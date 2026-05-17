@@ -1,0 +1,35 @@
+# Credentials & secrets — never commit
+.envrc
+.env
+.env.*
+.token-cache
+*.jwk
+*.pem
+*.key
+
+# Rust build output
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Local sync target (created at runtime by script-sync feature)
+/local-config/
+
+# Tool venvs / caches
+/.venv-tools/
+__pycache__/
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Claude Code local settings (per-developer allowlists, etc.)
+.claude/settings.local.json
+
+# Runtime project-local state (created by aic-edit at runtime)
+.aic-edit/
