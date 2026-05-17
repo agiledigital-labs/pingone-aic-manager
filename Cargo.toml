@@ -1,0 +1,33 @@
+[package]
+name = "aic-edit"
+version = "0.1.0"
+edition = "2021"
+description = "Ratatui TUI for managing PingOne Advanced Identity Cloud configuration"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+
+# JWT signing from JWK (service-account RFC7523 bearer flow).
+# Pure-Rust stack — avoids the openssl-sys system dependency.
+# jsonwebtoken handles RS256; rsa parses the JWK components into a key.
+jsonwebtoken = { version = "10", default-features = false }
+rsa = "0.9"
+sha2 = "0.11"
+base64 = "0.22"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# File watcher for two-way script sync
+notify = "8"
+
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+dotenvy = "0.15"
