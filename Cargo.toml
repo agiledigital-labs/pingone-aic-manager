@@ -6,7 +6,8 @@ description = "Ratatui TUI for managing PingOne Advanced Identity Cloud configur
 
 [dependencies]
 ratatui = "0.30"
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["event-stream"] }
+futures = "0.3"
 
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
@@ -14,7 +15,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 # JWT signing from JWK (service-account RFC7523 bearer flow).
 # Pure-Rust stack — avoids the openssl-sys system dependency.
 # jsonwebtoken handles RS256; rsa parses the JWK components into a key.
-jsonwebtoken = { version = "10", default-features = false }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 rsa = "0.9"
 sha2 = "0.11"
 base64 = "0.22"
@@ -29,5 +30,32 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 
 dotenvy = "0.15"
+
+# Encryption at rest
+argon2    = "0.5"
+aes-gcm   = "0.10"
+rand      = "0.8"
+zeroize   = { version = "1", features = ["derive"] }
+
+# OS keychain
+keyring   = "3"
+
+# Browser handoff (PKCE localhost callback)
+webbrowser      = "1"
+hyper           = { version = "1", features = ["server", "http1"] }
+hyper-util      = { version = "0.1", features = ["tokio"] }
+http-body-util  = "0.1"
+url             = "2"
+
+# RSA key handling
+num-bigint-dig = "0.8"
+pkcs8          = { version = "0.10", features = ["alloc"] }
+
+# Misc
+uuid        = { version = "1", features = ["v4", "serde"] }
+chrono      = "0.4"
+toml        = "0.8"
+directories = "5"

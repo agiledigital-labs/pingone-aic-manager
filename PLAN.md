@@ -1,360 +1,197 @@
-# Step 2 — Foundation: app skeleton, encryption, in-TUI tenant onboarding
+# aic-edit — Plan
 
-Step 1 (research + verified API docs + cargo skeleton) is complete. See
-[CLAUDE.md](CLAUDE.md) and [docs/api/](docs/api/) for that output. This file
-is the approved plan for Step 2.
+Step 1 (research + verified API docs + cargo skeleton) and Step 2 (TUI
+foundation: app skeleton, encryption, in-TUI tenant onboarding) are complete.
+Step 3 (ESVs tab) is next.
 
-## Context
+## Step 2 status — complete
 
-We're starting the TUI implementation for `aic-edit` (Rust + Ratatui, managing
-PingOne AIC tenants). Step 2 is **foundation only** — what every later
-capability needs: app skeleton, async event loop, tenant config + encryption,
-in-TUI onboarding, tab/env chrome. The first capability tab (ESVs) is
-deferred to Step 3 so this step doesn't sprawl.
+The plan in the previous revision of this file is mostly accurate for what got
+built. The big deviations:
 
-Four requirements shape the design:
+### Tenant onboarding — three verified patterns, no PKCE-to-loopback
 
-1. **Project-local config, not global.** The user has multiple concurrent AIC
-   projects and `cd`s between them. Config lives in `./.aic-edit/` in the
-   current working directory.
-2. **In-TUI tenant onboarding** — like Frodo CLI's `frodo conn save`, but
-   one better: support **WebAuthn/passkey 2FA via browser handoff**. Frodo's
-   in-terminal callback chain can't do this; the user has accounts where
-   passkey is the *only* second factor. Also keep a **manual override** path
-   for restricted environments (WSL is one).
-3. **Encryption at rest.** Master password → Argon2id → AES-256-GCM around
-   service-account JWKs and other secrets. Optional OS keychain remember to
-   skip the password on subsequent launches per machine. Yubikey deferred.
-4. **Prod-write confirm.** Any mutation on a tenant themed `prod` triggers
-   a "You're writing to PROD — Are you sure?" modal.
+The original "browser-handoff PKCE to localhost" flow turned out not to work
+for AIC platform admins. The investigation is in
+[`docs/api/99-quirks-and-open-questions.md`](docs/api/99-quirks-and-open-questions.md)
+(Q11 / Q12). Headlines:
 
-## Architecture
+- Platform admins live in the **root realm**. AIC blocks the root-realm
+  OAuth2-client-management API (`403 "not available in PingOne Advanced
+  Identity Cloud"`), so we can't register a new client with a localhost
+  redirect.
+- The built-in `idmAdminClient` rejects localhost redirects.
+- Device code grant is advertised in `grant_types_supported` but no
+  `device_authorization_endpoint` is exposed.
+- DCR is exposed but rejects SA bearers.
 
-- **Async tokio + Ratatui.** Required because we make HTTP calls. Pattern: a
-  background task drives `crossterm::event::EventStream` + tick/render
-  intervals via `tokio::select!`, sending unified `AppEvent`s through an
-  `mpsc::unbounded_channel`. Background HTTP runs in `tokio::spawn` tasks
-  that send their result as another `AppEvent`. `JoinHandle::abort()` for
-  cancellation when the user navigates away.
-- **`ratatui::init()` / `ratatui::restore()`** (0.30 idiom) — handles raw
-  mode, alternate screen, and panic hook.
-- **Inherit `tally`'s structure** (the user's existing personal-finance TUI
-  at `~/w/tally` — referenced patterns):
-  central `App` struct + `InputMode` enum for modal dispatch + per-tab state
-  + `FilteredList<T>` + `try_mutation`/`load_or_show` patterns + XDG-aware
-  `logging.rs`. The big departure: tally is sync, we're async; mutations
-  dispatch background tasks and react to `AppEvent::ApiResponse(...)`.
+What we ship instead — three patterns proven end-to-end by
+`scripts/verify-pattern1-cookie.sh` and `scripts/verify-pattern2-userpass.sh`:
 
-## Module layout
+1. **Paste session cookie** — user logs into the admin console in their real
+   browser (full SSO/MFA/passkey/SAML stack), copies the AM session cookie name
+   and value from DevTools, pastes both into aic-edit. aic-edit drives the
+   OAuth2 PKCE flow server-side (the cookie carries the session;
+   `idmAdminClient` returns a 302 with the code in the Location header which
+   we intercept without following the redirect). The Bearer creates the SA
+   via `/openidm/managed/svcacct`.
+2. **In-app username + password** — aic-edit walks AM's authentication journey
+   via `POST /am/json/{realm-path}/authenticate`, handling each callback
+   round. Works for username/password + optional TOTP. Polling/push/passkey is
+   rejected with a message pointing the user to pattern 1.
+3. **Paste service-account details** — user already has an SA UUID + JWK
+   somewhere; this is just a save-it-locally flow.
+
+All three forms share a `TextField` widget
+([`src/ui/widgets/text_field.rs`](src/ui/widgets/text_field.rs)) with prebuilt
+factories in `text_field::fields` so a label change is a single edit.
+
+### Master password — unified screen, no opt-in
+
+The opt-in setup screen was dropped. There is now one unlock screen for both
+first-run and subsequent launches. The first submission creates an empty
+encrypted `keys.enc` as a verifier so that on next launch a wrong password is
+actually rejected (previously, with no `keys.enc`, anything was accepted).
+
+The unlock work runs on a `spawn_blocking` task so Argon2id+AES doesn't freeze
+the UI; while it's in flight the password field reads "Unlocking…". On error
+the field becomes editable again with the failure message below it.
+
+### Other UX additions worth knowing
+
+- **`Tenant hostname`** input rather than `Base URL`; on focus-leave we strip
+  `https://`, `http://`, and any trailing path (e.g. `/am`) so users pasting
+  a URL from frodo or curl just get the hostname.
+- **Duplicate tenant name → overwrite confirm modal.** `persist_new_tenant` in
+  `src/app.rs` checks for collisions and routes to `OverwriteConfirm` if it
+  finds one.
+- **Toasts wrap.** The Auth signing error was being clipped at 6 chars; toasts
+  now grow to fit (up to 8 rows) and error toasts stick for 30 ticks. All
+  background-task errors are also logged at error level
+  (`~/.local/share/aic-edit/aic-edit.<date>.log`).
+- **kid mismatch fix.** `header.kid` in `mint_token` now comes from the JWK
+  itself (not `tenant.sa_id`), because the JWK we register with the SA uses a
+  random UUID kid distinct from the SA UUID. Also
+  `EncodingKey::from_rsa_der` wants PKCS#1, not PKCS#8 — we now call
+  `to_pkcs1_der()`.
+- **Textarea scroll-to-bottom + fixed-size mask.** Multi-line textareas scroll
+  vertically so the cursor stays visible on overflow. Masked single-line
+  fields render a fixed `head••••••••tail  (N chars)` summary so any-size
+  paste fits.
+
+## What's in the repo now
+
+Files added since the original plan; the layout matches except for the
+onboarding submodule and the new TextField widget:
 
 ```
 src/
-├── main.rs                     # tokio runtime; ratatui::init/restore; calls app::run
-├── lib.rs                      # re-exports
-├── error.rs                    # thiserror — port from tally
-├── logging.rs                  # XDG file logging — port from tally
-├── event.rs                    # AppEvent enum + EventHandler
-├── app.rs                      # App struct + run loop with tokio::select!
-├── config/
-│   ├── mod.rs                  # ProjectConfig: load/save .aic-edit/config.toml
-│   ├── tenant.rs               # Tenant struct (name, base_url, sa_id, scopes, theme)
-│   └── crypto.rs               # Argon2id + AES-256-GCM wrapper; keys.enc read/write
-├── keychain.rs                 # `keyring` wrapper for "remember unlocked key per machine"
-├── aic/
-│   ├── mod.rs                  # AicClient — reqwest wrapper with auto-bearer + Accept-API-Version
-│   ├── auth.rs                 # JWK → EncodingKey; TokenCache; mint_token
-│   ├── onboard/
-│   │   ├── mod.rs              # high-level "add tenant" entry points
-│   │   ├── manual.rs           # paste mode — parse user input → Tenant
-│   │   └── browser.rs          # OIDC PKCE flow: localhost server + browser open + SA create
-│   └── svcacct.rs              # POST /openidm/managed/svcacct?_action=create
-├── theme.rs                    # 4 env themes (sandbox/dev/staging/prod); chip styles
-└── ui/
-    ├── mod.rs                  # top-level draw() dispatcher
-    ├── header.rs               # tab strip + realm chip + env chip
-    ├── toast.rs                # top-right toast stack
-    ├── modal.rs                # generic modal helpers (centered_rect, etc.)
-    ├── unlock.rs               # master password prompt screen
-    ├── onboard.rs              # add-tenant modal (path picker + forms)
-    ├── env_picker.rs           # env switcher modal
-    └── widgets/
-        └── filtered_list.rs    # port from tally
+├── aic/onboard/
+│   ├── mod.rs                # domain normalisation helpers + path enum
+│   ├── bootstrap.rs          # shared OAuth2 + RSA + SA-create helpers
+│   ├── cookie.rs             # Pattern 1 form state
+│   ├── userpass.rs           # Pattern 2 form state + AM callback walker
+│   └── paste.rs              # Pattern 3 form state
+├── ui/
+│   ├── unlock.rs             # single-field unlock screen with busy state
+│   ├── onboard.rs            # menu + three single-page form draws
+│   └── widgets/
+│       ├── filtered_list.rs  # unchanged (used by Step 3+)
+│       └── text_field.rs     # bordered SingleLine / Masked / TextArea
+└── ...
 ```
 
-## Subsystem detail
+Files removed: `src/ui/master_password.rs`, `src/aic/onboard/browser.rs`,
+`src/aic/onboard/manual.rs`. `Settings` (encrypt-keys toggle) was dropped from
+`src/config/mod.rs`.
 
-### Project-local config
+## Verification (Step 2)
 
-`./.aic-edit/` in cwd:
+End-to-end smoke, sandbox tenant required (populate `.envrc`):
 
-```
-.aic-edit/
-├── config.toml         # non-secret: tenant index, default tenant, theme overrides
-├── keys.enc            # AES-256-GCM ciphertext of the JWK map; gitignored
-├── .gitignore          # auto-written: keys.enc, local-config/, *.log
-└── local-config/       # script-sync target (Step 4+); gitignored
-```
+1. `cargo build` + `cargo clippy --no-deps` are green.
+2. Fresh start (no `.aic-edit/`): app opens to the unlock screen with intro
+   "Set a master password…". Enter password → spinner-less but visible busy
+   state → Normal mode with empty-tenants welcome message.
+3. `Ctrl-N` opens the add-tenant menu with three (or four if `.envrc` exists)
+   options. Tab/Shift-Tab moves between fields in any form. Enter on Submit
+   validates + persists or kicks off bootstrap.
+4. Pattern 1: paste a fresh session cookie name + value from your admin
+   console → SA created → token mints in background → "Token ready" toast.
+5. Pattern 2: enter username + password (root realm) → if TOTP is set, an
+   inline "Enter verification code" prompt appears; type code → SA created.
+6. Pattern 3: enter SA UUID + JWK JSON → saved.
+7. Quit + restart: the unlock screen accepts the same password (and rejects
+   a wrong one). Wrong password no longer slides through when no tenants
+   exist yet.
+8. Adding a tenant with an existing name surfaces the `⚠ Tenant already
+   exists` modal with `y`/`n` confirm.
 
-`config.toml` shape:
+## Step 3 — ESVs tab (next)
 
-```toml
-project = "my-aic-project"
-default_tenant = "sandbox"
+Goal: list / create / edit / delete environment-specific variables, plus the
+"apply changes" restart flow. Read
+[`docs/api/03-esvs.md`](docs/api/03-esvs.md) before coding.
 
-[[tenant]]
-name = "sandbox"
-base_url = "https://<your-tenant>.forgeblocks.com"
-theme = "sandbox"
-sa_id = "<service-account-uuid>"
-scopes = ["fr:idm:*", "fr:am:*", "fr:idc:esv:*", "fr:idc:cookie-domain:*"]
+### Surface
 
-[[tenant]]
-name = "prod"
-base_url = "https://<your-tenant>.forgeblocks.com"
-theme = "prod"
-sa_id = "<service-account-uuid>"
-scopes = [...]
-```
+- New `Tab::Esvs` content (the existing placeholder body in `src/ui/mod.rs`
+  is where this lives).
+- Lists `/environment/variables` and `/environment/secrets` side by side or
+  in two sub-tabs. Reuse `FilteredList` from `src/ui/widgets/filtered_list.rs`.
+- Per-row actions: view (modal with the full value/details), edit (TextArea
+  for variable; placeholder-set for secrets since they're write-only), delete.
+- Top-level action: "Apply changes" → `POST /environment/startup?_action=restart`.
+  Triggers the prod-confirm modal when tenant is themed prod.
 
-Service-account JWKs live separately, encrypted, in `keys.enc`. Decrypted
-shape:
+### Wire details (from 03-esvs.md)
 
-```json
-{ "sandbox": { "kty": "RSA", "n": "...", "e": "AQAB", "d": "...", ... },
-  "prod":    { "kty": "RSA", ... } }
-```
+- Variables: `GET/PUT /environment/variables[/{id}]` — JSON value field.
+- Secrets: `GET /environment/secrets`, `PUT /environment/secrets/{id}` with
+  `valueBase64`. No GET-with-value — secrets are write-only.
+- `lastChangeDate` is the staleness signal; **no `_rev`** so use content
+  equality (or `lastChangeDate` if writes need optimistic locking).
+- The `esv-` prefix is enforced by the server for user-created variables.
 
-First-run convenience: if `./.aic-edit/` doesn't exist but `./.envrc` does
-and looks like ours (has `SERVICE_ACCOUNT_KEY`), offer to import it as a
-"sandbox"-themed tenant — keeps the existing dev loop working unchanged.
+### Reuse from Step 2
 
-### Encryption
+- `AicClient::get / put / post / write` already handle bearer minting, the
+  prod-confirm error, and `Accept-API-Version`. Don't reinvent — just call
+  `client.write(method, path, body, confirmed_prod)` where appropriate.
+- The error → toast pipeline (`AppEvent::Toast` / `AppEvent::TokenError`)
+  is sized for full-length errors now; use it.
+- `TextField` for the value editor (TextArea variant). Existing scroll-to-end
+  behaviour will work; if you need cursor-position editing rather than
+  append-only, that's a widget upgrade — flag it in the plan first.
 
-- Master password → `argon2::Argon2` (Argon2id, m=64MiB, t=3, p=4) with a
-  16-byte random salt stored alongside ciphertext → 32-byte key.
-- `aes-gcm::Aes256Gcm` with random 12-byte nonce per encrypt.
-- File layout (binary): `magic(4) | version(1) | salt(16) | nonce(12) |
-  ciphertext(...) | tag(16)`.
-- `keyring` crate for "remember": after first successful unlock, offer to
-  store the derived key in OS keychain (Secret Service / Keychain / Cred
-  Manager). Subsequent launches try keychain first, fall back to prompt.
-- Re-key on master password change: re-encrypt, re-store in keychain.
+### Not in Step 3
 
-### Async event loop
+- Scripts tab. Step 4.
+- OAuth2 / SAML / Journeys / managed-objects. Later steps.
+- Log sync. Stretch.
+- CLI subcommands.
 
-`src/event.rs`:
+## Risks / open items carried forward
 
-```rust
-pub enum AppEvent {
-    Key(crossterm::event::KeyEvent),
-    Tick,
-    Render,
-    TokenMinted { tenant: String, expires_at: i64 },
-    TokenError  { tenant: String, error: String },
-    ApiResponse { request_id: u64, result: Result<serde_json::Value, ApiError> },
-    OnboardCallback(Result<OauthCode, String>),  // from localhost server
-    Toast(ToastKind, String),
-}
+- **No browser-handoff for headless / SSO-only admins.** Pattern 1 still
+  requires the admin to log into the admin console manually once per session
+  to copy the cookie. Acceptable for now; if a tenant wants automated
+  rotation, see `docs/api/99` Q11/Q12 for options that weren't viable.
+- **`keyring` on Linux** still depends on Secret Service running. Pattern 1
+  / unlock both store the password best-effort; failures are silent.
+- **RSA-2048 keygen** is fast enough not to need a progress indicator (the
+  original plan was 4096, the implementation uses 2048 — see
+  `bootstrap::generate_rsa_jwk`). If we want 4096 later, run it in
+  `spawn_blocking` and show a busy state in the cookie/userpass forms.
 
-pub struct EventHandler {
-    pub tx: mpsc::UnboundedSender<AppEvent>,
-    rx: mpsc::UnboundedReceiver<AppEvent>,
-    _task: tokio::task::JoinHandle<()>,
-}
-```
+## How to hand this off
 
-`src/app.rs` main loop:
+The next agent should:
 
-```rust
-loop {
-    terminal.draw(|f| ui::draw(f, &app))?;
-    if app.should_quit { break; }
-    if let Some(ev) = app.events.recv().await {
-        app.handle_event(ev).await?;
-    }
-}
-```
-
-### Tab strip + env chrome
-
-- Header: tabs left (just `ESVs` shown in Step 2; more added per step), realm
-  chip + env chip right-aligned.
-- `R` toggles realm; `T` opens env picker modal; `Ctrl-N` opens "Add tenant"
-  modal.
-- `theme.rs`: returns `(fg, bg, glyph)` for each theme.
-  `sandbox`: green/black/`▪`, `dev`: blue/black/`▪`, `staging`: yellow/black/`▪`,
-  `prod`: white/red/`⚠`.
-
-### Tenant onboarding
-
-`Ctrl-N` opens a modal with three choices:
-
-1. **Paste service account JSON** (works everywhere, including WSL).
-   - Form: name, base URL, theme picker, paste-area for SA UUID, paste-area
-     for JWK private key. Validates JWK shape + checks the base URL is
-     reachable + mints a test token. Success → encrypt + persist.
-2. **Log in via browser** (the headline feature; needs localhost reachability).
-   - Form: name, base URL, theme picker.
-   - aic-edit binds `127.0.0.1:0` (random port), opens the user's browser via
-     `webbrowser` crate to `{base_url}/am/oauth2/authorize?…&redirect_uri=
-     http://127.0.0.1:{port}/cb` using OIDC PKCE.
-   - User authenticates in browser (whatever 2FA — passkey, TOTP, push, SSO).
-   - Browser redirects to the localhost callback with `?code=…&state=…`.
-   - Localhost server captures the code, exchanges for an access token at
-     `/am/oauth2/access_token`, sends `OnboardCallback(Ok(token))` to App.
-   - App uses that token to: generate a local RSA-4096 JWK pair (takes
-     ~10–30s; show progress), `POST /openidm/managed/svcacct?_action=create`
-     with `name`, `description`, `accountStatus=active`, `scopes=[…]`,
-     `jwks=JSON.stringify({keys:[<public_jwk>]})`. Response gives back the
-     SA UUID. Encrypt + persist the **private** JWK.
-3. **Import from .envrc** (convenience, shown only when `./.envrc` exists).
-
-**Browser-handoff open question (flag in plan, resolve in implementation):**
-the OAuth client we use needs `http://127.0.0.1:*/cb` whitelisted as a valid
-redirect URI. Frodo uses `idmAdminClient` (built-in to AIC) but with a
-`/platform/...` redirect, not localhost. We need to verify whether
-`idmAdminClient` accepts a localhost redirect; if not, we'll need a
-documented one-time setup step ("create a public OAuth client in your AIC
-admin console with redirect URI `http://127.0.0.1:*/cb`") to make
-browser-handoff work. Manual paste mode always works regardless.
-
-### Prod-write confirm pattern
-
-`AicClient::write(method, path, body)` checks `tenant.theme == Prod`; if so,
-returns `Err(ApiError::ProdConfirmRequired)` unless caller passes
-`ConfirmedProdWrite` token. UI catches that error, raises a centered modal
-("You're writing to PROD — confirm? (y/n)"), and on `y` retries with the
-token. Stays consistent across tabs without per-tab logic.
-
-Step 2 exercises this on the SA-creation call when adding a prod-themed
-tenant — first real prod write the app makes.
-
-### Master password unlock UX
-
-- Launch: if `.aic-edit/keys.enc` exists, look in OS keychain
-  (`keyring::Entry::new("aic-edit", &project_path)`) for cached key.
-  - Found and decrypts → straight to main UI.
-  - Not found / decrypt fails → show unlock screen, prompt for master password,
-    derive + decrypt + (optionally) store in keychain.
-- Launch with no `.aic-edit/`: skip straight to "no tenants — Ctrl-N to add"
-  state.
-- First "Add tenant" with no existing store: also prompt to set master
-  password.
-
-## Critical files to be created (Step 2)
-
-- `src/main.rs`, `src/lib.rs`, `src/error.rs`, `src/logging.rs`, `src/event.rs`,
-  `src/app.rs`
-- `src/config/{mod,tenant,crypto}.rs`
-- `src/keychain.rs`
-- `src/aic/{mod,auth,svcacct}.rs`, `src/aic/onboard/{mod,manual,browser}.rs`
-- `src/theme.rs`
-- `src/ui/{mod,header,toast,modal,unlock,onboard,env_picker}.rs`
-- `src/ui/widgets/filtered_list.rs`
-
-Plus `Cargo.toml` additions (see below).
-
-## Reused from tally (~/w/tally on the user's machine)
-
-Port these verbatim with minimal adjustments. Tally is the user's existing
-Ratatui app and the closest match in style + structure to what aic-edit will
-be. If you don't have access to that source tree, the patterns below are
-described in [docs/DESIGN.md](docs/DESIGN.md) at a high level:
-
-- `error.rs` — thiserror enum + `Result<T>` alias.
-- `logging.rs` — XDG file path, daily rotation, env-var level.
-- `FilteredList<T>` widget (from tally's `tui/filtered_list.rs`) — generic,
-  well-tested.
-- `try_mutation` / `load_or_show` patterns — adapted to async (return Future).
-- The `InputMode` enum approach for modal dispatch.
-
-## Cargo.toml additions
-
-```toml
-# Encryption
-argon2          = "0.5"
-aes-gcm         = "0.10"
-rand            = "0.8"
-zeroize         = { version = "1", features = ["derive"] }
-
-# OS keychain
-keyring         = "3"
-
-# Browser handoff
-webbrowser      = "1"
-hyper           = { version = "1", features = ["server", "http1"] }
-hyper-util      = { version = "0.1", features = ["tokio"] }
-http-body-util  = "0.1"
-url             = "2"
-
-# JWT — explicit pure-Rust backend (v10 requires this)
-jsonwebtoken    = { version = "10", default-features = false, features = ["rust_crypto"] }
-
-# RSA / PKCS1 / numbers (for JWK ↔ EncodingKey conversion)
-num-bigint-dig  = "0.8"     # rsa v0.9 uses this
-pkcs1           = { version = "0.7", features = ["pem"] }
-
-# Misc
-uuid            = { version = "1", features = ["v4", "serde"] }
-chrono          = "0.4"
-toml            = "0.8"
-directories     = "5"       # XDG for log file location only
-```
-
-## Verification
-
-End-to-end smoke for Step 2 (sandbox tenant required; populate `.envrc` per
-the SETUP section in `README.md`):
-
-1. `cargo check` passes; `cargo build` passes.
-2. In a directory with no `.aic-edit/` but with `.envrc` → app shows
-   "no tenants yet" + offers `i` to import .envrc + `Ctrl-N` to add.
-3. Import .envrc → master password prompt → set password → tenant appears,
-   `.aic-edit/` directory created, `keys.enc` 600 perms.
-4. App mints a token in the background (visible in top-right toast).
-   Token cache reuse on second mint (no network).
-5. `R` toggles realm; chip updates color (alpha and bravo both dim grey).
-6. `T` opens env picker with the one tenant; selecting it does nothing yet
-   (just confirms switching works).
-7. **Paste-mode onboarding:** `Ctrl-N` → choose paste → fill form with the
-   .envrc values under a different name → save → it appears in env picker.
-   Master password is not re-asked.
-8. **Browser-handoff onboarding:** `Ctrl-N` → choose browser → enter a new
-   tenant name and the sandbox base URL → browser opens to AIC login →
-   user authenticates → returns to TUI with success toast. SA visible in
-   AIC admin console under "Service Accounts".
-9. **Prod confirm:** add the same tenant a third time with theme=prod. Try
-   to add — confirm modal pops, asks "you're writing to PROD". `y` proceeds.
-10. Restart the app: keychain unlock works silently. Delete the keychain
-    entry → master password prompt returns; correct password proceeds.
-
-## Out of scope (Step 3+)
-
-- **ESVs tab** — list + edit variables + apply restart. Step 3.
-- **Scripts tab** with two-way file sync + content-equality conflict
-  detection. Step 4.
-- **OAuth2 / SAML / Journeys tabs.** Later.
-- **Yubikey** for master-key unlock. Later.
-- **Log sync + compression + search.** Stretch.
-- **CLI subcommands** (`aic-edit init`, `aic-edit tenant add` etc.). All
-  Step-2 functionality is reachable via the TUI; CLI niceties can wait.
-
-## Risks & open items
-
-- **Browser-handoff redirect URI whitelisting.** The OAuth client used for
-  `?redirect_uri=http://127.0.0.1:*/cb` must allow that URI. Frodo uses the
-  built-in `idmAdminClient` with a hosted redirect helper — we may need to
-  either (a) confirm `idmAdminClient` accepts localhost, (b) use a
-  different built-in client, or (c) document a one-time admin-console
-  setup step. If none of those work cleanly, browser mode degrades to
-  "open browser to admin console, then come back to TUI in paste mode" —
-  still better than no help at all.
-- **4096-bit RSA keypair generation in Rust is slow** (10–30s on commodity
-  CPUs). Show progress UI; consider doing it before the form is submitted
-  so it's ready when the user finishes typing.
-- **`keyring` crate platform behaviour varies.** Linux Secret Service
-  requires `gnome-keyring` or `kwallet` to be running; in headless envs
-  (some WSL setups) it fails. Fall back gracefully to "prompt every time".
-- **First-launch UX with no tenants** needs to be obviously navigable —
-  not a blank screen. Centered "Welcome — press Ctrl-N to add your first
-  tenant" message in the empty body.
+1. Read `CLAUDE.md` and `docs/api/README.md`.
+2. Skim `docs/api/03-esvs.md` and `docs/api/99-quirks-and-open-questions.md`.
+3. Run `scripts/verify-endpoint.sh "/environment/variables"` to confirm
+   sandbox reachability before coding.
+4. Build on the existing `AicClient` and `TextField` abstractions. Don't
+   reach into `app.rs` for new input-mode plumbing without checking whether
+   the existing `InputMode` enum + per-mode key handler pattern fits.
