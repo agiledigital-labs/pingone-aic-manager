@@ -111,8 +111,140 @@ new things are learned.
 **Lesson:** Both libraries' research summaries had errors. Always verify
 endpoints + shapes against the live tenant before writing code.
 
+### Q11. PKCE browser flow — superseded (resolved 2026-05-20)
+- **Status:** Superseded by Q12. Original investigation kept for posterity.
+- **Original finding:** `idmAdminClient` rejects `http://localhost:*/callback`
+  loopback redirect URIs, so we tried provisioning a dedicated `AicEdit` OAuth2
+  client in the alpha realm. That worked for alpha-realm identities, but
+  platform admins (the users who actually need to bootstrap aic-edit) live in
+  the **root realm** in AIC, and AIC explicitly blocks root-realm OAuth2 client
+  management API (`403 "This operation is not available in PingOne Advanced
+  Identity Cloud"`). DCR is exposed but rejects SA bearers. Device code is in
+  `grant_types_supported` but no `device_authorization_endpoint` is advertised.
+  → no path to a loopback PKCE flow for the actual users.
+- **Replacement:** Three bootstrap patterns documented in Q12 below. The
+  `AicEdit` client is no longer required and can be deleted from tenants where
+  it was provisioned.
+
+### Q12. Bootstrap auth flows (resolved 2026-05-20)
+- **Status:** Resolved end-to-end; verified by `scripts/verify-pattern1-cookie.sh`
+  and `scripts/verify-pattern2-userpass.sh`.
+
+Three patterns produce an initial Bearer that can `POST /openidm/managed/svcacct`
+to mint a long-lived service account. After bootstrap, the SA's JWK takes over;
+the bootstrap credentials are discarded.
+
+**Pattern 1 — Paste session cookie.** User logs into the AIC admin console in
+their normal browser (full SSO/MFA/passkey/SAML stack). They copy the AM
+session cookie value from DevTools → Application → Cookies. aic-edit drives the
+OAuth flow server-side using the cookie.
+
+**Pattern 2 — Username/password in-app.** aic-edit walks AM's authentication
+journey via `POST /am/json/realms/root/authenticate`, handling each callback
+round (NameCallback, PasswordCallback, ConfirmationCallback, etc.). Works for
+username+password and TOTP. Does NOT work for passkey/push/CAPTCHA — those
+require a real browser.
+
+**Pattern 3 — Paste SA details.** User already has a service account JWK and
+client_id. aic-edit stores them directly. (Same path as `scripts/verify-endpoint.sh`.)
+
+#### Pattern 1 wire details
+
+1. `GET /am/json/serverinfo/*` → `cookieName` (per-tenant hex, e.g.
+   `da4bb2cc51f31d3`). Do NOT hardcode; AIC randomises per tenant.
+2. PKCE: `code_verifier` random URL-safe 32 bytes, `code_challenge =
+   base64url(SHA256(verifier))`.
+3. `GET /am/oauth2/realms/root/authorize` with:
+   - `client_id=idmAdminClient`
+   - `response_type=code`
+   - `scope=openid fr:idm:*`  *(other `fr:*` scopes rejected by this client —
+     see scope rules below)*
+   - `redirect_uri=https://{TENANT_BASE}/platform/appAuthHelperRedirect.html`
+     *(must be exactly this URL; same host as AM, NOT `id.forgerock.io`)*
+   - `code_challenge`, `code_challenge_method=S256`, `state`
+   - Header: `Cookie: <cookieName>=<sessionValue>; amlbcookie=01`
+   - HTTP client MUST NOT follow redirects.
+4. Response is `HTTP 302` with `Location: <redirect_uri>?code=...&state=...`.
+   Parse the `code` from the Location header — never navigate there.
+5. `POST /am/oauth2/realms/root/access_token` (form-encoded):
+   - `grant_type=authorization_code`
+   - `code`, `client_id=idmAdminClient`, `redirect_uri` (same as above),
+     `code_verifier`
+6. Response JSON has `access_token` (a JWT) with scope `openid fr:idm:*`,
+   audience `idmAdminClient`, `expires_in=3600`.
+
+#### Pattern 2 wire details
+
+1. `POST /am/json{realm-path}/authenticate` with NO body and header
+   `Accept-API-Version: resource=2.0, protocol=1.0`. Do NOT specify
+   `authIndexValue=Login` — AIC's root and alpha realms have NO named "Login"
+   tree (returns `"No Configuration found"`). The realm's default journey is
+   used when no `authIndexValue` is provided.
+2. Response is a JSON `{ "authId": "...", "callbacks": [...] }`. Walk callbacks:
+   - **NameCallback**: prompt `"User Name"` → username. Prompt
+     `"Enter verification code"` (or anything containing
+     `otp/code/token/verification`) → **OTP**. AIC reuses NameCallback for OTP
+     entry; do not assume it's always the username.
+   - **PasswordCallback**: password (or OTP if prompt contains an OTP keyword).
+   - **ConfirmationCallback**: hidden "Submit" button. Send the
+     `defaultOption` value from the callback's `output` array (typically `0`).
+     Do NOT prompt the user — this is the form's submit button, not a question.
+   - **BooleanAttributeInputCallback** (e.g. "Trust this device"): default
+     `false`.
+   - **TextOutputCallback**, **HiddenValueCallback**: leave as-is.
+   - **PollingWaitCallback**: passkey/push — abort with a clear message.
+3. POST the modified callback array back to the same URL. AIC may return more
+   rounds (HAR shows 3 rounds for u/p+TOTP). Loop until the response contains
+   `tokenId`.
+4. `tokenId` is the session cookie value. Continue with Pattern 1 step 3
+   (skip step 1 — we already minted a session, just need the cookie name).
+
+#### Bearer scope asymmetry (important)
+
+The bootstrap Bearer from `idmAdminClient` only carries `openid fr:idm:*`. The
+real admin console requests 15+ `fr:idc:*` scopes but the SA-creation API only
+needs `fr:idm:*`. **The SA we create can declare WIDER scopes than the token
+that minted it** — request the full set in the SA's `scopes` array:
+
+```json
+["fr:idm:*", "fr:am:*", "fr:idc:esv:*", "fr:idc:cookie-domain:*"]
+```
+
+The SA's own tokens (via JWT-bearer grant) then carry those wider scopes.
+Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
+`scope: "fr:am:* fr:idc:esv:* fr:idm:*"`.
+
+#### Service account create body
+
+`POST /openidm/managed/svcacct?_action=create` with:
+```json
+{
+  "name": "...",
+  "description": "...",
+  "scopes": ["fr:idm:*", "fr:am:*", "fr:idc:esv:*", "fr:idc:cookie-domain:*"],
+  "accountStatus": "Active",
+  "jwks": "<full JWKS JSON as a string>"
+}
+```
+
+- `jwks` is a **string** containing JSON `{"keys":[{...public RSA JWK...}]}`.
+  Not a JSON object — the API stores it as an LDAP `fr-attr-jwks` directory
+  string. An empty `jwks` returns
+  `"Invalid Attribute Syntax: ... zero-length value"`.
+- Only the public key fields go in (`kty`, `kid`, `alg`, `use`, `n`, `e`) —
+  never `d/p/q/dp/dq/qi` (those stay private).
+- 2048-bit RSA is sufficient. The kid you set here must match the `kid` header
+  on JWT-bearer assertions later.
+
+#### Cookie discovery
+- `GET /am/json/serverinfo/*` → `cookieName` field. Required, not constant.
+- The `amlbcookie=01` load-balancer cookie should also be sent on AM requests
+  for stickiness.
+
 ---
 
 ## Changelog
 
 - **2026-05-17** — Initial verification pass; Q1-Q4 + secret stores resolved.
+- **2026-05-18** — Step 2 implemented (TUI skeleton, crypto, onboarding). Q11 (PKCE redirect URI) resolved; `AicEdit` OAuth2 client provisioned.
+- **2026-05-20** — Q11 superseded by Q12. Three bootstrap patterns verified end-to-end via `scripts/verify-pattern1-cookie.sh` and `scripts/verify-pattern2-userpass.sh`. `AicEdit` OAuth2 client no longer required.

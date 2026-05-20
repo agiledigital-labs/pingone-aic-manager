@@ -6,6 +6,7 @@
 *.jwk
 *.pem
 *.key
+*.har
 
 # Rust build output
 /target/
