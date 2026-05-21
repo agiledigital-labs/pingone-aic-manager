@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::theme::Theme;
+use crate::theme::style_for;
 use crate::ui::modal::centered_rect;
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -22,7 +22,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .tenants
         .iter()
         .map(|t| {
-            let style = Theme::from_tenant(t.theme).style();
+            let style = style_for(t.theme);
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!(" {} ", style.glyph),

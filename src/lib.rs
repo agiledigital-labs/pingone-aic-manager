@@ -9,5 +9,6 @@ pub mod keychain;
 pub mod logging;
 pub mod theme;
 pub mod ui;
+pub mod yubikey;
 
 pub use error::{Error, Result};

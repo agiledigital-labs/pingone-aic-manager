@@ -1,16 +1,19 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt;
-use tokio::time::{Duration, interval};
+use tokio::time::{interval, Duration};
 
 use crate::aic::onboard::cookie::{CookieField, CookieForm};
 use crate::aic::onboard::paste::{PasteField, PasteForm};
 use crate::aic::onboard::userpass::{CallbackOutcome, UpField, UpForm};
 use crate::aic::AicClient;
-use crate::config::crypto;
+use crate::config::crypto::{self, Dek};
 use crate::config::tenant::{Tenant, TenantTheme};
-use crate::config::ProjectConfig;
+use crate::config::wraps::{self, Wrap, WrapsFile};
+use crate::config::{ProjectConfig, Settings};
 use crate::event::{AppEvent, EventHandler, ToastKind};
 use crate::ui::toast::Toast;
 use crate::{Error, Result};
@@ -18,6 +21,10 @@ use crate::{Error, Result};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InputMode {
     Normal,
+    /// First-run only: pick whether to encrypt credentials with a master
+    /// password and (if so) set the password + confirm it.
+    SetMasterPassword,
+    /// Subsequent launches: enter the master password to decrypt `keys.enc`.
     Unlock,
     OnboardMenu,
     OnboardCookie,
@@ -26,6 +33,69 @@ pub enum InputMode {
     OverwriteConfirm,
     EnvPicker,
     ProdConfirm,
+}
+
+/// Fields on the first-run master-password setup form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MpField {
+    Choice,
+    Password,
+    Confirm,
+    Submit,
+}
+
+#[derive(Debug, Clone)]
+pub struct MpForm {
+    /// true → encrypt with a master password; false → store credentials plain.
+    pub want_password: bool,
+    pub password: String,
+    pub confirm: String,
+    pub focused: MpField,
+    pub error: Option<String>,
+}
+
+impl Default for MpForm {
+    fn default() -> Self {
+        Self {
+            want_password: true,
+            password: String::new(),
+            confirm: String::new(),
+            focused: MpField::Choice,
+            error: None,
+        }
+    }
+}
+
+impl MpForm {
+    pub fn next(&mut self) {
+        self.focused = match self.focused {
+            MpField::Choice => {
+                if self.want_password {
+                    MpField::Password
+                } else {
+                    MpField::Submit
+                }
+            }
+            MpField::Password => MpField::Confirm,
+            MpField::Confirm => MpField::Submit,
+            MpField::Submit => MpField::Choice,
+        };
+    }
+
+    pub fn prev(&mut self) {
+        self.focused = match self.focused {
+            MpField::Choice => MpField::Submit,
+            MpField::Password => MpField::Choice,
+            MpField::Confirm => MpField::Password,
+            MpField::Submit => {
+                if self.want_password {
+                    MpField::Confirm
+                } else {
+                    MpField::Choice
+                }
+            }
+        };
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -54,6 +124,7 @@ impl Tab {
 pub struct App {
     pub events: EventHandler,
     pub config: Option<ProjectConfig>,
+    pub settings: Option<Settings>,
     pub input_mode: InputMode,
     pub current_tab: Tab,
     pub current_realm: Realm,
@@ -68,12 +139,26 @@ pub struct App {
     pub unlock_input: String,
     pub unlock_error: Option<String>,
     pub unlock_busy: bool,
-    /// True when there is no `keys.enc` yet — the unlock screen treats the
-    /// next submission as "set the password" rather than "unlock".
-    first_run: bool,
 
-    // Master password (kept in memory after unlock; None means "no master password set")
-    master_password: Option<String>,
+    // First-run master-password setup form
+    pub mp_form: MpForm,
+
+    /// Data encryption key (random 32 bytes), held only while unlocked.
+    /// `None` either means "not yet unlocked" or "user opted out of
+    /// encryption" (see `settings.encrypt_keys`). The DEK is wrapped on disk
+    /// by every enrolled unlock method (`wraps.toml`).
+    dek: Option<Dek>,
+
+    /// Loaded wrap envelope, kept in memory so the unlock screen can decide
+    /// which methods to offer and the enrolment flow can append new entries.
+    pub wraps: WrapsFile,
+
+    /// Set by the background yubikey poll to stop itself once unlock has
+    /// happened (via any method). Shared with the spawned task.
+    yubikey_cancel: Arc<AtomicBool>,
+    /// True while a yubikey poll task is running — guards against spawning
+    /// more than one.
+    yubikey_armed: bool,
 
     // JWK map (decrypted; keyed by tenant name)
     jwks: HashMap<String, serde_json::Value>,
@@ -107,6 +192,8 @@ enum PendingProdAction {
 impl App {
     pub fn new() -> Result<Self> {
         let config = ProjectConfig::load()?;
+        let settings = Settings::load()?;
+        let wraps = WrapsFile::load()?.unwrap_or_default();
         let tenants = config
             .as_ref()
             .map(|c| c.tenants.clone())
@@ -120,6 +207,7 @@ impl App {
         Ok(Self {
             events: EventHandler::new(),
             config,
+            settings,
             input_mode: InputMode::Normal,
             current_tab: Tab::Esvs,
             current_realm: Realm::Alpha,
@@ -132,8 +220,11 @@ impl App {
             unlock_input: String::new(),
             unlock_error: None,
             unlock_busy: false,
-            first_run: false,
-            master_password: None,
+            mp_form: MpForm::default(),
+            dek: None,
+            wraps,
+            yubikey_cancel: Arc::new(AtomicBool::new(false)),
+            yubikey_armed: false,
             jwks: HashMap::new(),
             clients: HashMap::new(),
             onboard_menu_idx: 0,
@@ -146,23 +237,96 @@ impl App {
         })
     }
 
-    /// Pick the initial mode. `keys.enc` exists iff a master password has been
-    /// set, so:
-    ///   - exists → Unlock (with possible keychain auto-unlock).
-    ///   - missing → first run; the Unlock screen treats the next submission
-    ///     as "set the password" and writes a verifier `keys.enc` afterwards.
+    /// Pick the initial mode from on-disk state:
+    ///   - `settings.toml` says encrypt_keys=true → Unlock (keychain may
+    ///     auto-unlock; on failure, the user is prompted).
+    ///   - `settings.toml` says encrypt_keys=false → Normal; load `keys.plain`.
+    ///   - No `settings.toml` → first run → `SetMasterPassword`.
+    ///   - Legacy `keys.enc` with no settings → backfill encrypt_keys=true.
     fn decide_initial_mode(&mut self) {
-        if ProjectConfig::keys_path().exists() {
-            self.first_run = false;
-            self.try_keychain_unlock();
-        } else {
-            self.first_run = true;
-            self.input_mode = InputMode::Unlock;
+        let has_enc = ProjectConfig::keys_path().exists();
+
+        if self.settings.is_none() && has_enc {
+            // Migrate older installs that don't have settings.toml.
+            self.settings = Some(Settings { encrypt_keys: true });
+            let _ = self.settings.as_ref().unwrap().save();
+        }
+
+        match self.settings {
+            Some(Settings { encrypt_keys: true }) => self.try_keychain_unlock(),
+            Some(Settings {
+                encrypt_keys: false,
+            }) => {
+                self.load_plain_keys();
+                self.input_mode = InputMode::Normal;
+            }
+            None => {
+                self.input_mode = InputMode::SetMasterPassword;
+            }
+        }
+
+        // If the user landed on the Unlock screen and a yubikey is enrolled,
+        // start polling in the background so tapping the device is enough —
+        // no extra keystroke needed.
+        if self.input_mode == InputMode::Unlock && self.wraps.has_yubikey() {
+            self.spawn_yubikey_poll();
         }
     }
 
-    pub fn is_first_run(&self) -> bool {
-        self.first_run
+    fn spawn_yubikey_poll(&mut self) {
+        if self.yubikey_armed {
+            return;
+        }
+        self.yubikey_armed = true;
+        self.yubikey_cancel.store(false, Ordering::Relaxed);
+        let wraps = self.wraps.clone();
+        let tx = self.events.tx.clone();
+        let cancel = self.yubikey_cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            'outer: loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                if !crate::yubikey::device_present() {
+                    // No yubikey plugged in; poll again in a moment.
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+                for wrap in wraps.yubikey_wraps() {
+                    if cancel.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    match crate::config::unlock_with_yubikey(wrap) {
+                        Ok((dek, jwks)) => {
+                            let _ = tx.send(AppEvent::UnlockResult(Ok(UnlockOk {
+                                dek,
+                                jwks,
+                                password_to_cache: None,
+                            })));
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::debug!("yubikey unlock attempt failed: {e}");
+                        }
+                    }
+                    if cancel.load(Ordering::Relaxed) {
+                        break 'outer;
+                    }
+                }
+                // None of the enrolled credentials matched this device.
+                // Wait a bit before trying again — gives the user time to
+                // swap yubikeys or type their password.
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        });
+    }
+
+    fn load_plain_keys(&mut self) {
+        if let Ok(Some(bytes)) = ProjectConfig::load_keys_plain() {
+            if let Ok(map) = serde_json::from_slice::<HashMap<String, serde_json::Value>>(&bytes) {
+                self.jwks = map;
+            }
+        }
     }
 
     /// Try to unlock from OS keychain; fall back to the Unlock screen if needed.
@@ -182,15 +346,15 @@ impl App {
                 return;
             }
         };
-        // Try the cached password synchronously. If it works we go straight to
-        // Normal; otherwise the user types it themselves.
-        match try_decrypt_keys(&password) {
-            Ok(Some(map)) => {
-                self.jwks = map;
-                self.master_password = Some(password);
+        // Try the cached password synchronously. If it works we go straight
+        // to Normal; otherwise the user types it themselves.
+        match try_password_unlock(&password, &self.wraps) {
+            Ok((dek, jwks)) => {
+                self.dek = Some(dek);
+                self.jwks = jwks;
                 self.input_mode = InputMode::Normal;
             }
-            _ => {
+            Err(_) => {
                 self.input_mode = InputMode::Unlock;
             }
         }
@@ -198,16 +362,30 @@ impl App {
 
     fn save_jwk(&mut self, tenant_name: &str, jwk: serde_json::Value) -> Result<()> {
         self.jwks.insert(tenant_name.to_string(), jwk);
-        self.persist_keys_enc()
+        self.persist_keys()
+    }
+
+    /// Write the current JWK map to disk — encrypted with the in-memory DEK,
+    /// or plain (mode 600) if the user opted out of encryption.
+    fn persist_keys(&self) -> Result<()> {
+        let encrypt = self.settings.map(|s| s.encrypt_keys).unwrap_or(true);
+        let bytes = serde_json::to_vec(&self.jwks)?;
+        if encrypt {
+            let dek = self
+                .dek
+                .as_ref()
+                .ok_or_else(|| Error::Crypto("not unlocked — no DEK in memory".into()))?;
+            let enc = crypto::encrypt_data(&bytes, dek)?;
+            ProjectConfig::save_keys_enc(&enc)?;
+        } else {
+            ProjectConfig::save_keys_plain(&bytes)?;
+        }
+        Ok(())
     }
 
     /// Save a tenant outright — replacing any existing entry with the same
     /// name. Caller is responsible for confirming the overwrite before calling.
-    fn persist_tenant_overwriting(
-        &mut self,
-        tenant: Tenant,
-        jwk: serde_json::Value,
-    ) -> Result<()> {
+    fn persist_tenant_overwriting(&mut self, tenant: Tenant, jwk: serde_json::Value) -> Result<()> {
         self.save_jwk(&tenant.name, jwk.clone())?;
 
         let client = AicClient::new(tenant.clone(), jwk.clone());
@@ -272,6 +450,13 @@ impl App {
 
     pub fn active_tenant(&self) -> Option<&Tenant> {
         self.tenants.get(self.active_tenant_idx)
+    }
+
+    /// True iff the in-memory DEK is set — meaning credentials are encrypted
+    /// and the user is currently unlocked. The header uses this to decide
+    /// whether to surface yubikey-enrol shortcuts.
+    pub fn dek_is_set(&self) -> bool {
+        self.dek.is_some()
     }
 
     pub async fn run(
@@ -356,9 +541,37 @@ impl App {
                 self.handle_onboard_error(msg);
             }
             AppEvent::UnlockResult(r) => self.handle_unlock_result(r),
+            AppEvent::YubikeyEnrollResult(r) => self.handle_yubikey_enroll_result(r),
             AppEvent::OnboardCallback(_) | AppEvent::ApiResponse { .. } => {}
         }
         Ok(())
+    }
+
+    fn handle_yubikey_enroll_result(
+        &mut self,
+        result: std::result::Result<Wrap, String>,
+    ) {
+        match result {
+            Ok(wrap) => {
+                self.wraps.push_yubikey(wrap);
+                match self.wraps.save() {
+                    Ok(()) => {
+                        self.push_toast(ToastKind::Success, "Yubikey enrolled");
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "wraps.toml save failed after enrol");
+                        self.push_toast(
+                            ToastKind::Error,
+                            format!("Yubikey enrolled but couldn't save wraps.toml: {e}"),
+                        );
+                    }
+                }
+            }
+            Err(msg) => {
+                tracing::error!(error = %msg, "yubikey enrolment failed");
+                self.push_toast(ToastKind::Error, format!("Yubikey enrol: {msg}"));
+            }
+        }
     }
 
     fn tick(&mut self) {
@@ -375,6 +588,7 @@ impl App {
     async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         match self.input_mode {
             InputMode::Normal => self.handle_normal_key(key).await?,
+            InputMode::SetMasterPassword => self.handle_mp_key(key)?,
             InputMode::Unlock => self.handle_unlock_key(key),
             InputMode::OnboardMenu => self.handle_onboard_menu_key(key).await?,
             InputMode::OnboardCookie => self.handle_cookie_key(key).await?,
@@ -411,7 +625,9 @@ impl App {
     }
 
     pub fn pending_overwrite_name(&self) -> Option<&str> {
-        self.pending_overwrite.as_ref().map(|(t, _)| t.name.as_str())
+        self.pending_overwrite
+            .as_ref()
+            .map(|(t, _)| t.name.as_str())
     }
 
     async fn handle_normal_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -436,9 +652,37 @@ impl App {
                 self.onboard_menu_idx = 0;
                 self.input_mode = InputMode::OnboardMenu;
             }
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.start_yubikey_enrol();
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    fn start_yubikey_enrol(&mut self) {
+        let dek = match self.dek.clone() {
+            Some(d) => d,
+            None => {
+                self.push_toast(
+                    ToastKind::Warning,
+                    "Encryption is disabled — set a master password first.",
+                );
+                return;
+            }
+        };
+        // Default label: "Yubikey N" so users with multiple devices can tell
+        // them apart in wraps.toml at a glance.
+        let label = format!("Yubikey {}", self.wraps.yubikey_wraps().count() + 1);
+        self.push_toast(
+            ToastKind::Warning,
+            "Tap your Yubikey to enrol it…",
+        );
+        let tx = self.events.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = enroll_yubikey_blocking(dek, label);
+            let _ = tx.send(AppEvent::YubikeyEnrollResult(result));
+        });
     }
 
     fn handle_unlock_key(&mut self, key: KeyEvent) {
@@ -462,14 +706,16 @@ impl App {
                 self.unlock_error = None;
                 self.unlock_busy = true;
                 let tx = self.events.tx.clone();
+                let wraps = self.wraps.clone();
                 tokio::task::spawn_blocking(move || {
-                    let result = try_decrypt_keys(&password).map(|opt| {
-                        // First run: no keys.enc yet → start with empty map.
-                        (password.clone(), opt.unwrap_or_default())
-                    });
-                    let _ = tx.send(AppEvent::UnlockResult(
-                        result.map_err(|e| format!("{e}")),
-                    ));
+                    let result = try_password_unlock(&password, &wraps)
+                        .map(|(dek, jwks)| UnlockOk {
+                            dek,
+                            jwks,
+                            password_to_cache: Some(password.clone()),
+                        })
+                        .map_err(|e| format!("{e}"));
+                    let _ = tx.send(AppEvent::UnlockResult(result));
                 });
             }
             KeyCode::Backspace => {
@@ -482,36 +728,32 @@ impl App {
         }
     }
 
-    fn handle_unlock_result(
-        &mut self,
-        result: std::result::Result<(String, HashMap<String, serde_json::Value>), String>,
-    ) {
+    fn handle_unlock_result(&mut self, result: std::result::Result<UnlockOk, String>) {
+        // A late-arriving second result (e.g. yubikey unlock fired after we
+        // already accepted the password) — drop it.
+        if self.input_mode != InputMode::Unlock {
+            return;
+        }
         self.unlock_busy = false;
         match result {
-            Ok((password, jwks)) => {
+            Ok(UnlockOk {
+                dek,
+                jwks,
+                password_to_cache,
+            }) => {
+                self.dek = Some(dek);
                 self.jwks = jwks;
-                self.master_password = Some(password.clone());
                 self.unlock_error = None;
                 self.input_mode = InputMode::Normal;
-
-                // First run: persist an encrypted (empty) map so the password
-                // is validated on subsequent launches.
-                if self.first_run {
-                    if let Err(e) = self.persist_keys_enc() {
-                        tracing::error!(error = %e, "first-run verifier persist failed");
-                        self.push_toast(
-                            ToastKind::Warning,
-                            format!("Couldn't write verifier: {e}"),
-                        );
-                    }
-                    self.first_run = false;
+                // Tell the yubikey poll task to stop (if it was running).
+                self.yubikey_cancel.store(true, Ordering::Relaxed);
+                self.yubikey_armed = false;
+                if let Some(pw) = password_to_cache {
+                    let _ = crate::keychain::store_key(
+                        &ProjectConfig::project_key(),
+                        pw.as_bytes(),
+                    );
                 }
-
-                // Best-effort keychain stash so future launches auto-unlock.
-                let _ = crate::keychain::store_key(
-                    &ProjectConfig::project_key(),
-                    password.as_bytes(),
-                );
                 self.init_clients();
             }
             Err(e) => {
@@ -520,17 +762,98 @@ impl App {
         }
     }
 
-    /// Write the current (possibly empty) JWK map encrypted with the master
-    /// password. Used on first run to create the password verifier, and via
-    /// `save_jwk` for normal tenant writes.
-    fn persist_keys_enc(&self) -> Result<()> {
-        let password = self
-            .master_password
-            .as_deref()
-            .ok_or_else(|| Error::Crypto("no master password set".into()))?;
-        let bytes = serde_json::to_vec(&self.jwks)?;
-        let enc = crypto::encrypt(&bytes, password)?;
-        ProjectConfig::save_keys_enc(&enc)?;
+    fn handle_mp_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.should_quit = true;
+            }
+            KeyCode::Tab => self.mp_form.next(),
+            KeyCode::BackTab => self.mp_form.prev(),
+            KeyCode::Left | KeyCode::Right if self.mp_form.focused == MpField::Choice => {
+                self.mp_form.want_password = !self.mp_form.want_password;
+                if !self.mp_form.want_password {
+                    self.mp_form.password.clear();
+                    self.mp_form.confirm.clear();
+                }
+            }
+            KeyCode::Char(' ') if self.mp_form.focused == MpField::Choice => {
+                self.mp_form.want_password = !self.mp_form.want_password;
+            }
+            KeyCode::Enter if self.mp_form.focused == MpField::Submit => {
+                self.commit_master_password_choice()?;
+            }
+            KeyCode::Enter => {
+                self.mp_form.next();
+            }
+            KeyCode::Backspace => match self.mp_form.focused {
+                MpField::Password => {
+                    self.mp_form.password.pop();
+                }
+                MpField::Confirm => {
+                    self.mp_form.confirm.pop();
+                }
+                _ => {}
+            },
+            KeyCode::Char(c) => match self.mp_form.focused {
+                MpField::Password if self.mp_form.want_password => self.mp_form.password.push(c),
+                MpField::Confirm if self.mp_form.want_password => self.mp_form.confirm.push(c),
+                _ => {}
+            },
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn commit_master_password_choice(&mut self) -> Result<()> {
+        if self.mp_form.want_password {
+            if self.mp_form.password.is_empty() {
+                self.mp_form.error = Some("Password cannot be empty".into());
+                self.mp_form.focused = MpField::Password;
+                return Ok(());
+            }
+            if self.mp_form.password != self.mp_form.confirm {
+                self.mp_form.error = Some("Passwords do not match".into());
+                self.mp_form.focused = MpField::Confirm;
+                return Ok(());
+            }
+            // Generate a fresh DEK and wrap it with the password.
+            let dek = Dek::random();
+            let (salt, nonce, ct) =
+                crypto::wrap_dek_with_password(&dek, &self.mp_form.password)?;
+            self.wraps.upsert_password(Wrap::Password {
+                salt: wraps::b64_encode(&salt),
+                nonce: wraps::b64_encode(&nonce),
+                ciphertext: wraps::b64_encode(&ct),
+            });
+            self.wraps.save()?;
+            self.dek = Some(dek);
+            self.settings = Some(Settings { encrypt_keys: true });
+            // Best-effort keychain stash so future launches auto-unlock.
+            let _ = crate::keychain::store_key(
+                &ProjectConfig::project_key(),
+                self.mp_form.password.as_bytes(),
+            );
+        } else {
+            self.dek = None;
+            self.settings = Some(Settings {
+                encrypt_keys: false,
+            });
+        }
+
+        if let Some(s) = self.settings {
+            s.save()?;
+        }
+        // Write the (empty) keys file immediately so the password (or the
+        // "no-password" choice) is locked in on disk. Without this, any
+        // password entered on the next launch would "unlock" successfully
+        // because there'd be nothing to validate against.
+        self.persist_keys()?;
+
+        // Zero form state ASAP.
+        self.mp_form.password.clear();
+        self.mp_form.confirm.clear();
+        self.mp_form.error = None;
+        self.input_mode = InputMode::Normal;
         Ok(())
     }
 
@@ -600,9 +923,8 @@ impl App {
         }
 
         // Normalise the domain field whenever focus leaves it.
-        let leaving_domain =
-            matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
-                && form.focused == CookieField::Domain;
+        let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+            && form.focused == CookieField::Domain;
         if leaving_domain {
             let cleaned = crate::aic::onboard::normalise_domain(&form.domain.value);
             form.domain.set(cleaned);
@@ -656,15 +978,7 @@ impl App {
         let tx = self.events.tx.clone();
 
         tokio::spawn(async move {
-            run_bootstrap_from_cookie(
-                name,
-                base_url,
-                theme,
-                cookie_name,
-                cookie_value,
-                tx,
-            )
-            .await;
+            run_bootstrap_from_cookie(name, base_url, theme, cookie_name, cookie_value, tx).await;
         });
     }
 
@@ -716,9 +1030,8 @@ impl App {
             return Ok(());
         }
 
-        let leaving_domain =
-            matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
-                && form.focused == UpField::Domain;
+        let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+            && form.focused == UpField::Domain;
         if leaving_domain {
             let cleaned = crate::aic::onboard::normalise_domain(&form.domain.value);
             form.domain.set(cleaned);
@@ -778,16 +1091,7 @@ impl App {
 
         tokio::spawn(async move {
             run_bootstrap_from_userpass(
-                name,
-                base_url,
-                theme,
-                realm_path,
-                username,
-                password,
-                None,
-                None,
-                scopes,
-                tx,
+                name, base_url, theme, realm_path, username, password, None, None, scopes, tx,
             )
             .await;
         });
@@ -861,9 +1165,8 @@ impl App {
             None => return Ok(()),
         };
 
-        let leaving_domain =
-            matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
-                && form.focused == PasteField::Domain;
+        let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+            && form.focused == PasteField::Domain;
         if leaving_domain {
             let cleaned = crate::aic::onboard::normalise_domain(&form.domain.value);
             form.domain.set(cleaned);
@@ -887,7 +1190,7 @@ impl App {
                     }
                 };
                 let tenant = form.into_tenant();
-                let prod = tenant.theme == TenantTheme::Prod;
+                let prod = tenant.theme == TenantTheme::Production;
                 self.paste_form = None;
                 if prod {
                     self.pending_prod_action = Some(PendingProdAction::SaveTenant { tenant, jwk });
@@ -1006,7 +1309,7 @@ impl App {
         self.up_form = None;
         self.pending_callback_body = None;
 
-        if tenant.theme == TenantTheme::Prod {
+        if tenant.theme == TenantTheme::Production {
             self.pending_prod_action = Some(PendingProdAction::SaveTenant { tenant, jwk });
             self.input_mode = InputMode::ProdConfirm;
             return Ok(());
@@ -1313,8 +1616,14 @@ async fn run_bootstrap_from_userpass(
                     }
                 };
             }
-            CallbackOutcome::PromptRequired { prompt, body: pending } => {
-                let _ = tx.send(AppEvent::AuthCallbackProgress { body: pending, prompt });
+            CallbackOutcome::PromptRequired {
+                prompt,
+                body: pending,
+            } => {
+                let _ = tx.send(AppEvent::AuthCallbackProgress {
+                    body: pending,
+                    prompt,
+                });
                 return;
             }
             CallbackOutcome::Unsupported(msg) => {
@@ -1329,15 +1638,41 @@ async fn run_bootstrap_from_userpass(
     ));
 }
 
-/// Try to decrypt the on-disk keys file with the given password. Returns
-/// `Ok(None)` if no file exists yet (first run), `Ok(Some(map))` on success,
-/// or `Err` on decryption / parse failure.
-fn try_decrypt_keys(password: &str) -> Result<Option<HashMap<String, serde_json::Value>>> {
-    let enc = match ProjectConfig::load_keys_enc()? {
-        Some(d) => d,
-        None => return Ok(None),
-    };
-    let plaintext = crypto::decrypt(&enc, password)?;
-    let map: HashMap<String, serde_json::Value> = serde_json::from_slice(&plaintext)?;
-    Ok(Some(map))
+/// Payload returned by a successful background unlock task.
+#[derive(Debug)]
+pub struct UnlockOk {
+    pub dek: Dek,
+    pub jwks: HashMap<String, serde_json::Value>,
+    /// `Some` when the unlock came from a password the user typed (so we can
+    /// stash it in the OS keychain). `None` for yubikey unlocks — nothing
+    /// useful to cache, the next unlock will need another touch.
+    pub password_to_cache: Option<String>,
+}
+
+/// Thin wrapper around `config::unlock_with_password` so the spawn_blocking
+/// closure stays self-contained (no `&self.wraps` borrow across threads).
+fn try_password_unlock(
+    password: &str,
+    _wraps: &WrapsFile,
+) -> Result<(Dek, HashMap<String, serde_json::Value>)> {
+    crate::config::unlock_with_password(password)
+}
+
+/// Enrol a yubikey and produce a wrap entry that the event handler can
+/// append to `wraps.toml`. Blocks until the user taps the device.
+fn enroll_yubikey_blocking(
+    dek: Dek,
+    label: String,
+) -> std::result::Result<Wrap, String> {
+    let enrolment = crate::yubikey::enroll().map_err(|e| e.to_string())?;
+    let (nonce, ct) =
+        crypto::wrap_dek_with_kek(&dek, &enrolment.hmac).map_err(|e| e.to_string())?;
+    Ok(Wrap::Yubikey {
+        label: Some(label),
+        credential_id: wraps::b64_encode(&enrolment.credential_id),
+        rp_id: crate::yubikey::RP_ID.to_string(),
+        hmac_salt: wraps::b64_encode(&enrolment.hmac_salt),
+        nonce: wraps::b64_encode(&nonce),
+        ciphertext: wraps::b64_encode(&ct),
+    })
 }

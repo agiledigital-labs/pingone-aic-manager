@@ -37,9 +37,9 @@ keybindings. Don't redebate these unless the maintainer explicitly revisits.
   modal frame).
 - Env chip uses the environment's theme color:
   - **sandbox** → green
-  - **dev** (also predev, UAT, etc.) → blue
-  - **staging** → yellow
-  - **prod** → red + `⚠`
+  - **development** (also predev) → blue
+  - **staging (also UAT)** → yellow
+  - **production** → red + `⚠`
 - Out-of-the-box environments: dev, staging, prod. Sandbox is the next
   most-commonly-added. Extra environments (e.g. predev, UAT) pick one of
   the four themes.
@@ -65,7 +65,7 @@ keybindings. Don't redebate these unless the maintainer explicitly revisits.
 
 - Used sparingly: env picker, confirm-destructive, push-conflict resolver,
   error reporter. Rendered with `Clear` + black bg; border + title only when
-  the modal is a *choice* (env picker, conflict resolver) or an *error*.
+  the modal is a _choice_ (env picker, conflict resolver) or an _error_.
 
 ## Prod-write confirm
 

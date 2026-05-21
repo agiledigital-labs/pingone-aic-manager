@@ -60,6 +60,14 @@ chrono      = "0.4"
 toml        = "0.8"
 directories = "5"
 
+# Yubikey (FIDO2 hmac-secret) — talks CTAP2 over USB HID to the device.
+# We initially tried webauthn-authenticator-rs but its USB backend
+# (`fido-hid-rs`) needs `libudev` + bindgen/libclang at build time, which
+# isn't available out of the box on NixOS without a shell.nix.
+# `ctap-hid-fido2` wraps `hidapi-rs` and builds clean against just the
+# stock toolchain.
+ctap-hid-fido2 = "3.5.10"
+
 # CLI + agent
 clap       = { version = "4", features = ["derive"] }
 rpassword  = "7"

@@ -9,8 +9,14 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
+
+/// Background shade for input value rows. A dim, near-black grey reads as
+/// "input area" without screaming for attention; the focused variant is a
+/// touch brighter so the active field stands out.
+const BG_UNFOCUSED: Color = Color::Indexed(234); // #1c1c1c
+const BG_FOCUSED: Color = Color::Indexed(236); // #303030
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKind {
@@ -87,12 +93,13 @@ impl TextField {
         self.value = value.into();
     }
 
-    /// Recommended row height for layouts. TextArea returns a small default;
-    /// callers typically override it with a larger `Constraint::Min(n)`.
+    /// Recommended row height for layouts. SingleLine/Masked want 2 rows
+    /// (label + value); TextArea wants ~5+ and callers typically use
+    /// `Constraint::Min(n)` to give them the leftover space.
     pub fn height_hint(&self) -> u16 {
         match self.kind {
-            FieldKind::SingleLine | FieldKind::Masked => 3,
-            FieldKind::TextArea => 6,
+            FieldKind::SingleLine | FieldKind::Masked => 2,
+            FieldKind::TextArea => 5,
         }
     }
 
@@ -109,16 +116,25 @@ impl TextField {
 
 fn label_style(focused: bool) -> Style {
     if focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
     }
 }
 
-fn border_color(focused: bool) -> Color {
-    if focused { Color::Yellow } else { Color::DarkGray }
+fn value_bg(focused: bool) -> Color {
+    if focused { BG_FOCUSED } else { BG_UNFOCUSED }
 }
 
+fn value_fg(focused: bool) -> Color {
+    if focused { Color::Yellow } else { Color::Gray }
+}
+
+/// Render a labelled single-line input as `label` (line 0) + a dark-backed
+/// value row (line 1+). No border. Content scrolls horizontally so the cursor
+/// stays visible at the right edge when the value overflows.
 fn draw_single_line(
     f: &mut Frame,
     area: Rect,
@@ -127,8 +143,27 @@ fn draw_single_line(
     focused: bool,
     mask: bool,
 ) {
-    let title = Span::styled(format!(" {label} "), label_style(focused));
-    let inner_width = area.width.saturating_sub(2) as usize;
+    if area.height == 0 {
+        return;
+    }
+    // Label row.
+    let label_area = Rect { height: 1, ..area };
+    f.render_widget(
+        Paragraph::new(Span::styled(label.to_string(), label_style(focused))),
+        label_area,
+    );
+
+    if area.height < 2 {
+        return;
+    }
+    // Value row (one or more, depending on caller's height).
+    let value_area = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: area.height - 1,
+    };
+    let inner_width = value_area.width as usize;
     let display = if mask {
         mask_for_display(value)
     } else {
@@ -141,43 +176,55 @@ fn draw_single_line(
         0
     };
     let cursor = if focused { "▏" } else { " " };
+    let bg = value_bg(focused);
     let line = Line::from(vec![
-        Span::styled(
-            display,
-            Style::default().fg(if focused { Color::Yellow } else { Color::Gray }),
-        ),
-        Span::styled(cursor, Style::default().fg(Color::Yellow)),
+        Span::styled(" ", Style::default().bg(bg)),
+        Span::styled(display, Style::default().fg(value_fg(focused)).bg(bg)),
+        Span::styled(cursor, Style::default().fg(Color::Yellow).bg(bg)),
     ]);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color(focused)))
-        .title(title);
     f.render_widget(
-        Paragraph::new(line).block(block).scroll((0, scroll_x)),
-        area,
+        Paragraph::new(line)
+            .style(Style::default().bg(bg))
+            .scroll((0, scroll_x)),
+        value_area,
     );
 }
 
+/// Render a labelled multi-line textarea. Label is line 0; the rest is a
+/// dark-backed wrapping region that scrolls vertically so the cursor stays in
+/// view as content grows.
 fn draw_textarea(f: &mut Frame, area: Rect, label: &str, value: &str, focused: bool) {
-    let title = Span::styled(format!(" {label} "), label_style(focused));
-    let body_style = Style::default().fg(if focused { Color::Yellow } else { Color::Gray });
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color(focused)))
-        .title(title);
+    if area.height == 0 {
+        return;
+    }
+    let label_area = Rect { height: 1, ..area };
+    f.render_widget(
+        Paragraph::new(Span::styled(label.to_string(), label_style(focused))),
+        label_area,
+    );
 
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let inner_height = area.height.saturating_sub(2) as usize;
+    if area.height < 2 {
+        return;
+    }
+    let body_area = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: area.height - 1,
+    };
+    let bg = value_bg(focused);
+    let inner_width = body_area.width as usize;
+    let inner_height = body_area.height as usize;
     let wrapped = count_wrapped_lines(value, inner_width);
     let scroll_y = wrapped.saturating_sub(inner_height) as u16;
+    let body_style = Style::default().fg(value_fg(focused)).bg(bg);
 
     f.render_widget(
         Paragraph::new(value.to_string())
             .style(body_style)
-            .block(block)
             .wrap(Wrap { trim: false })
             .scroll((scroll_y, 0)),
-        area,
+        body_area,
     );
 }
 

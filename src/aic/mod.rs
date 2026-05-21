@@ -73,7 +73,7 @@ impl AicClient {
         body: serde_json::Value,
         confirmed_prod: bool,
     ) -> Result<serde_json::Value> {
-        if self.tenant.theme == TenantTheme::Prod && !confirmed_prod {
+        if self.tenant.theme == TenantTheme::Production && !confirmed_prod {
             return Err(Error::ProdConfirmRequired);
         }
         let token = self.bearer().await?;
@@ -91,8 +91,14 @@ impl AicClient {
         self.check_response(resp).await
     }
 
-    pub async fn put(&self, path: &str, body: serde_json::Value, confirmed_prod: bool) -> Result<serde_json::Value> {
-        self.write(reqwest::Method::PUT, path, body, confirmed_prod).await
+    pub async fn put(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        confirmed_prod: bool,
+    ) -> Result<serde_json::Value> {
+        self.write(reqwest::Method::PUT, path, body, confirmed_prod)
+            .await
     }
 
     async fn check_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {
@@ -101,7 +107,10 @@ impl AicClient {
             Ok(resp.json().await?)
         } else {
             let body = resp.text().await.unwrap_or_default();
-            Err(Error::Api { status: status.as_u16(), body })
+            Err(Error::Api {
+                status: status.as_u16(),
+                body,
+            })
         }
     }
 
@@ -122,12 +131,18 @@ impl AicClient {
                         let mut cache = token_cache.lock().unwrap();
                         cache.store(token, expires_at);
                     }
-                    let _ = tx.send(AppEvent::TokenMinted { tenant: name, expires_at });
+                    let _ = tx.send(AppEvent::TokenMinted {
+                        tenant: name,
+                        expires_at,
+                    });
                 }
                 Err(e) => {
                     let msg = e.to_string();
                     tracing::error!(tenant = %name, error = %msg, "token mint failed");
-                    let _ = tx.send(AppEvent::TokenError { tenant: name, error: msg });
+                    let _ = tx.send(AppEvent::TokenError {
+                        tenant: name,
+                        error: msg,
+                    });
                 }
             }
         });
