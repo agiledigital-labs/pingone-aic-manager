@@ -1,6 +1,7 @@
 pub mod crypto;
 pub mod tenant;
 
+use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -9,6 +10,49 @@ use serde::{Deserialize, Serialize};
 
 use crate::Result;
 pub use tenant::{Tenant, TenantTheme};
+
+/// Decrypt `.aic-edit/keys.enc` into a `tenant_name → private JWK` map.
+/// Returns `Ok(None)` if no keys file exists yet (first run).
+pub fn load_jwk_map(password: &str) -> Result<Option<HashMap<String, serde_json::Value>>> {
+    let enc = match ProjectConfig::load_keys_enc()? {
+        Some(d) => d,
+        None => return Ok(None),
+    };
+    let plaintext = crypto::decrypt(&enc, password)?;
+    let map: HashMap<String, serde_json::Value> = serde_json::from_slice(&plaintext)?;
+    Ok(Some(map))
+}
+
+/// Encrypt and persist a JWK map with the given master password.
+pub fn save_jwk_map(
+    map: &HashMap<String, serde_json::Value>,
+    password: &str,
+) -> Result<()> {
+    let bytes = serde_json::to_vec(map)?;
+    let enc = crypto::encrypt(&bytes, password)?;
+    ProjectConfig::save_keys_enc(&enc)?;
+    Ok(())
+}
+
+/// Path to the per-project "currently-selected tenant" pointer used by the CLI.
+pub fn current_context_path() -> PathBuf {
+    ProjectConfig::dir().join("current-context")
+}
+
+pub fn read_current_context() -> Result<Option<String>> {
+    let path = current_context_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let s = fs::read_to_string(path)?;
+    Ok(Some(s.trim().to_string()))
+}
+
+pub fn write_current_context(name: &str) -> Result<()> {
+    fs::create_dir_all(ProjectConfig::dir())?;
+    fs::write(current_context_path(), name)?;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {

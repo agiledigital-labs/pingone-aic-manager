@@ -173,7 +173,6 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
         Constraint::Length(3), // name
         Constraint::Length(3), // domain
         Constraint::Length(3), // theme
-        Constraint::Length(3), // realm
         Constraint::Length(3), // username
         Constraint::Length(3), // password
         Constraint::Length(1), // submit
@@ -187,7 +186,7 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
     f.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
-                "Authenticates against the realm's default Login journey. Works with TOTP MFA.",
+                "Signs in as a platform admin via the root realm's default Login journey (TOTP supported).",
                 Style::default().fg(Color::Gray),
             )),
             Line::from(Span::styled(
@@ -201,14 +200,13 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
     form.name.draw(f, chunks[1], form.focused == UpField::Name);
     form.domain.draw(f, chunks[2], form.focused == UpField::Domain);
     draw_theme_row(f, chunks[3], form.theme, form.focused == UpField::Theme);
-    form.realm.draw(f, chunks[4], form.focused == UpField::Realm);
     form.username
-        .draw(f, chunks[5], form.focused == UpField::Username);
+        .draw(f, chunks[4], form.focused == UpField::Username);
     form.password
-        .draw(f, chunks[6], form.focused == UpField::Password);
+        .draw(f, chunks[5], form.focused == UpField::Password);
     draw_submit_row(
         f,
-        chunks[7],
+        chunks[6],
         if form.busy {
             "Working…"
         } else {
@@ -224,7 +222,7 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
                 format!("  {status}"),
                 Style::default().fg(Color::Cyan),
             )),
-            chunks[8],
+            chunks[7],
         );
     } else if let Some(err) = &form.error {
         f.render_widget(
@@ -232,7 +230,7 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
                 format!("  {err}"),
                 Style::default().fg(Color::Red),
             )),
-            chunks[8],
+            chunks[7],
         );
     }
 
@@ -241,8 +239,8 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow))
             .title(" Additional input required ");
-        let inner = prompt_block.inner(chunks[9]);
-        f.render_widget(prompt_block, chunks[9]);
+        let inner = prompt_block.inner(chunks[8]);
+        f.render_widget(prompt_block, chunks[8]);
         let masked: String = "•".repeat(form.prompt_input.chars().count());
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -266,7 +264,7 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
             form_hint(form.busy)
         })
         .style(Style::default().fg(Color::DarkGray)),
-        chunks[11],
+        chunks[10],
     );
 }
 

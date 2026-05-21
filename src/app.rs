@@ -1182,10 +1182,16 @@ async fn run_bootstrap_from_userpass(
     let mut body = match resume_body {
         Some(b) => b,
         None => {
+            // AIC's load balancer (ALB) rejects POSTs with no `Content-Length`
+            // header → HTTP 411. `curl -X POST` adds `Content-Length: 0`
+            // automatically; reqwest+hyper does not, even with `.body("")`.
+            // Send `{}` instead — AM ignores body content on the first round,
+            // and we get a deterministic `Content-Length: 2`.
             let resp = match http
                 .post(&auth_url)
                 .header("Accept-API-Version", "resource=2.0, protocol=1.0")
                 .header("Content-Type", "application/json")
+                .body("{}")
                 .send()
                 .await
             {
