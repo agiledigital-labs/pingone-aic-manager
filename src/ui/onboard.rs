@@ -1,16 +1,16 @@
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
+    Frame,
 };
 
 use crate::aic::onboard::cookie::{CookieField, CookieForm};
 use crate::aic::onboard::paste::{PasteField, PasteForm};
 use crate::aic::onboard::userpass::{UpField, UpForm};
 use crate::app::{App, InputMode};
-use crate::theme::Theme;
+use crate::theme::style_for;
 use crate::ui::modal::centered_rect;
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -78,6 +78,7 @@ fn draw_cookie_form(f: &mut Frame, form: &CookieForm) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
+        .padding(form_padding())
         .title(Span::styled(
             " Add Tenant — Session Cookie ",
             Style::default().fg(Color::Cyan),
@@ -85,17 +86,26 @@ fn draw_cookie_form(f: &mut Frame, form: &CookieForm) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Field heights: 2 rows each (label + value). A 1-row gap separates
+    // every field so the form breathes; the final spacer absorbs slack.
     let chunks = Layout::vertical([
-        Constraint::Length(2),  // help
-        Constraint::Length(3),  // name
-        Constraint::Length(3),  // domain
-        Constraint::Length(3),  // theme
-        Constraint::Length(3),  // cookie name
-        Constraint::Length(3),  // cookie value (single-line bordered field)
-        Constraint::Length(1),  // submit
-        Constraint::Length(2),  // status / error
+        Constraint::Length(2), // help
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // name
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // domain
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // theme
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // cookie name
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // cookie value
+        Constraint::Length(1), // gap
+        Constraint::Length(1), // submit
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // status / error
         Constraint::Min(0),
-        Constraint::Length(1),  // hint
+        Constraint::Length(1), // hint
     ])
     .split(inner);
 
@@ -114,17 +124,23 @@ fn draw_cookie_form(f: &mut Frame, form: &CookieForm) {
         chunks[0],
     );
 
-    form.name.draw(f, chunks[1], form.focused == CookieField::Name);
-    form.domain.draw(f, chunks[2], form.focused == CookieField::Domain);
-    draw_theme_row(f, chunks[3], form.theme, form.focused == CookieField::Theme);
+    form.name
+        .draw(f, chunks[2], form.focused == CookieField::Name);
+    form.domain
+        .draw(f, chunks[4], form.focused == CookieField::Domain);
+    draw_theme_row(f, chunks[6], form.theme, form.focused == CookieField::Theme);
     form.cookie_name
-        .draw(f, chunks[4], form.focused == CookieField::CookieName);
+        .draw(f, chunks[8], form.focused == CookieField::CookieName);
     form.cookie_value
-        .draw(f, chunks[5], form.focused == CookieField::Cookie);
+        .draw(f, chunks[10], form.focused == CookieField::Cookie);
     draw_submit_row(
         f,
-        chunks[6],
-        if form.busy { "Working…" } else { "Create service account" },
+        chunks[12],
+        if form.busy {
+            "Working…"
+        } else {
+            "Create service account"
+        },
         form.focused == CookieField::Submit,
         form.busy,
     );
@@ -135,7 +151,7 @@ fn draw_cookie_form(f: &mut Frame, form: &CookieForm) {
                 format!("  {status}"),
                 Style::default().fg(Color::Cyan),
             )),
-            chunks[7],
+            chunks[14],
         );
     } else if let Some(err) = &form.error {
         f.render_widget(
@@ -143,13 +159,13 @@ fn draw_cookie_form(f: &mut Frame, form: &CookieForm) {
                 format!("  {err}"),
                 Style::default().fg(Color::Red),
             )),
-            chunks[7],
+            chunks[14],
         );
     }
 
     f.render_widget(
         Paragraph::new(form_hint(form.busy)).style(Style::default().fg(Color::DarkGray)),
-        chunks[9],
+        chunks[16],
     );
 }
 
@@ -161,6 +177,7 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
+        .padding(form_padding())
         .title(Span::styled(
             " Add Tenant — Username & Password ",
             Style::default().fg(Color::Cyan),
@@ -170,12 +187,19 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
 
     let chunks = Layout::vertical([
         Constraint::Length(2), // help
-        Constraint::Length(3), // name
-        Constraint::Length(3), // domain
-        Constraint::Length(3), // theme
-        Constraint::Length(3), // username
-        Constraint::Length(3), // password
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // name
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // domain
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // theme
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // username
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // password
+        Constraint::Length(1), // gap
         Constraint::Length(1), // submit
+        Constraint::Length(1), // gap
         Constraint::Length(2), // status/error
         Constraint::Length(3), // OTP prompt (rendered when needed)
         Constraint::Min(0),
@@ -186,7 +210,7 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
     f.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
-                "Signs in as a platform admin via the root realm's default Login journey (TOTP supported).",
+                "Sign in as a platform admin via the root realm's default Login journey (TOTP supported).",
                 Style::default().fg(Color::Gray),
             )),
             Line::from(Span::styled(
@@ -197,16 +221,17 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
         chunks[0],
     );
 
-    form.name.draw(f, chunks[1], form.focused == UpField::Name);
-    form.domain.draw(f, chunks[2], form.focused == UpField::Domain);
-    draw_theme_row(f, chunks[3], form.theme, form.focused == UpField::Theme);
+    form.name.draw(f, chunks[2], form.focused == UpField::Name);
+    form.domain
+        .draw(f, chunks[4], form.focused == UpField::Domain);
+    draw_theme_row(f, chunks[6], form.theme, form.focused == UpField::Theme);
     form.username
-        .draw(f, chunks[4], form.focused == UpField::Username);
+        .draw(f, chunks[8], form.focused == UpField::Username);
     form.password
-        .draw(f, chunks[5], form.focused == UpField::Password);
+        .draw(f, chunks[10], form.focused == UpField::Password);
     draw_submit_row(
         f,
-        chunks[6],
+        chunks[12],
         if form.busy {
             "Working…"
         } else {
@@ -222,7 +247,7 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
                 format!("  {status}"),
                 Style::default().fg(Color::Cyan),
             )),
-            chunks[7],
+            chunks[14],
         );
     } else if let Some(err) = &form.error {
         f.render_widget(
@@ -230,7 +255,7 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
                 format!("  {err}"),
                 Style::default().fg(Color::Red),
             )),
-            chunks[7],
+            chunks[14],
         );
     }
 
@@ -239,8 +264,8 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow))
             .title(" Additional input required ");
-        let inner = prompt_block.inner(chunks[8]);
-        f.render_widget(prompt_block, chunks[8]);
+        let inner = prompt_block.inner(chunks[15]);
+        f.render_widget(prompt_block, chunks[15]);
         let masked: String = "•".repeat(form.prompt_input.chars().count());
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -264,7 +289,7 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
             form_hint(form.busy)
         })
         .style(Style::default().fg(Color::DarkGray)),
-        chunks[10],
+        chunks[17],
     );
 }
 
@@ -276,6 +301,7 @@ fn draw_paste_form(f: &mut Frame, form: &PasteForm) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
+        .padding(form_padding())
         .title(Span::styled(
             " Add Tenant — Paste Service Account ",
             Style::default().fg(Color::Cyan),
@@ -284,26 +310,35 @@ fn draw_paste_form(f: &mut Frame, form: &PasteForm) {
     f.render_widget(block, area);
 
     let chunks = Layout::vertical([
-        Constraint::Length(3), // name
-        Constraint::Length(3), // domain
-        Constraint::Length(3), // theme
-        Constraint::Length(3), // sa id
+        Constraint::Length(2), // name
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // domain
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // theme
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // sa id
+        Constraint::Length(1), // gap
         Constraint::Min(8),    // jwk textarea (biggest)
+        Constraint::Length(1), // gap
         Constraint::Length(1), // submit
+        Constraint::Length(1), // gap
         Constraint::Length(2), // error
         Constraint::Length(1), // hint
     ])
     .split(inner);
 
-    form.name.draw(f, chunks[0], form.focused == PasteField::Name);
-    form.domain.draw(f, chunks[1], form.focused == PasteField::Domain);
-    draw_theme_row(f, chunks[2], form.theme, form.focused == PasteField::Theme);
-    form.sa_id.draw(f, chunks[3], form.focused == PasteField::SaId);
+    form.name
+        .draw(f, chunks[0], form.focused == PasteField::Name);
+    form.domain
+        .draw(f, chunks[2], form.focused == PasteField::Domain);
+    draw_theme_row(f, chunks[4], form.theme, form.focused == PasteField::Theme);
+    form.sa_id
+        .draw(f, chunks[6], form.focused == PasteField::SaId);
     form.jwk_input
-        .draw(f, chunks[4], form.focused == PasteField::Jwk);
+        .draw(f, chunks[8], form.focused == PasteField::Jwk);
     draw_submit_row(
         f,
-        chunks[5],
+        chunks[10],
         "Save",
         form.focused == PasteField::Submit,
         false,
@@ -314,13 +349,19 @@ fn draw_paste_form(f: &mut Frame, form: &PasteForm) {
                 format!("  {err}"),
                 Style::default().fg(Color::Red),
             )),
-            chunks[6],
+            chunks[12],
         );
     }
     f.render_widget(
         Paragraph::new(form_hint(false)).style(Style::default().fg(Color::DarkGray)),
-        chunks[7],
+        chunks[13],
     );
+}
+
+/// Two-space horizontal padding + a one-row top/bottom margin around the
+/// inner area of an onboarding form's outer block.
+fn form_padding() -> Padding {
+    Padding::new(2, 2, 1, 1)
 }
 
 // ---- Shared widgets ----
@@ -331,19 +372,40 @@ fn draw_theme_row(
     theme: crate::config::tenant::TenantTheme,
     focused: bool,
 ) {
-    let border_color = if focused { Color::Yellow } else { Color::DarkGray };
-    let style = Theme::from_tenant(theme).style();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .title(Span::styled(" Theme (←/→ to cycle) ", label_style(focused)));
+    if area.height == 0 {
+        return;
+    }
+    let label_area = ratatui::layout::Rect { height: 1, ..area };
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            format!(" {} {} ", style.glyph, style.label),
-            Style::default().fg(style.fg).bg(style.bg),
-        )))
-        .block(block),
-        area,
+        Paragraph::new(Span::styled("Theme (←/→ to cycle)", label_style(focused))),
+        label_area,
+    );
+    if area.height < 2 {
+        return;
+    }
+    let value_area = ratatui::layout::Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: area.height - 1,
+    };
+    let style = style_for(theme);
+    let bg = if focused {
+        Color::Indexed(236)
+    } else {
+        Color::Indexed(234)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled(
+                format!(" {} {} ", style.glyph, style.label),
+                Style::default().fg(style.fg).bg(style.bg),
+            ),
+            Span::styled("  ", Style::default().bg(bg)),
+        ]))
+        .style(Style::default().bg(bg)),
+        value_area,
     );
 }
 

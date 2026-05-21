@@ -7,12 +7,12 @@ use ratatui::{
 };
 
 use crate::app::{App, Realm, Tab};
-use crate::theme::Theme;
+use crate::theme::style_for;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
     draw_tab_row(f, app, chunks[0]);
-    draw_hint_row(f, chunks[1]);
+    draw_hint_row(f, app, chunks[1]);
 }
 
 fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
@@ -43,8 +43,7 @@ fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
     );
 
     let env_spans: Vec<Span> = if let Some(tenant) = app.active_tenant() {
-        let style = Theme::from_tenant(tenant.theme);
-        let s = style.style();
+        let s = style_for(tenant.theme);
         vec![
             Span::raw(" "),
             Span::styled(
@@ -62,14 +61,18 @@ fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(chips, right);
 }
 
-fn draw_hint_row(f: &mut Frame, area: Rect) {
-    let hints = Paragraph::new(Line::from(vec![
+fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
+    let mut spans = vec![
         hint("R", "realm"),
         hint("T", "env"),
         hint("^N", "add tenant"),
-        hint("q", "quit"),
-    ]))
-    .style(Style::default().fg(Color::DarkGray));
+    ];
+    // The yubikey enrol shortcut only makes sense when encryption is on.
+    if app.dek_is_set() {
+        spans.push(hint("^Y", "enrol yubikey"));
+    }
+    spans.push(hint("q", "quit"));
+    let hints = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
     f.render_widget(hints, area);
 }
 

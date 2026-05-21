@@ -16,7 +16,7 @@ Step 2 (TUI implementation) is planned but not yet started — see
 - **OAuth2 / OIDC** — manage clients and the provider service.
 - **SAML 2.0** — manage hosted/remote entities and circles of trust.
 - **Fast environment switching** with per-env theme colours
-  (sandbox=green, dev=blue, staging=yellow, prod=red + ⚠) and an
+  (sandbox=green, development=blue, staging=yellow, production=red + ⚠) and an
   automatic "you're writing to PROD" guard on every mutation.
 - **Stretch:** log sync with compression + search for offline history
   beyond AIC's 30-day retention.
@@ -28,14 +28,14 @@ passkey 2FA — a hard requirement for the maintainer.
 
 ## Repo tour
 
-| Path | What's in it |
-|------|--------------|
-| [`PLAN.md`](PLAN.md) | The approved Step 2 implementation plan. Start here. |
-| [`CLAUDE.md`](CLAUDE.md) | Workflow rules for AI-assisted edits (docs-first, verify-before-update, credential hygiene). |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | TUI design rules (palette, layout, keybindings). |
-| [`docs/api/`](docs/api/) | Verified AIC API reference. **Read before writing any code that hits a tenant.** Each file has a "Verified against" date for trust. |
-| [`scripts/verify-endpoint.sh`](scripts/verify-endpoint.sh) | Mints a service-account access token from `.envrc` and curls any AIC path. Used to verify endpoints before documenting them. |
-| `Cargo.toml`, `src/main.rs` | Compilation skeleton (stub binary; `cargo check` passes). |
+| Path                                                       | What's in it                                                                                                                        |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| [`PLAN.md`](PLAN.md)                                       | The approved Step 2 implementation plan. Start here.                                                                                |
+| [`CLAUDE.md`](CLAUDE.md)                                   | Workflow rules for AI-assisted edits (docs-first, verify-before-update, credential hygiene).                                        |
+| [`docs/DESIGN.md`](docs/DESIGN.md)                         | TUI design rules (palette, layout, keybindings).                                                                                    |
+| [`docs/api/`](docs/api/)                                   | Verified AIC API reference. **Read before writing any code that hits a tenant.** Each file has a "Verified against" date for trust. |
+| [`scripts/verify-endpoint.sh`](scripts/verify-endpoint.sh) | Mints a service-account access token from `.envrc` and curls any AIC path. Used to verify endpoints before documenting them.        |
+| `Cargo.toml`, `src/main.rs`                                | Compilation skeleton (stub binary; `cargo check` passes).                                                                           |
 
 ## Local setup
 
@@ -88,13 +88,13 @@ cargo run         # prints a placeholder; Step 2 implementation hasn't started
 
 ## Implementation status
 
-| Step | Status | Output |
-|------|--------|--------|
-| **1.** Research + verified API docs + cargo skeleton | ✅ done | `docs/api/`, `CLAUDE.md`, stub `src/main.rs` |
-| **2.** App skeleton, encryption, in-TUI tenant onboarding | 📋 planned (see [PLAN.md](PLAN.md)) | Working tab strip, env chrome, "add tenant via browser or paste" flow, encrypted local store |
-| **3.** ESVs tab — list, edit, apply | not yet planned | |
-| **4.** Scripts tab — two-way file sync with content-based conflict detection | not yet planned | |
-| Later | OAuth2 / OIDC, SAML, Journeys, Logs, Yubikey unlock | |
+| Step                                                                         | Status                                              | Output                                                                                       |
+| ---------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **1.** Research + verified API docs + cargo skeleton                         | ✅ done                                             | `docs/api/`, `CLAUDE.md`, stub `src/main.rs`                                                 |
+| **2.** App skeleton, encryption, in-TUI tenant onboarding                    | 📋 planned (see [PLAN.md](PLAN.md))                 | Working tab strip, env chrome, "add tenant via browser or paste" flow, encrypted local store |
+| **3.** ESVs tab — list, edit, apply                                          | not yet planned                                     |                                                                                              |
+| **4.** Scripts tab — two-way file sync with content-based conflict detection | not yet planned                                     |                                                                                              |
+| Later                                                                        | OAuth2 / OIDC, SAML, Journeys, Logs, Yubikey unlock |                                                                                              |
 
 ## How to work on this codebase (for AI assistants)
 

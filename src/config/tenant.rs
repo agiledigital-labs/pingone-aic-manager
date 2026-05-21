@@ -4,23 +4,28 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum TenantTheme {
     Sandbox,
-    Dev,
+    Development,
     Staging,
-    Prod,
+    Production,
 }
 
 impl TenantTheme {
     pub fn label(self) -> &'static str {
         match self {
             TenantTheme::Sandbox => "sandbox",
-            TenantTheme::Dev     => "dev",
+            TenantTheme::Development => "development",
             TenantTheme::Staging => "staging",
-            TenantTheme::Prod    => "prod",
+            TenantTheme::Production => "production",
         }
     }
 
     pub fn all() -> &'static [TenantTheme] {
-        &[TenantTheme::Sandbox, TenantTheme::Dev, TenantTheme::Staging, TenantTheme::Prod]
+        &[
+            TenantTheme::Sandbox,
+            TenantTheme::Development,
+            TenantTheme::Staging,
+            TenantTheme::Production,
+        ]
     }
 }
 
@@ -35,6 +40,6 @@ pub struct Tenant {
 
 impl Tenant {
     pub fn is_prod(&self) -> bool {
-        self.theme == TenantTheme::Prod
+        self.theme == TenantTheme::Production
     }
 }

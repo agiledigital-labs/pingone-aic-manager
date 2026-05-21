@@ -1,5 +1,6 @@
 pub mod env_picker;
 pub mod header;
+pub mod master_password;
 pub mod modal;
 pub mod onboard;
 pub mod toast;
@@ -18,9 +19,16 @@ use crate::app::{App, InputMode};
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Full-screen takeovers come first.
-    if matches!(app.input_mode, InputMode::Unlock) {
-        unlock::draw(f, app);
-        return;
+    match app.input_mode {
+        InputMode::Unlock => {
+            unlock::draw(f, app);
+            return;
+        }
+        InputMode::SetMasterPassword => {
+            master_password::draw(f, app);
+            return;
+        }
+        _ => {}
     }
 
     let area = f.area();
@@ -61,19 +69,27 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         ])
         .split(area);
 
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "Welcome to aic-edit",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "No tenants configured. Press Ctrl-N to add your first tenant.",
+                Style::default().fg(Color::Gray),
+            )),
+        ];
+        if app.dek_is_set() {
+            lines.push(Line::from(Span::styled(
+                "Press Ctrl-Y to enrol a Yubikey as an alternative unlock method.",
+                Style::default().fg(Color::Gray),
+            )));
+        }
         f.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "Welcome to aic-edit",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "No tenants configured. Press Ctrl-N to add your first tenant.",
-                    Style::default().fg(Color::Gray),
-                )),
-            ])
-            .alignment(Alignment::Center),
+            Paragraph::new(lines).alignment(Alignment::Center),
             chunks[1],
         );
     } else {

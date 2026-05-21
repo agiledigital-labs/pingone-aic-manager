@@ -260,22 +260,21 @@ async fn handle(
 async fn do_unlock(password: &str, state: Arc<RwLock<AgentState>>) -> Result<()> {
     // Load + decrypt off the async thread — argon2 takes hundreds of ms.
     let password = password.to_string();
-    let jwks = tokio::task::spawn_blocking(move || config::load_jwk_map(&password))
-        .await
-        .map_err(|e| Error::Crypto(format!("unlock task panicked: {e}")))??;
+    let (_dek, jwk_map) =
+        tokio::task::spawn_blocking(move || config::unlock_with_password(&password))
+            .await
+            .map_err(|e| Error::Crypto(format!("unlock task panicked: {e}")))??;
 
     let cfg = ProjectConfig::load()?
         .ok_or_else(|| Error::Config("no .aic-edit/config.toml in current dir".into()))?;
 
     let mut clients = HashMap::new();
-    if let Some(jwk_map) = jwks {
-        for tenant in &cfg.tenants {
-            if let Some(jwk) = jwk_map.get(&tenant.name) {
-                clients.insert(
-                    tenant.name.clone(),
-                    Arc::new(AicClient::new(tenant.clone(), jwk.clone())),
-                );
-            }
+    for tenant in &cfg.tenants {
+        if let Some(jwk) = jwk_map.get(&tenant.name) {
+            clients.insert(
+                tenant.name.clone(),
+                Arc::new(AicClient::new(tenant.clone(), jwk.clone())),
+            );
         }
     }
 
