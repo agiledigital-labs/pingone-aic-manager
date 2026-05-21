@@ -1,3 +1,5 @@
+use clap::Parser;
+
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
@@ -11,6 +13,14 @@ async fn run() -> aic_edit::Result<()> {
         eprintln!("Warning: logging init failed: {e}");
     }
 
+    let cli = aic_edit::cli::Cli::parse();
+    if cli.command.is_none() {
+        return run_tui().await;
+    }
+    aic_edit::cli::run(cli).await
+}
+
+async fn run_tui() -> aic_edit::Result<()> {
     let mut terminal = ratatui::init();
     let result = run_app(&mut terminal).await;
     ratatui::restore();

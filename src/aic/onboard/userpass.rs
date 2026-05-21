@@ -16,18 +16,16 @@ pub enum UpField {
     Name,
     Domain,
     Theme,
-    Realm,
     Username,
     Password,
     Submit,
 }
 
 impl UpField {
-    pub const ORDER: [UpField; 7] = [
+    pub const ORDER: [UpField; 6] = [
         UpField::Name,
         UpField::Domain,
         UpField::Theme,
-        UpField::Realm,
         UpField::Username,
         UpField::Password,
         UpField::Submit,
@@ -50,7 +48,6 @@ pub struct UpForm {
     pub domain: TextField,
     pub theme: TenantTheme,
     pub theme_idx: usize,
-    pub realm: TextField,
     pub username: TextField,
     pub password: TextField,
     pub focused: UpField,
@@ -71,7 +68,6 @@ impl Default for UpForm {
             domain: fields::hostname(),
             theme: TenantTheme::Sandbox,
             theme_idx: 0,
-            realm: fields::realm(),
             username: fields::username(),
             password: fields::password(),
             focused: UpField::Name,
@@ -89,7 +85,6 @@ impl UpForm {
         match self.focused {
             UpField::Name => Some(&mut self.name),
             UpField::Domain => Some(&mut self.domain),
-            UpField::Realm => Some(&mut self.realm),
             UpField::Username => Some(&mut self.username),
             UpField::Password => Some(&mut self.password),
             UpField::Theme | UpField::Submit => None,
@@ -119,9 +114,6 @@ impl UpForm {
         if self.password.value.is_empty() {
             return Err("Password is required".into());
         }
-        if self.realm.is_empty() {
-            return Err("Realm is required (typically 'root')".into());
-        }
         Ok(())
     }
 
@@ -129,13 +121,10 @@ impl UpForm {
         super::domain_to_base_url(&self.domain.value)
     }
 
+    /// Platform admins live in (and only in) the root realm — AIC blocks
+    /// admin sign-in via alpha/bravo. Hard-coded.
     pub fn realm_path(&self) -> String {
-        let r = self.realm.trimmed();
-        if r.eq_ignore_ascii_case("root") || r.is_empty() {
-            "/realms/root".to_string()
-        } else {
-            format!("/realms/root/realms/{r}")
-        }
+        "/realms/root".to_string()
     }
 }
 
@@ -154,6 +143,10 @@ pub enum CallbackOutcome {
 
 const OTP_HINTS: &[&str] = &["otp", "code", "token", "verification", "verify"];
 const USER_HINTS: &[&str] = &["user", "name", "email", "login"];
+/// Choice options we never want to auto-select. After a wrong TOTP, AIC's
+/// default Login journey offers a ChoiceCallback like
+/// `["Try Again", "Use Recovery Code"]` — we always pick the retry side.
+const RECOVERY_HINTS: &[&str] = &["recovery", "backup", "emergency", "alternate"];
 
 fn looks_like(prompt: &str, hints: &[&str]) -> bool {
     let p = prompt.to_lowercase();
@@ -219,6 +212,25 @@ pub fn walk_with_extra(
                 })
             })
             .unwrap_or(0);
+        let choices: Vec<String> = outputs
+            .as_ref()
+            .and_then(|o| o.as_array())
+            .and_then(|arr| {
+                arr.iter().find_map(|item| {
+                    if item.get("name").and_then(|n| n.as_str()) == Some("choices") {
+                        item.get("value")
+                            .and_then(|v| v.as_array())
+                            .map(|vs| {
+                                vs.iter()
+                                    .map(|v| v.as_str().unwrap_or("").to_string())
+                                    .collect()
+                            })
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or_default();
 
         let inp = match cb.get_mut("input").and_then(|v| v.as_array_mut()) {
             Some(i) if !i.is_empty() => i,
@@ -286,6 +298,17 @@ pub fn walk_with_extra(
             }
             "ConfirmationCallback" => {
                 inp[0]["value"] = serde_json::Value::from(default_idx);
+            }
+            "ChoiceCallback" => {
+                // Skip any "Use recovery code" / "backup code" option so the
+                // journey loops back to the TOTP prompt for another try.
+                // Falls back to defaultOption if nothing matches.
+                let pick = choices
+                    .iter()
+                    .position(|c| !looks_like(c, RECOVERY_HINTS))
+                    .map(|i| i as i64)
+                    .unwrap_or(default_idx);
+                inp[0]["value"] = serde_json::Value::from(pick);
             }
             "BooleanAttributeInputCallback" => {
                 inp[0]["value"] = serde_json::Value::Bool(false);

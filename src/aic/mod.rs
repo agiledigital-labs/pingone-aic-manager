@@ -30,7 +30,7 @@ impl AicClient {
         }
     }
 
-    async fn bearer(&self) -> Result<String> {
+    pub async fn bearer(&self) -> Result<String> {
         // Check cache first
         {
             let cache = self.token_cache.lock().unwrap();
