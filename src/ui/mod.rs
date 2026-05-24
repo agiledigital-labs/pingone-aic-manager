@@ -33,10 +33,16 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     let area = f.area();
-    let chunks = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // top: tabs + chips
+        Constraint::Min(0),    // body
+        Constraint::Length(1), // bottom: global keybind hints
+    ])
+    .split(area);
 
     header::draw(f, app, chunks[0]);
     draw_body(f, app, chunks[1]);
+    header::draw_hints(f, app, chunks[2]);
 
     // Overlay modals
     match app.input_mode {
