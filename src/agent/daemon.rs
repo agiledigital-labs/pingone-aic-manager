@@ -6,12 +6,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 
 use crate::aic::AicClient;
-use crate::config::{self, ProjectConfig};
+use crate::config::{self, crypto::Dek, ProjectConfig};
 use crate::{Error, Result};
 
 use super::protocol::{CachedTokenInfo, Request, Response, StatusInfo};
@@ -21,9 +23,14 @@ const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 
 struct AgentState {
     project_dir: String,
-    /// `None` when locked. `Some(map)` when unlocked: tenant_name → AicClient.
-    /// Each AicClient holds its own JWK and a token cache.
-    clients: Option<HashMap<String, Arc<AicClient>>>,
+    /// `None` when locked. When unlocked, the 32-byte DEK that decrypts
+    /// `keys.enc`. The TUI hands us this directly after a security-key
+    /// unlock; the password unlock path derives it from Argon2 internally.
+    dek: Option<Dek>,
+    /// AicClients are built lazily on the first `GetToken { tenant }` after
+    /// unlock and cached here for their token-cache benefit. Cleared on
+    /// `Lock` (and whenever the DEK changes).
+    clients: HashMap<String, Arc<AicClient>>,
     last_request: Instant,
     idle_timeout: Duration,
 }
@@ -32,7 +39,8 @@ impl AgentState {
     fn new(project_dir: String, idle_timeout: Duration) -> Self {
         Self {
             project_dir,
-            clients: None,
+            dek: None,
+            clients: HashMap::new(),
             last_request: Instant::now(),
             idle_timeout,
         }
@@ -43,7 +51,12 @@ impl AgentState {
     }
 
     fn lock(&mut self) {
-        self.clients = None;
+        self.dek = None;
+        self.clients.clear();
+    }
+
+    fn is_unlocked(&self) -> bool {
+        self.dek.is_some()
     }
 }
 
@@ -110,7 +123,7 @@ pub async fn run(opts: DaemonOptions) -> Result<()> {
             loop {
                 tick.tick().await;
                 let mut s = state.write().await;
-                if s.clients.is_some() && s.last_request.elapsed() >= s.idle_timeout {
+                if s.is_unlocked() && s.last_request.elapsed() >= s.idle_timeout {
                     tracing::info!("idle timeout reached, locking");
                     s.lock();
                 }
@@ -241,13 +254,27 @@ async fn handle(
             Ok(()) => Response::Ok,
             Err(e) => Response::Error { message: e.to_string() },
         },
+        Request::PutDek { dek_b64 } => match do_put_dek(&dek_b64, state).await {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Error { message: e.to_string() },
+        },
+        Request::GetDek => {
+            let s = state.read().await;
+            match &s.dek {
+                Some(dek) => Response::Dek {
+                    dek_b64: B64.encode(dek.as_bytes()),
+                },
+                None => Response::Locked,
+            }
+        }
         Request::Lock => {
             state.write().await.lock();
             Response::Ok
         }
         Request::Status => Response::Status(do_status(state).await),
         Request::GetToken { tenant } => match do_get_token(&tenant, state).await {
-            Ok((token, expires_at)) => Response::Token { access_token: token, expires_at },
+            Ok(Some((token, expires_at))) => Response::Token { access_token: token, expires_at },
+            Ok(None) => Response::Locked,
             Err(e) => Response::Error { message: e.to_string() },
         },
         Request::Shutdown => {
@@ -258,60 +285,55 @@ async fn handle(
 }
 
 async fn do_unlock(password: &str, state: Arc<RwLock<AgentState>>) -> Result<()> {
-    // Load + decrypt off the async thread — argon2 takes hundreds of ms.
+    // Argon2 takes hundreds of ms — keep it off the async thread.
     let password = password.to_string();
-    let (_dek, jwk_map) =
+    let (dek, _jwks) =
         tokio::task::spawn_blocking(move || config::unlock_with_password(&password))
             .await
             .map_err(|e| Error::Crypto(format!("unlock task panicked: {e}")))??;
-
-    let cfg = ProjectConfig::load()?
-        .ok_or_else(|| Error::Config("no .aic-edit/config.toml in current dir".into()))?;
-
-    let mut clients = HashMap::new();
-    for tenant in &cfg.tenants {
-        if let Some(jwk) = jwk_map.get(&tenant.name) {
-            clients.insert(
-                tenant.name.clone(),
-                Arc::new(AicClient::new(tenant.clone(), jwk.clone())),
-            );
-        }
-    }
-
-    let mut s = state.write().await;
-    s.clients = Some(clients);
-    s.touch();
+    set_dek(state, dek).await;
     Ok(())
+}
+
+async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()> {
+    let bytes = B64
+        .decode(dek_b64)
+        .map_err(|e| Error::Crypto(format!("put_dek: {e}")))?;
+    let arr: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::Crypto("put_dek: DEK must be 32 bytes".into()))?;
+    set_dek(state, Dek::from_bytes(arr)).await;
+    Ok(())
+}
+
+/// Replace whatever the daemon was holding with a freshly-supplied DEK. Any
+/// AicClients we'd cached are dropped so they get rebuilt against the new
+/// key the next time someone asks for a token.
+async fn set_dek(state: Arc<RwLock<AgentState>>, dek: Dek) {
+    let mut s = state.write().await;
+    s.dek = Some(dek);
+    s.clients.clear();
+    s.touch();
 }
 
 async fn do_status(state: Arc<RwLock<AgentState>>) -> StatusInfo {
     let s = state.read().await;
-    let unlocked = s.clients.is_some();
-    let tenants: Vec<String> = s
-        .clients
-        .as_ref()
-        .map(|m| {
-            let mut names: Vec<_> = m.keys().cloned().collect();
-            names.sort();
-            names
-        })
-        .unwrap_or_default();
+    let unlocked = s.is_unlocked();
+    let mut tenants: Vec<String> = s.clients.keys().cloned().collect();
+    tenants.sort();
     let cached_tokens: Vec<CachedTokenInfo> = s
         .clients
-        .as_ref()
-        .map(|m| {
-            m.iter()
-                .filter_map(|(name, c)| {
-                    let exp = c.token_cache.lock().unwrap().expires_at();
-                    if exp > 0 {
-                        Some(CachedTokenInfo { tenant: name.clone(), expires_at: exp })
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+        .iter()
+        .filter_map(|(name, c)| {
+            let exp = c.token_cache.lock().unwrap().expires_at();
+            if exp > 0 {
+                Some(CachedTokenInfo { tenant: name.clone(), expires_at: exp })
+            } else {
+                None
+            }
         })
-        .unwrap_or_default();
+        .collect();
 
     let idle_remaining_secs = if unlocked {
         s.idle_timeout
@@ -331,23 +353,64 @@ async fn do_status(state: Arc<RwLock<AgentState>>) -> StatusInfo {
     }
 }
 
+/// Return `Ok(None)` when the agent is locked so the caller can answer with
+/// `Response::Locked`. `Ok(Some(_))` on success, `Err` on any other failure.
 async fn do_get_token(
     tenant: &str,
     state: Arc<RwLock<AgentState>>,
-) -> Result<(String, i64)> {
-    let client = {
+) -> Result<Option<(String, i64)>> {
+    // Fast path: AicClient was built on a previous request.
+    {
         let s = state.read().await;
-        let clients = s.clients.as_ref().ok_or_else(|| {
-            Error::Auth("agent is locked; run `aic-edit login` first".into())
-        })?;
-        clients
-            .get(tenant)
-            .cloned()
-            .ok_or_else(|| Error::Config(format!("unknown tenant: {tenant}")))?
-    };
+        if s.dek.is_none() {
+            return Ok(None);
+        }
+        if let Some(client) = s.clients.get(tenant).cloned() {
+            drop(s);
+            let token = client.bearer().await?;
+            let expires_at = client.token_cache.lock().unwrap().expires_at();
+            return Ok(Some((token, expires_at)));
+        }
+    }
+
+    // Slow path: decrypt keys.enc with the cached DEK and find the JWK for
+    // the named tenant. Cache the AicClient for the next request.
+    let client = build_client(tenant, state.clone()).await?;
     let token = client.bearer().await?;
     let expires_at = client.token_cache.lock().unwrap().expires_at();
-    Ok((token, expires_at))
+    Ok(Some((token, expires_at)))
+}
+
+async fn build_client(
+    tenant: &str,
+    state: Arc<RwLock<AgentState>>,
+) -> Result<Arc<AicClient>> {
+    let dek = {
+        let s = state.read().await;
+        s.dek
+            .clone()
+            .ok_or_else(|| Error::Auth("agent is locked".into()))?
+    };
+    let jwks = config::decrypt_keys_file(&dek)?;
+    let jwk = jwks
+        .get(tenant)
+        .cloned()
+        .ok_or_else(|| Error::Config(format!("no JWK on file for tenant: {tenant}")))?;
+    let cfg = ProjectConfig::load()?
+        .ok_or_else(|| Error::Config("no .aic-edit/config.toml in current dir".into()))?;
+    let tcfg = cfg
+        .tenants
+        .iter()
+        .find(|t| t.name == tenant)
+        .cloned()
+        .ok_or_else(|| Error::Config(format!("unknown tenant: {tenant}")))?;
+    let client = Arc::new(AicClient::new(tcfg, jwk));
+    state
+        .write()
+        .await
+        .clients
+        .insert(tenant.to_string(), client.clone());
+    Ok(client)
 }
 
 /// Used by the foreground subcommand to print where the agent is running.

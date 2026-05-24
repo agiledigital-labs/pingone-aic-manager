@@ -7,10 +7,18 @@ use serde::{Deserialize, Serialize};
 pub enum Request {
     /// Liveness probe. Cheap; doesn't require unlock.
     Ping,
-    /// Decrypt `keys.enc` with the supplied master password and hold the JWK
-    /// map in memory for the lifetime of the agent (or until idle timeout).
+    /// Decrypt `keys.enc` with the supplied master password and hold the DEK
+    /// (and the derived JWK map) in memory until idle timeout or `Lock`.
     Unlock { password: String },
-    /// Drop the decrypted JWK map and any cached tokens.
+    /// Cache an already-derived 32-byte DEK (base64). Used by the TUI after a
+    /// security-key unlock — the device produces the DEK locally, so the
+    /// daemon never sees the PIN or HMAC inputs.
+    PutDek { dek_b64: String },
+    /// Return the cached DEK (`Response::Dek`) or `Response::Locked` if there
+    /// is no session. The TUI calls this on startup to skip the unlock screen
+    /// when the daemon already holds a DEK.
+    GetDek,
+    /// Drop the cached DEK, JWK map, and any cached tokens.
     Lock,
     /// Report unlock state, project dir, tenant list, cached-token expirations,
     /// and time remaining before idle-lock.
@@ -35,6 +43,14 @@ pub enum Response {
         access_token: String,
         expires_at: i64,
     },
+    /// Reply to `GetDek` when a DEK is cached. Base64 of 32 raw bytes.
+    Dek {
+        dek_b64: String,
+    },
+    /// Reply to `GetDek` (or any op that needs an unlocked session) when the
+    /// agent isn't holding a DEK. Distinct from `Error` so the TUI can quietly
+    /// fall through to the unlock screen.
+    Locked,
     Error {
         message: String,
     },
