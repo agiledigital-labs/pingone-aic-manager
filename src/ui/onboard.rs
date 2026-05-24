@@ -52,8 +52,8 @@ fn draw_menu(f: &mut Frame, app: &App) {
         ListItem::new("  2  Username + password           (TOTP supported)"),
         ListItem::new("  3  Paste service-account JWK     (already have one)"),
     ];
-    if app.has_envrc {
-        options.push(ListItem::new("  4  Import sandbox from .envrc"));
+    if app.has_env_creds {
+        options.push(ListItem::new("  4  Import sandbox from environment"));
     }
 
     let list = List::new(options)
