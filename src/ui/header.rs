@@ -9,10 +9,14 @@ use ratatui::{
 use crate::app::{App, Realm, Tab};
 use crate::theme::style_for;
 
+/// Top strip: tabs + realm/tenant chips. Caller must pass a 1-row area.
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
-    draw_tab_row(f, app, chunks[0]);
-    draw_hint_row(f, app, chunks[1]);
+    draw_tab_row(f, app, area);
+}
+
+/// Bottom strip: global keybind hints. Caller must pass a 1-row area.
+pub fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
+    draw_hint_row(f, app, area);
 }
 
 fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
