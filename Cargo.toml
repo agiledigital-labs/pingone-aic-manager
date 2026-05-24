@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "Ratatui TUI for managing PingOne Advanced Identity Cloud configuration"
 
+# Short binary name — `aic` instead of `aic-edit`. The library crate keeps the
+# longer name (referenced as `aic_edit::…` in src/main.rs).
+[[bin]]
+name = "aic"
+path = "src/main.rs"
+
 [dependencies]
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
@@ -40,9 +46,6 @@ aes-gcm   = "0.10"
 rand      = "0.8"
 zeroize   = { version = "1", features = ["derive"] }
 
-# OS keychain
-keyring   = "3"
-
 # Browser handoff (PKCE localhost callback)
 webbrowser      = "1"
 hyper           = { version = "1", features = ["server", "http1"] }
@@ -60,7 +63,7 @@ chrono      = "0.4"
 toml        = "0.8"
 directories = "5"
 
-# Yubikey (FIDO2 hmac-secret) — talks CTAP2 over USB HID to the device.
+# Security keys (FIDO2 hmac-secret) — talks CTAP2 over USB HID to the device.
 # We initially tried webauthn-authenticator-rs but its USB backend
 # (`fido-hid-rs`) needs `libudev` + bindgen/libclang at build time, which
 # isn't available out of the box on NixOS without a shell.nix.

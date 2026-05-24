@@ -26,13 +26,12 @@ pub enum AppEvent {
     /// Service account created; carries (sa_uuid, private_jwk)
     ServiceAccountCreated { tenant_name: String, sa_id: String, jwk: serde_json::Value },
     /// Background unlock task finished. On success the payload carries the
-    /// decrypted DEK + JWK map (and optionally the password we should stash
-    /// in the OS keychain for next time); on failure a human-readable
-    /// message for the unlock screen.
+    /// decrypted DEK + JWK map; on failure a human-readable message for the
+    /// unlock screen.
     UnlockResult(std::result::Result<crate::app::UnlockOk, String>),
-    /// User-triggered yubikey enrolment finished. The payload is the new
+    /// User-triggered security key enrolment finished. The payload is the new
     /// wrap entry ready to be appended to `wraps.toml`, or an error string.
-    YubikeyEnrollResult(std::result::Result<crate::config::wraps::Wrap, String>),
+    SecurityKeyEnrollResult(std::result::Result<crate::config::wraps::Wrap, String>),
     Toast(ToastKind, String),
 }
 

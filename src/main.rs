@@ -3,7 +3,7 @@ use clap::Parser;
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
-        eprintln!("aic-edit error: {e}");
+        eprintln!("aic error: {e}");
         std::process::exit(1);
     }
 }

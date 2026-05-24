@@ -20,9 +20,6 @@ pub enum Error {
     #[error("Crypto error: {0}")]
     Crypto(String),
 
-    #[error("Keychain error: {0}")]
-    Keychain(String),
-
     #[error("Auth error: {0}")]
     Auth(String),
 

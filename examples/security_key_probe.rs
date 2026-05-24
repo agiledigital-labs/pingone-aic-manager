@@ -1,17 +1,17 @@
-//! `yubikey_probe` — a single-purpose CLI for poking the FIDO2 hmac-secret
+//! `security_key_probe` — a single-purpose CLI for poking the FIDO2 hmac-secret
 //! flow without dragging the rest of aic-edit along.
 //!
 //! Build:
-//!     nix-shell --run "cargo build --example yubikey_probe"
+//!     nix-shell --run "cargo build --example security_key_probe"
 //!
 //! Usage:
-//!     cargo run --example yubikey_probe -- list
-//!     cargo run --example yubikey_probe -- info     [<device-index>]
-//!     cargo run --example yubikey_probe -- enroll   [<device-index>]
-//!     cargo run --example yubikey_probe -- assert <cred_id_b64> <salt_b64> [<device-index>]
+//!     cargo run --example security_key_probe -- list
+//!     cargo run --example security_key_probe -- info     [<device-index>]
+//!     cargo run --example security_key_probe -- enroll   [<device-index>]
+//!     cargo run --example security_key_probe -- assert <cred_id_b64> <salt_b64> [<device-index>]
 //!
 //! `<device-index>` defaults to 0; values come from `list`.
-//! Set `YUBIKEY_PIN=…` before the command to skip the interactive prompt.
+//! Set `SECURITY_KEY_PIN=…` before the command to skip the interactive prompt.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine;
@@ -204,7 +204,7 @@ fn enroll(idx: Option<usize>) -> Result<(), String> {
     println!();
     println!("Save the credential_id + salt; re-run with:");
     println!(
-        "    cargo run --example yubikey_probe -- assert {} {}",
+        "    cargo run --example security_key_probe -- assert {} {}",
         B64.encode(&credential_id),
         B64.encode(salt)
     );
@@ -263,7 +263,7 @@ fn assert_hmac(args: Vec<String>) -> Result<(), String> {
 
 fn read_pin_optional() -> Option<String> {
     // 1. env var wins (lets you script without typing).
-    if let Ok(pin) = std::env::var("YUBIKEY_PIN") {
+    if let Ok(pin) = std::env::var("SECURITY_KEY_PIN") {
         if !pin.is_empty() {
             return Some(pin);
         }
