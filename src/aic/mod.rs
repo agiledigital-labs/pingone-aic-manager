@@ -9,6 +9,7 @@ use auth::TokenCache;
 use crate::config::tenant::{Tenant, TenantTheme};
 use crate::{Error, Result};
 
+#[derive(Clone)]
 pub struct AicClient {
     pub tenant: Tenant,
     http: reqwest::Client,
@@ -99,6 +100,24 @@ impl AicClient {
     ) -> Result<serde_json::Value> {
         self.write(reqwest::Method::PUT, path, body, confirmed_prod)
             .await
+    }
+
+    /// List ESV variables. Returns the contents of the `result` array — each
+    /// element is a variable object as documented in `docs/api/03-esvs.md`.
+    /// Pagination not implemented yet; AIC's default page size is 1000 which
+    /// is fine for the "just show me a list" use case.
+    pub async fn list_variables(&self) -> Result<Vec<serde_json::Value>> {
+        let body = self.get("/environment/variables").await?;
+        match body.get("result") {
+            Some(serde_json::Value::Array(arr)) => Ok(arr.clone()),
+            _ => Err(Error::Api {
+                status: 0,
+                body: format!(
+                    "unexpected /environment/variables response shape: {}",
+                    body
+                ),
+            }),
+        }
     }
 
     async fn check_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {

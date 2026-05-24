@@ -16,7 +16,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::app::{App, InputMode};
+use crate::app::{App, EsvLoadState, InputMode};
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Full-screen takeovers come first.
@@ -109,13 +109,38 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             chunks[1],
         );
     } else {
-        // ESVs tab placeholder (Step 3)
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                "  ESVs — coming in Step 3",
-                Style::default().fg(Color::DarkGray),
-            )),
-            area,
-        );
+        draw_esvs(f, app, area);
     }
+}
+
+fn draw_esvs(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let tenant_name = match app.active_tenant() {
+        Some(t) => t.name.as_str(),
+        None => return,
+    };
+    let lines: Vec<Line> = match app.esvs.get(tenant_name) {
+        None | Some(EsvLoadState::Loading) => vec![Line::from(Span::styled(
+            "  Loading ESVs…",
+            Style::default().fg(Color::DarkGray),
+        ))],
+        Some(EsvLoadState::Failed(e)) => vec![Line::from(Span::styled(
+            format!("  ESV list failed: {e}"),
+            Style::default().fg(Color::Red),
+        ))],
+        Some(EsvLoadState::Loaded(vs)) if vs.is_empty() => vec![Line::from(Span::styled(
+            "  No ESV variables.",
+            Style::default().fg(Color::DarkGray),
+        ))],
+        Some(EsvLoadState::Loaded(vs)) => vs
+            .iter()
+            .map(|v| {
+                let id = v.get("_id").and_then(|x| x.as_str()).unwrap_or("?");
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(id.to_string(), Style::default().fg(Color::Gray)),
+                ])
+            })
+            .collect(),
+    };
+    f.render_widget(Paragraph::new(lines), area);
 }

@@ -1,6 +1,7 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt;
@@ -273,6 +274,26 @@ pub struct App {
 
     // Overwrite confirm: a pending tenant whose name collides with an existing one
     pending_overwrite: Option<(Tenant, serde_json::Value)>,
+
+    // ESV variables, keyed by tenant name. Populated lazily on demand —
+    // entering the ESVs tab for a tenant that's not yet in the map fires a
+    // background fetch which inserts a Loading marker and then a Loaded /
+    // Failed entry on completion. Subsequent visits show the cached value
+    // immediately; a periodic poll (see `last_esv_poll`) refreshes in the
+    // background without clobbering the stale view.
+    pub esvs: HashMap<String, EsvLoadState>,
+    /// Tenants whose ESV refetch is currently in flight — guards against
+    /// duplicate spawns when the user re-enters the tab or the poll fires.
+    esvs_refreshing: HashSet<String>,
+    /// When the last ESV poll-refresh ran. Drives the 30s cadence in `tick`.
+    last_esv_poll: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub enum EsvLoadState {
+    Loading,
+    Loaded(Vec<serde_json::Value>),
+    Failed(String),
 }
 
 enum PendingProdAction {
@@ -357,6 +378,9 @@ impl App {
             pending_callback_body: None,
             pending_prod_action: None,
             pending_overwrite: None,
+            esvs: HashMap::new(),
+            esvs_refreshing: HashSet::new(),
+            last_esv_poll: Instant::now(),
         })
     }
 
@@ -654,6 +678,7 @@ impl App {
         self.try_agent_unlock().await;
         self.decide_initial_mode();
         self.init_clients();
+        self.refresh_esvs(false);
 
         let tx = self.events.tx.clone();
         tokio::spawn(async move {
@@ -701,6 +726,47 @@ impl App {
         }
     }
 
+    /// Kick off a background ESV fetch for the active tenant.
+    ///
+    /// - `force = false`: only fetches when there's no cached entry yet
+    ///   (initial load on startup / tenant switch).
+    /// - `force = true`: always fetches, even if a `Loaded` entry exists.
+    ///   The stale data stays visible until the new fetch completes; failed
+    ///   refetches don't clobber the cached value (see the `EsvListed`
+    ///   handler).
+    ///
+    /// In either case a no-op when (a) there's no active tenant, (b) no
+    /// AicClient exists yet (still on the unlock screen), or (c) a fetch
+    /// for this tenant is already in flight.
+    fn refresh_esvs(&mut self, force: bool) {
+        let Some(tenant) = self.active_tenant() else { return };
+        let name = tenant.name.clone();
+        if self.esvs_refreshing.contains(&name) {
+            return;
+        }
+        if !force && self.esvs.contains_key(&name) {
+            return;
+        }
+        let Some(client) = self.clients.get(&name).cloned() else { return };
+
+        // Only show the Loading spinner when there's nothing cached yet;
+        // refetches keep the previous Loaded entry visible.
+        if !self.esvs.contains_key(&name) {
+            self.esvs.insert(name.clone(), EsvLoadState::Loading);
+        }
+        self.esvs_refreshing.insert(name.clone());
+        self.last_esv_poll = Instant::now();
+
+        let tx = self.events.tx.clone();
+        tokio::spawn(async move {
+            let result = client
+                .list_variables()
+                .await
+                .map_err(|e| e.to_string());
+            let _ = tx.send(AppEvent::EsvListed { tenant: name, result });
+        });
+    }
+
     pub async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
             AppEvent::Key(key) => self.handle_key(key).await?,
@@ -721,6 +787,24 @@ impl App {
             }
             AppEvent::Toast(kind, msg) => {
                 self.push_toast(kind, msg);
+            }
+            AppEvent::EsvListed { tenant, result } => {
+                self.esvs_refreshing.remove(&tenant);
+                match result {
+                    Ok(vs) => {
+                        self.esvs.insert(tenant, EsvLoadState::Loaded(vs));
+                    }
+                    Err(e) => {
+                        // Don't clobber a previously-cached list with a
+                        // background-refresh error — keep showing the
+                        // stale data and just log.
+                        if matches!(self.esvs.get(&tenant), Some(EsvLoadState::Loaded(_))) {
+                            tracing::warn!("ESV refresh failed for {tenant}: {e}");
+                        } else {
+                            self.esvs.insert(tenant, EsvLoadState::Failed(e));
+                        }
+                    }
+                }
             }
             AppEvent::AuthCallbackProgress { body, prompt } => {
                 self.handle_auth_progress(body, prompt);
@@ -797,6 +881,16 @@ impl App {
                 true
             }
         });
+
+        // Background poll for the resource the user is currently viewing.
+        // 30s cadence is a tradeoff between freshness and sandbox load —
+        // the sandbox API itself takes ~7s to answer a list, so polling
+        // faster than that just stacks in-flight requests.
+        if self.current_tab == Tab::Esvs
+            && self.last_esv_poll.elapsed() >= Duration::from_secs(30)
+        {
+            self.refresh_esvs(true);
+        }
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -995,6 +1089,7 @@ impl App {
                 self.security_key_cancel.store(true, Ordering::Relaxed);
                 self.security_key_armed = false;
                 self.init_clients();
+                self.refresh_esvs(false);
                 self.put_dek_to_agent();
             }
             Err(e) => {
@@ -1744,6 +1839,7 @@ impl App {
             KeyCode::Enter => {
                 self.active_tenant_idx = self.env_picker_idx;
                 self.input_mode = InputMode::Normal;
+                self.refresh_esvs(false);
             }
             _ => {}
         }

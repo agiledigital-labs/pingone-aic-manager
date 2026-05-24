@@ -57,6 +57,21 @@ pub enum Command {
         #[arg(long)]
         tenant: Option<String>,
     },
+    /// ESV operations (variables, secrets).
+    Esv {
+        #[command(subcommand)]
+        command: EsvCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EsvCommand {
+    /// List ESV variables. Outputs the `result` array as JSON.
+    List {
+        /// Override the current context for this call.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -80,6 +95,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Status) => status().await,
         Some(Command::Ctx { command }) => ctx(command).await,
         Some(Command::Whoami { tenant }) => whoami(tenant).await,
+        Some(Command::Esv { command }) => esv(command).await,
         None => unreachable!("dispatch handled at top level"),
     }
 }
@@ -276,22 +292,7 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
 async fn whoami(tenant_arg: Option<String>) -> Result<()> {
     let cfg = ProjectConfig::load()?
         .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
-    let tenant = match tenant_arg {
-        Some(t) => t,
-        None => config::read_current_context()?
-            .or_else(|| {
-                if cfg.default_tenant.is_empty() {
-                    None
-                } else {
-                    Some(cfg.default_tenant.clone())
-                }
-            })
-            .ok_or_else(|| {
-                Error::Config(
-                    "no current context — run `aic ctx use <tenant>` first".into(),
-                )
-            })?,
-    };
+    let tenant = resolve_tenant(tenant_arg, &cfg)?;
 
     let client = AgentClient::connect_or_spawn().await?;
     match client.send(&Request::GetToken { tenant: tenant.clone() }).await? {
@@ -302,9 +303,67 @@ async fn whoami(tenant_arg: Option<String>) -> Result<()> {
             println!("token:   {}", redact(&access_token));
             Ok(())
         }
+        Response::Locked => Err(Error::Auth("agent locked; run `aic login`".into())),
         Response::Error { message } => Err(Error::Auth(message)),
         other => Err(Error::Config(format!("unexpected reply: {other:?}"))),
     }
+}
+
+async fn esv(cmd: EsvCommand) -> Result<()> {
+    match cmd {
+        EsvCommand::List { tenant } => esv_list(tenant).await,
+    }
+}
+
+async fn esv_list(tenant_arg: Option<String>) -> Result<()> {
+    let cfg = ProjectConfig::load()?
+        .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
+    let tenant_name = resolve_tenant(tenant_arg, &cfg)?;
+
+    let body = api_get(&tenant_name, "/environment/variables").await?;
+    let result = body
+        .get("result")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+/// Ask the daemon to GET an AIC path on our behalf. The daemon reuses its
+/// tenant HTTP connection (TLS handshake amortised across CLI invocations)
+/// and caches the body keyed by `(tenant, path)` so subsequent calls can
+/// short-circuit on a 304 from AIC.
+async fn api_get(tenant: &str, path: &str) -> Result<serde_json::Value> {
+    let agent = AgentClient::connect_or_spawn().await?;
+    match agent
+        .send(&Request::ApiGet {
+            tenant: tenant.to_string(),
+            path: path.to_string(),
+        })
+        .await?
+    {
+        Response::Json { value } => Ok(value),
+        Response::Locked => Err(Error::Auth("agent locked; run `aic login`".into())),
+        Response::Error { message } => Err(Error::Api { status: 0, body: message }),
+        other => Err(Error::Config(format!("unexpected reply: {other:?}"))),
+    }
+}
+
+/// Resolve a tenant name from a CLI flag, falling back to the on-disk
+/// current context, then the config's default tenant. Errors if none is set.
+fn resolve_tenant(arg: Option<String>, cfg: &ProjectConfig) -> Result<String> {
+    if let Some(t) = arg {
+        return Ok(t);
+    }
+    if let Some(c) = config::read_current_context()? {
+        return Ok(c);
+    }
+    if !cfg.default_tenant.is_empty() {
+        return Ok(cfg.default_tenant.clone());
+    }
+    Err(Error::Config(
+        "no current context — run `aic ctx use <tenant>` first".into(),
+    ))
 }
 
 fn redact(token: &str) -> String {
