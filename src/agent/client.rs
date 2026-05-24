@@ -110,9 +110,11 @@ fn spawn_detached_agent() -> Result<()> {
         .open(&log_path)?;
     let log_err = log.try_clone()?;
 
+    // No --detach flag here: the child should run the daemon loop directly.
+    // We're already detaching it via stdio redirection + setsid(), so asking
+    // the child to detach again would just fork bomb.
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("agent")
-        .arg("--foreground")
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));

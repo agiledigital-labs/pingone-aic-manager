@@ -25,12 +25,17 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Run the background agent (held in memory, hands out bearer tokens).
+    /// Run the agent (holds DEK + tokens in memory, hands out bearer tokens).
+    /// By default runs attached to the current terminal — Ctrl-C to stop, logs
+    /// to stderr. The TUI auto-spawns a detached copy via `--detach`.
     Agent {
-        /// Stay attached to the current terminal; log to stderr.
+        /// Spawn a detached child that runs the daemon loop, and exit. Stdio
+        /// gets redirected to .aic-edit/agent.log; setsid() puts the child in
+        /// its own session so a terminal HUP doesn't kill it.
         #[arg(long)]
-        foreground: bool,
-        /// Idle-lock timeout in seconds (default 3600).
+        detach: bool,
+        /// Idle-lock timeout in seconds (default 3600, or whatever
+        /// settings.toml specifies).
         #[arg(long)]
         idle_timeout: Option<u64>,
     },
@@ -66,8 +71,8 @@ pub enum CtxCommand {
 
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Some(Command::Agent { foreground, idle_timeout }) => {
-            run_agent(foreground, idle_timeout).await
+        Some(Command::Agent { detach, idle_timeout }) => {
+            run_agent(detach, idle_timeout).await
         }
         Some(Command::Login) => login().await,
         Some(Command::Logout) => logout().await,
@@ -79,16 +84,23 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
 }
 
-async fn run_agent(foreground: bool, idle_timeout: Option<u64>) -> Result<()> {
-    if !foreground {
-        // Re-exec ourselves with --foreground after detaching. Keeps the
-        // detach logic in one place (in agent::client::spawn_detached_agent),
-        // and lets `aic agent` (no flag) work as a one-liner from a
-        // shell.
+async fn run_agent(detach: bool, idle_timeout: Option<u64>) -> Result<()> {
+    if detach {
+        // User asked us to spawn a detached child and exit. The spawn path
+        // (agent::client::spawn_detached_agent) handles stdio redirection and
+        // setsid; the child then re-enters this function with detach=false
+        // and runs the loop.
         return spawn_detached_then_exit();
     }
+    // Precedence: CLI flag > settings.toml > 3600s default. Settings is
+    // best-effort — if it can't be read we just fall through to the default
+    // rather than refusing to start.
+    let from_settings = config::Settings::load()
+        .ok()
+        .flatten()
+        .and_then(|s| s.agent_idle_timeout_secs);
     let opts = agent::daemon::DaemonOptions {
-        idle_timeout_secs: idle_timeout.unwrap_or(3600),
+        idle_timeout_secs: idle_timeout.or(from_settings).unwrap_or(3600),
     };
     eprintln!("{}", agent::daemon::describe_paths());
     agent::daemon::run(opts).await

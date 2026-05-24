@@ -9,6 +9,7 @@ use tokio::time::{interval, Duration};
 use crate::aic::onboard::cookie::{CookieField, CookieForm};
 use crate::aic::onboard::paste::{PasteField, PasteForm};
 use crate::aic::onboard::userpass::{CallbackOutcome, UpField, UpForm};
+use crate::agent::{AgentClient, Request as AgentRequest, Response as AgentResponse};
 use crate::aic::AicClient;
 use crate::config::crypto::{self, Dek};
 use crate::config::tenant::{Tenant, TenantTheme};
@@ -357,13 +358,96 @@ impl App {
         })
     }
 
+    /// If the agent is already holding the DEK from a previous TUI session,
+    /// fetch it and hydrate `self.dek` + `self.jwks` so `decide_initial_mode`
+    /// can skip the Unlock screen. Best-effort: any failure (agent missing,
+    /// stale socket, locked, decrypt-error) silently falls through to the
+    /// normal unlock path.
+    async fn try_agent_unlock(&mut self) {
+        // Only meaningful when there's an encrypted blob to unlock.
+        if !matches!(self.settings, Some(Settings { encrypt_keys: true, .. })) {
+            return;
+        }
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine as _;
+
+        let client = match AgentClient::connect_or_spawn().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!("agent unavailable on startup: {e}");
+                return;
+            }
+        };
+        let dek_b64 = match client.send(&AgentRequest::GetDek).await {
+            Ok(AgentResponse::Dek { dek_b64 }) => dek_b64,
+            Ok(AgentResponse::Locked) => return,
+            Ok(other) => {
+                tracing::debug!("unexpected GetDek reply: {other:?}");
+                return;
+            }
+            Err(e) => {
+                tracing::debug!("GetDek failed: {e}");
+                return;
+            }
+        };
+        let bytes = match B64.decode(&dek_b64) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("agent returned non-base64 DEK: {e}");
+                return;
+            }
+        };
+        let arr: [u8; 32] = match bytes.as_slice().try_into() {
+            Ok(a) => a,
+            Err(_) => {
+                tracing::warn!("agent returned DEK of wrong length");
+                return;
+            }
+        };
+        let dek = Dek::from_bytes(arr);
+        let jwks = match crate::config::decrypt_keys_file(&dek) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!("agent DEK failed to decrypt keys.enc: {e}");
+                return;
+            }
+        };
+        self.dek = Some(dek);
+        self.jwks = jwks;
+    }
+
+    /// Fire-and-forget: cache the just-derived DEK in the agent so subsequent
+    /// TUI launches (within the idle window) skip the Unlock screen.
+    fn put_dek_to_agent(&self) {
+        let Some(dek) = &self.dek else { return };
+        let dek_bytes = *dek.as_bytes();
+        tokio::spawn(async move {
+            use base64::engine::general_purpose::STANDARD as B64;
+            use base64::Engine as _;
+            let dek_b64 = B64.encode(dek_bytes);
+            match AgentClient::connect_or_spawn().await {
+                Ok(c) => {
+                    if let Err(e) = c.send(&AgentRequest::PutDek { dek_b64 }).await {
+                        tracing::warn!("PutDek failed: {e}");
+                    }
+                }
+                Err(e) => tracing::debug!("agent unavailable for PutDek: {e}"),
+            }
+        });
+    }
+
     /// Pick the initial mode from on-disk state:
+    ///   - DEK already hydrated (e.g. via `try_agent_unlock`) → `Normal`.
     ///   - `settings.toml` says encrypt_keys=true → `Unlock`.
     ///   - `settings.toml` says encrypt_keys=false → `Normal`; load `keys.plain`.
     ///   - No `settings.toml` → first run → `SetupAuth`.
     fn decide_initial_mode(&mut self) {
+        if self.dek.is_some() {
+            self.input_mode = InputMode::Normal;
+            return;
+        }
         match self.settings {
-            Some(Settings { encrypt_keys: true }) => {
+            Some(Settings { encrypt_keys: true, .. }) => {
                 self.input_mode = InputMode::Unlock;
                 // Default focus to whichever method is actually enrolled.
                 // If both are enrolled we prefer the security key field — it's the
@@ -376,6 +460,7 @@ impl App {
             }
             Some(Settings {
                 encrypt_keys: false,
+                ..
             }) => {
                 self.load_plain_keys();
                 self.input_mode = InputMode::Normal;
@@ -564,6 +649,7 @@ impl App {
         &mut self,
         terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
+        self.try_agent_unlock().await;
         self.decide_initial_mode();
         self.init_clients();
 
@@ -658,7 +744,7 @@ impl App {
         let context = self.setup_context;
         let was_dek_minted_for_this_op = !matches!(
             self.settings,
-            Some(Settings { encrypt_keys: true })
+            Some(Settings { encrypt_keys: true, .. })
         );
 
         match result {
@@ -784,9 +870,24 @@ impl App {
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.open_auth_settings();
             }
+            KeyCode::Char('L') => {
+                self.lock_and_quit().await;
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Tell the agent to drop the cached DEK, then quit the TUI. The next
+    /// launch goes back through the Unlock screen.
+    async fn lock_and_quit(&mut self) {
+        self.dek = None;
+        // Best-effort. If the agent isn't running there's nothing to lock;
+        // we deliberately don't spawn one just to immediately lock it.
+        if let Ok(c) = AgentClient::connect(crate::agent::socket_path()).await {
+            let _ = c.send(&AgentRequest::Lock).await;
+        }
+        self.should_quit = true;
     }
 
     fn open_auth_settings(&mut self) {
@@ -892,6 +993,7 @@ impl App {
                 self.security_key_cancel.store(true, Ordering::Relaxed);
                 self.security_key_armed = false;
                 self.init_clients();
+                self.put_dek_to_agent();
             }
             Err(e) => {
                 // A security key failure shouldn't take the screen down — let the
@@ -984,12 +1086,10 @@ impl App {
                 // No encryption: write an empty keys.plain at mode 600 and
                 // record settings. No DEK; no wraps.toml.
                 self.dek = None;
-                self.settings = Some(Settings {
-                    encrypt_keys: false,
-                });
-                if let Some(s) = self.settings {
-                    s.save()?;
-                }
+                let mut s = self.settings.unwrap_or_default();
+                s.encrypt_keys = false;
+                self.settings = Some(s);
+                s.save()?;
                 let bytes = serde_json::to_vec(&self.jwks)?;
                 ProjectConfig::save_keys_plain(&bytes)?;
                 self.setup_form = AuthSetupForm::default();
@@ -1061,7 +1161,7 @@ impl App {
         success_toast: &str,
     ) -> Result<()> {
         let already_encrypted =
-            matches!(self.settings, Some(Settings { encrypt_keys: true }));
+            matches!(self.settings, Some(Settings { encrypt_keys: true, .. }));
 
         if !already_encrypted {
             // We just added the first factor while encryption was disabled
@@ -1072,7 +1172,9 @@ impl App {
                 .as_ref()
                 .ok_or_else(|| crate::Error::Crypto("DEK missing".into()))?;
             crate::config::enable_encryption(dek)?;
-            self.settings = Some(Settings { encrypt_keys: true });
+            let mut s = self.settings.unwrap_or_default();
+            s.encrypt_keys = true;
+            self.settings = Some(s);
         } else if freshly_minted_dek {
             // Defensive: should not happen — if encryption was already on,
             // we have a DEK and didn't mint a fresh one. But if the state
@@ -1215,9 +1317,9 @@ impl App {
                             crate::config::disable_encryption(&dek)?;
                             self.dek = None;
                             self.wraps = WrapsFile::default();
-                            self.settings = Some(Settings {
-                                encrypt_keys: false,
-                            });
+                            let mut s = self.settings.unwrap_or_default();
+                            s.encrypt_keys = false;
+                            self.settings = Some(s);
                             self.auth_settings_idx = 0;
                             self.push_toast(
                                 ToastKind::Info,

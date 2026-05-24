@@ -84,7 +84,9 @@ pub fn enable_encryption(dek: &crypto::Dek) -> Result<()> {
     let enc = crypto::encrypt_data(&plain, dek)?;
     ProjectConfig::save_keys_enc(&enc)?;
     let _ = fs::remove_file(ProjectConfig::keys_plain_path());
-    Settings { encrypt_keys: true }.save()?;
+    let mut settings = Settings::load()?.unwrap_or_default();
+    settings.encrypt_keys = true;
+    settings.save()?;
     Ok(())
 }
 
@@ -99,10 +101,9 @@ pub fn disable_encryption(dek: &crypto::Dek) -> Result<()> {
     ProjectConfig::save_keys_plain(&bytes)?;
     let _ = fs::remove_file(ProjectConfig::keys_path());
     let _ = fs::remove_file(ProjectConfig::wraps_path());
-    Settings {
-        encrypt_keys: false,
-    }
-    .save()?;
+    let mut settings = Settings::load()?.unwrap_or_default();
+    settings.encrypt_keys = false;
+    settings.save()?;
     Ok(())
 }
 
@@ -181,9 +182,15 @@ pub struct ProjectConfig {
 /// password (Argon2id + AES-256-GCM in `keys.enc`) or store them as a plain,
 /// gitignored, mode-600 file (`keys.plain`). Recorded once in
 /// `.aic-edit/settings.toml` so the choice persists across launches.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+///
+/// `agent_idle_timeout_secs` is read by the daemon at startup to decide how
+/// long the cached DEK lives in memory. Omit (or set to `None`) for the
+/// 1-hour default. No UI yet — edit the file by hand.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct Settings {
     pub encrypt_keys: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_idle_timeout_secs: Option<u64>,
 }
 
 impl Settings {

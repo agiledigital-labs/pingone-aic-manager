@@ -69,6 +69,7 @@ fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
         ("T", "env"),
         ("^N", "add tenant"),
         ("^A", "auth settings"),
+        ("L", "lock"),
         ("q", "quit"),
     ] {
         spans.extend(hint(k, d));
