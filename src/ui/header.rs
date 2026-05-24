@@ -62,20 +62,29 @@ fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
-    let mut spans = vec![
-        hint("R", "realm"),
-        hint("T", "env"),
-        hint("^N", "add tenant"),
-    ];
-    // The yubikey enrol shortcut only makes sense when encryption is on.
-    if app.dek_is_set() {
-        spans.push(hint("^Y", "enrol yubikey"));
+    let _ = app;
+    let mut spans: Vec<Span> = Vec::new();
+    for (k, d) in [
+        ("R", "realm"),
+        ("T", "env"),
+        ("^N", "add tenant"),
+        ("^A", "auth settings"),
+        ("q", "quit"),
+    ] {
+        spans.extend(hint(k, d));
     }
-    spans.push(hint("q", "quit"));
-    let hints = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
-    f.render_widget(hints, area);
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn hint(key: &'static str, desc: &'static str) -> Span<'static> {
-    Span::raw(format!("  {key} {desc}"))
+fn hint(key: &'static str, desc: &'static str) -> Vec<Span<'static>> {
+    vec![
+        Span::raw("  "),
+        Span::styled(
+            key,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" {desc}"), Style::default().fg(Color::DarkGray)),
+    ]
 }

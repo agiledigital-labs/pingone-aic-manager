@@ -3,14 +3,14 @@
 //! ## Why two layers
 //!
 //! aic-edit needs more than one way to unlock the on-disk credentials — a
-//! master password and (optionally) one or more Yubikeys, possibly more
+//! master password and (optionally) one or more SecurityKeys, possibly more
 //! methods later. Encrypting the JWK map directly with the password would
 //! mean re-encrypting the whole blob whenever a key is added, removed, or
 //! rotated, and it would mean each unlock method has to derive the same key.
 //!
 //! Instead we use a single random 32-byte **DEK** (data encryption key) for
 //! the data, and **wrap** the DEK with whatever unlock methods are enrolled.
-//! Each wrap is independent — adding/removing a Yubikey only touches the
+//! Each wrap is independent — adding/removing a security key only touches the
 //! wraps file, never `keys.enc`.
 //!
 //! ```text
@@ -19,7 +19,7 @@
 //!   │ JWK map      │ ◄──────────decrypt──┐ │ [[wrap]]     │
 //!   └──────────────┘                     │ │  password    │
 //!                                        │ │ [[wrap]]     │
-//!                                  DEK  ◄┘ │  yubikey     │
+//!                                  DEK  ◄┘ │  security key     │
 //!                                          └──────────────┘
 //! ```
 
@@ -136,7 +136,7 @@ pub fn unwrap_dek_with_password(
     unwrap_dek_with_kek(&kek, nonce, ciphertext)
 }
 
-/// Wrap a DEK with a raw 32-byte KEK (e.g. an HMAC output from a Yubikey).
+/// Wrap a DEK with a raw 32-byte KEK (e.g. an HMAC output from a security key).
 /// Returns (nonce, ciphertext).
 pub fn wrap_dek_with_kek(dek: &Dek, kek: &[u8; 32]) -> Result<([u8; 12], Vec<u8>)> {
     let mut nonce_bytes = [0u8; 12];

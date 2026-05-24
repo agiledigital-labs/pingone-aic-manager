@@ -12,8 +12,8 @@
 //! ciphertext = "<base64 — wrapped DEK + tag>"
 //!
 //! [[wrap]]
-//! method = "yubikey"
-//! label = "Yubikey 5C NFC"           # optional, user-supplied
+//! method = "security_key"
+//! label = "Security key 5C NFC"           # optional, user-supplied
 //! credential_id = "<base64>"          # FIDO2 credential id
 //! rp_id = "aic-edit"
 //! hmac_salt = "<base64 — 32 bytes>"   # input to hmac-secret
@@ -41,7 +41,11 @@ pub enum Wrap {
         nonce: String,
         ciphertext: String,
     },
-    Yubikey {
+    /// Explicit serde tag: the default `rename_all = "lowercase"` would emit
+    /// `method = "securitykey"`; the snake-cased form reads better in
+    /// `wraps.toml`.
+    #[serde(rename = "security_key")]
+    SecurityKey {
         #[serde(default)]
         label: Option<String>,
         credential_id: String,
@@ -56,16 +60,16 @@ impl Wrap {
     pub fn kind(&self) -> WrapKind {
         match self {
             Wrap::Password { .. } => WrapKind::Password,
-            Wrap::Yubikey { .. } => WrapKind::Yubikey,
+            Wrap::SecurityKey { .. } => WrapKind::SecurityKey,
         }
     }
 
     pub fn label(&self) -> String {
         match self {
             Wrap::Password { .. } => "Master password".into(),
-            Wrap::Yubikey { label, .. } => label
+            Wrap::SecurityKey { label, .. } => label
                 .clone()
-                .unwrap_or_else(|| "Yubikey".into()),
+                .unwrap_or_else(|| "Security key".into()),
         }
     }
 }
@@ -73,7 +77,7 @@ impl Wrap {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WrapKind {
     Password,
-    Yubikey,
+    SecurityKey,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,14 +121,18 @@ impl WrapsFile {
             .find(|w| matches!(w, Wrap::Password { .. }))
     }
 
-    pub fn yubikey_wraps(&self) -> impl Iterator<Item = &Wrap> {
+    pub fn security_key_wraps(&self) -> impl Iterator<Item = &Wrap> {
         self.wraps
             .iter()
-            .filter(|w| matches!(w, Wrap::Yubikey { .. }))
+            .filter(|w| matches!(w, Wrap::SecurityKey { .. }))
     }
 
-    pub fn has_yubikey(&self) -> bool {
-        self.yubikey_wraps().next().is_some()
+    pub fn has_security_key(&self) -> bool {
+        self.security_key_wraps().next().is_some()
+    }
+
+    pub fn has_password(&self) -> bool {
+        self.password_wrap().is_some()
     }
 
     /// Replace the password wrap (or append if none exists yet).
@@ -141,8 +149,8 @@ impl WrapsFile {
         }
     }
 
-    pub fn push_yubikey(&mut self, wrap: Wrap) {
-        debug_assert!(matches!(wrap, Wrap::Yubikey { .. }));
+    pub fn push_security_key(&mut self, wrap: Wrap) {
+        debug_assert!(matches!(wrap, Wrap::SecurityKey { .. }));
         self.wraps.push(wrap);
     }
 }

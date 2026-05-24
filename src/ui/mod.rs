@@ -1,6 +1,7 @@
+pub mod auth_settings;
+pub mod auth_setup;
 pub mod env_picker;
 pub mod header;
-pub mod master_password;
 pub mod modal;
 pub mod onboard;
 pub mod toast;
@@ -24,8 +25,8 @@ pub fn draw(f: &mut Frame, app: &App) {
             unlock::draw(f, app);
             return;
         }
-        InputMode::SetMasterPassword => {
-            master_password::draw(f, app);
+        InputMode::SetupAuth => {
+            auth_setup::draw(f, app);
             return;
         }
         _ => {}
@@ -53,6 +54,17 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         InputMode::ProdConfirm => {
             modal::draw_prod_confirm(f, app);
+        }
+        InputMode::AuthSettings => {
+            auth_settings::draw(f, app);
+        }
+        InputMode::AuthSettingsConfirm => {
+            auth_settings::draw(f, app);
+            auth_settings::draw_confirm(f, app);
+        }
+        InputMode::AuthSettingsRename => {
+            auth_settings::draw(f, app);
+            auth_settings::draw_rename(f, app);
         }
         _ => {}
     }
@@ -82,12 +94,10 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 Style::default().fg(Color::Gray),
             )),
         ];
-        if app.dek_is_set() {
-            lines.push(Line::from(Span::styled(
-                "Press Ctrl-Y to enrol a Yubikey as an alternative unlock method.",
-                Style::default().fg(Color::Gray),
-            )));
-        }
+        lines.push(Line::from(Span::styled(
+            "Press Ctrl-A to manage authentication factors.",
+            Style::default().fg(Color::Gray),
+        )));
         f.render_widget(
             Paragraph::new(lines).alignment(Alignment::Center),
             chunks[1],

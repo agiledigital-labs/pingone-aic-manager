@@ -5,10 +5,9 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod event;
-pub mod keychain;
 pub mod logging;
 pub mod theme;
 pub mod ui;
-pub mod yubikey;
+pub mod security_key;
 
 pub use error::{Error, Result};

@@ -21,11 +21,19 @@ use crate::{Error, Result};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InputMode {
     Normal,
-    /// First-run only: pick whether to encrypt credentials with a master
-    /// password and (if so) set the password + confirm it.
-    SetMasterPassword,
-    /// Subsequent launches: enter the master password to decrypt `keys.enc`.
+    /// First-run only: pick an auth method (none / master password /
+    /// security key) and provide credentials for it.
+    SetupAuth,
+    /// Subsequent launches: enter the master password and/or tap the
+    /// security key to decrypt `keys.enc`.
     Unlock,
+    /// Auth settings panel — list factors, add/remove/change-password.
+    AuthSettings,
+    /// Last-step confirmation overlay (y/n) for destructive auth-settings
+    /// actions: remove a factor, disable encryption.
+    AuthSettingsConfirm,
+    /// Inline editor for renaming the focused security-key wrap.
+    AuthSettingsRename,
     OnboardMenu,
     OnboardCookie,
     OnboardUserPass,
@@ -35,66 +43,131 @@ pub enum InputMode {
     ProdConfirm,
 }
 
-/// Fields on the first-run master-password setup form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MpField {
-    Choice,
+/// Which input on the Unlock screen currently has focus. Only meaningful when
+/// a security key wrap exists; otherwise the Master password is the only field.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UnlockFocus {
+    SecurityKeyPin,
     Password,
-    Confirm,
-    Submit,
 }
 
-#[derive(Debug, Clone)]
-pub struct MpForm {
-    /// true → encrypt with a master password; false → store credentials plain.
-    pub want_password: bool,
-    pub password: String,
-    pub confirm: String,
-    pub focused: MpField,
-    pub error: Option<String>,
+/// Auth methods offered on the first-run picker (and on the in-app "add
+/// factor" flow). "None" = `keys.plain`, no DEK; the other two share the
+/// envelope-encryption scheme — random DEK wrapped per-method in
+/// `wraps.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMethod {
+    None,
+    Password,
+    SecurityKey,
 }
 
-impl Default for MpForm {
-    fn default() -> Self {
-        Self {
-            want_password: true,
-            password: String::new(),
-            confirm: String::new(),
-            focused: MpField::Choice,
-            error: None,
+impl AuthMethod {
+    pub const ORDER: [AuthMethod; 3] = [
+        AuthMethod::None,
+        AuthMethod::Password,
+        AuthMethod::SecurityKey,
+    ];
+
+    pub fn next(self) -> AuthMethod {
+        let i = Self::ORDER.iter().position(|m| *m == self).unwrap_or(0);
+        Self::ORDER[(i + 1) % Self::ORDER.len()]
+    }
+
+    pub fn prev(self) -> AuthMethod {
+        let i = Self::ORDER.iter().position(|m| *m == self).unwrap_or(0);
+        Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AuthMethod::None => "None",
+            AuthMethod::Password => "Master password",
+            AuthMethod::SecurityKey => "Security key",
         }
     }
 }
 
-impl MpForm {
+/// Fields on the first-run / add-factor setup form. Only some of these are
+/// visible per `AuthMethod`; navigation skips the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthSetupField {
+    Method,
+    Password,
+    Confirm,
+    Pin,
+    Label,
+    Submit,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthSetupForm {
+    pub method: AuthMethod,
+    pub password: String,
+    pub confirm: String,
+    pub pin: String,
+    pub label: String,
+    pub focused: AuthSetupField,
+    pub error: Option<String>,
+    /// True while a blocking enrol task is in flight. Locks out input and
+    /// shows a "Tap your security key…" hint.
+    pub busy: bool,
+}
+
+impl Default for AuthSetupForm {
+    fn default() -> Self {
+        Self {
+            method: AuthMethod::Password,
+            password: String::new(),
+            confirm: String::new(),
+            pin: String::new(),
+            label: "Security key 1".into(),
+            focused: AuthSetupField::Method,
+            error: None,
+            busy: false,
+        }
+    }
+}
+
+impl AuthSetupForm {
+    /// Field order for the current method, used by Tab/BackTab. Always starts
+    /// with `Method` so the user can cycle back to switch.
+    fn order(&self) -> &'static [AuthSetupField] {
+        match self.method {
+            AuthMethod::None => &[AuthSetupField::Method, AuthSetupField::Submit],
+            AuthMethod::Password => &[
+                AuthSetupField::Method,
+                AuthSetupField::Password,
+                AuthSetupField::Confirm,
+                AuthSetupField::Submit,
+            ],
+            AuthMethod::SecurityKey => &[
+                AuthSetupField::Method,
+                AuthSetupField::Pin,
+                AuthSetupField::Label,
+                AuthSetupField::Submit,
+            ],
+        }
+    }
+
     pub fn next(&mut self) {
-        self.focused = match self.focused {
-            MpField::Choice => {
-                if self.want_password {
-                    MpField::Password
-                } else {
-                    MpField::Submit
-                }
-            }
-            MpField::Password => MpField::Confirm,
-            MpField::Confirm => MpField::Submit,
-            MpField::Submit => MpField::Choice,
-        };
+        let order = self.order();
+        let i = order.iter().position(|f| *f == self.focused).unwrap_or(0);
+        self.focused = order[(i + 1) % order.len()];
     }
 
     pub fn prev(&mut self) {
-        self.focused = match self.focused {
-            MpField::Choice => MpField::Submit,
-            MpField::Password => MpField::Choice,
-            MpField::Confirm => MpField::Password,
-            MpField::Submit => {
-                if self.want_password {
-                    MpField::Confirm
-                } else {
-                    MpField::Choice
-                }
-            }
-        };
+        let order = self.order();
+        let i = order.iter().position(|f| *f == self.focused).unwrap_or(0);
+        self.focused = order[(i + order.len() - 1) % order.len()];
+    }
+
+    /// After switching the radio, keep focus on Method. The user can ←/→
+    /// through the options to compare them, then Tab into the body when
+    /// they're ready. Jumping ahead is surprising — especially for None,
+    /// where the next field is Submit and Shift-Tab back is non-obvious.
+    pub fn settle_focus_after_method_change(&mut self) {
+        self.focused = AuthSetupField::Method;
     }
 }
 
@@ -139,9 +212,28 @@ pub struct App {
     pub unlock_input: String,
     pub unlock_error: Option<String>,
     pub unlock_busy: bool,
+    /// PIN typed for the security key field. Held in memory only while the unlock
+    /// screen is open; consumed by the security key poll task.
+    pub unlock_pin_input: String,
+    /// Which input on the Unlock screen has focus. Defaults to the security key
+    /// PIN field when a security key is enrolled, otherwise irrelevant.
+    pub unlock_focus: UnlockFocus,
 
-    // First-run master-password setup form
-    pub mp_form: MpForm,
+
+    // First-run auth-setup form (also used by the "add factor" flow from
+    // Auth Settings).
+    pub setup_form: AuthSetupForm,
+    /// Whether the SetupAuth screen is being shown for first-run or for the
+    /// "add factor" entry from Auth Settings. Decides where we return to on
+    /// submit + whether the None radio option is offered.
+    pub setup_context: SetupContext,
+
+    // Auth Settings screen state
+    pub auth_settings_idx: usize,
+    /// Buffer for the rename popup (Auth Settings → `r`).
+    pub rename_input: String,
+    /// Pending destructive action awaiting y/n confirmation.
+    pending_auth_action: Option<PendingAuthAction>,
 
     /// Data encryption key (random 32 bytes), held only while unlocked.
     /// `None` either means "not yet unlocked" or "user opted out of
@@ -153,12 +245,12 @@ pub struct App {
     /// which methods to offer and the enrolment flow can append new entries.
     pub wraps: WrapsFile,
 
-    /// Set by the background yubikey poll to stop itself once unlock has
+    /// Set by the background security key poll to stop itself once unlock has
     /// happened (via any method). Shared with the spawned task.
-    yubikey_cancel: Arc<AtomicBool>,
-    /// True while a yubikey poll task is running — guards against spawning
+    security_key_cancel: Arc<AtomicBool>,
+    /// True while a security key poll task is running — guards against spawning
     /// more than one.
-    yubikey_armed: bool,
+    security_key_armed: bool,
 
     // JWK map (decrypted; keyed by tenant name)
     jwks: HashMap<String, serde_json::Value>,
@@ -187,6 +279,28 @@ enum PendingProdAction {
         tenant: Tenant,
         jwk: serde_json::Value,
     },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SetupContext {
+    /// Initial install: no settings.toml on disk. Picker is full 3-way
+    /// (None / Password / security key) and submit returns to Normal.
+    FirstRun,
+    /// "Add factor" from Auth Settings: picker hides None (you can't downgrade
+    /// to no-encryption by adding a factor), and submit returns to
+    /// AuthSettings.
+    AddFactor,
+}
+
+#[derive(Debug)]
+enum PendingAuthAction {
+    /// Remove the wrap at this index from `wraps.toml`. Last-factor cases
+    /// transition to `DisableEncryption` before reaching this state, so
+    /// the index is guaranteed not to be the only wrap.
+    RemoveWrap(usize),
+    /// Decrypt `keys.enc` → `keys.plain` and delete all wraps. Triggered
+    /// either by [x] or by attempting to remove the last wrap.
+    DisableEncryption,
 }
 
 impl App {
@@ -220,11 +334,17 @@ impl App {
             unlock_input: String::new(),
             unlock_error: None,
             unlock_busy: false,
-            mp_form: MpForm::default(),
+            unlock_pin_input: String::new(),
+            unlock_focus: UnlockFocus::SecurityKeyPin,
+            setup_form: AuthSetupForm::default(),
+            setup_context: SetupContext::FirstRun,
+            auth_settings_idx: 0,
+            rename_input: String::new(),
+            pending_auth_action: None,
             dek: None,
             wraps,
-            yubikey_cancel: Arc::new(AtomicBool::new(false)),
-            yubikey_armed: false,
+            security_key_cancel: Arc::new(AtomicBool::new(false)),
+            security_key_armed: false,
             jwks: HashMap::new(),
             clients: HashMap::new(),
             onboard_menu_idx: 0,
@@ -238,22 +358,22 @@ impl App {
     }
 
     /// Pick the initial mode from on-disk state:
-    ///   - `settings.toml` says encrypt_keys=true → Unlock (keychain may
-    ///     auto-unlock; on failure, the user is prompted).
-    ///   - `settings.toml` says encrypt_keys=false → Normal; load `keys.plain`.
-    ///   - No `settings.toml` → first run → `SetMasterPassword`.
-    ///   - Legacy `keys.enc` with no settings → backfill encrypt_keys=true.
+    ///   - `settings.toml` says encrypt_keys=true → `Unlock`.
+    ///   - `settings.toml` says encrypt_keys=false → `Normal`; load `keys.plain`.
+    ///   - No `settings.toml` → first run → `SetupAuth`.
     fn decide_initial_mode(&mut self) {
-        let has_enc = ProjectConfig::keys_path().exists();
-
-        if self.settings.is_none() && has_enc {
-            // Migrate older installs that don't have settings.toml.
-            self.settings = Some(Settings { encrypt_keys: true });
-            let _ = self.settings.as_ref().unwrap().save();
-        }
-
         match self.settings {
-            Some(Settings { encrypt_keys: true }) => self.try_keychain_unlock(),
+            Some(Settings { encrypt_keys: true }) => {
+                self.input_mode = InputMode::Unlock;
+                // Default focus to whichever method is actually enrolled.
+                // If both are enrolled we prefer the security key field — it's the
+                // stronger factor and the user can Tab away if they want.
+                self.unlock_focus = if self.wraps.has_security_key() {
+                    UnlockFocus::SecurityKeyPin
+                } else {
+                    UnlockFocus::Password
+                };
+            }
             Some(Settings {
                 encrypt_keys: false,
             }) => {
@@ -261,52 +381,64 @@ impl App {
                 self.input_mode = InputMode::Normal;
             }
             None => {
-                self.input_mode = InputMode::SetMasterPassword;
+                self.input_mode = InputMode::SetupAuth;
             }
         }
 
-        // If the user landed on the Unlock screen and a yubikey is enrolled,
-        // start polling in the background so tapping the device is enough —
-        // no extra keystroke needed.
-        if self.input_mode == InputMode::Unlock && self.wraps.has_yubikey() {
-            self.spawn_yubikey_poll();
-        }
+        // The security key poll is not auto-spawned here: hmac-secret needs a PIN,
+        // so the user has to enter it on the Unlock screen first. The poll
+        // is spawned from `handle_unlock_key` once that happens.
     }
 
-    fn spawn_yubikey_poll(&mut self) {
-        if self.yubikey_armed {
+    /// Spawn the security key background poll for the Unlock screen. `pin` is the
+    /// FIDO2 PIN the user just typed; it's required for every assertion.
+    fn spawn_security_key_poll(&mut self, pin: String) {
+        if self.security_key_armed {
             return;
         }
-        self.yubikey_armed = true;
-        self.yubikey_cancel.store(false, Ordering::Relaxed);
+        self.security_key_armed = true;
+        self.security_key_cancel.store(false, Ordering::Relaxed);
         let wraps = self.wraps.clone();
         let tx = self.events.tx.clone();
-        let cancel = self.yubikey_cancel.clone();
+        let cancel = self.security_key_cancel.clone();
         tokio::task::spawn_blocking(move || {
+            let pin_opt = if pin.is_empty() { None } else { Some(pin.as_str()) };
             'outer: loop {
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                if !crate::yubikey::device_present() {
-                    // No yubikey plugged in; poll again in a moment.
+                if !crate::security_key::device_present() {
+                    // No security key plugged in; poll again in a moment.
                     std::thread::sleep(Duration::from_secs(1));
                     continue;
                 }
-                for wrap in wraps.yubikey_wraps() {
+                for wrap in wraps.security_key_wraps() {
                     if cancel.load(Ordering::Relaxed) {
                         return;
                     }
-                    match crate::config::unlock_with_yubikey(wrap) {
+                    match crate::config::unlock_with_security_key(wrap, pin_opt) {
                         Ok((dek, jwks)) => {
                             let _ = tx.send(AppEvent::UnlockResult(Ok(UnlockOk {
                                 dek,
                                 jwks,
-                                password_to_cache: None,
                             })));
                             return;
                         }
                         Err(e) => {
-                            tracing::debug!("yubikey unlock attempt failed: {e}");
+                            // Surface PIN-related errors so the user knows
+                            // to try again rather than waiting silently.
+                            let msg = e.to_string();
+                            let fatal = msg.contains("PIN_REQUIRED")
+                                || msg.contains("PIN_INVALID")
+                                || msg.contains("PIN_AUTH_INVALID")
+                                || msg.contains("PIN_BLOCKED");
+                            tracing::debug!("security key unlock attempt failed: {msg}");
+                            if fatal {
+                                let _ = tx.send(AppEvent::UnlockResult(Err(format!(
+                                    "security key: {msg}"
+                                ))));
+                                return;
+                            }
                         }
                     }
                     if cancel.load(Ordering::Relaxed) {
@@ -315,7 +447,7 @@ impl App {
                 }
                 // None of the enrolled credentials matched this device.
                 // Wait a bit before trying again — gives the user time to
-                // swap yubikeys or type their password.
+                // swap security_keys or type their password.
                 std::thread::sleep(Duration::from_secs(2));
             }
         });
@@ -325,37 +457,6 @@ impl App {
         if let Ok(Some(bytes)) = ProjectConfig::load_keys_plain() {
             if let Ok(map) = serde_json::from_slice::<HashMap<String, serde_json::Value>>(&bytes) {
                 self.jwks = map;
-            }
-        }
-    }
-
-    /// Try to unlock from OS keychain; fall back to the Unlock screen if needed.
-    fn try_keychain_unlock(&mut self) {
-        let project_key = ProjectConfig::project_key();
-        let raw_key = match crate::keychain::load_key(&project_key) {
-            Ok(Some(k)) => k,
-            _ => {
-                self.input_mode = InputMode::Unlock;
-                return;
-            }
-        };
-        let password = match String::from_utf8(raw_key) {
-            Ok(p) => p,
-            Err(_) => {
-                self.input_mode = InputMode::Unlock;
-                return;
-            }
-        };
-        // Try the cached password synchronously. If it works we go straight
-        // to Normal; otherwise the user types it themselves.
-        match try_password_unlock(&password, &self.wraps) {
-            Ok((dek, jwks)) => {
-                self.dek = Some(dek);
-                self.jwks = jwks;
-                self.input_mode = InputMode::Normal;
-            }
-            Err(_) => {
-                self.input_mode = InputMode::Unlock;
             }
         }
     }
@@ -454,7 +555,7 @@ impl App {
 
     /// True iff the in-memory DEK is set — meaning credentials are encrypted
     /// and the user is currently unlocked. The header uses this to decide
-    /// whether to surface yubikey-enrol shortcuts.
+    /// whether to surface security key-enrol shortcuts.
     pub fn dek_is_set(&self) -> bool {
         self.dek.is_some()
     }
@@ -541,35 +642,60 @@ impl App {
                 self.handle_onboard_error(msg);
             }
             AppEvent::UnlockResult(r) => self.handle_unlock_result(r),
-            AppEvent::YubikeyEnrollResult(r) => self.handle_yubikey_enroll_result(r),
+            AppEvent::SecurityKeyEnrollResult(r) => self.handle_security_key_enroll_result(r),
             AppEvent::OnboardCallback(_) | AppEvent::ApiResponse { .. } => {}
         }
         Ok(())
     }
 
-    fn handle_yubikey_enroll_result(
+    fn handle_security_key_enroll_result(
         &mut self,
         result: std::result::Result<Wrap, String>,
     ) {
+        // We're always reached from SetupAuth (either first-run or add-factor),
+        // because the obsolete Ctrl-Y modal has been removed. The two cases
+        // diverge in `finalize_factor_addition` based on `setup_context`.
+        let context = self.setup_context;
+        let was_dek_minted_for_this_op = !matches!(
+            self.settings,
+            Some(Settings { encrypt_keys: true })
+        );
+
         match result {
             Ok(wrap) => {
-                self.wraps.push_yubikey(wrap);
-                match self.wraps.save() {
-                    Ok(()) => {
-                        self.push_toast(ToastKind::Success, "Yubikey enrolled");
+                self.wraps.push_security_key(wrap);
+                if let Err(e) = self.wraps.save() {
+                    tracing::error!(error = %e, "wraps.toml save failed after enrol");
+                    self.push_toast(
+                        ToastKind::Error,
+                        format!("wraps.toml: {e}"),
+                    );
+                    self.wraps.wraps.pop();
+                    if was_dek_minted_for_this_op {
+                        self.dek = None;
                     }
-                    Err(e) => {
-                        tracing::error!(error = %e, "wraps.toml save failed after enrol");
-                        self.push_toast(
-                            ToastKind::Error,
-                            format!("Yubikey enrolled but couldn't save wraps.toml: {e}"),
-                        );
-                    }
+                    self.setup_form.busy = false;
+                    self.setup_form.error = Some(format!("Save failed: {e}"));
+                    return;
+                }
+
+                self.setup_form.busy = false;
+                if let Err(e) =
+                    self.finalize_factor_addition(was_dek_minted_for_this_op, context, "Security key enrolled")
+                {
+                    tracing::error!(error = %e, "finalize_factor_addition failed");
+                    self.setup_form.error = Some(format!("Finalise: {e}"));
                 }
             }
             Err(msg) => {
-                tracing::error!(error = %msg, "yubikey enrolment failed");
-                self.push_toast(ToastKind::Error, format!("Yubikey enrol: {msg}"));
+                tracing::error!(error = %msg, "security key enrolment failed");
+                // Reset so the user can try again. Drop the half-minted DEK
+                // if it never made it onto disk.
+                if was_dek_minted_for_this_op {
+                    self.dek = None;
+                }
+                self.setup_form.busy = false;
+                self.setup_form.error = Some(format!("Enrol failed: {msg}"));
             }
         }
     }
@@ -588,8 +714,11 @@ impl App {
     async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         match self.input_mode {
             InputMode::Normal => self.handle_normal_key(key).await?,
-            InputMode::SetMasterPassword => self.handle_mp_key(key)?,
+            InputMode::SetupAuth => self.handle_setup_auth_key(key)?,
             InputMode::Unlock => self.handle_unlock_key(key),
+            InputMode::AuthSettings => self.handle_auth_settings_key(key)?,
+            InputMode::AuthSettingsConfirm => self.handle_auth_settings_confirm_key(key)?,
+            InputMode::AuthSettingsRename => self.handle_auth_settings_rename_key(key)?,
             InputMode::OnboardMenu => self.handle_onboard_menu_key(key).await?,
             InputMode::OnboardCookie => self.handle_cookie_key(key).await?,
             InputMode::OnboardUserPass => self.handle_up_key(key).await?,
@@ -652,37 +781,25 @@ impl App {
                 self.onboard_menu_idx = 0;
                 self.input_mode = InputMode::OnboardMenu;
             }
-            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.start_yubikey_enrol();
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_auth_settings();
             }
             _ => {}
         }
         Ok(())
     }
 
-    fn start_yubikey_enrol(&mut self) {
-        let dek = match self.dek.clone() {
-            Some(d) => d,
-            None => {
-                self.push_toast(
-                    ToastKind::Warning,
-                    "Encryption is disabled — set a master password first.",
-                );
-                return;
-            }
-        };
-        // Default label: "Yubikey N" so users with multiple devices can tell
-        // them apart in wraps.toml at a glance.
-        let label = format!("Yubikey {}", self.wraps.yubikey_wraps().count() + 1);
-        self.push_toast(
-            ToastKind::Warning,
-            "Tap your Yubikey to enrol it…",
-        );
-        let tx = self.events.tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let result = enroll_yubikey_blocking(dek, label);
-            let _ = tx.send(AppEvent::YubikeyEnrollResult(result));
-        });
+    fn open_auth_settings(&mut self) {
+        // Clamp the cursor to the current factor list so we never index past
+        // the end (e.g. if a previous session removed the wrap that was
+        // selected).
+        let n = self.wraps.wraps.len();
+        if n == 0 {
+            self.auth_settings_idx = 0;
+        } else if self.auth_settings_idx >= n {
+            self.auth_settings_idx = n - 1;
+        }
+        self.input_mode = InputMode::AuthSettings;
     }
 
     fn handle_unlock_key(&mut self, key: KeyEvent) {
@@ -693,110 +810,159 @@ impl App {
             }
             return;
         }
+
+        // Which methods are actually enrolled. Tab toggles only when both
+        // are present; otherwise focus is pinned to whichever exists.
+        let yk = self.wraps.has_security_key();
+        let pw = self.wraps.has_password();
+        let both = yk && pw;
+        let on_pin =
+            (yk && !pw) || (both && self.unlock_focus == UnlockFocus::SecurityKeyPin);
+
         match key.code {
             KeyCode::Esc => {
                 self.should_quit = true;
             }
+            KeyCode::Tab | KeyCode::BackTab if both => {
+                self.unlock_focus = match self.unlock_focus {
+                    UnlockFocus::SecurityKeyPin => UnlockFocus::Password,
+                    UnlockFocus::Password => UnlockFocus::SecurityKeyPin,
+                };
+            }
             KeyCode::Enter => {
-                if self.unlock_input.is_empty() {
-                    self.unlock_error = Some("Password cannot be empty".into());
-                    return;
+                if on_pin {
+                    if self.unlock_pin_input.is_empty() {
+                        self.unlock_error = Some("Security key PIN cannot be empty".into());
+                        return;
+                    }
+                    self.unlock_error = Some(crate::ui::unlock::TAP_MESSAGE.into());
+                    let pin = std::mem::take(&mut self.unlock_pin_input);
+                    self.spawn_security_key_poll(pin);
+                } else {
+                    if self.unlock_input.is_empty() {
+                        self.unlock_error = Some("Password cannot be empty".into());
+                        return;
+                    }
+                    let password = std::mem::take(&mut self.unlock_input);
+                    self.unlock_error = None;
+                    self.unlock_busy = true;
+                    let tx = self.events.tx.clone();
+                    let wraps = self.wraps.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let result = try_password_unlock(&password, &wraps)
+                            .map(|(dek, jwks)| UnlockOk { dek, jwks })
+                            .map_err(|e| format!("{e}"));
+                        let _ = tx.send(AppEvent::UnlockResult(result));
+                    });
                 }
-                let password = std::mem::take(&mut self.unlock_input);
-                self.unlock_error = None;
-                self.unlock_busy = true;
-                let tx = self.events.tx.clone();
-                let wraps = self.wraps.clone();
-                tokio::task::spawn_blocking(move || {
-                    let result = try_password_unlock(&password, &wraps)
-                        .map(|(dek, jwks)| UnlockOk {
-                            dek,
-                            jwks,
-                            password_to_cache: Some(password.clone()),
-                        })
-                        .map_err(|e| format!("{e}"));
-                    let _ = tx.send(AppEvent::UnlockResult(result));
-                });
             }
             KeyCode::Backspace => {
-                self.unlock_input.pop();
+                if on_pin {
+                    self.unlock_pin_input.pop();
+                } else {
+                    self.unlock_input.pop();
+                }
             }
             KeyCode::Char(c) => {
-                self.unlock_input.push(c);
+                if on_pin {
+                    self.unlock_pin_input.push(c);
+                } else {
+                    self.unlock_input.push(c);
+                }
             }
             _ => {}
         }
     }
 
     fn handle_unlock_result(&mut self, result: std::result::Result<UnlockOk, String>) {
-        // A late-arriving second result (e.g. yubikey unlock fired after we
+        // A late-arriving second result (e.g. security key unlock fired after we
         // already accepted the password) — drop it.
         if self.input_mode != InputMode::Unlock {
             return;
         }
         self.unlock_busy = false;
         match result {
-            Ok(UnlockOk {
-                dek,
-                jwks,
-                password_to_cache,
-            }) => {
+            Ok(UnlockOk { dek, jwks }) => {
                 self.dek = Some(dek);
                 self.jwks = jwks;
                 self.unlock_error = None;
+                self.unlock_pin_input.clear();
                 self.input_mode = InputMode::Normal;
-                // Tell the yubikey poll task to stop (if it was running).
-                self.yubikey_cancel.store(true, Ordering::Relaxed);
-                self.yubikey_armed = false;
-                if let Some(pw) = password_to_cache {
-                    let _ = crate::keychain::store_key(
-                        &ProjectConfig::project_key(),
-                        pw.as_bytes(),
-                    );
-                }
+                // Tell the security key poll task to stop (if it was running).
+                self.security_key_cancel.store(true, Ordering::Relaxed);
+                self.security_key_armed = false;
                 self.init_clients();
             }
             Err(e) => {
+                // A security key failure shouldn't take the screen down — let the
+                // user retry the tap or fall back to the password field.
+                self.security_key_cancel.store(true, Ordering::Relaxed);
+                self.security_key_armed = false;
                 self.unlock_error = Some(format!("Unlock failed: {e}"));
             }
         }
     }
 
-    fn handle_mp_key(&mut self, key: KeyEvent) -> Result<()> {
+    fn handle_setup_auth_key(&mut self, key: KeyEvent) -> Result<()> {
+        // While a security key enrol task is running the form is read-only except
+        // for Esc-to-quit (the blocking task can't be cancelled mid-touch).
+        if self.setup_form.busy {
+            if key.code == KeyCode::Esc {
+                // Can't cancel an in-flight enrol cleanly — just refuse.
+            }
+            return Ok(());
+        }
+
         match key.code {
-            KeyCode::Esc => {
-                self.should_quit = true;
-            }
-            KeyCode::Tab => self.mp_form.next(),
-            KeyCode::BackTab => self.mp_form.prev(),
-            KeyCode::Left | KeyCode::Right if self.mp_form.focused == MpField::Choice => {
-                self.mp_form.want_password = !self.mp_form.want_password;
-                if !self.mp_form.want_password {
-                    self.mp_form.password.clear();
-                    self.mp_form.confirm.clear();
+            KeyCode::Esc => match self.setup_context {
+                SetupContext::FirstRun => self.should_quit = true,
+                SetupContext::AddFactor => {
+                    self.setup_form = AuthSetupForm::default();
+                    self.setup_context = SetupContext::FirstRun;
+                    self.input_mode = InputMode::AuthSettings;
                 }
+            },
+            KeyCode::Tab => self.setup_form.next(),
+            KeyCode::BackTab => self.setup_form.prev(),
+            KeyCode::Left if self.setup_form.focused == AuthSetupField::Method => {
+                self.setup_form.method = step_method_prev(self.setup_form.method, self.setup_context);
+                self.setup_form.error = None;
+                self.setup_form.settle_focus_after_method_change();
             }
-            KeyCode::Char(' ') if self.mp_form.focused == MpField::Choice => {
-                self.mp_form.want_password = !self.mp_form.want_password;
+            KeyCode::Right if self.setup_form.focused == AuthSetupField::Method => {
+                self.setup_form.method = step_method_next(self.setup_form.method, self.setup_context);
+                self.setup_form.error = None;
+                self.setup_form.settle_focus_after_method_change();
             }
-            KeyCode::Enter if self.mp_form.focused == MpField::Submit => {
-                self.commit_master_password_choice()?;
+            KeyCode::Char(' ') if self.setup_form.focused == AuthSetupField::Method => {
+                self.setup_form.method = step_method_next(self.setup_form.method, self.setup_context);
+                self.setup_form.error = None;
+                self.setup_form.settle_focus_after_method_change();
             }
-            KeyCode::Enter => {
-                self.mp_form.next();
+            KeyCode::Enter if self.setup_form.focused == AuthSetupField::Submit => {
+                self.commit_setup_auth()?;
             }
-            KeyCode::Backspace => match self.mp_form.focused {
-                MpField::Password => {
-                    self.mp_form.password.pop();
+            KeyCode::Enter => self.setup_form.next(),
+            KeyCode::Backspace => match self.setup_form.focused {
+                AuthSetupField::Password => {
+                    self.setup_form.password.pop();
                 }
-                MpField::Confirm => {
-                    self.mp_form.confirm.pop();
+                AuthSetupField::Confirm => {
+                    self.setup_form.confirm.pop();
+                }
+                AuthSetupField::Pin => {
+                    self.setup_form.pin.pop();
+                }
+                AuthSetupField::Label => {
+                    self.setup_form.label.pop();
                 }
                 _ => {}
             },
-            KeyCode::Char(c) => match self.mp_form.focused {
-                MpField::Password if self.mp_form.want_password => self.mp_form.password.push(c),
-                MpField::Confirm if self.mp_form.want_password => self.mp_form.confirm.push(c),
+            KeyCode::Char(c) => match self.setup_form.focused {
+                AuthSetupField::Password => self.setup_form.password.push(c),
+                AuthSetupField::Confirm => self.setup_form.confirm.push(c),
+                AuthSetupField::Pin => self.setup_form.pin.push(c),
+                AuthSetupField::Label => self.setup_form.label.push(c),
                 _ => {}
             },
             _ => {}
@@ -804,57 +970,291 @@ impl App {
         Ok(())
     }
 
-    fn commit_master_password_choice(&mut self) -> Result<()> {
-        if self.mp_form.want_password {
-            if self.mp_form.password.is_empty() {
-                self.mp_form.error = Some("Password cannot be empty".into());
-                self.mp_form.focused = MpField::Password;
-                return Ok(());
+    fn commit_setup_auth(&mut self) -> Result<()> {
+        let context = self.setup_context;
+        match self.setup_form.method {
+            AuthMethod::None => {
+                // None is only valid from first-run. Defensive guard.
+                if context != SetupContext::FirstRun {
+                    self.setup_form.error = Some(
+                        "Use [x] disable encryption from Auth Settings instead".into(),
+                    );
+                    return Ok(());
+                }
+                // No encryption: write an empty keys.plain at mode 600 and
+                // record settings. No DEK; no wraps.toml.
+                self.dek = None;
+                self.settings = Some(Settings {
+                    encrypt_keys: false,
+                });
+                if let Some(s) = self.settings {
+                    s.save()?;
+                }
+                let bytes = serde_json::to_vec(&self.jwks)?;
+                ProjectConfig::save_keys_plain(&bytes)?;
+                self.setup_form = AuthSetupForm::default();
+                self.setup_context = SetupContext::FirstRun;
+                self.input_mode = InputMode::Normal;
             }
-            if self.mp_form.password != self.mp_form.confirm {
-                self.mp_form.error = Some("Passwords do not match".into());
-                self.mp_form.focused = MpField::Confirm;
-                return Ok(());
+            AuthMethod::Password => {
+                if self.setup_form.password.is_empty() {
+                    self.setup_form.error = Some("Password cannot be empty".into());
+                    self.setup_form.focused = AuthSetupField::Password;
+                    return Ok(());
+                }
+                if self.setup_form.password != self.setup_form.confirm {
+                    self.setup_form.error = Some("Passwords do not match".into());
+                    self.setup_form.focused = AuthSetupField::Confirm;
+                    return Ok(());
+                }
+
+                // Mint a DEK iff there isn't one yet. Re-using an existing
+                // DEK is what makes "change password" work without touching
+                // keys.enc.
+                let freshly_minted = self.dek.is_none();
+                let dek = self.dek.clone().unwrap_or_else(Dek::random);
+                let (salt, nonce, ct) =
+                    crypto::wrap_dek_with_password(&dek, &self.setup_form.password)?;
+                self.wraps.upsert_password(Wrap::Password {
+                    salt: wraps::b64_encode(&salt),
+                    nonce: wraps::b64_encode(&nonce),
+                    ciphertext: wraps::b64_encode(&ct),
+                });
+                self.wraps.save()?;
+                self.dek = Some(dek);
+                self.finalize_factor_addition(freshly_minted, context, "Password set")?;
             }
-            // Generate a fresh DEK and wrap it with the password.
-            let dek = Dek::random();
-            let (salt, nonce, ct) =
-                crypto::wrap_dek_with_password(&dek, &self.mp_form.password)?;
-            self.wraps.upsert_password(Wrap::Password {
-                salt: wraps::b64_encode(&salt),
-                nonce: wraps::b64_encode(&nonce),
-                ciphertext: wraps::b64_encode(&ct),
-            });
-            self.wraps.save()?;
-            self.dek = Some(dek);
-            self.settings = Some(Settings { encrypt_keys: true });
-            // Best-effort keychain stash so future launches auto-unlock.
-            let _ = crate::keychain::store_key(
-                &ProjectConfig::project_key(),
-                self.mp_form.password.as_bytes(),
-            );
-        } else {
-            self.dek = None;
-            self.settings = Some(Settings {
-                encrypt_keys: false,
-            });
+            AuthMethod::SecurityKey => {
+                if self.setup_form.pin.is_empty() {
+                    self.setup_form.error = Some("FIDO2 PIN cannot be empty".into());
+                    self.setup_form.focused = AuthSetupField::Pin;
+                    return Ok(());
+                }
+                if self.setup_form.label.trim().is_empty() {
+                    self.setup_form.error = Some("Label cannot be empty".into());
+                    self.setup_form.focused = AuthSetupField::Label;
+                    return Ok(());
+                }
+                let dek = self.dek.clone().unwrap_or_else(Dek::random);
+                self.dek = Some(dek.clone());
+                self.setup_form.busy = true;
+                self.setup_form.error = None;
+                let pin = std::mem::take(&mut self.setup_form.pin);
+                let label = self.setup_form.label.trim().to_string();
+                let tx = self.events.tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let result = enroll_security_key_blocking(dek, label, Some(pin));
+                    let _ = tx.send(AppEvent::SecurityKeyEnrollResult(result));
+                });
+            }
         }
-
-        if let Some(s) = self.settings {
-            s.save()?;
-        }
-        // Write the (empty) keys file immediately so the password (or the
-        // "no-password" choice) is locked in on disk. Without this, any
-        // password entered on the next launch would "unlock" successfully
-        // because there'd be nothing to validate against.
-        self.persist_keys()?;
-
-        // Zero form state ASAP.
-        self.mp_form.password.clear();
-        self.mp_form.confirm.clear();
-        self.mp_form.error = None;
-        self.input_mode = InputMode::Normal;
         Ok(())
+    }
+
+    /// Shared "after a wrap was just persisted" tail. Handles the encryption
+    /// transition (keys.plain → keys.enc) when this is the first factor, and
+    /// routes back to whichever screen launched SetupAuth.
+    fn finalize_factor_addition(
+        &mut self,
+        freshly_minted_dek: bool,
+        context: SetupContext,
+        success_toast: &str,
+    ) -> Result<()> {
+        let already_encrypted =
+            matches!(self.settings, Some(Settings { encrypt_keys: true }));
+
+        if !already_encrypted {
+            // We just added the first factor while encryption was disabled
+            // (or this is first-run with no prior settings.toml). Promote
+            // keys.plain → keys.enc and flip the flag.
+            let dek = self
+                .dek
+                .as_ref()
+                .ok_or_else(|| crate::Error::Crypto("DEK missing".into()))?;
+            crate::config::enable_encryption(dek)?;
+            self.settings = Some(Settings { encrypt_keys: true });
+        } else if freshly_minted_dek {
+            // Defensive: should not happen — if encryption was already on,
+            // we have a DEK and didn't mint a fresh one. But if the state
+            // ever got out of sync, persist the new DEK so keys.enc is
+            // readable.
+            self.persist_keys()?;
+        }
+        // Else (already encrypted + DEK unchanged): wraps.toml already saved
+        // by the caller, nothing else to do.
+
+        self.setup_form = AuthSetupForm::default();
+        let next_mode = match context {
+            SetupContext::FirstRun => InputMode::Normal,
+            SetupContext::AddFactor => InputMode::AuthSettings,
+        };
+        self.setup_context = SetupContext::FirstRun;
+        self.input_mode = next_mode;
+        self.push_toast(ToastKind::Success, success_toast);
+        Ok(())
+    }
+
+    fn handle_auth_settings_key(&mut self, key: KeyEvent) -> Result<()> {
+        let n = self.wraps.wraps.len();
+        match key.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.auth_settings_idx > 0 {
+                    self.auth_settings_idx -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if n > 0 && self.auth_settings_idx + 1 < n {
+                    self.auth_settings_idx += 1;
+                }
+            }
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                self.start_add_factor(AuthMethod::Password);
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                self.start_add_factor(AuthMethod::SecurityKey);
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') if n > 0 => {
+                // Last-factor guard — falls through to disable-encryption.
+                if n == 1 {
+                    self.pending_auth_action = Some(PendingAuthAction::DisableEncryption);
+                } else {
+                    self.pending_auth_action =
+                        Some(PendingAuthAction::RemoveWrap(self.auth_settings_idx));
+                }
+                self.input_mode = InputMode::AuthSettingsConfirm;
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') if n > 0 => {
+                // Only security-key wraps carry a user-editable label; the
+                // password row is always "Master password".
+                if let Some(Wrap::SecurityKey { label, .. }) =
+                    self.wraps.wraps.get(self.auth_settings_idx)
+                {
+                    self.rename_input = label.clone().unwrap_or_default();
+                    self.input_mode = InputMode::AuthSettingsRename;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_auth_settings_rename_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.rename_input.clear();
+                self.input_mode = InputMode::AuthSettings;
+            }
+            KeyCode::Enter => {
+                let new_label = self.rename_input.trim().to_string();
+                if new_label.is_empty() {
+                    // Silently refuse — Esc cancels, Enter requires a label.
+                    return Ok(());
+                }
+                if let Some(Wrap::SecurityKey { label, .. }) =
+                    self.wraps.wraps.get_mut(self.auth_settings_idx)
+                {
+                    *label = Some(new_label);
+                    self.wraps.save()?;
+                    self.push_toast(ToastKind::Success, "Renamed");
+                }
+                self.rename_input.clear();
+                self.input_mode = InputMode::AuthSettings;
+            }
+            KeyCode::Backspace => {
+                self.rename_input.pop();
+            }
+            KeyCode::Char(c) => {
+                self.rename_input.push(c);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Open the SetupAuth form pre-set for "add factor" mode.
+    fn start_add_factor(&mut self, method: AuthMethod) {
+        self.setup_form = AuthSetupForm::default();
+        self.setup_form.method = method;
+        self.setup_form.focused = match method {
+            AuthMethod::Password => AuthSetupField::Password,
+            AuthMethod::SecurityKey => AuthSetupField::Pin,
+            AuthMethod::None => AuthSetupField::Method,
+        };
+        if method == AuthMethod::SecurityKey {
+            self.setup_form.label = format!(
+                "Security key {}",
+                self.wraps.security_key_wraps().count() + 1
+            );
+        }
+        self.setup_context = SetupContext::AddFactor;
+        self.input_mode = InputMode::SetupAuth;
+    }
+
+    fn handle_auth_settings_confirm_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let action = self.pending_auth_action.take();
+                match action {
+                    Some(PendingAuthAction::RemoveWrap(idx)) => {
+                        if idx < self.wraps.wraps.len() {
+                            self.wraps.wraps.remove(idx);
+                            self.wraps.save()?;
+                            if self.auth_settings_idx >= self.wraps.wraps.len()
+                                && !self.wraps.wraps.is_empty()
+                            {
+                                self.auth_settings_idx = self.wraps.wraps.len() - 1;
+                            }
+                            self.push_toast(ToastKind::Success, "Factor removed");
+                        }
+                    }
+                    Some(PendingAuthAction::DisableEncryption) => {
+                        if let Some(dek) = self.dek.clone() {
+                            crate::config::disable_encryption(&dek)?;
+                            self.dek = None;
+                            self.wraps = WrapsFile::default();
+                            self.settings = Some(Settings {
+                                encrypt_keys: false,
+                            });
+                            self.auth_settings_idx = 0;
+                            self.push_toast(
+                                ToastKind::Info,
+                                "Encryption disabled — credentials at keys.plain",
+                            );
+                        } else {
+                            self.push_toast(
+                                ToastKind::Error,
+                                "Cannot disable: not unlocked",
+                            );
+                        }
+                    }
+                    None => {}
+                }
+                self.input_mode = InputMode::AuthSettings;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.pending_auth_action = None;
+                self.input_mode = InputMode::AuthSettings;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn pending_auth_action_label(&self) -> Option<String> {
+        match &self.pending_auth_action {
+            Some(PendingAuthAction::RemoveWrap(idx)) => self
+                .wraps
+                .wraps
+                .get(*idx)
+                .map(|w| format!("Remove factor: {}?", w.label())),
+            Some(PendingAuthAction::DisableEncryption) => Some(
+                "Disable encryption? Credentials will be written to keys.plain.".into(),
+            ),
+            None => None,
+        }
     }
 
     async fn handle_onboard_menu_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -1638,15 +2038,32 @@ async fn run_bootstrap_from_userpass(
     ));
 }
 
+/// Step the method radio left/right, skipping `None` when we're inside the
+/// "add factor" flow from Auth Settings (you can't degrade encryption by
+/// adding a factor).
+fn step_method_next(current: AuthMethod, context: SetupContext) -> AuthMethod {
+    let next = current.next();
+    if context == SetupContext::AddFactor && next == AuthMethod::None {
+        next.next()
+    } else {
+        next
+    }
+}
+
+fn step_method_prev(current: AuthMethod, context: SetupContext) -> AuthMethod {
+    let prev = current.prev();
+    if context == SetupContext::AddFactor && prev == AuthMethod::None {
+        prev.prev()
+    } else {
+        prev
+    }
+}
+
 /// Payload returned by a successful background unlock task.
 #[derive(Debug)]
 pub struct UnlockOk {
     pub dek: Dek,
     pub jwks: HashMap<String, serde_json::Value>,
-    /// `Some` when the unlock came from a password the user typed (so we can
-    /// stash it in the OS keychain). `None` for yubikey unlocks — nothing
-    /// useful to cache, the next unlock will need another touch.
-    pub password_to_cache: Option<String>,
 }
 
 /// Thin wrapper around `config::unlock_with_password` so the spawn_blocking
@@ -1658,19 +2075,20 @@ fn try_password_unlock(
     crate::config::unlock_with_password(password)
 }
 
-/// Enrol a yubikey and produce a wrap entry that the event handler can
+/// Enrol a security key and produce a wrap entry that the event handler can
 /// append to `wraps.toml`. Blocks until the user taps the device.
-fn enroll_yubikey_blocking(
+fn enroll_security_key_blocking(
     dek: Dek,
     label: String,
+    pin: Option<String>,
 ) -> std::result::Result<Wrap, String> {
-    let enrolment = crate::yubikey::enroll().map_err(|e| e.to_string())?;
+    let enrolment = crate::security_key::enroll(pin.as_deref()).map_err(|e| e.to_string())?;
     let (nonce, ct) =
         crypto::wrap_dek_with_kek(&dek, &enrolment.hmac).map_err(|e| e.to_string())?;
-    Ok(Wrap::Yubikey {
+    Ok(Wrap::SecurityKey {
         label: Some(label),
         credential_id: wraps::b64_encode(&enrolment.credential_id),
-        rp_id: crate::yubikey::RP_ID.to_string(),
+        rp_id: crate::security_key::RP_ID.to_string(),
         hmac_salt: wraps::b64_encode(&enrolment.hmac_salt),
         nonce: wraps::b64_encode(&nonce),
         ciphertext: wraps::b64_encode(&ct),

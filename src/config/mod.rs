@@ -65,14 +65,61 @@ pub fn save_jwk_map(
     Ok(())
 }
 
-/// Unlock via a yubikey wrap: ask the device for the HMAC of its enrolled
+/// Transition from "no encryption" to "encrypted": read `keys.plain`,
+/// encrypt with `dek`, write `keys.enc`, delete `keys.plain`, and flip
+/// `settings.toml` to `encrypt_keys = true`. Called by the Settings screen
+/// when the user adds the first auth factor while encryption is disabled.
+///
+/// `wraps.toml` is not touched here — callers must have already saved the
+/// wrap that protects this DEK before calling this function, otherwise
+/// `keys.enc` would be unreadable on next launch.
+pub fn enable_encryption(dek: &crypto::Dek) -> Result<()> {
+    // First-run installs never wrote keys.plain (no factors were added before
+    // now), so substitute an empty JSON map. Decrypting empty bytes would
+    // fail the `from_slice` round-trip in `decrypt_keys_file`.
+    let plain = match ProjectConfig::load_keys_plain()? {
+        Some(bytes) if !bytes.is_empty() => bytes,
+        _ => b"{}".to_vec(),
+    };
+    let enc = crypto::encrypt_data(&plain, dek)?;
+    ProjectConfig::save_keys_enc(&enc)?;
+    let _ = fs::remove_file(ProjectConfig::keys_plain_path());
+    Settings { encrypt_keys: true }.save()?;
+    Ok(())
+}
+
+/// Transition from "encrypted" to "no encryption": decrypt `keys.enc` with
+/// `dek`, write the cleartext to `keys.plain` (mode 600), then delete
+/// `keys.enc` and `wraps.toml`, and flip `settings.toml` to
+/// `encrypt_keys = false`. Called by the last-factor guard in the Settings
+/// screen.
+pub fn disable_encryption(dek: &crypto::Dek) -> Result<()> {
+    let plain = decrypt_keys_file(dek)?;
+    let bytes = serde_json::to_vec(&plain)?;
+    ProjectConfig::save_keys_plain(&bytes)?;
+    let _ = fs::remove_file(ProjectConfig::keys_path());
+    let _ = fs::remove_file(ProjectConfig::wraps_path());
+    Settings {
+        encrypt_keys: false,
+    }
+    .save()?;
+    Ok(())
+}
+
+/// Unlock via a security key wrap: ask the device for the HMAC of its enrolled
 /// (credential, salt) pair (one touch), use that HMAC as the KEK that
 /// unwraps the DEK, then decrypt `keys.enc`.
-pub fn unlock_with_yubikey(
+///
+/// `pin` is forwarded to the FIDO2 `get_assertion` call. SecurityKeys require a
+/// PIN to establish the `pinUvAuthToken` that authorises `hmac-secret`, so
+/// callers should normally supply one. `None` is only useful when probing
+/// an authenticator that has no PIN configured.
+pub fn unlock_with_security_key(
     wrap: &wraps::Wrap,
+    pin: Option<&str>,
 ) -> Result<(crypto::Dek, HashMap<String, serde_json::Value>)> {
     let (credential_id_b64, hmac_salt_b64, nonce_b64, ct_b64) = match wrap {
-        wraps::Wrap::Yubikey {
+        wraps::Wrap::SecurityKey {
             credential_id,
             hmac_salt,
             nonce,
@@ -81,22 +128,22 @@ pub fn unlock_with_yubikey(
         } => (credential_id, hmac_salt, nonce, ciphertext),
         _ => {
             return Err(crate::Error::Crypto(
-                "unlock_with_yubikey called with a non-yubikey wrap".into(),
+                "unlock_with_security_key called with a non-security-key wrap".into(),
             ));
         }
     };
     let credential_id = wraps::b64_decode(credential_id_b64)?;
-    let hmac_salt: [u8; crate::yubikey::HMAC_SALT_LEN] = wraps::b64_decode(hmac_salt_b64)?
+    let hmac_salt: [u8; crate::security_key::HMAC_SALT_LEN] = wraps::b64_decode(hmac_salt_b64)?
         .as_slice()
         .try_into()
-        .map_err(|_| crate::Error::Crypto("yubikey wrap: hmac_salt length".into()))?;
+        .map_err(|_| crate::Error::Crypto("security key wrap: hmac_salt length".into()))?;
     let nonce: [u8; 12] = wraps::b64_decode(nonce_b64)?
         .as_slice()
         .try_into()
-        .map_err(|_| crate::Error::Crypto("yubikey wrap: nonce length".into()))?;
+        .map_err(|_| crate::Error::Crypto("security key wrap: nonce length".into()))?;
     let ct = wraps::b64_decode(ct_b64)?;
 
-    let hmac = crate::yubikey::derive_hmac(&credential_id, &hmac_salt)?;
+    let hmac = crate::security_key::derive_hmac(&credential_id, &hmac_salt, pin)?;
     let dek = crypto::unwrap_dek_with_kek(&hmac, &nonce, &ct)?;
     let jwks = decrypt_keys_file(&dek)?;
     Ok((dek, jwks))
@@ -204,7 +251,7 @@ impl ProjectConfig {
         fs::create_dir_all(Self::dir())?;
         let path = Self::dir().join(".gitignore");
         // wraps.toml contains the (encrypted) DEK envelope, including the
-        // FIDO2 credential id for any enrolled yubikeys — opaque but
+        // FIDO2 credential id for any enrolled security_keys — opaque but
         // device-specific, so we never check it in.
         let content = "keys.enc\nkeys.plain\nwraps.toml\nlocal-config/\n*.log\n";
         fs::write(path, content)?;
@@ -246,10 +293,4 @@ impl ProjectConfig {
         Ok(Some(fs::read(path)?))
     }
 
-    /// Current working directory as a stable string key for the keychain.
-    pub fn project_key() -> String {
-        std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| ".".to_string())
-    }
 }

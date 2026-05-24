@@ -1,4 +1,4 @@
-//! `aic-edit` CLI subcommands. Plumbing only — agent lifecycle, context
+//! `aic` CLI subcommands. Plumbing only — agent lifecycle, context
 //! selection, and a `whoami` that proves a token can be minted via the agent.
 //!
 //! Resource commands (`get esv`, `apply`, etc.) will land alongside their
@@ -12,7 +12,7 @@ use crate::{Error, Result};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "aic-edit",
+    name = "aic",
     version,
     about = "AIC tenant TUI + CLI",
     long_about = None,
@@ -83,7 +83,7 @@ async fn run_agent(foreground: bool, idle_timeout: Option<u64>) -> Result<()> {
     if !foreground {
         // Re-exec ourselves with --foreground after detaching. Keeps the
         // detach logic in one place (in agent::client::spawn_detached_agent),
-        // and lets `aic-edit agent` (no flag) work as a one-liner from a
+        // and lets `aic agent` (no flag) work as a one-liner from a
         // shell.
         return spawn_detached_then_exit();
     }
@@ -276,7 +276,7 @@ async fn whoami(tenant_arg: Option<String>) -> Result<()> {
             })
             .ok_or_else(|| {
                 Error::Config(
-                    "no current context — run `aic-edit ctx use <tenant>` first".into(),
+                    "no current context — run `aic ctx use <tenant>` first".into(),
                 )
             })?,
     };
