@@ -26,6 +26,12 @@ pub enum Request {
     /// Return a valid bearer token for the named tenant, minting one if the
     /// cached token is missing or within 60s of expiry.
     GetToken { tenant: String },
+    /// Proxy a GET against an AIC path. The daemon reuses its tenant HTTP
+    /// connection (TLS handshake amortised across CLI invocations) but does
+    /// not cache the response — AIC's read endpoints emit no validators, so
+    /// a body cache here would either be stale or useless. Callers that
+    /// want caching (e.g. the TUI) keep their own.
+    ApiGet { tenant: String, path: String },
     /// Tell the agent to clean up the socket and exit.
     Shutdown,
 }
@@ -46,6 +52,10 @@ pub enum Response {
     /// Reply to `GetDek` when a DEK is cached. Base64 of 32 raw bytes.
     Dek {
         dek_b64: String,
+    },
+    /// Reply to `ApiGet` — JSON body from AIC.
+    Json {
+        value: serde_json::Value,
     },
     /// Reply to `GetDek` (or any op that needs an unlocked session) when the
     /// agent isn't holding a DEK. Distinct from `Error` so the TUI can quietly

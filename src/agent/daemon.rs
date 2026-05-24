@@ -28,8 +28,8 @@ struct AgentState {
     /// unlock; the password unlock path derives it from Argon2 internally.
     dek: Option<Dek>,
     /// AicClients are built lazily on the first `GetToken { tenant }` after
-    /// unlock and cached here for their token-cache benefit. Cleared on
-    /// `Lock` (and whenever the DEK changes).
+    /// unlock and cached here for their token-cache + HTTP-connection-pool
+    /// benefit. Cleared on `Lock` (and whenever the DEK changes).
     clients: HashMap<String, Arc<AicClient>>,
     last_request: Instant,
     idle_timeout: Duration,
@@ -277,6 +277,11 @@ async fn handle(
             Ok(None) => Response::Locked,
             Err(e) => Response::Error { message: e.to_string() },
         },
+        Request::ApiGet { tenant, path } => match do_api_get(&tenant, &path, state).await {
+            Ok(Some(value)) => Response::Json { value },
+            Ok(None) => Response::Locked,
+            Err(e) => Response::Error { message: e.to_string() },
+        },
         Request::Shutdown => {
             shutdown.notify_waiters();
             Response::Ok
@@ -379,6 +384,34 @@ async fn do_get_token(
     let token = client.bearer().await?;
     let expires_at = client.token_cache.lock().unwrap().expires_at();
     Ok(Some((token, expires_at)))
+}
+
+/// Proxy a GET against AIC. Returns `Ok(None)` when the agent is locked so
+/// the caller can answer with `Response::Locked`; `Ok(Some(body))` on
+/// success. No caching here — every call goes to AIC. Connection pooling
+/// happens automatically via the per-tenant AicClient.
+async fn do_api_get(
+    tenant: &str,
+    path: &str,
+    state: Arc<RwLock<AgentState>>,
+) -> Result<Option<serde_json::Value>> {
+    // Each `state.read()` is scoped to a let-binding so the read guard
+    // drops before we try anything that might need a write lock. tokio's
+    // RwLock is write-preferring, so a write blocked by our own read guard
+    // would also block every later reader and wedge the daemon.
+    let (has_dek, cached_client) = {
+        let s = state.read().await;
+        (s.dek.is_some(), s.clients.get(tenant).cloned())
+    };
+    if !has_dek {
+        return Ok(None);
+    }
+    let client = match cached_client {
+        Some(c) => c,
+        None => build_client(tenant, state.clone()).await?,
+    };
+    let body = client.get(path).await?;
+    Ok(Some(body))
 }
 
 async fn build_client(
