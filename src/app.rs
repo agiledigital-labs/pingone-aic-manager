@@ -207,7 +207,7 @@ pub struct App {
     pub env_picker_idx: usize,
     pub toasts: VecDeque<Toast>,
     pub should_quit: bool,
-    pub has_envrc: bool,
+    pub has_env_creds: bool,
 
     // Unlock screen state
     pub unlock_input: String,
@@ -314,10 +314,12 @@ impl App {
             .map(|c| c.tenants.clone())
             .unwrap_or_default();
 
-        let has_envrc = std::path::Path::new(".envrc").exists()
-            && std::fs::read_to_string(".envrc")
-                .unwrap_or_default()
-                .contains("SERVICE_ACCOUNT_KEY");
+        // Sandbox import path is offered when the three required vars are
+        // already exported in our environment (typically via direnv loading
+        // the project's .envrc).
+        let has_env_creds = std::env::var("TENANT_BASE_URL").is_ok()
+            && std::env::var("SERVICE_ACCOUNT_ID").is_ok()
+            && std::env::var("SERVICE_ACCOUNT_KEY").is_ok();
 
         Ok(Self {
             events: EventHandler::new(),
@@ -331,7 +333,7 @@ impl App {
             env_picker_idx: 0,
             toasts: VecDeque::new(),
             should_quit: false,
-            has_envrc,
+            has_env_creds,
             unlock_input: String::new(),
             unlock_error: None,
             unlock_busy: false,
@@ -1360,7 +1362,7 @@ impl App {
     }
 
     async fn handle_onboard_menu_key(&mut self, key: KeyEvent) -> Result<()> {
-        let max_idx = if self.has_envrc { 3 } else { 2 };
+        let max_idx = if self.has_env_creds { 3 } else { 2 };
         match key.code {
             KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;
@@ -1379,7 +1381,7 @@ impl App {
             KeyCode::Char('1') => self.enter_onboard_choice(0).await?,
             KeyCode::Char('2') => self.enter_onboard_choice(1).await?,
             KeyCode::Char('3') => self.enter_onboard_choice(2).await?,
-            KeyCode::Char('4') if self.has_envrc => self.enter_onboard_choice(3).await?,
+            KeyCode::Char('4') if self.has_env_creds => self.enter_onboard_choice(3).await?,
             _ => {}
         }
         Ok(())
@@ -1399,8 +1401,8 @@ impl App {
                 self.paste_form = Some(PasteForm::default());
                 self.input_mode = InputMode::OnboardPaste;
             }
-            3 if self.has_envrc => {
-                self.import_envrc().await?;
+            3 if self.has_env_creds => {
+                self.import_env_creds().await?;
             }
             _ => {}
         }
@@ -1830,36 +1832,18 @@ impl App {
         Ok(())
     }
 
-    async fn import_envrc(&mut self) -> Result<()> {
-        let content = std::fs::read_to_string(".envrc")?;
-        let mut map: HashMap<String, String> = HashMap::new();
-        for line in content.lines() {
-            let line = line.trim();
-            let rest = line.strip_prefix("export ").unwrap_or(line);
-            if let Some(eq) = rest.find('=') {
-                let key = rest[..eq].trim().to_string();
-                let val = rest[eq + 1..]
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string();
-                map.insert(key, val);
-            }
-        }
-
-        let base_url = map
-            .get("TENANT_BASE_URL")
-            .cloned()
+    async fn import_env_creds(&mut self) -> Result<()> {
+        let base_url = std::env::var("TENANT_BASE_URL")
             .unwrap_or_default()
             .trim_end_matches('/')
             .to_string();
-        let sa_id = map.get("SERVICE_ACCOUNT_ID").cloned().unwrap_or_default();
-        let jwk_str = map.get("SERVICE_ACCOUNT_KEY").cloned().unwrap_or_default();
+        let sa_id = std::env::var("SERVICE_ACCOUNT_ID").unwrap_or_default();
+        let jwk_str = std::env::var("SERVICE_ACCOUNT_KEY").unwrap_or_default();
 
         if base_url.is_empty() || sa_id.is_empty() || jwk_str.is_empty() {
             self.push_toast(
                 ToastKind::Error,
-                "Could not parse .envrc — expected TENANT_BASE_URL, SERVICE_ACCOUNT_ID, SERVICE_ACCOUNT_KEY",
+                "Missing env vars — need TENANT_BASE_URL, SERVICE_ACCOUNT_ID, SERVICE_ACCOUNT_KEY",
             );
             self.input_mode = InputMode::Normal;
             return Ok(());
@@ -1888,7 +1872,7 @@ impl App {
 
         match self.persist_new_tenant(tenant, jwk) {
             Ok(()) => {
-                self.push_toast(ToastKind::Success, "Imported sandbox tenant from .envrc");
+                self.push_toast(ToastKind::Success, "Imported sandbox tenant from environment");
                 self.input_mode = InputMode::Normal;
             }
             Err(e) => {

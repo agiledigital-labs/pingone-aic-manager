@@ -111,14 +111,12 @@ pub async fn mint_token(
     };
 
     let mut header = Header::new(Algorithm::RS256);
-    // kid must match the kid we registered in the SA's JWKS — that's the JWK's
-    // own kid field, not the SA UUID. (They happen to coincide when frodo
-    // creates an SA, but aic-edit's own bootstrap uses a random UUID for the
-    // key id, so we always trust the JWK.)
-    header.kid = jwk["kid"]
-        .as_str()
-        .map(|s| s.to_string())
-        .or_else(|| Some(tenant.sa_id.clone()));
+    // Only set `kid` when the JWK actually carries one. Setting kid to the
+    // SA UUID as a fallback breaks external SAs whose registered kid is
+    // something the AIC console picked (we don't know what it is). Omitting
+    // kid entirely lets the server try every key registered for the SA —
+    // matches the verify-endpoint.sh reference implementation.
+    header.kid = jwk["kid"].as_str().map(|s| s.to_string());
 
     let encoding_key = jwk_to_encoding_key(jwk)?;
     let assertion = jsonwebtoken::encode(&header, &claims, &encoding_key)
