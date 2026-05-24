@@ -107,44 +107,72 @@ pub fn disable_encryption(dek: &crypto::Dek) -> Result<()> {
     Ok(())
 }
 
-/// Unlock via a security key wrap: ask the device for the HMAC of its enrolled
-/// (credential, salt) pair (one touch), use that HMAC as the KEK that
-/// unwraps the DEK, then decrypt `keys.enc`.
+/// Unlock via any enrolled security key in `wraps_file`. Builds an allowList
+/// from every enrolled credential id and makes a single `getAssertion` call
+/// (one PIN check, one tap) — the device returns the credential it actually
+/// holds, and we use that to pick the right wrap to unwrap.
 ///
-/// `pin` is forwarded to the FIDO2 `get_assertion` call. SecurityKeys require a
-/// PIN to establish the `pinUvAuthToken` that authorises `hmac-secret`, so
-/// callers should normally supply one. `None` is only useful when probing
-/// an authenticator that has no PIN configured.
+/// Errors if `wraps_file` has security-key wraps but no `security_key_hmac_salt`
+/// (old schema — user needs to re-enrol).
 pub fn unlock_with_security_key(
-    wrap: &wraps::Wrap,
+    wraps_file: &wraps::WrapsFile,
     pin: Option<&str>,
 ) -> Result<(crypto::Dek, HashMap<String, serde_json::Value>)> {
-    let (credential_id_b64, hmac_salt_b64, nonce_b64, ct_b64) = match wrap {
-        wraps::Wrap::SecurityKey {
-            credential_id,
-            hmac_salt,
-            nonce,
-            ciphertext,
-            ..
-        } => (credential_id, hmac_salt, nonce, ciphertext),
-        _ => {
-            return Err(crate::Error::Crypto(
-                "unlock_with_security_key called with a non-security-key wrap".into(),
-            ));
-        }
-    };
-    let credential_id = wraps::b64_decode(credential_id_b64)?;
-    let hmac_salt: [u8; crate::security_key::HMAC_SALT_LEN] = wraps::b64_decode(hmac_salt_b64)?
+    let salt_b64 = wraps_file
+        .security_key_hmac_salt
+        .as_ref()
+        .ok_or_else(|| {
+            crate::Error::Crypto(
+                "wraps.toml has security keys enrolled but no security_key_hmac_salt — \
+                 the salt was moved file-level; please remove and re-enrol your keys"
+                    .into(),
+            )
+        })?;
+    let hmac_salt: [u8; crate::security_key::HMAC_SALT_LEN] = wraps::b64_decode(salt_b64)?
         .as_slice()
         .try_into()
-        .map_err(|_| crate::Error::Crypto("security key wrap: hmac_salt length".into()))?;
+        .map_err(|_| crate::Error::Crypto("security_key_hmac_salt length".into()))?;
+
+    let security_wraps: Vec<&wraps::Wrap> = wraps_file.security_key_wraps().collect();
+    if security_wraps.is_empty() {
+        return Err(crate::Error::Crypto(
+            "no security key wraps enrolled".into(),
+        ));
+    }
+    let credential_ids: Vec<Vec<u8>> = security_wraps
+        .iter()
+        .map(|w| match w {
+            wraps::Wrap::SecurityKey { credential_id, .. } => wraps::b64_decode(credential_id),
+            _ => unreachable!("filtered above"),
+        })
+        .collect::<Result<_>>()?;
+
+    let (matched_id, hmac) = crate::security_key::unlock_any(&credential_ids, &hmac_salt, pin)?;
+
+    // Find the wrap whose credential_id matches what the device returned.
+    let matched_wrap = security_wraps
+        .iter()
+        .find(|w| match w {
+            wraps::Wrap::SecurityKey { credential_id, .. } => {
+                wraps::b64_decode(credential_id).map(|b| b == matched_id).unwrap_or(false)
+            }
+            _ => false,
+        })
+        .ok_or_else(|| {
+            crate::Error::Crypto(
+                "security key returned a credential id that doesn't match any enrolled wrap"
+                    .into(),
+            )
+        })?;
+    let (nonce_b64, ct_b64) = match matched_wrap {
+        wraps::Wrap::SecurityKey { nonce, ciphertext, .. } => (nonce, ciphertext),
+        _ => unreachable!("filtered above"),
+    };
     let nonce: [u8; 12] = wraps::b64_decode(nonce_b64)?
         .as_slice()
         .try_into()
         .map_err(|_| crate::Error::Crypto("security key wrap: nonce length".into()))?;
     let ct = wraps::b64_decode(ct_b64)?;
-
-    let hmac = crate::security_key::derive_hmac(&credential_id, &hmac_salt, pin)?;
     let dek = crypto::unwrap_dek_with_kek(&hmac, &nonce, &ct)?;
     let jwks = decrypt_keys_file(&dek)?;
     Ok((dek, jwks))

@@ -30,8 +30,6 @@ use ctap_hid_fido2::{
     },
     verifier, Cfg, FidoKeyHidFactory,
 };
-use rand::RngCore;
-
 use crate::{Error, Result};
 
 /// Stable RP ID used for every aic-edit credential. The security key scopes its
@@ -51,11 +49,8 @@ pub const TAP_MESSAGE: &str = "🔑  Tap your security key to unlock…";
 pub struct Enrolment {
     /// FIDO2 credential id returned by the device. Goes into wraps.toml.
     pub credential_id: Vec<u8>,
-    /// The salt we chose at enrolment time. Stored alongside the credential
-    /// id so subsequent unlocks can reproduce the HMAC.
-    pub hmac_salt: [u8; HMAC_SALT_LEN],
-    /// The HMAC output for (credential_id, hmac_salt). Used immediately to
-    /// wrap the DEK; not persisted.
+    /// The HMAC output for the credential against the file-level salt the
+    /// caller supplied. Used immediately to wrap the DEK; not persisted.
     pub hmac: [u8; HMAC_OUT_LEN],
 }
 
@@ -115,10 +110,11 @@ fn require_hmac_secret(device: &FidoKeyHid) -> Result<()> {
     }
 }
 
-/// Enrol a new security key credential with hmac-secret enabled and immediately
-/// derive its first HMAC. Requires two touches (make_credential + first
-/// get_assertion).
-pub fn enroll(pin: Option<&str>) -> Result<Enrolment> {
+/// Enrol a new security key credential with hmac-secret enabled and
+/// immediately derive its HMAC against `hmac_salt` — the caller's file-
+/// level salt that's shared across every security-key wrap in the same
+/// project. Two touches required (make_credential + first get_assertion).
+pub fn enroll(pin: Option<&str>, hmac_salt: &[u8; HMAC_SALT_LEN]) -> Result<Enrolment> {
     let device = open_device()?;
     require_hmac_secret(&device)?;
 
@@ -135,39 +131,47 @@ pub fn enroll(pin: Option<&str>) -> Result<Enrolment> {
         .map_err(|e| Error::Crypto(format!("security key make_credential failed: {e}")))?;
     let credential_id = attestation.credential_descriptor.id.clone();
 
-    // 2. Pick a salt and ask for the first HMAC.
-    let mut hmac_salt = [0u8; HMAC_SALT_LEN];
-    rand::thread_rng().fill_bytes(&mut hmac_salt);
-    let hmac = derive_hmac_with_device(&device, &credential_id, &hmac_salt, pin)?;
+    // 2. Ask for the first HMAC against the shared salt.
+    let (_matched, hmac) =
+        unlock_with_device(&device, &[credential_id.clone()], hmac_salt, pin)?;
 
-    Ok(Enrolment {
-        credential_id,
-        hmac_salt,
-        hmac,
-    })
+    Ok(Enrolment { credential_id, hmac })
 }
 
-/// Derive the HMAC for an already-enrolled (credential_id, salt) pair.
-/// Requires one touch.
-pub fn derive_hmac(
-    credential_id: &[u8],
+/// Single `getAssertion` against an allowList of every enrolled credential
+/// — the device returns the one it actually holds. Lets us identify the
+/// matched wrap and derive its HMAC in one PIN check + one tap, regardless
+/// of how many keys are enrolled.
+///
+/// Returns `(matched_credential_id, hmac)`. The credential id is the raw
+/// bytes the device echoed back; the caller matches it against `wraps.toml`
+/// to find which wrap to unwrap.
+pub fn unlock_any(
+    credential_ids: &[Vec<u8>],
     hmac_salt: &[u8; HMAC_SALT_LEN],
     pin: Option<&str>,
-) -> Result<[u8; HMAC_OUT_LEN]> {
+) -> Result<(Vec<u8>, [u8; HMAC_OUT_LEN])> {
+    if credential_ids.is_empty() {
+        return Err(Error::Crypto(
+            "no security key credentials enrolled".into(),
+        ));
+    }
     let device = open_device()?;
-    derive_hmac_with_device(&device, credential_id, hmac_salt, pin)
+    unlock_with_device(&device, credential_ids, hmac_salt, pin)
 }
 
-fn derive_hmac_with_device(
+fn unlock_with_device(
     device: &FidoKeyHid,
-    credential_id: &[u8],
+    credential_ids: &[Vec<u8>],
     hmac_salt: &[u8; HMAC_SALT_LEN],
     pin: Option<&str>,
-) -> Result<[u8; HMAC_OUT_LEN]> {
+) -> Result<(Vec<u8>, [u8; HMAC_OUT_LEN])> {
     let challenge = verifier::create_challenge();
     let mut get_builder = GetAssertionArgsBuilder::new(RP_ID, &challenge)
-        .credential_id(credential_id)
         .extensions(&[Aext::HmacSecret(Some(*hmac_salt))]);
+    for cid in credential_ids {
+        get_builder = get_builder.add_credential_id(cid);
+    }
     get_builder = match pin {
         Some(p) if !p.is_empty() => get_builder.pin(p),
         _ => get_builder.without_pin_and_uv(),
@@ -185,8 +189,10 @@ fn derive_hmac_with_device(
             Aext::HmacSecret(Some(v)) => Some(*v),
             _ => None,
         })
-        .ok_or_else(|| Error::Crypto("security key assertion had no hmac-secret extension output".into()))?;
-    Ok(hmac)
+        .ok_or_else(|| {
+            Error::Crypto("security key assertion had no hmac-secret extension output".into())
+        })?;
+    Ok((assertion.credential_id.clone(), hmac))
 }
 
 /// Check whether a FIDO2 authenticator is currently connected. We just try
