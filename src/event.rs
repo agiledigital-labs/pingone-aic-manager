@@ -28,7 +28,7 @@ pub enum AppEvent {
     /// Background unlock task finished. On success the payload carries the
     /// decrypted DEK + JWK map; on failure a human-readable message for the
     /// unlock screen.
-    UnlockResult(std::result::Result<crate::app::UnlockOk, String>),
+    UnlockResult(std::result::Result<crate::auth::UnlockOk, String>),
     /// User-triggered security key enrolment finished. The payload is the new
     /// wrap entry ready to be appended to `wraps.toml`, or an error string.
     SecurityKeyEnrollResult(std::result::Result<crate::config::wraps::Wrap, String>),

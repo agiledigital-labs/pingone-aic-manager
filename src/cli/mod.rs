@@ -7,6 +7,9 @@
 use clap::{Parser, Subcommand};
 
 use crate::agent::{self, AgentClient, Request, Response};
+use crate::auth;
+use crate::config::crypto::Dek;
+use crate::config::wraps::WrapsFile;
 use crate::config::{self, ProjectConfig};
 use crate::{Error, Result};
 
@@ -142,22 +145,76 @@ async fn login() -> Result<()> {
     }
     if ProjectConfig::load_keys_enc()?.is_none() {
         return Err(Error::Config(
-            "no .aic-edit/keys.enc — set a master password in the TUI first".into(),
+            "no .aic-edit/keys.enc — set up an auth factor in the TUI first".into(),
         ));
     }
+    let wraps_file = WrapsFile::load()?
+        .ok_or_else(|| Error::Config("no .aic-edit/wraps.toml — set up an auth factor in the TUI first".into()))?;
 
+    let dek = match pick_method(&wraps_file)? {
+        MethodChoice::Password => unlock_with_password_prompt().await?,
+        MethodChoice::SecurityKey => unlock_with_security_key_prompt(&wraps_file).await?,
+    };
+
+    auth::put_dek_to_agent(&dek).await?;
+    println!("unlocked");
+    print_status_block().await
+}
+
+enum MethodChoice {
+    Password,
+    SecurityKey,
+}
+
+/// Pick an auth method based on what's enrolled. If only one *method* is
+/// enrolled (password OR any number of security keys), use it without
+/// prompting. If both are enrolled, ask. We don't list individual security
+/// keys — the device tells us which credential matches when the user taps,
+/// so it's fine to enumerate enrolled wraps internally and just present
+/// "Security key" to the user.
+fn pick_method(wraps_file: &WrapsFile) -> Result<MethodChoice> {
+    let has_password = wraps_file.has_password();
+    let has_security_key = wraps_file.has_security_key();
+
+    match (has_password, has_security_key) {
+        (false, false) => Err(Error::Config(
+            "no auth factors enrolled in wraps.toml".into(),
+        )),
+        (true, false) => Ok(MethodChoice::Password),
+        (false, true) => Ok(MethodChoice::SecurityKey),
+        (true, true) => {
+            println!("Authentication methods:");
+            println!("  1) Master password");
+            println!("  2) Security key");
+            print!("Choose [1]: ");
+            use std::io::Write;
+            std::io::stdout()
+                .flush()
+                .map_err(|e| Error::Config(format!("flush: {e}")))?;
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .map_err(|e| Error::Config(format!("read: {e}")))?;
+            match line.trim() {
+                "" | "1" => Ok(MethodChoice::Password),
+                "2" => Ok(MethodChoice::SecurityKey),
+                other => Err(Error::Config(format!("invalid choice: {other}"))),
+            }
+        }
+    }
+}
+
+async fn unlock_with_password_prompt() -> Result<Dek> {
     let password = rpassword::prompt_password("Master password: ")
         .map_err(|e| Error::Config(format!("read password: {e}")))?;
+    Ok(auth::unlock_password(password).await?.dek)
+}
 
-    let client = AgentClient::connect_or_spawn().await?;
-    match client.send(&Request::Unlock { password }).await? {
-        Response::Ok => {
-            println!("unlocked");
-            print_status_block().await
-        }
-        Response::Error { message } => Err(Error::Auth(message)),
-        other => Err(Error::Config(format!("unexpected reply: {other:?}"))),
-    }
+async fn unlock_with_security_key_prompt(wraps_file: &WrapsFile) -> Result<Dek> {
+    let pin = rpassword::prompt_password("Security key PIN: ")
+        .map_err(|e| Error::Config(format!("read pin: {e}")))?;
+    eprintln!("{}", crate::security_key::TAP_MESSAGE);
+    Ok(auth::unlock_security_key(wraps_file.clone(), pin).await?.dek)
 }
 
 async fn logout() -> Result<()> {

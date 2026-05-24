@@ -444,20 +444,14 @@ impl App {
 
     /// Fire-and-forget: cache the just-derived DEK in the agent so subsequent
     /// TUI launches (within the idle window) skip the Unlock screen.
+    /// Hand the just-derived DEK to the agent so the next TUI / CLI launch
+    /// can skip the unlock screen. Fire-and-forget — agent failures are
+    /// logged, not surfaced to the user.
     fn put_dek_to_agent(&self) {
-        let Some(dek) = &self.dek else { return };
-        let dek_bytes = *dek.as_bytes();
+        let Some(dek) = self.dek.clone() else { return };
         tokio::spawn(async move {
-            use base64::engine::general_purpose::STANDARD as B64;
-            use base64::Engine as _;
-            let dek_b64 = B64.encode(dek_bytes);
-            match AgentClient::connect_or_spawn().await {
-                Ok(c) => {
-                    if let Err(e) = c.send(&AgentRequest::PutDek { dek_b64 }).await {
-                        tracing::warn!("PutDek failed: {e}");
-                    }
-                }
-                Err(e) => tracing::debug!("agent unavailable for PutDek: {e}"),
+            if let Err(e) = crate::auth::put_dek_to_agent(&dek).await {
+                tracing::warn!("PutDek failed: {e}");
             }
         });
     }
@@ -514,7 +508,7 @@ impl App {
         let cancel = self.security_key_cancel.clone();
         tokio::task::spawn_blocking(move || {
             let pin_opt = if pin.is_empty() { None } else { Some(pin.as_str()) };
-            'outer: loop {
+            loop {
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
@@ -523,43 +517,32 @@ impl App {
                     std::thread::sleep(Duration::from_secs(1));
                     continue;
                 }
-                for wrap in wraps.security_key_wraps() {
-                    if cancel.load(Ordering::Relaxed) {
+                // Single allowList call across every enrolled credential —
+                // the device picks the one it has, we identify the wrap
+                // from the returned credential_id.
+                match crate::config::unlock_with_security_key(&wraps, pin_opt) {
+                    Ok((dek, jwks)) => {
+                        let _ = tx.send(AppEvent::UnlockResult(Ok(UnlockOk { dek, jwks })));
                         return;
                     }
-                    match crate::config::unlock_with_security_key(wrap, pin_opt) {
-                        Ok((dek, jwks)) => {
-                            let _ = tx.send(AppEvent::UnlockResult(Ok(UnlockOk {
-                                dek,
-                                jwks,
-                            })));
-                            return;
+                    Err(e) => {
+                        let msg = e.to_string();
+                        // Whitelist: only "device doesn't hold any matching
+                        // credential" lets us retry silently. Everything
+                        // else — wrong PIN, blocked, bad device — is
+                        // surfaced so the user can react before we hammer
+                        // the PIN counter further.
+                        if msg.contains("NO_CREDENTIALS") || msg.contains("0x2E") {
+                            tracing::debug!("device has no enrolled credential: {msg}");
+                            std::thread::sleep(Duration::from_secs(2));
+                            continue;
                         }
-                        Err(e) => {
-                            // Surface PIN-related errors so the user knows
-                            // to try again rather than waiting silently.
-                            let msg = e.to_string();
-                            let fatal = msg.contains("PIN_REQUIRED")
-                                || msg.contains("PIN_INVALID")
-                                || msg.contains("PIN_AUTH_INVALID")
-                                || msg.contains("PIN_BLOCKED");
-                            tracing::debug!("security key unlock attempt failed: {msg}");
-                            if fatal {
-                                let _ = tx.send(AppEvent::UnlockResult(Err(format!(
-                                    "security key: {msg}"
-                                ))));
-                                return;
-                            }
-                        }
-                    }
-                    if cancel.load(Ordering::Relaxed) {
-                        break 'outer;
+                        let _ = tx.send(AppEvent::UnlockResult(Err(format!(
+                            "security key: {msg}"
+                        ))));
+                        return;
                     }
                 }
-                // None of the enrolled credentials matched this device.
-                // Wait a bit before trying again — gives the user time to
-                // swap security_keys or type their password.
-                std::thread::sleep(Duration::from_secs(2));
             }
         });
     }
@@ -1044,11 +1027,10 @@ impl App {
                     self.unlock_error = None;
                     self.unlock_busy = true;
                     let tx = self.events.tx.clone();
-                    let wraps = self.wraps.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let result = try_password_unlock(&password, &wraps)
-                            .map(|(dek, jwks)| UnlockOk { dek, jwks })
-                            .map_err(|e| format!("{e}"));
+                    tokio::spawn(async move {
+                        let result = crate::auth::unlock_password(password)
+                            .await
+                            .map_err(|e| e.to_string());
                         let _ = tx.send(AppEvent::UnlockResult(result));
                     });
                 }
@@ -1236,11 +1218,16 @@ impl App {
                 self.dek = Some(dek.clone());
                 self.setup_form.busy = true;
                 self.setup_form.error = None;
+                // Pull (or generate) the file-level hmac-secret salt. The
+                // in-memory mutation lands on disk inside
+                // handle_security_key_enroll_result after the enrolment
+                // succeeds.
+                let hmac_salt = self.wraps.get_or_create_security_key_salt();
                 let pin = std::mem::take(&mut self.setup_form.pin);
                 let label = self.setup_form.label.trim().to_string();
                 let tx = self.events.tx.clone();
                 tokio::task::spawn_blocking(move || {
-                    let result = enroll_security_key_blocking(dek, label, Some(pin));
+                    let result = enroll_security_key_blocking(dek, label, Some(pin), hmac_salt);
                     let _ = tx.send(AppEvent::SecurityKeyEnrollResult(result));
                 });
             }
@@ -1400,6 +1387,10 @@ impl App {
                     Some(PendingAuthAction::RemoveWrap(idx)) => {
                         if idx < self.wraps.wraps.len() {
                             self.wraps.wraps.remove(idx);
+                            // If that was the last security key, drop the
+                            // shared salt — the next enrolment generates a
+                            // fresh one.
+                            self.wraps.clear_security_key_salt_if_unused();
                             self.wraps.save()?;
                             if self.auth_settings_idx >= self.wraps.wraps.len()
                                 && !self.wraps.wraps.is_empty()
@@ -2241,37 +2232,28 @@ fn step_method_prev(current: AuthMethod, context: SetupContext) -> AuthMethod {
     }
 }
 
-/// Payload returned by a successful background unlock task.
-#[derive(Debug)]
-pub struct UnlockOk {
-    pub dek: Dek,
-    pub jwks: HashMap<String, serde_json::Value>,
-}
-
-/// Thin wrapper around `config::unlock_with_password` so the spawn_blocking
-/// closure stays self-contained (no `&self.wraps` borrow across threads).
-fn try_password_unlock(
-    password: &str,
-    _wraps: &WrapsFile,
-) -> Result<(Dek, HashMap<String, serde_json::Value>)> {
-    crate::config::unlock_with_password(password)
-}
+// Re-exported from `crate::auth` so existing `app::UnlockOk` call sites
+// (event.rs, etc.) keep compiling against the moved type.
+pub use crate::auth::UnlockOk;
 
 /// Enrol a security key and produce a wrap entry that the event handler can
-/// append to `wraps.toml`. Blocks until the user taps the device.
+/// append to `wraps.toml`. Blocks until the user taps the device. `hmac_salt`
+/// is the file-level salt from WrapsFile — shared across every security-key
+/// wrap so unlock can be done in a single allowList call.
 fn enroll_security_key_blocking(
     dek: Dek,
     label: String,
     pin: Option<String>,
+    hmac_salt: [u8; crate::security_key::HMAC_SALT_LEN],
 ) -> std::result::Result<Wrap, String> {
-    let enrolment = crate::security_key::enroll(pin.as_deref()).map_err(|e| e.to_string())?;
+    let enrolment =
+        crate::security_key::enroll(pin.as_deref(), &hmac_salt).map_err(|e| e.to_string())?;
     let (nonce, ct) =
         crypto::wrap_dek_with_kek(&dek, &enrolment.hmac).map_err(|e| e.to_string())?;
     Ok(Wrap::SecurityKey {
         label: Some(label),
         credential_id: wraps::b64_encode(&enrolment.credential_id),
         rp_id: crate::security_key::RP_ID.to_string(),
-        hmac_salt: wraps::b64_encode(&enrolment.hmac_salt),
         nonce: wraps::b64_encode(&nonce),
         ciphertext: wraps::b64_encode(&ct),
     })
