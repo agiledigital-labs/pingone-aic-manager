@@ -659,6 +659,12 @@ fn persist_tenant_overwriting(
     };
     config.save()?;
     app.config = Some(config);
+
+    // Kick the ESVs tab to fetch for the just-added tenant. Without this
+    // the user lands on the dashboard after a fresh import and has to
+    // wait up to 30s for the next poll tick — feels broken even though
+    // it isn't.
+    crate::screens::esv::refresh(app, false);
     Ok(())
 }
 

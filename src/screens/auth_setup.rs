@@ -362,7 +362,7 @@ pub async fn commit(app: &mut App) -> crate::Result<()> {
             });
             app.wraps.save()?;
             app.set_dek(Some(dek));
-            finalize_factor_addition(app, freshly_minted, context, "Password set")?;
+            finalize_factor_addition(app, freshly_minted, context, "Password set").await?;
         }
         AuthMethod::SecurityKey => {
             if app.auth_setup.form.pin.is_empty() {
@@ -396,9 +396,11 @@ pub async fn commit(app: &mut App) -> crate::Result<()> {
 }
 
 /// Shared "after a wrap was just persisted" tail. Handles the encryption
-/// transition (keys.plain → keys.enc) when this is the first factor, and
-/// routes back to whichever screen launched SetupAuth.
-fn finalize_factor_addition(
+/// transition (keys.plain → keys.enc) when this is the first factor, routes
+/// back to whichever screen launched SetupAuth, and hands the freshly-
+/// derived DEK to the agent so subsequent `ApiCall`s — both in this TUI
+/// session and in any concurrent CLI — find it unlocked.
+async fn finalize_factor_addition(
     app: &mut App,
     freshly_minted_dek: bool,
     context: SetupContext,
@@ -431,6 +433,12 @@ fn finalize_factor_addition(
     };
     app.auth_setup.context = SetupContext::FirstRun;
     app.input_mode = next_mode;
+    // Spawn / wake the agent and seed it with the DEK. Without this the
+    // first-run user lands on the dashboard, the ESVs tab fires its
+    // initial fetch, and the agent rejects it as Locked — even though the
+    // TUI itself has the DEK in memory. Awaited (not spawned) so any
+    // refresh that runs straight after sees an unlocked agent.
+    crate::screens::unlock::put_dek_to_agent(app).await;
     app.push_toast(ToastKind::Success, success_toast);
     Ok(())
 }
@@ -438,7 +446,7 @@ fn finalize_factor_addition(
 /// Called from the dispatcher when the background security-key enrol task
 /// reports success/failure. Mirrors the old `handle_security_key_enroll_result`
 /// on `App`.
-pub fn handle_enroll_result(app: &mut App, result: std::result::Result<Wrap, String>) {
+pub async fn handle_enroll_result(app: &mut App, result: std::result::Result<Wrap, String>) {
     let context = app.auth_setup.context;
     let was_dek_minted_for_this_op =
         !matches!(app.settings, Some(Settings { encrypt_keys: true, .. }));
@@ -464,7 +472,9 @@ pub fn handle_enroll_result(app: &mut App, result: std::result::Result<Wrap, Str
                 was_dek_minted_for_this_op,
                 context,
                 "Security key enrolled",
-            ) {
+            )
+            .await
+            {
                 tracing::error!(error = %e, "finalize_factor_addition failed");
                 app.auth_setup.form.error = Some(format!("Finalise: {e}"));
             }
