@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap as TextWrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap as TextWrap},
 };
 
 use crate::app::App;
@@ -17,9 +17,19 @@ pub fn draw(f: &mut Frame, app: &App) {
     let area = fixed_rect(90, 18, f.area());
     f.render_widget(Clear, area);
 
+    // Padding on the outer block gives us:
+    //  - 2-col left + right insets so the selection highlight on the factor
+    //    list (which spans the full rendered area) doesn't touch the cyan
+    //    border, and every text row reads with the same gutter.
+    //  - 1-row top inset so the status sits inside the frame instead of
+    //    hugging the title bar.
+    // Status / list / hints then render flush at column 0 of the padded
+    // inner rect; ratatui's `block.inner(area)` already accounts for the
+    // padding.
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
+        .padding(Padding::new(2, 2, 1, 0))
         .title(Span::styled(
             " Auth Settings ",
             Style::default()
@@ -78,9 +88,9 @@ fn draw_factor_list(f: &mut Frame, app: &App, area: Rect) {
             .map(|s| s.encrypt_keys)
             .unwrap_or(false)
         {
-            "  (encryption is on but no factors are enrolled — inconsistent state!)"
+            "(encryption is on but no factors are enrolled — inconsistent state!)"
         } else {
-            "  No factors enrolled."
+            "No factors enrolled."
         };
         f.render_widget(
             Paragraph::new(Span::styled(msg, Style::default().fg(Color::Gray)))
@@ -150,6 +160,12 @@ fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     hints.extend(hint("Esc", "close"));
+    // `hint` prefixes every entry with two spaces (it doubles as a
+    // separator between hints). The outer block's padding already provides
+    // the left gutter, so drop the leading pad on the first hint.
+    if !hints.is_empty() {
+        hints[0] = Span::raw("");
+    }
     f.render_widget(Paragraph::new(Line::from(hints)), area);
 }
 
