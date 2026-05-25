@@ -397,7 +397,9 @@ impl App {
                 crate::screens::onboard::handle_onboard_error(self, msg);
             }
             AppEvent::UnlockResult(r) => crate::screens::unlock::handle_result(self, r).await,
-            AppEvent::SecurityKeyEnrollResult(r) => crate::screens::auth_setup::handle_enroll_result(self, r),
+            AppEvent::SecurityKeyEnrollResult(r) => {
+                crate::screens::auth_setup::handle_enroll_result(self, r).await
+            }
         }
         Ok(())
     }
