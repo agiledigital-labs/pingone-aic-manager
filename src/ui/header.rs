@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Paragraph, Tabs},
 };
 
-use crate::app::{App, Realm, Tab};
+use crate::app::{App, InputMode, Realm, Tab};
 use crate::theme::style_for;
 
 /// Top strip: tabs + realm/tenant chips. Caller must pass a 1-row area.
@@ -66,17 +66,31 @@ fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
-    let _ = app;
     let mut spans: Vec<Span> = Vec::new();
-    for (k, d) in [
-        ("R", "realm"),
-        ("T", "env"),
-        ("^N", "add tenant"),
-        ("^A", "auth settings"),
-        ("L", "lock"),
-        ("q", "quit"),
-    ] {
-        spans.extend(hint(k, d));
+    if app.input_mode == InputMode::EsvSearch {
+        for (k, d) in [
+            ("Enter", "keep filter"),
+            ("Esc", "clear + exit"),
+        ] {
+            spans.extend(hint(k, d));
+        }
+    } else {
+        let base = [
+            ("R", "realm"),
+            ("T", "env"),
+            ("^N", "add tenant"),
+            ("^A", "auth settings"),
+            ("L", "lock"),
+            ("q", "quit"),
+        ];
+        let esv_extras: &[(&str, &str)] = if app.current_tab == Tab::Esvs {
+            &[("/", "search"), ("j/k", "nav")]
+        } else {
+            &[]
+        };
+        for (k, d) in esv_extras.iter().chain(base.iter()) {
+            spans.extend(hint(k, d));
+        }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }

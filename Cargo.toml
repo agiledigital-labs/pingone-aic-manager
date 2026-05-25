@@ -75,3 +75,8 @@ ctap-hid-fido2 = "3.5.10"
 clap       = { version = "4", features = ["derive"] }
 rpassword  = "7"
 libc       = "0.2"
+
+# Fuzzy matching for the ESV search (`/`) — the helix editor's matcher,
+# small, no_std-friendly, returns scored matches + indices we can use to
+# highlight matched chars in the list.
+nucleo-matcher = "0.3"
