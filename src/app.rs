@@ -17,6 +17,7 @@ use crate::config::wraps::{self, Wrap, WrapsFile};
 use crate::config::{self, ProjectConfig, Settings};
 use crate::event::{AppEvent, EventHandler, ToastKind};
 use crate::ui::toast::Toast;
+use crate::ui::widgets::LineEditor;
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -135,19 +136,33 @@ impl Default for AuthSetupForm {
 }
 
 impl AuthSetupForm {
-    /// Field order for the current method, used by Tab/BackTab. Always starts
-    /// with `Method` so the user can cycle back to switch.
-    fn order(&self) -> &'static [AuthSetupField] {
-        match self.method {
-            AuthMethod::None => &[AuthSetupField::Method, AuthSetupField::Submit],
-            AuthMethod::Password => &[
+    /// Field order for Tab/BackTab. `Method` is included only on first-run;
+    /// `AddFactor` callers pre-pick the method on the previous screen
+    /// (auth_settings `p`/`s`), so the picker isn't rendered or focusable.
+    fn order(&self, context: SetupContext) -> &'static [AuthSetupField] {
+        match (context, self.method) {
+            (SetupContext::FirstRun, AuthMethod::None) => {
+                &[AuthSetupField::Method, AuthSetupField::Submit]
+            }
+            (SetupContext::FirstRun, AuthMethod::Password) => &[
                 AuthSetupField::Method,
                 AuthSetupField::Password,
                 AuthSetupField::Confirm,
                 AuthSetupField::Submit,
             ],
-            AuthMethod::SecurityKey => &[
+            (SetupContext::FirstRun, AuthMethod::SecurityKey) => &[
                 AuthSetupField::Method,
+                AuthSetupField::Pin,
+                AuthSetupField::Label,
+                AuthSetupField::Submit,
+            ],
+            (SetupContext::AddFactor, AuthMethod::None) => &[AuthSetupField::Submit],
+            (SetupContext::AddFactor, AuthMethod::Password) => &[
+                AuthSetupField::Password,
+                AuthSetupField::Confirm,
+                AuthSetupField::Submit,
+            ],
+            (SetupContext::AddFactor, AuthMethod::SecurityKey) => &[
                 AuthSetupField::Pin,
                 AuthSetupField::Label,
                 AuthSetupField::Submit,
@@ -155,14 +170,14 @@ impl AuthSetupForm {
         }
     }
 
-    pub fn next(&mut self) {
-        let order = self.order();
+    pub fn next(&mut self, context: SetupContext) {
+        let order = self.order(context);
         let i = order.iter().position(|f| *f == self.focused).unwrap_or(0);
         self.focused = order[(i + 1) % order.len()];
     }
 
-    pub fn prev(&mut self) {
-        let order = self.order();
+    pub fn prev(&mut self, context: SetupContext) {
+        let order = self.order(context);
         let i = order.iter().position(|f| *f == self.focused).unwrap_or(0);
         self.focused = order[(i + order.len() - 1) % order.len()];
     }
@@ -268,6 +283,12 @@ pub struct App {
     pub cookie_form: Option<CookieForm>,
     pub up_form: Option<UpForm>,
     pub paste_form: Option<PasteForm>,
+    /// UUID stamped on the in-flight bootstrap task. Set when the user kicks
+    /// off Pattern 1/2 (cookie / userpass), cleared on Esc-cancel. When a
+    /// `ServiceAccountCreated` event arrives with a non-matching id, the
+    /// handler drops it instead of persisting a tenant the user no longer
+    /// wants.
+    pending_onboard_id: Option<uuid::Uuid>,
 
     // For Pattern 2: the in-flight callback JSON we POST'd that needs an extra prompt
     pending_callback_body: Option<serde_json::Value>,
@@ -291,10 +312,10 @@ pub struct App {
     /// When the last ESV poll-refresh ran. Drives the 30s cadence in `tick`.
     last_esv_poll: Instant,
 
-    /// Fuzzy search query for the ESV list. Empty = show everything. Updated
-    /// while in `InputMode::EsvSearch`; persists after Enter so the filter
-    /// stays applied. Cleared on tenant switch + on Esc-from-search.
-    pub esv_query: String,
+    /// Fuzzy search query + cursor for the ESV list. Empty = show everything.
+    /// Updated while in `InputMode::EsvSearch`; persists after Enter so the
+    /// filter stays applied. Cleared on tenant switch + on Esc-from-search.
+    pub esv_query: LineEditor,
     /// Index into the *filtered* ESV list. Always clamped to len-1 (or 0
     /// when the filter eliminates everything).
     pub esv_selected: usize,
@@ -411,13 +432,14 @@ impl App {
             cookie_form: None,
             up_form: None,
             paste_form: None,
+            pending_onboard_id: None,
             pending_callback_body: None,
             pending_prod_action: None,
             pending_overwrite: None,
             esvs: HashMap::new(),
             esvs_refreshing: HashSet::new(),
             last_esv_poll: Instant::now(),
-            esv_query: String::new(),
+            esv_query: LineEditor::new(),
             esv_selected: 0,
             esv_scroll: 0,
         })
@@ -493,6 +515,16 @@ impl App {
         let Some(dek) = self.dek.clone() else { return };
         if let Err(e) = crate::auth::put_dek_to_agent(&dek).await {
             tracing::warn!("PutDek failed: {e}");
+        }
+    }
+
+    /// Plain-mode equivalent of `put_dek_to_agent`. There's no DEK to send —
+    /// we just tell the agent to load `keys.plain` itself, so subsequent
+    /// `ApiCall`s find it in the "unlocked, plain" vault state instead of
+    /// returning `Locked` and stranding the request.
+    async fn unlock_plain_agent(&self) {
+        if let Err(e) = crate::auth::unlock_plain_agent().await {
+            tracing::warn!("UnlockPlain failed: {e}");
         }
     }
 
@@ -730,7 +762,7 @@ impl App {
         };
         let mut matcher = Matcher::new(Config::DEFAULT);
         let pattern = Pattern::new(
-            &self.esv_query,
+            self.esv_query.value(),
             CaseMatching::Ignore,
             Normalization::Smart,
             AtomKind::Fuzzy,
@@ -762,12 +794,31 @@ impl App {
         self.dek.is_some()
     }
 
+    /// True iff the TUI is ready to call AIC: either we hold a DEK
+    /// (encrypted mode, unlocked) or `settings.encrypt_keys = false`
+    /// (plain mode — there's no DEK, the JWKs live in `keys.plain`).
+    /// Plain mode still requires the agent's plain-vault to be loaded, but
+    /// `try_agent_unlock` + the post-setup hook handle that.
+    pub fn is_unlocked(&self) -> bool {
+        if self.dek.is_some() {
+            return true;
+        }
+        matches!(self.settings, Some(Settings { encrypt_keys: false, .. }))
+    }
+
     pub async fn run(
         &mut self,
         terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
         self.try_agent_unlock().await;
         self.decide_initial_mode();
+        // Plain mode skips the unlock screen entirely; make sure the agent
+        // knows what state we're in before any ESV refresh hits its socket.
+        // Encrypted mode either gets the DEK from `try_agent_unlock` (idle-
+        // window resume) or via `handle_unlock_result` once the user types.
+        if matches!(self.settings, Some(Settings { encrypt_keys: false, .. })) {
+            self.unlock_plain_agent().await;
+        }
         self.refresh_esvs(false);
 
         let tx = self.events.tx.clone();
@@ -818,7 +869,7 @@ impl App {
     /// would return an Auth error and we'd just surface noise), or (c) a
     /// fetch for this tenant is already in flight.
     fn refresh_esvs(&mut self, force: bool) {
-        if self.dek.is_none() {
+        if !self.is_unlocked() {
             return;
         }
         let Some(tenant) = self.active_tenant() else { return };
@@ -853,11 +904,14 @@ impl App {
             AppEvent::Key(key) => self.handle_key(key).await?,
             AppEvent::Tick => self.tick(),
             AppEvent::ServiceAccountCreated {
+                onboard_id,
                 tenant_name,
+                base_url,
+                theme,
                 sa_id,
                 jwk,
             } => {
-                self.handle_sa_created(tenant_name, sa_id, jwk)?;
+                self.handle_sa_created(onboard_id, tenant_name, base_url, theme, sa_id, jwk)?;
             }
             AppEvent::Toast(kind, msg) => {
                 self.push_toast(kind, msg);
@@ -899,7 +953,6 @@ impl App {
             }
             AppEvent::UnlockResult(r) => self.handle_unlock_result(r).await,
             AppEvent::SecurityKeyEnrollResult(r) => self.handle_security_key_enroll_result(r),
-            AppEvent::OnboardCallback(_) | AppEvent::ApiResponse { .. } => {}
         }
         Ok(())
     }
@@ -980,10 +1033,10 @@ impl App {
     async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         match self.input_mode {
             InputMode::Normal => self.handle_normal_key(key).await?,
-            InputMode::SetupAuth => self.handle_setup_auth_key(key)?,
+            InputMode::SetupAuth => self.handle_setup_auth_key(key).await?,
             InputMode::Unlock => self.handle_unlock_key(key),
             InputMode::AuthSettings => self.handle_auth_settings_key(key)?,
-            InputMode::AuthSettingsConfirm => self.handle_auth_settings_confirm_key(key)?,
+            InputMode::AuthSettingsConfirm => self.handle_auth_settings_confirm_key(key).await?,
             InputMode::AuthSettingsRename => self.handle_auth_settings_rename_key(key)?,
             InputMode::OnboardMenu => self.handle_onboard_menu_key(key).await?,
             InputMode::OnboardCookie => self.handle_cookie_key(key).await?,
@@ -1119,21 +1172,27 @@ impl App {
                 self.esv_selected = 0;
                 self.esv_scroll = 0;
                 self.input_mode = InputMode::Normal;
+                return;
             }
             KeyCode::Enter => {
                 self.input_mode = InputMode::Normal;
+                return;
             }
-            KeyCode::Backspace => {
-                self.esv_query.pop();
-                self.esv_selected = 0;
-                self.esv_scroll = 0;
-            }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.esv_query.push(c);
-                self.esv_selected = 0;
-                self.esv_scroll = 0;
+            // Vertical nav should keep scrolling the results even while
+            // the user is still typing — fall through to the normal-mode
+            // list handler instead of swallowing the key in the editor.
+            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                self.handle_esv_normal_key(key);
+                return;
             }
             _ => {}
+        }
+        // Everything else (chars, ←/→, Home/End, Ctrl-A/E, Backspace, Delete)
+        // is the editor's job.
+        let before = self.esv_query.value().to_string();
+        if self.esv_query.handle_key(&key) && self.esv_query.value() != before {
+            self.esv_selected = 0;
+            self.esv_scroll = 0;
         }
     }
 
@@ -1266,7 +1325,7 @@ impl App {
         }
     }
 
-    fn handle_setup_auth_key(&mut self, key: KeyEvent) -> Result<()> {
+    async fn handle_setup_auth_key(&mut self, key: KeyEvent) -> Result<()> {
         // While a security key enrol task is running the form is read-only except
         // for Esc-to-quit (the blocking task can't be cancelled mid-touch).
         if self.setup_form.busy {
@@ -1285,8 +1344,8 @@ impl App {
                     self.input_mode = InputMode::AuthSettings;
                 }
             },
-            KeyCode::Tab => self.setup_form.next(),
-            KeyCode::BackTab => self.setup_form.prev(),
+            KeyCode::Tab => self.setup_form.next(self.setup_context),
+            KeyCode::BackTab => self.setup_form.prev(self.setup_context),
             KeyCode::Left if self.setup_form.focused == AuthSetupField::Method => {
                 self.setup_form.method = step_method_prev(self.setup_form.method, self.setup_context);
                 self.setup_form.error = None;
@@ -1303,9 +1362,9 @@ impl App {
                 self.setup_form.settle_focus_after_method_change();
             }
             KeyCode::Enter if self.setup_form.focused == AuthSetupField::Submit => {
-                self.commit_setup_auth()?;
+                self.commit_setup_auth().await?;
             }
-            KeyCode::Enter => self.setup_form.next(),
+            KeyCode::Enter => self.setup_form.next(self.setup_context),
             KeyCode::Backspace => match self.setup_form.focused {
                 AuthSetupField::Password => {
                     self.setup_form.password.pop();
@@ -1333,7 +1392,7 @@ impl App {
         Ok(())
     }
 
-    fn commit_setup_auth(&mut self) -> Result<()> {
+    async fn commit_setup_auth(&mut self) -> Result<()> {
         let context = self.setup_context;
         match self.setup_form.method {
             AuthMethod::None => {
@@ -1356,6 +1415,10 @@ impl App {
                 self.setup_form = AuthSetupForm::default();
                 self.setup_context = SetupContext::FirstRun;
                 self.input_mode = InputMode::Normal;
+                // Tell the agent we're in plain mode now — same race as the
+                // password-unlock path: an ESV refresh that fires before
+                // this completes would land on a locked daemon.
+                self.unlock_plain_agent().await;
             }
             AuthMethod::Password => {
                 if self.setup_form.password.is_empty() {
@@ -1561,7 +1624,7 @@ impl App {
         self.input_mode = InputMode::SetupAuth;
     }
 
-    fn handle_auth_settings_confirm_key(&mut self, key: KeyEvent) -> Result<()> {
+    async fn handle_auth_settings_confirm_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 let action = self.pending_auth_action.take();
@@ -1591,6 +1654,11 @@ impl App {
                             s.encrypt_keys = false;
                             self.settings = Some(s);
                             self.auth_settings_idx = 0;
+                            // Switch the agent over to plain mode now that
+                            // keys.plain exists; otherwise the next ApiCall
+                            // would hit a daemon still holding the (now
+                            // useless) DEK.
+                            self.unlock_plain_agent().await;
                             self.push_toast(
                                 ToastKind::Info,
                                 "Encryption disabled — credentials at keys.plain",
@@ -1689,6 +1757,10 @@ impl App {
             if key.code == KeyCode::Esc {
                 form.busy = false;
                 self.cookie_form = None;
+                // Drop the in-flight bootstrap's id so its
+                // ServiceAccountCreated event (if it still arrives) is
+                // recognised as stale and ignored.
+                self.pending_onboard_id = None;
                 self.input_mode = InputMode::OnboardMenu;
             }
             return Ok(());
@@ -1748,9 +1820,14 @@ impl App {
         let cookie_name = form.cookie_name.trimmed().to_string();
         let cookie_value = form.cookie_value.trimmed().to_string();
         let tx = self.events.tx.clone();
+        let onboard_id = uuid::Uuid::new_v4();
+        self.pending_onboard_id = Some(onboard_id);
 
         tokio::spawn(async move {
-            run_bootstrap_from_cookie(name, base_url, theme, cookie_name, cookie_value, tx).await;
+            run_bootstrap_from_cookie(
+                onboard_id, name, base_url, theme, cookie_name, cookie_value, tx,
+            )
+            .await;
         });
     }
 
@@ -1797,6 +1874,7 @@ impl App {
                 form.busy = false;
                 form.status = None;
                 self.up_form = None;
+                self.pending_onboard_id = None;
                 self.input_mode = InputMode::OnboardMenu;
             }
             return Ok(());
@@ -1860,10 +1938,13 @@ impl App {
             .iter()
             .map(|s| s.to_string())
             .collect();
+        let onboard_id = uuid::Uuid::new_v4();
+        self.pending_onboard_id = Some(onboard_id);
 
         tokio::spawn(async move {
             run_bootstrap_from_userpass(
-                name, base_url, theme, realm_path, username, password, None, None, scopes, tx,
+                onboard_id, name, base_url, theme, realm_path, username, password, None, None,
+                scopes, tx,
             )
             .await;
         });
@@ -1889,8 +1970,13 @@ impl App {
             .map(|s| s.to_string())
             .collect();
         let tx = self.events.tx.clone();
+        // Re-use the existing onboard id — this is a continuation of the same
+        // user-initiated bootstrap. If the user cancelled and the id is gone,
+        // there's nothing to continue.
+        let Some(onboard_id) = self.pending_onboard_id else { return };
         tokio::spawn(async move {
             run_bootstrap_from_userpass(
+                onboard_id,
                 name,
                 base_url,
                 theme,
@@ -2048,18 +2134,26 @@ impl App {
 
     fn handle_sa_created(
         &mut self,
+        onboard_id: uuid::Uuid,
         tenant_name: String,
+        base_url: String,
+        theme: TenantTheme,
         sa_id: String,
         jwk: serde_json::Value,
     ) -> Result<()> {
-        // Build the Tenant from whichever form is active.
-        let (base_url, theme) = if let Some(form) = &self.cookie_form {
-            (form.normalised_base_url(), form.theme)
-        } else if let Some(form) = &self.up_form {
-            (form.normalised_base_url(), form.theme)
-        } else {
-            (String::new(), TenantTheme::Sandbox)
-        };
+        // Drop the event if it doesn't match the bootstrap we're waiting on.
+        // Covers: user cancelled before the task finished (id was cleared),
+        // user cancelled and started a new bootstrap (id was replaced),
+        // late completion that arrived after a successful different flow.
+        if self.pending_onboard_id != Some(onboard_id) {
+            tracing::debug!(
+                event_id = %onboard_id,
+                pending = ?self.pending_onboard_id,
+                "dropping stale ServiceAccountCreated"
+            );
+            return Ok(());
+        }
+        self.pending_onboard_id = None;
 
         let scopes: Vec<String> = crate::aic::onboard::bootstrap::SA_SCOPES
             .iter()
@@ -2156,9 +2250,10 @@ impl App {
 // ---- Background bootstrap tasks ----
 
 async fn run_bootstrap_from_cookie(
+    onboard_id: uuid::Uuid,
     tenant_name: String,
     base_url: String,
-    _theme: TenantTheme,
+    theme: TenantTheme,
     cookie_name: String,
     session_value: String,
     tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
@@ -2207,7 +2302,10 @@ async fn run_bootstrap_from_cookie(
     // NOTE: do NOT overwrite priv_jwk["kid"] with sa_id — the kid must match
     // the one we registered in the SA's JWKS or AM rejects the signature.
     let _ = tx.send(AppEvent::ServiceAccountCreated {
+        onboard_id,
         tenant_name,
+        base_url,
+        theme,
         sa_id,
         jwk: priv_jwk,
     });
@@ -2215,9 +2313,10 @@ async fn run_bootstrap_from_cookie(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_bootstrap_from_userpass(
+    onboard_id: uuid::Uuid,
     tenant_name: String,
     base_url: String,
-    _theme: TenantTheme,
+    theme: TenantTheme,
     realm_path: String,
     username: String,
     password: String,
@@ -2325,7 +2424,10 @@ async fn run_bootstrap_from_userpass(
             // match the one we registered in the SA's JWKS or AM rejects the
             // signature.
             let _ = tx.send(AppEvent::ServiceAccountCreated {
+                onboard_id,
                 tenant_name,
+                base_url,
+                theme,
                 sa_id,
                 jwk: priv_jwk,
             });

@@ -10,7 +10,7 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-use crate::app::{App, AuthMethod, AuthSetupField};
+use crate::app::{App, AuthMethod, AuthSetupField, SetupContext};
 use crate::security_key;
 use crate::ui::widgets::secret_field;
 
@@ -20,20 +20,31 @@ const BG_FOCUSED: Color = Color::Indexed(236);
 pub fn draw(f: &mut Frame, app: &App) {
     let area = centered_form(f.area(), 64, 20);
 
+    // The method picker only renders on first-run. When the user pressed
+    // `p`/`s` in auth_settings, the method is already chosen and showing it
+    // again would just be a redundant chip row.
+    let show_method = app.setup_context == SetupContext::FirstRun;
+    let method_label_h = if show_method { 1 } else { 0 };
+    let method_value_h = if show_method { 1 } else { 0 };
+    let pre_body_gap_h = if show_method { 1 } else { 0 };
+
     let chunks = Layout::vertical([
-        Constraint::Length(1), // method label
-        Constraint::Length(1), // radio row
-        Constraint::Length(1), // gap
-        Constraint::Length(7), // conditional field block
-        Constraint::Length(1), // submit
-        Constraint::Length(1), // gap
-        Constraint::Min(2),    // error — grows to absorb any leftover height,
-                               // so long ctap-hid messages don't overflow.
-        Constraint::Length(1), // hint
+        Constraint::Length(method_label_h), // method label (FirstRun only)
+        Constraint::Length(method_value_h), // radio row    (FirstRun only)
+        Constraint::Length(pre_body_gap_h), // gap
+        Constraint::Length(7),              // conditional field block
+        Constraint::Length(1),              // submit
+        Constraint::Length(1),              // gap
+        Constraint::Min(2),                 // error — grows to absorb leftover
+                                            // height, so long ctap-hid
+                                            // messages don't overflow.
+        Constraint::Length(1),              // hint
     ])
     .split(area);
 
-    draw_radio(f, app, chunks[0], chunks[1]);
+    if show_method {
+        draw_radio(f, app, chunks[0], chunks[1]);
+    }
 
     match app.setup_form.method {
         AuthMethod::None => draw_none_body(f, chunks[3]),
@@ -53,8 +64,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let hint = if app.setup_form.busy {
         "Working…"
-    } else {
+    } else if show_method {
         "Tab/Shift-Tab navigate · ←/→ change method · Enter submit · Esc quit"
+    } else {
+        "Tab/Shift-Tab navigate · Enter submit · Esc cancel"
     };
     f.render_widget(
         Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),

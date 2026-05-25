@@ -151,6 +151,24 @@ async fn login() -> Result<()> {
             "no .aic-edit/config.toml here — onboard a tenant in the TUI first".into(),
         ));
     }
+
+    // Plain mode (user opted out of encryption): no DEK to derive, no
+    // prompt. Just tell the agent to load keys.plain and exit.
+    let plain_mode = matches!(
+        config::Settings::load()?,
+        Some(config::Settings { encrypt_keys: false, .. })
+    );
+    if plain_mode {
+        if ProjectConfig::load_keys_plain()?.is_none() {
+            return Err(Error::Config(
+                "no .aic-edit/keys.plain — onboard a tenant in the TUI first".into(),
+            ));
+        }
+        auth::unlock_plain_agent().await?;
+        println!("unlocked (plain mode)");
+        return print_status_block().await;
+    }
+
     if ProjectConfig::load_keys_enc()?.is_none() {
         return Err(Error::Config(
             "no .aic-edit/keys.enc — set up an auth factor in the TUI first".into(),

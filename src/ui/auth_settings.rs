@@ -80,7 +80,7 @@ fn draw_factor_list(f: &mut Frame, app: &App, area: Rect) {
         {
             "  (encryption is on but no factors are enrolled — inconsistent state!)"
         } else {
-            "  No factors enrolled. Press [p] for a master password or [s] for a security key."
+            "  No factors enrolled."
         };
         f.render_widget(
             Paragraph::new(Span::styled(msg, Style::default().fg(Color::Gray)))

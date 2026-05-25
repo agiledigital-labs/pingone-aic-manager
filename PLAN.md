@@ -1,8 +1,31 @@
 # aic-edit — Plan
 
-Step 1 (research + verified API docs + cargo skeleton) and Step 2 (TUI
-foundation: app skeleton, encryption, in-TUI tenant onboarding) are complete.
-Step 3 (ESVs tab) is next.
+Steps 1–4 are complete:
+
+- **Step 1** — research + verified API docs (`docs/api/`) + cargo skeleton.
+- **Step 2** — TUI foundation, encryption (`keys.enc` + Argon2id master pw,
+  envelope wrap in `wraps.toml`, optional security-key hmac-secret unlock),
+  three-pattern onboarding (cookie / userpass / paste / sandbox import).
+- **Step 3** — single-binary `aic` CLI + `ssh-agent`-shaped background
+  daemon. Agent owns the JWK cache, AicClient pool, and bearer token
+  refresh. All tenant HTTP from both TUI and CLI flows through
+  `aic::api` / `aic::esv` → `Request::ApiCall` so there's exactly one
+  code path per resource.
+- **Step 4** — ESV listing (TUI tab + `aic esv list`). TUI tab has fuzzy
+  search (`/`, nucleo-matcher), arrow / PgUp-PgDn / `gg` / `G` nav, vertical
+  split with JSON preview, list-nav while typing, `LineEditor` widget for
+  reusable cursor-aware single-line input.
+
+**Step 5 (next):** ESV edit + apply — write variables / secrets, call
+`/environment/startup?_action=restart`, prod-confirm modal already in
+place.
+
+**Deferred — App.rs screen-split refactor.** `src/app.rs` is ~2.5 KLOC and
+owns state, key dispatch, persistence, background task bodies, onboarding,
+auth-settings, and ESV view logic. Before Scripts / OAuth2 / SAML pile on,
+split by screen/tab (`screens::auth`, `screens::onboard`, `tabs::esv`)
+with `App` as a coordinator. Not done yet because each tab is still
+small; revisit when Scripts is queued.
 
 ## Step 2 status — complete
 
