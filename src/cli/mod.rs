@@ -1,8 +1,16 @@
-//! `aic` CLI subcommands. Plumbing only — agent lifecycle, context
-//! selection, and a `whoami` that proves a token can be minted via the agent.
+//! `aic` CLI subcommands.
 //!
-//! Resource commands (`get esv`, `apply`, etc.) will land alongside their
-//! feature implementations.
+//! Two layers:
+//!   * agent lifecycle + auth (`agent`, `login`, `logout`, `stop`, `status`,
+//!     `ctx`, `whoami`) — talks directly to the daemon over its socket.
+//!   * resource commands (`esv list`, future `script`, `oauth2`, ...) — go
+//!     through `aic::api` / `aic::esv`, which are shared with the TUI. Do
+//!     NOT add tenant-scoped HTTP via reqwest in here; everything tenant-
+//!     facing belongs in `aic/` so both surfaces stay in sync.
+//!
+//! **Onboarding (creating a new tenant + service account) is TUI-only.**
+//! The required flows mix browser cookies, interactive TOTP, and RSA
+//! keygen; we haven't tried to script them. Run the TUI once per tenant.
 
 use clap::{Parser, Subcommand};
 
@@ -376,34 +384,9 @@ async fn esv_list(tenant_arg: Option<String>) -> Result<()> {
     let cfg = ProjectConfig::load()?
         .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
     let tenant_name = resolve_tenant(tenant_arg, &cfg)?;
-
-    let body = api_get(&tenant_name, "/environment/variables").await?;
-    let result = body
-        .get("result")
-        .cloned()
-        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    let result = crate::aic::esv::list_variables(&tenant_name).await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
-}
-
-/// Ask the daemon to GET an AIC path on our behalf. The daemon reuses its
-/// tenant HTTP connection (TLS handshake amortised across CLI invocations)
-/// and caches the body keyed by `(tenant, path)` so subsequent calls can
-/// short-circuit on a 304 from AIC.
-async fn api_get(tenant: &str, path: &str) -> Result<serde_json::Value> {
-    let agent = AgentClient::connect_or_spawn().await?;
-    match agent
-        .send(&Request::ApiGet {
-            tenant: tenant.to_string(),
-            path: path.to_string(),
-        })
-        .await?
-    {
-        Response::Json { value } => Ok(value),
-        Response::Locked => Err(Error::Auth("agent locked; run `aic login`".into())),
-        Response::Error { message } => Err(Error::Api { status: 0, body: message }),
-        other => Err(Error::Config(format!("unexpected reply: {other:?}"))),
-    }
 }
 
 /// Resolve a tenant name from a CLI flag, falling back to the on-disk

@@ -12,8 +12,6 @@ pub enum ToastKind {
 pub enum AppEvent {
     Key(crossterm::event::KeyEvent),
     Tick,
-    TokenMinted { tenant: String, expires_at: i64 },
-    TokenError { tenant: String, error: String },
     ApiResponse { request_id: u64, result: Result<serde_json::Value, String> },
     /// OAuth code received from localhost callback server (Ok = code, Err = message)
     OnboardCallback(std::result::Result<String, String>),

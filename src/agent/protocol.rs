@@ -26,12 +26,19 @@ pub enum Request {
     /// Return a valid bearer token for the named tenant, minting one if the
     /// cached token is missing or within 60s of expiry.
     GetToken { tenant: String },
-    /// Proxy a GET against an AIC path. The daemon reuses its tenant HTTP
-    /// connection (TLS handshake amortised across CLI invocations) but does
-    /// not cache the response — AIC's read endpoints emit no validators, so
-    /// a body cache here would either be stale or useless. Callers that
-    /// want caching (e.g. the TUI) keep their own.
-    ApiGet { tenant: String, path: String },
+    /// Proxy a tenant-scoped AIC HTTP call. The daemon owns the bearer
+    /// token cache + connection pool, so the TUI and CLI both go through
+    /// here for every read and write — keeps token/HTTP machinery in one
+    /// place. `confirmed_prod` is forwarded to the prod-confirm guard;
+    /// callers ask the user (modal in TUI, `--yes` flag in CLI) first and
+    /// pass `true` when greenlit.
+    ApiCall {
+        tenant: String,
+        method: String,
+        path: String,
+        body: Option<serde_json::Value>,
+        confirmed_prod: bool,
+    },
     /// Tell the agent to clean up the socket and exit.
     Shutdown,
 }
@@ -53,10 +60,21 @@ pub enum Response {
     Dek {
         dek_b64: String,
     },
-    /// Reply to `ApiGet` — JSON body from AIC.
+    /// Reply to `ApiCall` — parsed JSON body from a successful AIC response.
     Json {
         value: serde_json::Value,
     },
+    /// AIC returned a non-success HTTP status. Distinct from `Error` so the
+    /// caller can pattern-match on it (e.g. retry on 401, distinguish 404
+    /// from a protocol failure).
+    ApiError {
+        status: u16,
+        body: String,
+    },
+    /// `ApiCall` was made with `confirmed_prod: false` against a prod-themed
+    /// tenant. Caller should surface a confirmation modal (TUI) or refuse
+    /// without `--yes` (CLI) and retry with `confirmed_prod: true`.
+    ProdConfirmRequired,
     /// Reply to `GetDek` (or any op that needs an unlocked session) when the
     /// agent isn't holding a DEK. Distinct from `Error` so the TUI can quietly
     /// fall through to the unlock screen.

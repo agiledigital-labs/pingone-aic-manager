@@ -133,7 +133,7 @@ pub fn enroll(pin: Option<&str>, hmac_salt: &[u8; HMAC_SALT_LEN]) -> Result<Enro
 
     // 2. Ask for the first HMAC against the shared salt.
     let (_matched, hmac) =
-        unlock_with_device(&device, &[credential_id.clone()], hmac_salt, pin)?;
+        unlock_with_device(&device, std::slice::from_ref(&credential_id), hmac_salt, pin)?;
 
     Ok(Enrolment { credential_id, hmac })
 }

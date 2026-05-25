@@ -11,11 +11,10 @@ use crate::aic::onboard::cookie::{CookieField, CookieForm};
 use crate::aic::onboard::paste::{PasteField, PasteForm};
 use crate::aic::onboard::userpass::{CallbackOutcome, UpField, UpForm};
 use crate::agent::{AgentClient, Request as AgentRequest, Response as AgentResponse};
-use crate::aic::AicClient;
 use crate::config::crypto::{self, Dek};
 use crate::config::tenant::{Tenant, TenantTheme};
 use crate::config::wraps::{self, Wrap, WrapsFile};
-use crate::config::{ProjectConfig, Settings};
+use crate::config::{self, ProjectConfig, Settings};
 use crate::event::{AppEvent, EventHandler, ToastKind};
 use crate::ui::toast::Toast;
 use crate::{Error, Result};
@@ -254,11 +253,11 @@ pub struct App {
     /// more than one.
     security_key_armed: bool,
 
-    // JWK map (decrypted; keyed by tenant name)
+    // JWK map (decrypted; keyed by tenant name). Held in memory only so the
+    // onboarding flow can insert a freshly-generated JWK and re-encrypt the
+    // file; all AIC HTTP goes through the agent (see `aic::api`) so we never
+    // need a JWK to mint a token from this process.
     jwks: HashMap<String, serde_json::Value>,
-
-    // AIC clients (keyed by tenant name)
-    clients: HashMap<String, AicClient>,
 
     // Onboard state
     pub onboard_menu_idx: usize,
@@ -335,6 +334,11 @@ impl App {
             .map(|c| c.tenants.clone())
             .unwrap_or_default();
 
+        // Match whatever the CLI's `aic ctx use` last persisted, falling back
+        // to the project's default_tenant. Falling back further to 0 keeps
+        // first-run (where the file doesn't exist) sane.
+        let active_tenant_idx = pick_initial_tenant_idx(&tenants, config.as_ref());
+
         // Sandbox import path is offered when the three required vars are
         // already exported in our environment (typically via direnv loading
         // the project's .envrc).
@@ -350,8 +354,8 @@ impl App {
             current_tab: Tab::Esvs,
             current_realm: Realm::Alpha,
             tenants,
-            active_tenant_idx: 0,
-            env_picker_idx: 0,
+            active_tenant_idx,
+            env_picker_idx: active_tenant_idx,
             toasts: VecDeque::new(),
             should_quit: false,
             has_env_creds,
@@ -370,7 +374,6 @@ impl App {
             security_key_cancel: Arc::new(AtomicBool::new(false)),
             security_key_armed: false,
             jwks: HashMap::new(),
-            clients: HashMap::new(),
             onboard_menu_idx: 0,
             cookie_form: None,
             up_form: None,
@@ -444,16 +447,17 @@ impl App {
 
     /// Fire-and-forget: cache the just-derived DEK in the agent so subsequent
     /// TUI launches (within the idle window) skip the Unlock screen.
-    /// Hand the just-derived DEK to the agent so the next TUI / CLI launch
-    /// can skip the unlock screen. Fire-and-forget — agent failures are
-    /// logged, not surfaced to the user.
-    fn put_dek_to_agent(&self) {
+    /// Hand the just-derived DEK to the agent so subsequent ApiCalls (this
+    /// session's ESV poll, plus any CLI invocation) find the agent unlocked.
+    /// Must be awaited before triggering any tenant-scoped HTTP — otherwise
+    /// the first `refresh_esvs` races the `PutDek` to the daemon and loses.
+    /// Failure is logged, not surfaced — the user's already past the unlock
+    /// screen, and the TUI can keep going (agent calls will just re-prompt).
+    async fn put_dek_to_agent(&self) {
         let Some(dek) = self.dek.clone() else { return };
-        tokio::spawn(async move {
-            if let Err(e) = crate::auth::put_dek_to_agent(&dek).await {
-                tracing::warn!("PutDek failed: {e}");
-            }
-        });
+        if let Err(e) = crate::auth::put_dek_to_agent(&dek).await {
+            tracing::warn!("PutDek failed: {e}");
+        }
     }
 
     /// Pick the initial mode from on-disk state:
@@ -581,21 +585,15 @@ impl App {
     /// Save a tenant outright — replacing any existing entry with the same
     /// name. Caller is responsible for confirming the overwrite before calling.
     fn persist_tenant_overwriting(&mut self, tenant: Tenant, jwk: serde_json::Value) -> Result<()> {
-        self.save_jwk(&tenant.name, jwk.clone())?;
-
-        let client = AicClient::new(tenant.clone(), jwk.clone());
-        let tx = self.events.tx.clone();
-        let token_cache = client.token_cache.clone();
-        AicClient::spawn_mint_token(tenant.clone(), jwk, token_cache, tx);
-        self.clients.insert(tenant.name.clone(), client);
+        self.save_jwk(&tenant.name, jwk)?;
 
         // Replace any existing entry with the same name, or append.
         if let Some(idx) = self.tenants.iter().position(|t| t.name == tenant.name) {
             self.tenants[idx] = tenant.clone();
-            self.active_tenant_idx = idx;
+            self.set_active_tenant(idx);
         } else {
             self.tenants.push(tenant.clone());
-            self.active_tenant_idx = self.tenants.len() - 1;
+            self.set_active_tenant(self.tenants.len() - 1);
         }
 
         let project = self
@@ -647,6 +645,19 @@ impl App {
         self.tenants.get(self.active_tenant_idx)
     }
 
+    /// Single point of mutation for `active_tenant_idx` — also writes the
+    /// per-project `current-context` file so the CLI (`aic ctx use ...`) and
+    /// TUI agree on the active tenant. Best-effort: a write failure is
+    /// logged but doesn't take the TUI down.
+    fn set_active_tenant(&mut self, idx: usize) {
+        self.active_tenant_idx = idx;
+        if let Some(t) = self.tenants.get(idx) {
+            if let Err(e) = config::write_current_context(&t.name) {
+                tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
+            }
+        }
+    }
+
     /// True iff the in-memory DEK is set — meaning credentials are encrypted
     /// and the user is currently unlocked. The header uses this to decide
     /// whether to surface security key-enrol shortcuts.
@@ -660,7 +671,6 @@ impl App {
     ) -> Result<()> {
         self.try_agent_unlock().await;
         self.decide_initial_mode();
-        self.init_clients();
         self.refresh_esvs(false);
 
         let tx = self.events.tx.clone();
@@ -697,18 +707,6 @@ impl App {
         Ok(())
     }
 
-    fn init_clients(&mut self) {
-        for tenant in self.tenants.clone() {
-            if let Some(jwk) = self.jwks.get(&tenant.name).cloned() {
-                let client = AicClient::new(tenant.clone(), jwk.clone());
-                let tx = self.events.tx.clone();
-                let token_cache = client.token_cache.clone();
-                AicClient::spawn_mint_token(tenant.clone(), jwk, token_cache, tx);
-                self.clients.insert(tenant.name.clone(), client);
-            }
-        }
-    }
-
     /// Kick off a background ESV fetch for the active tenant.
     ///
     /// - `force = false`: only fetches when there's no cached entry yet
@@ -718,10 +716,14 @@ impl App {
     ///   refetches don't clobber the cached value (see the `EsvListed`
     ///   handler).
     ///
-    /// In either case a no-op when (a) there's no active tenant, (b) no
-    /// AicClient exists yet (still on the unlock screen), or (c) a fetch
-    /// for this tenant is already in flight.
+    /// In either case a no-op when (a) there's no active tenant, (b) the
+    /// agent is locked (still on the unlock screen — `aic::esv::list_variables`
+    /// would return an Auth error and we'd just surface noise), or (c) a
+    /// fetch for this tenant is already in flight.
     fn refresh_esvs(&mut self, force: bool) {
+        if self.dek.is_none() {
+            return;
+        }
         let Some(tenant) = self.active_tenant() else { return };
         let name = tenant.name.clone();
         if self.esvs_refreshing.contains(&name) {
@@ -730,7 +732,6 @@ impl App {
         if !force && self.esvs.contains_key(&name) {
             return;
         }
-        let Some(client) = self.clients.get(&name).cloned() else { return };
 
         // Only show the Loading spinner when there's nothing cached yet;
         // refetches keep the previous Loaded entry visible.
@@ -741,9 +742,9 @@ impl App {
         self.last_esv_poll = Instant::now();
 
         let tx = self.events.tx.clone();
+        let tenant_name = name.clone();
         tokio::spawn(async move {
-            let result = client
-                .list_variables()
+            let result = crate::aic::esv::list_variables(&tenant_name)
                 .await
                 .map_err(|e| e.to_string());
             let _ = tx.send(AppEvent::EsvListed { tenant: name, result });
@@ -754,13 +755,6 @@ impl App {
         match event {
             AppEvent::Key(key) => self.handle_key(key).await?,
             AppEvent::Tick => self.tick(),
-            AppEvent::TokenMinted { tenant, expires_at } => {
-                self.push_toast(ToastKind::Success, format!("Token ready: {tenant}"));
-                tracing::info!("Token minted for {tenant}, expires {expires_at}");
-            }
-            AppEvent::TokenError { tenant, error } => {
-                self.push_toast(ToastKind::Error, format!("Token error ({tenant}): {error}"));
-            }
             AppEvent::ServiceAccountCreated {
                 tenant_name,
                 sa_id,
@@ -796,7 +790,7 @@ impl App {
                 tracing::error!(error = %msg, "onboard error");
                 self.handle_onboard_error(msg);
             }
-            AppEvent::UnlockResult(r) => self.handle_unlock_result(r),
+            AppEvent::UnlockResult(r) => self.handle_unlock_result(r).await,
             AppEvent::SecurityKeyEnrollResult(r) => self.handle_security_key_enroll_result(r),
             AppEvent::OnboardCallback(_) | AppEvent::ApiResponse { .. } => {}
         }
@@ -1053,7 +1047,7 @@ impl App {
         }
     }
 
-    fn handle_unlock_result(&mut self, result: std::result::Result<UnlockOk, String>) {
+    async fn handle_unlock_result(&mut self, result: std::result::Result<UnlockOk, String>) {
         // A late-arriving second result (e.g. security key unlock fired after we
         // already accepted the password) — drop it.
         if self.input_mode != InputMode::Unlock {
@@ -1070,9 +1064,11 @@ impl App {
                 // Tell the security key poll task to stop (if it was running).
                 self.security_key_cancel.store(true, Ordering::Relaxed);
                 self.security_key_armed = false;
-                self.init_clients();
+                // Order matters: the agent must hold the DEK *before* we fire
+                // off the ESV refresh, otherwise the ApiCall lands on a
+                // still-locked daemon and we surface a spurious "agent locked".
+                self.put_dek_to_agent().await;
                 self.refresh_esvs(false);
-                self.put_dek_to_agent();
             }
             Err(e) => {
                 // A security key failure shouldn't take the screen down — let the
@@ -1828,7 +1824,7 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                self.active_tenant_idx = self.env_picker_idx;
+                self.set_active_tenant(self.env_picker_idx);
                 self.input_mode = InputMode::Normal;
                 self.refresh_esvs(false);
             }
@@ -2238,6 +2234,31 @@ pub use crate::auth::UnlockOk;
 
 /// Enrol a security key and produce a wrap entry that the event handler can
 /// append to `wraps.toml`. Blocks until the user taps the device. `hmac_salt`
+/// Pick which tenant should be active on startup. Order:
+///   1. `.aic-edit/current-context` (set by `aic ctx use ...` or by the env
+///      picker on the previous TUI session)
+///   2. `config.default_tenant`
+///   3. index 0 (first-run, or stale current-context pointing at a removed
+///      tenant)
+fn pick_initial_tenant_idx(tenants: &[Tenant], config: Option<&ProjectConfig>) -> usize {
+    if tenants.is_empty() {
+        return 0;
+    }
+    if let Ok(Some(name)) = config::read_current_context() {
+        if let Some(i) = tenants.iter().position(|t| t.name == name) {
+            return i;
+        }
+    }
+    if let Some(cfg) = config {
+        if !cfg.default_tenant.is_empty() {
+            if let Some(i) = tenants.iter().position(|t| t.name == cfg.default_tenant) {
+                return i;
+            }
+        }
+    }
+    0
+}
+
 /// is the file-level salt from WrapsFile — shared across every security-key
 /// wrap so unlock can be done in a single allowList call.
 fn enroll_security_key_blocking(
