@@ -277,11 +277,15 @@ async fn handle(
             Ok(None) => Response::Locked,
             Err(e) => Response::Error { message: e.to_string() },
         },
-        Request::ApiGet { tenant, path } => match do_api_get(&tenant, &path, state).await {
-            Ok(Some(value)) => Response::Json { value },
-            Ok(None) => Response::Locked,
-            Err(e) => Response::Error { message: e.to_string() },
-        },
+        Request::ApiCall { tenant, method, path, body, confirmed_prod } => {
+            match do_api_call(&tenant, &method, &path, body, confirmed_prod, state).await {
+                Ok(Some(value)) => Response::Json { value },
+                Ok(None) => Response::Locked,
+                Err(Error::ProdConfirmRequired) => Response::ProdConfirmRequired,
+                Err(Error::Api { status, body }) => Response::ApiError { status, body },
+                Err(e) => Response::Error { message: e.to_string() },
+            }
+        }
         Request::Shutdown => {
             shutdown.notify_waiters();
             Response::Ok
@@ -386,13 +390,15 @@ async fn do_get_token(
     Ok(Some((token, expires_at)))
 }
 
-/// Proxy a GET against AIC. Returns `Ok(None)` when the agent is locked so
-/// the caller can answer with `Response::Locked`; `Ok(Some(body))` on
-/// success. No caching here — every call goes to AIC. Connection pooling
-/// happens automatically via the per-tenant AicClient.
-async fn do_api_get(
+/// Proxy a tenant-scoped HTTP call to AIC. Returns `Ok(None)` when the
+/// agent is locked so the caller can answer with `Response::Locked`.
+/// Connection pooling happens automatically via the per-tenant AicClient.
+async fn do_api_call(
     tenant: &str,
+    method: &str,
     path: &str,
+    body: Option<serde_json::Value>,
+    confirmed_prod: bool,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<Option<serde_json::Value>> {
     // Each `state.read()` is scoped to a let-binding so the read guard
@@ -410,8 +416,51 @@ async fn do_api_get(
         Some(c) => c,
         None => build_client(tenant, state.clone()).await?,
     };
-    let body = client.get(path).await?;
-    Ok(Some(body))
+    let value = match method {
+        "GET" => client.get(path).await?,
+        "POST" => {
+            client
+                .write(
+                    reqwest::Method::POST,
+                    path,
+                    body.unwrap_or(serde_json::Value::Null),
+                    confirmed_prod,
+                )
+                .await?
+        }
+        "PUT" => {
+            client
+                .write(
+                    reqwest::Method::PUT,
+                    path,
+                    body.unwrap_or(serde_json::Value::Null),
+                    confirmed_prod,
+                )
+                .await?
+        }
+        "PATCH" => {
+            client
+                .write(
+                    reqwest::Method::PATCH,
+                    path,
+                    body.unwrap_or(serde_json::Value::Null),
+                    confirmed_prod,
+                )
+                .await?
+        }
+        "DELETE" => {
+            client
+                .write(
+                    reqwest::Method::DELETE,
+                    path,
+                    body.unwrap_or(serde_json::Value::Null),
+                    confirmed_prod,
+                )
+                .await?
+        }
+        other => return Err(Error::Config(format!("unsupported method: {other}"))),
+    };
+    Ok(Some(value))
 }
 
 async fn build_client(

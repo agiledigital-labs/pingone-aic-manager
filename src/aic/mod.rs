@@ -1,4 +1,6 @@
+pub mod api;
 pub mod auth;
+pub mod esv;
 pub mod onboard;
 pub mod svcacct;
 
@@ -62,10 +64,6 @@ impl AicClient {
         self.check_response(resp).await
     }
 
-    pub async fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
-        self.write(reqwest::Method::POST, path, body, false).await
-    }
-
     /// Write method — checks prod confirmation for prod-themed tenants.
     pub async fn write(
         &self,
@@ -92,34 +90,6 @@ impl AicClient {
         self.check_response(resp).await
     }
 
-    pub async fn put(
-        &self,
-        path: &str,
-        body: serde_json::Value,
-        confirmed_prod: bool,
-    ) -> Result<serde_json::Value> {
-        self.write(reqwest::Method::PUT, path, body, confirmed_prod)
-            .await
-    }
-
-    /// List ESV variables. Returns the contents of the `result` array — each
-    /// element is a variable object as documented in `docs/api/03-esvs.md`.
-    /// Pagination not implemented yet; AIC's default page size is 1000 which
-    /// is fine for the "just show me a list" use case.
-    pub async fn list_variables(&self) -> Result<Vec<serde_json::Value>> {
-        let body = self.get("/environment/variables").await?;
-        match body.get("result") {
-            Some(serde_json::Value::Array(arr)) => Ok(arr.clone()),
-            _ => Err(Error::Api {
-                status: 0,
-                body: format!(
-                    "unexpected /environment/variables response shape: {}",
-                    body
-                ),
-            }),
-        }
-    }
-
     async fn check_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {
         let status = resp.status();
         if status.is_success() {
@@ -133,37 +103,4 @@ impl AicClient {
         }
     }
 
-    /// Mint a token in a background task and report the result via AppEvent.
-    pub fn spawn_mint_token(
-        tenant: Tenant,
-        jwk: serde_json::Value,
-        token_cache: Arc<Mutex<TokenCache>>,
-        tx: tokio::sync::mpsc::UnboundedSender<crate::event::AppEvent>,
-    ) {
-        use crate::event::AppEvent;
-        let http = reqwest::Client::new();
-        let name = tenant.name.clone();
-        tokio::spawn(async move {
-            match auth::mint_token(&http, &tenant, &jwk).await {
-                Ok((token, expires_at)) => {
-                    {
-                        let mut cache = token_cache.lock().unwrap();
-                        cache.store(token, expires_at);
-                    }
-                    let _ = tx.send(AppEvent::TokenMinted {
-                        tenant: name,
-                        expires_at,
-                    });
-                }
-                Err(e) => {
-                    let msg = e.to_string();
-                    tracing::error!(tenant = %name, error = %msg, "token mint failed");
-                    let _ = tx.send(AppEvent::TokenError {
-                        tenant: name,
-                        error: msg,
-                    });
-                }
-            }
-        });
-    }
 }
