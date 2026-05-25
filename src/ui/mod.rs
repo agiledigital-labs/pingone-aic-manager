@@ -16,7 +16,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::app::{esv_id, App, EsvLoadState, EsvMatch, InputMode};
+use crate::app::{App, InputMode};
+use crate::screens::esv::{id_of as esv_id, LoadState as EsvLoadState, Match as EsvMatch};
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Full-screen takeovers come first.
@@ -121,7 +122,7 @@ fn draw_esvs(f: &mut Frame, app: &App, area: Rect) {
     };
 
     // Loading / failed / empty: full-width status; no split, no preview pane.
-    match app.esvs.get(tenant_name) {
+    match app.esv.data.get(tenant_name) {
         None | Some(EsvLoadState::Loading) => {
             f.render_widget(
                 Paragraph::new(Line::from(Span::styled(
@@ -164,11 +165,11 @@ fn draw_esvs(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     let searching = app.input_mode == InputMode::EsvSearch;
-    let total = match app.active_tenant().and_then(|t| app.esvs.get(&t.name)) {
+    let total = match app.active_tenant().and_then(|t| app.esv.data.get(&t.name)) {
         Some(EsvLoadState::Loaded(vs)) => vs.len(),
         _ => 0,
     };
-    let count_text = if app.esv_query.is_empty() {
+    let count_text = if app.esv.query.is_empty() {
         format!("{} ESVs ", total)
     } else {
         format!("{}/{} ESVs ", matches.len(), total)
@@ -197,8 +198,8 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     // characters double-wide.
     let cursor_style = query_style.add_modifier(Modifier::REVERSED);
     let mut spans: Vec<Span> = vec![Span::styled(" /", query_style)];
-    let cursor_idx = app.esv_query.cursor();
-    let chars: Vec<char> = app.esv_query.value().chars().collect();
+    let cursor_idx = app.esv.query.cursor();
+    let chars: Vec<char> = app.esv.query.value().chars().collect();
     if searching {
         for (i, c) in chars.iter().enumerate() {
             let style = if i == cursor_idx { cursor_style } else { query_style };
@@ -208,7 +209,7 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
             spans.push(Span::styled(" ", cursor_style));
         }
     } else {
-        spans.push(Span::styled(app.esv_query.value().to_string(), query_style));
+        spans.push(Span::styled(app.esv.query.value().to_string(), query_style));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
     f.render_widget(
@@ -225,8 +226,8 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     // Visible window: keep the selection inside [scroll, scroll + h).
     let h = rows[1].height as usize;
     let n = matches.len();
-    let selected = app.esv_selected.min(n.saturating_sub(1));
-    let scroll = clamp_scroll(app.esv_scroll, selected, h, n);
+    let selected = app.esv.selected.min(n.saturating_sub(1));
+    let scroll = clamp_scroll(app.esv.scroll, selected, h, n);
 
     let lines: Vec<Line> = matches
         .iter()
@@ -240,7 +241,7 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
 
 /// Pick the new top-of-window so `selected` stays visible. We can't compute
 /// this purely from app state because the height comes from the rendered
-/// rect; do it here, leave `app.esv_scroll` as a hint only.
+/// rect; do it here, leave `app.esv.scroll` as a hint only.
 fn clamp_scroll(prev: usize, selected: usize, height: usize, n: usize) -> usize {
     if n == 0 || height == 0 {
         return 0;
@@ -306,8 +307,8 @@ fn draw_esv_preview(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) 
     f.render_widget(block, area);
 
     let Some(tenant) = app.active_tenant() else { return };
-    let Some(EsvLoadState::Loaded(items)) = app.esvs.get(&tenant.name) else { return };
-    let selected = app.esv_selected.min(matches.len().saturating_sub(1));
+    let Some(EsvLoadState::Loaded(items)) = app.esv.data.get(&tenant.name) else { return };
+    let selected = app.esv.selected.min(matches.len().saturating_sub(1));
     let Some(m) = matches.get(selected) else {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(

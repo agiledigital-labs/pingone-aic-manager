@@ -23,7 +23,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // The method picker only renders on first-run. When the user pressed
     // `p`/`s` in auth_settings, the method is already chosen and showing it
     // again would just be a redundant chip row.
-    let show_method = app.setup_context == SetupContext::FirstRun;
+    let show_method = app.auth_setup.context == SetupContext::FirstRun;
     let method_label_h = if show_method { 1 } else { 0 };
     let method_value_h = if show_method { 1 } else { 0 };
     let pre_body_gap_h = if show_method { 1 } else { 0 };
@@ -46,7 +46,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_radio(f, app, chunks[0], chunks[1]);
     }
 
-    match app.setup_form.method {
+    match app.auth_setup.form.method {
         AuthMethod::None => draw_none_body(f, chunks[3]),
         AuthMethod::Password => draw_password_body(f, app, chunks[3]),
         AuthMethod::SecurityKey => draw_security_key_body(f, app, chunks[3]),
@@ -54,7 +54,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_submit(f, app, chunks[4]);
 
-    if let Some(err) = &app.setup_form.error {
+    if let Some(err) = &app.auth_setup.form.error {
         f.render_widget(
             Paragraph::new(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
                 .wrap(Wrap { trim: false }),
@@ -62,7 +62,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         );
     }
 
-    let hint = if app.setup_form.busy {
+    let hint = if app.auth_setup.form.busy {
         "Working…"
     } else if show_method {
         "Tab/Shift-Tab navigate · ←/→ change method · Enter submit · Esc quit"
@@ -76,7 +76,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_radio(f: &mut Frame, app: &App, label_area: Rect, value_area: Rect) {
-    let focused = app.setup_form.focused == AuthSetupField::Method;
+    let focused = app.auth_setup.form.focused == AuthSetupField::Method;
     f.render_widget(
         Paragraph::new(Span::styled(
             "Protect credentials at rest with",
@@ -87,7 +87,7 @@ fn draw_radio(f: &mut Frame, app: &App, label_area: Rect, value_area: Rect) {
     let bg = if focused { BG_FOCUSED } else { BG_UNFOCUSED };
     let mut line: Vec<Span> = vec![Span::styled(" ", Style::default().bg(bg))];
     for m in AuthMethod::ORDER.iter() {
-        line.push(chip(m.label(), *m == app.setup_form.method, focused));
+        line.push(chip(m.label(), *m == app.auth_setup.form.method, focused));
         line.push(Span::styled("  ", Style::default().bg(bg)));
     }
     f.render_widget(
@@ -138,16 +138,16 @@ fn draw_password_body(f: &mut Frame, app: &App, area: Rect) {
         f,
         chunks[0],
         "Master password",
-        &app.setup_form.password,
-        app.setup_form.focused == AuthSetupField::Password,
+        &app.auth_setup.form.password,
+        app.auth_setup.form.focused == AuthSetupField::Password,
         None,
     );
     secret_field::draw(
         f,
         chunks[2],
         "Confirm",
-        &app.setup_form.confirm,
-        app.setup_form.focused == AuthSetupField::Confirm,
+        &app.auth_setup.form.confirm,
+        app.auth_setup.form.focused == AuthSetupField::Confirm,
         None,
     );
 }
@@ -165,9 +165,9 @@ fn draw_security_key_body(f: &mut Frame, app: &App, area: Rect) {
         f,
         chunks[0],
         "Security key PIN",
-        &app.setup_form.pin,
-        app.setup_form.focused == AuthSetupField::Pin,
-        if app.setup_form.busy {
+        &app.auth_setup.form.pin,
+        app.auth_setup.form.focused == AuthSetupField::Pin,
+        if app.auth_setup.form.busy {
             Some(security_key::TAP_MESSAGE)
         } else {
             None
@@ -178,8 +178,8 @@ fn draw_security_key_body(f: &mut Frame, app: &App, area: Rect) {
         chunks[2],
         chunks[3],
         "Label",
-        &app.setup_form.label,
-        app.setup_form.focused == AuthSetupField::Label,
+        &app.auth_setup.form.label,
+        app.auth_setup.form.focused == AuthSetupField::Label,
     );
 }
 
@@ -216,7 +216,7 @@ fn draw_text_field(
 }
 
 fn draw_submit(f: &mut Frame, app: &App, area: Rect) {
-    let focused = app.setup_form.focused == AuthSetupField::Submit;
+    let focused = app.auth_setup.form.focused == AuthSetupField::Submit;
     let style = if focused {
         Style::default()
             .fg(Color::Black)
@@ -225,7 +225,7 @@ fn draw_submit(f: &mut Frame, app: &App, area: Rect) {
     } else {
         Style::default().fg(Color::Green)
     };
-    let label = match app.setup_form.method {
+    let label = match app.auth_setup.form.method {
         AuthMethod::None => " Continue without encryption ",
         AuthMethod::Password => " Set password and continue ",
         AuthMethod::SecurityKey => " Enrol security key and continue ",

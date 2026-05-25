@@ -118,7 +118,7 @@ fn draw_factor_list(f: &mut Frame, app: &App, area: Rect) {
         )
         .highlight_symbol("▶ ");
     let mut state = ListState::default();
-    state.select(Some(app.auth_settings_idx));
+    state.select(Some(app.auth_settings.idx));
     f.render_stateful_widget(list, area, &mut state);
 }
 
@@ -145,7 +145,7 @@ fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
         hints.extend(hint("d", "remove"));
         // Rename only makes sense for security-key wraps (the password row's
         // label is always "Master password").
-        if let Some(Wrap::SecurityKey { .. }) = app.wraps.wraps.get(app.auth_settings_idx) {
+        if let Some(Wrap::SecurityKey { .. }) = app.wraps.wraps.get(app.auth_settings.idx) {
             hints.extend(hint("r", "rename"));
         }
     }
@@ -206,7 +206,7 @@ pub fn draw_rename(f: &mut Frame, app: &App) {
         Paragraph::new(Line::from(vec![
             Span::styled(" ", Style::default().bg(bg)),
             Span::styled(
-                app.rename_input.clone(),
+                app.auth_settings.rename_input.clone(),
                 Style::default().fg(Color::White).bg(bg),
             ),
             Span::styled("▏", Style::default().fg(Color::Yellow).bg(bg)),

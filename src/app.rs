@@ -1,7 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+use std::collections::{HashMap, VecDeque};
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt;
@@ -10,14 +7,12 @@ use tokio::time::{interval, Duration};
 use crate::aic::onboard::cookie::{CookieField, CookieForm};
 use crate::aic::onboard::paste::{PasteField, PasteForm};
 use crate::aic::onboard::userpass::{CallbackOutcome, UpField, UpForm};
-use crate::agent::{AgentClient, Request as AgentRequest, Response as AgentResponse};
 use crate::config::crypto::{self, Dek};
 use crate::config::tenant::{Tenant, TenantTheme};
-use crate::config::wraps::{self, Wrap, WrapsFile};
+use crate::config::wraps::WrapsFile;
 use crate::config::{self, ProjectConfig, Settings};
 use crate::event::{AppEvent, EventHandler, ToastKind};
 use crate::ui::toast::Toast;
-use crate::ui::widgets::LineEditor;
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -49,147 +44,13 @@ pub enum InputMode {
     EsvSearch,
 }
 
-/// Which input on the Unlock screen currently has focus. Only meaningful when
-/// a security key wrap exists; otherwise the Master password is the only field.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum UnlockFocus {
-    SecurityKeyPin,
-    Password,
-}
-
-/// Auth methods offered on the first-run picker (and on the in-app "add
-/// factor" flow). "None" = `keys.plain`, no DEK; the other two share the
-/// envelope-encryption scheme — random DEK wrapped per-method in
-/// `wraps.toml`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuthMethod {
-    None,
-    Password,
-    SecurityKey,
-}
-
-impl AuthMethod {
-    pub const ORDER: [AuthMethod; 3] = [
-        AuthMethod::None,
-        AuthMethod::Password,
-        AuthMethod::SecurityKey,
-    ];
-
-    pub fn next(self) -> AuthMethod {
-        let i = Self::ORDER.iter().position(|m| *m == self).unwrap_or(0);
-        Self::ORDER[(i + 1) % Self::ORDER.len()]
-    }
-
-    pub fn prev(self) -> AuthMethod {
-        let i = Self::ORDER.iter().position(|m| *m == self).unwrap_or(0);
-        Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            AuthMethod::None => "None",
-            AuthMethod::Password => "Master password",
-            AuthMethod::SecurityKey => "Security key",
-        }
-    }
-}
-
-/// Fields on the first-run / add-factor setup form. Only some of these are
-/// visible per `AuthMethod`; navigation skips the rest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuthSetupField {
-    Method,
-    Password,
-    Confirm,
-    Pin,
-    Label,
-    Submit,
-}
-
-#[derive(Debug, Clone)]
-pub struct AuthSetupForm {
-    pub method: AuthMethod,
-    pub password: String,
-    pub confirm: String,
-    pub pin: String,
-    pub label: String,
-    pub focused: AuthSetupField,
-    pub error: Option<String>,
-    /// True while a blocking enrol task is in flight. Locks out input and
-    /// shows a "Tap your security key…" hint.
-    pub busy: bool,
-}
-
-impl Default for AuthSetupForm {
-    fn default() -> Self {
-        Self {
-            method: AuthMethod::Password,
-            password: String::new(),
-            confirm: String::new(),
-            pin: String::new(),
-            label: "Security key 1".into(),
-            focused: AuthSetupField::Method,
-            error: None,
-            busy: false,
-        }
-    }
-}
-
-impl AuthSetupForm {
-    /// Field order for Tab/BackTab. `Method` is included only on first-run;
-    /// `AddFactor` callers pre-pick the method on the previous screen
-    /// (auth_settings `p`/`s`), so the picker isn't rendered or focusable.
-    fn order(&self, context: SetupContext) -> &'static [AuthSetupField] {
-        match (context, self.method) {
-            (SetupContext::FirstRun, AuthMethod::None) => {
-                &[AuthSetupField::Method, AuthSetupField::Submit]
-            }
-            (SetupContext::FirstRun, AuthMethod::Password) => &[
-                AuthSetupField::Method,
-                AuthSetupField::Password,
-                AuthSetupField::Confirm,
-                AuthSetupField::Submit,
-            ],
-            (SetupContext::FirstRun, AuthMethod::SecurityKey) => &[
-                AuthSetupField::Method,
-                AuthSetupField::Pin,
-                AuthSetupField::Label,
-                AuthSetupField::Submit,
-            ],
-            (SetupContext::AddFactor, AuthMethod::None) => &[AuthSetupField::Submit],
-            (SetupContext::AddFactor, AuthMethod::Password) => &[
-                AuthSetupField::Password,
-                AuthSetupField::Confirm,
-                AuthSetupField::Submit,
-            ],
-            (SetupContext::AddFactor, AuthMethod::SecurityKey) => &[
-                AuthSetupField::Pin,
-                AuthSetupField::Label,
-                AuthSetupField::Submit,
-            ],
-        }
-    }
-
-    pub fn next(&mut self, context: SetupContext) {
-        let order = self.order(context);
-        let i = order.iter().position(|f| *f == self.focused).unwrap_or(0);
-        self.focused = order[(i + 1) % order.len()];
-    }
-
-    pub fn prev(&mut self, context: SetupContext) {
-        let order = self.order(context);
-        let i = order.iter().position(|f| *f == self.focused).unwrap_or(0);
-        self.focused = order[(i + order.len() - 1) % order.len()];
-    }
-
-    /// After switching the radio, keep focus on Method. The user can ←/→
-    /// through the options to compare them, then Tab into the body when
-    /// they're ready. Jumping ahead is surprising — especially for None,
-    /// where the next field is Submit and Shift-Tab back is non-obvious.
-    pub fn settle_focus_after_method_change(&mut self) {
-        self.focused = AuthSetupField::Method;
-    }
-}
+/// Re-export so existing `crate::app::AuthMethod` / `AuthSetupField` /
+/// `SetupContext` / `AuthSetupForm` paths (used in `ui/auth_setup.rs`,
+/// `ui/auth_settings.rs`, and inside `App`) keep compiling against the
+/// moved types.
+pub use crate::screens::auth_setup::{
+    AuthMethod, AuthSetupField, AuthSetupForm, SetupContext,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Realm {
@@ -228,32 +89,17 @@ pub struct App {
     pub should_quit: bool,
     pub has_env_creds: bool,
 
-    // Unlock screen state
-    pub unlock_input: String,
-    pub unlock_error: Option<String>,
-    pub unlock_busy: bool,
-    /// PIN typed for the security key field. Held in memory only while the unlock
-    /// screen is open; consumed by the security key poll task.
-    pub unlock_pin_input: String,
-    /// Which input on the Unlock screen has focus. Defaults to the security key
-    /// PIN field when a security key is enrolled, otherwise irrelevant.
-    pub unlock_focus: UnlockFocus,
+    /// Unlock-screen state — owned by `screens::unlock`. See that module
+    /// for handlers; the field lives here because lifecycle code
+    /// (`decide_initial_mode`, etc.) needs to pre-seed focus.
+    pub unlock: crate::screens::unlock::State,
 
 
-    // First-run auth-setup form (also used by the "add factor" flow from
-    // Auth Settings).
-    pub setup_form: AuthSetupForm,
-    /// Whether the SetupAuth screen is being shown for first-run or for the
-    /// "add factor" entry from Auth Settings. Decides where we return to on
-    /// submit + whether the None radio option is offered.
-    pub setup_context: SetupContext,
+    /// First-run + add-factor screen state. See `screens::auth_setup`.
+    pub auth_setup: crate::screens::auth_setup::State,
 
-    // Auth Settings screen state
-    pub auth_settings_idx: usize,
-    /// Buffer for the rename popup (Auth Settings → `r`).
-    pub rename_input: String,
-    /// Pending destructive action awaiting y/n confirmation.
-    pending_auth_action: Option<PendingAuthAction>,
+    /// Auth Settings screen state. See `screens::auth_settings`.
+    pub auth_settings: crate::screens::auth_settings::State,
 
     /// Data encryption key (random 32 bytes), held only while unlocked.
     /// `None` either means "not yet unlocked" or "user opted out of
@@ -264,13 +110,6 @@ pub struct App {
     /// Loaded wrap envelope, kept in memory so the unlock screen can decide
     /// which methods to offer and the enrolment flow can append new entries.
     pub wraps: WrapsFile,
-
-    /// Set by the background security key poll to stop itself once unlock has
-    /// happened (via any method). Shared with the spawned task.
-    security_key_cancel: Arc<AtomicBool>,
-    /// True while a security key poll task is running — guards against spawning
-    /// more than one.
-    security_key_armed: bool,
 
     // JWK map (decrypted; keyed by tenant name). Held in memory only so the
     // onboarding flow can insert a freshly-generated JWK and re-encrypt the
@@ -299,54 +138,9 @@ pub struct App {
     // Overwrite confirm: a pending tenant whose name collides with an existing one
     pending_overwrite: Option<(Tenant, serde_json::Value)>,
 
-    // ESV variables, keyed by tenant name. Populated lazily on demand —
-    // entering the ESVs tab for a tenant that's not yet in the map fires a
-    // background fetch which inserts a Loading marker and then a Loaded /
-    // Failed entry on completion. Subsequent visits show the cached value
-    // immediately; a periodic poll (see `last_esv_poll`) refreshes in the
-    // background without clobbering the stale view.
-    pub esvs: HashMap<String, EsvLoadState>,
-    /// Tenants whose ESV refetch is currently in flight — guards against
-    /// duplicate spawns when the user re-enters the tab or the poll fires.
-    esvs_refreshing: HashSet<String>,
-    /// When the last ESV poll-refresh ran. Drives the 30s cadence in `tick`.
-    last_esv_poll: Instant,
-
-    /// Fuzzy search query + cursor for the ESV list. Empty = show everything.
-    /// Updated while in `InputMode::EsvSearch`; persists after Enter so the
-    /// filter stays applied. Cleared on tenant switch + on Esc-from-search.
-    pub esv_query: LineEditor,
-    /// Index into the *filtered* ESV list. Always clamped to len-1 (or 0
-    /// when the filter eliminates everything).
-    pub esv_selected: usize,
-    /// First visible row of the filtered list — drives windowed rendering.
-    /// `draw_esvs` keeps `esv_selected` inside `[scroll, scroll + visible)`.
-    pub esv_scroll: usize,
-}
-
-#[derive(Debug, Clone)]
-pub enum EsvLoadState {
-    Loading,
-    Loaded(Vec<serde_json::Value>),
-    Failed(String),
-}
-
-/// One row in the ESV list as the UI sees it: the underlying index into
-/// `EsvLoadState::Loaded`, the `_id` string for cheap re-rendering, the
-/// fuzzy-match score (0 when no filter is active), and the matched char
-/// positions in the `_id` for highlighting.
-#[derive(Debug, Clone)]
-pub struct EsvMatch {
-    pub idx: usize,
-    pub id: String,
-    pub score: u32,
-    pub positions: Vec<u32>,
-}
-
-/// Extract the `_id` field of an ESV variable; falls back to `"?"` when
-/// the API returned something unexpected.
-pub fn esv_id(v: &serde_json::Value) -> &str {
-    v.get("_id").and_then(|x| x.as_str()).unwrap_or("?")
+    /// ESV tab state — list cache, refresh book-keeping, search query +
+    /// selection. See `crate::screens::esv` for the handlers.
+    pub esv: crate::screens::esv::State,
 }
 
 enum PendingProdAction {
@@ -356,27 +150,7 @@ enum PendingProdAction {
     },
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SetupContext {
-    /// Initial install: no settings.toml on disk. Picker is full 3-way
-    /// (None / Password / security key) and submit returns to Normal.
-    FirstRun,
-    /// "Add factor" from Auth Settings: picker hides None (you can't downgrade
-    /// to no-encryption by adding a factor), and submit returns to
-    /// AuthSettings.
-    AddFactor,
-}
-
-#[derive(Debug)]
-enum PendingAuthAction {
-    /// Remove the wrap at this index from `wraps.toml`. Last-factor cases
-    /// transition to `DisableEncryption` before reaching this state, so
-    /// the index is guaranteed not to be the only wrap.
-    RemoveWrap(usize),
-    /// Decrypt `keys.enc` → `keys.plain` and delete all wraps. Triggered
-    /// either by [x] or by attempting to remove the last wrap.
-    DisableEncryption,
-}
+pub use crate::screens::auth_settings::PendingAuthAction;
 
 impl App {
     pub fn new() -> Result<Self> {
@@ -413,20 +187,11 @@ impl App {
             toasts: VecDeque::new(),
             should_quit: false,
             has_env_creds,
-            unlock_input: String::new(),
-            unlock_error: None,
-            unlock_busy: false,
-            unlock_pin_input: String::new(),
-            unlock_focus: UnlockFocus::SecurityKeyPin,
-            setup_form: AuthSetupForm::default(),
-            setup_context: SetupContext::FirstRun,
-            auth_settings_idx: 0,
-            rename_input: String::new(),
-            pending_auth_action: None,
+            unlock: crate::screens::unlock::State::new(),
+            auth_setup: crate::screens::auth_setup::State::new(),
+            auth_settings: crate::screens::auth_settings::State::new(),
             dek: None,
             wraps,
-            security_key_cancel: Arc::new(AtomicBool::new(false)),
-            security_key_armed: false,
             jwks: HashMap::new(),
             onboard_menu_idx: 0,
             cookie_form: None,
@@ -436,96 +201,8 @@ impl App {
             pending_callback_body: None,
             pending_prod_action: None,
             pending_overwrite: None,
-            esvs: HashMap::new(),
-            esvs_refreshing: HashSet::new(),
-            last_esv_poll: Instant::now(),
-            esv_query: LineEditor::new(),
-            esv_selected: 0,
-            esv_scroll: 0,
+            esv: crate::screens::esv::State::new(),
         })
-    }
-
-    /// If the agent is already holding the DEK from a previous TUI session,
-    /// fetch it and hydrate `self.dek` + `self.jwks` so `decide_initial_mode`
-    /// can skip the Unlock screen. Best-effort: any failure (agent missing,
-    /// stale socket, locked, decrypt-error) silently falls through to the
-    /// normal unlock path.
-    async fn try_agent_unlock(&mut self) {
-        // Only meaningful when there's an encrypted blob to unlock.
-        if !matches!(self.settings, Some(Settings { encrypt_keys: true, .. })) {
-            return;
-        }
-        use base64::engine::general_purpose::STANDARD as B64;
-        use base64::Engine as _;
-
-        let client = match AgentClient::connect_or_spawn().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::debug!("agent unavailable on startup: {e}");
-                return;
-            }
-        };
-        let dek_b64 = match client.send(&AgentRequest::GetDek).await {
-            Ok(AgentResponse::Dek { dek_b64 }) => dek_b64,
-            Ok(AgentResponse::Locked) => return,
-            Ok(other) => {
-                tracing::debug!("unexpected GetDek reply: {other:?}");
-                return;
-            }
-            Err(e) => {
-                tracing::debug!("GetDek failed: {e}");
-                return;
-            }
-        };
-        let bytes = match B64.decode(&dek_b64) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!("agent returned non-base64 DEK: {e}");
-                return;
-            }
-        };
-        let arr: [u8; 32] = match bytes.as_slice().try_into() {
-            Ok(a) => a,
-            Err(_) => {
-                tracing::warn!("agent returned DEK of wrong length");
-                return;
-            }
-        };
-        let dek = Dek::from_bytes(arr);
-        let jwks = match crate::config::decrypt_keys_file(&dek) {
-            Ok(j) => j,
-            Err(e) => {
-                tracing::warn!("agent DEK failed to decrypt keys.enc: {e}");
-                return;
-            }
-        };
-        self.dek = Some(dek);
-        self.jwks = jwks;
-    }
-
-    /// Fire-and-forget: cache the just-derived DEK in the agent so subsequent
-    /// TUI launches (within the idle window) skip the Unlock screen.
-    /// Hand the just-derived DEK to the agent so subsequent ApiCalls (this
-    /// session's ESV poll, plus any CLI invocation) find the agent unlocked.
-    /// Must be awaited before triggering any tenant-scoped HTTP — otherwise
-    /// the first `refresh_esvs` races the `PutDek` to the daemon and loses.
-    /// Failure is logged, not surfaced — the user's already past the unlock
-    /// screen, and the TUI can keep going (agent calls will just re-prompt).
-    async fn put_dek_to_agent(&self) {
-        let Some(dek) = self.dek.clone() else { return };
-        if let Err(e) = crate::auth::put_dek_to_agent(&dek).await {
-            tracing::warn!("PutDek failed: {e}");
-        }
-    }
-
-    /// Plain-mode equivalent of `put_dek_to_agent`. There's no DEK to send —
-    /// we just tell the agent to load `keys.plain` itself, so subsequent
-    /// `ApiCall`s find it in the "unlocked, plain" vault state instead of
-    /// returning `Locked` and stranding the request.
-    async fn unlock_plain_agent(&self) {
-        if let Err(e) = crate::auth::unlock_plain_agent().await {
-            tracing::warn!("UnlockPlain failed: {e}");
-        }
     }
 
     /// Pick the initial mode from on-disk state:
@@ -544,10 +221,10 @@ impl App {
                 // Default focus to whichever method is actually enrolled.
                 // If both are enrolled we prefer the security key field — it's the
                 // stronger factor and the user can Tab away if they want.
-                self.unlock_focus = if self.wraps.has_security_key() {
-                    UnlockFocus::SecurityKeyPin
+                self.unlock.focus = if self.wraps.has_security_key() {
+                    crate::screens::unlock::Focus::SecurityKeyPin
                 } else {
-                    UnlockFocus::Password
+                    crate::screens::unlock::Focus::Password
                 };
             }
             Some(Settings {
@@ -567,57 +244,6 @@ impl App {
         // is spawned from `handle_unlock_key` once that happens.
     }
 
-    /// Spawn the security key background poll for the Unlock screen. `pin` is the
-    /// FIDO2 PIN the user just typed; it's required for every assertion.
-    fn spawn_security_key_poll(&mut self, pin: String) {
-        if self.security_key_armed {
-            return;
-        }
-        self.security_key_armed = true;
-        self.security_key_cancel.store(false, Ordering::Relaxed);
-        let wraps = self.wraps.clone();
-        let tx = self.events.tx.clone();
-        let cancel = self.security_key_cancel.clone();
-        tokio::task::spawn_blocking(move || {
-            let pin_opt = if pin.is_empty() { None } else { Some(pin.as_str()) };
-            loop {
-                if cancel.load(Ordering::Relaxed) {
-                    return;
-                }
-                if !crate::security_key::device_present() {
-                    // No security key plugged in; poll again in a moment.
-                    std::thread::sleep(Duration::from_secs(1));
-                    continue;
-                }
-                // Single allowList call across every enrolled credential —
-                // the device picks the one it has, we identify the wrap
-                // from the returned credential_id.
-                match crate::config::unlock_with_security_key(&wraps, pin_opt) {
-                    Ok((dek, jwks)) => {
-                        let _ = tx.send(AppEvent::UnlockResult(Ok(UnlockOk { dek, jwks })));
-                        return;
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        // Whitelist: only "device doesn't hold any matching
-                        // credential" lets us retry silently. Everything
-                        // else — wrong PIN, blocked, bad device — is
-                        // surfaced so the user can react before we hammer
-                        // the PIN counter further.
-                        if msg.contains("NO_CREDENTIALS") || msg.contains("0x2E") {
-                            tracing::debug!("device has no enrolled credential: {msg}");
-                            std::thread::sleep(Duration::from_secs(2));
-                            continue;
-                        }
-                        let _ = tx.send(AppEvent::UnlockResult(Err(format!(
-                            "security key: {msg}"
-                        ))));
-                        return;
-                    }
-                }
-            }
-        });
-    }
 
     fn load_plain_keys(&mut self) {
         if let Ok(Some(bytes)) = ProjectConfig::load_keys_plain() {
@@ -634,7 +260,7 @@ impl App {
 
     /// Write the current JWK map to disk — encrypted with the in-memory DEK,
     /// or plain (mode 600) if the user opted out of encryption.
-    fn persist_keys(&self) -> Result<()> {
+    pub fn persist_keys(&self) -> Result<()> {
         let encrypt = self.settings.map(|s| s.encrypt_keys).unwrap_or(true);
         let bytes = serde_json::to_vec(&self.jwks)?;
         if encrypt {
@@ -702,7 +328,7 @@ impl App {
         self.persist_tenant_overwriting(tenant, jwk)
     }
 
-    fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {
+    pub fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {
         self.toasts.push_front(Toast::new(kind, message.into()));
         if self.toasts.len() > 5 {
             self.toasts.pop_back();
@@ -721,9 +347,7 @@ impl App {
         self.active_tenant_idx = idx;
         // Drop ESV view state (filter + selection) when the data behind it
         // changes — anything else is just confusing.
-        self.esv_query.clear();
-        self.esv_selected = 0;
-        self.esv_scroll = 0;
+        self.esv.reset_view();
         if let Some(t) = self.tenants.get(idx) {
             if let Err(e) = config::write_current_context(&t.name) {
                 tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
@@ -731,60 +355,12 @@ impl App {
         }
     }
 
-    /// Apply the fuzzy filter to the active tenant's ESV list. Returns
-    /// `(matches, total)` where `matches` is a Vec of `(index_into_loaded_list,
-    /// score, match_positions)` sorted by score descending. `total` is the
-    /// unfiltered count (for the "N of M" header). Empty when there's no
-    /// data yet, or when the active tenant isn't `Loaded`.
-    pub fn esv_matches(&self) -> Vec<EsvMatch> {
-        let Some(tenant) = self.active_tenant() else { return Vec::new() };
-        let Some(EsvLoadState::Loaded(items)) = self.esvs.get(&tenant.name) else {
-            return Vec::new();
-        };
-        if self.esv_query.is_empty() {
-            // No filter — sort by _id ascending, no highlight positions.
-            let mut indexed: Vec<EsvMatch> = items
-                .iter()
-                .enumerate()
-                .map(|(i, v)| EsvMatch {
-                    idx: i,
-                    id: esv_id(v).to_string(),
-                    score: 0,
-                    positions: Vec::new(),
-                })
-                .collect();
-            indexed.sort_by(|a, b| a.id.cmp(&b.id));
-            return indexed;
-        }
-        use nucleo_matcher::{
-            pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-            Config, Matcher, Utf32Str,
-        };
-        let mut matcher = Matcher::new(Config::DEFAULT);
-        let pattern = Pattern::new(
-            self.esv_query.value(),
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-        );
-        let mut out: Vec<EsvMatch> = Vec::new();
-        let mut buf = Vec::new();
-        let mut positions: Vec<u32> = Vec::new();
-        for (i, v) in items.iter().enumerate() {
-            let id = esv_id(v);
-            let haystack = Utf32Str::new(id, &mut buf);
-            positions.clear();
-            if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
-                out.push(EsvMatch {
-                    idx: i,
-                    id: id.to_string(),
-                    score,
-                    positions: positions.clone(),
-                });
-            }
-        }
-        out.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
-        out
+    /// Convenience wrapper around `screens::esv::State::matches` that
+    /// supplies the active tenant. Keeps existing callers (UI mostly)
+    /// from threading `app.active_tenant()` in every call.
+    pub fn esv_matches(&self) -> Vec<crate::screens::esv::Match> {
+        self.esv
+            .matches(self.active_tenant().map(|t| t.name.as_str()))
     }
 
     /// True iff the in-memory DEK is set — meaning credentials are encrypted
@@ -792,6 +368,27 @@ impl App {
     /// whether to surface security key-enrol shortcuts.
     pub fn dek_is_set(&self) -> bool {
         self.dek.is_some()
+    }
+
+    /// Cheap clone of the current DEK (if any) — used by the unlock
+    /// module's "PutDek to the agent" helper. The DEK lives on `App`
+    /// because multiple screens read/write it.
+    pub fn dek_clone(&self) -> Option<Dek> {
+        self.dek.clone()
+    }
+
+    pub fn set_dek(&mut self, dek: Option<Dek>) {
+        self.dek = dek;
+    }
+
+    pub fn set_jwks(&mut self, map: HashMap<String, serde_json::Value>) {
+        self.jwks = map;
+    }
+
+    /// Read-only access to the decrypted JWK map for callers that need to
+    /// serialise it (e.g. plain-mode write of `keys.plain` from auth-setup).
+    pub fn jwks(&self) -> &HashMap<String, serde_json::Value> {
+        &self.jwks
     }
 
     /// True iff the TUI is ready to call AIC: either we hold a DEK
@@ -810,16 +407,16 @@ impl App {
         &mut self,
         terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
-        self.try_agent_unlock().await;
+        crate::screens::unlock::try_agent_unlock(self).await;
         self.decide_initial_mode();
         // Plain mode skips the unlock screen entirely; make sure the agent
         // knows what state we're in before any ESV refresh hits its socket.
         // Encrypted mode either gets the DEK from `try_agent_unlock` (idle-
         // window resume) or via `handle_unlock_result` once the user types.
         if matches!(self.settings, Some(Settings { encrypt_keys: false, .. })) {
-            self.unlock_plain_agent().await;
+            crate::screens::unlock::unlock_plain_agent(self).await;
         }
-        self.refresh_esvs(false);
+        crate::screens::esv::refresh(self, false);
 
         let tx = self.events.tx.clone();
         tokio::spawn(async move {
@@ -855,50 +452,6 @@ impl App {
         Ok(())
     }
 
-    /// Kick off a background ESV fetch for the active tenant.
-    ///
-    /// - `force = false`: only fetches when there's no cached entry yet
-    ///   (initial load on startup / tenant switch).
-    /// - `force = true`: always fetches, even if a `Loaded` entry exists.
-    ///   The stale data stays visible until the new fetch completes; failed
-    ///   refetches don't clobber the cached value (see the `EsvListed`
-    ///   handler).
-    ///
-    /// In either case a no-op when (a) there's no active tenant, (b) the
-    /// agent is locked (still on the unlock screen — `aic::esv::list_variables`
-    /// would return an Auth error and we'd just surface noise), or (c) a
-    /// fetch for this tenant is already in flight.
-    fn refresh_esvs(&mut self, force: bool) {
-        if !self.is_unlocked() {
-            return;
-        }
-        let Some(tenant) = self.active_tenant() else { return };
-        let name = tenant.name.clone();
-        if self.esvs_refreshing.contains(&name) {
-            return;
-        }
-        if !force && self.esvs.contains_key(&name) {
-            return;
-        }
-
-        // Only show the Loading spinner when there's nothing cached yet;
-        // refetches keep the previous Loaded entry visible.
-        if !self.esvs.contains_key(&name) {
-            self.esvs.insert(name.clone(), EsvLoadState::Loading);
-        }
-        self.esvs_refreshing.insert(name.clone());
-        self.last_esv_poll = Instant::now();
-
-        let tx = self.events.tx.clone();
-        let tenant_name = name.clone();
-        tokio::spawn(async move {
-            let result = crate::aic::esv::list_variables(&tenant_name)
-                .await
-                .map_err(|e| e.to_string());
-            let _ = tx.send(AppEvent::EsvListed { tenant: name, result });
-        });
-    }
-
     pub async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
             AppEvent::Key(key) => self.handle_key(key).await?,
@@ -917,32 +470,7 @@ impl App {
                 self.push_toast(kind, msg);
             }
             AppEvent::EsvListed { tenant, result } => {
-                let is_active = self.active_tenant().is_some_and(|t| t.name == tenant);
-                self.esvs_refreshing.remove(&tenant);
-                match result {
-                    Ok(vs) => {
-                        self.esvs.insert(tenant, EsvLoadState::Loaded(vs));
-                        // Re-clamp the selection in case the new list is
-                        // shorter than the old (deletions) or the filter now
-                        // matches fewer rows.
-                        if is_active {
-                            let n = self.esv_matches().len();
-                            if self.esv_selected >= n {
-                                self.esv_selected = n.saturating_sub(1);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        // Don't clobber a previously-cached list with a
-                        // background-refresh error — keep showing the
-                        // stale data and just log.
-                        if matches!(self.esvs.get(&tenant), Some(EsvLoadState::Loaded(_))) {
-                            tracing::warn!("ESV refresh failed for {tenant}: {e}");
-                        } else {
-                            self.esvs.insert(tenant, EsvLoadState::Failed(e));
-                        }
-                    }
-                }
+                crate::screens::esv::apply_listed(self, tenant, result);
             }
             AppEvent::AuthCallbackProgress { body, prompt } => {
                 self.handle_auth_progress(body, prompt);
@@ -951,62 +479,10 @@ impl App {
                 tracing::error!(error = %msg, "onboard error");
                 self.handle_onboard_error(msg);
             }
-            AppEvent::UnlockResult(r) => self.handle_unlock_result(r).await,
-            AppEvent::SecurityKeyEnrollResult(r) => self.handle_security_key_enroll_result(r),
+            AppEvent::UnlockResult(r) => crate::screens::unlock::handle_result(self, r).await,
+            AppEvent::SecurityKeyEnrollResult(r) => crate::screens::auth_setup::handle_enroll_result(self, r),
         }
         Ok(())
-    }
-
-    fn handle_security_key_enroll_result(
-        &mut self,
-        result: std::result::Result<Wrap, String>,
-    ) {
-        // We're always reached from SetupAuth (either first-run or add-factor),
-        // because the obsolete Ctrl-Y modal has been removed. The two cases
-        // diverge in `finalize_factor_addition` based on `setup_context`.
-        let context = self.setup_context;
-        let was_dek_minted_for_this_op = !matches!(
-            self.settings,
-            Some(Settings { encrypt_keys: true, .. })
-        );
-
-        match result {
-            Ok(wrap) => {
-                self.wraps.push_security_key(wrap);
-                if let Err(e) = self.wraps.save() {
-                    tracing::error!(error = %e, "wraps.toml save failed after enrol");
-                    self.push_toast(
-                        ToastKind::Error,
-                        format!("wraps.toml: {e}"),
-                    );
-                    self.wraps.wraps.pop();
-                    if was_dek_minted_for_this_op {
-                        self.dek = None;
-                    }
-                    self.setup_form.busy = false;
-                    self.setup_form.error = Some(format!("Save failed: {e}"));
-                    return;
-                }
-
-                self.setup_form.busy = false;
-                if let Err(e) =
-                    self.finalize_factor_addition(was_dek_minted_for_this_op, context, "Security key enrolled")
-                {
-                    tracing::error!(error = %e, "finalize_factor_addition failed");
-                    self.setup_form.error = Some(format!("Finalise: {e}"));
-                }
-            }
-            Err(msg) => {
-                tracing::error!(error = %msg, "security key enrolment failed");
-                // Reset so the user can try again. Drop the half-minted DEK
-                // if it never made it onto disk.
-                if was_dek_minted_for_this_op {
-                    self.dek = None;
-                }
-                self.setup_form.busy = false;
-                self.setup_form.error = Some(format!("Enrol failed: {msg}"));
-            }
-        }
     }
 
     fn tick(&mut self) {
@@ -1024,20 +500,20 @@ impl App {
         // the sandbox API itself takes ~7s to answer a list, so polling
         // faster than that just stacks in-flight requests.
         if self.current_tab == Tab::Esvs
-            && self.last_esv_poll.elapsed() >= Duration::from_secs(30)
+            && self.esv.last_poll.elapsed() >= Duration::from_secs(30)
         {
-            self.refresh_esvs(true);
+            crate::screens::esv::refresh(self, true);
         }
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         match self.input_mode {
             InputMode::Normal => self.handle_normal_key(key).await?,
-            InputMode::SetupAuth => self.handle_setup_auth_key(key).await?,
-            InputMode::Unlock => self.handle_unlock_key(key),
-            InputMode::AuthSettings => self.handle_auth_settings_key(key)?,
-            InputMode::AuthSettingsConfirm => self.handle_auth_settings_confirm_key(key).await?,
-            InputMode::AuthSettingsRename => self.handle_auth_settings_rename_key(key)?,
+            InputMode::SetupAuth => crate::screens::auth_setup::handle_key(self, key).await?,
+            InputMode::Unlock => crate::screens::unlock::handle_key(self, key),
+            InputMode::AuthSettings => crate::screens::auth_settings::handle_key(self, key)?,
+            InputMode::AuthSettingsConfirm => crate::screens::auth_settings::handle_confirm_key(self, key).await?,
+            InputMode::AuthSettingsRename => crate::screens::auth_settings::handle_rename_key(self, key)?,
             InputMode::OnboardMenu => self.handle_onboard_menu_key(key).await?,
             InputMode::OnboardCookie => self.handle_cookie_key(key).await?,
             InputMode::OnboardUserPass => self.handle_up_key(key).await?,
@@ -1045,7 +521,7 @@ impl App {
             InputMode::OverwriteConfirm => self.handle_overwrite_key(key)?,
             InputMode::EnvPicker => self.handle_env_picker_key(key),
             InputMode::ProdConfirm => self.handle_prod_confirm_key(key).await?,
-            InputMode::EsvSearch => self.handle_esv_search_key(key),
+            InputMode::EsvSearch => crate::screens::esv::handle_search_key(self, key),
         }
         Ok(())
     }
@@ -1083,7 +559,7 @@ impl App {
         // Tab-specific keys first — these take precedence over the global
         // shortcuts so e.g. `j` in the ESV list scrolls instead of doing
         // nothing.
-        if self.current_tab == Tab::Esvs && self.handle_esv_normal_key(key) {
+        if self.current_tab == Tab::Esvs && crate::screens::esv::handle_normal_key(self, key) {
             return Ok(());
         }
         match key.code {
@@ -1108,593 +584,21 @@ impl App {
                 self.input_mode = InputMode::OnboardMenu;
             }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.open_auth_settings();
+                crate::screens::auth_settings::open(self);
             }
             KeyCode::Char('L') => {
-                self.lock_and_quit().await;
+                crate::screens::unlock::lock_and_quit(self).await;
             }
             _ => {}
         }
         Ok(())
     }
 
-    /// ESV-tab keys while in Normal mode. Returns `true` if the key was
-    /// consumed (skip the global key table) and `false` to fall through.
-    fn handle_esv_normal_key(&mut self, key: KeyEvent) -> bool {
-        let n = self.esv_matches().len();
-        match key.code {
-            KeyCode::Char('/') => {
-                self.input_mode = InputMode::EsvSearch;
-                true
-            }
-            KeyCode::Esc if !self.esv_query.is_empty() => {
-                self.esv_query.clear();
-                self.esv_selected = 0;
-                self.esv_scroll = 0;
-                true
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if n > 0 && self.esv_selected + 1 < n {
-                    self.esv_selected += 1;
-                }
-                true
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.esv_selected > 0 {
-                    self.esv_selected -= 1;
-                }
-                true
-            }
-            KeyCode::PageDown => {
-                self.esv_selected = (self.esv_selected + 10).min(n.saturating_sub(1));
-                true
-            }
-            KeyCode::PageUp => {
-                self.esv_selected = self.esv_selected.saturating_sub(10);
-                true
-            }
-            KeyCode::Char('g') => {
-                self.esv_selected = 0;
-                true
-            }
-            KeyCode::Char('G') => {
-                self.esv_selected = n.saturating_sub(1);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn handle_esv_search_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => {
-                self.esv_query.clear();
-                self.esv_selected = 0;
-                self.esv_scroll = 0;
-                self.input_mode = InputMode::Normal;
-                return;
-            }
-            KeyCode::Enter => {
-                self.input_mode = InputMode::Normal;
-                return;
-            }
-            // Vertical nav should keep scrolling the results even while
-            // the user is still typing — fall through to the normal-mode
-            // list handler instead of swallowing the key in the editor.
-            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
-                self.handle_esv_normal_key(key);
-                return;
-            }
-            _ => {}
-        }
-        // Everything else (chars, ←/→, Home/End, Ctrl-A/E, Backspace, Delete)
-        // is the editor's job.
-        let before = self.esv_query.value().to_string();
-        if self.esv_query.handle_key(&key) && self.esv_query.value() != before {
-            self.esv_selected = 0;
-            self.esv_scroll = 0;
-        }
-    }
-
-    /// Tell the agent to drop the cached DEK, then quit the TUI. The next
-    /// launch goes back through the Unlock screen.
-    async fn lock_and_quit(&mut self) {
-        self.dek = None;
-        // Best-effort. If the agent isn't running there's nothing to lock;
-        // we deliberately don't spawn one just to immediately lock it.
-        if let Ok(c) = AgentClient::connect(crate::agent::socket_path()).await {
-            let _ = c.send(&AgentRequest::Lock).await;
-        }
-        self.should_quit = true;
-    }
-
-    fn open_auth_settings(&mut self) {
-        // Clamp the cursor to the current factor list so we never index past
-        // the end (e.g. if a previous session removed the wrap that was
-        // selected).
-        let n = self.wraps.wraps.len();
-        if n == 0 {
-            self.auth_settings_idx = 0;
-        } else if self.auth_settings_idx >= n {
-            self.auth_settings_idx = n - 1;
-        }
-        self.input_mode = InputMode::AuthSettings;
-    }
-
-    fn handle_unlock_key(&mut self, key: KeyEvent) {
-        // While the unlock task is running, ignore everything except Esc-to-quit.
-        if self.unlock_busy {
-            if key.code == KeyCode::Esc {
-                self.should_quit = true;
-            }
-            return;
-        }
-
-        // Which methods are actually enrolled. Tab toggles only when both
-        // are present; otherwise focus is pinned to whichever exists.
-        let yk = self.wraps.has_security_key();
-        let pw = self.wraps.has_password();
-        let both = yk && pw;
-        let on_pin =
-            (yk && !pw) || (both && self.unlock_focus == UnlockFocus::SecurityKeyPin);
-
-        match key.code {
-            KeyCode::Esc => {
-                self.should_quit = true;
-            }
-            KeyCode::Tab | KeyCode::BackTab if both => {
-                self.unlock_focus = match self.unlock_focus {
-                    UnlockFocus::SecurityKeyPin => UnlockFocus::Password,
-                    UnlockFocus::Password => UnlockFocus::SecurityKeyPin,
-                };
-            }
-            KeyCode::Enter => {
-                if on_pin {
-                    if self.unlock_pin_input.is_empty() {
-                        self.unlock_error = Some("Security key PIN cannot be empty".into());
-                        return;
-                    }
-                    self.unlock_error = Some(crate::ui::unlock::TAP_MESSAGE.into());
-                    let pin = std::mem::take(&mut self.unlock_pin_input);
-                    self.spawn_security_key_poll(pin);
-                } else {
-                    if self.unlock_input.is_empty() {
-                        self.unlock_error = Some("Password cannot be empty".into());
-                        return;
-                    }
-                    let password = std::mem::take(&mut self.unlock_input);
-                    self.unlock_error = None;
-                    self.unlock_busy = true;
-                    let tx = self.events.tx.clone();
-                    tokio::spawn(async move {
-                        let result = crate::auth::unlock_password(password)
-                            .await
-                            .map_err(|e| e.to_string());
-                        let _ = tx.send(AppEvent::UnlockResult(result));
-                    });
-                }
-            }
-            KeyCode::Backspace => {
-                if on_pin {
-                    self.unlock_pin_input.pop();
-                } else {
-                    self.unlock_input.pop();
-                }
-            }
-            KeyCode::Char(c) => {
-                if on_pin {
-                    self.unlock_pin_input.push(c);
-                } else {
-                    self.unlock_input.push(c);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    async fn handle_unlock_result(&mut self, result: std::result::Result<UnlockOk, String>) {
-        // A late-arriving second result (e.g. security key unlock fired after we
-        // already accepted the password) — drop it.
-        if self.input_mode != InputMode::Unlock {
-            return;
-        }
-        self.unlock_busy = false;
-        match result {
-            Ok(UnlockOk { dek, jwks }) => {
-                self.dek = Some(dek);
-                self.jwks = jwks;
-                self.unlock_error = None;
-                self.unlock_pin_input.clear();
-                self.input_mode = InputMode::Normal;
-                // Tell the security key poll task to stop (if it was running).
-                self.security_key_cancel.store(true, Ordering::Relaxed);
-                self.security_key_armed = false;
-                // Order matters: the agent must hold the DEK *before* we fire
-                // off the ESV refresh, otherwise the ApiCall lands on a
-                // still-locked daemon and we surface a spurious "agent locked".
-                self.put_dek_to_agent().await;
-                self.refresh_esvs(false);
-            }
-            Err(e) => {
-                // A security key failure shouldn't take the screen down — let the
-                // user retry the tap or fall back to the password field.
-                self.security_key_cancel.store(true, Ordering::Relaxed);
-                self.security_key_armed = false;
-                self.unlock_error = Some(format!("Unlock failed: {e}"));
-            }
-        }
-    }
-
-    async fn handle_setup_auth_key(&mut self, key: KeyEvent) -> Result<()> {
-        // While a security key enrol task is running the form is read-only except
-        // for Esc-to-quit (the blocking task can't be cancelled mid-touch).
-        if self.setup_form.busy {
-            if key.code == KeyCode::Esc {
-                // Can't cancel an in-flight enrol cleanly — just refuse.
-            }
-            return Ok(());
-        }
-
-        match key.code {
-            KeyCode::Esc => match self.setup_context {
-                SetupContext::FirstRun => self.should_quit = true,
-                SetupContext::AddFactor => {
-                    self.setup_form = AuthSetupForm::default();
-                    self.setup_context = SetupContext::FirstRun;
-                    self.input_mode = InputMode::AuthSettings;
-                }
-            },
-            KeyCode::Tab => self.setup_form.next(self.setup_context),
-            KeyCode::BackTab => self.setup_form.prev(self.setup_context),
-            KeyCode::Left if self.setup_form.focused == AuthSetupField::Method => {
-                self.setup_form.method = step_method_prev(self.setup_form.method, self.setup_context);
-                self.setup_form.error = None;
-                self.setup_form.settle_focus_after_method_change();
-            }
-            KeyCode::Right if self.setup_form.focused == AuthSetupField::Method => {
-                self.setup_form.method = step_method_next(self.setup_form.method, self.setup_context);
-                self.setup_form.error = None;
-                self.setup_form.settle_focus_after_method_change();
-            }
-            KeyCode::Char(' ') if self.setup_form.focused == AuthSetupField::Method => {
-                self.setup_form.method = step_method_next(self.setup_form.method, self.setup_context);
-                self.setup_form.error = None;
-                self.setup_form.settle_focus_after_method_change();
-            }
-            KeyCode::Enter if self.setup_form.focused == AuthSetupField::Submit => {
-                self.commit_setup_auth().await?;
-            }
-            KeyCode::Enter => self.setup_form.next(self.setup_context),
-            KeyCode::Backspace => match self.setup_form.focused {
-                AuthSetupField::Password => {
-                    self.setup_form.password.pop();
-                }
-                AuthSetupField::Confirm => {
-                    self.setup_form.confirm.pop();
-                }
-                AuthSetupField::Pin => {
-                    self.setup_form.pin.pop();
-                }
-                AuthSetupField::Label => {
-                    self.setup_form.label.pop();
-                }
-                _ => {}
-            },
-            KeyCode::Char(c) => match self.setup_form.focused {
-                AuthSetupField::Password => self.setup_form.password.push(c),
-                AuthSetupField::Confirm => self.setup_form.confirm.push(c),
-                AuthSetupField::Pin => self.setup_form.pin.push(c),
-                AuthSetupField::Label => self.setup_form.label.push(c),
-                _ => {}
-            },
-            _ => {}
-        }
-        Ok(())
-    }
-
-    async fn commit_setup_auth(&mut self) -> Result<()> {
-        let context = self.setup_context;
-        match self.setup_form.method {
-            AuthMethod::None => {
-                // None is only valid from first-run. Defensive guard.
-                if context != SetupContext::FirstRun {
-                    self.setup_form.error = Some(
-                        "Use [x] disable encryption from Auth Settings instead".into(),
-                    );
-                    return Ok(());
-                }
-                // No encryption: write an empty keys.plain at mode 600 and
-                // record settings. No DEK; no wraps.toml.
-                self.dek = None;
-                let mut s = self.settings.unwrap_or_default();
-                s.encrypt_keys = false;
-                self.settings = Some(s);
-                s.save()?;
-                let bytes = serde_json::to_vec(&self.jwks)?;
-                ProjectConfig::save_keys_plain(&bytes)?;
-                self.setup_form = AuthSetupForm::default();
-                self.setup_context = SetupContext::FirstRun;
-                self.input_mode = InputMode::Normal;
-                // Tell the agent we're in plain mode now — same race as the
-                // password-unlock path: an ESV refresh that fires before
-                // this completes would land on a locked daemon.
-                self.unlock_plain_agent().await;
-            }
-            AuthMethod::Password => {
-                if self.setup_form.password.is_empty() {
-                    self.setup_form.error = Some("Password cannot be empty".into());
-                    self.setup_form.focused = AuthSetupField::Password;
-                    return Ok(());
-                }
-                if self.setup_form.password != self.setup_form.confirm {
-                    self.setup_form.error = Some("Passwords do not match".into());
-                    self.setup_form.focused = AuthSetupField::Confirm;
-                    return Ok(());
-                }
-
-                // Mint a DEK iff there isn't one yet. Re-using an existing
-                // DEK is what makes "change password" work without touching
-                // keys.enc.
-                let freshly_minted = self.dek.is_none();
-                let dek = self.dek.clone().unwrap_or_else(Dek::random);
-                let (salt, nonce, ct) =
-                    crypto::wrap_dek_with_password(&dek, &self.setup_form.password)?;
-                self.wraps.upsert_password(Wrap::Password {
-                    salt: wraps::b64_encode(&salt),
-                    nonce: wraps::b64_encode(&nonce),
-                    ciphertext: wraps::b64_encode(&ct),
-                });
-                self.wraps.save()?;
-                self.dek = Some(dek);
-                self.finalize_factor_addition(freshly_minted, context, "Password set")?;
-            }
-            AuthMethod::SecurityKey => {
-                if self.setup_form.pin.is_empty() {
-                    self.setup_form.error = Some("FIDO2 PIN cannot be empty".into());
-                    self.setup_form.focused = AuthSetupField::Pin;
-                    return Ok(());
-                }
-                if self.setup_form.label.trim().is_empty() {
-                    self.setup_form.error = Some("Label cannot be empty".into());
-                    self.setup_form.focused = AuthSetupField::Label;
-                    return Ok(());
-                }
-                let dek = self.dek.clone().unwrap_or_else(Dek::random);
-                self.dek = Some(dek.clone());
-                self.setup_form.busy = true;
-                self.setup_form.error = None;
-                // Pull (or generate) the file-level hmac-secret salt. The
-                // in-memory mutation lands on disk inside
-                // handle_security_key_enroll_result after the enrolment
-                // succeeds.
-                let hmac_salt = self.wraps.get_or_create_security_key_salt();
-                let pin = std::mem::take(&mut self.setup_form.pin);
-                let label = self.setup_form.label.trim().to_string();
-                let tx = self.events.tx.clone();
-                tokio::task::spawn_blocking(move || {
-                    let result = enroll_security_key_blocking(dek, label, Some(pin), hmac_salt);
-                    let _ = tx.send(AppEvent::SecurityKeyEnrollResult(result));
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Shared "after a wrap was just persisted" tail. Handles the encryption
-    /// transition (keys.plain → keys.enc) when this is the first factor, and
-    /// routes back to whichever screen launched SetupAuth.
-    fn finalize_factor_addition(
-        &mut self,
-        freshly_minted_dek: bool,
-        context: SetupContext,
-        success_toast: &str,
-    ) -> Result<()> {
-        let already_encrypted =
-            matches!(self.settings, Some(Settings { encrypt_keys: true, .. }));
-
-        if !already_encrypted {
-            // We just added the first factor while encryption was disabled
-            // (or this is first-run with no prior settings.toml). Promote
-            // keys.plain → keys.enc and flip the flag.
-            let dek = self
-                .dek
-                .as_ref()
-                .ok_or_else(|| crate::Error::Crypto("DEK missing".into()))?;
-            crate::config::enable_encryption(dek)?;
-            let mut s = self.settings.unwrap_or_default();
-            s.encrypt_keys = true;
-            self.settings = Some(s);
-        } else if freshly_minted_dek {
-            // Defensive: should not happen — if encryption was already on,
-            // we have a DEK and didn't mint a fresh one. But if the state
-            // ever got out of sync, persist the new DEK so keys.enc is
-            // readable.
-            self.persist_keys()?;
-        }
-        // Else (already encrypted + DEK unchanged): wraps.toml already saved
-        // by the caller, nothing else to do.
-
-        self.setup_form = AuthSetupForm::default();
-        let next_mode = match context {
-            SetupContext::FirstRun => InputMode::Normal,
-            SetupContext::AddFactor => InputMode::AuthSettings,
-        };
-        self.setup_context = SetupContext::FirstRun;
-        self.input_mode = next_mode;
-        self.push_toast(ToastKind::Success, success_toast);
-        Ok(())
-    }
-
-    fn handle_auth_settings_key(&mut self, key: KeyEvent) -> Result<()> {
-        let n = self.wraps.wraps.len();
-        match key.code {
-            KeyCode::Esc => {
-                self.input_mode = InputMode::Normal;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.auth_settings_idx > 0 {
-                    self.auth_settings_idx -= 1;
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if n > 0 && self.auth_settings_idx + 1 < n {
-                    self.auth_settings_idx += 1;
-                }
-            }
-            KeyCode::Char('p') | KeyCode::Char('P') => {
-                self.start_add_factor(AuthMethod::Password);
-            }
-            KeyCode::Char('s') | KeyCode::Char('S') => {
-                self.start_add_factor(AuthMethod::SecurityKey);
-            }
-            KeyCode::Char('d') | KeyCode::Char('D') if n > 0 => {
-                // Last-factor guard — falls through to disable-encryption.
-                if n == 1 {
-                    self.pending_auth_action = Some(PendingAuthAction::DisableEncryption);
-                } else {
-                    self.pending_auth_action =
-                        Some(PendingAuthAction::RemoveWrap(self.auth_settings_idx));
-                }
-                self.input_mode = InputMode::AuthSettingsConfirm;
-            }
-            KeyCode::Char('r') | KeyCode::Char('R') if n > 0 => {
-                // Only security-key wraps carry a user-editable label; the
-                // password row is always "Master password".
-                if let Some(Wrap::SecurityKey { label, .. }) =
-                    self.wraps.wraps.get(self.auth_settings_idx)
-                {
-                    self.rename_input = label.clone().unwrap_or_default();
-                    self.input_mode = InputMode::AuthSettingsRename;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn handle_auth_settings_rename_key(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Esc => {
-                self.rename_input.clear();
-                self.input_mode = InputMode::AuthSettings;
-            }
-            KeyCode::Enter => {
-                let new_label = self.rename_input.trim().to_string();
-                if new_label.is_empty() {
-                    // Silently refuse — Esc cancels, Enter requires a label.
-                    return Ok(());
-                }
-                if let Some(Wrap::SecurityKey { label, .. }) =
-                    self.wraps.wraps.get_mut(self.auth_settings_idx)
-                {
-                    *label = Some(new_label);
-                    self.wraps.save()?;
-                    self.push_toast(ToastKind::Success, "Renamed");
-                }
-                self.rename_input.clear();
-                self.input_mode = InputMode::AuthSettings;
-            }
-            KeyCode::Backspace => {
-                self.rename_input.pop();
-            }
-            KeyCode::Char(c) => {
-                self.rename_input.push(c);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// Open the SetupAuth form pre-set for "add factor" mode.
-    fn start_add_factor(&mut self, method: AuthMethod) {
-        self.setup_form = AuthSetupForm::default();
-        self.setup_form.method = method;
-        self.setup_form.focused = match method {
-            AuthMethod::Password => AuthSetupField::Password,
-            AuthMethod::SecurityKey => AuthSetupField::Pin,
-            AuthMethod::None => AuthSetupField::Method,
-        };
-        if method == AuthMethod::SecurityKey {
-            self.setup_form.label = format!(
-                "Security key {}",
-                self.wraps.security_key_wraps().count() + 1
-            );
-        }
-        self.setup_context = SetupContext::AddFactor;
-        self.input_mode = InputMode::SetupAuth;
-    }
-
-    async fn handle_auth_settings_confirm_key(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                let action = self.pending_auth_action.take();
-                match action {
-                    Some(PendingAuthAction::RemoveWrap(idx)) => {
-                        if idx < self.wraps.wraps.len() {
-                            self.wraps.wraps.remove(idx);
-                            // If that was the last security key, drop the
-                            // shared salt — the next enrolment generates a
-                            // fresh one.
-                            self.wraps.clear_security_key_salt_if_unused();
-                            self.wraps.save()?;
-                            if self.auth_settings_idx >= self.wraps.wraps.len()
-                                && !self.wraps.wraps.is_empty()
-                            {
-                                self.auth_settings_idx = self.wraps.wraps.len() - 1;
-                            }
-                            self.push_toast(ToastKind::Success, "Factor removed");
-                        }
-                    }
-                    Some(PendingAuthAction::DisableEncryption) => {
-                        if let Some(dek) = self.dek.clone() {
-                            crate::config::disable_encryption(&dek)?;
-                            self.dek = None;
-                            self.wraps = WrapsFile::default();
-                            let mut s = self.settings.unwrap_or_default();
-                            s.encrypt_keys = false;
-                            self.settings = Some(s);
-                            self.auth_settings_idx = 0;
-                            // Switch the agent over to plain mode now that
-                            // keys.plain exists; otherwise the next ApiCall
-                            // would hit a daemon still holding the (now
-                            // useless) DEK.
-                            self.unlock_plain_agent().await;
-                            self.push_toast(
-                                ToastKind::Info,
-                                "Encryption disabled — credentials at keys.plain",
-                            );
-                        } else {
-                            self.push_toast(
-                                ToastKind::Error,
-                                "Cannot disable: not unlocked",
-                            );
-                        }
-                    }
-                    None => {}
-                }
-                self.input_mode = InputMode::AuthSettings;
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                self.pending_auth_action = None;
-                self.input_mode = InputMode::AuthSettings;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
+    /// Backwards-compat shim so existing UI callers
+    /// (`ui::auth_settings::draw_confirm`) keep working without touching
+    /// the rendering code.
     pub fn pending_auth_action_label(&self) -> Option<String> {
-        match &self.pending_auth_action {
-            Some(PendingAuthAction::RemoveWrap(idx)) => self
-                .wraps
-                .wraps
-                .get(*idx)
-                .map(|w| format!("Remove factor: {}?", w.label())),
-            Some(PendingAuthAction::DisableEncryption) => Some(
-                "Disable encryption? Credentials will be written to keys.plain.".into(),
-            ),
-            None => None,
-        }
+        self.auth_settings.pending_action_label(&self.wraps)
     }
 
     async fn handle_onboard_menu_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -2098,7 +1002,7 @@ impl App {
             KeyCode::Enter => {
                 self.set_active_tenant(self.env_picker_idx);
                 self.input_mode = InputMode::Normal;
-                self.refresh_esvs(false);
+                crate::screens::esv::refresh(self, false);
             }
             _ => {}
         }
@@ -2495,26 +1399,6 @@ async fn run_bootstrap_from_userpass(
     ));
 }
 
-/// Step the method radio left/right, skipping `None` when we're inside the
-/// "add factor" flow from Auth Settings (you can't degrade encryption by
-/// adding a factor).
-fn step_method_next(current: AuthMethod, context: SetupContext) -> AuthMethod {
-    let next = current.next();
-    if context == SetupContext::AddFactor && next == AuthMethod::None {
-        next.next()
-    } else {
-        next
-    }
-}
-
-fn step_method_prev(current: AuthMethod, context: SetupContext) -> AuthMethod {
-    let prev = current.prev();
-    if context == SetupContext::AddFactor && prev == AuthMethod::None {
-        prev.prev()
-    } else {
-        prev
-    }
-}
 
 // Re-exported from `crate::auth` so existing `app::UnlockOk` call sites
 // (event.rs, etc.) keep compiling against the moved type.
@@ -2547,23 +1431,3 @@ fn pick_initial_tenant_idx(tenants: &[Tenant], config: Option<&ProjectConfig>) -
     0
 }
 
-/// is the file-level salt from WrapsFile — shared across every security-key
-/// wrap so unlock can be done in a single allowList call.
-fn enroll_security_key_blocking(
-    dek: Dek,
-    label: String,
-    pin: Option<String>,
-    hmac_salt: [u8; crate::security_key::HMAC_SALT_LEN],
-) -> std::result::Result<Wrap, String> {
-    let enrolment =
-        crate::security_key::enroll(pin.as_deref(), &hmac_salt).map_err(|e| e.to_string())?;
-    let (nonce, ct) =
-        crypto::wrap_dek_with_kek(&dek, &enrolment.hmac).map_err(|e| e.to_string())?;
-    Ok(Wrap::SecurityKey {
-        label: Some(label),
-        credential_id: wraps::b64_encode(&enrolment.credential_id),
-        rp_id: crate::security_key::RP_ID.to_string(),
-        nonce: wraps::b64_encode(&nonce),
-        ciphertext: wraps::b64_encode(&ct),
-    })
-}
