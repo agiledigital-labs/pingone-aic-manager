@@ -17,17 +17,17 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.input_mode {
         InputMode::OnboardMenu => draw_menu(f, app),
         InputMode::OnboardCookie => {
-            if let Some(form) = &app.cookie_form {
+            if let Some(form) = &app.onboard.cookie_form {
                 draw_cookie_form(f, form);
             }
         }
         InputMode::OnboardUserPass => {
-            if let Some(form) = &app.up_form {
+            if let Some(form) = &app.onboard.up_form {
                 draw_up_form(f, form);
             }
         }
         InputMode::OnboardPaste => {
-            if let Some(form) = &app.paste_form {
+            if let Some(form) = &app.onboard.paste_form {
                 draw_paste_form(f, form);
             }
         }
@@ -66,7 +66,7 @@ fn draw_menu(f: &mut Frame, app: &App) {
         .highlight_symbol("▶ ");
 
     let mut state = ListState::default();
-    state.select(Some(app.onboard_menu_idx));
+    state.select(Some(app.onboard.menu_idx));
     f.render_stateful_widget(list, area, &mut state);
 }
 
