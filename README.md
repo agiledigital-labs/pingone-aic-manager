@@ -1,11 +1,14 @@
 # aic-edit
 
-A Rust + Ratatui TUI for managing PingOne Advanced Identity Cloud (AIC,
-formerly ForgeRock Identity Cloud) tenant configuration.
+A Rust + Ratatui TUI **and** a `kubectl`-style CLI for managing PingOne
+Advanced Identity Cloud (AIC, formerly ForgeRock Identity Cloud) tenant
+configuration. Both surfaces share an `ssh-agent`-shaped background daemon
+that holds decrypted service-account keys in memory and mints / refreshes
+bearer tokens on demand, so every tenant call goes through one path.
 
-**Status:** Step 1 complete (API research + verified docs + cargo skeleton).
-Step 2 (TUI implementation) is planned but not yet started — see
-[PLAN.md](PLAN.md).
+**Status:** Step 1 + Step 2 + agent / CLI + ESV listing complete. Onboarding
+(cookie / userpass / paste / sandbox-import) works end-to-end. Scripts /
+OAuth2 / SAML / journeys are the next slices — see [PLAN.md](PLAN.md).
 
 ## What it does (target scope)
 
@@ -35,7 +38,11 @@ passkey 2FA — a hard requirement for the maintainer.
 | [`docs/DESIGN.md`](docs/DESIGN.md)                         | TUI design rules (palette, layout, keybindings).                                                                                    |
 | [`docs/api/`](docs/api/)                                   | Verified AIC API reference. **Read before writing any code that hits a tenant.** Each file has a "Verified against" date for trust. |
 | [`scripts/verify-endpoint.sh`](scripts/verify-endpoint.sh) | Mints a service-account access token from `.envrc` and curls any AIC path. Used to verify endpoints before documenting them.        |
-| `Cargo.toml`, `src/main.rs`                                | Compilation skeleton (stub binary; `cargo check` passes).                                                                           |
+| `src/agent/`                                               | The background daemon (Unix-socket protocol, AicClient cache, token mint).                                                          |
+| `src/aic/api.rs`, `src/aic/esv.rs`                         | Surface-agnostic AIC helpers — **the only path** TUI/CLI use for tenant HTTP. New resources go here.                                |
+| `src/cli/mod.rs`                                           | `aic` subcommands (login, status, ctx, esv list, …). Resource commands call `aic::api` / `aic::esv`.                                |
+| `src/app.rs`                                               | TUI coordinator: state, key dispatch, ESV view, onboarding flows.                                                                   |
+| `Cargo.toml`, `src/main.rs`                                | Single binary; no-args runs the TUI, any subcommand routes through `src/cli`.                                                       |
 
 ## Local setup
 
@@ -79,22 +86,32 @@ scripts/verify-endpoint.sh "/environment/variables"      # smoke test
 First run bootstraps a Python venv at `.venv-tools/` (used only for JWT
 signing in the bash helper — the Rust app does this natively).
 
-### 4. Build
+### 4. Build + run
 
 ```bash
-cargo build       # compiles the stub
-cargo run         # prints a placeholder; Step 2 implementation hasn't started
+cargo build
+cargo run             # launches the TUI
+cargo run -- --help   # CLI subcommands
+cargo run -- agent    # foreground daemon (auto-spawned otherwise)
+cargo run -- login    # unlock the agent for this session
+cargo run -- esv list # talk to the active tenant via the agent
 ```
+
+The agent listens on `.aic-edit/agent.sock` (mode 0600). Killing it (`aic
+stop`) clears in-memory credentials; an idle timeout does the same after
+1 h by default (overridable via `settings.toml` or `--idle-timeout`).
 
 ## Implementation status
 
-| Step                                                                         | Status                                              | Output                                                                                       |
-| ---------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **1.** Research + verified API docs + cargo skeleton                         | ✅ done                                             | `docs/api/`, `CLAUDE.md`, stub `src/main.rs`                                                 |
-| **2.** App skeleton, encryption, in-TUI tenant onboarding                    | 📋 planned (see [PLAN.md](PLAN.md))                 | Working tab strip, env chrome, "add tenant via browser or paste" flow, encrypted local store |
-| **3.** ESVs tab — list, edit, apply                                          | not yet planned                                     |                                                                                              |
-| **4.** Scripts tab — two-way file sync with content-based conflict detection | not yet planned                                     |                                                                                              |
-| Later                                                                        | OAuth2 / OIDC, SAML, Journeys, Logs, Yubikey unlock |                                                                                              |
+| Step                                                            | Status      | Output                                                                                        |
+| --------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------- |
+| **1.** Research + verified API docs + cargo skeleton            | ✅ done     | `docs/api/`, `CLAUDE.md`                                                                      |
+| **2.** TUI foundation, encryption, three-pattern onboarding     | ✅ done     | Unlock + onboarding screens, `keys.enc` / `wraps.toml` (master-pw + security-key envelope)    |
+| **3.** Agent + CLI                                              | ✅ done     | Single-binary `aic`, Unix-socket protocol, `aic::api` + `aic::esv` shared between TUI and CLI |
+| **4.** ESVs — list + fuzzy search + preview                     | ✅ done     | `/`-search with live scoring (nucleo), vertical split with JSON preview                       |
+| **5.** ESVs — edit + apply (`/environment/startup?_action=…`)   | next        |                                                                                               |
+| **6.** Scripts (two-way sync with content-based conflict check) | not started |                                                                                               |
+| Later                                                           |             | OAuth2 / OIDC, SAML, Journeys, Logs, App.rs screen-split refactor                             |
 
 ## How to work on this codebase (for AI assistants)
 

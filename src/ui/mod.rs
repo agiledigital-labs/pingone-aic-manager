@@ -191,15 +191,26 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     } else {
         Color::DarkGray
     });
-    let cursor = if searching { "▏" } else { "" };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" /", query_style),
-            Span::styled(app.esv_query.clone(), query_style),
-            Span::styled(cursor, query_style.add_modifier(Modifier::SLOW_BLINK)),
-        ])),
-        cols[0],
-    );
+    // Standard block cursor: reverse-video the char under the cursor (or a
+    // single space at end-of-line). Inserting a separate cursor glyph like
+    // "▏" displaces following columns in fonts that render box-drawing
+    // characters double-wide.
+    let cursor_style = query_style.add_modifier(Modifier::REVERSED);
+    let mut spans: Vec<Span> = vec![Span::styled(" /", query_style)];
+    let cursor_idx = app.esv_query.cursor();
+    let chars: Vec<char> = app.esv_query.value().chars().collect();
+    if searching {
+        for (i, c) in chars.iter().enumerate() {
+            let style = if i == cursor_idx { cursor_style } else { query_style };
+            spans.push(Span::styled(c.to_string(), style));
+        }
+        if cursor_idx >= chars.len() {
+            spans.push(Span::styled(" ", cursor_style));
+        }
+    } else {
+        spans.push(Span::styled(app.esv_query.value().to_string(), query_style));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             count_text,

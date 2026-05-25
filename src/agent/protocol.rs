@@ -7,16 +7,25 @@ use serde::{Deserialize, Serialize};
 pub enum Request {
     /// Liveness probe. Cheap; doesn't require unlock.
     Ping,
-    /// Decrypt `keys.enc` with the supplied master password and hold the DEK
-    /// (and the derived JWK map) in memory until idle timeout or `Lock`.
-    Unlock { password: String },
-    /// Cache an already-derived 32-byte DEK (base64). Used by the TUI after a
-    /// security-key unlock — the device produces the DEK locally, so the
-    /// daemon never sees the PIN or HMAC inputs.
+    /// Cache an already-derived 32-byte DEK (base64). The CLI and TUI both
+    /// derive the DEK themselves (Argon2 from a password, or hmac-secret
+    /// from a security key) via `crate::auth::*` and hand it to the agent —
+    /// the daemon never sees the password or PIN. There used to be a
+    /// `Request::Unlock { password }` that did the Argon2 work inside the
+    /// daemon; it was removed to keep one canonical unlock path.
     PutDek { dek_b64: String },
+    /// Load `.aic-edit/keys.plain` into the agent. Used when the user
+    /// opted out of encryption (`settings.encrypt_keys = false`); there's
+    /// no DEK, the file is already plaintext, and the agent just holds
+    /// the JWK map in memory. CLI/TUI call this in place of `PutDek` when
+    /// they detect plain mode on startup.
+    UnlockPlain,
     /// Return the cached DEK (`Response::Dek`) or `Response::Locked` if there
-    /// is no session. The TUI calls this on startup to skip the unlock screen
-    /// when the daemon already holds a DEK.
+    /// is no encrypted session. The TUI calls this on startup to skip the
+    /// unlock screen when the daemon already holds a DEK. **Plain mode
+    /// also answers `Locked`** — there's no DEK to return — so callers
+    /// shouldn't infer "agent is locked" from a `Locked` reply without
+    /// checking `Status::unlocked` too.
     GetDek,
     /// Drop the cached DEK, JWK map, and any cached tokens.
     Lock,

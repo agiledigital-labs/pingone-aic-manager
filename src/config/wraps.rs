@@ -31,6 +31,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 
 use crate::config::ProjectConfig;
 use crate::{Error, Result};
@@ -121,8 +122,13 @@ impl WrapsFile {
 
     pub fn save(&self) -> Result<()> {
         fs::create_dir_all(ProjectConfig::dir())?;
+        let path = ProjectConfig::wraps_path();
         let body = toml::to_string_pretty(self)?;
-        fs::write(ProjectConfig::wraps_path(), body)?;
+        fs::write(&path, body)?;
+        // wraps.toml contains password-Argon2 salts + security-key credential
+        // ids — material an attacker with read access can use to brute-force
+        // or impersonate. Match the keys.enc / keys.plain protections.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
         ProjectConfig::write_gitignore()?;
         Ok(())
     }

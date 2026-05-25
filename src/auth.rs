@@ -63,3 +63,18 @@ pub async fn put_dek_to_agent(dek: &Dek) -> Result<()> {
         other => Err(Error::Config(format!("unexpected reply: {other:?}"))),
     }
 }
+
+/// Tell the agent to load `.aic-edit/keys.plain` — the no-encryption unlock
+/// path. Surfaces a clear error when the file is missing (e.g. the user is
+/// in encrypted mode but called this anyway) so the caller can show
+/// something actionable.
+pub async fn unlock_plain_agent() -> Result<()> {
+    let client = AgentClient::connect_or_spawn().await?;
+    match client.send(&AgentRequest::UnlockPlain).await? {
+        AgentResponse::Ok => Ok(()),
+        AgentResponse::Error { message } => Err(Error::Auth(format!(
+            "agent rejected UnlockPlain: {message}"
+        ))),
+        other => Err(Error::Config(format!("unexpected reply: {other:?}"))),
+    }
+}

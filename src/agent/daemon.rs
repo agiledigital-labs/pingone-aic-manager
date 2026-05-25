@@ -21,15 +21,27 @@ use super::{log_path, pid_path, socket_path};
 
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 
+/// Credential vault state the daemon holds in memory.
+///
+/// Two unlocked flavours mirror the two on-disk layouts:
+///
+/// - `Encrypted { dek }` — `.aic-edit/keys.enc` exists; the DEK was handed
+///   to us via `PutDek`. `build_client` decrypts the file on demand.
+/// - `Plain { jwks }` — user picked "no encryption"; `.aic-edit/keys.plain`
+///   is a plaintext map and we hold its contents directly. There's no DEK
+///   to fish out, so `GetDek` answers `Locked` even though API calls work.
+enum Vault {
+    Locked,
+    Encrypted { dek: Dek },
+    Plain { jwks: HashMap<String, serde_json::Value> },
+}
+
 struct AgentState {
     project_dir: String,
-    /// `None` when locked. When unlocked, the 32-byte DEK that decrypts
-    /// `keys.enc`. The TUI hands us this directly after a security-key
-    /// unlock; the password unlock path derives it from Argon2 internally.
-    dek: Option<Dek>,
+    vault: Vault,
     /// AicClients are built lazily on the first `GetToken { tenant }` after
     /// unlock and cached here for their token-cache + HTTP-connection-pool
-    /// benefit. Cleared on `Lock` (and whenever the DEK changes).
+    /// benefit. Cleared on `Lock` (and whenever the vault changes).
     clients: HashMap<String, Arc<AicClient>>,
     last_request: Instant,
     idle_timeout: Duration,
@@ -39,7 +51,7 @@ impl AgentState {
     fn new(project_dir: String, idle_timeout: Duration) -> Self {
         Self {
             project_dir,
-            dek: None,
+            vault: Vault::Locked,
             clients: HashMap::new(),
             last_request: Instant::now(),
             idle_timeout,
@@ -51,12 +63,12 @@ impl AgentState {
     }
 
     fn lock(&mut self) {
-        self.dek = None;
+        self.vault = Vault::Locked;
         self.clients.clear();
     }
 
     fn is_unlocked(&self) -> bool {
-        self.dek.is_some()
+        !matches!(self.vault, Vault::Locked)
     }
 }
 
@@ -250,21 +262,21 @@ async fn handle(
             version: env!("CARGO_PKG_VERSION").to_string(),
             pid: std::process::id(),
         },
-        Request::Unlock { password } => match do_unlock(&password, state).await {
+        Request::PutDek { dek_b64 } => match do_put_dek(&dek_b64, state).await {
             Ok(()) => Response::Ok,
             Err(e) => Response::Error { message: e.to_string() },
         },
-        Request::PutDek { dek_b64 } => match do_put_dek(&dek_b64, state).await {
+        Request::UnlockPlain => match do_unlock_plain(state).await {
             Ok(()) => Response::Ok,
             Err(e) => Response::Error { message: e.to_string() },
         },
         Request::GetDek => {
             let s = state.read().await;
-            match &s.dek {
-                Some(dek) => Response::Dek {
+            match &s.vault {
+                Vault::Encrypted { dek } => Response::Dek {
                     dek_b64: B64.encode(dek.as_bytes()),
                 },
-                None => Response::Locked,
+                Vault::Plain { .. } | Vault::Locked => Response::Locked,
             }
         }
         Request::Lock => {
@@ -293,17 +305,6 @@ async fn handle(
     }
 }
 
-async fn do_unlock(password: &str, state: Arc<RwLock<AgentState>>) -> Result<()> {
-    // Argon2 takes hundreds of ms — keep it off the async thread.
-    let password = password.to_string();
-    let (dek, _jwks) =
-        tokio::task::spawn_blocking(move || config::unlock_with_password(&password))
-            .await
-            .map_err(|e| Error::Crypto(format!("unlock task panicked: {e}")))??;
-    set_dek(state, dek).await;
-    Ok(())
-}
-
 async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()> {
     let bytes = B64
         .decode(dek_b64)
@@ -312,16 +313,28 @@ async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()>
         .as_slice()
         .try_into()
         .map_err(|_| Error::Crypto("put_dek: DEK must be 32 bytes".into()))?;
-    set_dek(state, Dek::from_bytes(arr)).await;
+    set_vault(state, Vault::Encrypted { dek: Dek::from_bytes(arr) }).await;
     Ok(())
 }
 
-/// Replace whatever the daemon was holding with a freshly-supplied DEK. Any
-/// AicClients we'd cached are dropped so they get rebuilt against the new
-/// key the next time someone asks for a token.
-async fn set_dek(state: Arc<RwLock<AgentState>>, dek: Dek) {
+/// Load `keys.plain` into the agent — the "no encryption" mode. Used by the
+/// TUI/CLI when `settings.encrypt_keys = false`. Errors if the file is
+/// missing or malformed; callers should fall through to a clear "set up
+/// encryption first" message in that case.
+async fn do_unlock_plain(state: Arc<RwLock<AgentState>>) -> Result<()> {
+    let bytes = ProjectConfig::load_keys_plain()?
+        .ok_or_else(|| Error::Config("no .aic-edit/keys.plain on disk".into()))?;
+    let jwks: HashMap<String, serde_json::Value> = serde_json::from_slice(&bytes)?;
+    set_vault(state, Vault::Plain { jwks }).await;
+    Ok(())
+}
+
+/// Replace whatever the daemon was holding. Any AicClients we'd cached are
+/// dropped so they get rebuilt against the new vault the next time someone
+/// asks for a token.
+async fn set_vault(state: Arc<RwLock<AgentState>>, vault: Vault) {
     let mut s = state.write().await;
-    s.dek = Some(dek);
+    s.vault = vault;
     s.clients.clear();
     s.touch();
 }
@@ -371,7 +384,7 @@ async fn do_get_token(
     // Fast path: AicClient was built on a previous request.
     {
         let s = state.read().await;
-        if s.dek.is_none() {
+        if !s.is_unlocked() {
             return Ok(None);
         }
         if let Some(client) = s.clients.get(tenant).cloned() {
@@ -382,8 +395,9 @@ async fn do_get_token(
         }
     }
 
-    // Slow path: decrypt keys.enc with the cached DEK and find the JWK for
-    // the named tenant. Cache the AicClient for the next request.
+    // Slow path: derive the JWK from the current vault (decrypt keys.enc
+    // with the cached DEK, or look up in the cached plain map) and cache
+    // the AicClient for the next request.
     let client = build_client(tenant, state.clone()).await?;
     let token = client.bearer().await?;
     let expires_at = client.token_cache.lock().unwrap().expires_at();
@@ -405,11 +419,11 @@ async fn do_api_call(
     // drops before we try anything that might need a write lock. tokio's
     // RwLock is write-preferring, so a write blocked by our own read guard
     // would also block every later reader and wedge the daemon.
-    let (has_dek, cached_client) = {
+    let (unlocked, cached_client) = {
         let s = state.read().await;
-        (s.dek.is_some(), s.clients.get(tenant).cloned())
+        (s.is_unlocked(), s.clients.get(tenant).cloned())
     };
-    if !has_dek {
+    if !unlocked {
         return Ok(None);
     }
     let client = match cached_client {
@@ -467,17 +481,26 @@ async fn build_client(
     tenant: &str,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<Arc<AicClient>> {
-    let dek = {
+    let jwk = {
         let s = state.read().await;
-        s.dek
-            .clone()
-            .ok_or_else(|| Error::Auth("agent is locked".into()))?
+        match &s.vault {
+            Vault::Locked => return Err(Error::Auth("agent is locked".into())),
+            Vault::Plain { jwks } => jwks
+                .get(tenant)
+                .cloned()
+                .ok_or_else(|| Error::Config(format!("no JWK on file for tenant: {tenant}")))?,
+            Vault::Encrypted { dek } => {
+                let dek = dek.clone();
+                // Drop the read guard before touching the filesystem so a
+                // concurrent reader isn't blocked behind disk I/O.
+                drop(s);
+                let jwks = config::decrypt_keys_file(&dek)?;
+                jwks.get(tenant)
+                    .cloned()
+                    .ok_or_else(|| Error::Config(format!("no JWK on file for tenant: {tenant}")))?
+            }
+        }
     };
-    let jwks = config::decrypt_keys_file(&dek)?;
-    let jwk = jwks
-        .get(tenant)
-        .cloned()
-        .ok_or_else(|| Error::Config(format!("no JWK on file for tenant: {tenant}")))?;
     let cfg = ProjectConfig::load()?
         .ok_or_else(|| Error::Config("no .aic-edit/config.toml in current dir".into()))?;
     let tcfg = cfg
