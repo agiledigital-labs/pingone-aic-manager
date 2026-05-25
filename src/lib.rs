@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod event;
 pub mod logging;
+pub mod screens;
 pub mod theme;
 pub mod ui;
 pub mod security_key;

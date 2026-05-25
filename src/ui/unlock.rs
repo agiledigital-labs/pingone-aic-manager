@@ -6,7 +6,8 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-use crate::app::{App, UnlockFocus};
+use crate::app::App;
+use crate::screens::unlock::Focus as UnlockFocus;
 use crate::security_key;
 use crate::ui::widgets::secret_field;
 
@@ -22,7 +23,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Single-field layout: when only one method exists, show that one; when
     // both exist, show whichever the focus is on (Tab toggles).
     let show_pin = if both {
-        app.unlock_focus == UnlockFocus::SecurityKeyPin
+        app.unlock.focus == UnlockFocus::SecurityKeyPin
     } else {
         has_yk
     };
@@ -37,14 +38,14 @@ pub fn draw(f: &mut Frame, app: &App) {
     ])
     .split(area);
 
-    let waiting_for_tap = app.unlock_error.as_deref() == Some(TAP_MESSAGE);
+    let waiting_for_tap = app.unlock.error.as_deref() == Some(TAP_MESSAGE);
 
     if show_pin {
         secret_field::draw(
             f,
             chunks[0],
             "Security key PIN",
-            &app.unlock_pin_input,
+            &app.unlock.pin_input,
             true,
             if waiting_for_tap {
                 Some(security_key::TAP_MESSAGE)
@@ -57,9 +58,9 @@ pub fn draw(f: &mut Frame, app: &App) {
             f,
             chunks[0],
             "Master password",
-            &app.unlock_input,
+            &app.unlock.input,
             true,
-            if app.unlock_busy { Some(UNLOCKING) } else { None },
+            if app.unlock.busy { Some(UNLOCKING) } else { None },
         );
     }
 
@@ -67,7 +68,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     // Error row sits below the hints with a 1-row gap. The waiting-for-tap
     // status is shown inside the PIN field's status row, not down here.
-    if let Some(err) = &app.unlock_error {
+    if let Some(err) = &app.unlock.error {
         if !waiting_for_tap {
             f.render_widget(
                 Paragraph::new(Span::styled(
