@@ -42,6 +42,10 @@ pub enum InputMode {
     OverwriteConfirm,
     EnvPicker,
     ProdConfirm,
+    /// `/` — fuzzy search the ESV list. Chars edit the query; Esc cancels
+    /// (and clears the filter); Enter commits and returns to Normal with
+    /// the filter still applied.
+    EsvSearch,
 }
 
 /// Which input on the Unlock screen currently has focus. Only meaningful when
@@ -286,6 +290,17 @@ pub struct App {
     esvs_refreshing: HashSet<String>,
     /// When the last ESV poll-refresh ran. Drives the 30s cadence in `tick`.
     last_esv_poll: Instant,
+
+    /// Fuzzy search query for the ESV list. Empty = show everything. Updated
+    /// while in `InputMode::EsvSearch`; persists after Enter so the filter
+    /// stays applied. Cleared on tenant switch + on Esc-from-search.
+    pub esv_query: String,
+    /// Index into the *filtered* ESV list. Always clamped to len-1 (or 0
+    /// when the filter eliminates everything).
+    pub esv_selected: usize,
+    /// First visible row of the filtered list — drives windowed rendering.
+    /// `draw_esvs` keeps `esv_selected` inside `[scroll, scroll + visible)`.
+    pub esv_scroll: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -293,6 +308,24 @@ pub enum EsvLoadState {
     Loading,
     Loaded(Vec<serde_json::Value>),
     Failed(String),
+}
+
+/// One row in the ESV list as the UI sees it: the underlying index into
+/// `EsvLoadState::Loaded`, the `_id` string for cheap re-rendering, the
+/// fuzzy-match score (0 when no filter is active), and the matched char
+/// positions in the `_id` for highlighting.
+#[derive(Debug, Clone)]
+pub struct EsvMatch {
+    pub idx: usize,
+    pub id: String,
+    pub score: u32,
+    pub positions: Vec<u32>,
+}
+
+/// Extract the `_id` field of an ESV variable; falls back to `"?"` when
+/// the API returned something unexpected.
+pub fn esv_id(v: &serde_json::Value) -> &str {
+    v.get("_id").and_then(|x| x.as_str()).unwrap_or("?")
 }
 
 enum PendingProdAction {
@@ -384,6 +417,9 @@ impl App {
             esvs: HashMap::new(),
             esvs_refreshing: HashSet::new(),
             last_esv_poll: Instant::now(),
+            esv_query: String::new(),
+            esv_selected: 0,
+            esv_scroll: 0,
         })
     }
 
@@ -651,11 +687,72 @@ impl App {
     /// logged but doesn't take the TUI down.
     fn set_active_tenant(&mut self, idx: usize) {
         self.active_tenant_idx = idx;
+        // Drop ESV view state (filter + selection) when the data behind it
+        // changes — anything else is just confusing.
+        self.esv_query.clear();
+        self.esv_selected = 0;
+        self.esv_scroll = 0;
         if let Some(t) = self.tenants.get(idx) {
             if let Err(e) = config::write_current_context(&t.name) {
                 tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
             }
         }
+    }
+
+    /// Apply the fuzzy filter to the active tenant's ESV list. Returns
+    /// `(matches, total)` where `matches` is a Vec of `(index_into_loaded_list,
+    /// score, match_positions)` sorted by score descending. `total` is the
+    /// unfiltered count (for the "N of M" header). Empty when there's no
+    /// data yet, or when the active tenant isn't `Loaded`.
+    pub fn esv_matches(&self) -> Vec<EsvMatch> {
+        let Some(tenant) = self.active_tenant() else { return Vec::new() };
+        let Some(EsvLoadState::Loaded(items)) = self.esvs.get(&tenant.name) else {
+            return Vec::new();
+        };
+        if self.esv_query.is_empty() {
+            // No filter — sort by _id ascending, no highlight positions.
+            let mut indexed: Vec<EsvMatch> = items
+                .iter()
+                .enumerate()
+                .map(|(i, v)| EsvMatch {
+                    idx: i,
+                    id: esv_id(v).to_string(),
+                    score: 0,
+                    positions: Vec::new(),
+                })
+                .collect();
+            indexed.sort_by(|a, b| a.id.cmp(&b.id));
+            return indexed;
+        }
+        use nucleo_matcher::{
+            pattern::{AtomKind, CaseMatching, Normalization, Pattern},
+            Config, Matcher, Utf32Str,
+        };
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        let pattern = Pattern::new(
+            &self.esv_query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
+        let mut out: Vec<EsvMatch> = Vec::new();
+        let mut buf = Vec::new();
+        let mut positions: Vec<u32> = Vec::new();
+        for (i, v) in items.iter().enumerate() {
+            let id = esv_id(v);
+            let haystack = Utf32Str::new(id, &mut buf);
+            positions.clear();
+            if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
+                out.push(EsvMatch {
+                    idx: i,
+                    id: id.to_string(),
+                    score,
+                    positions: positions.clone(),
+                });
+            }
+        }
+        out.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
+        out
     }
 
     /// True iff the in-memory DEK is set — meaning credentials are encrypted
@@ -766,10 +863,20 @@ impl App {
                 self.push_toast(kind, msg);
             }
             AppEvent::EsvListed { tenant, result } => {
+                let is_active = self.active_tenant().is_some_and(|t| t.name == tenant);
                 self.esvs_refreshing.remove(&tenant);
                 match result {
                     Ok(vs) => {
                         self.esvs.insert(tenant, EsvLoadState::Loaded(vs));
+                        // Re-clamp the selection in case the new list is
+                        // shorter than the old (deletions) or the filter now
+                        // matches fewer rows.
+                        if is_active {
+                            let n = self.esv_matches().len();
+                            if self.esv_selected >= n {
+                                self.esv_selected = n.saturating_sub(1);
+                            }
+                        }
                     }
                     Err(e) => {
                         // Don't clobber a previously-cached list with a
@@ -885,6 +992,7 @@ impl App {
             InputMode::OverwriteConfirm => self.handle_overwrite_key(key)?,
             InputMode::EnvPicker => self.handle_env_picker_key(key),
             InputMode::ProdConfirm => self.handle_prod_confirm_key(key).await?,
+            InputMode::EsvSearch => self.handle_esv_search_key(key),
         }
         Ok(())
     }
@@ -919,6 +1027,12 @@ impl App {
     }
 
     async fn handle_normal_key(&mut self, key: KeyEvent) -> Result<()> {
+        // Tab-specific keys first — these take precedence over the global
+        // shortcuts so e.g. `j` in the ESV list scrolls instead of doing
+        // nothing.
+        if self.current_tab == Tab::Esvs && self.handle_esv_normal_key(key) {
+            return Ok(());
+        }
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -949,6 +1063,78 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    /// ESV-tab keys while in Normal mode. Returns `true` if the key was
+    /// consumed (skip the global key table) and `false` to fall through.
+    fn handle_esv_normal_key(&mut self, key: KeyEvent) -> bool {
+        let n = self.esv_matches().len();
+        match key.code {
+            KeyCode::Char('/') => {
+                self.input_mode = InputMode::EsvSearch;
+                true
+            }
+            KeyCode::Esc if !self.esv_query.is_empty() => {
+                self.esv_query.clear();
+                self.esv_selected = 0;
+                self.esv_scroll = 0;
+                true
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if n > 0 && self.esv_selected + 1 < n {
+                    self.esv_selected += 1;
+                }
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.esv_selected > 0 {
+                    self.esv_selected -= 1;
+                }
+                true
+            }
+            KeyCode::PageDown => {
+                self.esv_selected = (self.esv_selected + 10).min(n.saturating_sub(1));
+                true
+            }
+            KeyCode::PageUp => {
+                self.esv_selected = self.esv_selected.saturating_sub(10);
+                true
+            }
+            KeyCode::Char('g') => {
+                self.esv_selected = 0;
+                true
+            }
+            KeyCode::Char('G') => {
+                self.esv_selected = n.saturating_sub(1);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_esv_search_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.esv_query.clear();
+                self.esv_selected = 0;
+                self.esv_scroll = 0;
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Enter => {
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.esv_query.pop();
+                self.esv_selected = 0;
+                self.esv_scroll = 0;
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.esv_query.push(c);
+                self.esv_selected = 0;
+                self.esv_scroll = 0;
+            }
+            _ => {}
+        }
     }
 
     /// Tell the agent to drop the cached DEK, then quit the TUI. The next
