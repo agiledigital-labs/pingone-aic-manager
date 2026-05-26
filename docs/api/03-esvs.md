@@ -142,13 +142,24 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
   All in-flight sessions survive but new operations get the refreshed values.
 - **You cannot rename an ESV.** The `_id` is the identifier; to "rename", create
   a new one and delete the old.
+- **`expressionType` is "immutable" via `PUT` only.** An in-place `PUT` that
+  changes `expressionType` is rejected with `400 {"message":"Changing the type
+  of an existing variable is not permitted"}`. **However**, a `DELETE` followed
+  by an immediate `PUT` with the new type works, with no restart required
+  between the two — verified on the sandbox 2026-05-26 (string → int round-trip
+  via `esv-aicedit-typetest`, response 200 both times). aic-edit takes this
+  path automatically when a save changes the type.
 
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-05-17
+- Date: 2026-05-26
 - Calls: `GET /environment/variables`, `GET /environment/variables/{id}`,
   `GET /environment/secrets`, `GET /environment/startup`. All 200 OK.
+- Type-change round-trip on `/environment/variables/{id}`:
+  `PUT (string → int)` → 400 "Changing the type ... not permitted";
+  `DELETE` → 200; subsequent `PUT (int)` → 200; `DELETE` → 200. No restart
+  between the delete and recreate.
 - Negative: `GET /environment/esv` → 404. (Ping docs' "ESV aggregate" path
   doesn't exist on AIC.)
 

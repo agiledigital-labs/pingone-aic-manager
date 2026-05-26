@@ -67,29 +67,54 @@ fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
     let mut spans: Vec<Span> = Vec::new();
-    if app.input_mode == InputMode::EsvSearch {
-        for (k, d) in [
-            ("Enter", "keep filter"),
-            ("Esc", "clear + exit"),
-        ] {
-            spans.extend(hint(k, d));
+    match app.input_mode {
+        InputMode::EsvSearch => {
+            for (k, d) in [("Enter", "keep filter"), ("Esc", "clear + exit")] {
+                spans.extend(hint(k, d));
+            }
         }
-    } else {
-        let base = [
-            ("R", "realm"),
-            ("T", "env"),
-            ("^N", "add tenant"),
-            ("^A", "auth settings"),
-            ("L", "lock"),
-            ("q", "quit"),
-        ];
-        let esv_extras: &[(&str, &str)] = if app.current_tab == Tab::Esvs {
-            &[("/", "search"), ("j/k", "nav")]
-        } else {
-            &[]
-        };
-        for (k, d) in esv_extras.iter().chain(base.iter()) {
-            spans.extend(hint(k, d));
+        InputMode::EsvEdit => {
+            for (k, d) in [
+                ("Tab", "navigate"),
+                ("←/→", "change type"),
+                ("Esc", "cancel"),
+            ] {
+                spans.extend(hint(k, d));
+            }
+        }
+        _ => {
+            let base = [
+                ("R", "realm"),
+                ("T", "env"),
+                ("^T", "add tenant"),
+                ("^A", "auth settings"),
+                ("L", "lock"),
+                ("q", "quit"),
+            ];
+            let pending = if app.current_tab == Tab::Esvs {
+                app.active_tenant()
+                    .map(|t| crate::screens::esv::pending_count(app, &t.name))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let esv_extras_base: &[(&str, &str)] = if app.current_tab == Tab::Esvs {
+                &[("/", "search"), ("j/k", "nav"), ("^N", "new variable")]
+            } else {
+                &[]
+            };
+            let esv_extras_apply: &[(&str, &str)] = if pending > 0 {
+                &[("^S", "apply changes")]
+            } else {
+                &[]
+            };
+            for (k, d) in esv_extras_apply
+                .iter()
+                .chain(esv_extras_base.iter())
+                .chain(base.iter())
+            {
+                spans.extend(hint(k, d));
+            }
         }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);

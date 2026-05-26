@@ -39,6 +39,13 @@ pub enum InputMode {
     /// (and clears the filter); Enter commits and returns to Normal with
     /// the filter still applied.
     EsvSearch,
+    /// Editing the ESV the cursor was on. The list/preview layout stays
+    /// the same; the preview pane goes editable + grows a Save button.
+    EsvEdit,
+    /// Small overlay confirm: are you sure you want to apply pending ESV
+    /// changes (i.e. trigger a tenant restart)? Unlike most modals, the
+    /// dashboard underneath stays drawn.
+    EsvRestartConfirm,
 }
 
 /// Re-export so existing `crate::app::AuthMethod` / `AuthSetupField` /
@@ -389,6 +396,12 @@ impl App {
             AppEvent::EsvListed { tenant, result } => {
                 crate::screens::esv::apply_listed(self, tenant, result);
             }
+            AppEvent::EsvSaveResult { tenant, id, result } => {
+                crate::screens::esv::apply_save_result(self, tenant, id, result);
+            }
+            AppEvent::EsvRestartResult { tenant, result } => {
+                crate::screens::esv::apply_restart_result(self, tenant, result);
+            }
             AppEvent::AuthCallbackProgress { body, prompt } => {
                 crate::screens::onboard::handle_auth_progress(self, body, prompt);
             }
@@ -441,6 +454,10 @@ impl App {
             InputMode::EnvPicker => self.handle_env_picker_key(key),
             InputMode::ProdConfirm => crate::screens::onboard::handle_prod_confirm_key(self, key).await?,
             InputMode::EsvSearch => crate::screens::esv::handle_search_key(self, key),
+            InputMode::EsvEdit => crate::screens::esv::handle_edit_key(self, key)?,
+            InputMode::EsvRestartConfirm => {
+                crate::screens::esv::handle_restart_confirm_key(self, key)?
+            }
         }
         Ok(())
     }
@@ -468,15 +485,18 @@ impl App {
                     Realm::Bravo => Realm::Alpha,
                 };
             }
+            // Ctrl-T must come before plain `t`/`T` — without the modifier
+            // guard split, the pattern below would also match ^T and
+            // never reach the onboard path.
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.onboard.menu_idx = 0;
+                self.input_mode = InputMode::OnboardMenu;
+            }
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 if !self.tenants.is_empty() {
                     self.env_picker_idx = self.active_tenant_idx;
                     self.input_mode = InputMode::EnvPicker;
                 }
-            }
-            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.onboard.menu_idx = 0;
-                self.input_mode = InputMode::OnboardMenu;
             }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 crate::screens::auth_settings::open(self);
