@@ -94,18 +94,45 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             app.input_mode = InputMode::AuthSettingsConfirm;
         }
         KeyCode::Char('r') | KeyCode::Char('R') if n > 0 => {
-            // Only security-key wraps carry a user-editable label; the
-            // password row is always "Master password".
-            if let Some(Wrap::SecurityKey { label, .. }) =
-                app.wraps.wraps.get(app.auth_settings.idx)
-            {
-                app.auth_settings.rename_input = label.clone().unwrap_or_default();
-                app.input_mode = InputMode::AuthSettingsRename;
+            start_rename(app);
+        }
+        KeyCode::Enter if n > 0 => edit_factor(app, app.auth_settings.idx),
+        KeyCode::Char(c @ '1'..='9') => {
+            // Number-key hotkey, matching the Add Tenant menu: jump the
+            // cursor to the row and trigger its edit action in one step.
+            let target = c.to_digit(10).unwrap() as usize - 1;
+            if target < n {
+                app.auth_settings.idx = target;
+                edit_factor(app, target);
             }
         }
         _ => {}
     }
     Ok(())
+}
+
+/// Open the edit action for the factor at `idx`. Password rows route to
+/// "change password"; security-key rows route to rename. The bottom hint
+/// row deliberately omits Enter — it's the natural default for any row,
+/// not a global verb.
+fn edit_factor(app: &mut App, idx: usize) {
+    match app.wraps.wraps.get(idx) {
+        Some(Wrap::Password { .. }) => {
+            crate::screens::auth_setup::start_add_factor(app, AuthMethod::Password);
+        }
+        Some(Wrap::SecurityKey { .. }) => {
+            app.auth_settings.idx = idx;
+            start_rename(app);
+        }
+        None => {}
+    }
+}
+
+fn start_rename(app: &mut App) {
+    if let Some(Wrap::SecurityKey { label, .. }) = app.wraps.wraps.get(app.auth_settings.idx) {
+        app.auth_settings.rename_input = label.clone().unwrap_or_default();
+        app.input_mode = InputMode::AuthSettingsRename;
+    }
 }
 
 pub fn handle_rename_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {

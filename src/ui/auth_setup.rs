@@ -1,6 +1,6 @@
-//! First-run auth-setup form. Centered on an otherwise-empty screen — no
-//! outer frame, no intro paragraph; just the method picker, the conditional
-//! credential fields, and a submit button.
+//! Setup-auth modal. First-run shows the method picker + the conditional
+//! field block; Auth-Settings "add factor" reuses the same screen with the
+//! picker collapsed. Goes through the shared modal chrome for title + hints.
 
 use ratatui::{
     Frame,
@@ -12,35 +12,68 @@ use ratatui::{
 
 use crate::app::{App, AuthMethod, AuthSetupField, SetupContext};
 use crate::security_key;
+use crate::ui::modal_chrome::Modal;
 use crate::ui::widgets::secret_field;
 
 const BG_UNFOCUSED: Color = Color::Indexed(234);
 const BG_FOCUSED: Color = Color::Indexed(236);
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let area = centered_form(f.area(), 64, 20);
+    let first_run = app.auth_setup.context == SetupContext::FirstRun;
+    let title = if first_run {
+        "Set up authentication"
+    } else {
+        match app.auth_setup.form.method {
+            AuthMethod::None => "Add factor",
+            AuthMethod::Password => "Change password",
+            AuthMethod::SecurityKey => "Add security key",
+        }
+    };
+
+    let hints: &[(&str, &str)] = if app.auth_setup.form.busy {
+        &[("Esc", "cancel")]
+    } else if first_run {
+        &[
+            ("Tab", "navigate"),
+            ("←/→", "change method"),
+            ("Enter", "submit"),
+            ("Esc", "quit"),
+        ]
+    } else {
+        &[
+            ("Tab", "navigate"),
+            ("Enter", "submit"),
+            ("Esc", "cancel"),
+        ]
+    };
 
     // The method picker only renders on first-run. When the user pressed
-    // `p`/`s` in auth_settings, the method is already chosen and showing it
-    // again would just be a redundant chip row.
-    let show_method = app.auth_setup.context == SetupContext::FirstRun;
+    // `p`/`s` in auth_settings the method is already known.
+    let show_method = first_run;
     let method_label_h = if show_method { 1 } else { 0 };
     let method_value_h = if show_method { 1 } else { 0 };
     let pre_body_gap_h = if show_method { 1 } else { 0 };
+    let body_height = method_label_h + method_value_h + pre_body_gap_h + 7 + 1 + 1 + 2;
+
+    let body = Modal {
+        title,
+        status: None,
+        hints,
+        body_height,
+    }
+    .draw(f, f.area());
 
     let chunks = Layout::vertical([
-        Constraint::Length(method_label_h), // method label (FirstRun only)
-        Constraint::Length(method_value_h), // radio row    (FirstRun only)
-        Constraint::Length(pre_body_gap_h), // gap
-        Constraint::Length(7),              // conditional field block
-        Constraint::Length(1),              // submit
-        Constraint::Length(1),              // gap
-        Constraint::Min(2),                 // error — grows to absorb leftover
-                                            // height, so long ctap-hid
-                                            // messages don't overflow.
-        Constraint::Length(1),              // hint
+        Constraint::Length(method_label_h),
+        Constraint::Length(method_value_h),
+        Constraint::Length(pre_body_gap_h),
+        Constraint::Length(7), // field block
+        Constraint::Length(1), // submit
+        Constraint::Length(1), // gap
+        Constraint::Min(2),    // error — absorbs leftover so long CTAP
+                               // messages don't overflow
     ])
-    .split(area);
+    .split(body);
 
     if show_method {
         draw_radio(f, app, chunks[0], chunks[1]);
@@ -61,18 +94,6 @@ pub fn draw(f: &mut Frame, app: &App) {
             chunks[6],
         );
     }
-
-    let hint = if app.auth_setup.form.busy {
-        "Working…"
-    } else if show_method {
-        "Tab/Shift-Tab navigate · ←/→ change method · Enter submit · Esc quit"
-    } else {
-        "Tab/Shift-Tab navigate · Enter submit · Esc cancel"
-    };
-    f.render_widget(
-        Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
-        chunks[7],
-    );
 }
 
 fn draw_radio(f: &mut Frame, app: &App, label_area: Rect, value_area: Rect) {
@@ -128,9 +149,9 @@ fn draw_none_body(f: &mut Frame, area: Rect) {
 
 fn draw_password_body(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::vertical([
-        Constraint::Length(2), // password label + value
-        Constraint::Length(1), // gap
-        Constraint::Length(2), // confirm label + value
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(2),
     ])
     .split(area);
 
@@ -154,10 +175,10 @@ fn draw_password_body(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_security_key_body(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::vertical([
-        Constraint::Length(secret_field::HEIGHT), // PIN field (label + value + status)
-        Constraint::Length(1),                    // gap
-        Constraint::Length(1),                    // label label
-        Constraint::Length(1),                    // label value
+        Constraint::Length(secret_field::HEIGHT),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
     ])
     .split(area);
 
@@ -191,15 +212,8 @@ fn draw_text_field(
     value: &str,
     focused: bool,
 ) {
-    let label_style = if focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
     f.render_widget(
-        Paragraph::new(Span::styled(label.to_string(), label_style)),
+        Paragraph::new(Span::styled(label.to_string(), label_style(focused))),
         label_area,
     );
     let bg = if focused { BG_FOCUSED } else { BG_UNFOCUSED };
@@ -223,7 +237,10 @@ fn draw_submit(f: &mut Frame, app: &App, area: Rect) {
             .bg(Color::Green)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Green)
+        // Same dark fill as an unselected input — the leading space then
+        // reads as the button's left padding instead of shifting the text
+        // right of the field labels above.
+        Style::default().fg(Color::Green).bg(BG_UNFOCUSED)
     };
     let label = match app.auth_setup.form.method {
         AuthMethod::None => " Continue without encryption ",
@@ -240,16 +257,5 @@ fn label_style(focused: bool) -> Style {
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
-    }
-}
-
-fn centered_form(parent: Rect, width: u16, height: u16) -> Rect {
-    let w = width.min(parent.width);
-    let h = height.min(parent.height);
-    Rect {
-        x: parent.x + (parent.width.saturating_sub(w)) / 2,
-        y: parent.y + (parent.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
     }
 }
