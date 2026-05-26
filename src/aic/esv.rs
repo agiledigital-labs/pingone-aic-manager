@@ -17,3 +17,79 @@ pub async fn list_variables(tenant: &str) -> Result<Vec<serde_json::Value>> {
         }),
     }
 }
+
+/// `GET /environment/variables/{id}` → single variable object. Used to
+/// refresh a record right before saving so we can do content-based
+/// conflict detection (variables have no `_rev`).
+pub async fn get_variable(tenant: &str, id: &str) -> Result<serde_json::Value> {
+    super::api::get(tenant, &format!("/environment/variables/{id}")).await
+}
+
+/// `PUT /environment/variables/{id}` with the editable fields. Returns the
+/// server's response (echoes the saved object). `confirmed_prod` is
+/// forwarded to the agent so prod-themed tenants can be guarded by the
+/// existing confirm flow.
+pub async fn update_variable(
+    tenant: &str,
+    id: &str,
+    description: &str,
+    expression_type: &str,
+    value_base64: &str,
+    confirmed_prod: bool,
+) -> Result<serde_json::Value> {
+    let body = serde_json::json!({
+        "valueBase64": value_base64,
+        "expressionType": expression_type,
+        "description": description,
+    });
+    super::api::put(
+        tenant,
+        &format!("/environment/variables/{id}"),
+        body,
+        confirmed_prod,
+    )
+    .await
+}
+
+/// `DELETE /environment/variables/{id}`. Used as the first half of a
+/// type-change save — AIC rejects in-place type changes on existing
+/// variables, but immediately recreating after a delete with a new type
+/// is fine (verified on the sandbox 2026-05-26). No restart needed
+/// between delete and recreate.
+pub async fn delete_variable(
+    tenant: &str,
+    id: &str,
+    confirmed_prod: bool,
+) -> Result<serde_json::Value> {
+    super::api::delete(tenant, &format!("/environment/variables/{id}"), confirmed_prod).await
+}
+
+/// `POST /environment/startup?_action=restart`. Triggers a tenant-wide
+/// restart so freshly-saved ESVs become the loaded values. Per the docs
+/// rate limits are tighter than the read endpoints — guard the call
+/// behind a user-confirmed action, never poll. Returns the server's
+/// response body (typically `{"restartStatus":"restarting"}`).
+pub async fn trigger_restart(tenant: &str, confirmed_prod: bool) -> Result<serde_json::Value> {
+    super::api::post(
+        tenant,
+        "/environment/startup?_action=restart",
+        serde_json::json!({}),
+        confirmed_prod,
+    )
+    .await
+}
+
+/// True iff the editable content of two variable objects matches. Used
+/// for conflict detection just before a PUT — we refetch and compare
+/// against the snapshot the user started editing from. Server-managed
+/// fields (`lastChangeDate`, `lastChangedBy`, `loaded`) are ignored.
+pub fn content_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    let pick = |v: &serde_json::Value| {
+        (
+            v.get("valueBase64").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            v.get("expressionType").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            v.get("description").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        )
+    };
+    pick(a) == pick(b)
+}

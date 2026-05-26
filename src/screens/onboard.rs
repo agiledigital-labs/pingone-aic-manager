@@ -154,17 +154,11 @@ pub async fn handle_cookie_key(app: &mut App, key: KeyEvent) -> crate::Result<()
             }
         }
         KeyCode::Enter => form.focused = form.focused.next(),
-        KeyCode::Backspace => {
+        _ => {
             if let Some(f) = form.focused_field_mut() {
-                f.backspace();
+                f.handle_key(&key);
             }
         }
-        KeyCode::Char(c) => {
-            if let Some(f) = form.focused_field_mut() {
-                f.push_char(c);
-            }
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -265,17 +259,11 @@ pub async fn handle_up_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             }
         }
         KeyCode::Enter => form.focused = form.focused.next(),
-        KeyCode::Backspace => {
+        _ => {
             if let Some(f) = form.focused_field_mut() {
-                f.backspace();
+                f.handle_key(&key);
             }
         }
-        KeyCode::Char(c) => {
-            if let Some(f) = form.focused_field_mut() {
-                f.push_char(c);
-            }
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -425,17 +413,11 @@ pub async fn handle_paste_key(app: &mut App, key: KeyEvent) -> crate::Result<()>
             form.jwk_input.push_newline();
         }
         KeyCode::Enter => form.focused = form.focused.next(),
-        KeyCode::Backspace => {
+        _ => {
             if let Some(f) = form.focused_field_mut() {
-                f.backspace();
+                f.handle_key(&key);
             }
         }
-        KeyCode::Char(c) => {
-            if let Some(f) = form.focused_field_mut() {
-                f.push_char(c);
-            }
-        }
-        _ => {}
     }
     Ok(())
 }

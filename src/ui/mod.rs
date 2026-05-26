@@ -5,6 +5,7 @@ pub mod header;
 pub mod modal;
 pub mod modal_chrome;
 pub mod onboard;
+pub mod popup_confirm;
 pub mod toast;
 pub mod unlock;
 pub mod widgets;
@@ -18,7 +19,10 @@ use ratatui::{
 };
 
 use crate::app::{App, InputMode};
-use crate::screens::esv::{id_of as esv_id, LoadState as EsvLoadState, Match as EsvMatch};
+use crate::screens::esv::{
+    id_of as esv_id, EditField as EsvEditField, ExpressionType as EsvExpressionType,
+    LoadState as EsvLoadState, Match as EsvMatch,
+};
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Every modal owns the whole screen. The dashboard (Normal + EsvSearch)
@@ -72,7 +76,10 @@ pub fn draw(f: &mut Frame, app: &App) {
             toast::draw(f, app);
             return;
         }
-        InputMode::Normal | InputMode::EsvSearch => {}
+        InputMode::Normal
+        | InputMode::EsvSearch
+        | InputMode::EsvEdit
+        | InputMode::EsvRestartConfirm => {}
     }
 
     let area = f.area();
@@ -87,6 +94,20 @@ pub fn draw(f: &mut Frame, app: &App) {
     header::draw(f, app, chunks[0]);
     draw_body(f, app, chunks[2]);
     header::draw_hints(f, app, chunks[3]);
+
+    // Overlay popup confirm for restart, drawn on top of the dashboard
+    // (not full-screen — short y/n questions get the small popup style).
+    if app.input_mode == InputMode::EsvRestartConfirm {
+        let n = app
+            .active_tenant()
+            .map(|t| crate::screens::esv::pending_count(app, &t.name))
+            .unwrap_or(0);
+        let noun = if n == 1 { "change" } else { "changes" };
+        let message = format!(
+            "{n} {noun} pending.\n\nApply by restarting the tenant runtime?\nTakes a few minutes; users already signed in stay signed in."
+        );
+        popup_confirm::draw(f, "Apply pending changes?", &message);
+    }
 
     toast::draw(f, app);
 }
@@ -240,12 +261,30 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     let selected = app.esv.selected.min(n.saturating_sub(1));
     let scroll = clamp_scroll(app.esv.scroll, selected, h, n);
 
+    let tenant_name = app.active_tenant().map(|t| t.name.clone());
+    let loaded_items: Option<&Vec<serde_json::Value>> = tenant_name
+        .as_ref()
+        .and_then(|t| app.esv.data.get(t))
+        .and_then(|s| match s {
+            EsvLoadState::Loaded(v) => Some(v),
+            _ => None,
+        });
     let lines: Vec<Line> = matches
         .iter()
         .enumerate()
         .skip(scroll)
         .take(h)
-        .map(|(i, m)| render_esv_row(m, i == selected))
+        .map(|(i, m)| {
+            let failed = tenant_name
+                .as_ref()
+                .map(|t| app.esv.failed_writes.contains(&(t.clone(), m.id.clone())))
+                .unwrap_or(false);
+            let pending = loaded_items
+                .and_then(|items| items.get(m.idx))
+                .map(crate::screens::esv::is_pending)
+                .unwrap_or(false);
+            render_esv_row(m, i == selected, failed, pending)
+        })
         .collect();
     f.render_widget(Paragraph::new(lines), rows[1]);
 }
@@ -266,27 +305,51 @@ fn clamp_scroll(prev: usize, selected: usize, height: usize, n: usize) -> usize 
     scroll
 }
 
-fn render_esv_row(m: &EsvMatch, is_selected: bool) -> Line<'static> {
+fn render_esv_row(m: &EsvMatch, is_selected: bool, failed: bool, pending: bool) -> Line<'static> {
+    // Styling axes:
+    //   selected: cyan-on-black bar with ▶
+    //   failed:   red — background save errored, user should retry
+    //   pending:  green ! — saved on AIC but not yet loaded by the runtime
+    //   default:  gray
+    // failed takes precedence over pending (a failed write is more urgent
+    // than a pending one). selected always overlays the ▶ glyph.
+    let row_fg = if failed {
+        Color::Red
+    } else if pending {
+        Color::Gray // body text stays gray; only the gutter glyph turns green
+    } else {
+        Color::Gray
+    };
     let row_style = if is_selected {
         Style::default()
-            .fg(Color::Black)
+            .fg(if failed { Color::Red } else { Color::Black })
             .bg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Gray)
+        Style::default().fg(row_fg)
     };
     let match_style = if is_selected {
         row_style.add_modifier(Modifier::UNDERLINED)
+    } else if failed {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     };
 
-    let mut spans = vec![Span::styled(
-        if is_selected { "▶ " } else { "  " },
-        row_style,
-    )];
+    // Gutter glyph + colour. Search-friendly: every pending row contains a
+    // literal `!` so the user can `/!` to filter to just-the-pending-rows.
+    let (leader, leader_style) = match (is_selected, failed, pending) {
+        (true, _, _) => ("▶ ", row_style),
+        (false, true, _) => ("! ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        (false, false, true) => (
+            "! ",
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ),
+        (false, false, false) => ("  ", row_style),
+    };
+    let mut spans = vec![Span::styled(leader, leader_style)];
 
     if m.positions.is_empty() {
         spans.push(Span::styled(m.id.clone(), row_style));
@@ -317,51 +380,372 @@ fn draw_esv_preview(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Split off a 3-row banner at the top whenever there's something to
+    // tell the user (pending changes, queued saves, or an in-flight
+    // restart). Sits above the form, full-width edge-to-edge.
     let Some(tenant) = app.active_tenant() else { return };
-    let Some(EsvLoadState::Loaded(items)) = app.esv.data.get(&tenant.name) else { return };
-    let selected = app.esv.selected.min(matches.len().saturating_sub(1));
-    let Some(m) = matches.get(selected) else {
+    let banner = crate::screens::esv::banner_state(app, &tenant.name);
+    let (banner_area, content_area) = if !matches!(banner, crate::screens::esv::BannerState::None) {
+        let rows = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Length(1), // gap below banner
+            Constraint::Min(0),
+        ])
+        .split(inner);
+        (Some(rows[0]), rows[2])
+    } else {
+        (None, inner)
+    };
+    if let Some(banner_rect) = banner_area {
+        draw_pending_banner(f, banner_rect, banner);
+    }
+
+    // Add a 2-col left gutter so the form text doesn't hug the border.
+    let inner = Rect {
+        x: content_area.x + 2,
+        y: content_area.y,
+        width: content_area.width.saturating_sub(2),
+        height: content_area.height,
+    };
+
+
+    // Create flow: there's no on-server snapshot yet — the form is
+    // entirely driven by EditState.
+    if app
+        .esv
+        .editing
+        .as_ref()
+        .is_some_and(|e| e.creating && app.input_mode == InputMode::EsvEdit)
+    {
+        draw_esv_form(f, app, None, inner);
+        return;
+    }
+
+    let editing_id = app
+        .esv
+        .editing
+        .as_ref()
+        .filter(|_| app.input_mode == InputMode::EsvEdit)
+        .map(|e| e.id.as_str());
+
+    // Prefer the in-progress edit's snapshot as the rendered variable
+    // when we're in edit mode — that way the read-only rows still show
+    // the original fields even if the user has scrolled the list away.
+    let v_owned: Option<serde_json::Value> = if let (Some(id), Some(EsvLoadState::Loaded(items))) =
+        (editing_id, app.esv.data.get(&tenant.name))
+    {
+        items.iter().find(|v| esv_id(v) == id).cloned()
+    } else {
+        let selected = app.esv.selected.min(matches.len().saturating_sub(1));
+        match (matches.get(selected), app.esv.data.get(&tenant.name)) {
+            (Some(m), Some(EsvLoadState::Loaded(items))) => items.get(m.idx).cloned(),
+            _ => None,
+        }
+    };
+    let Some(v) = v_owned else {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "  no match",
+                "no match",
                 Style::default().fg(Color::DarkGray),
             ))),
             inner,
         );
         return;
     };
-    let Some(v) = items.get(m.idx) else { return };
+
+    draw_esv_form(f, app, Some(&v), inner);
+}
+
+/// Render the ESV form. Same skeleton in preview, edit, and create modes —
+/// editable rows are drawn unfocused in preview, focusable in edit/create.
+/// `snapshot` is `None` when creating (no server-side variable yet); the
+/// `_id` title becomes an editable field and the metadata rows are hidden.
+fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>, area: Rect) {
+    let editing = app
+        .esv
+        .editing
+        .as_ref()
+        .filter(|_| app.input_mode == InputMode::EsvEdit);
+
+    let creating = editing.is_some_and(|e| e.creating);
+
+    let id_owned: String;
+    let last_changed_date: &str;
+    let last_changed_by: &str;
+    let loaded;
+    if let Some(v) = snapshot {
+        id_owned = esv_id(v).to_string();
+        last_changed_date = v
+            .get("lastChangeDate")
+            .and_then(|x| x.as_str())
+            .unwrap_or("—");
+        last_changed_by = v
+            .get("lastChangedBy")
+            .and_then(|x| x.as_str())
+            .unwrap_or("—");
+        loaded = v.get("loaded").and_then(|x| x.as_bool()).unwrap_or(false);
+    } else {
+        id_owned = String::new();
+        last_changed_date = "—";
+        last_changed_by = "—";
+        loaded = false;
+    };
+
+    let error_h = if editing.and_then(|e| e.error.as_ref()).is_some() {
+        2
+    } else {
+        0
+    };
+    let save_h = if editing.is_some() { 2 } else { 0 };
+    // The `_id` row is a 1-line cyan-bold title in preview/edit but a
+    // 2-line TextField in create. Metadata rows hide entirely in create.
+    let id_h = if creating { 2 } else { 1 };
+    let meta_h = if creating { 0 } else { 1 };
 
     let rows = Layout::vertical([
-        Constraint::Length(1), // id title
-        Constraint::Length(1), // blank
-        Constraint::Min(0),    // pretty JSON
+        Constraint::Length(id_h),   // _id (title or editable field)
+        Constraint::Length(1),      // gap
+        Constraint::Length(meta_h), // last changed
+        Constraint::Length(meta_h), // loaded
+        Constraint::Length(meta_h), // gap
+        Constraint::Length(2),      // description
+        Constraint::Length(1),
+        Constraint::Length(2),      // type
+        Constraint::Length(1),
+        Constraint::Min(3),         // value
+        Constraint::Length(error_h),
+        Constraint::Length(save_h),
     ])
-    .split(inner);
+    .split(area);
 
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                esv_id(v).to_string(),
+    // _id row — title in edit/preview, editable in create.
+    if creating {
+        if let Some(e) = editing {
+            e.id_input.draw(f, rows[0], e.focused == EsvEditField::Id);
+        }
+    } else {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                id_owned.clone(),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
+            )])),
+            rows[0],
+        );
+    }
+
+    if !creating {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Last changed  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{last_changed_date} by {last_changed_by}"),
+                    Style::default().fg(Color::Gray),
+                ),
+            ])),
+            rows[2],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Loaded        ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    if loaded { "✓ yes" } else { "✗ no (restart pending)" },
+                    Style::default().fg(if loaded { Color::Green } else { Color::Yellow }),
+                ),
+            ])),
+            rows[3],
+        );
+    }
+
+    // Editable rows — always drawn from `editing` when present so the
+    // user sees their in-progress changes; otherwise drawn from the
+    // snapshot. `snapshot` is only `None` when creating, in which case
+    // `editing` is always Some and we never hit the else branches.
+    let null = serde_json::Value::Null;
+    let v: &serde_json::Value = snapshot.unwrap_or(&null);
+    let description_focused = editing.is_some_and(|e| e.focused == EsvEditField::Description);
+    let type_focused = editing.is_some_and(|e| e.focused == EsvEditField::Type);
+    let value_focused = editing.is_some_and(|e| e.focused == EsvEditField::Value);
+    let save_focused = editing.is_some_and(|e| e.focused == EsvEditField::Save);
+
+    if let Some(e) = editing {
+        e.description.draw(f, rows[5], description_focused);
+    } else {
+        let desc = v.get("description").and_then(|x| x.as_str()).unwrap_or("");
+        let field = crate::ui::widgets::TextField::single_line("Description")
+            .with_initial(desc);
+        field.draw(f, rows[5], false);
+    }
+
+    draw_type_row(
+        f,
+        rows[7],
+        match editing {
+            Some(e) => e.expr_type,
+            None => EsvExpressionType::parse(
+                v.get("expressionType").and_then(|x| x.as_str()).unwrap_or(""),
             ),
-        ])),
-        rows[0],
+        },
+        type_focused,
     );
 
-    let pretty = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
-    let body: Vec<Line> = pretty
-        .lines()
-        .map(|l| Line::from(Span::styled(
-            format!("  {l}"),
-            Style::default().fg(Color::Gray),
-        )))
-        .collect();
+    if let Some(e) = editing {
+        e.value.draw(f, rows[9], value_focused);
+    } else {
+        // Show the decoded value if it's UTF-8; fall back to the base64
+        // string itself when it isn't (matches the edit-form fallback).
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine as _;
+        let v_b64 = v.get("valueBase64").and_then(|x| x.as_str()).unwrap_or("");
+        let text = match B64.decode(v_b64) {
+            Ok(bytes) => String::from_utf8(bytes).unwrap_or_else(|_| v_b64.to_string()),
+            Err(_) => v_b64.to_string(),
+        };
+        let field = crate::ui::widgets::TextField::textarea("Value").with_initial(text);
+        field.draw(f, rows[9], false);
+    }
+
+    if let Some(e) = editing {
+        if let Some(err) = &e.error {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    err.clone(),
+                    Style::default().fg(Color::Yellow),
+                )))
+                .wrap(Wrap { trim: false }),
+                rows[10],
+            );
+        }
+        draw_esv_save_button(f, rows[11], save_focused);
+    }
+}
+
+/// "Type:" label + the current expression-type rendered as a chip on a
+/// dark-fill row. Matches the input-field styling so preview and edit
+/// look the same.
+fn draw_type_row(
+    f: &mut Frame,
+    area: Rect,
+    expr_type: EsvExpressionType,
+    focused: bool,
+) {
+    if area.height == 0 {
+        return;
+    }
+    let label_area = Rect { height: 1, ..area };
+    let label_style = if focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
     f.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: false }),
-        rows[2],
+        Paragraph::new(Span::styled("Type (←/→ to cycle)", label_style)),
+        label_area,
     );
+    if area.height < 2 {
+        return;
+    }
+    let value_area = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: 1,
+    };
+    let bg = if focused {
+        Color::Indexed(236)
+    } else {
+        Color::Indexed(234)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ", Style::default().bg(bg)),
+            Span::styled(
+                format!(" {} ", expr_type.as_str()),
+                Style::default().fg(Color::Cyan).bg(bg),
+            ),
+            Span::styled("  ", Style::default().bg(bg)),
+        ]))
+        .style(Style::default().bg(bg)),
+        value_area,
+    );
+}
+
+/// Pastel-blue banner above the form when one or more variables are
+/// saved but not yet loaded by the runtime. 3 rows: blank top, message,
+/// blank bottom. 2-col side margins inside the text row.
+fn draw_pending_banner(f: &mut Frame, area: Rect, state: crate::screens::esv::BannerState) {
+    use crate::screens::esv::BannerState;
+    let (bg, count, msg): (Color, usize, String) = match state {
+        BannerState::None => return,
+        BannerState::ToApply(n) => (
+            Color::Indexed(153), // pastel blue  #afd7ff
+            n,
+            format!(
+                "ⓘ  You have {n} {noun} to apply. Press ^S to apply.",
+                noun = if n == 1 { "change" } else { "changes" }
+            ),
+        ),
+        BannerState::Queued(n) => (
+            Color::Indexed(183), // pastel purple #d7afff
+            n,
+            format!(
+                "↻  You have {n} {noun} queued — waiting for save to complete…",
+                noun = if n == 1 { "change" } else { "changes" }
+            ),
+        ),
+        BannerState::Applying(n) => (
+            Color::Indexed(223), // pastel yellow/peach #ffd7af
+            n,
+            format!(
+                "ⓘ  You have {n} {noun} applying — runtime restart in progress…",
+                noun = if n == 1 { "change" } else { "changes" }
+            ),
+        ),
+    };
+    let _ = count; // silence unused-on-no-arm
+    let fg = Color::Indexed(232); // near-black so the pastel reads as the strip colour
+    f.render_widget(
+        Block::default().style(Style::default().bg(bg)),
+        area,
+    );
+    if area.height < 2 {
+        return;
+    }
+    let text_row = Rect {
+        x: area.x + 2,
+        y: area.y + 1,
+        width: area.width.saturating_sub(4),
+        height: 1,
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            msg,
+            Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+        )),
+        text_row,
+    );
+}
+
+fn draw_esv_save_button(f: &mut Frame, area: Rect, focused: bool) {
+    if area.height == 0 {
+        return;
+    }
+    let style = if focused {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Green).bg(Color::Indexed(234))
+    };
+    let row = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: 1,
+    };
+    f.render_widget(Paragraph::new(Span::styled(" Save ", style)), row);
 }

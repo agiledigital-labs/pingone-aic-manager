@@ -39,6 +39,19 @@ pub enum AppEvent {
     /// User-triggered security key enrolment finished. The payload is the new
     /// wrap entry ready to be appended to `wraps.toml`, or an error string.
     SecurityKeyEnrollResult(std::result::Result<crate::config::wraps::Wrap, String>),
+    /// Background tenant-restart trigger finished. Toasts on error.
+    EsvRestartResult {
+        tenant: String,
+        result: std::result::Result<serde_json::Value, String>,
+    },
+    /// Background ESV-edit save finished. `tenant` + `id` identify the
+    /// variable so a stale result for a previously-edited entry can be
+    /// dropped.
+    EsvSaveResult {
+        tenant: String,
+        id: String,
+        result: std::result::Result<crate::screens::esv::SaveOutcome, String>,
+    },
     /// Background ESV-variables list fetch finished for `tenant`. The result
     /// holds the variable objects (raw JSON) or a human-readable error.
     EsvListed {
