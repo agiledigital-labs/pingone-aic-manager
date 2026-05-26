@@ -1,14 +1,15 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
+    layout::{Constraint, Layout},
+    style::{Color, Style},
+    text::Span,
     widgets::{Paragraph, Wrap},
 };
 
 use crate::app::App;
 use crate::screens::unlock::Focus as UnlockFocus;
 use crate::security_key;
+use crate::ui::modal_chrome::Modal;
 use crate::ui::widgets::secret_field;
 
 /// Re-export so `app.rs` can compare `unlock_error` against the tap status.
@@ -28,17 +29,34 @@ pub fn draw(f: &mut Frame, app: &App) {
         has_yk
     };
 
-    let area = centered_form(f.area(), 60, 10);
-    let chunks = Layout::vertical([
-        Constraint::Length(secret_field::HEIGHT), // active field
-        Constraint::Length(1),                    // gap above hints
-        Constraint::Length(1),                    // footer hints
-        Constraint::Length(1),                    // gap above error
-        Constraint::Length(3),                    // error (wraps)
-    ])
-    .split(area);
+    let hints: &[(&str, &str)] = if both {
+        &[
+            ("Tab", "switch method"),
+            ("Enter", "submit"),
+            ("Esc", "quit"),
+        ]
+    } else {
+        &[("Enter", "submit"), ("Esc", "quit")]
+    };
+
+    // field (3) + gap (1) + error (3)
+    const BODY: u16 = secret_field::HEIGHT + 1 + 3;
+    let body = Modal {
+        title: "Unlock",
+        status: None,
+        hints,
+        body_height: BODY,
+    }
+    .draw(f, f.area());
 
     let waiting_for_tap = app.unlock.error.as_deref() == Some(TAP_MESSAGE);
+    let chunks = Layout::vertical([
+        Constraint::Length(secret_field::HEIGHT), // active field
+        Constraint::Length(1),                    // gap
+        Constraint::Length(3),                    // error (wraps)
+        Constraint::Min(0),
+    ])
+    .split(body);
 
     if show_pin {
         secret_field::draw(
@@ -64,10 +82,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         );
     }
 
-    draw_footer_hints(f, chunks[2], both);
-
-    // Error row sits below the hints with a 1-row gap. The waiting-for-tap
-    // status is shown inside the PIN field's status row, not down here.
+    // The waiting-for-tap status is rendered inside the PIN field's status
+    // row, not here. Other errors land below the gap.
     if let Some(err) = &app.unlock.error {
         if !waiting_for_tap {
             f.render_widget(
@@ -76,44 +92,8 @@ pub fn draw(f: &mut Frame, app: &App) {
                     Style::default().fg(Color::Red),
                 ))
                 .wrap(Wrap { trim: false }),
-                chunks[4],
+                chunks[2],
             );
         }
-    }
-}
-
-fn draw_footer_hints(f: &mut Frame, area: Rect, has_tab: bool) {
-    let mut spans: Vec<Span> = Vec::new();
-    if has_tab {
-        spans.extend(footer_hint("Tab", "switch method"));
-    }
-    spans.extend(footer_hint("Enter", "submit"));
-    spans.extend(footer_hint("Esc", "quit"));
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn footer_hint(key: &'static str, desc: &'static str) -> Vec<Span<'static>> {
-    vec![
-        Span::raw("  "),
-        Span::styled(
-            key,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!(" {desc}"), Style::default().fg(Color::DarkGray)),
-    ]
-}
-
-/// Center a fixed-size form within the full terminal — no outer block, just
-/// the form fields floating in the empty screen.
-fn centered_form(parent: Rect, width: u16, height: u16) -> Rect {
-    let w = width.min(parent.width);
-    let h = height.min(parent.height);
-    Rect {
-        x: parent.x + (parent.width.saturating_sub(w)) / 2,
-        y: parent.y + (parent.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
     }
 }

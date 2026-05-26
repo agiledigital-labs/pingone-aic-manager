@@ -516,6 +516,17 @@ impl App {
                 self.input_mode = InputMode::Normal;
                 crate::screens::esv::refresh(self, false);
             }
+            KeyCode::Char(c @ '1'..='9') => {
+                // Number-key hotkey, matching the Add Tenant menu: switch
+                // to tenant N immediately without an Enter step.
+                let target = c.to_digit(10).unwrap() as usize - 1;
+                if target < self.tenants.len() {
+                    self.env_picker_idx = target;
+                    self.set_active_tenant(target);
+                    self.input_mode = InputMode::Normal;
+                    crate::screens::esv::refresh(self, false);
+                }
+            }
             _ => {}
         }
     }

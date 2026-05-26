@@ -3,6 +3,7 @@ pub mod auth_setup;
 pub mod env_picker;
 pub mod header;
 pub mod modal;
+pub mod modal_chrome;
 pub mod onboard;
 pub mod toast;
 pub mod unlock;
@@ -20,17 +21,58 @@ use crate::app::{App, InputMode};
 use crate::screens::esv::{id_of as esv_id, LoadState as EsvLoadState, Match as EsvMatch};
 
 pub fn draw(f: &mut Frame, app: &App) {
-    // Full-screen takeovers come first.
+    // Every modal owns the whole screen. The dashboard (Normal + EsvSearch)
+    // is the only thing that gets the header / body / global-hints layout.
     match app.input_mode {
         InputMode::Unlock => {
             unlock::draw(f, app);
+            toast::draw(f, app);
             return;
         }
         InputMode::SetupAuth => {
             auth_setup::draw(f, app);
+            toast::draw(f, app);
             return;
         }
-        _ => {}
+        InputMode::AuthSettings => {
+            auth_settings::draw(f, app);
+            toast::draw(f, app);
+            return;
+        }
+        InputMode::AuthSettingsConfirm => {
+            auth_settings::draw_confirm(f, app);
+            toast::draw(f, app);
+            return;
+        }
+        InputMode::AuthSettingsRename => {
+            auth_settings::draw_rename(f, app);
+            toast::draw(f, app);
+            return;
+        }
+        InputMode::OnboardMenu
+        | InputMode::OnboardCookie
+        | InputMode::OnboardUserPass
+        | InputMode::OnboardPaste => {
+            onboard::draw(f, app);
+            toast::draw(f, app);
+            return;
+        }
+        InputMode::OverwriteConfirm => {
+            modal::draw_overwrite_confirm(f, app);
+            toast::draw(f, app);
+            return;
+        }
+        InputMode::EnvPicker => {
+            env_picker::draw(f, app);
+            toast::draw(f, app);
+            return;
+        }
+        InputMode::ProdConfirm => {
+            modal::draw_prod_confirm(f, app);
+            toast::draw(f, app);
+            return;
+        }
+        InputMode::Normal | InputMode::EsvSearch => {}
     }
 
     let area = f.area();
@@ -45,37 +87,6 @@ pub fn draw(f: &mut Frame, app: &App) {
     header::draw(f, app, chunks[0]);
     draw_body(f, app, chunks[2]);
     header::draw_hints(f, app, chunks[3]);
-
-    // Overlay modals
-    match app.input_mode {
-        InputMode::OnboardMenu
-        | InputMode::OnboardCookie
-        | InputMode::OnboardUserPass
-        | InputMode::OnboardPaste => {
-            onboard::draw(f, app);
-        }
-        InputMode::OverwriteConfirm => {
-            modal::draw_overwrite_confirm(f, app);
-        }
-        InputMode::EnvPicker => {
-            env_picker::draw(f, app);
-        }
-        InputMode::ProdConfirm => {
-            modal::draw_prod_confirm(f, app);
-        }
-        InputMode::AuthSettings => {
-            auth_settings::draw(f, app);
-        }
-        InputMode::AuthSettingsConfirm => {
-            auth_settings::draw(f, app);
-            auth_settings::draw_confirm(f, app);
-        }
-        InputMode::AuthSettingsRename => {
-            auth_settings::draw(f, app);
-            auth_settings::draw_rename(f, app);
-        }
-        _ => {}
-    }
 
     toast::draw(f, app);
 }

@@ -1,8 +1,12 @@
+//! Add-tenant flows: the picker menu and the three onboarding form
+//! variants (session cookie / username+password / paste-JWK). Each one
+//! is a full-screen modal that goes through `ui::modal_chrome`.
+
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
@@ -11,7 +15,7 @@ use crate::aic::onboard::paste::{PasteField, PasteForm};
 use crate::aic::onboard::userpass::{UpField, UpForm};
 use crate::app::{App, InputMode};
 use crate::theme::style_for;
-use crate::ui::modal::centered_rect;
+use crate::ui::modal_chrome::Modal;
 
 pub fn draw(f: &mut Frame, app: &App) {
     match app.input_mode {
@@ -36,16 +40,18 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_menu(f: &mut Frame, app: &App) {
-    let area = centered_rect(60, 50, f.area());
-    f.render_widget(Clear, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(Span::styled(
-            " Add Tenant ",
-            Style::default().fg(Color::Cyan),
-        ));
+    let n_options = if app.has_env_creds { 4 } else { 3 };
+    let body = Modal {
+        title: "Add Tenant",
+        status: None,
+        hints: &[
+            ("j/k", "navigate"),
+            ("Enter", "choose"),
+            ("Esc", "cancel"),
+        ],
+        body_height: n_options as u16,
+    }
+    .draw(f, f.area());
 
     let mut options = vec![
         ListItem::new("  1  Paste browser session cookie  (full SSO/MFA/passkey)"),
@@ -57,7 +63,6 @@ fn draw_menu(f: &mut Frame, app: &App) {
     }
 
     let list = List::new(options)
-        .block(block)
         .highlight_style(
             Style::default()
                 .fg(Color::Yellow)
@@ -67,47 +72,37 @@ fn draw_menu(f: &mut Frame, app: &App) {
 
     let mut state = ListState::default();
     state.select(Some(app.onboard.menu_idx));
-    f.render_stateful_widget(list, area, &mut state);
+    f.render_stateful_widget(list, body, &mut state);
 }
 
-// ---- Pattern 1: cookie ----
-
 fn draw_cookie_form(f: &mut Frame, form: &CookieForm) {
-    let area = centered_rect(80, 80, f.area());
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .padding(form_padding())
-        .title(Span::styled(
-            " Add Tenant — Session Cookie ",
-            Style::default().fg(Color::Cyan),
-        ));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    // help(2) + 5 fields × (1 gap + 2 rows) + gap + submit(1)
+    const BODY: u16 = 2 + (2 + 1) * 5 + 1 + 1;
+    let body = Modal {
+        title: "Add Tenant — Session Cookie",
+        status: form_status_text(form.status.as_deref(), form.error.as_deref()),
+        hints: form_hints(form.busy),
+        body_height: BODY,
+    }
+    .draw(f, f.area());
 
-    // Field heights: 2 rows each (label + value). A 1-row gap separates
-    // every field so the form breathes; the final spacer absorbs slack.
     let chunks = Layout::vertical([
         Constraint::Length(2), // help
         Constraint::Length(1), // gap
         Constraint::Length(2), // name
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // domain
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // theme
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // cookie name
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // cookie value
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(1), // submit
-        Constraint::Length(1), // gap
-        Constraint::Length(2), // status / error
         Constraint::Min(0),
-        Constraint::Length(1), // hint
     ])
-    .split(inner);
+    .split(body);
 
     f.render_widget(
         Paragraph::new(vec![
@@ -124,15 +119,11 @@ fn draw_cookie_form(f: &mut Frame, form: &CookieForm) {
         chunks[0],
     );
 
-    form.name
-        .draw(f, chunks[2], form.focused == CookieField::Name);
-    form.domain
-        .draw(f, chunks[4], form.focused == CookieField::Domain);
+    form.name.draw(f, chunks[2], form.focused == CookieField::Name);
+    form.domain.draw(f, chunks[4], form.focused == CookieField::Domain);
     draw_theme_row(f, chunks[6], form.theme, form.focused == CookieField::Theme);
-    form.cookie_name
-        .draw(f, chunks[8], form.focused == CookieField::CookieName);
-    form.cookie_value
-        .draw(f, chunks[10], form.focused == CookieField::Cookie);
+    form.cookie_name.draw(f, chunks[8], form.focused == CookieField::CookieName);
+    form.cookie_value.draw(f, chunks[10], form.focused == CookieField::Cookie);
     draw_submit_row(
         f,
         chunks[12],
@@ -144,68 +135,46 @@ fn draw_cookie_form(f: &mut Frame, form: &CookieForm) {
         form.focused == CookieField::Submit,
         form.busy,
     );
-
-    if let Some(status) = &form.status {
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                format!("  {status}"),
-                Style::default().fg(Color::Cyan),
-            )),
-            chunks[14],
-        );
-    } else if let Some(err) = &form.error {
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                format!("  {err}"),
-                Style::default().fg(Color::Red),
-            )),
-            chunks[14],
-        );
-    }
-
-    f.render_widget(
-        Paragraph::new(form_hint(form.busy)).style(Style::default().fg(Color::DarkGray)),
-        chunks[16],
-    );
 }
 
-// ---- Pattern 2: u/p ----
-
 fn draw_up_form(f: &mut Frame, form: &UpForm) {
-    let area = centered_rect(80, 80, f.area());
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .padding(form_padding())
-        .title(Span::styled(
-            " Add Tenant — Username & Password ",
-            Style::default().fg(Color::Cyan),
-        ));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    // help(2) + 5 fields × (1 gap + 2 rows) + gap + submit(1) + gap + otp(3)
+    const BODY: u16 = 2 + (2 + 1) * 5 + 1 + 1 + 1 + 3;
+    let body = Modal {
+        title: "Add Tenant — Username & Password",
+        status: form_status_text(form.status.as_deref(), form.error.as_deref()),
+        hints: if form.pending_prompt.is_some() {
+            &[
+                ("Type", "the code"),
+                ("Enter", "submit"),
+                ("Esc", "cancel"),
+            ]
+        } else {
+            form_hints(form.busy)
+        },
+        body_height: BODY,
+    }
+    .draw(f, f.area());
 
     let chunks = Layout::vertical([
         Constraint::Length(2), // help
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // name
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // domain
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // theme
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // username
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // password
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(1), // submit
-        Constraint::Length(1), // gap
-        Constraint::Length(2), // status/error
-        Constraint::Length(3), // OTP prompt (rendered when needed)
+        Constraint::Length(1),
+        Constraint::Length(3), // OTP prompt
         Constraint::Min(0),
-        Constraint::Length(1), // hint
     ])
-    .split(inner);
+    .split(body);
 
     f.render_widget(
         Paragraph::new(vec![
@@ -222,13 +191,10 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
     );
 
     form.name.draw(f, chunks[2], form.focused == UpField::Name);
-    form.domain
-        .draw(f, chunks[4], form.focused == UpField::Domain);
+    form.domain.draw(f, chunks[4], form.focused == UpField::Domain);
     draw_theme_row(f, chunks[6], form.theme, form.focused == UpField::Theme);
-    form.username
-        .draw(f, chunks[8], form.focused == UpField::Username);
-    form.password
-        .draw(f, chunks[10], form.focused == UpField::Password);
+    form.username.draw(f, chunks[8], form.focused == UpField::Username);
+    form.password.draw(f, chunks[10], form.focused == UpField::Password);
     draw_submit_row(
         f,
         chunks[12],
@@ -241,31 +207,13 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
         form.busy,
     );
 
-    if let Some(status) = &form.status {
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                format!("  {status}"),
-                Style::default().fg(Color::Cyan),
-            )),
-            chunks[14],
-        );
-    } else if let Some(err) = &form.error {
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                format!("  {err}"),
-                Style::default().fg(Color::Red),
-            )),
-            chunks[14],
-        );
-    }
-
     if let Some(prompt) = &form.pending_prompt {
         let prompt_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow))
             .title(" Additional input required ");
-        let inner = prompt_block.inner(chunks[15]);
-        f.render_widget(prompt_block, chunks[15]);
+        let inner = prompt_block.inner(chunks[14]);
+        f.render_widget(prompt_block, chunks[14]);
         let masked: String = "•".repeat(form.prompt_input.chars().count());
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -281,61 +229,39 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
             inner,
         );
     }
-
-    f.render_widget(
-        Paragraph::new(if form.pending_prompt.is_some() {
-            "Type the code · Enter submit · Esc cancel"
-        } else {
-            form_hint(form.busy)
-        })
-        .style(Style::default().fg(Color::DarkGray)),
-        chunks[17],
-    );
 }
 
-// ---- Pattern 3: paste ----
-
 fn draw_paste_form(f: &mut Frame, form: &PasteForm) {
-    let area = centered_rect(80, 90, f.area());
-    f.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .padding(form_padding())
-        .title(Span::styled(
-            " Add Tenant — Paste Service Account ",
-            Style::default().fg(Color::Cyan),
-        ));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    // 4 fields × (2 + 1 gap) + jwk(8) + gap + submit(1)
+    const BODY: u16 = (2 + 1) * 4 + 8 + 1 + 1;
+    let body = Modal {
+        title: "Add Tenant — Paste Service Account",
+        status: form_status_text(None, form.error.as_deref()),
+        hints: form_hints(false),
+        body_height: BODY,
+    }
+    .draw(f, f.area());
 
     let chunks = Layout::vertical([
         Constraint::Length(2), // name
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // domain
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // theme
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
         Constraint::Length(2), // sa id
-        Constraint::Length(1), // gap
-        Constraint::Min(8),    // jwk textarea (biggest)
-        Constraint::Length(1), // gap
+        Constraint::Length(1),
+        Constraint::Min(8),    // jwk textarea
+        Constraint::Length(1),
         Constraint::Length(1), // submit
-        Constraint::Length(1), // gap
-        Constraint::Length(2), // error
-        Constraint::Length(1), // hint
     ])
-    .split(inner);
+    .split(body);
 
-    form.name
-        .draw(f, chunks[0], form.focused == PasteField::Name);
-    form.domain
-        .draw(f, chunks[2], form.focused == PasteField::Domain);
+    form.name.draw(f, chunks[0], form.focused == PasteField::Name);
+    form.domain.draw(f, chunks[2], form.focused == PasteField::Domain);
     draw_theme_row(f, chunks[4], form.theme, form.focused == PasteField::Theme);
-    form.sa_id
-        .draw(f, chunks[6], form.focused == PasteField::SaId);
-    form.jwk_input
-        .draw(f, chunks[8], form.focused == PasteField::Jwk);
+    form.sa_id.draw(f, chunks[6], form.focused == PasteField::SaId);
+    form.jwk_input.draw(f, chunks[8], form.focused == PasteField::Jwk);
     draw_submit_row(
         f,
         chunks[10],
@@ -343,25 +269,25 @@ fn draw_paste_form(f: &mut Frame, form: &PasteForm) {
         form.focused == PasteField::Submit,
         false,
     );
-    if let Some(err) = &form.error {
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                format!("  {err}"),
-                Style::default().fg(Color::Red),
-            )),
-            chunks[12],
-        );
-    }
-    f.render_widget(
-        Paragraph::new(form_hint(false)).style(Style::default().fg(Color::DarkGray)),
-        chunks[13],
-    );
 }
 
-/// Two-space horizontal padding + a one-row top/bottom margin around the
-/// inner area of an onboarding form's outer block.
-fn form_padding() -> Padding {
-    Padding::new(2, 2, 1, 1)
+/// Status takes precedence — when a status is present we don't show the
+/// (probably stale) error. Returned as `Option<&str>` so it can be wired
+/// straight into the Modal chrome.
+fn form_status_text<'a>(status: Option<&'a str>, error: Option<&'a str>) -> Option<&'a str> {
+    status.or(error)
+}
+
+fn form_hints(busy: bool) -> &'static [(&'static str, &'static str)] {
+    if busy {
+        &[("Esc", "cancel")]
+    } else {
+        &[
+            ("Tab", "navigate"),
+            ("Enter", "submit"),
+            ("Esc", "go back"),
+        ]
+    }
 }
 
 // ---- Shared widgets ----
@@ -375,7 +301,7 @@ fn draw_theme_row(
     if area.height == 0 {
         return;
     }
-    let label_area = ratatui::layout::Rect { height: 1, ..area };
+    let label_area = Rect { height: 1, ..area };
     f.render_widget(
         Paragraph::new(Span::styled("Theme (←/→ to cycle)", label_style(focused))),
         label_area,
@@ -383,7 +309,7 @@ fn draw_theme_row(
     if area.height < 2 {
         return;
     }
-    let value_area = ratatui::layout::Rect {
+    let value_area = Rect {
         x: area.x,
         y: area.y + 1,
         width: area.width,
@@ -419,7 +345,10 @@ fn draw_submit_row(f: &mut Frame, area: Rect, label: &str, focused: bool, busy: 
             .fg(Color::Black)
             .bg(Color::Green)
             .add_modifier(Modifier::BOLD),
-        (false, false) => Style::default().fg(Color::Green),
+        // Same dark fill as an unselected input — the leading space then
+        // reads as button padding instead of shifting the text right of
+        // the field labels above.
+        (false, false) => Style::default().fg(Color::Green).bg(Color::Indexed(234)),
     };
     f.render_widget(
         Paragraph::new(Span::styled(format!(" {label} "), style)).alignment(Alignment::Left),
@@ -434,13 +363,5 @@ fn label_style(focused: bool) -> Style {
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
-    }
-}
-
-fn form_hint(busy: bool) -> &'static str {
-    if busy {
-        "Esc to cancel"
-    } else {
-        "Tab/Shift-Tab navigate · Enter submit on action · Esc go back"
     }
 }

@@ -2,28 +2,39 @@ use ratatui::{
     Frame,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState},
+    widgets::{List, ListItem, ListState},
 };
 
 use crate::app::App;
 use crate::theme::style_for;
-use crate::ui::modal::centered_rect;
+use crate::ui::modal_chrome::Modal;
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let area = centered_rect(50, 60, f.area());
-    f.render_widget(Clear, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(Span::styled(" Switch Tenant  (j/k select  Enter confirm  Esc cancel) ", Style::default().fg(Color::Cyan)));
+    let body = Modal {
+        title: "Switch Tenant",
+        status: None,
+        hints: &[
+            ("j/k", "navigate"),
+            ("Enter", "confirm"),
+            ("Esc", "cancel"),
+        ],
+        body_height: app.tenants.len().max(1) as u16,
+    }
+    .draw(f, f.area());
 
     let items: Vec<ListItem> = app
         .tenants
         .iter()
-        .map(|t| {
+        .enumerate()
+        .map(|(i, t)| {
             let style = style_for(t.theme);
+            let num = if i < 9 {
+                format!("{} ", i + 1)
+            } else {
+                "  ".to_string()
+            };
             ListItem::new(Line::from(vec![
+                Span::raw(num),
                 Span::styled(
                     format!(" {} ", style.glyph),
                     Style::default().fg(style.fg).bg(style.bg),
@@ -33,13 +44,14 @@ pub fn draw(f: &mut Frame, app: &App) {
         })
         .collect();
 
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
     let mut state = ListState::default();
     state.select(Some(app.env_picker_idx));
-
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-        .highlight_symbol("▶ ");
-
-    f.render_stateful_widget(list, area, &mut state);
+    f.render_stateful_widget(list, body, &mut state);
 }
