@@ -9,8 +9,11 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::aic::esv::StartupStatus;
 use crate::app::{App, InputMode};
+use crate::config::tenant::TenantTheme;
 use crate::event::{AppEvent, ToastKind};
+use crate::screens::prod_confirm::PendingProdAction;
 use crate::ui::widgets::{LineEditor, TextField};
 
 /// Per-tenant ESV load state. `app.esv.data` maps tenant name → this.
@@ -19,6 +22,34 @@ pub enum LoadState {
     Loading,
     Loaded(Vec<serde_json::Value>),
     Failed(String),
+}
+
+/// Per-tenant apply state shown in the ESV banner. This is sticky: refreshes
+/// keep showing the previous value until a tenant response lets us replace it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyState {
+    NoChanges,
+    Unapplied(usize),
+    Restarting(usize),
+}
+
+impl ApplyState {
+    pub fn from_authoritative(startup: StartupStatus, pending: usize) -> Self {
+        match startup {
+            StartupStatus::Restarting => Self::Restarting(pending),
+            StartupStatus::Ready if pending > 0 => Self::Unapplied(pending),
+            StartupStatus::Ready => Self::NoChanges,
+        }
+    }
+}
+
+/// Result of a background ESV refresh. Variables and startup status are kept
+/// separate so we can update whichever half succeeded without clobbering the
+/// cached state owned by the other half.
+#[derive(Debug)]
+pub struct RefreshOutcome {
+    pub variables: std::result::Result<Vec<serde_json::Value>, String>,
+    pub startup: std::result::Result<StartupStatus, String>,
 }
 
 /// One row in the rendered ESV list. The UI consumes `Vec<Match>` from
@@ -224,6 +255,32 @@ pub struct EditState {
     pub error: Option<String>,
 }
 
+/// Fully-validated save payload, captured before any production confirmation
+/// modal takes focus. Executing the plan performs the optimistic local update
+/// and spawns the tenant write.
+#[derive(Debug)]
+pub struct SavePlan {
+    tenant_name: String,
+    id: String,
+    description: String,
+    expr_type: String,
+    value_b64: String,
+    type_changed: bool,
+    original: Option<serde_json::Value>,
+    optimistic: serde_json::Value,
+    was_creating: bool,
+}
+
+struct SaveRequest {
+    tenant_name: String,
+    id: String,
+    description: String,
+    expr_type: String,
+    value_b64: String,
+    type_changed: bool,
+    original: Option<serde_json::Value>,
+}
+
 #[derive(Debug)]
 pub struct State {
     /// Cached ESV lists, keyed by tenant name. Populated lazily on first
@@ -252,7 +309,7 @@ pub struct State {
     /// (AIC's `/environment/variables` is eventually consistent — a brand-
     /// new variable can take a few seconds to show up). Keyed by
     /// `(tenant, id)`; each value is `(saved_at, body)`. On every
-    /// `apply_listed` we re-merge any entries still within
+    /// `apply_refresh` we re-merge any entries still within
     /// `RECENT_WRITE_TTL` so the local view never loses them.
     pub recent_writes: HashMap<(String, String), (Instant, serde_json::Value)>,
 
@@ -263,12 +320,14 @@ pub struct State {
     /// save for the same id.
     pub failed_writes: HashSet<(String, String)>,
 
-    /// Tenants we've just triggered a restart on, keyed by name. The
-    /// banner flips from "to apply" to "applying" while an entry is
-    /// present. Cleared when a polled list reports `pending_count == 0`
-    /// (the runtime caught up) or after `RESTART_TIMEOUT` as a safety
-    /// net for failures we didn't otherwise observe.
-    pub restart_in_progress: HashMap<String, Instant>,
+    /// Last known apply state per tenant. Refreshes update this only after
+    /// authoritative tenant responses arrive; while a refresh is in flight
+    /// the previous value keeps rendering.
+    pub apply_states: HashMap<String, ApplyState>,
+
+    /// When a restart first moved into `ApplyState::Restarting`. This is
+    /// display metadata only; it never times the state out.
+    pub restart_started_at: HashMap<String, Instant>,
 
     /// (tenant, id) for every optimistic save whose background PUT
     /// hasn't returned yet. Drives the "queued" banner colour and gates
@@ -277,11 +336,6 @@ pub struct State {
     /// success / failure.
     pub in_flight_writes: HashSet<(String, String)>,
 }
-
-/// How long the "applying" banner state stays sticky in the absence of
-/// a polled list confirming completion. Tenant restarts are documented
-/// to take "a few minutes"; ten minutes is a comfortable upper bound.
-pub const RESTART_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// How long we keep a freshly-saved variable pinned to the local cache
 /// after a save. Long enough to cover AIC's indexing lag on creates;
@@ -301,15 +355,15 @@ impl Default for State {
             editing: None,
             recent_writes: HashMap::new(),
             failed_writes: HashSet::new(),
-            restart_in_progress: HashMap::new(),
+            apply_states: HashMap::new(),
+            restart_started_at: HashMap::new(),
             in_flight_writes: HashSet::new(),
         }
     }
 }
 
 /// Banner display mode — picks the colour and the wording. Computed
-/// fresh on every draw from the three sources of truth: restart-in-
-/// progress, in-flight saves, and `loaded=false` counts.
+/// fresh on every draw from the cached apply state plus in-flight saves.
 #[derive(Debug, Clone, Copy)]
 pub enum BannerState {
     None,
@@ -332,33 +386,38 @@ pub fn queued_count(app: &App, tenant: &str) -> usize {
         .count()
 }
 
-/// Pick which banner (if any) to display. Precedence: applying > queued
-/// > to-apply. The applying state wins even when queued > 0 because a
-/// restart in progress is the more important signal.
+/// Pick which banner (if any) to display. Precedence is applying, then
+/// queued, then to-apply. The applying state wins even when queued > 0
+/// because a restart in progress is the more important signal.
 pub fn banner_state(app: &App, tenant: &str) -> BannerState {
-    if is_applying(app, tenant) {
-        return BannerState::Applying(pending_count(app, tenant));
+    if let Some(ApplyState::Restarting(n)) = app.esv.apply_states.get(tenant).copied() {
+        return BannerState::Applying(n);
     }
     let q = queued_count(app, tenant);
     if q > 0 {
         return BannerState::Queued(q);
     }
-    let p = pending_count(app, tenant);
-    if p > 0 {
-        return BannerState::ToApply(p);
+    if let Some(ApplyState::Unapplied(n)) = app.esv.apply_states.get(tenant).copied() {
+        return BannerState::ToApply(n);
     }
     BannerState::None
 }
 
-/// True when the "applying" banner state should be shown — i.e. the user
-/// triggered a restart recently and it hasn't been confirmed complete
-/// (by a polled list returning zero pending changes) or timed out.
+/// True when the "applying" banner state should be shown. This is driven by
+/// cached tenant state, not elapsed local time.
 pub fn is_applying(app: &App, tenant: &str) -> bool {
-    app.esv
-        .restart_in_progress
-        .get(tenant)
-        .map(|started_at| started_at.elapsed() < RESTART_TIMEOUT)
-        .unwrap_or(false)
+    matches!(
+        app.esv.apply_states.get(tenant),
+        Some(ApplyState::Restarting(_))
+    )
+}
+
+/// True when `^S` can open the restart confirmation for this tenant.
+pub fn can_request_restart(app: &App, tenant: &str) -> bool {
+    matches!(
+        app.esv.apply_states.get(tenant),
+        Some(ApplyState::Unapplied(n)) if *n > 0
+    ) && queued_count(app, tenant) == 0
 }
 
 impl State {
@@ -468,6 +527,8 @@ impl State {
 /// A no-op when (a) the app is locked (still on the unlock screen — the
 /// agent would return `Locked` and we'd just surface noise), (b) there's
 /// no active tenant, or (c) a fetch for this tenant is already in flight.
+/// Refetches keep the previous list and apply-state visible until both
+/// tenant calls return through the event loop.
 pub fn refresh(app: &mut App, force: bool) {
     if !app.is_unlocked() {
         return;
@@ -492,10 +553,18 @@ pub fn refresh(app: &mut App, force: bool) {
     let tx = app.events.tx.clone();
     let tenant_name = name.clone();
     tokio::spawn(async move {
-        let result = crate::aic::esv::list_variables(&tenant_name)
-            .await
-            .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::EsvListed { tenant: name, result });
+        let (variables, startup) = tokio::join!(
+            crate::aic::esv::list_variables(&tenant_name),
+            crate::aic::esv::startup_status(&tenant_name),
+        );
+        let outcome = RefreshOutcome {
+            variables: variables.map_err(|e| e.to_string()),
+            startup: startup.map_err(|e| e.to_string()),
+        };
+        let _ = tx.send(AppEvent::EsvListed {
+            tenant: name,
+            outcome,
+        });
     });
 }
 
@@ -574,7 +643,7 @@ fn request_restart(app: &mut App) {
         // swallow ^S silently rather than stacking a contradicting toast.
         return;
     }
-    if pending_count(app, &tenant_name) == 0 {
+    if !can_request_restart(app, &tenant_name) {
         app.push_toast(crate::event::ToastKind::Info, "No pending changes to apply");
         return;
     }
@@ -587,7 +656,6 @@ pub fn handle_restart_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             trigger_restart(app);
-            app.input_mode = InputMode::Normal;
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
@@ -598,21 +666,30 @@ pub fn handle_restart_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result
 }
 
 fn trigger_restart(app: &mut App) {
-    let Some(tenant_name) = app.active_tenant().map(|t| t.name.clone()) else { return };
+    let Some(tenant) = app.active_tenant() else { return };
+    let tenant_name = tenant.name.clone();
+    if tenant.theme == TenantTheme::Production {
+        app.prod_confirm.pending = Some(PendingProdAction::EsvRestart { tenant_name });
+        app.input_mode = InputMode::ProdConfirm;
+        return;
+    }
+    trigger_restart_confirmed(app, tenant_name, false);
+}
+
+pub fn trigger_restart_confirmed(app: &mut App, tenant_name: String, confirmed_prod: bool) {
     // Flip the banner to its "applying" state immediately so the user
-    // sees their click registered. Cleared on the next polled list
-    // that reports zero pending (`apply_listed`) or after the safety
-    // timeout in `RESTART_TIMEOUT`.
-    app.esv
-        .restart_in_progress
-        .insert(tenant_name.clone(), Instant::now());
+    // sees their click registered. It stays there until `/environment/startup`
+    // and `/environment/variables` together prove a new state.
+    let pending = pending_count(app, &tenant_name);
+    set_apply_state(app, &tenant_name, ApplyState::Restarting(pending));
+    app.input_mode = InputMode::Normal;
     app.push_toast(
         crate::event::ToastKind::Info,
         "Restart triggered — runtime will pick up changes in a few minutes",
     );
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let result = crate::aic::esv::trigger_restart(&tenant_name, false)
+        let result = crate::aic::esv::trigger_restart(&tenant_name, confirmed_prod)
             .await
             .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::EsvRestartResult {
@@ -633,7 +710,7 @@ pub fn apply_restart_result(
     match result {
         Ok(_) => {}
         Err(e) => {
-            app.esv.restart_in_progress.remove(&tenant);
+            refresh_apply_state_from_cache(app, &tenant);
             app.push_toast(crate::event::ToastKind::Error, format!("Restart failed: {e}"));
         }
     }
@@ -667,14 +744,10 @@ pub fn handle_search_key(app: &mut App, key: KeyEvent) {
 }
 
 /// Apply an `EsvListed` event to the tab. Caller is `app::handle_event`.
-pub fn apply_listed(
-    app: &mut App,
-    tenant: String,
-    result: std::result::Result<Vec<serde_json::Value>, String>,
-) {
+pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
     let is_active = app.active_tenant().is_some_and(|t| t.name == tenant);
     app.esv.refreshing.remove(&tenant);
-    match result {
+    let variables_refreshed = match outcome.variables {
         Ok(mut vs) => {
             // Re-merge any entries we recently saved but the polled list
             // hasn't picked up yet (AIC's variable-list endpoint is
@@ -692,18 +765,12 @@ pub fn apply_listed(
                     vs.push(body.clone());
                 }
             }
-            // If the runtime has caught up (no more `loaded: false`
-            // entries) and we'd recently triggered a restart, clear the
-            // sticky "applying" state so the banner drops off.
-            let still_pending = vs.iter().any(is_pending);
-            if !still_pending {
-                app.esv.restart_in_progress.remove(&tenant);
-            }
-            app.esv.data.insert(tenant, LoadState::Loaded(vs));
+            app.esv.data.insert(tenant.clone(), LoadState::Loaded(vs));
             if is_active {
                 let n = app.esv.matches(app.active_tenant().map(|t| t.name.as_str())).len();
                 app.esv.clamp_selection(n);
             }
+            true
         }
         Err(e) => {
             // Don't clobber a previously-cached list with a background-
@@ -711,10 +778,57 @@ pub fn apply_listed(
             if matches!(app.esv.data.get(&tenant), Some(LoadState::Loaded(_))) {
                 tracing::warn!("ESV refresh failed for {tenant}: {e}");
             } else {
-                app.esv.data.insert(tenant, LoadState::Failed(e));
+                app.esv.data.insert(tenant.clone(), LoadState::Failed(e));
             }
+            false
+        }
+    };
+
+    match outcome.startup {
+        Ok(StartupStatus::Restarting) => {
+            set_apply_state(app, &tenant, ApplyState::Restarting(pending_count(app, &tenant)));
+        }
+        Ok(StartupStatus::Ready) if variables_refreshed => {
+            set_apply_state(
+                app,
+                &tenant,
+                ApplyState::from_authoritative(StartupStatus::Ready, pending_count(app, &tenant)),
+            );
+        }
+        Ok(StartupStatus::Ready) => {
+            // Startup alone can prove "restarting", but it cannot prove
+            // "no changes" without a fresh variable list. Keep the cached
+            // apply state until both tenant reads have succeeded together.
+        }
+        Err(e) => {
+            tracing::warn!("ESV startup-status refresh failed for {tenant}: {e}");
         }
     }
+}
+
+fn set_apply_state(app: &mut App, tenant: &str, state: ApplyState) {
+    match state {
+        ApplyState::Restarting(_) => {
+            app.esv
+                .restart_started_at
+                .entry(tenant.to_string())
+                .or_insert_with(Instant::now);
+        }
+        ApplyState::NoChanges | ApplyState::Unapplied(_) => {
+            app.esv.restart_started_at.remove(tenant);
+        }
+    }
+    app.esv.apply_states.insert(tenant.to_string(), state);
+}
+
+fn refresh_apply_state_from_cache(app: &mut App, tenant: &str) {
+    let pending = pending_count(app, tenant);
+    let state = match app.esv.apply_states.get(tenant).copied() {
+        Some(ApplyState::Restarting(_)) => ApplyState::Restarting(pending),
+        _ if pending > 0 => ApplyState::Unapplied(pending),
+        _ => ApplyState::NoChanges,
+    };
+    set_apply_state(app, tenant, state);
 }
 
 /// Open the edit form for the currently-selected list row. Snapshots the
@@ -725,6 +839,14 @@ pub fn start_edit(app: &mut App) {
     let tenant_name = tenant.name.clone();
     let matches = app.esv.matches(Some(&tenant_name));
     let Some(m) = matches.get(app.esv.selected) else { return };
+    if app
+        .esv
+        .in_flight_writes
+        .contains(&(tenant_name.clone(), m.id.clone()))
+    {
+        app.push_toast(ToastKind::Info, format!("Save already in progress: {}", m.id));
+        return;
+    }
     let Some(LoadState::Loaded(items)) = app.esv.data.get(&tenant_name) else { return };
     let Some(v) = items.get(m.idx).cloned() else { return };
 
@@ -852,18 +974,31 @@ pub fn handle_edit_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
 }
 
 fn commit_save(app: &mut App) {
-    let Some(tenant_name) = app.active_tenant().map(|t| t.name.clone()) else { return };
-    let Some(edit) = app.esv.editing.as_mut() else { return };
+    let Some(plan) = build_save_plan(app) else { return };
+    let is_prod = app
+        .active_tenant()
+        .is_some_and(|t| t.theme == TenantTheme::Production);
+    if is_prod {
+        app.prod_confirm.pending = Some(PendingProdAction::EsvSave(plan));
+        app.input_mode = InputMode::ProdConfirm;
+        return;
+    }
+    execute_save_plan(app, plan, false);
+}
+
+fn build_save_plan(app: &mut App) -> Option<SavePlan> {
+    let tenant_name = app.active_tenant().map(|t| t.name.clone())?;
+    let edit = app.esv.editing.as_mut()?;
 
     if edit.creating {
         let id = edit.id_input.value.trim().to_string();
         if id.is_empty() {
             edit.error = Some("_id cannot be empty".into());
-            return;
+            return None;
         }
         if !id.starts_with("esv-") {
             edit.error = Some("_id must start with 'esv-'".into());
-            return;
+            return None;
         }
         edit.id = id;
     }
@@ -872,7 +1007,7 @@ fn commit_save(app: &mut App) {
     // we apply optimistically and ship a request that would just bounce.
     if let Err(msg) = edit.expr_type.validate(&edit.value.value) {
         edit.error = Some(msg);
-        return;
+        return None;
     }
 
     let id = edit.id.clone();
@@ -889,6 +1024,20 @@ fn commit_save(app: &mut App) {
     let creating = edit.creating;
     let was_creating = edit.creating;
     let type_changed = !creating && original_type != expr_type;
+    let original_for_conflict = if creating {
+        None
+    } else {
+        Some(edit.original.clone())
+    };
+
+    if app
+        .esv
+        .in_flight_writes
+        .contains(&(tenant_name.clone(), id.clone()))
+    {
+        edit.error = Some("Save already in progress for this variable".into());
+        return None;
+    }
 
     // Build the optimistic body the local list will show until the
     // server's echo lands. Server-managed fields are inherited from the
@@ -908,6 +1057,32 @@ fn commit_save(app: &mut App) {
     // The runtime hasn't picked it up yet — restart is pending until the
     // user triggers one. Holds for both edits and creates.
     optimistic["loaded"] = serde_json::Value::Bool(false);
+
+    Some(SavePlan {
+        tenant_name,
+        id,
+        description,
+        expr_type,
+        value_b64,
+        type_changed,
+        original: original_for_conflict,
+        optimistic,
+        was_creating,
+    })
+}
+
+pub fn execute_save_plan(app: &mut App, plan: SavePlan, confirmed_prod: bool) {
+    let SavePlan {
+        tenant_name,
+        id,
+        description,
+        expr_type,
+        value_b64,
+        type_changed,
+        original,
+        optimistic,
+        was_creating,
+    } = plan;
 
     // Apply locally + pin across polls.
     if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant_name) {
@@ -939,14 +1114,23 @@ fn commit_save(app: &mut App) {
         }
     }
 
+    let request = SaveRequest {
+        tenant_name,
+        id,
+        description,
+        expr_type,
+        value_b64,
+        type_changed,
+        original,
+    };
+    let event_tenant = request.tenant_name.clone();
+    let event_id = request.id.clone();
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let result =
-            save_variable(&tenant_name, &id, &description, &expr_type, &value_b64, type_changed)
-                .await;
+        let result = save_variable(request, confirmed_prod).await;
         let _ = tx.send(AppEvent::EsvSaveResult {
-            tenant: tenant_name,
-            id,
+            tenant: event_tenant,
+            id: event_id,
             result,
         });
     });
@@ -960,23 +1144,42 @@ pub struct SaveOutcome {
     pub body: serde_json::Value,
 }
 
-async fn save_variable(
-    tenant: &str,
-    id: &str,
-    description: &str,
-    expr_type: &str,
-    value_b64: &str,
-    type_changed: bool,
-) -> Result<SaveOutcome, String> {
+async fn save_variable(request: SaveRequest, confirmed_prod: bool) -> Result<SaveOutcome, String> {
+    let SaveRequest {
+        tenant_name,
+        id,
+        description,
+        expr_type,
+        value_b64,
+        type_changed,
+        original,
+    } = request;
+
+    if let Some(original) = original.as_ref() {
+        let current = crate::aic::esv::get_variable(&tenant_name, &id)
+            .await
+            .map_err(|e| format!("conflict check: {e}"))?;
+        if !crate::aic::esv::content_equal(&current, original) {
+            return Err("remote value changed since you opened it; refresh and retry".into());
+        }
+    }
+
     if type_changed {
         // AIC rejects in-place type changes on existing variables, but
         // accepts DELETE followed by an immediate PUT with the new type
         // — verified on the sandbox 2026-05-26, no restart between.
-        crate::aic::esv::delete_variable(tenant, id, false)
+        crate::aic::esv::delete_variable(&tenant_name, &id, confirmed_prod)
             .await
             .map_err(|e| format!("type change: delete failed: {e}"))?;
     }
-    let saved = crate::aic::esv::update_variable(tenant, id, description, expr_type, value_b64, false)
+    let saved = crate::aic::esv::update_variable(
+        &tenant_name,
+        &id,
+        &description,
+        &expr_type,
+        &value_b64,
+        confirmed_prod,
+    )
         .await
         .map_err(|e| {
             if type_changed {
@@ -1019,7 +1222,8 @@ pub fn apply_save_result(
                 .recent_writes
                 .insert((tenant.clone(), id.clone()), (Instant::now(), body));
             // Clear any prior failure marker — the save went through.
-            app.esv.failed_writes.remove(&(tenant, id));
+            app.esv.failed_writes.remove(&(tenant.clone(), id));
+            refresh_apply_state_from_cache(app, &tenant);
         }
         Err(e) => {
             // Keep the optimistic body in `recent_writes` so the user
@@ -1028,5 +1232,34 @@ pub fn apply_save_result(
             app.esv.failed_writes.insert((tenant, id.clone()));
             app.push_toast(ToastKind::Error, format!("Save failed: {id} — {e}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authoritative_apply_state_prefers_startup_restarting() {
+        assert_eq!(
+            ApplyState::from_authoritative(StartupStatus::Restarting, 0),
+            ApplyState::Restarting(0)
+        );
+        assert_eq!(
+            ApplyState::from_authoritative(StartupStatus::Restarting, 3),
+            ApplyState::Restarting(3)
+        );
+    }
+
+    #[test]
+    fn authoritative_apply_state_uses_pending_when_ready() {
+        assert_eq!(
+            ApplyState::from_authoritative(StartupStatus::Ready, 0),
+            ApplyState::NoChanges
+        );
+        assert_eq!(
+            ApplyState::from_authoritative(StartupStatus::Ready, 2),
+            ApplyState::Unapplied(2)
+        );
     }
 }

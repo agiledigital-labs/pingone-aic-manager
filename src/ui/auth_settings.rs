@@ -51,9 +51,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         // `d` on the last remaining factor already falls through to the
         // disable-encryption confirm, so a separate [x] is redundant.
         hints.push(("d", "remove"));
-        if selected_is_security_key {
-            hints.push(("r", "rename"));
-        }
+        hints.push(("Enter", if selected_is_security_key { "rename" } else { "edit" }));
     }
     hints.push(("Esc", "close"));
 

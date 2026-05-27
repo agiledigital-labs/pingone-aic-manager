@@ -16,6 +16,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         hints: &[
             ("j/k", "navigate"),
             ("Enter", "confirm"),
+            ("1-9", "switch"),
             ("Esc", "cancel"),
         ],
         body_height: app.tenants.len().max(1) as u16,

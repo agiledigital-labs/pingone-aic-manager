@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, InputMode, Realm, Tab};
+use crate::screens::esv::EditField;
 use crate::theme::style_for;
 
 /// Top strip: tabs + realm/tenant chips. Caller must pass a 1-row area.
@@ -74,50 +75,48 @@ fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
             }
         }
         InputMode::EsvEdit => {
-            for (k, d) in [
-                ("Tab", "navigate"),
-                ("←/→", "change type"),
-                ("Esc", "cancel"),
-            ] {
+            let focused = app.esv.editing.as_ref().map(|edit| edit.focused);
+            let mut hints = vec![("Tab", "navigate")];
+            if let Some(enter_hint) = focused.and_then(esv_edit_enter_hint) {
+                hints.push(enter_hint);
+            }
+            if focused == Some(EditField::Type) {
+                hints.push(("←/→", "change type"));
+            }
+            hints.push(("Esc", "cancel"));
+            for (k, d) in hints {
                 spans.extend(hint(k, d));
             }
         }
         _ => {
-            let base = [
-                ("R", "realm"),
-                ("T", "env"),
-                ("^T", "add tenant"),
-                ("^A", "auth settings"),
-                ("L", "lock"),
-                ("q", "quit"),
-            ];
-            let pending = if app.current_tab == Tab::Esvs {
-                app.active_tenant()
-                    .map(|t| crate::screens::esv::pending_count(app, &t.name))
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            let esv_extras_base: &[(&str, &str)] = if app.current_tab == Tab::Esvs {
-                &[("/", "search"), ("j/k", "nav"), ("^N", "new variable")]
-            } else {
-                &[]
-            };
-            let esv_extras_apply: &[(&str, &str)] = if pending > 0 {
-                &[("^S", "apply changes")]
-            } else {
-                &[]
-            };
-            for (k, d) in esv_extras_apply
-                .iter()
-                .chain(esv_extras_base.iter())
-                .chain(base.iter())
-            {
+            let mut hints: Vec<(&str, &str)> = Vec::new();
+            if app.current_tab == Tab::Esvs && !app.tenants.is_empty() {
+                if app
+                    .active_tenant()
+                    .map(|t| crate::screens::esv::can_request_restart(app, &t.name))
+                    .unwrap_or(false)
+                {
+                    hints.push(("^S", "apply changes"));
+                }
+                hints.extend([("/", "search"), ("Enter", "edit"), ("^N", "new variable")]);
+            } else if app.tenants.is_empty() {
+                hints.extend([("^T", "add tenant"), ("^A", "auth settings")]);
+            }
+            hints.push(("?", "keys"));
+            for (k, d) in hints {
                 spans.extend(hint(k, d));
             }
         }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn esv_edit_enter_hint(focused: EditField) -> Option<(&'static str, &'static str)> {
+    match focused {
+        EditField::Id | EditField::Description | EditField::Type => Some(("Enter", "next")),
+        EditField::Value => None,
+        EditField::Save => Some(("Enter", "save")),
+    }
 }
 
 fn hint(key: &'static str, desc: &'static str) -> Vec<Span<'static>> {
@@ -131,4 +130,21 @@ fn hint(key: &'static str, desc: &'static str) -> Vec<Span<'static>> {
         ),
         Span::styled(format!(" {desc}"), Style::default().fg(Color::DarkGray)),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn esv_edit_enter_hint_tracks_focused_control() {
+        assert_eq!(esv_edit_enter_hint(EditField::Id), Some(("Enter", "next")));
+        assert_eq!(
+            esv_edit_enter_hint(EditField::Description),
+            Some(("Enter", "next"))
+        );
+        assert_eq!(esv_edit_enter_hint(EditField::Type), Some(("Enter", "next")));
+        assert_eq!(esv_edit_enter_hint(EditField::Value), None);
+        assert_eq!(esv_edit_enter_hint(EditField::Save), Some(("Enter", "save")));
+    }
 }

@@ -31,7 +31,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     };
 
     let hints: &[(&str, &str)] = if app.auth_setup.form.busy {
-        &[("Esc", "cancel")]
+        &[]
     } else if first_run {
         &[
             ("Tab", "navigate"),

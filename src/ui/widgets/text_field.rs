@@ -442,8 +442,7 @@ fn mask_for_display(value: &str) -> String {
 fn visual_position(text: &str, cursor: usize, width: usize) -> (usize, usize) {
     let mut row = 0usize;
     let mut col = 0usize;
-    let mut count = 0usize;
-    for c in text.chars() {
+    for (count, c) in text.chars().enumerate() {
         if count == cursor {
             break;
         }
@@ -457,7 +456,6 @@ fn visual_position(text: &str, cursor: usize, width: usize) -> (usize, usize) {
                 col = 0;
             }
         }
-        count += 1;
     }
     (row, col)
 }
@@ -468,15 +466,13 @@ fn visual_position(text: &str, cursor: usize, width: usize) -> (usize, usize) {
 /// the textarea has wrapped them visually.
 fn current_line_bounds(text: &str, cursor: usize) -> (usize, usize) {
     let mut start = 0usize;
-    let mut idx = 0usize;
-    for c in text.chars() {
+    for (idx, c) in text.chars().enumerate() {
         if idx >= cursor {
             break;
         }
         if c == '\n' {
             start = idx + 1;
         }
-        idx += 1;
     }
     let mut end = start;
     for c in text.chars().skip(start) {

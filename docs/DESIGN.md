@@ -55,11 +55,25 @@ keybindings. Don't redebate these unless the maintainer explicitly revisits.
 
 ## Keybindings
 
-- Vim-like: `j`/`k`, `h`/`l`, `gg`/`G`. `/` for search. `Esc` always
-  cancels. `Enter` confirms or focuses. Single-char actions (`a` apply,
-  `e` edit, `d` delete, `q` quit, `R` realm, `T` tenant).
-- No Ctrl combos for common ops (mirrors tally).
+- Vim-like movement where it fits: `j`/`k`, arrows, `gg`/`G`. `/` for search.
+- `Esc` cancels or closes the active mode. `Enter` confirms, advances, focuses,
+  or edits depending on focus.
+- Prefer plain keys for local actions. Ctrl combos are acceptable for global
+  commands or where plain keys conflict with text entry.
 - Mouse capture on but not relied on (mirrors tally).
+
+## Key hint principles
+
+- Hints describe what will happen **now**, not what a key usually does.
+- Use exact verbs: `next`, `save`, `edit`, `cancel`, `apply`.
+- Do not show a key if the focused control captures it for another purpose.
+  Example: hide `Enter` while an ESV value textarea uses it for newlines.
+- The bottom bar is for immediate, high-value actions only.
+- General movement and global commands belong in the keybind popover, not every
+  footer.
+- When a modal is open, the modal owns all visible hints.
+- The complete keybind popover must list every active key for the current mode.
+- Hint rendering and key dispatch should come from the same action source.
 
 ## Modals
 

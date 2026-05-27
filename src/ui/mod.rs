@@ -2,6 +2,7 @@ pub mod auth_settings;
 pub mod auth_setup;
 pub mod env_picker;
 pub mod header;
+pub mod keybind_help;
 pub mod modal;
 pub mod modal_chrome;
 pub mod onboard;
@@ -30,26 +31,31 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.input_mode {
         InputMode::Unlock => {
             unlock::draw(f, app);
+            draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
         }
         InputMode::SetupAuth => {
             auth_setup::draw(f, app);
+            draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
         }
         InputMode::AuthSettings => {
             auth_settings::draw(f, app);
+            draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
         }
         InputMode::AuthSettingsConfirm => {
             auth_settings::draw_confirm(f, app);
+            draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
         }
         InputMode::AuthSettingsRename => {
             auth_settings::draw_rename(f, app);
+            draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
         }
@@ -58,21 +64,25 @@ pub fn draw(f: &mut Frame, app: &App) {
         | InputMode::OnboardUserPass
         | InputMode::OnboardPaste => {
             onboard::draw(f, app);
+            draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
         }
         InputMode::OverwriteConfirm => {
             modal::draw_overwrite_confirm(f, app);
+            draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
         }
         InputMode::EnvPicker => {
             env_picker::draw(f, app);
+            draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
         }
         InputMode::ProdConfirm => {
             modal::draw_prod_confirm(f, app);
+            draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
         }
@@ -83,17 +93,20 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 
     let area = f.area();
+    let show_hints = !app.keybind_help_open && app.input_mode != InputMode::EsvRestartConfirm;
     let chunks = Layout::vertical([
         Constraint::Length(1), // top: tabs + chips
         Constraint::Length(1), // breathing room under the tab row
         Constraint::Min(0),    // body
-        Constraint::Length(1), // bottom: global keybind hints
+        Constraint::Length(if show_hints { 1 } else { 0 }), // bottom: keybind hints
     ])
     .split(area);
 
     header::draw(f, app, chunks[0]);
     draw_body(f, app, chunks[2]);
-    header::draw_hints(f, app, chunks[3]);
+    if show_hints {
+        header::draw_hints(f, app, chunks[3]);
+    }
 
     // Overlay popup confirm for restart, drawn on top of the dashboard
     // (not full-screen — short y/n questions get the small popup style).
@@ -109,7 +122,14 @@ pub fn draw(f: &mut Frame, app: &App) {
         popup_confirm::draw(f, "Apply pending changes?", &message);
     }
 
+    draw_keybind_help(f, app);
     toast::draw(f, app);
+}
+
+fn draw_keybind_help(f: &mut Frame, app: &App) {
+    if app.keybind_help_open {
+        keybind_help::draw(f, app);
+    }
 }
 
 fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -309,17 +329,12 @@ fn render_esv_row(m: &EsvMatch, is_selected: bool, failed: bool, pending: bool) 
     // Styling axes:
     //   selected: cyan-on-black bar with ▶
     //   failed:   red — background save errored, user should retry
-    //   pending:  green ! — saved on AIC but not yet loaded by the runtime
+    //   pending:  body text stays gray; only the gutter glyph turns green
+    //             (handled below where we render the gutter span)
     //   default:  gray
     // failed takes precedence over pending (a failed write is more urgent
     // than a pending one). selected always overlays the ▶ glyph.
-    let row_fg = if failed {
-        Color::Red
-    } else if pending {
-        Color::Gray // body text stays gray; only the gutter glyph turns green
-    } else {
-        Color::Gray
-    };
+    let row_fg = if failed { Color::Red } else { Color::Gray };
     let row_style = if is_selected {
         Style::default()
             .fg(if failed { Color::Red } else { Color::Black })
@@ -696,14 +711,17 @@ fn draw_pending_banner(f: &mut Frame, area: Rect, state: crate::screens::esv::Ba
                 noun = if n == 1 { "change" } else { "changes" }
             ),
         ),
-        BannerState::Applying(n) => (
-            Color::Indexed(223), // pastel yellow/peach #ffd7af
-            n,
-            format!(
-                "ⓘ  You have {n} {noun} applying — runtime restart in progress…",
-                noun = if n == 1 { "change" } else { "changes" }
-            ),
-        ),
+        BannerState::Applying(n) => {
+            let msg = if n == 0 {
+                "ⓘ  Runtime restart in progress…".to_string()
+            } else {
+                format!(
+                    "ⓘ  You have {n} {noun} applying — runtime restart in progress…",
+                    noun = if n == 1 { "change" } else { "changes" }
+                )
+            };
+            (Color::Indexed(223), n, msg)
+        }
     };
     let _ = count; // silence unused-on-no-arm
     let fg = Color::Indexed(232); // near-black so the pastel reads as the strip colour

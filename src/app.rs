@@ -122,16 +122,24 @@ pub struct App {
     jwks: HashMap<String, serde_json::Value>,
 
     /// Onboarding state — see `screens::onboard`. Owns the four form
-    /// drafts, the in-flight bootstrap id, the OTP callback body, the
-    /// prod-confirm pending action, and the overwrite-confirm draft.
+    /// drafts, the in-flight bootstrap id, the OTP callback body, and the
+    /// overwrite-confirm draft.
     pub onboard: crate::screens::onboard::State,
+
+    /// Pending production write confirmation shared by onboarding, ESV edits,
+    /// and any future write-capable screens.
+    pub prod_confirm: crate::screens::prod_confirm::State,
+
+    /// Confirm-style keybind help popover. This overlays the current screen
+    /// without changing the underlying input mode.
+    pub keybind_help_open: bool,
 
     /// ESV tab state — list cache, refresh book-keeping, search query +
     /// selection. See `crate::screens::esv` for the handlers.
     pub esv: crate::screens::esv::State,
 }
 
-pub use crate::screens::onboard::PendingProdAction;
+pub use crate::screens::prod_confirm::PendingProdAction;
 
 pub use crate::screens::auth_settings::PendingAuthAction;
 
@@ -177,6 +185,8 @@ impl App {
             wraps,
             jwks: HashMap::new(),
             onboard: crate::screens::onboard::State::new(),
+            prod_confirm: crate::screens::prod_confirm::State::new(),
+            keybind_help_open: false,
             esv: crate::screens::esv::State::new(),
         })
     }
@@ -393,8 +403,8 @@ impl App {
             AppEvent::Toast(kind, msg) => {
                 self.push_toast(kind, msg);
             }
-            AppEvent::EsvListed { tenant, result } => {
-                crate::screens::esv::apply_listed(self, tenant, result);
+            AppEvent::EsvListed { tenant, outcome } => {
+                crate::screens::esv::apply_refresh(self, tenant, outcome);
             }
             AppEvent::EsvSaveResult { tenant, id, result } => {
                 crate::screens::esv::apply_save_result(self, tenant, id, result);
@@ -402,12 +412,19 @@ impl App {
             AppEvent::EsvRestartResult { tenant, result } => {
                 crate::screens::esv::apply_restart_result(self, tenant, result);
             }
-            AppEvent::AuthCallbackProgress { body, prompt } => {
-                crate::screens::onboard::handle_auth_progress(self, body, prompt);
+            AppEvent::AuthCallbackProgress {
+                onboard_id,
+                body,
+                prompt,
+            } => {
+                crate::screens::onboard::handle_auth_progress(self, onboard_id, body, prompt);
             }
-            AppEvent::OnboardError(msg) => {
+            AppEvent::OnboardError {
+                onboard_id,
+                message: msg,
+            } => {
                 tracing::error!(error = %msg, "onboard error");
-                crate::screens::onboard::handle_onboard_error(self, msg);
+                crate::screens::onboard::handle_onboard_error(self, onboard_id, msg);
             }
             AppEvent::UnlockResult(r) => crate::screens::unlock::handle_result(self, r).await,
             AppEvent::SecurityKeyEnrollResult(r) => {
@@ -439,6 +456,21 @@ impl App {
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.keybind_help_open {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') | KeyCode::F(1)
+            ) {
+                self.keybind_help_open = false;
+            }
+            return Ok(());
+        }
+
+        if self.should_open_keybind_help(key) {
+            self.keybind_help_open = true;
+            return Ok(());
+        }
+
         match self.input_mode {
             InputMode::Normal => self.handle_normal_key(key).await?,
             InputMode::SetupAuth => crate::screens::auth_setup::handle_key(self, key).await?,
@@ -452,7 +484,7 @@ impl App {
             InputMode::OnboardPaste => crate::screens::onboard::handle_paste_key(self, key).await?,
             InputMode::OverwriteConfirm => crate::screens::onboard::handle_overwrite_key(self, key)?,
             InputMode::EnvPicker => self.handle_env_picker_key(key),
-            InputMode::ProdConfirm => crate::screens::onboard::handle_prod_confirm_key(self, key).await?,
+            InputMode::ProdConfirm => crate::screens::prod_confirm::handle_key(self, key).await?,
             InputMode::EsvSearch => crate::screens::esv::handle_search_key(self, key),
             InputMode::EsvEdit => crate::screens::esv::handle_edit_key(self, key)?,
             InputMode::EsvRestartConfirm => {
@@ -460,6 +492,23 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn should_open_keybind_help(&self, key: KeyEvent) -> bool {
+        if key.code == KeyCode::F(1) {
+            return true;
+        }
+
+        // `?` is only intercepted in list/command modes where it cannot be
+        // mistaken for text entry.
+        key.code == KeyCode::Char('?')
+            && matches!(
+                self.input_mode,
+                InputMode::Normal
+                    | InputMode::AuthSettings
+                    | InputMode::OnboardMenu
+                    | InputMode::EnvPicker
+            )
     }
 
     /// Backwards-compat shim for `ui::modal::draw_overwrite_confirm`.
@@ -534,7 +583,7 @@ impl App {
             KeyCode::Enter => {
                 self.set_active_tenant(self.env_picker_idx);
                 self.input_mode = InputMode::Normal;
-                crate::screens::esv::refresh(self, false);
+                crate::screens::esv::refresh(self, true);
             }
             KeyCode::Char(c @ '1'..='9') => {
                 // Number-key hotkey, matching the Add Tenant menu: switch
@@ -544,7 +593,7 @@ impl App {
                     self.env_picker_idx = target;
                     self.set_active_tenant(target);
                     self.input_mode = InputMode::Normal;
-                    crate::screens::esv::refresh(self, false);
+                    crate::screens::esv::refresh(self, true);
                 }
             }
             _ => {}
@@ -585,4 +634,3 @@ fn pick_initial_tenant_idx(tenants: &[Tenant], config: Option<&ProjectConfig>) -
     }
     0
 }
-

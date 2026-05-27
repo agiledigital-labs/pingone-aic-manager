@@ -13,4 +13,5 @@ pub mod auth_settings;
 pub mod auth_setup;
 pub mod esv;
 pub mod onboard;
+pub mod prod_confirm;
 pub mod unlock;
