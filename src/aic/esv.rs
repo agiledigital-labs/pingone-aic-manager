@@ -3,6 +3,13 @@
 
 use crate::{Error, Result};
 
+/// Authoritative tenant startup state from `GET /environment/startup`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupStatus {
+    Ready,
+    Restarting,
+}
+
 /// `GET /environment/variables` → returns the `result` array of variable
 /// objects (see `docs/api/03-esvs.md` for the object shape). Pagination not
 /// implemented; AIC's default page size is 1000 which is fine for "show me
@@ -14,6 +21,23 @@ pub async fn list_variables(tenant: &str) -> Result<Vec<serde_json::Value>> {
         _ => Err(Error::Api {
             status: 0,
             body: format!("unexpected /environment/variables response shape: {body}"),
+        }),
+    }
+}
+
+/// `GET /environment/startup` → current runtime restart status.
+pub async fn startup_status(tenant: &str) -> Result<StartupStatus> {
+    let body = super::api::get(tenant, "/environment/startup").await?;
+    parse_startup_status(&body)
+}
+
+pub fn parse_startup_status(body: &serde_json::Value) -> Result<StartupStatus> {
+    match body.get("restartStatus").and_then(|v| v.as_str()) {
+        Some("ready") => Ok(StartupStatus::Ready),
+        Some("restarting") => Ok(StartupStatus::Restarting),
+        _ => Err(Error::Api {
+            status: 0,
+            body: format!("unexpected /environment/startup response shape: {body}"),
         }),
     }
 }
@@ -92,4 +116,22 @@ pub fn content_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
         )
     };
     pick(a) == pick(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_startup_status() {
+        assert_eq!(
+            parse_startup_status(&serde_json::json!({"restartStatus":"ready"})).unwrap(),
+            StartupStatus::Ready
+        );
+        assert_eq!(
+            parse_startup_status(&serde_json::json!({"restartStatus":"restarting"})).unwrap(),
+            StartupStatus::Restarting
+        );
+        assert!(parse_startup_status(&serde_json::json!({"restartStatus":"unknown"})).is_err());
+    }
 }

@@ -1,0 +1,358 @@
+//! Confirm-style keybind help popover.
+//!
+//! This is intentionally a small overlay rather than a new screen. The
+//! underlying input mode stays active, but while the popover is open the app
+//! dispatches only the popover's close keys.
+
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
+};
+
+use crate::app::{App, AuthMethod, InputMode, SetupContext, Tab};
+use crate::screens::esv::EditField;
+use crate::ui::modal_chrome::hint_line;
+
+const WIDTH: u16 = 84;
+
+pub fn draw(f: &mut Frame, app: &App) {
+    let lines = lines_for(app);
+    let area = f.area();
+    let max_height = area.height.saturating_sub(2).max(1);
+    let desired_height = (lines.len() as u16).saturating_add(5).max(10);
+    let popup = centered(area, WIDTH, desired_height.min(max_height));
+
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .padding(Padding::new(2, 2, 1, 1))
+        .title(Span::styled(
+            " Keybinds ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let chunks = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(Color::White))
+            .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    f.render_widget(
+        Paragraph::new(hint_line(&[("Esc/Enter", "close"), ("F1/?", "close")])),
+        chunks[2],
+    );
+}
+
+fn lines_for(app: &App) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    match app.input_mode {
+        InputMode::Normal => normal_lines(app, &mut lines),
+        InputMode::EsvSearch => esv_search_lines(&mut lines),
+        InputMode::EsvEdit => esv_edit_lines(app, &mut lines),
+        InputMode::EsvRestartConfirm => confirm_lines(
+            &mut lines,
+            "Apply pending changes",
+            &[("y", "restart tenant runtime"), ("n/Esc", "cancel")],
+        ),
+        InputMode::AuthSettings => auth_settings_lines(app, &mut lines),
+        InputMode::AuthSettingsConfirm => confirm_lines(
+            &mut lines,
+            "Auth Settings confirmation",
+            &[("y", "confirm"), ("n/Esc", "cancel")],
+        ),
+        InputMode::AuthSettingsRename => text_modal_lines(
+            &mut lines,
+            "Rename security key",
+            &[("Enter", "save"), ("Esc", "cancel")],
+        ),
+        InputMode::SetupAuth => setup_auth_lines(app, &mut lines),
+        InputMode::Unlock => unlock_lines(app, &mut lines),
+        InputMode::OnboardMenu => onboard_menu_lines(app, &mut lines),
+        InputMode::OnboardCookie | InputMode::OnboardPaste => onboard_form_lines(&mut lines),
+        InputMode::OnboardUserPass => onboard_userpass_lines(app, &mut lines),
+        InputMode::OverwriteConfirm => confirm_lines(
+            &mut lines,
+            "Overwrite existing tenant",
+            &[("y", "overwrite"), ("n/Esc", "cancel")],
+        ),
+        InputMode::EnvPicker => env_picker_lines(app, &mut lines),
+        InputMode::ProdConfirm => confirm_lines(
+            &mut lines,
+            "Production write confirmation",
+            &[("y", "confirm production write"), ("n/Esc", "cancel")],
+        ),
+    }
+    lines
+}
+
+fn normal_lines(app: &App, lines: &mut Vec<Line<'static>>) {
+    if app.tenants.is_empty() {
+        group(lines, "Screen actions");
+        bind(lines, "^T", "add tenant");
+        bind(lines, "^A", "manage authentication factors");
+        bind(lines, "F1/?", "show keybinds");
+        group(lines, "General");
+        bind(lines, "q", "quit");
+        bind(lines, "^C", "quit");
+        return;
+    }
+
+    if app.current_tab == Tab::Esvs {
+        group(lines, "ESV actions");
+        bind(lines, "Enter", "edit selected variable");
+        bind(lines, "/", "search variables");
+        bind(lines, "^N", "create variable");
+        bind(lines, "^S", "apply pending changes when available");
+        group(lines, "Movement");
+        bind(lines, "j/k or ↑/↓", "move selection");
+        bind(lines, "PgUp/PgDn", "move by page");
+        bind(lines, "g/G", "first or last row");
+    }
+
+    group(lines, "General");
+    bind(lines, "R", "switch realm");
+    bind(lines, "T", "switch tenant");
+    bind(lines, "^T", "add tenant");
+    bind(lines, "^A", "auth settings");
+    bind(lines, "L", "lock and quit");
+    bind(lines, "q", "quit");
+    bind(lines, "F1/?", "show keybinds");
+}
+
+fn esv_search_lines(lines: &mut Vec<Line<'static>>) {
+    group(lines, "Search");
+    bind(lines, "Type", "edit search query");
+    bind(lines, "Backspace", "delete character");
+    bind(lines, "Enter", "keep filter and return to list");
+    bind(lines, "Esc", "clear filter and return to list");
+    group(lines, "Results");
+    bind(lines, "↑/↓", "move selection");
+    bind(lines, "PgUp/PgDn", "move by page");
+    bind(lines, "F1", "show keybinds");
+}
+
+fn esv_edit_lines(app: &App, lines: &mut Vec<Line<'static>>) {
+    group(lines, "Edit variable");
+    bind(lines, "Tab/Shift-Tab", "move between fields");
+    match app.esv.editing.as_ref().map(|edit| edit.focused) {
+        Some(EditField::Id | EditField::Description | EditField::Type) => {
+            bind(lines, "Enter", "move to next field");
+        }
+        Some(EditField::Value) => {
+            bind(lines, "Enter", "insert newline in value");
+        }
+        Some(EditField::Save) => {
+            bind(lines, "Enter", "save variable");
+        }
+        None => {}
+    }
+    bind(lines, "Esc", "cancel edit");
+    group(lines, "Selector");
+    bind(lines, "←/→", "change type when the Type selector is focused");
+    group(lines, "Text fields");
+    bind(lines, "Arrows/Home/End", "move cursor");
+    bind(lines, "Backspace/Delete", "delete text");
+    bind(lines, "F1", "show keybinds");
+}
+
+fn auth_settings_lines(app: &App, lines: &mut Vec<Line<'static>>) {
+    group(lines, "Auth Settings");
+    bind(lines, "p", "set or change password");
+    bind(lines, "s", "add security key");
+    if !app.wraps.wraps.is_empty() {
+        bind(lines, "d", "remove selected factor");
+        bind(lines, "Enter", "edit selected factor");
+    }
+    bind(lines, "Esc", "close");
+    group(lines, "Movement");
+    bind(lines, "j/k or ↑/↓", "move selection");
+    if let Some(range) = number_range(app.wraps.wraps.len()) {
+        bind(lines, range, "edit numbered factor");
+    }
+    bind(lines, "F1/?", "show keybinds");
+}
+
+fn setup_auth_lines(app: &App, lines: &mut Vec<Line<'static>>) {
+    if app.auth_setup.form.busy {
+        group(lines, "Security key enrollment");
+        bind(lines, "F1", "show or close keybinds");
+        bind(lines, "Input", "temporarily locked while waiting for the security key");
+        return;
+    }
+
+    let first_run = app.auth_setup.context == SetupContext::FirstRun;
+    group(lines, if first_run { "Set up authentication" } else { "Add factor" });
+    bind(lines, "Enter", "advance or submit");
+    bind(lines, "Esc", if first_run { "quit" } else { "cancel" });
+    bind(lines, "Tab/Shift-Tab", "move between fields");
+    if first_run {
+        bind(lines, "←/→ or Space", "change authentication method");
+    }
+    match app.auth_setup.form.method {
+        AuthMethod::None => {}
+        AuthMethod::Password => {
+            bind(lines, "Type", "enter password");
+            bind(lines, "Backspace", "delete character");
+        }
+        AuthMethod::SecurityKey => {
+            bind(lines, "Type", "enter PIN or label");
+            bind(lines, "Backspace", "delete character");
+        }
+    }
+    bind(lines, "F1", "show keybinds");
+}
+
+fn unlock_lines(app: &App, lines: &mut Vec<Line<'static>>) {
+    group(lines, "Unlock");
+    bind(lines, "Enter", "submit focused credential");
+    bind(lines, "Esc", "quit");
+    if app.wraps.has_password() && app.wraps.has_security_key() {
+        bind(lines, "Tab/Shift-Tab", "switch unlock method");
+    }
+    bind(lines, "Type", "enter password or security-key PIN");
+    bind(lines, "F1", "show keybinds");
+}
+
+fn onboard_menu_lines(app: &App, lines: &mut Vec<Line<'static>>) {
+    group(lines, "Add Tenant");
+    bind(lines, "Enter", "choose selected method");
+    bind(lines, "Esc", "cancel");
+    group(lines, "Movement");
+    bind(lines, "j/k or ↑/↓", "move selection");
+    let count = if app.has_env_creds { 4 } else { 3 };
+    if let Some(range) = number_range(count) {
+        bind(lines, range, "choose numbered method");
+    }
+    bind(lines, "F1/?", "show keybinds");
+}
+
+fn onboard_form_lines(lines: &mut Vec<Line<'static>>) {
+    group(lines, "Add Tenant form");
+    bind(lines, "Enter", "advance or submit");
+    bind(lines, "Esc", "go back");
+    bind(lines, "Tab/Shift-Tab", "move between fields");
+    bind(lines, "←/→", "change theme when the Theme selector is focused");
+    group(lines, "Text fields");
+    bind(lines, "Arrows/Home/End", "move cursor");
+    bind(lines, "Backspace/Delete", "delete text");
+    bind(lines, "F1", "show keybinds");
+}
+
+fn onboard_userpass_lines(app: &App, lines: &mut Vec<Line<'static>>) {
+    if app
+        .onboard
+        .up_form
+        .as_ref()
+        .is_some_and(|form| form.pending_prompt.is_some())
+    {
+        group(lines, "Additional input");
+        bind(lines, "Type", "enter requested code");
+        bind(lines, "Backspace", "delete character");
+        bind(lines, "Enter", "submit code");
+        bind(lines, "Esc", "cancel prompt");
+        bind(lines, "F1", "show keybinds");
+    } else {
+        onboard_form_lines(lines);
+    }
+}
+
+fn env_picker_lines(app: &App, lines: &mut Vec<Line<'static>>) {
+    group(lines, "Switch Tenant");
+    bind(lines, "Enter", "switch to selected tenant");
+    bind(lines, "Esc", "cancel");
+    group(lines, "Movement");
+    bind(lines, "j/k or ↑/↓", "move selection");
+    if let Some(range) = number_range(app.tenants.len()) {
+        bind(lines, range, "switch to numbered tenant");
+    }
+    bind(lines, "F1/?", "show keybinds");
+}
+
+fn confirm_lines(
+    lines: &mut Vec<Line<'static>>,
+    title: &'static str,
+    bindings: &[(&'static str, &'static str)],
+) {
+    group(lines, title);
+    for (key, desc) in bindings {
+        bind(lines, *key, *desc);
+    }
+}
+
+fn text_modal_lines(
+    lines: &mut Vec<Line<'static>>,
+    title: &'static str,
+    bindings: &[(&'static str, &'static str)],
+) {
+    confirm_lines(lines, title, bindings);
+    group(lines, "Text field");
+    bind(lines, "Arrows/Home/End", "move cursor");
+    bind(lines, "Backspace/Delete", "delete text");
+    bind(lines, "Type", "edit value");
+    bind(lines, "F1", "show keybinds");
+}
+
+fn group(lines: &mut Vec<Line<'static>>, title: &'static str) {
+    if !lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        title,
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )));
+}
+
+fn bind(
+    lines: &mut Vec<Line<'static>>,
+    key: impl Into<String>,
+    description: impl Into<String>,
+) {
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{:<18}", key.into()),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(description.into()),
+    ]));
+}
+
+fn number_range(count: usize) -> Option<String> {
+    let max = count.min(9);
+    match max {
+        0 => None,
+        1 => Some("1".to_string()),
+        _ => Some(format!("1-{max}")),
+    }
+}
+
+fn centered(parent: Rect, width: u16, height: u16) -> Rect {
+    let w = width.min(parent.width);
+    let h = height.min(parent.height);
+    Rect {
+        x: parent.x + (parent.width.saturating_sub(w)) / 2,
+        y: parent.y + (parent.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    }
+}

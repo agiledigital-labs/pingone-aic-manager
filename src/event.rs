@@ -15,9 +15,16 @@ pub enum AppEvent {
     /// Pattern 2: the AM authentication journey returned a callback we need
     /// extra user input to satisfy (TOTP). `body` is the JSON to POST back
     /// once the user supplies the missing value.
-    AuthCallbackProgress { body: serde_json::Value, prompt: String },
+    AuthCallbackProgress {
+        onboard_id: uuid::Uuid,
+        body: serde_json::Value,
+        prompt: String,
+    },
     /// Onboarding failed somewhere in the background task.
-    OnboardError(String),
+    OnboardError {
+        onboard_id: uuid::Uuid,
+        message: String,
+    },
     /// Service account created. `onboard_id` matches the `pending_onboard_id`
     /// stamped on the App when the bootstrap was kicked off — handler must
     /// drop the event when the id doesn't match (user cancelled, or a stale
@@ -52,11 +59,12 @@ pub enum AppEvent {
         id: String,
         result: std::result::Result<crate::screens::esv::SaveOutcome, String>,
     },
-    /// Background ESV-variables list fetch finished for `tenant`. The result
-    /// holds the variable objects (raw JSON) or a human-readable error.
+    /// Background ESV refresh finished for `tenant`. The payload keeps the
+    /// variable list and startup status separate so a partial failure doesn't
+    /// force us to throw away useful cached state.
     EsvListed {
         tenant: String,
-        result: std::result::Result<Vec<serde_json::Value>, String>,
+        outcome: crate::screens::esv::RefreshOutcome,
     },
     Toast(ToastKind, String),
 }

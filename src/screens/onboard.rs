@@ -1,8 +1,7 @@
 //! Tenant onboarding screens: cookie / userpass / paste / sandbox-import.
 //! Owns the four form structs (well, three — paste is synchronous), the
-//! pending-action book-keeping (prod confirm, overwrite confirm, in-flight
-//! bootstrap id, OTP callback body), and the background bootstrap tasks
-//! that hit AIC pre-tenant.
+//! overwrite confirm, in-flight bootstrap id, OTP callback body, and the
+//! background bootstrap tasks that hit AIC pre-tenant.
 
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -13,15 +12,7 @@ use crate::app::{App, InputMode};
 use crate::config::tenant::{Tenant, TenantTheme};
 use crate::config::ProjectConfig;
 use crate::event::{AppEvent, ToastKind};
-
-/// Pending write that requires the prod-confirm overlay first.
-#[derive(Debug)]
-pub enum PendingProdAction {
-    SaveTenant {
-        tenant: Tenant,
-        jwk: serde_json::Value,
-    },
-}
+use crate::screens::prod_confirm::PendingProdAction;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -40,9 +31,6 @@ pub struct State {
     /// Pattern 2: the in-flight callback JSON we POST'd that needs an
     /// extra prompt (TOTP).
     pub pending_callback_body: Option<serde_json::Value>,
-
-    /// Pending write awaiting the prod-confirm overlay.
-    pub pending_prod_action: Option<PendingProdAction>,
 
     /// Pending tenant whose name collides with an existing one. Set when
     /// the overwrite-confirm modal is up.
@@ -340,7 +328,20 @@ fn continue_up_with_extra(app: &mut App, extra: String) {
     });
 }
 
-pub fn handle_auth_progress(app: &mut App, body: serde_json::Value, prompt: String) {
+pub fn handle_auth_progress(
+    app: &mut App,
+    onboard_id: uuid::Uuid,
+    body: serde_json::Value,
+    prompt: String,
+) {
+    if app.onboard.pending_id != Some(onboard_id) {
+        tracing::debug!(
+            event_id = %onboard_id,
+            pending = ?app.onboard.pending_id,
+            "dropping stale AuthCallbackProgress"
+        );
+        return;
+    }
     if let Some(form) = &mut app.onboard.up_form {
         form.pending_prompt = Some(prompt);
         form.status = None;
@@ -348,7 +349,17 @@ pub fn handle_auth_progress(app: &mut App, body: serde_json::Value, prompt: Stri
     app.onboard.pending_callback_body = Some(body);
 }
 
-pub fn handle_onboard_error(app: &mut App, msg: String) {
+pub fn handle_onboard_error(app: &mut App, onboard_id: uuid::Uuid, msg: String) {
+    if app.onboard.pending_id != Some(onboard_id) {
+        tracing::debug!(
+            event_id = %onboard_id,
+            pending = ?app.onboard.pending_id,
+            "dropping stale OnboardError"
+        );
+        return;
+    }
+    app.onboard.pending_id = None;
+    app.onboard.pending_callback_body = None;
     if let Some(form) = &mut app.onboard.cookie_form {
         form.busy = false;
         form.error = Some(msg.clone());
@@ -399,7 +410,7 @@ pub async fn handle_paste_key(app: &mut App, key: KeyEvent) -> crate::Result<()>
             let prod = tenant.theme == TenantTheme::Production;
             app.onboard.paste_form = None;
             if prod {
-                app.onboard.pending_prod_action = Some(PendingProdAction::SaveTenant { tenant, jwk });
+                app.prod_confirm.pending = Some(PendingProdAction::SaveTenant { tenant, jwk });
                 app.input_mode = InputMode::ProdConfirm;
             } else {
                 match persist_new_tenant(app, tenant, jwk) {
@@ -422,7 +433,7 @@ pub async fn handle_paste_key(app: &mut App, key: KeyEvent) -> crate::Result<()>
     Ok(())
 }
 
-// ---- Overwrite / prod confirm / SA-created ----
+// ---- Overwrite / SA-created ----
 
 pub fn handle_overwrite_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     match key.code {
@@ -441,34 +452,6 @@ pub fn handle_overwrite_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             app.onboard.pending_overwrite = None;
             app.input_mode = InputMode::Normal;
             app.push_toast(ToastKind::Info, "Overwrite cancelled");
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-pub async fn handle_prod_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let action = app.onboard.pending_prod_action.take();
-            app.input_mode = InputMode::Normal;
-            if let Some(action) = action {
-                match action {
-                    PendingProdAction::SaveTenant { tenant, jwk } => {
-                        match persist_new_tenant(app, tenant, jwk) {
-                            Ok(()) => app.push_toast(ToastKind::Success, "Tenant added!"),
-                            Err(e) => {
-                                app.push_toast(ToastKind::Error, format!("Save failed: {e}"))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.onboard.pending_prod_action = None;
-            app.input_mode = InputMode::Normal;
-            app.push_toast(ToastKind::Info, "Prod write cancelled");
         }
         _ => {}
     }
@@ -513,7 +496,7 @@ pub fn handle_sa_created(
     app.onboard.pending_callback_body = None;
 
     if tenant.theme == TenantTheme::Production {
-        app.onboard.pending_prod_action = Some(PendingProdAction::SaveTenant { tenant, jwk });
+        app.prod_confirm.pending = Some(PendingProdAction::SaveTenant { tenant, jwk });
         app.input_mode = InputMode::ProdConfirm;
         return Ok(());
     }
@@ -587,7 +570,7 @@ async fn import_env_creds(app: &mut App) -> crate::Result<()> {
 /// Persist a new tenant. If a tenant with the same name already exists,
 /// switch to the OverwriteConfirm modal and bail out — the caller's flow
 /// is paused until the user answers.
-fn persist_new_tenant(
+pub(crate) fn persist_new_tenant(
     app: &mut App,
     tenant: Tenant,
     jwk: serde_json::Value,
@@ -652,6 +635,17 @@ fn persist_tenant_overwriting(
 
 // ---- Background bootstrap tasks ----
 
+fn send_onboard_error(
+    tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    onboard_id: uuid::Uuid,
+    message: impl Into<String>,
+) {
+    let _ = tx.send(AppEvent::OnboardError {
+        onboard_id,
+        message: message.into(),
+    });
+}
+
 async fn run_bootstrap_from_cookie(
     onboard_id: uuid::Uuid,
     tenant_name: String,
@@ -665,14 +659,14 @@ async fn run_bootstrap_from_cookie(
     let http = match no_redirect_client() {
         Ok(c) => c,
         Err(e) => {
-            let _ = tx.send(AppEvent::OnboardError(format!("HTTP client init: {e}")));
+            send_onboard_error(&tx, onboard_id, format!("HTTP client init: {e}"));
             return;
         }
     };
     let bearer = match session_to_bearer(&http, &base_url, &cookie_name, &session_value).await {
         Ok(b) => b,
         Err(e) => {
-            let _ = tx.send(AppEvent::OnboardError(format!("authorize/token: {e}")));
+            send_onboard_error(&tx, onboard_id, format!("authorize/token: {e}"));
             return;
         }
     };
@@ -680,7 +674,7 @@ async fn run_bootstrap_from_cookie(
     let priv_jwk = match generate_rsa_jwk(&kid) {
         Ok(j) => j,
         Err(e) => {
-            let _ = tx.send(AppEvent::OnboardError(format!("RSA keygen: {e}")));
+            send_onboard_error(&tx, onboard_id, format!("RSA keygen: {e}"));
             return;
         }
     };
@@ -698,7 +692,7 @@ async fn run_bootstrap_from_cookie(
     {
         Ok(id) => id,
         Err(e) => {
-            let _ = tx.send(AppEvent::OnboardError(format!("SA create: {e}")));
+            send_onboard_error(&tx, onboard_id, format!("SA create: {e}"));
             return;
         }
     };
@@ -730,7 +724,7 @@ async fn run_bootstrap_from_userpass(
     let http = match no_redirect_client() {
         Ok(c) => c,
         Err(e) => {
-            let _ = tx.send(AppEvent::OnboardError(format!("HTTP client init: {e}")));
+            send_onboard_error(&tx, onboard_id, format!("HTTP client init: {e}"));
             return;
         }
     };
@@ -755,21 +749,21 @@ async fn run_bootstrap_from_userpass(
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx.send(AppEvent::OnboardError(format!("authenticate: {e}")));
+                    send_onboard_error(&tx, onboard_id, format!("authenticate: {e}"));
                     return;
                 }
             };
             if !resp.status().is_success() {
-                let _ = tx.send(AppEvent::OnboardError(format!(
+                send_onboard_error(&tx, onboard_id, format!(
                     "authenticate: HTTP {}",
                     resp.status()
-                )));
+                ));
                 return;
             }
             match resp.json::<serde_json::Value>().await {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = tx.send(AppEvent::OnboardError(format!("authenticate body: {e}")));
+                    send_onboard_error(&tx, onboard_id, format!("authenticate body: {e}"));
                     return;
                 }
             }
@@ -783,14 +777,14 @@ async fn run_bootstrap_from_userpass(
             let cookie_name = match discover_cookie_name(&http, &base_url).await {
                 Ok(n) => n,
                 Err(e) => {
-                    let _ = tx.send(AppEvent::OnboardError(format!("serverinfo: {e}")));
+                    send_onboard_error(&tx, onboard_id, format!("serverinfo: {e}"));
                     return;
                 }
             };
             let bearer = match session_to_bearer(&http, &base_url, &cookie_name, &token_id).await {
                 Ok(b) => b,
                 Err(e) => {
-                    let _ = tx.send(AppEvent::OnboardError(format!("authorize/token: {e}")));
+                    send_onboard_error(&tx, onboard_id, format!("authorize/token: {e}"));
                     return;
                 }
             };
@@ -798,7 +792,7 @@ async fn run_bootstrap_from_userpass(
             let priv_jwk = match generate_rsa_jwk(&kid) {
                 Ok(j) => j,
                 Err(e) => {
-                    let _ = tx.send(AppEvent::OnboardError(format!("RSA keygen: {e}")));
+                    send_onboard_error(&tx, onboard_id, format!("RSA keygen: {e}"));
                     return;
                 }
             };
@@ -816,7 +810,7 @@ async fn run_bootstrap_from_userpass(
             {
                 Ok(id) => id,
                 Err(e) => {
-                    let _ = tx.send(AppEvent::OnboardError(format!("SA create: {e}")));
+                    send_onboard_error(&tx, onboard_id, format!("SA create: {e}"));
                     return;
                 }
             };
@@ -850,22 +844,22 @@ async fn run_bootstrap_from_userpass(
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        let _ = tx.send(AppEvent::OnboardError(format!("authenticate POST: {e}")));
+                        send_onboard_error(&tx, onboard_id, format!("authenticate POST: {e}"));
                         return;
                     }
                 };
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let txt = resp.text().await.unwrap_or_default();
-                    let _ = tx.send(AppEvent::OnboardError(format!(
+                    send_onboard_error(&tx, onboard_id, format!(
                         "authentication failed ({status}): {txt}"
-                    )));
+                    ));
                     return;
                 }
                 body = match resp.json::<serde_json::Value>().await {
                     Ok(v) => v,
                     Err(e) => {
-                        let _ = tx.send(AppEvent::OnboardError(format!("authenticate body: {e}")));
+                        send_onboard_error(&tx, onboard_id, format!("authenticate body: {e}"));
                         return;
                     }
                 };
@@ -875,19 +869,18 @@ async fn run_bootstrap_from_userpass(
                 body: pending,
             } => {
                 let _ = tx.send(AppEvent::AuthCallbackProgress {
+                    onboard_id,
                     body: pending,
                     prompt,
                 });
                 return;
             }
             CallbackOutcome::Unsupported(msg) => {
-                let _ = tx.send(AppEvent::OnboardError(msg));
+                send_onboard_error(&tx, onboard_id, msg);
                 return;
             }
         }
     }
 
-    let _ = tx.send(AppEvent::OnboardError(
-        "too many authentication rounds — aborting".into(),
-    ));
+    send_onboard_error(&tx, onboard_id, "too many authentication rounds — aborting");
 }

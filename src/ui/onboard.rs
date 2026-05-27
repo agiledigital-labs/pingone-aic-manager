@@ -44,11 +44,7 @@ fn draw_menu(f: &mut Frame, app: &App) {
     let body = Modal {
         title: "Add Tenant",
         status: None,
-        hints: &[
-            ("j/k", "navigate"),
-            ("Enter", "choose"),
-            ("Esc", "cancel"),
-        ],
+        hints: &[("Enter", "choose"), ("Esc", "cancel")],
         body_height: n_options as u16,
     }
     .draw(f, f.area());
@@ -282,11 +278,7 @@ fn form_hints(busy: bool) -> &'static [(&'static str, &'static str)] {
     if busy {
         &[("Esc", "cancel")]
     } else {
-        &[
-            ("Tab", "navigate"),
-            ("Enter", "submit"),
-            ("Esc", "go back"),
-        ]
+        &[("Enter", "submit"), ("Esc", "go back")]
     }
 }
 
