@@ -42,7 +42,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     let area = f.area();
     let max_visible = 3usize;
-    let mut next_y = area.y;
+    // Stack toasts from the bottom-right upward, newest (front of the queue)
+    // pinned to the bottom. A one-cell margin on the right and bottom keeps
+    // them off the very edge.
+    let mut next_bottom = area.bottom().saturating_sub(1);
 
     for toast in app.toasts.iter().take(max_visible) {
         let (border_color, icon) = match toast.kind {
@@ -58,17 +61,19 @@ pub fn draw(f: &mut Frame, app: &App) {
             .saturating_add(2) // borders
             .clamp(TOAST_MIN_HEIGHT, TOAST_MAX_HEIGHT);
 
-        if next_y + height > area.bottom() {
+        // Stop once there's no room left above for another toast.
+        if next_bottom < area.y + height {
             break;
         }
+        let y = next_bottom - height;
         let x = area.x + area.width.saturating_sub(TOAST_WIDTH + 1);
         let rect = Rect {
             x,
-            y: next_y,
+            y,
             width: TOAST_WIDTH,
             height,
         };
-        next_y += height + 1;
+        next_bottom = y.saturating_sub(1);
 
         f.render_widget(Clear, rect);
         let block = Block::default()
