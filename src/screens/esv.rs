@@ -5,8 +5,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::aic::esv::StartupStatus;
@@ -15,6 +15,7 @@ use crate::config::tenant::TenantTheme;
 use crate::event::{AppEvent, ToastKind};
 use crate::screens::prod_confirm::PendingProdAction;
 use crate::ui::widgets::{LineEditor, TextField};
+use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
 /// Per-tenant ESV load state. `app.esv.data` maps tenant name → this.
 #[derive(Debug, Clone)]
@@ -49,6 +50,7 @@ impl ApplyState {
 #[derive(Debug)]
 pub struct RefreshOutcome {
     pub variables: std::result::Result<Vec<serde_json::Value>, String>,
+    pub pending_variables: std::result::Result<Vec<serde_json::Value>, String>,
     pub startup: std::result::Result<StartupStatus, String>,
 }
 
@@ -57,10 +59,11 @@ pub struct RefreshOutcome {
 /// per-char highlight.
 #[derive(Debug, Clone)]
 pub struct Match {
-    pub idx: usize,
+    pub idx: Option<usize>,
     pub id: String,
     pub score: u32,
     pub positions: Vec<u32>,
+    pub deleted: bool,
 }
 
 /// Extract the `_id` field of an ESV variable; falls back to `"?"` when
@@ -80,10 +83,16 @@ pub fn is_pending(v: &serde_json::Value) -> bool {
 /// to take effect. Drives the banner above the preview pane and gates
 /// the `^S` apply keybind.
 pub fn pending_count(app: &App, tenant: &str) -> usize {
-    match app.esv.data.get(tenant) {
-        Some(LoadState::Loaded(items)) => items.iter().filter(|v| is_pending(v)).count(),
-        _ => 0,
+    let mut ids = app.esv.pending_ids.get(tenant).cloned().unwrap_or_default();
+    if let Some(LoadState::Loaded(items)) = app.esv.data.get(tenant) {
+        ids.extend(
+            items
+                .iter()
+                .filter(|v| is_pending(v))
+                .map(|v| id_of(v).to_string()),
+        );
     }
+    ids.len()
 }
 
 /// AIC's documented set of expression types for variables. Acts as a chip
@@ -172,16 +181,19 @@ impl ExpressionType {
                 .parse::<f64>()
                 .map(|_| ())
                 .map_err(|_| "Value must be a number".into()),
-            ExpressionType::Object => match serde_json::from_str::<serde_json::Value>(value.trim()) {
+            ExpressionType::Object => match serde_json::from_str::<serde_json::Value>(value.trim())
+            {
                 Ok(serde_json::Value::Object(_)) => Ok(()),
                 Ok(_) => Err("Value must be a JSON object (e.g. {\"k\":\"v\"})".into()),
                 Err(e) => Err(format!("Value must be valid JSON: {e}")),
             },
-            ExpressionType::Array => match serde_json::from_str::<serde_json::Value>(value.trim()) {
-                Ok(serde_json::Value::Array(_)) => Ok(()),
-                Ok(_) => Err("Value must be a JSON array (e.g. [1,2,3])".into()),
-                Err(e) => Err(format!("Value must be valid JSON: {e}")),
-            },
+            ExpressionType::Array => {
+                match serde_json::from_str::<serde_json::Value>(value.trim()) {
+                    Ok(serde_json::Value::Array(_)) => Ok(()),
+                    Ok(_) => Err("Value must be a JSON array (e.g. [1,2,3])".into()),
+                    Err(e) => Err(format!("Value must be valid JSON: {e}")),
+                }
+            }
         }
     }
 }
@@ -281,6 +293,27 @@ struct SaveRequest {
     original: Option<serde_json::Value>,
 }
 
+/// Fully-captured delete payload. The original body is required both for
+/// conflict detection and for undo.
+#[derive(Debug, Clone)]
+pub struct DeletePlan {
+    tenant_name: String,
+    id: String,
+    original: serde_json::Value,
+}
+
+struct DeleteRequest {
+    tenant_name: String,
+    id: String,
+    original: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteTombstone {
+    pub deleted_at: Instant,
+    pub body: serde_json::Value,
+}
+
 #[derive(Debug)]
 pub struct State {
     /// Cached ESV lists, keyed by tenant name. Populated lazily on first
@@ -313,6 +346,15 @@ pub struct State {
     /// `RECENT_WRITE_TTL` so the local view never loses them.
     pub recent_writes: HashMap<(String, String), (Instant, serde_json::Value)>,
 
+    /// Variables deleted locally/through AIC that we keep visible as local
+    /// undo tombstones. Ping's pending endpoints do not report deletes.
+    pub recent_deletes: HashMap<(String, String), DeleteTombstone>,
+
+    /// Last successful `GET /environment/variables?_onlyPending=true` result,
+    /// keyed by tenant. This is authoritative for existing variables that
+    /// need restart/apply.
+    pub pending_ids: HashMap<String, HashSet<String>>,
+
     /// (tenant, id) for any optimistic save whose background request
     /// failed. The local cache still holds the user's attempted body
     /// (via `recent_writes`); the list renders these rows in red so the
@@ -335,12 +377,17 @@ pub struct State {
     /// is in flight. Cleared by `apply_save_result` regardless of
     /// success / failure.
     pub in_flight_writes: HashSet<(String, String)>,
+
+    /// Original values for optimistic deletes that are still in flight.
+    /// Used to restore the local cache if the background DELETE fails.
+    pub in_flight_deletes: HashMap<(String, String), serde_json::Value>,
+
+    /// Delete plan waiting on the local y/n confirmation popover.
+    pub pending_delete: Option<DeletePlan>,
 }
 
 /// How long we keep a freshly-saved variable pinned to the local cache
-/// after a save. Long enough to cover AIC's indexing lag on creates;
-/// short enough that genuinely-deleted-elsewhere variables eventually
-/// drop off after the next poll confirms their absence.
+/// after a save. Long enough to cover AIC's indexing lag on creates.
 pub const RECENT_WRITE_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl Default for State {
@@ -354,10 +401,14 @@ impl Default for State {
             scroll: 0,
             editing: None,
             recent_writes: HashMap::new(),
+            recent_deletes: HashMap::new(),
+            pending_ids: HashMap::new(),
             failed_writes: HashSet::new(),
             apply_states: HashMap::new(),
             restart_started_at: HashMap::new(),
             in_flight_writes: HashSet::new(),
+            in_flight_deletes: HashMap::new(),
+            pending_delete: None,
         }
     }
 }
@@ -436,7 +487,9 @@ impl State {
     /// matches sorted by score (descending), with match positions for
     /// per-char highlighting. Empty when the tenant isn't `Loaded`.
     pub fn matches(&self, tenant: Option<&str>) -> Vec<Match> {
-        let Some(name) = tenant else { return Vec::new() };
+        let Some(name) = tenant else {
+            return Vec::new();
+        };
         let Some(LoadState::Loaded(items)) = self.data.get(name) else {
             return Vec::new();
         };
@@ -445,18 +498,32 @@ impl State {
                 .iter()
                 .enumerate()
                 .map(|(i, v)| Match {
-                    idx: i,
+                    idx: Some(i),
                     id: id_of(v).to_string(),
                     score: 0,
                     positions: Vec::new(),
+                    deleted: false,
                 })
                 .collect();
+            let live_ids: HashSet<String> = items.iter().map(|v| id_of(v).to_string()).collect();
+            indexed.extend(
+                self.recent_deletes
+                    .iter()
+                    .filter(|((t, id), _)| t == name && !live_ids.contains(id))
+                    .map(|((_, id), _)| Match {
+                        idx: None,
+                        id: id.clone(),
+                        score: 0,
+                        positions: Vec::new(),
+                        deleted: true,
+                    }),
+            );
             indexed.sort_by(|a, b| a.id.cmp(&b.id));
             return indexed;
         }
         use nucleo_matcher::{
-            pattern::{AtomKind, CaseMatching, Normalization, Pattern},
             Config, Matcher, Utf32Str,
+            pattern::{AtomKind, CaseMatching, Normalization, Pattern},
         };
         let mut matcher = Matcher::new(Config::DEFAULT);
         let pattern = Pattern::new(
@@ -468,22 +535,41 @@ impl State {
         let mut out: Vec<Match> = Vec::new();
         let mut buf = Vec::new();
         let mut positions: Vec<u32> = Vec::new();
-        for (i, v) in items.iter().enumerate() {
-            let id = id_of(v);
+        let live_ids: HashSet<String> = items.iter().map(|v| id_of(v).to_string()).collect();
+        let mut rows: Vec<(Option<usize>, String, bool, bool)> = items
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let id = id_of(v).to_string();
+                let pending = is_pending(v)
+                    || self
+                        .pending_ids
+                        .get(name)
+                        .is_some_and(|ids| ids.contains(&id));
+                (Some(i), id, false, pending)
+            })
+            .collect();
+        rows.extend(
+            self.recent_deletes
+                .iter()
+                .filter(|((t, id), _)| t == name && !live_ids.contains(id))
+                .map(|((_, id), _)| (None, id.clone(), true, false)),
+        );
+        for (idx, id, deleted, pending) in rows {
             // Build the fuzzy haystack from `id` plus synthetic tags so
             // `/!`, `/!pending`, `/!failed` filter to those rows. The
             // tags are stripped from the highlight positions so the id
             // renders without spurious tag chars.
-            let pending = is_pending(v);
-            let failed = self
-                .failed_writes
-                .contains(&(name.to_string(), id.to_string()));
-            let mut haystack_text = id.to_string();
+            let failed = self.failed_writes.contains(&(name.to_string(), id.clone()));
+            let mut haystack_text = id.clone();
             if pending {
                 haystack_text.push_str(" !pending");
             }
             if failed {
                 haystack_text.push_str(" !failed");
+            }
+            if deleted {
+                haystack_text.push_str(" !deleted");
             }
             let id_chars = id.chars().count();
             let haystack = Utf32Str::new(&haystack_text, &mut buf);
@@ -495,10 +581,11 @@ impl State {
                     .filter(|p| (*p as usize) < id_chars)
                     .collect();
                 out.push(Match {
-                    idx: i,
-                    id: id.to_string(),
+                    idx,
+                    id: id.clone(),
                     score,
                     positions: display_positions,
+                    deleted,
                 });
             }
         }
@@ -533,7 +620,9 @@ pub fn refresh(app: &mut App, force: bool) {
     if !app.is_unlocked() {
         return;
     }
-    let Some(tenant) = app.active_tenant() else { return };
+    let Some(tenant) = app.active_tenant() else {
+        return;
+    };
     let name = tenant.name.clone();
     if app.esv.refreshing.contains(&name) {
         return;
@@ -553,12 +642,14 @@ pub fn refresh(app: &mut App, force: bool) {
     let tx = app.events.tx.clone();
     let tenant_name = name.clone();
     tokio::spawn(async move {
-        let (variables, startup) = tokio::join!(
+        let (variables, pending_variables, startup) = tokio::join!(
             crate::aic::esv::list_variables(&tenant_name),
+            crate::aic::esv::list_pending_variables(&tenant_name),
             crate::aic::esv::startup_status(&tenant_name),
         );
         let outcome = RefreshOutcome {
             variables: variables.map_err(|e| e.to_string()),
+            pending_variables: pending_variables.map_err(|e| e.to_string()),
             startup: startup.map_err(|e| e.to_string()),
         };
         let _ = tx.send(AppEvent::EsvListed {
@@ -571,7 +662,10 @@ pub fn refresh(app: &mut App, force: bool) {
 /// ESV-tab keys while in Normal mode. Returns `true` if the key was
 /// consumed (skip the global key table) and `false` to fall through.
 pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
-    let n = app.esv.matches(app.active_tenant().map(|t| t.name.as_str())).len();
+    let n = app
+        .esv
+        .matches(app.active_tenant().map(|t| t.name.as_str()))
+        .len();
     match key.code {
         KeyCode::Char('/') => {
             app.input_mode = InputMode::EsvSearch;
@@ -613,6 +707,14 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
             start_edit(app);
             true
         }
+        KeyCode::Char('d') | KeyCode::Char('D') if n > 0 => {
+            request_delete(app);
+            true
+        }
+        KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            request_latest_undo(app);
+            true
+        }
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             start_create(app);
             true
@@ -630,12 +732,11 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
 /// flight. Each negative case gets its own info toast so the user can
 /// see why the keystroke was a no-op.
 fn request_restart(app: &mut App) {
-    let Some(tenant_name) = app.active_tenant().map(|t| t.name.clone()) else { return };
+    let Some(tenant_name) = app.active_tenant().map(|t| t.name.clone()) else {
+        return;
+    };
     if is_applying(app, &tenant_name) {
-        app.push_toast(
-            crate::event::ToastKind::Info,
-            "Restart already in progress",
-        );
+        app.push_toast(crate::event::ToastKind::Info, "Restart already in progress");
         return;
     }
     if queued_count(app, &tenant_name) > 0 {
@@ -648,6 +749,76 @@ fn request_restart(app: &mut App) {
         return;
     }
     app.input_mode = InputMode::EsvRestartConfirm;
+}
+
+fn request_delete(app: &mut App) {
+    let Some(plan) = build_delete_plan(app) else {
+        return;
+    };
+    app.esv.pending_delete = Some(plan);
+    app.input_mode = InputMode::EsvDeleteConfirm;
+}
+
+fn build_delete_plan(app: &mut App) -> Option<DeletePlan> {
+    let tenant = app.active_tenant()?;
+    let tenant_name = tenant.name.clone();
+    let matches = app.esv.matches(Some(&tenant_name));
+    let m = matches.get(app.esv.selected)?;
+    if m.deleted {
+        app.push_toast(
+            ToastKind::Info,
+            "Variable is already deleted; press ^Z to undo",
+        );
+        return None;
+    }
+    if app
+        .esv
+        .in_flight_writes
+        .contains(&(tenant_name.clone(), m.id.clone()))
+    {
+        app.push_toast(
+            ToastKind::Info,
+            format!("Write already in progress: {}", m.id),
+        );
+        return None;
+    }
+    let Some(LoadState::Loaded(items)) = app.esv.data.get(&tenant_name) else {
+        return None;
+    };
+    let original = items.get(m.idx?).cloned()?;
+    Some(DeletePlan {
+        tenant_name,
+        id: m.id.clone(),
+        original,
+    })
+}
+
+/// Dispatched from the y/n delete popup. `y` may still route through the
+/// shared production confirmation before executing the delete.
+pub fn handle_delete_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let Some(plan) = app.esv.pending_delete.take() else {
+                app.input_mode = InputMode::Normal;
+                return Ok(());
+            };
+            let is_prod = app
+                .active_tenant()
+                .is_some_and(|t| t.theme == TenantTheme::Production);
+            if is_prod {
+                app.prod_confirm.pending = Some(PendingProdAction::EsvDelete(plan));
+                app.input_mode = InputMode::ProdConfirm;
+            } else {
+                execute_delete_plan(app, plan, false);
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            app.esv.pending_delete = None;
+            app.input_mode = InputMode::Normal;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Dispatched from the y/n popup. `y` triggers the restart, `n`/`Esc`
@@ -666,7 +837,9 @@ pub fn handle_restart_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result
 }
 
 fn trigger_restart(app: &mut App) {
-    let Some(tenant) = app.active_tenant() else { return };
+    let Some(tenant) = app.active_tenant() else {
+        return;
+    };
     let tenant_name = tenant.name.clone();
     if tenant.theme == TenantTheme::Production {
         app.prod_confirm.pending = Some(PendingProdAction::EsvRestart { tenant_name });
@@ -711,7 +884,10 @@ pub fn apply_restart_result(
         Ok(_) => {}
         Err(e) => {
             refresh_apply_state_from_cache(app, &tenant);
-            app.push_toast(crate::event::ToastKind::Error, format!("Restart failed: {e}"));
+            app.push_toast(
+                crate::event::ToastKind::Error,
+                format!("Restart failed: {e}"),
+            );
         }
     }
 }
@@ -747,13 +923,18 @@ pub fn handle_search_key(app: &mut App, key: KeyEvent) {
 pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
     let is_active = app.active_tenant().is_some_and(|t| t.name == tenant);
     app.esv.refreshing.remove(&tenant);
+    let pending_for_merge = outcome
+        .pending_variables
+        .as_ref()
+        .ok()
+        .cloned()
+        .unwrap_or_default();
     let variables_refreshed = match outcome.variables {
         Ok(mut vs) => {
             // Re-merge any entries we recently saved but the polled list
             // hasn't picked up yet (AIC's variable-list endpoint is
             // eventually consistent — a brand-new variable can lag by a
-            // few seconds). Drop expired entries while we're here so
-            // they don't pin removed variables forever.
+            // few seconds). Drop expired write pins while we're here.
             app.esv
                 .recent_writes
                 .retain(|_, (saved_at, _)| saved_at.elapsed() < RECENT_WRITE_TTL);
@@ -765,9 +946,18 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
                     vs.push(body.clone());
                 }
             }
+            for pending in &pending_for_merge {
+                let pending_id = id_of(pending);
+                if !vs.iter().any(|v| id_of(v) == pending_id) {
+                    vs.push(pending.clone());
+                }
+            }
             app.esv.data.insert(tenant.clone(), LoadState::Loaded(vs));
             if is_active {
-                let n = app.esv.matches(app.active_tenant().map(|t| t.name.as_str())).len();
+                let n = app
+                    .esv
+                    .matches(app.active_tenant().map(|t| t.name.as_str()))
+                    .len();
                 app.esv.clamp_selection(n);
             }
             true
@@ -783,12 +973,29 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
             false
         }
     };
+    let pending_refreshed = match outcome.pending_variables {
+        Ok(vs) => {
+            app.esv.pending_ids.insert(
+                tenant.clone(),
+                vs.iter().map(|v| id_of(v).to_string()).collect(),
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!("ESV pending-variable refresh failed for {tenant}: {e}");
+            false
+        }
+    };
 
     match outcome.startup {
         Ok(StartupStatus::Restarting) => {
-            set_apply_state(app, &tenant, ApplyState::Restarting(pending_count(app, &tenant)));
+            set_apply_state(
+                app,
+                &tenant,
+                ApplyState::Restarting(pending_count(app, &tenant)),
+            );
         }
-        Ok(StartupStatus::Ready) if variables_refreshed => {
+        Ok(StartupStatus::Ready) if variables_refreshed && pending_refreshed => {
             set_apply_state(
                 app,
                 &tenant,
@@ -835,20 +1042,36 @@ fn refresh_apply_state_from_cache(app: &mut App, tenant: &str) {
 /// variable so we have something to diff against on save, decodes the
 /// base64 value, and switches input mode.
 pub fn start_edit(app: &mut App) {
-    let Some(tenant) = app.active_tenant() else { return };
+    let Some(tenant) = app.active_tenant() else {
+        return;
+    };
     let tenant_name = tenant.name.clone();
     let matches = app.esv.matches(Some(&tenant_name));
-    let Some(m) = matches.get(app.esv.selected) else { return };
+    let Some(m) = matches.get(app.esv.selected) else {
+        return;
+    };
+    if m.deleted {
+        app.push_toast(ToastKind::Info, "Deleted variable; press ^Z to restore it");
+        return;
+    }
     if app
         .esv
         .in_flight_writes
         .contains(&(tenant_name.clone(), m.id.clone()))
     {
-        app.push_toast(ToastKind::Info, format!("Save already in progress: {}", m.id));
+        app.push_toast(
+            ToastKind::Info,
+            format!("Save already in progress: {}", m.id),
+        );
         return;
     }
-    let Some(LoadState::Loaded(items)) = app.esv.data.get(&tenant_name) else { return };
-    let Some(v) = items.get(m.idx).cloned() else { return };
+    let Some(LoadState::Loaded(items)) = app.esv.data.get(&tenant_name) else {
+        return;
+    };
+    let Some(idx) = m.idx else { return };
+    let Some(v) = items.get(idx).cloned() else {
+        return;
+    };
 
     let description = v
         .get("description")
@@ -856,7 +1079,9 @@ pub fn start_edit(app: &mut App) {
         .unwrap_or("")
         .to_string();
     let expr_type = ExpressionType::parse(
-        v.get("expressionType").and_then(|x| x.as_str()).unwrap_or(""),
+        v.get("expressionType")
+            .and_then(|x| x.as_str())
+            .unwrap_or(""),
     );
     let value_b64 = v.get("valueBase64").and_then(|x| x.as_str()).unwrap_or("");
     // Try to render the value as UTF-8 text. Binary values fall back to
@@ -918,7 +1143,9 @@ pub fn cancel_edit(app: &mut App) {
 }
 
 pub fn handle_edit_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    let Some(edit) = app.esv.editing.as_mut() else { return Ok(()) };
+    let Some(edit) = app.esv.editing.as_mut() else {
+        return Ok(());
+    };
     let creating = edit.creating;
     // Keys that the form owns regardless of which field is focused.
     match key.code {
@@ -974,7 +1201,9 @@ pub fn handle_edit_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
 }
 
 fn commit_save(app: &mut App) {
-    let Some(plan) = build_save_plan(app) else { return };
+    let Some(plan) = build_save_plan(app) else {
+        return;
+    };
     let is_prod = app
         .active_tenant()
         .is_some_and(|t| t.theme == TenantTheme::Production);
@@ -1084,6 +1313,21 @@ pub fn execute_save_plan(app: &mut App, plan: SavePlan, confirmed_prod: bool) {
         was_creating,
     } = plan;
 
+    if let Err(e) = record_save_undo(
+        app,
+        &tenant_name,
+        &id,
+        original.as_ref(),
+        &optimistic,
+        was_creating,
+    ) {
+        app.push_toast(
+            ToastKind::Error,
+            format!("Save cancelled: failed to record undo — {e}"),
+        );
+        return;
+    }
+
     // Apply locally + pin across polls.
     if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant_name) {
         if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
@@ -1092,9 +1336,13 @@ pub fn execute_save_plan(app: &mut App, plan: SavePlan, confirmed_prod: bool) {
             items.push(optimistic.clone());
         }
     }
+    app.esv.recent_writes.insert(
+        (tenant_name.clone(), id.clone()),
+        (Instant::now(), optimistic),
+    );
     app.esv
-        .recent_writes
-        .insert((tenant_name.clone(), id.clone()), (Instant::now(), optimistic));
+        .recent_deletes
+        .remove(&(tenant_name.clone(), id.clone()));
     // Mark the background PUT as in flight so the banner can flip
     // purple and ^S is gated until it returns.
     app.esv
@@ -1136,12 +1384,225 @@ pub fn execute_save_plan(app: &mut App, plan: SavePlan, confirmed_prod: bool) {
     });
 }
 
+fn record_save_undo(
+    app: &mut App,
+    tenant_name: &str,
+    id: &str,
+    original: Option<&serde_json::Value>,
+    optimistic: &serde_json::Value,
+    was_creating: bool,
+) -> crate::Result<UndoId> {
+    let entry = if was_creating {
+        UndoEntry::pending(
+            tenant_name.to_string(),
+            "esv",
+            format!("Delete created variable {id}"),
+            Sensitivity::PublicMetadata,
+            Capability::Undoable,
+            Some(UndoOp::EsvVariableDelete {
+                tenant: tenant_name.to_string(),
+                id: id.to_string(),
+                recorded_body: optimistic.clone(),
+            }),
+            ConflictCheck::ContentEqualsAfter {
+                body: optimistic.clone(),
+            },
+        )
+    } else if let Some(original) = original {
+        UndoEntry::pending(
+            tenant_name.to_string(),
+            "esv",
+            format!("Revert {id} to previous value"),
+            Sensitivity::PublicMetadata,
+            Capability::Undoable,
+            Some(UndoOp::EsvVariableUpdateTo {
+                tenant: tenant_name.to_string(),
+                id: id.to_string(),
+                body: original.clone(),
+            }),
+            ConflictCheck::ContentEqualsAfter {
+                body: optimistic.clone(),
+            },
+        )
+    } else {
+        UndoEntry::pending(
+            tenant_name.to_string(),
+            "esv",
+            format!("Changed {id}"),
+            Sensitivity::PublicMetadata,
+            Capability::Irreversible,
+            None,
+            ConflictCheck::None,
+        )
+    };
+    app.undo.record(entry)
+}
+
+pub fn execute_delete_plan(app: &mut App, plan: DeletePlan, confirmed_prod: bool) {
+    let DeletePlan {
+        tenant_name,
+        id,
+        original,
+    } = plan;
+
+    if let Err(e) = record_delete_undo(app, &tenant_name, &id, &original) {
+        app.push_toast(
+            ToastKind::Error,
+            format!("Delete cancelled: failed to record undo — {e}"),
+        );
+        app.input_mode = InputMode::Normal;
+        return;
+    }
+
+    let mut remaining = None;
+    if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant_name) {
+        items.retain(|v| id_of(v) != id);
+        remaining = Some(items.len());
+    }
+    if let Some(n) = remaining {
+        app.esv.clamp_selection(n);
+    }
+    app.esv
+        .recent_writes
+        .remove(&(tenant_name.clone(), id.clone()));
+    app.esv.recent_deletes.insert(
+        (tenant_name.clone(), id.clone()),
+        DeleteTombstone {
+            deleted_at: Instant::now(),
+            body: original.clone(),
+        },
+    );
+    select_id(app, &tenant_name, &id);
+    app.esv
+        .failed_writes
+        .remove(&(tenant_name.clone(), id.clone()));
+    app.esv
+        .in_flight_writes
+        .insert((tenant_name.clone(), id.clone()));
+    app.esv
+        .in_flight_deletes
+        .insert((tenant_name.clone(), id.clone()), original.clone());
+    app.input_mode = InputMode::Normal;
+
+    let request = DeleteRequest {
+        tenant_name,
+        id,
+        original,
+    };
+    let event_tenant = request.tenant_name.clone();
+    let event_id = request.id.clone();
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result = delete_variable_request(request, confirmed_prod).await;
+        let _ = tx.send(AppEvent::EsvDeleteResult {
+            tenant: event_tenant,
+            id: event_id,
+            result,
+        });
+    });
+}
+
+fn record_delete_undo(
+    app: &mut App,
+    tenant_name: &str,
+    id: &str,
+    original: &serde_json::Value,
+) -> crate::Result<UndoId> {
+    app.undo.record(UndoEntry::pending(
+        tenant_name.to_string(),
+        "esv",
+        format!("Restore deleted variable {id}"),
+        Sensitivity::PublicMetadata,
+        Capability::Undoable,
+        Some(UndoOp::EsvVariableRestore {
+            tenant: tenant_name.to_string(),
+            body: original.clone(),
+        }),
+        ConflictCheck::ResourceAbsent,
+    ))
+}
+
 /// Outcome of a background save attempt. Carries the server's echo on
 /// success so the local cache can absorb server-managed fields
 /// (`lastChangeDate`, `lastChangedBy`).
 #[derive(Debug)]
 pub struct SaveOutcome {
     pub body: serde_json::Value,
+}
+
+#[derive(Debug)]
+pub struct DeleteOutcome;
+
+#[derive(Debug)]
+pub struct UndoOutcome {
+    description: String,
+    applied: UndoApplied,
+}
+
+#[derive(Debug)]
+enum UndoApplied {
+    Upsert {
+        id: String,
+        body: serde_json::Value,
+    },
+    Delete {
+        id: String,
+        body: Option<serde_json::Value>,
+    },
+}
+
+#[derive(Debug)]
+pub enum UndoFailure {
+    Conflict(String),
+    Failed(String),
+}
+
+fn request_latest_undo(app: &mut App) {
+    let Some(tenant) = app.active_tenant() else {
+        return;
+    };
+    let tenant_name = tenant.name.clone();
+    let Some(summary) = app.undo.latest_pending(&tenant_name) else {
+        app.push_toast(ToastKind::Info, "Nothing to undo for this tenant");
+        return;
+    };
+
+    if tenant.theme == TenantTheme::Production {
+        app.prod_confirm.pending = Some(PendingProdAction::EsvUndo(summary.id));
+        app.input_mode = InputMode::ProdConfirm;
+    } else {
+        execute_undo(app, summary.id, false);
+    }
+}
+
+pub fn execute_undo(app: &mut App, undo_id: UndoId, confirmed_prod: bool) {
+    let entry = match app.undo.load(undo_id) {
+        Ok(entry) => entry,
+        Err(e) => {
+            app.push_toast(ToastKind::Error, format!("Undo failed: {e}"));
+            return;
+        }
+    };
+
+    if entry.status != EntryStatus::Pending {
+        app.push_toast(ToastKind::Info, "Undo entry is no longer pending");
+        return;
+    }
+    if entry.op.is_none() || entry.capability == Capability::Irreversible {
+        app.push_toast(ToastKind::Warning, "This change cannot be undone");
+        return;
+    }
+
+    let event_tenant = entry.tenant.clone();
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result = apply_undo_entry(entry, confirmed_prod).await;
+        let _ = tx.send(AppEvent::EsvUndoResult {
+            undo_id,
+            tenant: event_tenant,
+            result,
+        });
+    });
 }
 
 async fn save_variable(request: SaveRequest, confirmed_prod: bool) -> Result<SaveOutcome, String> {
@@ -1180,18 +1641,180 @@ async fn save_variable(request: SaveRequest, confirmed_prod: bool) -> Result<Sav
         &value_b64,
         confirmed_prod,
     )
-        .await
-        .map_err(|e| {
-            if type_changed {
-                format!(
-                    "type change: delete succeeded but recreate failed ({e}). \
+    .await
+    .map_err(|e| {
+        if type_changed {
+            format!(
+                "type change: delete succeeded but recreate failed ({e}). \
                      Variable is currently absent on AIC; re-save to recreate."
-                )
-            } else {
-                e.to_string()
-            }
-        })?;
+            )
+        } else {
+            e.to_string()
+        }
+    })?;
     Ok(SaveOutcome { body: saved })
+}
+
+async fn delete_variable_request(
+    request: DeleteRequest,
+    confirmed_prod: bool,
+) -> Result<DeleteOutcome, String> {
+    let DeleteRequest {
+        tenant_name,
+        id,
+        original,
+    } = request;
+
+    let current = crate::aic::esv::get_variable(&tenant_name, &id)
+        .await
+        .map_err(|e| format!("conflict check: {e}"))?;
+    if !crate::aic::esv::content_equal(&current, &original) {
+        return Err("remote value changed since you selected it; refresh and retry".into());
+    }
+    crate::aic::esv::delete_variable(&tenant_name, &id, confirmed_prod)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(DeleteOutcome)
+}
+
+async fn apply_undo_entry(
+    entry: UndoEntry,
+    confirmed_prod: bool,
+) -> Result<UndoOutcome, UndoFailure> {
+    let op = entry
+        .op
+        .clone()
+        .ok_or_else(|| UndoFailure::Failed("undo entry has no operation".into()))?;
+    check_undo_conflict(&op, &entry.conflict_check).await?;
+
+    match op {
+        UndoOp::EsvVariableRestore { tenant, body } => {
+            let id = body_id(&body)?;
+            let saved = upsert_variable_body(&tenant, &body, confirmed_prod).await?;
+            Ok(UndoOutcome {
+                description: entry.description,
+                applied: UndoApplied::Upsert { id, body: saved },
+            })
+        }
+        UndoOp::EsvVariableUpdateTo { tenant, id, body } => {
+            let saved = upsert_variable_body(&tenant, &body, confirmed_prod).await?;
+            Ok(UndoOutcome {
+                description: entry.description,
+                applied: UndoApplied::Upsert { id, body: saved },
+            })
+        }
+        UndoOp::EsvVariableDelete {
+            tenant,
+            id,
+            recorded_body,
+        } => {
+            crate::aic::esv::delete_variable(&tenant, &id, confirmed_prod)
+                .await
+                .map_err(|e| UndoFailure::Failed(e.to_string()))?;
+            Ok(UndoOutcome {
+                description: entry.description,
+                applied: UndoApplied::Delete {
+                    id,
+                    body: Some(recorded_body),
+                },
+            })
+        }
+    }
+}
+
+async fn check_undo_conflict(op: &UndoOp, check: &ConflictCheck) -> Result<(), UndoFailure> {
+    match check {
+        ConflictCheck::ContentEqualsAfter { body }
+        | ConflictCheck::ContentEqualsBefore { body } => {
+            let tenant = op.tenant();
+            let id = op
+                .resource_id()
+                .ok_or_else(|| UndoFailure::Failed("undo operation has no resource id".into()))?;
+            let current = crate::aic::esv::get_variable(tenant, id)
+                .await
+                .map_err(|e| UndoFailure::Conflict(format!("current value unavailable: {e}")))?;
+            if crate::aic::esv::content_equal(&current, body) {
+                Ok(())
+            } else {
+                Err(UndoFailure::Conflict(
+                    "remote value changed since the original write".into(),
+                ))
+            }
+        }
+        ConflictCheck::ResourceAbsent => {
+            let tenant = op.tenant();
+            let id = op
+                .resource_id()
+                .ok_or_else(|| UndoFailure::Failed("undo operation has no resource id".into()))?;
+            match crate::aic::esv::get_variable(tenant, id).await {
+                Ok(_) => Err(UndoFailure::Conflict(format!(
+                    "{id} already exists; refusing to restore over it"
+                ))),
+                Err(e) if is_not_found(&e) => Ok(()),
+                Err(e) => Err(UndoFailure::Failed(format!("conflict check failed: {e}"))),
+            }
+        }
+        ConflictCheck::None => Ok(()),
+    }
+}
+
+async fn upsert_variable_body(
+    tenant: &str,
+    body: &serde_json::Value,
+    confirmed_prod: bool,
+) -> Result<serde_json::Value, UndoFailure> {
+    let id = body_id(body)?;
+    let description = body
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let expression_type = body
+        .get("expressionType")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| UndoFailure::Failed(format!("{id} has no expressionType")))?;
+    let value_base64 = body
+        .get("valueBase64")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| UndoFailure::Failed(format!("{id} has no valueBase64")))?;
+
+    let delete_first = match crate::aic::esv::get_variable(tenant, &id).await {
+        Ok(current) => {
+            current
+                .get("expressionType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                != expression_type
+        }
+        Err(e) if is_not_found(&e) => false,
+        Err(e) => return Err(UndoFailure::Failed(format!("preflight fetch failed: {e}"))),
+    };
+    if delete_first {
+        crate::aic::esv::delete_variable(tenant, &id, confirmed_prod)
+            .await
+            .map_err(|e| UndoFailure::Failed(format!("type change delete failed: {e}")))?;
+    }
+
+    crate::aic::esv::update_variable(
+        tenant,
+        &id,
+        description,
+        expression_type,
+        value_base64,
+        confirmed_prod,
+    )
+    .await
+    .map_err(|e| UndoFailure::Failed(e.to_string()))
+}
+
+fn body_id(body: &serde_json::Value) -> Result<String, UndoFailure> {
+    body.get("_id")
+        .and_then(|v| v.as_str())
+        .map(|id| id.to_string())
+        .ok_or_else(|| UndoFailure::Failed("undo body has no _id".into()))
+}
+
+fn is_not_found(error: &crate::Error) -> bool {
+    matches!(error, crate::Error::Api { status: 404, .. })
 }
 
 /// Background save finished. The edit form was already closed and the
@@ -1208,7 +1831,9 @@ pub fn apply_save_result(
     // the "queued" banner can drop and ^S unlocks. Done regardless of
     // success or failure; failures are tracked separately in
     // `failed_writes`.
-    app.esv.in_flight_writes.remove(&(tenant.clone(), id.clone()));
+    app.esv
+        .in_flight_writes
+        .remove(&(tenant.clone(), id.clone()));
     match result {
         Ok(SaveOutcome { body }) => {
             if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant) {
@@ -1221,9 +1846,11 @@ pub fn apply_save_result(
             app.esv
                 .recent_writes
                 .insert((tenant.clone(), id.clone()), (Instant::now(), body));
+            app.esv.recent_deletes.remove(&(tenant.clone(), id.clone()));
             // Clear any prior failure marker — the save went through.
             app.esv.failed_writes.remove(&(tenant.clone(), id));
             refresh_apply_state_from_cache(app, &tenant);
+            app.push_toast(ToastKind::Success, "Saved ESV. Press ^Z to undo.");
         }
         Err(e) => {
             // Keep the optimistic body in `recent_writes` so the user
@@ -1232,6 +1859,126 @@ pub fn apply_save_result(
             app.esv.failed_writes.insert((tenant, id.clone()));
             app.push_toast(ToastKind::Error, format!("Save failed: {id} — {e}"));
         }
+    }
+}
+
+pub fn apply_delete_result(
+    app: &mut App,
+    tenant: String,
+    id: String,
+    result: Result<DeleteOutcome, String>,
+) {
+    app.esv
+        .in_flight_writes
+        .remove(&(tenant.clone(), id.clone()));
+    let original = app
+        .esv
+        .in_flight_deletes
+        .remove(&(tenant.clone(), id.clone()));
+
+    match result {
+        Ok(DeleteOutcome) => {
+            app.esv.recent_writes.remove(&(tenant.clone(), id.clone()));
+            app.esv.failed_writes.remove(&(tenant.clone(), id.clone()));
+            refresh_apply_state_from_cache(app, &tenant);
+            app.push_toast(
+                ToastKind::Success,
+                format!("Deleted {id}. Press ^Z to undo."),
+            );
+        }
+        Err(e) => {
+            app.esv.recent_deletes.remove(&(tenant.clone(), id.clone()));
+            if let Some(original) = original {
+                if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant) {
+                    if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
+                        *slot = original.clone();
+                    } else {
+                        items.push(original.clone());
+                    }
+                }
+            }
+            app.push_toast(ToastKind::Error, format!("Delete failed: {id} — {e}"));
+        }
+    }
+}
+
+pub fn apply_undo_result(
+    app: &mut App,
+    undo_id: UndoId,
+    tenant: String,
+    result: Result<UndoOutcome, UndoFailure>,
+) {
+    match result {
+        Ok(UndoOutcome {
+            description,
+            applied,
+        }) => {
+            if let Err(e) = app.undo.mark_applied(undo_id, EntryStatus::AppliedSuccess) {
+                app.push_toast(
+                    ToastKind::Error,
+                    format!("Undo applied but log update failed: {e}"),
+                );
+            }
+            match applied {
+                UndoApplied::Upsert { id, body } => {
+                    if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant) {
+                        if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
+                            *slot = body.clone();
+                        } else {
+                            items.push(body.clone());
+                        }
+                    }
+                    app.esv
+                        .recent_writes
+                        .insert((tenant.clone(), id.clone()), (Instant::now(), body));
+                    app.esv.recent_deletes.remove(&(tenant.clone(), id.clone()));
+                    app.esv.failed_writes.remove(&(tenant.clone(), id.clone()));
+                    select_id(app, &tenant, &id);
+                }
+                UndoApplied::Delete { id, body } => {
+                    let mut remaining = None;
+                    if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant) {
+                        items.retain(|v| id_of(v) != id);
+                        remaining = Some(items.len());
+                    }
+                    if let Some(n) = remaining {
+                        app.esv.clamp_selection(n);
+                    }
+                    app.esv.recent_writes.remove(&(tenant.clone(), id.clone()));
+                    if let Some(body) = body {
+                        app.esv.recent_deletes.insert(
+                            (tenant.clone(), id.clone()),
+                            DeleteTombstone {
+                                deleted_at: Instant::now(),
+                                body,
+                            },
+                        );
+                    }
+                    app.esv.failed_writes.remove(&(tenant.clone(), id));
+                }
+            }
+            refresh_apply_state_from_cache(app, &tenant);
+            app.push_toast(ToastKind::Success, format!("Undone: {description}"));
+        }
+        Err(UndoFailure::Conflict(message)) => {
+            app.push_toast(ToastKind::Warning, format!("Undo conflict: {message}"));
+        }
+        Err(UndoFailure::Failed(message)) => {
+            if let Err(e) = app.undo.mark_applied(undo_id, EntryStatus::AppliedFailure) {
+                app.push_toast(
+                    ToastKind::Error,
+                    format!("Undo failure log update failed: {e}"),
+                );
+            }
+            app.push_toast(ToastKind::Error, format!("Undo failed: {message}"));
+        }
+    }
+}
+
+fn select_id(app: &mut App, tenant: &str, id: &str) {
+    let matches = app.esv.matches(Some(tenant));
+    if let Some(pos) = matches.iter().position(|m| m.id == id) {
+        app.esv.selected = pos;
     }
 }
 

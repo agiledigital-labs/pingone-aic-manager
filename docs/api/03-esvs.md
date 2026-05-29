@@ -19,10 +19,12 @@ Service-account bearer. Scopes: `fr:idc:esv:*` (or finer-grained
 | Op | Method | Path | Notes |
 |----|--------|------|-------|
 | List | `GET` | `/environment/variables` | Paged; returns `result`, `pagedResultsCookie`. |
+| List pending | `GET` | `/environment/variables?_onlyPending=true` | Variables Ping says need restart/apply. |
 | Read | `GET` | `/environment/variables/{id}` | `id` is the `esv-…` ID, not the human name. |
 | Upsert | `PUT` | `/environment/variables/{id}` | Body: `{ "valueBase64": "…", "expressionType": "string", "description": "…" }` |
 | Set description | `POST` | `/environment/variables/{id}?_action=setDescription` | Body: `{ "description": "…" }` |
 | Delete | `DELETE` | `/environment/variables/{id}` | Permanent. |
+| Count pending | `GET` | `/environment/count?_onlyPending=true` | Returns counts by resource type, e.g. `{ "variables": 1, "secrets": 0 }`. |
 
 ### Secrets
 
@@ -140,6 +142,12 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
   `&{esv.secret-id}` in config. Default true for new secrets.
 - **Restart is tenant-wide** and takes a few minutes; the UI shows live progress.
   All in-flight sessions survive but new operations get the refreshed values.
+- **Deletes are not reported as pending variables.** Verified 2026-05-29:
+  deleting `esv-test2` returned the previous body, subsequent `GET` returned
+  404, and both `/environment/variables?_onlyPending=true` and
+  `/environment/count?_onlyPending=true` reported zero pending variables.
+  Recreating the same body returned `loaded=false` and the pending endpoints
+  reported `esv-test2`.
 - **You cannot rename an ESV.** The `_id` is the identifier; to "rename", create
   a new one and delete the old.
 - **`expressionType` is "immutable" via `PUT` only.** An in-place `PUT` that

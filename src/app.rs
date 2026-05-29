@@ -35,6 +35,7 @@ pub enum InputMode {
     OverwriteConfirm,
     EnvPicker,
     ProdConfirm,
+    UndoHistory,
     /// `/` — fuzzy search the ESV list. Chars edit the query; Esc cancels
     /// (and clears the filter); Enter commits and returns to Normal with
     /// the filter still applied.
@@ -46,6 +47,8 @@ pub enum InputMode {
     /// changes (i.e. trigger a tenant restart)? Unlike most modals, the
     /// dashboard underneath stays drawn.
     EsvRestartConfirm,
+    /// Small overlay confirm before deleting the selected ESV variable.
+    EsvDeleteConfirm,
 }
 
 /// Re-export so existing `crate::app::AuthMethod` / `AuthSetupField` /
@@ -89,6 +92,7 @@ pub struct App {
     pub tenants: Vec<Tenant>,
     pub active_tenant_idx: usize,
     pub env_picker_idx: usize,
+    pub undo_history_idx: usize,
     pub toasts: VecDeque<Toast>,
     pub should_quit: bool,
     pub has_env_creds: bool,
@@ -129,6 +133,10 @@ pub struct App {
     /// Pending production write confirmation shared by onboarding, ESV edits,
     /// and any future write-capable screens.
     pub prod_confirm: crate::screens::prod_confirm::State,
+
+    /// Best-effort undo log. Domain screens record through the trait so
+    /// they don't know whether the entry was persisted or held in memory.
+    pub undo: Box<dyn crate::undo::UndoLog>,
 
     /// Confirm-style keybind help popover. This overlays the current screen
     /// without changing the underlying input mode.
@@ -175,6 +183,7 @@ impl App {
             tenants,
             active_tenant_idx,
             env_picker_idx: active_tenant_idx,
+            undo_history_idx: 0,
             toasts: VecDeque::new(),
             should_quit: false,
             has_env_creds,
@@ -186,6 +195,7 @@ impl App {
             jwks: HashMap::new(),
             onboard: crate::screens::onboard::State::new(),
             prod_confirm: crate::screens::prod_confirm::State::new(),
+            undo: Box::new(crate::undo::DiskLog::load_default()?),
             keybind_help_open: false,
             esv: crate::screens::esv::State::new(),
         })
@@ -409,6 +419,12 @@ impl App {
             AppEvent::EsvSaveResult { tenant, id, result } => {
                 crate::screens::esv::apply_save_result(self, tenant, id, result);
             }
+            AppEvent::EsvDeleteResult { tenant, id, result } => {
+                crate::screens::esv::apply_delete_result(self, tenant, id, result);
+            }
+            AppEvent::EsvUndoResult { undo_id, tenant, result } => {
+                crate::screens::esv::apply_undo_result(self, undo_id, tenant, result);
+            }
             AppEvent::EsvRestartResult { tenant, result } => {
                 crate::screens::esv::apply_restart_result(self, tenant, result);
             }
@@ -485,10 +501,14 @@ impl App {
             InputMode::OverwriteConfirm => crate::screens::onboard::handle_overwrite_key(self, key)?,
             InputMode::EnvPicker => self.handle_env_picker_key(key),
             InputMode::ProdConfirm => crate::screens::prod_confirm::handle_key(self, key).await?,
+            InputMode::UndoHistory => crate::screens::undo_history::handle_key(self, key),
             InputMode::EsvSearch => crate::screens::esv::handle_search_key(self, key),
             InputMode::EsvEdit => crate::screens::esv::handle_edit_key(self, key)?,
             InputMode::EsvRestartConfirm => {
                 crate::screens::esv::handle_restart_confirm_key(self, key)?
+            }
+            InputMode::EsvDeleteConfirm => {
+                crate::screens::esv::handle_delete_confirm_key(self, key)?
             }
         }
         Ok(())
@@ -549,6 +569,10 @@ impl App {
             }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 crate::screens::auth_settings::open(self);
+            }
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.undo_history_idx = 0;
+                self.input_mode = InputMode::UndoHistory;
             }
             KeyCode::Char('L') => {
                 crate::screens::unlock::lock_and_quit(self).await;

@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>aic-edit TUI Keybind Design</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f7f8;
+      --panel: #ffffff;
+      --ink: #14171c;
+      --muted: #626b76;
+      --line: #d7dce2;
+      --accent: #245f9f;
+      --accent-2: #38735f;
+      --accent-3: #a14d32;
+      --soft: #e8f0f8;
+      --ok: #e5f2ed;
+      --warn: #fff0d2;
+      --code: #eef1f4;
+      --shadow: 0 10px 24px rgb(20 23 28 / 8%);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101316;
+        --panel: #171b20;
+        --ink: #eef2f6;
+        --muted: #aab2bd;
+        --line: #303740;
+        --accent: #80bfff;
+        --accent-2: #80d1b9;
+        --accent-3: #f0a184;
+        --soft: #182b3f;
+        --ok: #17342c;
+        --warn: #392d16;
+        --code: #20252b;
+        --shadow: none;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1120px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 36px 0 56px;
+    }
+
+    header {
+      margin-bottom: 28px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 4vw, 3.45rem);
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 1.45rem;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 1rem;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 1.3rem;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    code {
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 0.08rem 0.35rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow: auto;
+      margin: 0;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--code);
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    pre code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    .lede {
+      max-width: 820px;
+      color: var(--muted);
+      font-size: 1.1rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .panel {
+      grid-column: span 12;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .half {
+      grid-column: span 6;
+    }
+
+    .third {
+      grid-column: span 4;
+    }
+
+    .two-third {
+      grid-column: span 8;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--soft);
+      box-shadow: none;
+    }
+
+    .success {
+      border-left: 4px solid var(--accent-2);
+      background: var(--ok);
+      box-shadow: none;
+    }
+
+    .warning {
+      border-left: 4px solid #bd7b1f;
+      background: var(--warn);
+      box-shadow: none;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .step {
+      min-height: 118px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel) 88%, var(--soft));
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--accent);
+    }
+
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95rem;
+    }
+
+    .table th,
+    .table td {
+      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .table th {
+      color: var(--muted);
+      font-size: 0.8rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 2px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--ink);
+      font-size: 0.85rem;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .mode-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .mode {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--panel) 92%, var(--soft));
+    }
+
+    .mode strong {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--accent);
+    }
+
+    .checklist li {
+      margin-top: 10px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    @media (max-width: 820px) {
+      main {
+        width: min(100vw - 24px, 1120px);
+        padding-top: 24px;
+      }
+
+      .half,
+      .third,
+      .two-third {
+        grid-column: span 12;
+      }
+
+      .flow,
+      .mode-list {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">aic-edit TUI design note</div>
+      <h1>Keybind and Hint Design</h1>
+      <p class="lede">
+        Key handling and visible keybind hints need to come from the same action model.
+        The bottom bar should stay focused on the small set of immediate screen actions,
+        while a confirm-style keybind popover lists every key currently available.
+      </p>
+    </header>
+
+    <section class="grid">
+      <article class="panel callout">
+        <h2>Core Contract</h2>
+        <p>
+          The TUI should describe each user action once: its identity, keys, label,
+          visibility rule, enabled rule, disabled reason, and execution handler. The
+          dispatcher, bottom-bar hint renderer, and keybind popover then read the same
+          action list.
+        </p>
+        <p>
+          A key should not be active unless the same action is visible or intentionally
+          hidden. A bottom-bar hint should not point to a key that the current mode ignores,
+          and the keybind popover should explain all visible keys for that mode.
+        </p>
+      </article>
+
+      <article class="panel">
+        <h2>Key Hint Principles</h2>
+        <ul>
+          <li>Hints describe what will happen now, not what a key usually does elsewhere.</li>
+          <li>Do not show a key that the focused control captures for another purpose.</li>
+          <li>Use exact verbs: <code>next</code>, <code>save</code>, <code>cancel</code>, <code>edit</code>.</li>
+          <li>Keep the footer for immediate actions only.</li>
+          <li>Move general navigation and global commands to the keybind popover.</li>
+          <li>When a modal is open, the modal owns all visible hints.</li>
+          <li>The complete key list must come from the same action source as dispatch.</li>
+        </ul>
+      </article>
+
+      <article class="panel two-third">
+        <h2>Current Direction</h2>
+        <p>
+          Recent cleanup tightened several drift points, but the footer still has too many
+          general navigation hints. Keys such as <code>j/k</code>, arrows, <code>R</code>,
+          <code>T</code>, <code>^T</code>, <code>^A</code>, <code>L</code>, and
+          <code>q</code> should not be repeated on every screen.
+        </p>
+        <p>
+          The next step is to keep the footer narrow and add a keybind help popover that
+          lists all keys available on the active screen, including general movement and
+          selection rules.
+        </p>
+      </article>
+
+      <article class="panel third warning">
+        <h2>Risk</h2>
+        <p>
+          Drift gets worse with overlays. A dashboard alert action, an ESV edit form, and a
+          production confirmation modal may all want <code>Enter</code>, <code>Esc</code>,
+          or number keys. When any popover modal is active, the bottom-bar hints should
+          disappear and the modal should own its own complete key list.
+        </p>
+      </article>
+
+      <article class="panel half">
+        <h2>Action Descriptor</h2>
+        <pre><code>Action {
+  id: ActionId,
+  keys: &'static [KeySpec],
+  label: &'static str,
+  scope: ActionScope,
+  hint: HintPlacement,
+  group: HintGroup,
+  visible: fn(&App) -> bool,
+  enabled: fn(&App) -> bool,
+  disabled_reason: fn(&App) -> Option&lt;String&gt;,
+  run: fn(&mut App, KeyEvent) -> Result&lt;()&gt;
+}</code></pre>
+      </article>
+
+      <article class="panel half">
+        <h2>One Source</h2>
+        <div class="flow">
+          <div class="step">
+            <strong>Action table</strong>
+            Screen and overlay expose the actions that exist in the current mode.
+          </div>
+          <div class="step">
+            <strong>Dispatcher</strong>
+            Key events are matched against enabled actions in precedence order.
+          </div>
+          <div class="step">
+            <strong>Renderer</strong>
+            Footer, modal, and keybind popover render from the same filtered actions.
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>Hint Surfaces</h2>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Surface</th>
+              <th>Purpose</th>
+              <th>What belongs there</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Bottom bar</td>
+              <td>Fast reminders for the few actions the user is most likely to need now.</td>
+              <td>
+                Primary screen actions such as save, apply, confirm, cancel, or open keybind
+                help. General movement keys do not belong here.
+              </td>
+            </tr>
+            <tr>
+              <td>Keybind popover</td>
+              <td>Complete reference for the active screen, using the confirm-style popover chrome.</td>
+              <td>
+                Every visible action for the current screen, including navigation,
+                selection, panel switching, refresh, quit, and numbered selection.
+              </td>
+            </tr>
+            <tr>
+              <td>Active modal</td>
+              <td>Complete reference for the modal currently capturing input.</td>
+              <td>
+                Modal-specific actions only. While a popover modal is visible, the bottom
+                bar is hidden behind it.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="panel">
+        <h2>Keybind Popover</h2>
+        <p>
+          The keybind popover should use the same visual treatment as confirmation
+          modals: centered over the current screen, with the background left in place.
+          It is not a separate page, and it should not reset panel state.
+        </p>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Group</th>
+              <th>Contents</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Screen actions</td>
+              <td>Save, apply, edit, delete, refresh, open logs, resolve alert, or any other action unique to the active screen.</td>
+            </tr>
+            <tr>
+              <td>Modal actions</td>
+              <td>If another modal is active, list only that modal's keys and hide normal screen actions.</td>
+            </tr>
+            <tr>
+              <td>Movement</td>
+              <td>Explain arrows and <code>j/k</code> in the language of the current screen.</td>
+            </tr>
+            <tr>
+              <td>Selection</td>
+              <td>Explain <code>Enter</code> and numbered row selection when available.</td>
+            </tr>
+            <tr>
+              <td>General commands</td>
+              <td>List global commands that are active in this context, including quit and panel navigation.</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="panel">
+        <h2>Mode Precedence</h2>
+        <p>
+          The active mode stack decides which actions receive key events. The topmost modal
+          or editor handles keys first. If it does not define an action for the key, the key
+          may fall through only when that behavior is explicitly allowed.
+        </p>
+        <div class="mode-list">
+          <div class="mode">
+            <strong>Blocking modal</strong>
+            Production confirmation, discard prompt, destructive action confirmation.
+            Usually captures <code>Enter</code>, <code>Esc</code>, arrows, and number keys.
+          </div>
+          <div class="mode">
+            <strong>Keybind popover</strong>
+            Confirm-style popover that leaves the background in place. It captures its own
+            close, scroll, and selection keys, and it is the only visible hint surface while open.
+          </div>
+          <div class="mode">
+            <strong>Inline editor</strong>
+            Text entry and form controls. Most printable keys belong to the editor, not the
+            screen below it.
+          </div>
+          <div class="mode">
+            <strong>Panel</strong>
+            ESV list, auth settings, environment picker, dashboard, logs, scripts.
+          </div>
+          <div class="mode">
+            <strong>Global</strong>
+            Quit, help, panel navigation, and commands that are safe everywhere.
+          </div>
+        </div>
+      </article>
+
+      <article class="panel two-third">
+        <h2>Visibility and Enabled Rules</h2>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>Use it for</th>
+              <th>Example</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>visible</code></td>
+              <td>Whether the action belongs in the current UI at all.</td>
+              <td>Show ESV restart only on the ESV panel.</td>
+            </tr>
+            <tr>
+              <td><code>enabled</code></td>
+              <td>Whether the action can run right now.</td>
+              <td>Enable restart only when apply state is <code>Unapplied</code>.</td>
+            </tr>
+            <tr>
+              <td><code>disabled_reason</code></td>
+              <td>Why a visible action is unavailable.</td>
+              <td>Restart disabled because tenant is already <code>Restarting</code>.</td>
+            </tr>
+            <tr>
+              <td><code>hidden_reason</code></td>
+              <td>Rare cases where an active key is intentionally omitted from hints.</td>
+              <td>Internal debug shortcut, gated behind debug build only.</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="panel third success">
+        <h2>Hint Policy</h2>
+        <p>
+          Prefer showing enabled primary actions in the bottom bar. Show disabled actions
+          there only when the disabled state explains important system status, such as an
+          ESV restart already being in progress.
+        </p>
+      </article>
+
+      <article class="panel">
+        <h2>Global Key Placement</h2>
+        <p>
+          General movement, panel navigation, refresh, logs, and quit are available often
+          enough that users will learn them, but repeating them in every footer makes the
+          interface noisy. They should be present in the keybind popover and omitted from
+          normal bottom-bar hints.
+        </p>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Keys</th>
+              <th>Meaning</th>
+              <th>Placement</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>j/k</code>, arrows</td>
+              <td>Move through rows, fields, or controls.</td>
+              <td>Popover only, with context-specific wording.</td>
+            </tr>
+            <tr>
+              <td><code>1-9</code></td>
+              <td>Select numbered rows when the current screen supports numeric selection.</td>
+              <td>Popover only unless numeric selection is the primary interaction.</td>
+            </tr>
+            <tr>
+              <td><code>R</code>, <code>T</code>, <code>^T</code>, <code>^A</code>, <code>L</code></td>
+              <td>General refresh, tenant, auth, and log-oriented commands.</td>
+              <td>Popover only on screens where the command is actually available.</td>
+            </tr>
+            <tr>
+              <td><code>q</code></td>
+              <td>Quit or leave the app, depending on the current mode.</td>
+              <td>Popover only for normal screens; modal close keys are modal-specific.</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="panel">
+        <h2>Context Examples</h2>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Context</th>
+              <th>Action</th>
+              <th>Visibility and enabled behavior</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>ESV list</td>
+              <td><code>RestartToApply</code> on <code>^S</code></td>
+              <td>
+                Visible on the ESV panel. Enabled only when the cached authoritative apply
+                state is <code>Unapplied</code> and no restart request is in flight.
+              </td>
+            </tr>
+            <tr>
+              <td>ESV edit</td>
+              <td><code>SaveField</code> on <code>Enter</code></td>
+              <td>
+                Footer-visible as <code>Enter next</code> on input fields and
+                <code>Enter save</code> on the Save button. Hidden from the footer while the
+                Value textarea is focused because the textarea captures Enter for newlines.
+              </td>
+            </tr>
+            <tr>
+              <td>ESV edit</td>
+              <td><code>MoveSelector</code> on left/right arrows</td>
+              <td>
+                Visible in the keybind popover whenever the selector exists. Footer-visible
+                only while focus is on the selector element.
+              </td>
+            </tr>
+            <tr>
+              <td>Environment picker</td>
+              <td><code>SelectTenantN</code> on <code>1-9</code></td>
+              <td>
+                Generated from the visible tenant rows. The popover should reflect the
+                numeric range that actually has rows.
+              </td>
+            </tr>
+            <tr>
+              <td>Auth settings</td>
+              <td><code>p</code>, <code>s</code>, <code>d</code>, <code>Enter</code>, <code>Esc</code></td>
+              <td>
+                These are the only actions that need bottom-bar hints on Auth Settings.
+                General movement and selection rules belong in the keybind popover.
+              </td>
+            </tr>
+            <tr>
+              <td>Add tenant</td>
+              <td><code>Enter</code>, <code>Esc</code></td>
+              <td>
+                The footer and modal hint list should stay limited to submit and cancel.
+                Text editing behavior should follow the standard input control model.
+              </td>
+            </tr>
+            <tr>
+              <td>Auth setup</td>
+              <td><code>Cancel</code> on <code>Esc</code></td>
+              <td>
+                Visible only when the current auth setup phase can actually be cancelled.
+              </td>
+            </tr>
+            <tr>
+              <td>Dashboard alert</td>
+              <td><code>OpenConflict</code> on <code>Enter</code></td>
+              <td>
+                Enabled when the selected alert still exists and carries a conflict action.
+                If a background refresh resolves the alert, the action disappears.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="panel half">
+        <h2>Dispatch Algorithm</h2>
+        <ol>
+          <li>Build the active action list from overlay, screen, and global scopes.</li>
+          <li>Sort by mode precedence, with the topmost overlay first.</li>
+          <li>If a popover modal is active, dispatch only against that modal's action list.</li>
+          <li>Find actions whose <code>keys</code> match the incoming key event.</li>
+          <li>Run the first visible and enabled action.</li>
+          <li>If an action is visible but disabled, optionally show its disabled reason.</li>
+          <li>If no action matches, leave state unchanged.</li>
+        </ol>
+      </article>
+
+      <article class="panel half">
+        <h2>Rendering Algorithm</h2>
+        <ol>
+          <li>Ask the active mode for the same action list used by dispatch.</li>
+          <li>Filter to visible actions.</li>
+          <li>If any popover modal is active, hide the bottom bar and render that modal's key list.</li>
+          <li>For normal screens, render only actions marked for footer placement.</li>
+          <li>For the keybind popover, render every visible action grouped by purpose.</li>
+          <li>Drop disabled actions unless their disabled state carries useful status.</li>
+          <li>Format keys from <code>KeySpec</code>, not hand-written strings.</li>
+          <li>Group primary actions first, navigation second, global actions last.</li>
+        </ol>
+      </article>
+
+      <article class="panel two-third">
+        <h2>Action IDs for Alerts</h2>
+        <p>
+          Dashboard alerts should not embed custom key handling. Each alert references
+          existing action IDs. When the alert is selected, the dashboard exposes those
+          actions in its own active action list.
+        </p>
+        <pre><code>ScriptConflictAlert {
+  id: "script-conflict:tenant:path",
+  actions: [
+    ActionId::OpenDiff,
+    ActionId::UseLocal,
+    ActionId::UseCloud,
+    ActionId::MarkResolved
+  ]
+}</code></pre>
+      </article>
+
+      <article class="panel third">
+        <h2>Formatting Keys</h2>
+        <p>
+          Human-facing hints should be rendered from structured keys. For example,
+          <code>Ctrl('s')</code> becomes <code>^S</code>, <code>Enter</code> stays
+          <code>Enter</code>, and generated numeric actions can collapse to <code>1-9</code>.
+        </p>
+      </article>
+
+      <article class="panel">
+        <h2>Tests That Prevent Drift</h2>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Test</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>visible_hints_dispatch</code></td>
+              <td>Every rendered enabled hint maps to an enabled action handler.</td>
+            </tr>
+            <tr>
+              <td><code>active_keys_are_documented</code></td>
+              <td>Every visible enabled action appears in the footer, active modal, or keybind popover.</td>
+            </tr>
+            <tr>
+              <td><code>disabled_actions_do_not_run</code></td>
+              <td>Disabled actions remain inert and report the expected reason.</td>
+            </tr>
+            <tr>
+              <td><code>mode_precedence_is_stable</code></td>
+              <td>Overlay keys take precedence over panel and global keys.</td>
+            </tr>
+            <tr>
+              <td><code>generated_numeric_actions_match_rows</code></td>
+              <td>Number key actions track the visible list length and never select hidden rows.</td>
+            </tr>
+            <tr>
+              <td><code>footer_excludes_help_only_globals</code></td>
+              <td>General keys such as movement, quit, tenant switching, and log shortcuts stay out of normal footers.</td>
+            </tr>
+            <tr>
+              <td><code>popover_contains_all_visible_actions</code></td>
+              <td>The keybind popover lists every visible action available in the active screen or modal.</td>
+            </tr>
+            <tr>
+              <td><code>popover_hides_footer</code></td>
+              <td>Any popover modal suppresses bottom-bar hints while it is active.</td>
+            </tr>
+            <tr>
+              <td><code>selector_arrows_are_contextual</code></td>
+              <td>Left and right arrow footer hints appear only when focus is on the ESV selector element.</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article class="panel">
+        <h2>Add-a-Keybind Checklist</h2>
+        <ul class="checklist">
+          <li>Create or reuse an <code>ActionId</code>.</li>
+          <li>Define the structured <code>KeySpec</code> values.</li>
+          <li>Choose <code>HintPlacement</code>: footer, popover only, modal only, or hidden with a reason.</li>
+          <li>Add visibility and enabled predicates that match the real state machine.</li>
+          <li>Implement the action handler in the owning screen or shared command module.</li>
+          <li>Let the footer, modal chrome, and keybind popover render from the action descriptor.</li>
+          <li>Keep general movement and global navigation keys out of regular bottom-bar hints.</li>
+          <li>Add or update drift tests for the affected mode.</li>
+          <li>For async actions, ensure the enabled predicate checks duplicate in-flight work.</li>
+          <li>For dashboard actions, attach the action ID to alerts instead of creating bespoke keys.</li>
+        </ul>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

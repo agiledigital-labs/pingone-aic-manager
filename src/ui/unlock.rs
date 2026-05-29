@@ -78,7 +78,11 @@ pub fn draw(f: &mut Frame, app: &App) {
             "Master password",
             &app.unlock.input,
             true,
-            if app.unlock.busy { Some(UNLOCKING) } else { None },
+            if app.unlock.busy {
+                Some(UNLOCKING)
+            } else {
+                None
+            },
         );
     }
 
@@ -87,11 +91,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Some(err) = &app.unlock.error {
         if !waiting_for_tap {
             f.render_widget(
-                Paragraph::new(Span::styled(
-                    err.as_str(),
-                    Style::default().fg(Color::Red),
-                ))
-                .wrap(Wrap { trim: false }),
+                Paragraph::new(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
+                    .wrap(Wrap { trim: false }),
                 chunks[2],
             );
         }

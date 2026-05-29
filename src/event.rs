@@ -59,6 +59,21 @@ pub enum AppEvent {
         id: String,
         result: std::result::Result<crate::screens::esv::SaveOutcome, String>,
     },
+    /// Background ESV delete finished.
+    EsvDeleteResult {
+        tenant: String,
+        id: String,
+        result: std::result::Result<crate::screens::esv::DeleteOutcome, String>,
+    },
+    /// Background undo attempt finished.
+    EsvUndoResult {
+        undo_id: crate::undo::UndoId,
+        tenant: String,
+        result: std::result::Result<
+            crate::screens::esv::UndoOutcome,
+            crate::screens::esv::UndoFailure,
+        >,
+    },
     /// Background ESV refresh finished for `tenant`. The payload keeps the
     /// variable list and startup status separate so a partial failure doesn't
     /// force us to throw away useful cached state.

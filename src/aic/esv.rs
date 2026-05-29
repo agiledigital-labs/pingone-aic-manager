@@ -15,12 +15,23 @@ pub enum StartupStatus {
 /// implemented; AIC's default page size is 1000 which is fine for "show me
 /// the list."
 pub async fn list_variables(tenant: &str) -> Result<Vec<serde_json::Value>> {
-    let body = super::api::get(tenant, "/environment/variables").await?;
+    list_variables_at(tenant, "/environment/variables").await
+}
+
+/// `GET /environment/variables?_onlyPending=true` → variables that Ping
+/// currently says need a restart/apply. This is authoritative for existing
+/// variables; deletes are not returned here.
+pub async fn list_pending_variables(tenant: &str) -> Result<Vec<serde_json::Value>> {
+    list_variables_at(tenant, "/environment/variables?_onlyPending=true").await
+}
+
+async fn list_variables_at(tenant: &str, path: &str) -> Result<Vec<serde_json::Value>> {
+    let body = super::api::get(tenant, path).await?;
     match body.get("result") {
         Some(serde_json::Value::Array(arr)) => Ok(arr.clone()),
         _ => Err(Error::Api {
             status: 0,
-            body: format!("unexpected /environment/variables response shape: {body}"),
+            body: format!("unexpected {path} response shape: {body}"),
         }),
     }
 }
@@ -85,7 +96,12 @@ pub async fn delete_variable(
     id: &str,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    super::api::delete(tenant, &format!("/environment/variables/{id}"), confirmed_prod).await
+    super::api::delete(
+        tenant,
+        &format!("/environment/variables/{id}"),
+        confirmed_prod,
+    )
+    .await
 }
 
 /// `POST /environment/startup?_action=restart`. Triggers a tenant-wide
@@ -110,9 +126,18 @@ pub async fn trigger_restart(tenant: &str, confirmed_prod: bool) -> Result<serde
 pub fn content_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     let pick = |v: &serde_json::Value| {
         (
-            v.get("valueBase64").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            v.get("expressionType").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            v.get("description").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            v.get("valueBase64")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            v.get("expressionType")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            v.get("description")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
         )
     };
     pick(a) == pick(b)

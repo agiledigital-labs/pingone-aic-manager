@@ -70,6 +70,11 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
             "Apply pending changes",
             &[("y", "restart tenant runtime"), ("n/Esc", "cancel")],
         ),
+        InputMode::EsvDeleteConfirm => confirm_lines(
+            &mut lines,
+            "Delete ESV variable",
+            &[("y", "delete variable"), ("n/Esc", "cancel")],
+        ),
         InputMode::AuthSettings => auth_settings_lines(app, &mut lines),
         InputMode::AuthSettingsConfirm => confirm_lines(
             &mut lines,
@@ -97,6 +102,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
             "Production write confirmation",
             &[("y", "confirm production write"), ("n/Esc", "cancel")],
         ),
+        InputMode::UndoHistory => undo_history_lines(&mut lines),
     }
     lines
 }
@@ -115,9 +121,14 @@ fn normal_lines(app: &App, lines: &mut Vec<Line<'static>>) {
 
     if app.current_tab == Tab::Esvs {
         group(lines, "ESV actions");
-        bind(lines, "Enter", "edit selected variable");
         bind(lines, "/", "search variables");
+        if !app.esv_matches().is_empty() {
+            bind(lines, "Enter", "edit selected variable");
+            bind(lines, "d", "delete selected variable");
+        }
         bind(lines, "^N", "create variable");
+        bind(lines, "^Z", "undo latest ESV change");
+        bind(lines, "^Y", "open undo history");
         bind(lines, "^S", "apply pending changes when available");
         group(lines, "Movement");
         bind(lines, "j/k or ↑/↓", "move selection");
@@ -164,7 +175,11 @@ fn esv_edit_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     }
     bind(lines, "Esc", "cancel edit");
     group(lines, "Selector");
-    bind(lines, "←/→", "change type when the Type selector is focused");
+    bind(
+        lines,
+        "←/→",
+        "change type when the Type selector is focused",
+    );
     group(lines, "Text fields");
     bind(lines, "Arrows/Home/End", "move cursor");
     bind(lines, "Backspace/Delete", "delete text");
@@ -192,12 +207,23 @@ fn setup_auth_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     if app.auth_setup.form.busy {
         group(lines, "Security key enrollment");
         bind(lines, "F1", "show or close keybinds");
-        bind(lines, "Input", "temporarily locked while waiting for the security key");
+        bind(
+            lines,
+            "Input",
+            "temporarily locked while waiting for the security key",
+        );
         return;
     }
 
     let first_run = app.auth_setup.context == SetupContext::FirstRun;
-    group(lines, if first_run { "Set up authentication" } else { "Add factor" });
+    group(
+        lines,
+        if first_run {
+            "Set up authentication"
+        } else {
+            "Add factor"
+        },
+    );
     bind(lines, "Enter", "advance or submit");
     bind(lines, "Esc", if first_run { "quit" } else { "cancel" });
     bind(lines, "Tab/Shift-Tab", "move between fields");
@@ -247,7 +273,11 @@ fn onboard_form_lines(lines: &mut Vec<Line<'static>>) {
     bind(lines, "Enter", "advance or submit");
     bind(lines, "Esc", "go back");
     bind(lines, "Tab/Shift-Tab", "move between fields");
-    bind(lines, "←/→", "change theme when the Theme selector is focused");
+    bind(
+        lines,
+        "←/→",
+        "change theme when the Theme selector is focused",
+    );
     group(lines, "Text fields");
     bind(lines, "Arrows/Home/End", "move cursor");
     bind(lines, "Backspace/Delete", "delete text");
@@ -282,6 +312,15 @@ fn env_picker_lines(app: &App, lines: &mut Vec<Line<'static>>) {
         bind(lines, range, "switch to numbered tenant");
     }
     bind(lines, "F1/?", "show keybinds");
+}
+
+fn undo_history_lines(lines: &mut Vec<Line<'static>>) {
+    group(lines, "Undo History");
+    bind(lines, "Enter", "undo selected pending entry");
+    bind(lines, "Esc", "close");
+    group(lines, "Movement");
+    bind(lines, "j/k or ↑/↓", "move selection");
+    bind(lines, "F1", "show keybinds");
 }
 
 fn confirm_lines(
@@ -320,11 +359,7 @@ fn group(lines: &mut Vec<Line<'static>>, title: &'static str) {
     )));
 }
 
-fn bind(
-    lines: &mut Vec<Line<'static>>,
-    key: impl Into<String>,
-    description: impl Into<String>,
-) {
+fn bind(lines: &mut Vec<Line<'static>>, key: impl Into<String>, description: impl Into<String>) {
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(
