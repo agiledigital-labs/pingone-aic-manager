@@ -10,6 +10,7 @@ pub mod logging;
 pub mod screens;
 pub mod theme;
 pub mod ui;
+pub mod undo;
 pub mod security_key;
 
 pub use error::{Error, Result};

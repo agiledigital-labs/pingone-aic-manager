@@ -51,7 +51,14 @@ pub fn draw(f: &mut Frame, app: &App) {
         // `d` on the last remaining factor already falls through to the
         // disable-encryption confirm, so a separate [x] is redundant.
         hints.push(("d", "remove"));
-        hints.push(("Enter", if selected_is_security_key { "rename" } else { "edit" }));
+        hints.push((
+            "Enter",
+            if selected_is_security_key {
+                "rename"
+            } else {
+                "edit"
+            },
+        ));
     }
     hints.push(("Esc", "close"));
 
@@ -95,10 +102,9 @@ fn draw_factor_list(f: &mut Frame, app: &App, area: Rect) {
         .map(|(i, w)| {
             let (icon, label) = match w {
                 Wrap::Password { .. } => ("🔒", "Master password".to_string()),
-                Wrap::SecurityKey { label, .. } => (
-                    "🔑",
-                    label.clone().unwrap_or_else(|| "Security key".into()),
-                ),
+                Wrap::SecurityKey { label, .. } => {
+                    ("🔑", label.clone().unwrap_or_else(|| "Security key".into()))
+                }
             };
             // Same shape as the Add Tenant menu: " N  glyph  label". 1-9
             // get a number that doubles as a hotkey; rows past 9 keep the

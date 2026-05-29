@@ -16,6 +16,8 @@ pub enum PendingProdAction {
         jwk: serde_json::Value,
     },
     EsvSave(crate::screens::esv::SavePlan),
+    EsvDelete(crate::screens::esv::DeletePlan),
+    EsvUndo(crate::undo::UndoId),
     EsvRestart {
         tenant_name: String,
     },
@@ -49,6 +51,12 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                     }
                     PendingProdAction::EsvSave(plan) => {
                         crate::screens::esv::execute_save_plan(app, plan, true);
+                    }
+                    PendingProdAction::EsvDelete(plan) => {
+                        crate::screens::esv::execute_delete_plan(app, plan, true);
+                    }
+                    PendingProdAction::EsvUndo(undo_id) => {
+                        crate::screens::esv::execute_undo(app, undo_id, true);
                     }
                     PendingProdAction::EsvRestart { tenant_name } => {
                         crate::screens::esv::trigger_restart_confirmed(app, tenant_name, true);

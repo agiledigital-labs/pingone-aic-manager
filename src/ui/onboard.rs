@@ -3,11 +3,11 @@
 //! is a full-screen modal that goes through `ui::modal_chrome`.
 
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
-    Frame,
 };
 
 use crate::aic::onboard::cookie::{CookieField, CookieForm};
@@ -115,11 +115,15 @@ fn draw_cookie_form(f: &mut Frame, form: &CookieForm) {
         chunks[0],
     );
 
-    form.name.draw(f, chunks[2], form.focused == CookieField::Name);
-    form.domain.draw(f, chunks[4], form.focused == CookieField::Domain);
+    form.name
+        .draw(f, chunks[2], form.focused == CookieField::Name);
+    form.domain
+        .draw(f, chunks[4], form.focused == CookieField::Domain);
     draw_theme_row(f, chunks[6], form.theme, form.focused == CookieField::Theme);
-    form.cookie_name.draw(f, chunks[8], form.focused == CookieField::CookieName);
-    form.cookie_value.draw(f, chunks[10], form.focused == CookieField::Cookie);
+    form.cookie_name
+        .draw(f, chunks[8], form.focused == CookieField::CookieName);
+    form.cookie_value
+        .draw(f, chunks[10], form.focused == CookieField::Cookie);
     draw_submit_row(
         f,
         chunks[12],
@@ -140,11 +144,7 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
         title: "Add Tenant — Username & Password",
         status: form_status_text(form.status.as_deref(), form.error.as_deref()),
         hints: if form.pending_prompt.is_some() {
-            &[
-                ("Type", "the code"),
-                ("Enter", "submit"),
-                ("Esc", "cancel"),
-            ]
+            &[("Type", "the code"), ("Enter", "submit"), ("Esc", "cancel")]
         } else {
             form_hints(form.busy)
         },
@@ -187,10 +187,13 @@ fn draw_up_form(f: &mut Frame, form: &UpForm) {
     );
 
     form.name.draw(f, chunks[2], form.focused == UpField::Name);
-    form.domain.draw(f, chunks[4], form.focused == UpField::Domain);
+    form.domain
+        .draw(f, chunks[4], form.focused == UpField::Domain);
     draw_theme_row(f, chunks[6], form.theme, form.focused == UpField::Theme);
-    form.username.draw(f, chunks[8], form.focused == UpField::Username);
-    form.password.draw(f, chunks[10], form.focused == UpField::Password);
+    form.username
+        .draw(f, chunks[8], form.focused == UpField::Username);
+    form.password
+        .draw(f, chunks[10], form.focused == UpField::Password);
     draw_submit_row(
         f,
         chunks[12],
@@ -247,17 +250,21 @@ fn draw_paste_form(f: &mut Frame, form: &PasteForm) {
         Constraint::Length(1),
         Constraint::Length(2), // sa id
         Constraint::Length(1),
-        Constraint::Min(8),    // jwk textarea
+        Constraint::Min(8), // jwk textarea
         Constraint::Length(1),
         Constraint::Length(1), // submit
     ])
     .split(body);
 
-    form.name.draw(f, chunks[0], form.focused == PasteField::Name);
-    form.domain.draw(f, chunks[2], form.focused == PasteField::Domain);
+    form.name
+        .draw(f, chunks[0], form.focused == PasteField::Name);
+    form.domain
+        .draw(f, chunks[2], form.focused == PasteField::Domain);
     draw_theme_row(f, chunks[4], form.theme, form.focused == PasteField::Theme);
-    form.sa_id.draw(f, chunks[6], form.focused == PasteField::SaId);
-    form.jwk_input.draw(f, chunks[8], form.focused == PasteField::Jwk);
+    form.sa_id
+        .draw(f, chunks[6], form.focused == PasteField::SaId);
+    form.jwk_input
+        .draw(f, chunks[8], form.focused == PasteField::Jwk);
     draw_submit_row(
         f,
         chunks[10],

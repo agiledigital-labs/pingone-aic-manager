@@ -40,7 +40,9 @@ impl<T> FilteredList<T> {
     }
 
     pub fn get(&self, visible_idx: usize) -> Option<&T> {
-        self.visible.get(visible_idx).and_then(|&i| self.items.get(i))
+        self.visible
+            .get(visible_idx)
+            .and_then(|&i| self.items.get(i))
     }
 
     pub fn items(&self) -> &[T] {

@@ -22,18 +22,24 @@ pub fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
     // Split: tabs on left, chips on right
-    let [left, right] = Layout::horizontal([Constraint::Min(20), Constraint::Length(30)])
-        .areas(area);
+    let [left, right] =
+        Layout::horizontal([Constraint::Min(20), Constraint::Length(30)]).areas(area);
 
     // Tabs
-    let tab_titles: Vec<Line> = Tab::all()
-        .iter()
-        .map(|t| Line::from(t.label()))
-        .collect();
+    let tab_titles: Vec<Line> = Tab::all().iter().map(|t| Line::from(t.label())).collect();
     let tabs = Tabs::new(tab_titles)
-        .select(Tab::all().iter().position(|t| *t == app.current_tab).unwrap_or(0))
+        .select(
+            Tab::all()
+                .iter()
+                .position(|t| *t == app.current_tab)
+                .unwrap_or(0),
+        )
         .style(Style::default().fg(Color::DarkGray))
-        .highlight_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
         .divider("|");
     f.render_widget(tabs, left);
 
@@ -57,7 +63,10 @@ fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]
     } else {
-        vec![Span::styled(" no tenant ", Style::default().fg(Color::DarkGray))]
+        vec![Span::styled(
+            " no tenant ",
+            Style::default().fg(Color::DarkGray),
+        )]
     };
 
     let mut spans = vec![realm_chip];
@@ -98,7 +107,24 @@ fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
                 {
                     hints.push(("^S", "apply changes"));
                 }
-                hints.extend([("/", "search"), ("Enter", "edit"), ("^N", "new variable")]);
+                hints.push(("/", "search"));
+                let matches = app.esv_matches();
+                let mut selected_deleted = false;
+                if let Some(selected) =
+                    matches.get(app.esv.selected.min(matches.len().saturating_sub(1)))
+                {
+                    if selected.deleted {
+                        selected_deleted = true;
+                        hints.push(("^Z", "restore"));
+                    } else {
+                        hints.extend([("Enter", "edit"), ("d", "delete")]);
+                    }
+                }
+                hints.push(("^N", "new variable"));
+                if !selected_deleted {
+                    hints.push(("^Z", "undo"));
+                }
+                hints.push(("^Y", "undo history"));
             } else if app.tenants.is_empty() {
                 hints.extend([("^T", "add tenant"), ("^A", "auth settings")]);
             }
@@ -143,8 +169,14 @@ mod tests {
             esv_edit_enter_hint(EditField::Description),
             Some(("Enter", "next"))
         );
-        assert_eq!(esv_edit_enter_hint(EditField::Type), Some(("Enter", "next")));
+        assert_eq!(
+            esv_edit_enter_hint(EditField::Type),
+            Some(("Enter", "next"))
+        );
         assert_eq!(esv_edit_enter_hint(EditField::Value), None);
-        assert_eq!(esv_edit_enter_hint(EditField::Save), Some(("Enter", "save")));
+        assert_eq!(
+            esv_edit_enter_hint(EditField::Save),
+            Some(("Enter", "save"))
+        );
     }
 }

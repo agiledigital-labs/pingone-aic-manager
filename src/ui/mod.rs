@@ -8,6 +8,7 @@ pub mod modal_chrome;
 pub mod onboard;
 pub mod popup_confirm;
 pub mod toast;
+pub mod undo_history;
 pub mod unlock;
 pub mod widgets;
 
@@ -21,8 +22,8 @@ use ratatui::{
 
 use crate::app::{App, InputMode};
 use crate::screens::esv::{
-    id_of as esv_id, EditField as EsvEditField, ExpressionType as EsvExpressionType,
-    LoadState as EsvLoadState, Match as EsvMatch,
+    EditField as EsvEditField, ExpressionType as EsvExpressionType, LoadState as EsvLoadState,
+    Match as EsvMatch, id_of as esv_id,
 };
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -86,18 +87,29 @@ pub fn draw(f: &mut Frame, app: &App) {
             toast::draw(f, app);
             return;
         }
+        InputMode::UndoHistory => {
+            undo_history::draw(f, app);
+            draw_keybind_help(f, app);
+            toast::draw(f, app);
+            return;
+        }
         InputMode::Normal
         | InputMode::EsvSearch
         | InputMode::EsvEdit
-        | InputMode::EsvRestartConfirm => {}
+        | InputMode::EsvRestartConfirm
+        | InputMode::EsvDeleteConfirm => {}
     }
 
     let area = f.area();
-    let show_hints = !app.keybind_help_open && app.input_mode != InputMode::EsvRestartConfirm;
+    let show_hints = !app.keybind_help_open
+        && !matches!(
+            app.input_mode,
+            InputMode::EsvRestartConfirm | InputMode::EsvDeleteConfirm
+        );
     let chunks = Layout::vertical([
-        Constraint::Length(1), // top: tabs + chips
-        Constraint::Length(1), // breathing room under the tab row
-        Constraint::Min(0),    // body
+        Constraint::Length(1),                              // top: tabs + chips
+        Constraint::Length(1),                              // breathing room under the tab row
+        Constraint::Min(0),                                 // body
         Constraint::Length(if show_hints { 1 } else { 0 }), // bottom: keybind hints
     ])
     .split(area);
@@ -120,6 +132,15 @@ pub fn draw(f: &mut Frame, app: &App) {
             "{n} {noun} pending.\n\nApply by restarting the tenant runtime?\nTakes a few minutes; users already signed in stay signed in."
         );
         popup_confirm::draw(f, "Apply pending changes?", &message);
+    }
+    if app.input_mode == InputMode::EsvDeleteConfirm {
+        let id = app
+            .esv_matches()
+            .get(app.esv.selected)
+            .map(|m| m.id.clone())
+            .unwrap_or_else(|| "selected variable".to_string());
+        let message = format!("Delete {id}?\n\nThis can be undone from the undo log.");
+        popup_confirm::draw(f, "Delete ESV variable?", &message);
     }
 
     draw_keybind_help(f, app);
@@ -209,8 +230,8 @@ fn draw_esvs(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let matches = app.esv_matches();
-    let columns = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(area);
+    let columns =
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
     draw_esv_list(f, app, &matches, columns[0]);
     draw_esv_preview(f, app, &matches, columns[1]);
 }
@@ -236,8 +257,8 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     // Top row: split horizontally so the count hugs the right edge regardless
     // of the query length.
     let count_width = count_text.chars().count() as u16;
-    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(count_width)])
-        .split(rows[0]);
+    let cols =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(count_width)]).split(rows[0]);
 
     let query_style = Style::default().fg(if searching {
         Color::Yellow
@@ -254,7 +275,11 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     let chars: Vec<char> = app.esv.query.value().chars().collect();
     if searching {
         for (i, c) in chars.iter().enumerate() {
-            let style = if i == cursor_idx { cursor_style } else { query_style };
+            let style = if i == cursor_idx {
+                cursor_style
+            } else {
+                query_style
+            };
             spans.push(Span::styled(c.to_string(), style));
         }
         if cursor_idx >= chars.len() {
@@ -300,8 +325,14 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
                 .map(|t| app.esv.failed_writes.contains(&(t.clone(), m.id.clone())))
                 .unwrap_or(false);
             let pending = loaded_items
-                .and_then(|items| items.get(m.idx))
-                .map(crate::screens::esv::is_pending)
+                .and_then(|items| m.idx.and_then(|idx| items.get(idx)))
+                .map(|v| {
+                    crate::screens::esv::is_pending(v)
+                        || tenant_name
+                            .as_ref()
+                            .and_then(|t| app.esv.pending_ids.get(t))
+                            .is_some_and(|ids| ids.contains(&m.id))
+                })
                 .unwrap_or(false);
             render_esv_row(m, i == selected, failed, pending)
         })
@@ -329,15 +360,17 @@ fn render_esv_row(m: &EsvMatch, is_selected: bool, failed: bool, pending: bool) 
     // Styling axes:
     //   selected: cyan-on-black bar with ▶
     //   failed:   red — background save errored, user should retry
+    //   deleted:  red — local tombstone kept for undo
     //   pending:  body text stays gray; only the gutter glyph turns green
     //             (handled below where we render the gutter span)
     //   default:  gray
-    // failed takes precedence over pending (a failed write is more urgent
-    // than a pending one). selected always overlays the ▶ glyph.
-    let row_fg = if failed { Color::Red } else { Color::Gray };
+    // failed/deleted take precedence over pending. selected always overlays
+    // the ▶ glyph while preserving a second-column alert marker.
+    let alert = failed || m.deleted;
+    let row_fg = if alert { Color::Red } else { Color::Gray };
     let row_style = if is_selected {
         Style::default()
-            .fg(if failed { Color::Red } else { Color::Black })
+            .fg(if alert { Color::Red } else { Color::Black })
             .bg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     } else {
@@ -345,7 +378,7 @@ fn render_esv_row(m: &EsvMatch, is_selected: bool, failed: bool, pending: bool) 
     };
     let match_style = if is_selected {
         row_style.add_modifier(Modifier::UNDERLINED)
-    } else if failed {
+    } else if alert {
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
@@ -355,12 +388,18 @@ fn render_esv_row(m: &EsvMatch, is_selected: bool, failed: bool, pending: bool) 
 
     // Gutter glyph + colour. Search-friendly: every pending row contains a
     // literal `!` so the user can `/!` to filter to just-the-pending-rows.
-    let (leader, leader_style) = match (is_selected, failed, pending) {
-        (true, _, _) => ("▶ ", row_style),
-        (false, true, _) => ("! ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+    let (leader, leader_style) = match (is_selected, alert, pending) {
+        (true, true, _) | (true, false, true) => ("▶!", row_style),
+        (true, false, false) => ("▶ ", row_style),
+        (false, true, _) => (
+            "! ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
         (false, false, true) => (
             "! ",
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         ),
         (false, false, false) => ("  ", row_style),
     };
@@ -372,10 +411,7 @@ fn render_esv_row(m: &EsvMatch, is_selected: bool, failed: bool, pending: bool) 
         // Highlight matched chars; positions are sorted utf32 indices.
         let mut pos_iter = m.positions.iter().copied().peekable();
         for (i, c) in m.id.chars().enumerate() {
-            let is_match = pos_iter
-                .peek()
-                .copied()
-                .is_some_and(|p| p as usize == i);
+            let is_match = pos_iter.peek().copied().is_some_and(|p| p as usize == i);
             if is_match {
                 pos_iter.next();
                 spans.push(Span::styled(c.to_string(), match_style));
@@ -398,7 +434,9 @@ fn draw_esv_preview(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) 
     // Split off a 3-row banner at the top whenever there's something to
     // tell the user (pending changes, queued saves, or an in-flight
     // restart). Sits above the form, full-width edge-to-edge.
-    let Some(tenant) = app.active_tenant() else { return };
+    let Some(tenant) = app.active_tenant() else {
+        return;
+    };
     let banner = crate::screens::esv::banner_state(app, &tenant.name);
     let (banner_area, content_area) = if !matches!(banner, crate::screens::esv::BannerState::None) {
         let rows = Layout::vertical([
@@ -422,7 +460,6 @@ fn draw_esv_preview(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) 
         width: content_area.width.saturating_sub(2),
         height: content_area.height,
     };
-
 
     // Create flow: there's no on-server snapshot yet — the form is
     // entirely driven by EditState.
@@ -453,7 +490,14 @@ fn draw_esv_preview(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) 
     } else {
         let selected = app.esv.selected.min(matches.len().saturating_sub(1));
         match (matches.get(selected), app.esv.data.get(&tenant.name)) {
-            (Some(m), Some(EsvLoadState::Loaded(items))) => items.get(m.idx).cloned(),
+            (Some(m), _) if m.deleted => app
+                .esv
+                .recent_deletes
+                .get(&(tenant.name.clone(), m.id.clone()))
+                .map(|t| t.body.clone()),
+            (Some(m), Some(EsvLoadState::Loaded(items))) => {
+                m.idx.and_then(|idx| items.get(idx)).cloned()
+            }
             _ => None,
         }
     };
@@ -525,9 +569,9 @@ fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>,
         Constraint::Length(meta_h), // gap
         Constraint::Length(2),      // description
         Constraint::Length(1),
-        Constraint::Length(2),      // type
+        Constraint::Length(2), // type
         Constraint::Length(1),
-        Constraint::Min(3),         // value
+        Constraint::Min(3), // value
         Constraint::Length(error_h),
         Constraint::Length(save_h),
     ])
@@ -565,7 +609,11 @@ fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>,
             Paragraph::new(Line::from(vec![
                 Span::styled("Loaded        ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    if loaded { "✓ yes" } else { "✗ no (restart pending)" },
+                    if loaded {
+                        "✓ yes"
+                    } else {
+                        "✗ no (restart pending)"
+                    },
                     Style::default().fg(if loaded { Color::Green } else { Color::Yellow }),
                 ),
             ])),
@@ -588,8 +636,7 @@ fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>,
         e.description.draw(f, rows[5], description_focused);
     } else {
         let desc = v.get("description").and_then(|x| x.as_str()).unwrap_or("");
-        let field = crate::ui::widgets::TextField::single_line("Description")
-            .with_initial(desc);
+        let field = crate::ui::widgets::TextField::single_line("Description").with_initial(desc);
         field.draw(f, rows[5], false);
     }
 
@@ -599,7 +646,9 @@ fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>,
         match editing {
             Some(e) => e.expr_type,
             None => EsvExpressionType::parse(
-                v.get("expressionType").and_then(|x| x.as_str()).unwrap_or(""),
+                v.get("expressionType")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(""),
             ),
         },
         type_focused,
@@ -610,8 +659,8 @@ fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>,
     } else {
         // Show the decoded value if it's UTF-8; fall back to the base64
         // string itself when it isn't (matches the edit-form fallback).
-        use base64::engine::general_purpose::STANDARD as B64;
         use base64::Engine as _;
+        use base64::engine::general_purpose::STANDARD as B64;
         let v_b64 = v.get("valueBase64").and_then(|x| x.as_str()).unwrap_or("");
         let text = match B64.decode(v_b64) {
             Ok(bytes) => String::from_utf8(bytes).unwrap_or_else(|_| v_b64.to_string()),
@@ -639,12 +688,7 @@ fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>,
 /// "Type:" label + the current expression-type rendered as a chip on a
 /// dark-fill row. Matches the input-field styling so preview and edit
 /// look the same.
-fn draw_type_row(
-    f: &mut Frame,
-    area: Rect,
-    expr_type: EsvExpressionType,
-    focused: bool,
-) {
+fn draw_type_row(f: &mut Frame, area: Rect, expr_type: EsvExpressionType, focused: bool) {
     if area.height == 0 {
         return;
     }
@@ -725,10 +769,7 @@ fn draw_pending_banner(f: &mut Frame, area: Rect, state: crate::screens::esv::Ba
     };
     let _ = count; // silence unused-on-no-arm
     let fg = Color::Indexed(232); // near-black so the pastel reads as the strip colour
-    f.render_widget(
-        Block::default().style(Style::default().bg(bg)),
-        area,
-    );
+    f.render_widget(Block::default().style(Style::default().bg(bg)), area);
     if area.height < 2 {
         return;
     }

@@ -24,7 +24,11 @@ impl Toast {
             ToastKind::Warning => 16,
             _ => 8,
         };
-        Self { kind, message, ticks_remaining: ticks }
+        Self {
+            kind,
+            message,
+            ticks_remaining: ticks,
+        }
     }
 }
 

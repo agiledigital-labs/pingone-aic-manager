@@ -40,11 +40,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             ("Esc", "quit"),
         ]
     } else {
-        &[
-            ("Tab", "navigate"),
-            ("Enter", "submit"),
-            ("Esc", "cancel"),
-        ]
+        &[("Tab", "navigate"), ("Enter", "submit"), ("Esc", "cancel")]
     };
 
     // The method picker only renders on first-run. When the user pressed
