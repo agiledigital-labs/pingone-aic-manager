@@ -148,6 +148,22 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
   `/environment/count?_onlyPending=true` reported zero pending variables.
   Recreating the same body returned `loaded=false` and the pending endpoints
   reported `esv-test2`.
+- **A create/update is reported pending; a delete cancels it.** Verified
+  2026-05-30: creating `esv-aicedit-deltest` returned `loaded=false` and bumped
+  `/environment/count?_onlyPending=true` from `variables:1` to `variables:2`.
+  Deleting it (while still `loaded=false`, i.e. never applied) returned the
+  body, `GET` then 404'd, and the count dropped back to `variables:1` with the
+  id absent from `?_onlyPending=true`. So deleting a not-yet-applied create
+  simply removes its pending entry.
+- **Decision: aic-edit treats deletes as immediate (no apply gate).** Ping's
+  pending/count endpoints structurally cannot report a delete (the row is gone),
+  and Ping's own tooling never prompts a restart after a delete, so we match it:
+  delete tombstones are *not* counted toward `pending_count` / the `^S` restart
+  gate. They remain visible as red `!` ghost rows only as a local undo
+  affordance (TTL `DELETE_TOMBSTONE_TTL`, 300s), independent of apply state. The
+  management API gives no way to observe whether the running tenant still serves
+  a deleted-but-previously-loaded value, so this is a deliberate product choice,
+  not a measured fact.
 - **You cannot rename an ESV.** The `_id` is the identifier; to "rename", create
   a new one and delete the old.
 - **`expressionType` is "immutable" via `PUT` only.** An in-place `PUT` that

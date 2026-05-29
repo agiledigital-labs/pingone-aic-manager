@@ -15,6 +15,13 @@ use serde::{Deserialize, Serialize};
 use crate::config::ProjectConfig;
 use crate::{Error, Result};
 
+/// How long a recorded undo entry stays actionable. Past this age the entry
+/// is marked `EntryStatus::Expired` (on the next `expire_stale` sweep, which
+/// runs at startup) and is no longer offered by `^Z` / the history modal.
+/// Entries persist across sessions, so without this an undo from days ago
+/// could silently fire against a tenant that has long since moved on.
+pub const UNDO_TTL_SECS: i64 = 24 * 60 * 60;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct UndoId(pub uuid::Uuid);
@@ -50,7 +57,6 @@ pub enum Capability {
     Undoable,
     BestEffort,
     Irreversible,
-    Expired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +150,12 @@ impl UndoEntry {
             status: EntryStatus::Pending,
         }
     }
+
+    /// True once the entry is older than `UNDO_TTL_SECS`. `now` is injected so
+    /// the sweep is deterministic in tests.
+    pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
+        (now - self.created_at).num_seconds() >= UNDO_TTL_SECS
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +191,20 @@ pub trait UndoLog: Send {
     fn load(&self, id: UndoId) -> Result<UndoEntry>;
     fn mark_applied(&mut self, id: UndoId, status: EntryStatus) -> Result<()>;
     fn latest_pending(&self, tenant: &str) -> Option<UndoSummary>;
+    /// Mark every still-`Pending` entry older than `UNDO_TTL_SECS` as
+    /// `Expired`, persisting the change. Returns how many were expired.
+    fn expire_stale(&mut self, now: DateTime<Utc>) -> Result<usize>;
+}
+
+fn expire_in_place(entries: &mut [UndoEntry], now: DateTime<Utc>) -> usize {
+    let mut count = 0;
+    for entry in entries.iter_mut() {
+        if entry.status == EntryStatus::Pending && entry.is_expired(now) {
+            entry.status = EntryStatus::Expired;
+            count += 1;
+        }
+    }
+    count
 }
 
 #[derive(Debug, Default)]
@@ -220,7 +246,11 @@ impl UndoLog for MemoryLog {
     }
 
     fn latest_pending(&self, tenant: &str) -> Option<UndoSummary> {
-        latest_pending_summary(&self.entries, tenant)
+        latest_pending_summary(&self.entries, tenant, Utc::now())
+    }
+
+    fn expire_stale(&mut self, now: DateTime<Utc>) -> Result<usize> {
+        Ok(expire_in_place(&mut self.entries, now))
     }
 }
 
@@ -313,7 +343,15 @@ impl UndoLog for DiskLog {
     }
 
     fn latest_pending(&self, tenant: &str) -> Option<UndoSummary> {
-        latest_pending_summary(&self.entries, tenant)
+        latest_pending_summary(&self.entries, tenant, Utc::now())
+    }
+
+    fn expire_stale(&mut self, now: DateTime<Utc>) -> Result<usize> {
+        let count = expire_in_place(&mut self.entries, now);
+        if count > 0 {
+            self.rewrite()?;
+        }
+        Ok(count)
     }
 }
 
@@ -343,12 +381,17 @@ fn summaries(entries: &[UndoEntry], limit: usize) -> Vec<UndoSummary> {
     out
 }
 
-fn latest_pending_summary(entries: &[UndoEntry], tenant: &str) -> Option<UndoSummary> {
+fn latest_pending_summary(
+    entries: &[UndoEntry],
+    tenant: &str,
+    now: DateTime<Utc>,
+) -> Option<UndoSummary> {
     entries
         .iter()
         .filter(|entry| {
             entry.tenant == tenant
                 && entry.status == EntryStatus::Pending
+                && !entry.is_expired(now)
                 && matches!(entry.capability, Capability::Undoable | Capability::BestEffort)
                 && entry.op.is_some()
         })
@@ -395,6 +438,42 @@ mod tests {
             EntryStatus::AppliedSuccess
         );
         assert_eq!(log.latest_pending("sandbox").unwrap().id, first);
+    }
+
+    #[test]
+    fn expire_stale_retires_old_pending_entries() {
+        let mut log = MemoryLog::new();
+        let old = log.record(entry("old")).unwrap();
+        let fresh = log.record(entry("fresh")).unwrap();
+        // Backdate the first entry past the TTL.
+        log.entries
+            .iter_mut()
+            .find(|e| e.id == old)
+            .unwrap()
+            .created_at = Utc::now() - chrono::Duration::seconds(UNDO_TTL_SECS + 1);
+
+        let now = Utc::now();
+        assert_eq!(log.expire_stale(now).unwrap(), 1);
+        assert_eq!(log.load(old).unwrap().status, EntryStatus::Expired);
+        assert_eq!(log.load(fresh).unwrap().status, EntryStatus::Pending);
+        // The expired entry must not be offered as the latest undo.
+        assert_eq!(log.latest_pending("sandbox").unwrap().id, fresh);
+        // Idempotent: a second sweep retires nothing new.
+        assert_eq!(log.expire_stale(now).unwrap(), 0);
+    }
+
+    #[test]
+    fn latest_pending_skips_aged_entries_before_sweep() {
+        let mut log = MemoryLog::new();
+        let aged = log.record(entry("aged")).unwrap();
+        log.entries
+            .iter_mut()
+            .find(|e| e.id == aged)
+            .unwrap()
+            .created_at = Utc::now() - chrono::Duration::seconds(UNDO_TTL_SECS + 1);
+        // Even though the status is still Pending (no sweep yet), an aged
+        // entry is not offered for undo.
+        assert!(log.latest_pending("sandbox").is_none());
     }
 
     #[test]

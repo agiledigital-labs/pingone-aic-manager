@@ -173,6 +173,15 @@ impl App {
             && std::env::var("SERVICE_ACCOUNT_ID").is_ok()
             && std::env::var("SERVICE_ACCOUNT_KEY").is_ok();
 
+        // Undo entries persist across sessions; retire anything older than the
+        // TTL up front so a stale entry can't be offered for undo. Best-effort:
+        // a failed sweep just leaves the old statuses in place.
+        let mut undo: Box<dyn crate::undo::UndoLog> =
+            Box::new(crate::undo::DiskLog::load_default()?);
+        if let Err(e) = undo.expire_stale(chrono::Utc::now()) {
+            tracing::warn!("undo expire-stale sweep failed: {e}");
+        }
+
         Ok(Self {
             events: EventHandler::new(),
             config,
@@ -195,7 +204,7 @@ impl App {
             jwks: HashMap::new(),
             onboard: crate::screens::onboard::State::new(),
             prod_confirm: crate::screens::prod_confirm::State::new(),
-            undo: Box::new(crate::undo::DiskLog::load_default()?),
+            undo,
             keybind_help_open: false,
             esv: crate::screens::esv::State::new(),
         })

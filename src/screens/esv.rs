@@ -390,6 +390,12 @@ pub struct State {
 /// after a save. Long enough to cover AIC's indexing lag on creates.
 pub const RECENT_WRITE_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// How long we keep a delete tombstone: both the red `!` ghost row in the
+/// list and the negative pin that suppresses the deleted id if AIC's
+/// eventually-consistent list endpoint still returns it. After this the
+/// ghost drops off; the undo entry itself outlives it (recover via `^Y`).
+pub const DELETE_TOMBSTONE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
 impl Default for State {
     fn default() -> Self {
         Self {
@@ -938,6 +944,11 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
             app.esv
                 .recent_writes
                 .retain(|_, (saved_at, _)| saved_at.elapsed() < RECENT_WRITE_TTL);
+            // Drop expired delete tombstones so the red `!` ghost rows clear
+            // once the delete has had time to settle.
+            app.esv
+                .recent_deletes
+                .retain(|_, tomb| tomb.deleted_at.elapsed() < DELETE_TOMBSTONE_TTL);
             for ((t, recent_id), (_, body)) in app.esv.recent_writes.iter() {
                 if t != &tenant {
                     continue;
@@ -952,6 +963,18 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
                     vs.push(pending.clone());
                 }
             }
+            // Negative pin: AIC's list endpoint is eventually consistent, so a
+            // just-deleted variable can still come back for a few polls. While
+            // its tombstone is alive, suppress it from the live list so the row
+            // stays "deleted" instead of flickering back to a normal entry.
+            let suppressed: HashSet<String> = app
+                .esv
+                .recent_deletes
+                .keys()
+                .filter(|(t, _)| t == &tenant)
+                .map(|(_, id)| id.clone())
+                .collect();
+            vs.retain(|v| !suppressed.contains(id_of(v)));
             app.esv.data.insert(tenant.clone(), LoadState::Loaded(vs));
             if is_active {
                 let n = app
@@ -1230,6 +1253,14 @@ fn build_save_plan(app: &mut App) -> Option<SavePlan> {
             return None;
         }
         edit.id = id;
+    }
+
+    // A variable value must be non-empty: base64 of "" is "", which AIC
+    // rejects (and a rejected create leaves a confusing local-only row).
+    // A single space is a valid, non-empty value.
+    if edit.value.value.is_empty() {
+        edit.error = Some("Value cannot be empty (a single space is allowed)".into());
+        return None;
     }
 
     // Pre-flight validation. Catches obvious type/value mismatches before
@@ -1528,6 +1559,9 @@ fn record_delete_undo(
 #[derive(Debug)]
 pub struct SaveOutcome {
     pub body: serde_json::Value,
+    /// True when we opened the form as an "edit" but the variable was
+    /// absent on AIC (a prior create failed), so the save became a create.
+    pub created: bool,
 }
 
 #[derive(Debug)]
@@ -1616,16 +1650,28 @@ async fn save_variable(request: SaveRequest, confirmed_prod: bool) -> Result<Sav
         original,
     } = request;
 
+    let mut created = false;
     if let Some(original) = original.as_ref() {
-        let current = crate::aic::esv::get_variable(&tenant_name, &id)
-            .await
-            .map_err(|e| format!("conflict check: {e}"))?;
-        if !crate::aic::esv::content_equal(&current, original) {
-            return Err("remote value changed since you opened it; refresh and retry".into());
+        match crate::aic::esv::get_variable(&tenant_name, &id).await {
+            Ok(current) => {
+                if !crate::aic::esv::content_equal(&current, original) {
+                    return Err(
+                        "remote value changed since you opened it; refresh and retry".into(),
+                    );
+                }
+            }
+            // We opened the form as an edit, but the variable is absent on
+            // AIC (typically a prior create that failed and left a local-
+            // only row). The PUT below is an upsert, so just create it.
+            Err(e) if is_not_found(&e) => created = true,
+            Err(e) => return Err(format!("conflict check: {e}")),
         }
     }
 
-    if type_changed {
+    // A type change needs a DELETE-then-PUT, but only if the variable
+    // actually exists remotely — skip it when we're falling back to create.
+    let did_type_delete = type_changed && !created;
+    if did_type_delete {
         // AIC rejects in-place type changes on existing variables, but
         // accepts DELETE followed by an immediate PUT with the new type
         // — verified on the sandbox 2026-05-26, no restart between.
@@ -1643,7 +1689,7 @@ async fn save_variable(request: SaveRequest, confirmed_prod: bool) -> Result<Sav
     )
     .await
     .map_err(|e| {
-        if type_changed {
+        if did_type_delete {
             format!(
                 "type change: delete succeeded but recreate failed ({e}). \
                      Variable is currently absent on AIC; re-save to recreate."
@@ -1652,7 +1698,10 @@ async fn save_variable(request: SaveRequest, confirmed_prod: bool) -> Result<Sav
             e.to_string()
         }
     })?;
-    Ok(SaveOutcome { body: saved })
+    Ok(SaveOutcome {
+        body: saved,
+        created,
+    })
 }
 
 async fn delete_variable_request(
@@ -1835,7 +1884,7 @@ pub fn apply_save_result(
         .in_flight_writes
         .remove(&(tenant.clone(), id.clone()));
     match result {
-        Ok(SaveOutcome { body }) => {
+        Ok(SaveOutcome { body, created }) => {
             if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant) {
                 if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
                     *slot = body.clone();
@@ -1848,9 +1897,14 @@ pub fn apply_save_result(
                 .insert((tenant.clone(), id.clone()), (Instant::now(), body));
             app.esv.recent_deletes.remove(&(tenant.clone(), id.clone()));
             // Clear any prior failure marker — the save went through.
-            app.esv.failed_writes.remove(&(tenant.clone(), id));
+            app.esv.failed_writes.remove(&(tenant.clone(), id.clone()));
             refresh_apply_state_from_cache(app, &tenant);
-            app.push_toast(ToastKind::Success, "Saved ESV. Press ^Z to undo.");
+            let msg = if created {
+                format!("{id} was missing on AIC — created it. Press ^Z to undo.")
+            } else {
+                "Saved ESV. Press ^Z to undo.".to_string()
+            };
+            app.push_toast(ToastKind::Success, msg);
         }
         Err(e) => {
             // Keep the optimistic body in `recent_writes` so the user

@@ -95,7 +95,6 @@ fn capability_label(capability: Capability) -> &'static str {
         Capability::Undoable => "undoable",
         Capability::BestEffort => "best",
         Capability::Irreversible => "no-undo",
-        Capability::Expired => "expired",
     }
 }
 
