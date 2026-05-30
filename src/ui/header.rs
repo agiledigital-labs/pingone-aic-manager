@@ -6,8 +6,7 @@ use ratatui::{
     widgets::{Paragraph, Tabs},
 };
 
-use crate::app::{App, InputMode, Realm, Tab};
-use crate::screens::esv::EditField;
+use crate::app::{App, Realm, Tab};
 use crate::theme::style_for;
 
 /// Top strip: tabs + realm/tenant chips. Caller must pass a 1-row area.
@@ -76,47 +75,12 @@ fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
+    // Every mode's footer comes from one place — see `keymap::footer_hints`.
     let mut spans: Vec<Span> = Vec::new();
-    match app.input_mode {
-        InputMode::EsvSearch => {
-            for (k, d) in [("Enter", "keep filter"), ("Esc", "clear + exit")] {
-                spans.extend(hint(k, d));
-            }
-        }
-        InputMode::EsvEdit => {
-            let focused = app.esv.editing.as_ref().map(|edit| edit.focused);
-            let mut hints = vec![("Tab", "navigate")];
-            if let Some(enter_hint) = focused.and_then(esv_edit_enter_hint) {
-                hints.push(enter_hint);
-            }
-            if focused == Some(EditField::Type) {
-                hints.push(("←/→", "change type"));
-            }
-            hints.push(("Esc", "cancel"));
-            for (k, d) in hints {
-                spans.extend(hint(k, d));
-            }
-        }
-        // Normal mode: footer hints come straight from the keymap table, so
-        // they can never advertise a key the dispatcher doesn't handle.
-        _ => {
-            for bind in crate::keymap::normal_binds(app) {
-                if bind.footer {
-                    spans.extend(hint(bind.label, bind.desc));
-                }
-            }
-            spans.extend(hint("?", "keys"));
-        }
+    for (k, d) in crate::keymap::footer_hints(app) {
+        spans.extend(hint(k, d));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn esv_edit_enter_hint(focused: EditField) -> Option<(&'static str, &'static str)> {
-    match focused {
-        EditField::Id | EditField::Description | EditField::Type => Some(("Enter", "next")),
-        EditField::Value => None,
-        EditField::Save => Some(("Enter", "save")),
-    }
 }
 
 fn hint(key: &'static str, desc: &'static str) -> Vec<Span<'static>> {
@@ -132,25 +96,3 @@ fn hint(key: &'static str, desc: &'static str) -> Vec<Span<'static>> {
     ]
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn esv_edit_enter_hint_tracks_focused_control() {
-        assert_eq!(esv_edit_enter_hint(EditField::Id), Some(("Enter", "next")));
-        assert_eq!(
-            esv_edit_enter_hint(EditField::Description),
-            Some(("Enter", "next"))
-        );
-        assert_eq!(
-            esv_edit_enter_hint(EditField::Type),
-            Some(("Enter", "next"))
-        );
-        assert_eq!(esv_edit_enter_hint(EditField::Value), None);
-        assert_eq!(
-            esv_edit_enter_hint(EditField::Save),
-            Some(("Enter", "save"))
-        );
-    }
-}
