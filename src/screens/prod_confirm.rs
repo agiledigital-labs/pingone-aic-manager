@@ -24,6 +24,7 @@ pub enum PendingProdAction {
     SecretCreate(crate::screens::secret::CreatePlan),
     SecretAddVersion(crate::screens::secret::VersionAddPlan),
     SecretDelete(crate::screens::secret::DeletePlan),
+    SecretSetDescription(crate::screens::secret::SetDescriptionPlan),
     SecretVersionStatus {
         tenant: String,
         id: String,
@@ -83,6 +84,9 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                     }
                     PendingProdAction::SecretDelete(plan) => {
                         crate::screens::secret::execute_delete(app, plan, true);
+                    }
+                    PendingProdAction::SecretSetDescription(plan) => {
+                        crate::screens::secret::execute_set_description(app, plan, true);
                     }
                     PendingProdAction::SecretVersionStatus {
                         tenant,

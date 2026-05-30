@@ -47,10 +47,14 @@ pub struct TextField {
     pub label: String,
     pub value: String,
     /// Char index (not byte offset) into `value`. Always in
-    /// `0..=value.chars().count()`. Sits at the end after `with_initial` /
-    /// `set`; updated by every edit / nav action.
+    /// `prefix_len()..=value.chars().count()`. Sits at the end after
+    /// `with_initial` / `set`; updated by every edit / nav action.
     pub cursor: usize,
     pub kind: FieldKind,
+    /// A fixed, non-editable leading portion of `value` (e.g. the `esv-`
+    /// prefix on ESV ids). The cursor can't move before it and backspace /
+    /// delete won't remove it; the user only edits the suffix.
+    pub locked_prefix: String,
 }
 
 impl TextField {
@@ -60,6 +64,7 @@ impl TextField {
             value: String::new(),
             cursor: 0,
             kind: FieldKind::SingleLine,
+            locked_prefix: String::new(),
         }
     }
 
@@ -69,6 +74,7 @@ impl TextField {
             value: String::new(),
             cursor: 0,
             kind: FieldKind::Masked,
+            locked_prefix: String::new(),
         }
     }
 
@@ -78,6 +84,7 @@ impl TextField {
             value: String::new(),
             cursor: 0,
             kind: FieldKind::TextArea,
+            locked_prefix: String::new(),
         }
     }
 
@@ -85,6 +92,21 @@ impl TextField {
         self.value = value.into();
         self.cursor = self.value.chars().count();
         self
+    }
+
+    /// Seed `value` with a fixed prefix the user can't edit or delete (they
+    /// type the suffix). The cursor starts just past the prefix.
+    pub fn with_locked_prefix(mut self, prefix: impl Into<String>) -> Self {
+        let prefix = prefix.into();
+        self.value = prefix.clone();
+        self.cursor = prefix.chars().count();
+        self.locked_prefix = prefix;
+        self
+    }
+
+    /// Number of leading chars protected from editing / cursor movement.
+    fn prefix_len(&self) -> usize {
+        self.locked_prefix.chars().count()
     }
 
     pub fn trimmed(&self) -> &str {
@@ -126,7 +148,8 @@ impl TextField {
 
     /// Delete the char immediately before the cursor.
     pub fn backspace(&mut self) {
-        if self.cursor == 0 {
+        // Won't delete into the locked prefix.
+        if self.cursor <= self.prefix_len() {
             return;
         }
         let prev_byte = self
@@ -140,10 +163,10 @@ impl TextField {
         self.cursor -= 1;
     }
 
-    /// Delete the char at the cursor (no-op past the end).
+    /// Delete the char at the cursor (no-op past the end or within the prefix).
     pub fn delete_forward(&mut self) {
         let total = self.value.chars().count();
-        if self.cursor >= total {
+        if self.cursor >= total || self.cursor < self.prefix_len() {
             return;
         }
         let cur_byte = self.cursor_byte();
@@ -157,7 +180,7 @@ impl TextField {
     }
 
     pub fn cursor_left(&mut self) {
-        if self.cursor > 0 {
+        if self.cursor > self.prefix_len() {
             self.cursor -= 1;
         }
     }
@@ -175,9 +198,9 @@ impl TextField {
     pub fn cursor_home(&mut self) {
         if matches!(self.kind, FieldKind::TextArea) {
             let (start, _) = current_line_bounds(&self.value, self.cursor);
-            self.cursor = start;
+            self.cursor = start.max(self.prefix_len());
         } else {
-            self.cursor = 0;
+            self.cursor = self.prefix_len();
         }
     }
 
@@ -488,6 +511,43 @@ fn current_line_bounds(text: &str, cursor: usize) -> (usize, usize) {
 //
 // Centralising these lets us change a label or render-kind in one place. Form
 // modules call e.g. `fields::tenant_name()` at construction time.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    #[test]
+    fn locked_prefix_cannot_be_deleted_or_crossed() {
+        let mut f = TextField::single_line("id").with_locked_prefix("esv-");
+        assert_eq!(f.value, "esv-");
+        assert_eq!(f.cursor, 4);
+
+        // Typing appends after the prefix.
+        for c in "name".chars() {
+            f.handle_key(&key(KeyCode::Char(c)));
+        }
+        assert_eq!(f.value, "esv-name");
+
+        // Backspace stops at the prefix boundary.
+        for _ in 0..20 {
+            f.handle_key(&key(KeyCode::Backspace));
+        }
+        assert_eq!(f.value, "esv-");
+
+        // Home / Left clamp to the prefix; forward-delete can't eat it.
+        f.handle_key(&key(KeyCode::Home));
+        assert_eq!(f.cursor, 4);
+        f.handle_key(&key(KeyCode::Left));
+        assert_eq!(f.cursor, 4);
+        f.handle_key(&key(KeyCode::Delete));
+        assert_eq!(f.value, "esv-");
+    }
+}
 
 pub mod fields {
     use super::TextField;

@@ -128,7 +128,7 @@ pub struct CreateForm {
 impl CreateForm {
     fn new() -> Self {
         Self {
-            id: TextField::single_line("Secret ID (esv-…)"),
+            id: TextField::single_line("Secret ID (esv-…)").with_locked_prefix("esv-"),
             description: TextField::single_line("Description"),
             encoding: Encoding::Generic,
             use_in_placeholders: true,
@@ -166,6 +166,16 @@ pub enum SecretOpKind {
     StatusChange,
     Destroy,
     Delete,
+    SetDescription,
+}
+
+/// Which half of the open secret-detail pane has keyboard focus. The pane shows
+/// the read-only metadata, an editable description, and the version list; `Tab`
+/// toggles between editing the description and navigating the versions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailFocus {
+    Versions,
+    Description,
 }
 
 #[derive(Debug)]
@@ -185,6 +195,12 @@ pub struct State {
     /// (tenant, id, version) awaiting the irreversible-destroy confirmation.
     pub pending_version_destroy: Option<(String, String, String)>,
 
+    /// Which half of the open detail pane has focus (description vs versions).
+    pub detail_focus: DetailFocus,
+    /// Edit buffer for the open secret's description. Initialised from the
+    /// secret when the panel opens; committed via `setDescription`.
+    pub description: TextField,
+
     /// (tenant, id) for secrets with a mutation in flight — gates re-issuing.
     pub in_flight: HashSet<(String, String)>,
 
@@ -201,6 +217,8 @@ impl Default for State {
             version_selected: 0,
             version_target: None,
             pending_version_destroy: None,
+            detail_focus: DetailFocus::Versions,
+            description: TextField::single_line("Description"),
             in_flight: HashSet::new(),
             create: None,
             add_version: None,
@@ -223,6 +241,8 @@ impl State {
         self.version_target = None;
         self.version_selected = 0;
         self.pending_version_destroy = None;
+        self.detail_focus = DetailFocus::Versions;
+        self.description = TextField::single_line("Description");
     }
 }
 
@@ -236,6 +256,11 @@ pub fn use_in_placeholders(v: &serde_json::Value) -> bool {
 /// `encoding` of a secret object.
 pub fn encoding_of(v: &serde_json::Value) -> &str {
     v.get("encoding").and_then(|x| x.as_str()).unwrap_or("?")
+}
+
+/// `description` of a secret object (empty if absent).
+pub fn description_of(v: &serde_json::Value) -> &str {
+    v.get("description").and_then(|x| x.as_str()).unwrap_or("")
 }
 
 /// Number of secrets gating a restart for `tenant` — the `?_onlyPending=true`
@@ -354,58 +379,72 @@ pub fn handle_create_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     let Some(form) = app.secret.create.as_mut() else {
         return Ok(());
     };
+    // Form-level keys, mirroring the variables edit form: Tab/Shift-Tab move
+    // focus, Enter advances (or commits on Value/Save), Esc cancels.
+    let focused = form.focused;
     match key.code {
         KeyCode::Esc => {
             app.secret.create = None;
             app.input_mode = InputMode::Normal;
             return Ok(());
         }
-        KeyCode::Tab | KeyCode::Down => {
-            form.focused = form.focused.next();
+        KeyCode::Tab => {
+            form.focused = focused.next();
             return Ok(());
         }
-        KeyCode::BackTab | KeyCode::Up => {
-            form.focused = form.focused.prev();
+        KeyCode::BackTab => {
+            form.focused = focused.prev();
             return Ok(());
+        }
+        KeyCode::Enter => {
+            match focused {
+                CreateField::Value | CreateField::Save => commit_create(app),
+                _ => form.focused = focused.next(),
+            }
+            return Ok(());
+        }
+        // ←/→ cycle the chip / toggle rows; on text fields they fall through
+        // to cursor movement below.
+        KeyCode::Left | KeyCode::Right => {
+            let left = key.code == KeyCode::Left;
+            match focused {
+                CreateField::Encoding => {
+                    form.encoding = if left { form.encoding.prev() } else { form.encoding.next() };
+                    return Ok(());
+                }
+                CreateField::Placeholders => {
+                    form.use_in_placeholders = !form.use_in_placeholders;
+                    return Ok(());
+                }
+                CreateField::Json => {
+                    form.as_json = !form.as_json;
+                    return Ok(());
+                }
+                _ => {}
+            }
         }
         _ => {}
     }
+
     form.error = None;
-    match form.focused {
+    match focused {
         CreateField::Id => {
             form.id.handle_key(&key);
         }
         CreateField::Description => {
             form.description.handle_key(&key);
         }
-        CreateField::Encoding => match key.code {
-            KeyCode::Left | KeyCode::Char('h') => form.encoding = form.encoding.prev(),
-            KeyCode::Right | KeyCode::Char('l') => form.encoding = form.encoding.next(),
-            _ => {}
-        },
-        CreateField::Placeholders => {
-            if matches!(key.code, KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right) {
-                form.use_in_placeholders = !form.use_in_placeholders;
-            }
-        }
-        CreateField::Json => {
-            if matches!(key.code, KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right) {
-                form.as_json = !form.as_json;
-            }
-        }
         CreateField::Value => {
-            if key.code == KeyCode::Enter {
-                // Enter in the value field submits (single-line masked input).
-                commit_create(app);
-            } else {
-                form.value.handle_key(&key);
-            }
+            form.value.handle_key(&key);
         }
-        CreateField::Save => {
-            if key.code == KeyCode::Enter {
-                commit_create(app);
-            }
+        // Space also toggles the boolean rows (in addition to ←/→ above).
+        CreateField::Placeholders if key.code == KeyCode::Char(' ') => {
+            form.use_in_placeholders = !form.use_in_placeholders;
         }
+        CreateField::Json if key.code == KeyCode::Char(' ') => {
+            form.as_json = !form.as_json;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -422,9 +461,10 @@ fn commit_create(app: &mut App) {
     let use_in_placeholders = form.use_in_placeholders;
     let description = form.description.value.clone();
 
-    // Validate id.
-    if id.is_empty() {
-        set_create_error(app, "Secret ID cannot be empty");
+    // Validate id. The `esv-` prefix is locked in the field, so the only id
+    // problem left is an empty suffix.
+    if id == "esv-" || id.is_empty() {
+        set_create_error(app, "Give the secret a name after 'esv-'");
         return;
     }
     if !id.starts_with("esv-") {
@@ -587,7 +627,7 @@ fn open_add_version(app: &mut App) {
 }
 
 /// Look up a secret object in the per-tenant cache by id.
-fn secret_in_cache(app: &App, tenant: &str, id: &str) -> Option<serde_json::Value> {
+pub fn secret_in_cache(app: &App, tenant: &str, id: &str) -> Option<serde_json::Value> {
     match app.secret.list.data.get(tenant) {
         Some(LoadState::Loaded(items)) => items.iter().find(|v| id_of(v) == id).cloned(),
         _ => None,
@@ -682,6 +722,19 @@ pub fn execute_add_version(app: &mut App, plan: VersionAddPlan, confirmed_prod: 
 
 // --- Version panel --------------------------------------------------------
 
+/// Whether the version panel is currently showing in the detail pane. True
+/// across the version-list mode and the two states layered on top of it
+/// (add-version form, destroy confirmation), so the pane keeps the versions
+/// visible underneath those overlays.
+pub fn versions_panel_open(app: &App) -> bool {
+    matches!(
+        app.input_mode,
+        InputMode::SecretVersions
+            | InputMode::SecretAddVersion
+            | InputMode::SecretVersionDestroyConfirm
+    )
+}
+
 pub fn open_versions(app: &mut App) {
     let Some(secret) = selected_secret(app) else {
         return;
@@ -692,6 +745,9 @@ pub fn open_versions(app: &mut App) {
     let id = id_of(&secret).to_string();
     app.secret.version_selected = 0;
     app.secret.version_target = Some((tenant.clone(), id.clone()));
+    app.secret.detail_focus = DetailFocus::Versions;
+    app.secret.description =
+        TextField::single_line("Description").with_initial(description_of(&secret));
     app.secret
         .versions
         .insert((tenant.clone(), id.clone()), LoadState::Loading);
@@ -754,11 +810,36 @@ pub fn handle_versions_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             return Ok(());
         }
     };
-    let n = versions.len();
+    // Tab toggles focus between the description editor and the version list;
+    // Esc always closes the panel.
     match key.code {
         KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
+            return Ok(());
         }
+        KeyCode::Tab | KeyCode::BackTab => {
+            app.secret.detail_focus = match app.secret.detail_focus {
+                DetailFocus::Versions => DetailFocus::Description,
+                DetailFocus::Description => DetailFocus::Versions,
+            };
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // Description focused: keystrokes edit the buffer; Enter commits it.
+    if app.secret.detail_focus == DetailFocus::Description {
+        if key.code == KeyCode::Enter {
+            commit_description(app);
+        } else {
+            app.secret.description.handle_key(&key);
+        }
+        return Ok(());
+    }
+
+    // Versions focused: navigate / mutate the selected version.
+    let n = versions.len();
+    match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             if n > 0 && app.secret.version_selected + 1 < n {
                 app.secret.version_selected += 1;
@@ -784,6 +865,168 @@ pub fn handle_versions_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+// --- Edit description -----------------------------------------------------
+
+/// Commit the edited description for the open secret via `setDescription`.
+/// No-ops (with an info toast) when the text is unchanged.
+fn commit_description(app: &mut App) {
+    let Some((tenant, id)) = app.secret.version_target.clone() else {
+        return;
+    };
+    let new_desc = app.secret.description.value.clone();
+    let previous = secret_in_cache(app, &tenant, &id)
+        .map(|s| description_of(&s).to_string())
+        .unwrap_or_default();
+    if new_desc == previous {
+        app.push_toast(ToastKind::Info, "Description unchanged".to_string());
+        app.secret.detail_focus = DetailFocus::Versions;
+        return;
+    }
+
+    let plan = SetDescriptionPlan {
+        tenant,
+        id,
+        description: new_desc,
+        previous,
+    };
+    let is_prod = app
+        .active_tenant()
+        .is_some_and(|t| t.theme == TenantTheme::Production);
+    if is_prod {
+        app.prod_confirm.pending = Some(PendingProdAction::SecretSetDescription(plan));
+        app.input_mode = InputMode::ProdConfirm;
+    } else {
+        execute_set_description(app, plan, false);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SetDescriptionPlan {
+    pub tenant: String,
+    pub id: String,
+    pub description: String,
+    pub previous: String,
+}
+
+pub fn execute_set_description(app: &mut App, plan: SetDescriptionPlan, confirmed_prod: bool) {
+    // Return focus to the version list so the user sees the edit was submitted
+    // (the cursor leaves the description field).
+    app.input_mode = InputMode::SecretVersions;
+    app.secret.detail_focus = DetailFocus::Versions;
+    app.secret
+        .in_flight
+        .insert((plan.tenant.clone(), plan.id.clone()));
+
+    // Optimistic: reflect the new description in the local cache now, so the
+    // detail pane shows it immediately instead of after the round-trip. The
+    // server value reconciles on completion (`refresh_tenant`).
+    set_local_secret_description(app, &plan.tenant, &plan.id, &plan.description);
+
+    // Record the revert undo up front (like variable edits do): a failed write
+    // leaves the description at `previous`, so the conflict guard in
+    // `undo_set_description` (current == expected) refuses to fire — safe.
+    record_set_description_undo(app, &plan);
+
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result =
+            crate::aic::esv::set_secret_description(&plan.tenant, &plan.id, &plan.description, confirmed_prod)
+                .await
+                .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::SecretOpResult {
+            tenant: plan.tenant,
+            id: plan.id,
+            kind: SecretOpKind::SetDescription,
+            label: "Updated description".to_string(),
+            reload_versions: false,
+            result,
+        });
+    });
+}
+
+fn record_set_description_undo(app: &mut App, plan: &SetDescriptionPlan) {
+    let entry = UndoEntry::pending(
+        plan.tenant.clone(),
+        "secret",
+        format!("Revert description of {}", plan.id),
+        Sensitivity::TenantConfig,
+        Capability::Undoable,
+        Some(UndoOp::SecretSetDescription {
+            tenant: plan.tenant.clone(),
+            id: plan.id.clone(),
+            previous: plan.previous.clone(),
+            expected: plan.description.clone(),
+        }),
+        ConflictCheck::None,
+    );
+    if let Err(e) = app.undo.record(entry) {
+        tracing::warn!("failed to record secret-description undo for {}: {e}", plan.id);
+    }
+}
+
+/// Undo a description change: set it back to `previous`, but only if the live
+/// description still equals `expected` (what we set), so a later edit isn't
+/// clobbered. Lives here so the secret-specific conflict logic stays put.
+pub async fn undo_set_description(
+    tenant: &str,
+    id: &str,
+    previous: &str,
+    expected: &str,
+    confirmed_prod: bool,
+) -> std::result::Result<(), crate::screens::esv::UndoFailure> {
+    use crate::screens::esv::UndoFailure;
+    match crate::aic::esv::get_secret(tenant, id).await {
+        Ok(current) => {
+            if description_of(&current) != expected {
+                return Err(UndoFailure::Conflict(format!(
+                    "{id}'s description changed since; refusing to overwrite"
+                )));
+            }
+        }
+        Err(crate::Error::Api { status: 404, .. }) => {
+            return Err(UndoFailure::Conflict(format!("{id} no longer exists")));
+        }
+        Err(e) => return Err(UndoFailure::Failed(format!("conflict check failed: {e}"))),
+    }
+    crate::aic::esv::set_secret_description(tenant, id, previous, confirmed_prod)
+        .await
+        .map(|_| ())
+        .map_err(|e| UndoFailure::Failed(e.to_string()))
+}
+
+/// Optimistically set a version's `status` in the local cache so the panel
+/// repaints immediately. The authoritative list is reloaded on op completion
+/// (success *or* failure), so a rejected change self-corrects.
+fn set_local_version_status(app: &mut App, tenant: &str, id: &str, version: &str, status: &str) {
+    if let Some(LoadState::Loaded(vs)) =
+        app.secret.versions.get_mut(&(tenant.to_string(), id.to_string()))
+    {
+        for v in vs.iter_mut() {
+            if version_num(v).as_deref() == Some(version) {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("status".into(), serde_json::Value::String(status.to_string()));
+                }
+            }
+        }
+    }
+}
+
+/// Optimistically set a secret's `description` in the list cache.
+fn set_local_secret_description(app: &mut App, tenant: &str, id: &str, description: &str) {
+    if let Some(LoadState::Loaded(items)) = app.secret.list.data.get_mut(tenant) {
+        for v in items.iter_mut() {
+            if id_of(v) == id {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert(
+                        "description".into(),
+                        serde_json::Value::String(description.to_string()),
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn version_num(v: &serde_json::Value) -> Option<String> {
@@ -839,6 +1082,10 @@ pub fn execute_version_status(
     confirmed_prod: bool,
 ) {
     app.input_mode = InputMode::SecretVersions;
+    // Optimistic: flip the version's status locally so the panel repaints at
+    // once; `apply_op_result` reloads the authoritative state when the call
+    // returns (and reverts this on failure).
+    set_local_version_status(app, &tenant, &id, &version, &status);
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
         let result =
@@ -909,6 +1156,8 @@ pub fn execute_version_destroy(
     confirmed_prod: bool,
 ) {
     app.input_mode = InputMode::SecretVersions;
+    // Optimistic: mark the version DESTROYED locally; reconciled on completion.
+    set_local_version_status(app, &tenant, &id, &version, "DESTROYED");
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
         let result =
@@ -1030,7 +1279,9 @@ pub fn apply_op_result(
                 SecretOpKind::Delete => record_delete_history(app, &tenant, &id),
                 _ => {}
             }
-            let suffix = if kind == SecretOpKind::Create {
+            // Create records its undo here; SetDescription recorded it up front
+            // in `execute_set_description`. Both can be reverted with ^Z.
+            let suffix = if matches!(kind, SecretOpKind::Create | SecretOpKind::SetDescription) {
                 " — ^Z to undo"
             } else {
                 ""
@@ -1045,6 +1296,12 @@ pub fn apply_op_result(
         }
         Err(e) => {
             app.push_toast(ToastKind::Error, format!("{label} failed: {id} — {e}"));
+            // Reconcile any optimistic change back to the server's real state.
+            if reload {
+                reload_versions(app, tenant, id);
+            } else {
+                crate::screens::esv::refresh_tenant(app, &tenant, true);
+            }
         }
     }
 }

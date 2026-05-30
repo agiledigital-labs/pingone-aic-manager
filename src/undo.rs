@@ -105,6 +105,17 @@ pub enum UndoOp {
         id: String,
         active_version: String,
     },
+    /// Undo of a secret *description* change — set it back to `previous`, but
+    /// only if the live description still equals `expected` (the value we just
+    /// set), so a later edit by someone else isn't clobbered. The conflict
+    /// check lives in `secret::undo_set_description`, so the entry itself uses
+    /// `ConflictCheck::None`.
+    SecretSetDescription {
+        tenant: String,
+        id: String,
+        previous: String,
+        expected: String,
+    },
 }
 
 impl UndoOp {
@@ -113,7 +124,8 @@ impl UndoOp {
             UndoOp::EsvVariableRestore { tenant, .. }
             | UndoOp::EsvVariableDelete { tenant, .. }
             | UndoOp::EsvVariableUpdateTo { tenant, .. }
-            | UndoOp::SecretDelete { tenant, .. } => tenant,
+            | UndoOp::SecretDelete { tenant, .. }
+            | UndoOp::SecretSetDescription { tenant, .. } => tenant,
         }
     }
 
@@ -122,7 +134,8 @@ impl UndoOp {
             UndoOp::EsvVariableRestore { body, .. } => body.get("_id").and_then(|v| v.as_str()),
             UndoOp::EsvVariableDelete { id, .. }
             | UndoOp::EsvVariableUpdateTo { id, .. }
-            | UndoOp::SecretDelete { id, .. } => Some(id),
+            | UndoOp::SecretDelete { id, .. }
+            | UndoOp::SecretSetDescription { id, .. } => Some(id),
         }
     }
 }

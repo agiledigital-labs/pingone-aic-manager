@@ -117,6 +117,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
             &mut lines,
             "Secret versions",
             &[
+                ("Tab", "edit description / versions"),
                 ("j/k", "navigate"),
                 ("e/d", "enable / disable"),
                 ("x/Del", "destroy (irreversible)"),
