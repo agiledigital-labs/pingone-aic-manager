@@ -92,6 +92,19 @@ pub enum UndoOp {
         id: String,
         body: serde_json::Value,
     },
+    /// Undo of a secret *create* — delete the secret we just made. (Secret
+    /// value deletes are irreversible, so this is the only reversible secret
+    /// op; the recorded entry holds the id only, never a value.)
+    /// `active_version` is what the create returned (`"1"`); the undo refuses
+    /// to fire unless the secret still exists with that same active version,
+    /// so we never delete a secret that has since gained new versions or been
+    /// replaced. (`lastChangeDate` is unusable here — create returns ns+`Z`
+    /// precision, GET returns truncated µs without `Z`, so it never matches.)
+    SecretDelete {
+        tenant: String,
+        id: String,
+        active_version: String,
+    },
 }
 
 impl UndoOp {
@@ -99,16 +112,17 @@ impl UndoOp {
         match self {
             UndoOp::EsvVariableRestore { tenant, .. }
             | UndoOp::EsvVariableDelete { tenant, .. }
-            | UndoOp::EsvVariableUpdateTo { tenant, .. } => tenant,
+            | UndoOp::EsvVariableUpdateTo { tenant, .. }
+            | UndoOp::SecretDelete { tenant, .. } => tenant,
         }
     }
 
     pub fn resource_id(&self) -> Option<&str> {
         match self {
             UndoOp::EsvVariableRestore { body, .. } => body.get("_id").and_then(|v| v.as_str()),
-            UndoOp::EsvVariableDelete { id, .. } | UndoOp::EsvVariableUpdateTo { id, .. } => {
-                Some(id)
-            }
+            UndoOp::EsvVariableDelete { id, .. }
+            | UndoOp::EsvVariableUpdateTo { id, .. }
+            | UndoOp::SecretDelete { id, .. } => Some(id),
         }
     }
 }

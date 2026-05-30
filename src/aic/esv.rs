@@ -104,6 +104,166 @@ pub async fn delete_variable(
     .await
 }
 
+// ---------------------------------------------------------------------------
+// Secrets
+//
+// Secrets differ from variables in important ways (verified 2026-05-30, see
+// docs/api/03-esvs.md):
+//   * `PUT` is CREATE-ONLY — re-PUT on an existing id 400s. Value changes go
+//     through versions, not PUT.
+//   * Values are write-only — the API never returns plaintext.
+//   * `encoding` and `useInPlaceholders` are required at create and immutable.
+//   * Versions carry status (ENABLED/DISABLED/DESTROYED); the latest can't be
+//     disabled; DESTROYED is one-way via DELETE on the version.
+//   * `useInPlaceholders:false` secrets load immediately and never gate a
+//     restart.
+// ---------------------------------------------------------------------------
+
+/// `GET /environment/secrets` → the `result` array of secret metadata.
+pub async fn list_secrets(tenant: &str) -> Result<Vec<serde_json::Value>> {
+    list_result_at(tenant, "/environment/secrets").await
+}
+
+/// `GET /environment/secrets?_onlyPending=true` → secrets whose active version
+/// hasn't loaded yet (only `useInPlaceholders:true` secrets ever appear here).
+pub async fn list_pending_secrets(tenant: &str) -> Result<Vec<serde_json::Value>> {
+    list_result_at(tenant, "/environment/secrets?_onlyPending=true").await
+}
+
+async fn list_result_at(tenant: &str, path: &str) -> Result<Vec<serde_json::Value>> {
+    let body = super::api::get(tenant, path).await?;
+    match body.get("result") {
+        Some(serde_json::Value::Array(arr)) => Ok(arr.clone()),
+        _ => Err(Error::Api {
+            status: 0,
+            body: format!("unexpected {path} response shape: {body}"),
+        }),
+    }
+}
+
+/// `GET /environment/secrets/{id}` → single secret metadata (no value).
+pub async fn get_secret(tenant: &str, id: &str) -> Result<serde_json::Value> {
+    super::api::get(tenant, &format!("/environment/secrets/{id}")).await
+}
+
+/// `PUT /environment/secrets/{id}` — **create only**. All three of `encoding`,
+/// `useInPlaceholders`, `valueBase64` are required by the API. Returns the
+/// created secret object.
+pub async fn create_secret(
+    tenant: &str,
+    id: &str,
+    encoding: &str,
+    use_in_placeholders: bool,
+    value_base64: &str,
+    description: &str,
+    confirmed_prod: bool,
+) -> Result<serde_json::Value> {
+    let body = serde_json::json!({
+        "encoding": encoding,
+        "useInPlaceholders": use_in_placeholders,
+        "valueBase64": value_base64,
+        "description": description,
+    });
+    super::api::put(
+        tenant,
+        &format!("/environment/secrets/{id}"),
+        body,
+        confirmed_prod,
+    )
+    .await
+}
+
+/// `POST /environment/secrets/{id}?_action=setDescription`. The only mutating
+/// action available on an existing secret's metadata.
+pub async fn set_secret_description(
+    tenant: &str,
+    id: &str,
+    description: &str,
+    confirmed_prod: bool,
+) -> Result<serde_json::Value> {
+    super::api::post(
+        tenant,
+        &format!("/environment/secrets/{id}?_action=setDescription"),
+        serde_json::json!({ "description": description }),
+        confirmed_prod,
+    )
+    .await
+}
+
+/// `DELETE /environment/secrets/{id}` — removes the secret and all versions.
+pub async fn delete_secret(
+    tenant: &str,
+    id: &str,
+    confirmed_prod: bool,
+) -> Result<serde_json::Value> {
+    super::api::delete(tenant, &format!("/environment/secrets/{id}"), confirmed_prod).await
+}
+
+/// `GET /environment/secrets/{id}/versions` → a **bare array** (no `result`
+/// wrapper), newest-first. Each entry is `{version, createDate, loaded, status}`.
+pub async fn list_secret_versions(tenant: &str, id: &str) -> Result<Vec<serde_json::Value>> {
+    let body = super::api::get(tenant, &format!("/environment/secrets/{id}/versions")).await?;
+    match body {
+        serde_json::Value::Array(arr) => Ok(arr),
+        other => Err(Error::Api {
+            status: 0,
+            body: format!("unexpected secret-versions response shape: {other}"),
+        }),
+    }
+}
+
+/// `POST /environment/secrets/{id}/versions?_action=create`. The new version
+/// is auto-ENABLED and becomes the active version. Returns the version object.
+pub async fn create_secret_version(
+    tenant: &str,
+    id: &str,
+    value_base64: &str,
+    confirmed_prod: bool,
+) -> Result<serde_json::Value> {
+    super::api::post(
+        tenant,
+        &format!("/environment/secrets/{id}/versions?_action=create"),
+        serde_json::json!({ "valueBase64": value_base64 }),
+        confirmed_prod,
+    )
+    .await
+}
+
+/// `POST /environment/secrets/{id}/versions/{version}?_action=changestatus`.
+/// `status` must be `ENABLED` or `DISABLED` (DESTROYED is rejected here — use
+/// `destroy_secret_version`). The latest version cannot be disabled.
+pub async fn change_version_status(
+    tenant: &str,
+    id: &str,
+    version: &str,
+    status: &str,
+    confirmed_prod: bool,
+) -> Result<serde_json::Value> {
+    super::api::post(
+        tenant,
+        &format!("/environment/secrets/{id}/versions/{version}?_action=changestatus"),
+        serde_json::json!({ "status": status }),
+        confirmed_prod,
+    )
+    .await
+}
+
+/// `DELETE /environment/secrets/{id}/versions/{version}` — sets the version's
+/// status to DESTROYED (irreversible). The version stays listed as DESTROYED.
+pub async fn destroy_secret_version(
+    tenant: &str,
+    id: &str,
+    version: &str,
+    confirmed_prod: bool,
+) -> Result<serde_json::Value> {
+    super::api::delete(
+        tenant,
+        &format!("/environment/secrets/{id}/versions/{version}"),
+        confirmed_prod,
+    )
+    .await
+}
+
 /// `POST /environment/startup?_action=restart`. Triggers a tenant-wide
 /// restart so freshly-saved ESVs become the loaded values. Per the docs
 /// rate limits are tighter than the read endpoints — guard the call

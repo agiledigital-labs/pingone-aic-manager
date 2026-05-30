@@ -7,6 +7,7 @@ pub mod modal;
 pub mod modal_chrome;
 pub mod onboard;
 pub mod popup_confirm;
+pub mod secret;
 pub mod toast;
 pub mod undo_history;
 pub mod unlock;
@@ -97,14 +98,25 @@ pub fn draw(f: &mut Frame, app: &App) {
         | InputMode::EsvSearch
         | InputMode::EsvEdit
         | InputMode::EsvRestartConfirm
-        | InputMode::EsvDeleteConfirm => {}
+        | InputMode::EsvDeleteConfirm
+        | InputMode::SecretCreate
+        | InputMode::SecretVersions
+        | InputMode::SecretAddVersion
+        | InputMode::SecretDeleteConfirm
+        | InputMode::SecretVersionDestroyConfirm => {}
     }
 
     let area = f.area();
     let show_hints = !app.keybind_help_open
         && !matches!(
             app.input_mode,
-            InputMode::EsvRestartConfirm | InputMode::EsvDeleteConfirm
+            InputMode::EsvRestartConfirm
+                | InputMode::EsvDeleteConfirm
+                | InputMode::SecretCreate
+                | InputMode::SecretVersions
+                | InputMode::SecretAddVersion
+                | InputMode::SecretDeleteConfirm
+                | InputMode::SecretVersionDestroyConfirm
         );
     let chunks = Layout::vertical([
         Constraint::Length(1),                              // top: tabs + chips
@@ -141,6 +153,42 @@ pub fn draw(f: &mut Frame, app: &App) {
             .unwrap_or_else(|| "selected variable".to_string());
         let message = format!("Delete {id}?\n\nThis can be undone from the undo log.");
         popup_confirm::draw(f, "Delete ESV variable?", &message);
+    }
+
+    // Secret overlays — drawn on top of the secrets list.
+    match app.input_mode {
+        InputMode::SecretCreate => secret::draw_create(f, app),
+        InputMode::SecretVersions => secret::draw_versions(f, app),
+        InputMode::SecretAddVersion => {
+            secret::draw_versions(f, app);
+            secret::draw_add_version(f, app);
+        }
+        InputMode::SecretVersionDestroyConfirm => {
+            secret::draw_versions(f, app);
+            let version = app
+                .secret
+                .pending_version_destroy
+                .as_ref()
+                .map(|(_, _, v)| v.clone())
+                .unwrap_or_default();
+            let message = format!(
+                "Destroy version {version}?\n\nThis is irreversible — the version's value is gone for good."
+            );
+            popup_confirm::draw(f, "Destroy secret version?", &message);
+        }
+        InputMode::SecretDeleteConfirm => {
+            let id = app
+                .secret
+                .pending_delete
+                .as_ref()
+                .map(|p| p.id.clone())
+                .unwrap_or_else(|| "selected secret".to_string());
+            let message = format!(
+                "Delete secret {id} and ALL its versions?\n\nThis is irreversible — secret values cannot be recovered."
+            );
+            popup_confirm::draw(f, "Delete secret?", &message);
+        }
+        _ => {}
     }
 
     draw_keybind_help(f, app);
@@ -194,6 +242,16 @@ fn draw_esvs(f: &mut Frame, app: &App, area: Rect) {
         None => return,
     };
 
+    // Sub-view toggle header: `Variables | Secrets` with the active half lit.
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    draw_view_toggle(f, app, rows[0]);
+    let area = rows[1];
+
+    if app.esv.view == crate::screens::esv::EsvView::Secrets {
+        secret::draw_body(f, app, area);
+        return;
+    }
+
     // Loading / failed / empty: full-width status; no split, no preview pane.
     match app.esv.data.get(tenant_name) {
         None | Some(EsvLoadState::Loading) => {
@@ -234,6 +292,29 @@ fn draw_esvs(f: &mut Frame, app: &App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
     draw_esv_list(f, app, &matches, columns[0]);
     draw_esv_preview(f, app, &matches, columns[1]);
+}
+
+/// One-line `Variables | Secrets` toggle header. Tab switches; the active
+/// half is bold-white, the other dim.
+fn draw_view_toggle(f: &mut Frame, app: &App, area: Rect) {
+    use crate::screens::esv::EsvView;
+    let active = app.esv.view;
+    let tab = |label: &'static str, is_active: bool| {
+        let style = if is_active {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        Span::styled(label, style)
+    };
+    let line = Line::from(vec![
+        Span::raw(" "),
+        tab("Variables", active == EsvView::Variables),
+        Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+        tab("Secrets", active == EsvView::Secrets),
+        Span::styled("   (Tab to switch)", Style::default().fg(Color::DarkGray)),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
 }
 
 fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {

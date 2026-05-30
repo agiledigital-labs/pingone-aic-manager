@@ -49,6 +49,16 @@ pub enum InputMode {
     EsvRestartConfirm,
     /// Small overlay confirm before deleting the selected ESV variable.
     EsvDeleteConfirm,
+    /// Secret create form (id + encoding + placeholders + value).
+    SecretCreate,
+    /// Version panel for the selected secret (enable/disable/destroy/add).
+    SecretVersions,
+    /// Value entry for a new version of the selected secret.
+    SecretAddVersion,
+    /// Confirm before deleting a secret (and all its versions).
+    SecretDeleteConfirm,
+    /// Confirm before the irreversible destroy of a secret version.
+    SecretVersionDestroyConfirm,
 }
 
 /// Re-export so existing `crate::app::AuthMethod` / `AuthSetupField` /
@@ -145,6 +155,10 @@ pub struct App {
     /// ESV tab state — list cache, refresh book-keeping, search query +
     /// selection. See `crate::screens::esv` for the handlers.
     pub esv: crate::screens::esv::State,
+
+    /// Secrets sub-view of the ESVs tab (list, versions, create/add forms).
+    /// Populated by the same poll as `esv`. See `crate::screens::secret`.
+    pub secret: crate::screens::secret::State,
 }
 
 pub use crate::screens::prod_confirm::PendingProdAction;
@@ -207,6 +221,7 @@ impl App {
             undo,
             keybind_help_open: false,
             esv: crate::screens::esv::State::new(),
+            secret: crate::screens::secret::State::new(),
         })
     }
 
@@ -301,6 +316,7 @@ impl App {
         // Drop ESV view state (filter + selection) when the data behind it
         // changes — anything else is just confusing.
         self.esv.reset_view();
+        self.secret.reset_view();
         if let Some(t) = self.tenants.get(idx) {
             if let Err(e) = config::write_current_context(&t.name) {
                 tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
@@ -425,6 +441,27 @@ impl App {
             AppEvent::EsvListed { tenant, outcome } => {
                 crate::screens::esv::apply_refresh(self, tenant, outcome);
             }
+            AppEvent::SecretOpResult {
+                tenant,
+                id,
+                kind,
+                label,
+                reload_versions,
+                result,
+            } => {
+                crate::screens::secret::apply_op_result(
+                    self,
+                    tenant,
+                    id,
+                    kind,
+                    label,
+                    reload_versions,
+                    result,
+                );
+            }
+            AppEvent::SecretVersionsListed { tenant, id, result } => {
+                crate::screens::secret::apply_versions_listed(self, tenant, id, result);
+            }
             AppEvent::EsvSaveResult { tenant, id, result } => {
                 crate::screens::esv::apply_save_result(self, tenant, id, result);
             }
@@ -518,6 +555,17 @@ impl App {
             }
             InputMode::EsvDeleteConfirm => {
                 crate::screens::esv::handle_delete_confirm_key(self, key)?
+            }
+            InputMode::SecretCreate => crate::screens::secret::handle_create_key(self, key)?,
+            InputMode::SecretVersions => crate::screens::secret::handle_versions_key(self, key)?,
+            InputMode::SecretAddVersion => {
+                crate::screens::secret::handle_add_version_key(self, key)?
+            }
+            InputMode::SecretDeleteConfirm => {
+                crate::screens::secret::handle_delete_confirm_key(self, key)?
+            }
+            InputMode::SecretVersionDestroyConfirm => {
+                crate::screens::secret::handle_version_destroy_confirm_key(self, key)?
             }
         }
         Ok(())

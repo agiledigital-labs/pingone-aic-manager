@@ -25,6 +25,24 @@ pub enum LoadState {
     Failed(String),
 }
 
+/// Which half of the ESVs tab is showing. Toggled with Tab/Shift-Tab in
+/// Normal mode. Secrets and variables share the tab's apply/restart banner
+/// and a single background poll, but render and edit very differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EsvView {
+    Variables,
+    Secrets,
+}
+
+impl EsvView {
+    pub fn toggled(self) -> Self {
+        match self {
+            EsvView::Variables => EsvView::Secrets,
+            EsvView::Secrets => EsvView::Variables,
+        }
+    }
+}
+
 /// Per-tenant apply state shown in the ESV banner. This is sticky: refreshes
 /// keep showing the previous value until a tenant response lets us replace it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +69,8 @@ impl ApplyState {
 pub struct RefreshOutcome {
     pub variables: std::result::Result<Vec<serde_json::Value>, String>,
     pub pending_variables: std::result::Result<Vec<serde_json::Value>, String>,
+    pub secrets: std::result::Result<Vec<serde_json::Value>, String>,
+    pub pending_secrets: std::result::Result<Vec<serde_json::Value>, String>,
     pub startup: std::result::Result<StartupStatus, String>,
 }
 
@@ -82,7 +102,18 @@ pub fn is_pending(v: &serde_json::Value) -> bool {
 /// How many variables in this tenant's cached list still need a restart
 /// to take effect. Drives the banner above the preview pane and gates
 /// the `^S` apply keybind.
-pub fn pending_count(app: &App, tenant: &str) -> usize {
+/// The single source of truth for the ESV tab's restart gating. Folds both
+/// halves of the tab together: variable + secret changes that need a restart
+/// (`pending`), and variable + secret writes still in flight (`in_flight`).
+/// All banner / `^S` / apply-state decisions go through here so the two halves
+/// can never disagree.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EsvPending {
+    pub pending: usize,
+    pub in_flight: usize,
+}
+
+pub fn pending_summary(app: &App, tenant: &str) -> EsvPending {
     let mut ids = app.esv.pending_ids.get(tenant).cloned().unwrap_or_default();
     if let Some(LoadState::Loaded(items)) = app.esv.data.get(tenant) {
         ids.extend(
@@ -92,7 +123,29 @@ pub fn pending_count(app: &App, tenant: &str) -> usize {
                 .map(|v| id_of(v).to_string()),
         );
     }
-    ids.len()
+    // Secrets share the tab's restart gate: a `useInPlaceholders:true` secret
+    // whose active version hasn't loaded also needs the tenant restart.
+    let pending = ids.len() + crate::screens::secret::pending_count(app, tenant);
+    let var_in_flight = app
+        .esv
+        .in_flight_writes
+        .iter()
+        .filter(|(t, _)| t == tenant)
+        .count();
+    let secret_in_flight = app
+        .secret
+        .in_flight
+        .iter()
+        .filter(|(t, _)| t == tenant)
+        .count();
+    EsvPending {
+        pending,
+        in_flight: var_in_flight + secret_in_flight,
+    }
+}
+
+pub fn pending_count(app: &App, tenant: &str) -> usize {
+    pending_summary(app, tenant).pending
 }
 
 /// AIC's documented set of expression types for variables. Acts as a chip
@@ -384,6 +437,9 @@ pub struct State {
 
     /// Delete plan waiting on the local y/n confirmation popover.
     pub pending_delete: Option<DeletePlan>,
+
+    /// Which half of the tab (variables / secrets) is showing.
+    pub view: EsvView,
 }
 
 /// How long we keep a freshly-saved variable pinned to the local cache
@@ -415,6 +471,7 @@ impl Default for State {
             in_flight_writes: HashSet::new(),
             in_flight_deletes: HashMap::new(),
             pending_delete: None,
+            view: EsvView::Variables,
         }
     }
 }
@@ -436,11 +493,9 @@ pub enum BannerState {
 
 /// Number of background ESV saves currently in flight for `tenant`.
 pub fn queued_count(app: &App, tenant: &str) -> usize {
-    app.esv
-        .in_flight_writes
-        .iter()
-        .filter(|(t, _)| t == tenant)
-        .count()
+    // In-flight writes for *both* halves of the tab — a secret mutation in
+    // flight must gate `^S` just like a variable one.
+    pending_summary(app, tenant).in_flight
 }
 
 /// Pick which banner (if any) to display. Precedence is applying, then
@@ -623,13 +678,21 @@ impl State {
 /// Refetches keep the previous list and apply-state visible until both
 /// tenant calls return through the event loop.
 pub fn refresh(app: &mut App, force: bool) {
+    let Some(name) = app.active_tenant().map(|t| t.name.clone()) else {
+        return;
+    };
+    refresh_tenant(app, &name, force);
+}
+
+/// Like [`refresh`] but for a specific tenant by name — used by async
+/// completion handlers so a result that lands after the user switched
+/// tenants still refreshes the tenant it actually mutated, not whichever
+/// one happens to be active now.
+pub fn refresh_tenant(app: &mut App, name: &str, force: bool) {
     if !app.is_unlocked() {
         return;
     }
-    let Some(tenant) = app.active_tenant() else {
-        return;
-    };
-    let name = tenant.name.clone();
+    let name = name.to_string();
     if app.esv.refreshing.contains(&name) {
         return;
     }
@@ -648,14 +711,18 @@ pub fn refresh(app: &mut App, force: bool) {
     let tx = app.events.tx.clone();
     let tenant_name = name.clone();
     tokio::spawn(async move {
-        let (variables, pending_variables, startup) = tokio::join!(
+        let (variables, pending_variables, secrets, pending_secrets, startup) = tokio::join!(
             crate::aic::esv::list_variables(&tenant_name),
             crate::aic::esv::list_pending_variables(&tenant_name),
+            crate::aic::esv::list_secrets(&tenant_name),
+            crate::aic::esv::list_pending_secrets(&tenant_name),
             crate::aic::esv::startup_status(&tenant_name),
         );
         let outcome = RefreshOutcome {
             variables: variables.map_err(|e| e.to_string()),
             pending_variables: pending_variables.map_err(|e| e.to_string()),
+            secrets: secrets.map_err(|e| e.to_string()),
+            pending_secrets: pending_secrets.map_err(|e| e.to_string()),
             startup: startup.map_err(|e| e.to_string()),
         };
         let _ = tx.send(AppEvent::EsvListed {
@@ -668,6 +735,32 @@ pub fn refresh(app: &mut App, force: bool) {
 /// ESV-tab keys while in Normal mode. Returns `true` if the key was
 /// consumed (skip the global key table) and `false` to fall through.
 pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
+    // Tab/Shift-Tab flips between the variables and secrets halves of the tab.
+    if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+        app.esv.view = app.esv.view.toggled();
+        return true;
+    }
+    // Shared tab-wide keys work in either half: `^S` applies pending changes
+    // (variables + secrets) and `^Z` undoes the latest reversible write. These
+    // must run before the view-specific dispatch so the footer's `^S`/`^Z`
+    // hints aren't dead in the secrets view.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('s') => {
+                request_restart(app);
+                return true;
+            }
+            KeyCode::Char('z') => {
+                request_latest_undo(app);
+                return true;
+            }
+            _ => {}
+        }
+    }
+    // In the secrets half, the secret screen owns the remaining keys.
+    if app.esv.view == EsvView::Secrets {
+        return crate::screens::secret::handle_normal_key(app, key);
+    }
     let n = app
         .esv
         .matches(app.active_tenant().map(|t| t.name.as_str()))
@@ -717,16 +810,8 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
             request_delete(app);
             true
         }
-        KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            request_latest_undo(app);
-            true
-        }
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             start_create(app);
-            true
-        }
-        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            request_restart(app);
             true
         }
         _ => false,
@@ -902,6 +987,31 @@ pub fn apply_restart_result(
 /// scrolling the results list while the user is still typing; Esc clears
 /// the filter; Enter commits and returns to Normal mode.
 pub fn handle_search_key(app: &mut App, key: KeyEvent) {
+    // The search box edits whichever half's query is showing.
+    if app.esv.view == EsvView::Secrets {
+        match key.code {
+            KeyCode::Esc => {
+                app.secret.query.clear();
+                app.secret.selected = 0;
+                app.secret.scroll = 0;
+                app.input_mode = InputMode::Normal;
+            }
+            KeyCode::Enter => {
+                app.input_mode = InputMode::Normal;
+            }
+            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                crate::screens::secret::handle_normal_key(app, key);
+            }
+            _ => {
+                let before = app.secret.query.value().to_string();
+                if app.secret.query.handle_key(&key) && app.secret.query.value() != before {
+                    app.secret.selected = 0;
+                    app.secret.scroll = 0;
+                }
+            }
+        }
+        return;
+    }
     match key.code {
         KeyCode::Esc => {
             app.esv.reset_view();
@@ -1010,6 +1120,17 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
         }
     };
 
+    // Hand the secret half of the poll to the secrets screen. Whether the
+    // pending-secret fetch succeeded gates "authoritative" below, since the
+    // pending count now folds in secrets.
+    let secret_pending_refreshed = outcome.pending_secrets.is_ok();
+    crate::screens::secret::apply_refresh(
+        app,
+        &tenant,
+        &outcome.secrets,
+        &outcome.pending_secrets,
+    );
+
     match outcome.startup {
         Ok(StartupStatus::Restarting) => {
             set_apply_state(
@@ -1018,7 +1139,9 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
                 ApplyState::Restarting(pending_count(app, &tenant)),
             );
         }
-        Ok(StartupStatus::Ready) if variables_refreshed && pending_refreshed => {
+        Ok(StartupStatus::Ready)
+            if variables_refreshed && pending_refreshed && secret_pending_refreshed =>
+        {
             set_apply_state(
                 app,
                 &tenant,
@@ -1583,6 +1706,11 @@ enum UndoApplied {
         id: String,
         body: Option<serde_json::Value>,
     },
+    /// A secret was deleted as the undo of its create. The secrets list owns
+    /// the local-state update (variables and secrets are cached separately).
+    SecretRemoved {
+        id: String,
+    },
 }
 
 #[derive(Debug)]
@@ -1766,6 +1894,18 @@ async fn apply_undo_entry(
                     id,
                     body: Some(recorded_body),
                 },
+            })
+        }
+        UndoOp::SecretDelete {
+            tenant,
+            id,
+            active_version,
+        } => {
+            crate::screens::secret::undo_delete(&tenant, &id, &active_version, confirmed_prod)
+                .await?;
+            Ok(UndoOutcome {
+                description: entry.description,
+                applied: UndoApplied::SecretRemoved { id },
             })
         }
     }
@@ -2009,6 +2149,14 @@ pub fn apply_undo_result(
                         );
                     }
                     app.esv.failed_writes.remove(&(tenant.clone(), id));
+                }
+                UndoApplied::SecretRemoved { id } => {
+                    // Drop the secret locally and re-poll so the list + pending
+                    // state reflect the removal.
+                    if let Some(LoadState::Loaded(items)) = app.secret.data.get_mut(&tenant) {
+                        items.retain(|v| id_of(v) != id);
+                    }
+                    refresh(app, true);
                 }
             }
             refresh_apply_state_from_cache(app, &tenant);

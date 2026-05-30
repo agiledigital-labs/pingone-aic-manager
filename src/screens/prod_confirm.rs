@@ -21,6 +21,20 @@ pub enum PendingProdAction {
     EsvRestart {
         tenant_name: String,
     },
+    SecretCreate(crate::screens::secret::CreatePlan),
+    SecretAddVersion(crate::screens::secret::VersionAddPlan),
+    SecretDelete(crate::screens::secret::DeletePlan),
+    SecretVersionStatus {
+        tenant: String,
+        id: String,
+        version: String,
+        status: String,
+    },
+    SecretVersionDestroy {
+        tenant: String,
+        id: String,
+        version: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -60,6 +74,34 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                     }
                     PendingProdAction::EsvRestart { tenant_name } => {
                         crate::screens::esv::trigger_restart_confirmed(app, tenant_name, true);
+                    }
+                    PendingProdAction::SecretCreate(plan) => {
+                        crate::screens::secret::execute_create(app, plan, true);
+                    }
+                    PendingProdAction::SecretAddVersion(plan) => {
+                        crate::screens::secret::execute_add_version(app, plan, true);
+                    }
+                    PendingProdAction::SecretDelete(plan) => {
+                        crate::screens::secret::execute_delete(app, plan, true);
+                    }
+                    PendingProdAction::SecretVersionStatus {
+                        tenant,
+                        id,
+                        version,
+                        status,
+                    } => {
+                        crate::screens::secret::execute_version_status(
+                            app, tenant, id, version, status, true,
+                        );
+                    }
+                    PendingProdAction::SecretVersionDestroy {
+                        tenant,
+                        id,
+                        version,
+                    } => {
+                        crate::screens::secret::execute_version_destroy(
+                            app, tenant, id, version, true,
+                        );
                     }
                 }
             }
