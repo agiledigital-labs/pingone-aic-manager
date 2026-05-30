@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 
-use crate::app::{App, AuthMethod, InputMode, SetupContext, Tab};
+use crate::app::{App, AuthMethod, InputMode, SetupContext};
 use crate::screens::esv::EditField;
 use crate::ui::modal_chrome::hint_line;
 
@@ -144,41 +144,15 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
 }
 
 fn normal_lines(app: &App, lines: &mut Vec<Line<'static>>) {
-    if app.tenants.is_empty() {
-        group(lines, "Screen actions");
-        bind(lines, "^T", "add tenant");
-        bind(lines, "^A", "manage authentication factors");
-        bind(lines, "F1/?", "show keybinds");
-        group(lines, "General");
-        bind(lines, "q", "quit");
-        bind(lines, "^C", "quit");
-        return;
-    }
-
-    if app.current_tab == Tab::Esvs {
-        group(lines, "ESV actions");
-        bind(lines, "/", "search variables");
-        if !app.esv_matches().is_empty() {
-            bind(lines, "Enter", "edit selected variable");
-            bind(lines, "d", "delete selected variable");
+    // Derived from the same keymap table that drives dispatch + footer, so the
+    // help can't list a key the dispatcher won't honour (or omit one it does).
+    group(lines, "Keys");
+    for binding in crate::keymap::normal_binds(app) {
+        if binding.help {
+            bind(lines, binding.label, binding.desc);
         }
-        bind(lines, "^N", "create variable");
-        bind(lines, "^Z", "undo latest ESV change");
-        bind(lines, "^Y", "open undo history");
-        bind(lines, "^S", "apply pending changes when available");
-        group(lines, "Movement");
-        bind(lines, "j/k or ↑/↓", "move selection");
-        bind(lines, "PgUp/PgDn", "move by page");
-        bind(lines, "g/G", "first or last row");
     }
-
-    group(lines, "General");
-    bind(lines, "R", "switch realm");
-    bind(lines, "T", "switch tenant");
-    bind(lines, "^T", "add tenant");
-    bind(lines, "^A", "auth settings");
-    bind(lines, "L", "lock and quit");
-    bind(lines, "q", "quit");
+    bind(lines, "q / ^C", "quit");
     bind(lines, "F1/?", "show keybinds");
 }
 

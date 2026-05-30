@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::aic::esv::StartupStatus;
 use crate::app::{App, InputMode};
@@ -716,97 +716,11 @@ pub fn refresh_tenant(app: &mut App, name: &str, force: bool) {
     });
 }
 
-/// ESV-tab keys while in Normal mode. Returns `true` if the key was
-/// consumed (skip the global key table) and `false` to fall through.
-pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
-    // Tab/Shift-Tab flips between the variables and secrets halves of the tab.
-    if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-        app.esv.view = app.esv.view.toggled();
-        return true;
-    }
-    // Shared tab-wide keys work in either half: `^S` applies pending changes
-    // (variables + secrets) and `^Z` undoes the latest reversible write. These
-    // must run before the view-specific dispatch so the footer's `^S`/`^Z`
-    // hints aren't dead in the secrets view.
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        match key.code {
-            KeyCode::Char('s') => {
-                request_restart(app);
-                return true;
-            }
-            KeyCode::Char('z') => {
-                request_latest_undo(app);
-                return true;
-            }
-            _ => {}
-        }
-    }
-    // In the secrets half, the secret screen owns the remaining keys.
-    if app.esv.view == EsvView::Secrets {
-        return crate::screens::secret::handle_normal_key(app, key);
-    }
-    let n = app
-        .esv
-        .matches(app.active_tenant().map(|t| t.name.as_str()))
-        .len();
-    match key.code {
-        KeyCode::Char('/') => {
-            app.input_mode = InputMode::EsvSearch;
-            true
-        }
-        KeyCode::Esc if !app.esv.list.query.is_empty() => {
-            app.esv.reset_view();
-            true
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            if n > 0 && app.esv.list.selected + 1 < n {
-                app.esv.list.selected += 1;
-            }
-            true
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if app.esv.list.selected > 0 {
-                app.esv.list.selected -= 1;
-            }
-            true
-        }
-        KeyCode::PageDown => {
-            app.esv.list.selected = (app.esv.list.selected + 10).min(n.saturating_sub(1));
-            true
-        }
-        KeyCode::PageUp => {
-            app.esv.list.selected = app.esv.list.selected.saturating_sub(10);
-            true
-        }
-        KeyCode::Char('g') => {
-            app.esv.list.selected = 0;
-            true
-        }
-        KeyCode::Char('G') => {
-            app.esv.list.selected = n.saturating_sub(1);
-            true
-        }
-        KeyCode::Enter if n > 0 => {
-            start_edit(app);
-            true
-        }
-        KeyCode::Char('d') | KeyCode::Char('D') if n > 0 => {
-            request_delete(app);
-            true
-        }
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            start_create(app);
-            true
-        }
-        _ => false,
-    }
-}
-
 /// Open the restart-confirm popup if there's anything to apply, the
 /// background saves have caught up, and a restart isn't already in
 /// flight. Each negative case gets its own info toast so the user can
 /// see why the keystroke was a no-op.
-fn request_restart(app: &mut App) {
+pub fn request_restart(app: &mut App) {
     let Some(tenant_name) = app.active_tenant().map(|t| t.name.clone()) else {
         return;
     };
@@ -826,7 +740,7 @@ fn request_restart(app: &mut App) {
     app.input_mode = InputMode::EsvRestartConfirm;
 }
 
-fn request_delete(app: &mut App) {
+pub fn request_delete(app: &mut App) {
     let Some(plan) = build_delete_plan(app) else {
         return;
     };
@@ -983,9 +897,10 @@ pub fn handle_search_key(app: &mut App, key: KeyEvent) {
             KeyCode::Enter => {
                 app.input_mode = InputMode::Normal;
             }
-            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
-                crate::screens::secret::handle_normal_key(app, key);
-            }
+            KeyCode::Up => crate::keymap::move_selection(app, -1),
+            KeyCode::Down => crate::keymap::move_selection(app, 1),
+            KeyCode::PageUp => crate::keymap::move_selection(app, -10),
+            KeyCode::PageDown => crate::keymap::move_selection(app, 10),
             _ => {
                 let before = app.secret.list.query.value().to_string();
                 if app.secret.list.query.handle_key(&key) && app.secret.list.query.value() != before {
@@ -1006,8 +921,20 @@ pub fn handle_search_key(app: &mut App, key: KeyEvent) {
             app.input_mode = InputMode::Normal;
             return;
         }
-        KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
-            handle_normal_key(app, key);
+        KeyCode::Up => {
+            crate::keymap::move_selection(app, -1);
+            return;
+        }
+        KeyCode::Down => {
+            crate::keymap::move_selection(app, 1);
+            return;
+        }
+        KeyCode::PageUp => {
+            crate::keymap::move_selection(app, -10);
+            return;
+        }
+        KeyCode::PageDown => {
+            crate::keymap::move_selection(app, 10);
             return;
         }
         _ => {}
@@ -1703,7 +1630,7 @@ pub enum UndoFailure {
     Failed(String),
 }
 
-fn request_latest_undo(app: &mut App) {
+pub fn request_latest_undo(app: &mut App) {
     let Some(tenant) = app.active_tenant() else {
         return;
     };

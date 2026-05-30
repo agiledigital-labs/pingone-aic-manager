@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent};
 use futures::StreamExt;
 use tokio::time::{interval, Duration};
 
@@ -594,49 +594,9 @@ impl App {
     }
 
     async fn handle_normal_key(&mut self, key: KeyEvent) -> Result<()> {
-        // Tab-specific keys first — these take precedence over the global
-        // shortcuts so e.g. `j` in the ESV list scrolls instead of doing
-        // nothing.
-        if self.current_tab == Tab::Esvs && crate::screens::esv::handle_normal_key(self, key) {
-            return Ok(());
-        }
-        match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_quit = true;
-            }
-            KeyCode::Char('r') | KeyCode::Char('R') => {
-                self.current_realm = match self.current_realm {
-                    Realm::Alpha => Realm::Bravo,
-                    Realm::Bravo => Realm::Alpha,
-                };
-            }
-            // Ctrl-T must come before plain `t`/`T` — without the modifier
-            // guard split, the pattern below would also match ^T and
-            // never reach the onboard path.
-            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.onboard.menu_idx = 0;
-                self.input_mode = InputMode::OnboardMenu;
-            }
-            KeyCode::Char('t') | KeyCode::Char('T') => {
-                if !self.tenants.is_empty() {
-                    self.env_picker_idx = self.active_tenant_idx;
-                    self.input_mode = InputMode::EnvPicker;
-                }
-            }
-            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                crate::screens::auth_settings::open(self);
-            }
-            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.undo_history_idx = 0;
-                self.input_mode = InputMode::UndoHistory;
-            }
-            KeyCode::Char('L') => {
-                crate::screens::unlock::lock_and_quit(self).await;
-            }
-            _ => {}
-        }
-        Ok(())
+        // Dispatch, footer hints, and F1 help all derive from the same table
+        // in `crate::keymap` — see `keymap::normal_binds`.
+        crate::keymap::dispatch_normal(self, key).await
     }
 
     /// Backwards-compat shim so existing UI callers
