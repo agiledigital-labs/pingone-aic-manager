@@ -97,65 +97,15 @@ fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
                 spans.extend(hint(k, d));
             }
         }
+        // Normal mode: footer hints come straight from the keymap table, so
+        // they can never advertise a key the dispatcher doesn't handle.
         _ => {
-            let mut hints: Vec<(&str, &str)> = Vec::new();
-            if app.current_tab == Tab::Esvs
-                && !app.tenants.is_empty()
-                && app.esv.view == crate::screens::esv::EsvView::Secrets
-            {
-                if app
-                    .active_tenant()
-                    .map(|t| crate::screens::esv::can_request_restart(app, &t.name))
-                    .unwrap_or(false)
-                {
-                    hints.push(("^S", "apply changes"));
+            for bind in crate::keymap::normal_binds(app) {
+                if bind.footer {
+                    spans.extend(hint(bind.label, bind.desc));
                 }
-                hints.push(("Tab", "variables"));
-                hints.push(("/", "search"));
-                let n = crate::screens::secret::rows(
-                    app,
-                    app.active_tenant().map(|t| t.name.as_str()),
-                )
-                .len();
-                if n > 0 {
-                    hints.extend([("Enter", "versions"), ("d", "delete")]);
-                }
-                hints.push(("^N", "new secret"));
-                hints.push(("^Y", "undo history"));
-            } else if app.current_tab == Tab::Esvs && !app.tenants.is_empty() {
-                if app
-                    .active_tenant()
-                    .map(|t| crate::screens::esv::can_request_restart(app, &t.name))
-                    .unwrap_or(false)
-                {
-                    hints.push(("^S", "apply changes"));
-                }
-                hints.push(("Tab", "secrets"));
-                hints.push(("/", "search"));
-                let matches = app.esv_matches();
-                let mut selected_deleted = false;
-                if let Some(selected) =
-                    matches.get(app.esv.list.selected.min(matches.len().saturating_sub(1)))
-                {
-                    if selected.deleted {
-                        selected_deleted = true;
-                        hints.push(("^Z", "restore"));
-                    } else {
-                        hints.extend([("Enter", "edit"), ("d", "delete")]);
-                    }
-                }
-                hints.push(("^N", "new variable"));
-                if !selected_deleted {
-                    hints.push(("^Z", "undo"));
-                }
-                hints.push(("^Y", "undo history"));
-            } else if app.tenants.is_empty() {
-                hints.extend([("^T", "add tenant"), ("^A", "auth settings")]);
             }
-            hints.push(("?", "keys"));
-            for (k, d) in hints {
-                spans.extend(hint(k, d));
-            }
+            spans.extend(hint("?", "keys"));
         }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);

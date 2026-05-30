@@ -341,57 +341,14 @@ pub fn apply_refresh(
 
 // --- Normal-mode keys (secrets view) -------------------------------------
 
-/// Returns true if the key was consumed. Caller only routes here when the ESV
-/// tab is in `EsvView::Secrets`.
-pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
-    let n = rows(app, app.active_tenant().map(|t| t.name.as_str())).len();
-    match key.code {
-        KeyCode::Char('/') => {
-            app.input_mode = InputMode::EsvSearch;
-            true
-        }
-        KeyCode::Esc if !app.secret.list.query.is_empty() => {
-            app.secret.list.query.clear();
-            app.secret.list.selected = 0;
-            app.secret.list.scroll = 0;
-            true
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            if n > 0 && app.secret.list.selected + 1 < n {
-                app.secret.list.selected += 1;
-            }
-            true
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.secret.list.selected = app.secret.list.selected.saturating_sub(1);
-            true
-        }
-        KeyCode::Char('g') => {
-            app.secret.list.selected = 0;
-            true
-        }
-        KeyCode::Char('G') => {
-            app.secret.list.selected = n.saturating_sub(1);
-            true
-        }
-        KeyCode::Enter | KeyCode::Char('v') if n > 0 => {
-            open_versions(app);
-            true
-        }
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.secret.create = Some(CreateForm::new());
-            app.input_mode = InputMode::SecretCreate;
-            true
-        }
-        KeyCode::Char('d') | KeyCode::Char('D') if n > 0 => {
-            request_delete(app);
-            true
-        }
-        _ => false,
-    }
-}
-
 // --- Create form ----------------------------------------------------------
+
+/// Open the create-secret form. Entry point for the keymap (`^N` in the
+/// secrets view).
+pub fn start_create(app: &mut App) {
+    app.secret.create = Some(CreateForm::new());
+    app.input_mode = InputMode::SecretCreate;
+}
 
 pub fn handle_create_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     let Some(form) = app.secret.create.as_mut() else {
@@ -725,7 +682,7 @@ pub fn execute_add_version(app: &mut App, plan: VersionAddPlan, confirmed_prod: 
 
 // --- Version panel --------------------------------------------------------
 
-fn open_versions(app: &mut App) {
+pub fn open_versions(app: &mut App) {
     let Some(secret) = selected_secret(app) else {
         return;
     };
@@ -971,7 +928,7 @@ pub fn execute_version_destroy(
 
 // --- Delete secret --------------------------------------------------------
 
-fn request_delete(app: &mut App) {
+pub fn request_delete(app: &mut App) {
     let Some(secret) = selected_secret(app) else {
         return;
     };

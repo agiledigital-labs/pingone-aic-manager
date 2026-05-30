@@ -1,0 +1,407 @@
+//! Single source of truth for key bindings.
+//!
+//! Dispatch, footer hints, and the F1 help popover all derive from the same
+//! per-mode binding tables, so they can't drift — the class of bug where the
+//! footer advertised `^S` but the handler ignored it in the secrets view.
+//!
+//! Rolled out per mode. Normal mode (the dashboard, where the drift bit) is
+//! table-driven here; other modes are being migrated incrementally.
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::app::{App, InputMode, Realm};
+use crate::screens::esv::EsvView;
+
+/// One key that fires a binding. Matching is by code + the ctrl modifier.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    Char(char),
+    Ctrl(char),
+    Code(KeyCode),
+}
+
+impl Trigger {
+    pub fn matches(self, key: &KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match self {
+            Trigger::Char(c) => !ctrl && key.code == KeyCode::Char(c),
+            Trigger::Ctrl(c) => ctrl && key.code == KeyCode::Char(c),
+            Trigger::Code(code) => key.code == code,
+        }
+    }
+}
+
+/// What a Normal-mode binding does. Kept as a plain enum so dispatch is one
+/// `match` and the same binding list feeds the hint renderers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Act {
+    Quit,
+    ToggleView,
+    Search,
+    ClearFilter,
+    MoveDown,
+    MoveUp,
+    Top,
+    Bottom,
+    PageDown,
+    PageUp,
+    Primary,
+    Delete,
+    NewItem,
+    Apply,
+    Undo,
+    UndoHistory,
+    RealmToggle,
+    TenantPicker,
+    OnboardMenu,
+    AuthSettings,
+    Lock,
+}
+
+/// A single binding: which keys fire it, how it's labelled in the footer / F1
+/// help, and the action it runs.
+pub struct Bind {
+    pub triggers: &'static [Trigger],
+    pub label: &'static str,
+    pub desc: &'static str,
+    pub footer: bool,
+    pub help: bool,
+    pub act: Act,
+}
+
+const fn b(
+    triggers: &'static [Trigger],
+    label: &'static str,
+    desc: &'static str,
+    footer: bool,
+    help: bool,
+    act: Act,
+) -> Bind {
+    Bind {
+        triggers,
+        label,
+        desc,
+        footer,
+        help,
+        act,
+    }
+}
+
+/// The Normal-mode bindings for the current state. Conditional on tab, view,
+/// and selection so the footer never advertises a key that won't fire.
+pub fn normal_binds(app: &App) -> Vec<Bind> {
+    use Act::*;
+    let mut out: Vec<Bind> = Vec::new();
+
+    // First-run / no tenants: only the bootstrap shortcuts make sense.
+    if app.tenants.is_empty() {
+        out.push(b(
+            &[Trigger::Ctrl('t')],
+            "^T",
+            "add tenant",
+            true,
+            true,
+            OnboardMenu,
+        ));
+        out.push(b(
+            &[Trigger::Ctrl('a')],
+            "^A",
+            "auth settings",
+            true,
+            true,
+            AuthSettings,
+        ));
+        push_global(&mut out);
+        return out;
+    }
+
+    let secrets = app.esv.view == EsvView::Secrets;
+    let n = row_count(app);
+    let can_apply = app
+        .active_tenant()
+        .map(|t| crate::screens::esv::can_request_restart(app, &t.name))
+        .unwrap_or(false);
+
+    if can_apply {
+        out.push(b(&[Trigger::Ctrl('s')], "^S", "apply changes", true, true, Apply));
+    }
+    out.push(b(
+        &[Trigger::Code(KeyCode::Tab), Trigger::Code(KeyCode::BackTab)],
+        "Tab",
+        if secrets { "variables" } else { "secrets" },
+        true,
+        true,
+        ToggleView,
+    ));
+    out.push(b(&[Trigger::Char('/')], "/", "search", true, true, Search));
+
+    // Movement (help-only; the footer stays uncluttered).
+    out.push(b(
+        &[Trigger::Char('j'), Trigger::Code(KeyCode::Down)],
+        "j/↓",
+        "move down",
+        false,
+        true,
+        MoveDown,
+    ));
+    out.push(b(
+        &[Trigger::Char('k'), Trigger::Code(KeyCode::Up)],
+        "k/↑",
+        "move up",
+        false,
+        true,
+        MoveUp,
+    ));
+    out.push(b(&[Trigger::Char('g')], "g", "top", false, true, Top));
+    out.push(b(&[Trigger::Char('G')], "G", "bottom", false, true, Bottom));
+    out.push(b(
+        &[Trigger::Code(KeyCode::PageDown)],
+        "PgDn",
+        "page down",
+        false,
+        true,
+        PageDown,
+    ));
+    out.push(b(
+        &[Trigger::Code(KeyCode::PageUp)],
+        "PgUp",
+        "page up",
+        false,
+        true,
+        PageUp,
+    ));
+
+    if n > 0 {
+        if secrets {
+            out.push(b(
+                &[Trigger::Code(KeyCode::Enter), Trigger::Char('v')],
+                "Enter",
+                "versions",
+                true,
+                true,
+                Primary,
+            ));
+        } else {
+            out.push(b(
+                &[Trigger::Code(KeyCode::Enter)],
+                "Enter",
+                "edit",
+                true,
+                true,
+                Primary,
+            ));
+        }
+        out.push(b(
+            &[Trigger::Char('d'), Trigger::Char('D')],
+            "d",
+            "delete",
+            true,
+            true,
+            Delete,
+        ));
+    }
+
+    out.push(b(
+        &[Trigger::Ctrl('n')],
+        "^N",
+        if secrets { "new secret" } else { "new variable" },
+        true,
+        true,
+        NewItem,
+    ));
+    out.push(b(&[Trigger::Ctrl('z')], "^Z", "undo", true, true, Undo));
+    out.push(b(
+        &[Trigger::Ctrl('y')],
+        "^Y",
+        "undo history",
+        true,
+        true,
+        UndoHistory,
+    ));
+
+    // Esc clears an active filter (only meaningful when one is applied).
+    if filter_active(app) {
+        out.push(b(
+            &[Trigger::Code(KeyCode::Esc)],
+            "Esc",
+            "clear filter",
+            false,
+            true,
+            ClearFilter,
+        ));
+    }
+
+    // Global commands available on every populated screen.
+    out.push(b(
+        &[Trigger::Char('r'), Trigger::Char('R')],
+        "r",
+        "switch realm",
+        false,
+        true,
+        RealmToggle,
+    ));
+    out.push(b(
+        &[Trigger::Char('t'), Trigger::Char('T')],
+        "t",
+        "switch tenant",
+        false,
+        true,
+        TenantPicker,
+    ));
+    out.push(b(
+        &[Trigger::Ctrl('t')],
+        "^T",
+        "add tenant",
+        false,
+        true,
+        OnboardMenu,
+    ));
+    out.push(b(
+        &[Trigger::Ctrl('a')],
+        "^A",
+        "auth settings",
+        false,
+        true,
+        AuthSettings,
+    ));
+    out.push(b(&[Trigger::Char('L')], "L", "lock & quit", false, true, Lock));
+    push_global(&mut out);
+    out
+}
+
+/// Quit bindings — present in every Normal state, never shown as hints.
+fn push_global(out: &mut Vec<Bind>) {
+    out.push(b(&[Trigger::Char('q')], "q", "quit", false, false, Act::Quit));
+    out.push(b(&[Trigger::Ctrl('c')], "^C", "quit", false, false, Act::Quit));
+}
+
+/// Dispatch a Normal-mode key through the table. Returns without effect if no
+/// binding matches.
+pub async fn dispatch_normal(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    let act = normal_binds(app)
+        .iter()
+        .find(|bind| bind.triggers.iter().any(|t| t.matches(&key)))
+        .map(|bind| bind.act);
+    if let Some(act) = act {
+        run_normal(app, act).await;
+    }
+    Ok(())
+}
+
+async fn run_normal(app: &mut App, act: Act) {
+    use Act::*;
+    match act {
+        Quit => app.should_quit = true,
+        ToggleView => app.esv.view = app.esv.view.toggled(),
+        Search => app.input_mode = InputMode::EsvSearch,
+        ClearFilter => clear_filter(app),
+        MoveDown => move_selection(app, 1),
+        MoveUp => move_selection(app, -1),
+        Top => set_selection(app, 0),
+        Bottom => set_selection(app, usize::MAX),
+        PageDown => move_selection(app, 10),
+        PageUp => move_selection(app, -10),
+        Primary => primary(app),
+        Delete => delete(app),
+        NewItem => new_item(app),
+        Apply => crate::screens::esv::request_restart(app),
+        Undo => crate::screens::esv::request_latest_undo(app),
+        UndoHistory => {
+            app.undo_history_idx = 0;
+            app.input_mode = InputMode::UndoHistory;
+        }
+        RealmToggle => {
+            app.current_realm = match app.current_realm {
+                Realm::Alpha => Realm::Bravo,
+                Realm::Bravo => Realm::Alpha,
+            };
+        }
+        TenantPicker => {
+            if !app.tenants.is_empty() {
+                app.env_picker_idx = app.active_tenant_idx;
+                app.input_mode = InputMode::EnvPicker;
+            }
+        }
+        OnboardMenu => {
+            app.onboard.menu_idx = 0;
+            app.input_mode = InputMode::OnboardMenu;
+        }
+        AuthSettings => crate::screens::auth_settings::open(app),
+        Lock => crate::screens::unlock::lock_and_quit(app).await,
+    }
+}
+
+fn row_count(app: &App) -> usize {
+    match app.esv.view {
+        EsvView::Variables => app.esv_matches().len(),
+        EsvView::Secrets => {
+            crate::screens::secret::rows(app, app.active_tenant().map(|t| t.name.as_str())).len()
+        }
+    }
+}
+
+fn current_selection(app: &App) -> usize {
+    match app.esv.view {
+        EsvView::Variables => app.esv.list.selected,
+        EsvView::Secrets => app.secret.list.selected,
+    }
+}
+
+fn set_selection(app: &mut App, idx: usize) {
+    let n = row_count(app);
+    let clamped = if n == 0 { 0 } else { idx.min(n - 1) };
+    match app.esv.view {
+        EsvView::Variables => app.esv.list.selected = clamped,
+        EsvView::Secrets => app.secret.list.selected = clamped,
+    }
+}
+
+/// Move the current view's cursor by `delta`, clamped to the row range.
+pub fn move_selection(app: &mut App, delta: isize) {
+    let n = row_count(app);
+    if n == 0 {
+        return;
+    }
+    let cur = current_selection(app) as isize;
+    let next = (cur + delta).clamp(0, n as isize - 1) as usize;
+    set_selection(app, next);
+}
+
+fn filter_active(app: &App) -> bool {
+    match app.esv.view {
+        EsvView::Variables => !app.esv.list.query.is_empty(),
+        EsvView::Secrets => !app.secret.list.query.is_empty(),
+    }
+}
+
+fn clear_filter(app: &mut App) {
+    match app.esv.view {
+        EsvView::Variables => app.esv.reset_view(),
+        EsvView::Secrets => {
+            app.secret.list.query.clear();
+            app.secret.list.selected = 0;
+            app.secret.list.scroll = 0;
+        }
+    }
+}
+
+fn primary(app: &mut App) {
+    match app.esv.view {
+        EsvView::Variables => crate::screens::esv::start_edit(app),
+        EsvView::Secrets => crate::screens::secret::open_versions(app),
+    }
+}
+
+fn delete(app: &mut App) {
+    match app.esv.view {
+        EsvView::Variables => crate::screens::esv::request_delete(app),
+        EsvView::Secrets => crate::screens::secret::request_delete(app),
+    }
+}
+
+fn new_item(app: &mut App) {
+    match app.esv.view {
+        EsvView::Variables => crate::screens::esv::start_create(app),
+        EsvView::Secrets => crate::screens::secret::start_create(app),
+    }
+}
