@@ -1180,10 +1180,9 @@ pub fn start_create(app: &mut App) {
         id: String::new(),
         original: serde_json::Value::Null,
         creating: true,
-        // Pre-seed the conventional `esv-` prefix so the user doesn't
-        // have to remember it. They can backspace if they want a
-        // different shape.
-        id_input: TextField::single_line("_id").with_initial("esv-"),
+        // The `esv-` prefix is required by AIC, so lock it in: the user
+        // types only the suffix and can't delete the prefix.
+        id_input: TextField::single_line("_id").with_locked_prefix("esv-"),
         description: TextField::single_line("Description"),
         expr_type: ExpressionType::String,
         value: TextField::textarea("Value"),
@@ -1278,8 +1277,10 @@ fn build_save_plan(app: &mut App) -> Option<SavePlan> {
 
     if edit.creating {
         let id = edit.id_input.value.trim().to_string();
-        if id.is_empty() {
-            edit.error = Some("_id cannot be empty".into());
+        // The `esv-` prefix is locked in the field, so the only id problem the
+        // user can still hit is leaving the suffix empty.
+        if id == "esv-" || id.is_empty() {
+            edit.error = Some("Give the variable a name after 'esv-'".into());
             return None;
         }
         if !id.starts_with("esv-") {
@@ -1622,6 +1623,8 @@ enum UndoApplied {
     SecretRemoved {
         id: String,
     },
+    /// A secret's description was reverted. Just re-poll the secrets list.
+    SecretDescriptionSet,
 }
 
 #[derive(Debug)]
@@ -1817,6 +1820,25 @@ async fn apply_undo_entry(
             Ok(UndoOutcome {
                 description: entry.description,
                 applied: UndoApplied::SecretRemoved { id },
+            })
+        }
+        UndoOp::SecretSetDescription {
+            tenant,
+            id,
+            previous,
+            expected,
+        } => {
+            crate::screens::secret::undo_set_description(
+                &tenant,
+                &id,
+                &previous,
+                &expected,
+                confirmed_prod,
+            )
+            .await?;
+            Ok(UndoOutcome {
+                description: entry.description,
+                applied: UndoApplied::SecretDescriptionSet,
             })
         }
     }
@@ -2067,6 +2089,11 @@ pub fn apply_undo_result(
                     if let Some(LoadState::Loaded(items)) = app.secret.list.data.get_mut(&tenant) {
                         items.retain(|v| id_of(v) != id);
                     }
+                    refresh(app, true);
+                }
+                UndoApplied::SecretDescriptionSet => {
+                    // The description lives only on the server object; re-poll
+                    // to pull the reverted value back into the cache.
                     refresh(app, true);
                 }
             }

@@ -36,6 +36,8 @@ impl Trigger {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Act {
     Quit,
+    NextTab,
+    PrevTab,
     ToggleView,
     Search,
     ClearFilter,
@@ -125,9 +127,30 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     if can_apply {
         out.push(b(&[Trigger::Ctrl('s')], "^S", "apply changes", true, true, Apply));
     }
+    // Tab / Shift-Tab cycle the top-level tabs (ESVs, Scripts, …). Only worth a
+    // footer hint once there's more than one tab; help documents it regardless.
+    let multi_tab = crate::app::Tab::all().len() > 1;
     out.push(b(
-        &[Trigger::Code(KeyCode::Tab), Trigger::Code(KeyCode::BackTab)],
+        &[Trigger::Code(KeyCode::Tab)],
         "Tab",
+        "next tab",
+        multi_tab,
+        true,
+        NextTab,
+    ));
+    out.push(b(
+        &[Trigger::Code(KeyCode::BackTab)],
+        "S-Tab",
+        "prev tab",
+        false,
+        true,
+        PrevTab,
+    ));
+    // `[` / `]` switch sub-tabs within a tab (here: Variables ⇄ Secrets) — the
+    // lazygit/k9s convention for inner tabs.
+    out.push(b(
+        &[Trigger::Char('['), Trigger::Char(']')],
+        "[ ]",
         if secrets { "variables" } else { "secrets" },
         true,
         true,
@@ -285,6 +308,39 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out
         }
         InputMode::EsvSearch => vec![("Enter", "keep filter"), ("Esc", "clear + exit")],
+        InputMode::SecretCreate => {
+            use crate::screens::secret::CreateField;
+            let mut out = vec![("Tab", "next field")];
+            if let Some(form) = app.secret.create.as_ref() {
+                match form.focused {
+                    CreateField::Encoding | CreateField::Placeholders | CreateField::Json => {
+                        out.push(("←/→", "change"))
+                    }
+                    CreateField::Value | CreateField::Save => out.push(("Enter", "create")),
+                    _ => out.push(("Enter", "next")),
+                }
+            }
+            out.push(("Esc", "cancel"));
+            out
+        }
+        InputMode::SecretVersions => {
+            use crate::screens::secret::DetailFocus;
+            match app.secret.detail_focus {
+                DetailFocus::Description => vec![
+                    ("Tab", "versions"),
+                    ("Enter", "save description"),
+                    ("Esc", "close"),
+                ],
+                DetailFocus::Versions => vec![
+                    ("Tab", "edit description"),
+                    ("j/k", "navigate"),
+                    ("e/d", "enable/disable"),
+                    ("x", "destroy"),
+                    ("^N", "add version"),
+                    ("Esc", "close"),
+                ],
+            }
+        }
         InputMode::EsvEdit => {
             let mut out = vec![("Tab", "navigate")];
             let focused = app.esv.editing.as_ref().map(|edit| edit.focused);
@@ -369,6 +425,8 @@ async fn run_normal(app: &mut App, act: Act) {
     use Act::*;
     match act {
         Quit => app.should_quit = true,
+        NextTab => cycle_tab(app, 1),
+        PrevTab => cycle_tab(app, -1),
         ToggleView => app.esv.view = app.esv.view.toggled(),
         Search => app.input_mode = InputMode::EsvSearch,
         ClearFilter => clear_filter(app),
@@ -406,6 +464,19 @@ async fn run_normal(app: &mut App, act: Act) {
         AuthSettings => crate::screens::auth_settings::open(app),
         Lock => crate::screens::unlock::lock_and_quit(app).await,
     }
+}
+
+/// Cycle the top-level tab by `delta`, wrapping. No-op while only one tab
+/// exists, but wired now so `Tab` behaves correctly as more tabs land.
+fn cycle_tab(app: &mut App, delta: isize) {
+    let tabs = crate::app::Tab::all();
+    let n = tabs.len();
+    if n < 2 {
+        return;
+    }
+    let cur = tabs.iter().position(|t| *t == app.current_tab).unwrap_or(0) as isize;
+    let next = (cur + delta).rem_euclid(n as isize) as usize;
+    app.current_tab = tabs[next];
 }
 
 fn row_count(app: &App) -> usize {

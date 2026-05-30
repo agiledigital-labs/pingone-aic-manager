@@ -112,8 +112,6 @@ pub fn draw(f: &mut Frame, app: &App) {
             app.input_mode,
             InputMode::EsvRestartConfirm
                 | InputMode::EsvDeleteConfirm
-                | InputMode::SecretCreate
-                | InputMode::SecretVersions
                 | InputMode::SecretAddVersion
                 | InputMode::SecretDeleteConfirm
                 | InputMode::SecretVersionDestroyConfirm
@@ -155,16 +153,12 @@ pub fn draw(f: &mut Frame, app: &App) {
         popup_confirm::draw(f, "Delete ESV variable?", &message);
     }
 
-    // Secret overlays — drawn on top of the secrets list.
+    // Secret overlays. The version panel now lives in the detail pane (drawn
+    // by `secret::draw_body`), so these are just the create / add-version
+    // forms and the two y/n confirmations — each drawn over that panel.
     match app.input_mode {
-        InputMode::SecretCreate => secret::draw_create(f, app),
-        InputMode::SecretVersions => secret::draw_versions(f, app),
-        InputMode::SecretAddVersion => {
-            secret::draw_versions(f, app);
-            secret::draw_add_version(f, app);
-        }
+        InputMode::SecretAddVersion => secret::draw_add_version(f, app),
         InputMode::SecretVersionDestroyConfirm => {
-            secret::draw_versions(f, app);
             let version = app
                 .secret
                 .pending_version_destroy
@@ -312,7 +306,7 @@ fn draw_view_toggle(f: &mut Frame, app: &App, area: Rect) {
         tab("Variables", active == EsvView::Variables),
         Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
         tab("Secrets", active == EsvView::Secrets),
-        Span::styled("   (Tab to switch)", Style::default().fg(Color::DarkGray)),
+        Span::styled("   ([ ] to switch)", Style::default().fg(Color::DarkGray)),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -335,51 +329,7 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     ])
     .split(area);
 
-    // Top row: split horizontally so the count hugs the right edge regardless
-    // of the query length.
-    let count_width = count_text.chars().count() as u16;
-    let cols =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(count_width)]).split(rows[0]);
-
-    let query_style = Style::default().fg(if searching {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    });
-    // Standard block cursor: reverse-video the char under the cursor (or a
-    // single space at end-of-line). Inserting a separate cursor glyph like
-    // "▏" displaces following columns in fonts that render box-drawing
-    // characters double-wide.
-    let cursor_style = query_style.add_modifier(Modifier::REVERSED);
-    let mut spans: Vec<Span> = vec![Span::styled(" /", query_style)];
-    let cursor_idx = app.esv.list.query.cursor();
-    let chars: Vec<char> = app.esv.list.query.value().chars().collect();
-    if searching {
-        for (i, c) in chars.iter().enumerate() {
-            let style = if i == cursor_idx {
-                cursor_style
-            } else {
-                query_style
-            };
-            spans.push(Span::styled(c.to_string(), style));
-        }
-        if cursor_idx >= chars.len() {
-            spans.push(Span::styled(" ", cursor_style));
-        }
-    } else {
-        spans.push(Span::styled(app.esv.list.query.value().to_string(), query_style));
-    }
-    f.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            count_text,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .alignment(Alignment::Right),
-        cols[1],
-    );
+    draw_search_row(f, rows[0], &app.esv.list.query, searching, &count_text);
 
     // Visible window: keep the selection inside [scroll, scroll + h).
     let h = rows[1].height as usize;
@@ -421,10 +371,67 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     f.render_widget(Paragraph::new(lines), rows[1]);
 }
 
+/// Shared `/query` + right-aligned count header for the tenant list views
+/// (variables and secrets), so both halves of the ESVs tab render the search
+/// row identically. `area` must be a 1-row rect.
+pub(crate) fn draw_search_row(
+    f: &mut Frame,
+    area: Rect,
+    query: &crate::ui::widgets::LineEditor,
+    searching: bool,
+    count_text: &str,
+) {
+    // Split horizontally so the count hugs the right edge regardless of the
+    // query length.
+    let count_width = count_text.chars().count() as u16;
+    let cols =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(count_width)]).split(area);
+
+    let query_style = Style::default().fg(if searching {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    });
+    // Standard block cursor: reverse-video the char under the cursor (or a
+    // single space at end-of-line). Inserting a separate cursor glyph like
+    // "▏" displaces following columns in fonts that render box-drawing
+    // characters double-wide.
+    let cursor_style = query_style.add_modifier(Modifier::REVERSED);
+    let mut spans: Vec<Span> = vec![Span::styled(" /", query_style)];
+    let cursor_idx = query.cursor();
+    let chars: Vec<char> = query.value().chars().collect();
+    if searching {
+        for (i, c) in chars.iter().enumerate() {
+            let style = if i == cursor_idx {
+                cursor_style
+            } else {
+                query_style
+            };
+            spans.push(Span::styled(c.to_string(), style));
+        }
+        if cursor_idx >= chars.len() {
+            spans.push(Span::styled(" ", cursor_style));
+        }
+    } else {
+        spans.push(Span::styled(query.value().to_string(), query_style));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            count_text.to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Right),
+        cols[1],
+    );
+}
+
 /// Pick the new top-of-window so `selected` stays visible. We can't compute
 /// this purely from app state because the height comes from the rendered
-/// rect; do it here, leave `app.esv.list.scroll` as a hint only.
-fn clamp_scroll(prev: usize, selected: usize, height: usize, n: usize) -> usize {
+/// rect; do it here, leave the list's `scroll` as a hint only.
+pub(crate) fn clamp_scroll(prev: usize, selected: usize, height: usize, n: usize) -> usize {
     if n == 0 || height == 0 {
         return 0;
     }

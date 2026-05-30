@@ -14,32 +14,40 @@ use crate::screens::esv::{LoadState, id_of};
 use crate::screens::secret::{self, CreateField, Encoding};
 use crate::ui::modal_chrome::Modal;
 
-/// The secrets list (left) + selected-secret detail (right). Called from
-/// `draw_esvs` when the tab is in the Secrets view; `area` excludes the
-/// sub-view header row.
+/// The secrets list (left) + selected-secret detail (right). Mirrors the
+/// variables view: borderless list, a left-border divider on the detail pane.
+/// Called from `draw_esvs` when the tab is in the Secrets view; `area` excludes
+/// the sub-view header row.
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let tenant = match app.active_tenant() {
         Some(t) => t.name.as_str(),
         None => return,
     };
-    match app.secret.list.data.get(tenant) {
-        None | Some(LoadState::Loading) => {
-            status(f, area, "  Loading secrets…", Color::DarkGray);
-            return;
+    // While the create form is open we always show the split (form in the
+    // detail pane), even on a Loading/empty tenant — the empty-state message
+    // tells the user to press ^N, so the form has to appear from there too.
+    let creating =
+        app.input_mode == crate::app::InputMode::SecretCreate && app.secret.create.is_some();
+    if !creating {
+        match app.secret.list.data.get(tenant) {
+            None | Some(LoadState::Loading) => {
+                status(f, area, "  Loading secrets…", Color::DarkGray);
+                return;
+            }
+            Some(LoadState::Failed(e)) => {
+                status(f, area, &format!("  Secret list failed: {e}"), Color::Red);
+                return;
+            }
+            Some(LoadState::Loaded(vs)) if vs.is_empty() => {
+                status(f, area, "  No secrets. ^N to create one.", Color::DarkGray);
+                return;
+            }
+            Some(LoadState::Loaded(_)) => {}
         }
-        Some(LoadState::Failed(e)) => {
-            status(f, area, &format!("  Secret list failed: {e}"), Color::Red);
-            return;
-        }
-        Some(LoadState::Loaded(vs)) if vs.is_empty() => {
-            status(f, area, "  No secrets. ^N to create one.", Color::DarkGray);
-            return;
-        }
-        Some(LoadState::Loaded(_)) => {}
     }
 
     let columns =
-        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(area);
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
     draw_list(f, app, columns[0]);
     draw_detail(f, app, columns[1]);
 }
@@ -54,54 +62,104 @@ fn status(f: &mut Frame, area: Rect, msg: &str, color: Color) {
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let rows = secret::rows(app, app.active_tenant().map(|t| t.name.as_str()));
     let searching = app.input_mode == crate::app::InputMode::EsvSearch;
-    let title = if searching || !app.secret.list.query.value().is_empty() {
-        format!(" secrets  /{} ", app.secret.list.query.value())
-    } else {
-        format!(" secrets ({}) ", rows.len())
+    let total = match app.active_tenant().and_then(|t| app.secret.list.data.get(&t.name)) {
+        Some(LoadState::Loaded(vs)) => vs.len(),
+        _ => 0,
     };
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let count_text = if app.secret.list.query.is_empty() {
+        format!("{total} secrets ")
+    } else {
+        format!("{}/{} secrets ", rows.len(), total)
+    };
 
-    let selected = app.secret.list.selected.min(rows.len().saturating_sub(1));
-    let items: Vec<ListItem> = rows
+    let layout = Layout::vertical([
+        Constraint::Length(1), // /query (left) + count (right)
+        Constraint::Min(0),    // list
+    ])
+    .split(area);
+
+    crate::ui::draw_search_row(f, layout[0], &app.secret.list.query, searching, &count_text);
+
+    // Windowed render, same scroll math as the variables list.
+    let h = layout[1].height as usize;
+    let n = rows.len();
+    let selected = app.secret.list.selected.min(n.saturating_sub(1));
+    let scroll = crate::ui::clamp_scroll(app.secret.list.scroll, selected, h, n);
+    let lines: Vec<Line> = rows
         .iter()
-        .map(|r| {
-            let mut spans = vec![Span::raw(r.id.clone())];
-            // encoding tag + placeholder / pending markers.
-            spans.push(Span::styled(
-                format!("  [{}]", r.encoding),
-                Style::default().fg(Color::DarkGray),
-            ));
-            if !r.use_in_placeholders {
-                spans.push(Span::styled(
-                    "  no-ph",
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-            if r.pending {
-                spans.push(Span::styled(
-                    "  !",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ));
-            }
-            ListItem::new(Line::from(spans))
-        })
+        .enumerate()
+        .skip(scroll)
+        .take(h)
+        .map(|(i, r)| render_secret_row(r, i == selected))
         .collect();
+    f.render_widget(Paragraph::new(lines), layout[1]);
+}
 
-    let mut state = ListState::default();
-    if !rows.is_empty() {
-        state.select(Some(selected));
+/// One secret row, styled to match the variables list: cyan selection bar,
+/// a green `!` gutter for pending rows, dim metadata tags.
+fn render_secret_row(r: &secret::SecretRow, is_selected: bool) -> Line<'static> {
+    let row_style = if is_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let meta_style = if is_selected {
+        row_style
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let (leader, leader_style) = match (is_selected, r.pending) {
+        (true, true) => ("▶!", row_style),
+        (true, false) => ("▶ ", row_style),
+        (false, true) => (
+            "! ",
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ),
+        (false, false) => ("  ", row_style),
+    };
+    let mut spans = vec![
+        Span::styled(leader, leader_style),
+        Span::styled(r.id.clone(), row_style),
+        Span::styled(format!("  [{}]", r.encoding), meta_style),
+    ];
+    if !r.use_in_placeholders {
+        spans.push(Span::styled("  no-ph", meta_style));
     }
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-        .highlight_symbol("▶ ");
-    f.render_stateful_widget(list, area, &mut state);
+    Line::from(spans)
 }
 
 fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title(" detail ");
+    let block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(Style::default().fg(Color::DarkGray));
     let inner = block.inner(area);
     f.render_widget(block, area);
+
+    // 2-col left gutter so text doesn't hug the divider (matches variables).
+    let inner = Rect {
+        x: inner.x + 2,
+        y: inner.y,
+        width: inner.width.saturating_sub(2),
+        height: inner.height,
+    };
+
+    // Create flow: the New-Secret form lives in this pane (mirrors the
+    // variables create form), not a modal.
+    if app.input_mode == crate::app::InputMode::SecretCreate && app.secret.create.is_some() {
+        draw_create_form(f, app, inner);
+        return;
+    }
+
+    // Enter opens the interactive panel (metadata + editable description +
+    // versions) in this pane, the same way Enter opens the edit form in the
+    // variables pane — no modal.
+    if secret::versions_panel_open(app) {
+        draw_secret_panel(f, app, inner);
+        return;
+    }
 
     let Some(secret) = secret::selected_secret(app) else {
         f.render_widget(
@@ -111,33 +169,73 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let id = id_of(&secret).to_string();
-    let encoding = secret::encoding_of(&secret).to_string();
-    let use_ph = secret::use_in_placeholders(&secret);
-    let active = field_str(&secret, "activeVersion");
-    let loaded_v = field_str(&secret, "loadedVersion");
-    let loaded = secret.get("loaded").and_then(|v| v.as_bool()).unwrap_or(false);
-    let description = field_str(&secret, "description");
+    // Metadata block, then the description rendered as an (unfocused) input
+    // field so the preview matches the variables preview, then the write-only
+    // note.
+    let lines = meta_lines(&secret);
+    let meta_h = lines.len() as u16;
+    let rows = Layout::vertical([
+        Constraint::Length(meta_h), // metadata
+        Constraint::Length(1),      // gap
+        Constraint::Length(2),      // description (input-styled, read-only)
+        Constraint::Length(1),      // gap
+        Constraint::Min(1),         // write-only note
+    ])
+    .split(inner);
 
+    f.render_widget(Paragraph::new(lines), rows[0]);
+    crate::ui::widgets::TextField::single_line("Description")
+        .with_initial(secret::description_of(&secret))
+        .draw(f, rows[2], false);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "Value is write-only — never shown. Enter: versions & description.",
+            Style::default().fg(Color::DarkGray),
+        ))
+        .wrap(Wrap { trim: false }),
+        rows[4],
+    );
+}
+
+fn field_str(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
+
+/// Fixed-width label span shared across the secret detail rows.
+fn meta_label(k: &str) -> Span<'static> {
+    Span::styled(format!("{k:<16}"), Style::default().fg(Color::DarkGray))
+}
+
+/// The read-only metadata rows (ID … Loaded, plus a pending note) shown in both
+/// the static detail view and the interactive panel.
+fn meta_lines(secret: &serde_json::Value) -> Vec<Line<'static>> {
+    let id = id_of(secret).to_string();
+    let encoding = secret::encoding_of(secret).to_string();
+    let use_ph = secret::use_in_placeholders(secret);
+    let active = field_str(secret, "activeVersion");
+    let loaded_v = field_str(secret, "loadedVersion");
+    let loaded = secret.get("loaded").and_then(|v| v.as_bool()).unwrap_or(false);
     let pending = use_ph && active != loaded_v;
-    let label = |k: &str| Span::styled(format!("{k:<16}"), Style::default().fg(Color::DarkGray));
     let mut lines = vec![
-        Line::from(vec![label("ID"), Span::raw(id)]),
-        Line::from(vec![label("Encoding"), Span::raw(encoding)]),
+        Line::from(vec![meta_label("ID"), Span::raw(id)]),
+        Line::from(vec![meta_label("Encoding"), Span::raw(encoding)]),
         Line::from(vec![
-            label("In placeholders"),
+            meta_label("In placeholders"),
             Span::raw(if use_ph { "yes (gates restart)" } else { "no (loads immediately)" }.to_string()),
         ]),
         Line::from(vec![
-            label("Active version"),
+            meta_label("Active version"),
             Span::raw(if active.is_empty() { "—".into() } else { active }),
         ]),
         Line::from(vec![
-            label("Loaded version"),
+            meta_label("Loaded version"),
             Span::raw(if loaded_v.is_empty() { "—".into() } else { loaded_v }),
         ]),
         Line::from(vec![
-            label("Loaded"),
+            meta_label("Loaded"),
             Span::styled(
                 if loaded { "yes" } else { "no" }.to_string(),
                 Style::default().fg(if loaded { Color::Green } else { Color::Yellow }),
@@ -150,68 +248,84 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Yellow),
         )));
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![label("Description")]));
-    lines.push(Line::from(Span::styled(description, Style::default().fg(Color::Gray))));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Value is write-only — never shown. Enter/v: versions.",
-        Style::default().fg(Color::DarkGray),
-    )));
-
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    lines
 }
 
-fn field_str(v: &serde_json::Value, key: &str) -> String {
-    v.get(key)
-        .and_then(|x| x.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_default()
+// --- Interactive detail panel (metadata + description + versions) ---------
+
+/// The detail pane shown after Enter: read-only metadata, an editable
+/// description, then the version list. `Tab` moves focus between the
+/// description editor and the version list (see `handle_versions_key`).
+fn draw_secret_panel(f: &mut Frame, app: &App, area: Rect) {
+    // Resolve the subject from the panel's stored target, not the live list
+    // selection — a background refresh can re-sort the list underneath us.
+    let Some((tenant, id)) = app.secret.version_target.clone() else {
+        return;
+    };
+    let meta = secret::secret_in_cache(app, &tenant, &id);
+    let lines = meta.as_ref().map(meta_lines).unwrap_or_default();
+    let meta_h = lines.len() as u16;
+    let desc_focused = app.secret.detail_focus == secret::DetailFocus::Description;
+
+    let rows = Layout::vertical([
+        Constraint::Length(meta_h), // metadata block
+        Constraint::Length(1),      // gap
+        Constraint::Length(2),      // description editor (label + input)
+        Constraint::Length(1),      // gap
+        Constraint::Min(0),         // versions
+    ])
+    .split(area);
+
+    f.render_widget(Paragraph::new(lines), rows[0]);
+    // The TextField renders its own "Description" label and shows a cursor when
+    // focused; the footer carries the Tab/Enter hints.
+    app.secret.description.draw(f, rows[2], desc_focused);
+    draw_version_list(f, app, rows[4]);
 }
 
-// --- Version panel --------------------------------------------------------
-
-fn draw_versions_status(f: &mut Frame, msg: &str, color: Color) {
-    let body = Modal {
-        title: "Secret versions",
-        status: None,
-        hints: &[("Esc", "close")],
-        body_height: 1,
-    }
-    .draw(f, f.area());
-    f.render_widget(
-        Paragraph::new(Span::styled(msg.to_string(), Style::default().fg(color))),
-        body,
-    );
-}
-
-pub fn draw_versions(f: &mut Frame, app: &App) {
+/// The "Versions" header + version list portion of the detail panel.
+fn draw_version_list(f: &mut Frame, app: &App, area: Rect) {
     use secret::VersionsView;
-    let (id, versions) = match secret::versions_view(app) {
-        Some(VersionsView::Loaded { id, versions, .. }) => (id, versions),
+    let vers_focused = app.secret.detail_focus == secret::DetailFocus::Versions;
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "Versions",
+            if vers_focused {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        )),
+        rows[0],
+    );
+    let body = rows[1];
+
+    let versions = match secret::versions_view(app) {
+        Some(VersionsView::Loaded { versions, .. }) => versions,
         Some(VersionsView::Loading) => {
-            draw_versions_status(f, "Loading versions…", Color::DarkGray);
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    "Loading versions…",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                body,
+            );
             return;
         }
         Some(VersionsView::Failed(e)) => {
-            draw_versions_status(f, &format!("Failed to load versions: {e}"), Color::Red);
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    format!("Failed to load versions: {e}"),
+                    Style::default().fg(Color::Red),
+                ))
+                .wrap(Wrap { trim: false }),
+                body,
+            );
             return;
         }
         None => return,
     };
-    let body = Modal {
-        title: "Secret versions",
-        status: Some(&id),
-        hints: &[
-            ("j/k", "navigate"),
-            ("e/d", "enable/disable"),
-            ("x", "destroy"),
-            ("^N", "add version"),
-            ("Esc", "close"),
-        ],
-        body_height: versions.len().max(1) as u16,
-    }
-    .draw(f, f.area());
 
     if versions.is_empty() {
         f.render_widget(
@@ -249,76 +363,94 @@ pub fn draw_versions(f: &mut Frame, app: &App) {
 
     let mut state = ListState::default();
     state.select(Some(app.secret.version_selected.min(versions.len().saturating_sub(1))));
+    // De-emphasise the selection when the description editor holds focus, so it
+    // reads clearly which half `j/k`, `e/d`, `x` act on.
+    let (hl_style, hl_symbol) = if vers_focused {
+        (
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            "▶ ",
+        )
+    } else {
+        (Style::default().fg(Color::Gray), "  ")
+    };
     let list = List::new(items)
-        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-        .highlight_symbol("▶ ");
+        .highlight_style(hl_style)
+        .highlight_symbol(hl_symbol);
     f.render_stateful_widget(list, body, &mut state);
 }
 
-// --- Create form ----------------------------------------------------------
+// --- Create form (rendered in the detail pane) ----------------------------
 
-pub fn draw_create(f: &mut Frame, app: &App) {
+/// The New-Secret form, rendered into the detail pane (`area`) — mirrors the
+/// variables create form. The secrets list stays visible on the left.
+fn draw_create_form(f: &mut Frame, app: &App, area: Rect) {
     let Some(form) = app.secret.create.as_ref() else {
         return;
     };
-    let body = Modal {
-        title: "New secret",
-        status: app.active_tenant().map(|t| t.name.as_str()),
-        hints: &[("Tab", "next field"), ("Enter", "create"), ("Esc", "cancel")],
-        body_height: 13,
-    }
-    .draw(f, f.area());
+    let json_relevant = form.encoding == Encoding::Generic;
 
     let rows = Layout::vertical([
+        Constraint::Length(1), // title
+        Constraint::Length(1), // gap
         Constraint::Length(2), // id
         Constraint::Length(2), // description
+        Constraint::Length(1), // gap
         Constraint::Length(1), // encoding
         Constraint::Length(1), // placeholders
         Constraint::Length(1), // json
+        Constraint::Length(1), // gap
         Constraint::Length(2), // value
+        Constraint::Length(1), // gap
         Constraint::Length(1), // save
-        Constraint::Length(1), // error
+        Constraint::Min(1),    // error
     ])
-    .split(body);
+    .split(area);
 
-    form.id.draw(f, rows[0], form.focused == CreateField::Id);
-    form.description.draw(f, rows[1], form.focused == CreateField::Description);
-
-    // Encoding chips.
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "New secret",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        rows[0],
+    );
+    form.id.draw(f, rows[2], form.focused == CreateField::Id);
+    form.description.draw(f, rows[3], form.focused == CreateField::Description);
     draw_chip_row(
         f,
-        rows[2],
+        rows[5],
         "Encoding",
         Encoding::ALL.iter().map(|e| (e.label(), *e == form.encoding)).collect(),
         form.focused == CreateField::Encoding,
     );
     draw_toggle_row(
         f,
-        rows[3],
+        rows[6],
         "Use in placeholders",
         form.use_in_placeholders,
         form.focused == CreateField::Placeholders,
         "(off ⇒ loads immediately, no restart)",
     );
-    let json_relevant = form.encoding == Encoding::Generic;
     draw_toggle_row(
         f,
-        rows[4],
+        rows[7],
         "Validate as JSON",
         form.as_json,
         form.focused == CreateField::Json,
         if json_relevant { "(generic only)" } else { "(ignored for this encoding)" },
     );
-    form.value.draw(f, rows[5], form.focused == CreateField::Value);
-    draw_save(f, rows[6], form.focused == CreateField::Save);
+    form.value.draw(f, rows[9], form.focused == CreateField::Value);
+    draw_save(f, rows[11], form.focused == CreateField::Save);
 
     if let Some(err) = &form.error {
         f.render_widget(
             Paragraph::new(Span::styled(
                 format!("✗ {err}"),
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            )),
-            rows[7],
+            ))
+            .wrap(Wrap { trim: false }),
+            rows[12],
         );
     }
 }
