@@ -99,7 +99,10 @@ fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
         }
         _ => {
             let mut hints: Vec<(&str, &str)> = Vec::new();
-            if app.current_tab == Tab::Esvs && !app.tenants.is_empty() {
+            if app.current_tab == Tab::Esvs
+                && !app.tenants.is_empty()
+                && app.esv.view == crate::screens::esv::EsvView::Secrets
+            {
                 if app
                     .active_tenant()
                     .map(|t| crate::screens::esv::can_request_restart(app, &t.name))
@@ -107,6 +110,27 @@ fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
                 {
                     hints.push(("^S", "apply changes"));
                 }
+                hints.push(("Tab", "variables"));
+                hints.push(("/", "search"));
+                let n = crate::screens::secret::rows(
+                    app,
+                    app.active_tenant().map(|t| t.name.as_str()),
+                )
+                .len();
+                if n > 0 {
+                    hints.extend([("Enter", "versions"), ("d", "delete")]);
+                }
+                hints.push(("^N", "new secret"));
+                hints.push(("^Y", "undo history"));
+            } else if app.current_tab == Tab::Esvs && !app.tenants.is_empty() {
+                if app
+                    .active_tenant()
+                    .map(|t| crate::screens::esv::can_request_restart(app, &t.name))
+                    .unwrap_or(false)
+                {
+                    hints.push(("^S", "apply changes"));
+                }
+                hints.push(("Tab", "secrets"));
                 hints.push(("/", "search"));
                 let matches = app.esv_matches();
                 let mut selected_deleted = false;

@@ -14,5 +14,6 @@ pub mod auth_setup;
 pub mod esv;
 pub mod onboard;
 pub mod prod_confirm;
+pub mod secret;
 pub mod undo_history;
 pub mod unlock;

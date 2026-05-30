@@ -74,6 +74,24 @@ pub enum AppEvent {
             crate::screens::esv::UndoFailure,
         >,
     },
+    /// A background secret mutation finished. `kind` lets the handler record
+    /// the right undo entry post-success; `label` is the toast verb;
+    /// `reload_versions` requests a version-panel refetch. The Ok payload is
+    /// the API response body (e.g. the created secret, for its `lastChangeDate`).
+    SecretOpResult {
+        tenant: String,
+        id: String,
+        kind: crate::screens::secret::SecretOpKind,
+        label: String,
+        reload_versions: bool,
+        result: std::result::Result<serde_json::Value, String>,
+    },
+    /// Background fetch of a secret's versions finished.
+    SecretVersionsListed {
+        tenant: String,
+        id: String,
+        result: std::result::Result<Vec<serde_json::Value>, String>,
+    },
     /// Background ESV refresh finished for `tenant`. The payload keeps the
     /// variable list and startup status separate so a partial failure doesn't
     /// force us to throw away useful cached state.

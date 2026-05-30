@@ -107,6 +107,10 @@ new things are learned.
 | Scripts have `_rev` | frodo-lib research summary | False — no `_rev` anywhere. |
 | ESV path is `/environment/esv` | Ping docs research summary | 404 — use `/environment/variables` and `/environment/secrets`. |
 | Secret stores API works in AIC | both library summaries | 403 "not available in PingOne Advanced Identity Cloud". |
+| Secret `PUT` is an upsert | 03-esvs.md (transcribed) | False — create-only; re-PUT → 400 "already exists". Change value via new version. |
+| Version status `changestatus` accepts DESTROYED | 03-esvs.md (transcribed) | False — only ENABLED/DISABLED. DESTROYED is via `DELETE …/versions/{v}` (one-way). |
+| Secret version objects have `_id` | 03-esvs.md (transcribed) | False — versions are a bare array of `{version, createDate, loaded, status}`. |
+| `useInPlaceholders` defaults to true | 03-esvs.md (transcribed) | False — required on create, no default, and immutable afterwards. |
 
 **Lesson:** Both libraries' research summaries had errors. Always verify
 endpoints + shapes against the live tenant before writing code.
@@ -248,3 +252,4 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
 - **2026-05-17** — Initial verification pass; Q1-Q4 + secret stores resolved.
 - **2026-05-18** — Step 2 implemented (TUI skeleton, crypto, onboarding). Q11 (PKCE redirect URI) resolved; `AicEdit` OAuth2 client provisioned.
 - **2026-05-20** — Q11 superseded by Q12. Three bootstrap patterns verified end-to-end via `scripts/verify-pattern1-cookie.sh` and `scripts/verify-pattern2-userpass.sh`. `AicEdit` OAuth2 client no longer required.
+- **2026-05-30** — Full ESV **secrets** lifecycle verified live (create/version/changestatus/destroy/delete on throwaway `esv-aicedit-sec*`). Corrected four wrong transcribed claims in `03-esvs.md` (see contradictions table). Key facts: secret PUT is create-only; value changes go through versions; `useInPlaceholders` required + immutable and gates the restart (`false` ⇒ never pending); `changestatus` is ENABLED/DISABLED only; latest version can't be disabled; encodings `generic`/`pem`/`base64hmac`/`base64aes` with the last two double-base64-encoded.

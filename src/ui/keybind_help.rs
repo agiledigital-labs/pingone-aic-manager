@@ -103,6 +103,42 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
             &[("y", "confirm production write"), ("n/Esc", "cancel")],
         ),
         InputMode::UndoHistory => undo_history_lines(&mut lines),
+        InputMode::SecretCreate => text_modal_lines(
+            &mut lines,
+            "New secret",
+            &[
+                ("Tab/Shift-Tab", "move between fields"),
+                ("←/→ or Space", "encoding / toggles"),
+                ("Enter", "create"),
+                ("Esc", "cancel"),
+            ],
+        ),
+        InputMode::SecretVersions => text_modal_lines(
+            &mut lines,
+            "Secret versions",
+            &[
+                ("j/k", "navigate"),
+                ("e/d", "enable / disable"),
+                ("x/Del", "destroy (irreversible)"),
+                ("^N", "add version"),
+                ("Esc", "close"),
+            ],
+        ),
+        InputMode::SecretAddVersion => text_modal_lines(
+            &mut lines,
+            "Add secret version",
+            &[("Enter", "add version"), ("Esc", "cancel")],
+        ),
+        InputMode::SecretDeleteConfirm => confirm_lines(
+            &mut lines,
+            "Delete secret",
+            &[("y", "delete secret + all versions"), ("n/Esc", "cancel")],
+        ),
+        InputMode::SecretVersionDestroyConfirm => confirm_lines(
+            &mut lines,
+            "Destroy secret version",
+            &[("y", "destroy version (irreversible)"), ("n/Esc", "cancel")],
+        ),
     }
     lines
 }

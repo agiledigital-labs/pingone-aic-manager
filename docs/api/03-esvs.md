@@ -28,17 +28,26 @@ Service-account bearer. Scopes: `fr:idc:esv:*` (or finer-grained
 
 ### Secrets
 
+Verified live 2026-05-30 (full create/version/status/delete lifecycle on
+throwaway `esv-aicedit-sec*` secrets). Several earlier (library-transcribed)
+claims in this table were **wrong** — corrected below.
+
 | Op | Method | Path | Notes |
 |----|--------|------|-------|
-| List | `GET` | `/environment/secrets` | Includes `activeVersion`, `loadedVersion`. |
+| List | `GET` | `/environment/secrets` | `{ "result": [...] }` wrapper. Includes `activeVersion`, `loadedVersion`. |
+| List pending | `GET` | `/environment/secrets?_onlyPending=true` | Secrets whose `activeVersion != loadedVersion` AND `useInPlaceholders=true`. |
 | Read | `GET` | `/environment/secrets/{id}` | Metadata only — values never returned. |
-| Create | `PUT` | `/environment/secrets/{id}` | Body sets `encoding`, initial `valueBase64`. Encoding is immutable after creation. |
-| Set description | `POST` | `/environment/secrets/{id}?_action=setDescription` | |
-| Delete (all versions) | `DELETE` | `/environment/secrets/{id}` | Permanent. |
-| List versions | `GET` | `/environment/secrets/{id}/versions` | |
-| Create new version | `POST` | `/environment/secrets/{id}/versions?_action=create` | Body: `{ "valueBase64": "…" }`. Returns `version`. |
-| Set version status | `POST` | `/environment/secrets/{id}/versions/{v}?_action=changestatus` | Body: `{ "status": "ENABLED"\|"DISABLED"\|"DESTROYED" }` |
-| Delete version | `DELETE` | `/environment/secrets/{id}/versions/{v}` | |
+| **Create** | `PUT` | `/environment/secrets/{id}` | **Create-only, NOT upsert.** PUT on an existing id → `400 "Failed to create secret, the secret already exists"`. Body **requires** `encoding`, `useInPlaceholders`, `valueBase64` (and optional `description`). |
+| Set description | `POST` | `/environment/secrets/{id}?_action=setDescription` | Body `{ "description": "…" }` → 200, echoes object. **Only action allowed** on a secret. |
+| Delete (all versions) | `DELETE` | `/environment/secrets/{id}` | Permanent; removes the whole secret. |
+| List versions | `GET` | `/environment/secrets/{id}/versions` | Returns a **bare JSON array** (no `result` wrapper), newest-first. |
+| Create new version | `POST` | `/environment/secrets/{id}/versions?_action=create` | Body `{ "valueBase64": "…" }`. Returns the new version object. New version is auto-`ENABLED` and becomes `activeVersion`. |
+| Set version status | `POST` | `/environment/secrets/{id}/versions/{v}?_action=changestatus` | Body `{ "status": "ENABLED"\|"DISABLED" }` only — **`DESTROYED` is rejected here**. Cannot disable the latest (highest) version → `400 "Cannot disable latest secret version"`. |
+| Destroy version | `DELETE` | `/environment/secrets/{id}/versions/{v}` | Sets the version's `status` to `DESTROYED` (irreversible). The version **stays in the list** as `DESTROYED`; it is not removed. |
+
+**There is no API to change `encoding` or `useInPlaceholders` after creation**
+— PUT is create-only and `setDescription` is the only action. Both are
+effectively immutable post-create; to change them, delete and recreate.
 
 ### Startup / restart
 
@@ -86,21 +95,43 @@ Service-account bearer. Scopes: `fr:idc:esv:*` (or finer-grained
 ```
 
 - `encoding` ∈ `generic | pem | base64hmac | base64aes`. Set at create; immutable.
-- `activeVersion` = the version the runtime will pick up at next restart.
-- `loadedVersion` = the version currently in memory.
-- If `activeVersion != loadedVersion`, a restart is pending.
+  - `generic` — any bytes; `valueBase64` = base64(raw value).
+  - `pem` — decoded bytes must be a valid PEM document; invalid → `500 "Failed to create secret"`.
+  - `base64hmac` / `base64aes` — **double-encoded**: the value is itself a
+    base64-encoded key string, so `valueBase64` = base64(base64-key-string).
+    The inner content must be valid base64 (and a valid AES key length for aes);
+    invalid → `500 "Failed to create secret"`.
+- `useInPlaceholders` — **required on create** (no server default; omitting it →
+  `400 … property "useInPlaceholders" is missing`). When `true`, the secret is
+  referenceable as `&{esv.secret-id}` and a new active version stays `loaded:false`
+  until a restart (it counts toward the pending/apply gate). When `false`, the
+  secret is `loaded:true` immediately on create/new-version and **never appears
+  pending** — no restart needed. (Confirmed: a `useInPlaceholders:false` create
+  did not bump `/environment/count?_onlyPending=true`.)
+- `activeVersion` = the highest-numbered `ENABLED` version (auto-updates as
+  versions are added/enabled). The runtime picks this up at next restart.
+- `loadedVersion` = the version currently in memory; `""` when nothing is loaded yet.
+- If `useInPlaceholders=true` and `activeVersion != loadedVersion`, a restart is pending.
 
 ### Secret version
 
+Versions list is a bare array, newest-first. **No `_id` field** (the earlier
+doc claim was wrong). Fields:
+
 ```json
 {
-  "_id": "...",
   "version": "3",
-  "createDate": "...",
+  "createDate": "2026-05-30T05:48:30.490094Z",
   "loaded": false,
-  "status": "ENABLED"   // or DISABLED, DESTROYED
+  "status": "ENABLED"   // ENABLED | DISABLED | DESTROYED
 }
 ```
+
+- Multiple versions can be `ENABLED` at once (observed v1 and v2 both ENABLED on
+  a real secret). Scripts resolve `&{esv.id}` to the latest active version; an
+  OAuth2 client secret matches against *any* ENABLED version.
+- Status transitions: `ENABLED`↔`DISABLED` via `changestatus`; `DESTROYED` only
+  via `DELETE` on the version (one-way). The latest version can't be disabled.
 
 ## ID convention
 
@@ -138,8 +169,15 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
 - **Secret values are write-only.** Once set, the API never returns the
   plaintext. To "see" a secret, expose it via a journey or test client.
 - **Versioning is secret-only.** Variables are single-value (no version history).
-- **`useInPlaceholders: true`** is what makes a secret referenceable as
-  `&{esv.secret-id}` in config. Default true for new secrets.
+- **`useInPlaceholders`** makes a secret referenceable as `&{esv.secret-id}`.
+  It is **required on create** (no default) and there is **no API to change it
+  afterwards**. `false` ⇒ loaded immediately, never gates a restart.
+- **Secret `PUT` is create-only.** Unlike variables (where PUT is an upsert),
+  re-`PUT`ting an existing secret id fails. Change a secret's value by adding a
+  new **version** (`POST …/versions?_action=create`), not by PUT.
+- **`changestatus` only does ENABLED/DISABLED.** Destroying a version is a
+  separate `DELETE …/versions/{v}` and is irreversible; the destroyed version
+  stays listed with `status:"DESTROYED"`. The latest version cannot be disabled.
 - **Restart is tenant-wide** and takes a few minutes; the UI shows live progress.
   All in-flight sessions survive but new operations get the refreshed values.
 - **Deletes are not reported as pending variables.** Verified 2026-05-29:
@@ -177,9 +215,21 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-05-26
+- Date: 2026-05-26 (variables); 2026-05-30 (full secrets lifecycle)
 - Calls: `GET /environment/variables`, `GET /environment/variables/{id}`,
   `GET /environment/secrets`, `GET /environment/startup`. All 200 OK.
+- Secrets lifecycle (2026-05-30), throwaway `esv-aicedit-sec*`, all cleaned up:
+  - Create requires `useInPlaceholders` (omitted → 400). PUT on existing → 400
+    "already exists" (create-only).
+  - New version via `POST …/versions?_action=create` → auto-ENABLED, bumps
+    `activeVersion`. Versions list is a bare array, no `_id`.
+  - `changestatus DISABLED` on latest → 400; on non-latest → 200. `DESTROYED`
+    via changestatus → 400; via `DELETE …/versions/{v}` → 200, leaves status
+    DESTROYED.
+  - `useInPlaceholders:true` create → `loaded:false`, `secrets:1` pending;
+    `useInPlaceholders:false` create → `loaded:true`, not pending.
+  - Encodings: `generic`/`base64aes` (valid 16-byte key) → 200; `pem` (valid
+    cert) → 200; `pem`/`base64hmac` with invalid content → 500.
 - Type-change round-trip on `/environment/variables/{id}`:
   `PUT (string → int)` → 400 "Changing the type ... not permitted";
   `DELETE` → 200; subsequent `PUT (int)` → 200; `DELETE` → 200. No restart
