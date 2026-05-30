@@ -533,42 +533,8 @@ impl App {
             return Ok(());
         }
 
-        match self.input_mode {
-            InputMode::Normal => self.handle_normal_key(key).await?,
-            InputMode::SetupAuth => crate::screens::auth_setup::handle_key(self, key).await?,
-            InputMode::Unlock => crate::screens::unlock::handle_key(self, key),
-            InputMode::AuthSettings => crate::screens::auth_settings::handle_key(self, key)?,
-            InputMode::AuthSettingsConfirm => crate::screens::auth_settings::handle_confirm_key(self, key).await?,
-            InputMode::AuthSettingsRename => crate::screens::auth_settings::handle_rename_key(self, key)?,
-            InputMode::OnboardMenu => crate::screens::onboard::handle_menu_key(self, key).await?,
-            InputMode::OnboardCookie => crate::screens::onboard::handle_cookie_key(self, key).await?,
-            InputMode::OnboardUserPass => crate::screens::onboard::handle_up_key(self, key).await?,
-            InputMode::OnboardPaste => crate::screens::onboard::handle_paste_key(self, key).await?,
-            InputMode::OverwriteConfirm => crate::screens::onboard::handle_overwrite_key(self, key)?,
-            InputMode::EnvPicker => self.handle_env_picker_key(key),
-            InputMode::ProdConfirm => crate::screens::prod_confirm::handle_key(self, key).await?,
-            InputMode::UndoHistory => crate::screens::undo_history::handle_key(self, key),
-            InputMode::EsvSearch => crate::screens::esv::handle_search_key(self, key),
-            InputMode::EsvEdit => crate::screens::esv::handle_edit_key(self, key)?,
-            InputMode::EsvRestartConfirm => {
-                crate::screens::esv::handle_restart_confirm_key(self, key)?
-            }
-            InputMode::EsvDeleteConfirm => {
-                crate::screens::esv::handle_delete_confirm_key(self, key)?
-            }
-            InputMode::SecretCreate => crate::screens::secret::handle_create_key(self, key)?,
-            InputMode::SecretVersions => crate::screens::secret::handle_versions_key(self, key)?,
-            InputMode::SecretAddVersion => {
-                crate::screens::secret::handle_add_version_key(self, key)?
-            }
-            InputMode::SecretDeleteConfirm => {
-                crate::screens::secret::handle_delete_confirm_key(self, key)?
-            }
-            InputMode::SecretVersionDestroyConfirm => {
-                crate::screens::secret::handle_version_destroy_confirm_key(self, key)?
-            }
-        }
-        Ok(())
+        // One dispatch entry point for every mode — see `crate::keymap`.
+        crate::keymap::dispatch(self, key).await
     }
 
     fn should_open_keybind_help(&self, key: KeyEvent) -> bool {
@@ -593,11 +559,6 @@ impl App {
         self.onboard.pending_overwrite_name()
     }
 
-    async fn handle_normal_key(&mut self, key: KeyEvent) -> Result<()> {
-        // Dispatch, footer hints, and F1 help all derive from the same table
-        // in `crate::keymap` — see `keymap::normal_binds`.
-        crate::keymap::dispatch_normal(self, key).await
-    }
 
     /// Backwards-compat shim so existing UI callers
     /// (`ui::auth_settings::draw_confirm`) keep working without touching
@@ -606,7 +567,7 @@ impl App {
         self.auth_settings.pending_action_label(&self.wraps)
     }
 
-    fn handle_env_picker_key(&mut self, key: KeyEvent) {
+    pub fn handle_env_picker_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;

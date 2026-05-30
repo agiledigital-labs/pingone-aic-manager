@@ -275,6 +275,47 @@ fn push_global(out: &mut Vec<Bind>) {
     out.push(b(&[Trigger::Ctrl('c')], "^C", "quit", false, false, Act::Quit));
 }
 
+/// The single key-dispatch entry point for every input mode. `app::handle_key`
+/// calls this after the keybind-help-popover pre-checks. Normal mode is fully
+/// table-driven (below); other modes route to their screen handler — one place
+/// that maps mode → handler, instead of a match scattered in `app`.
+pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    match app.input_mode {
+        InputMode::Normal => dispatch_normal(app, key).await?,
+        InputMode::SetupAuth => crate::screens::auth_setup::handle_key(app, key).await?,
+        InputMode::Unlock => crate::screens::unlock::handle_key(app, key),
+        InputMode::AuthSettings => crate::screens::auth_settings::handle_key(app, key)?,
+        InputMode::AuthSettingsConfirm => {
+            crate::screens::auth_settings::handle_confirm_key(app, key).await?
+        }
+        InputMode::AuthSettingsRename => {
+            crate::screens::auth_settings::handle_rename_key(app, key)?
+        }
+        InputMode::OnboardMenu => crate::screens::onboard::handle_menu_key(app, key).await?,
+        InputMode::OnboardCookie => crate::screens::onboard::handle_cookie_key(app, key).await?,
+        InputMode::OnboardUserPass => crate::screens::onboard::handle_up_key(app, key).await?,
+        InputMode::OnboardPaste => crate::screens::onboard::handle_paste_key(app, key).await?,
+        InputMode::OverwriteConfirm => crate::screens::onboard::handle_overwrite_key(app, key)?,
+        InputMode::EnvPicker => app.handle_env_picker_key(key),
+        InputMode::ProdConfirm => crate::screens::prod_confirm::handle_key(app, key).await?,
+        InputMode::UndoHistory => crate::screens::undo_history::handle_key(app, key),
+        InputMode::EsvSearch => crate::screens::esv::handle_search_key(app, key),
+        InputMode::EsvEdit => crate::screens::esv::handle_edit_key(app, key)?,
+        InputMode::EsvRestartConfirm => crate::screens::esv::handle_restart_confirm_key(app, key)?,
+        InputMode::EsvDeleteConfirm => crate::screens::esv::handle_delete_confirm_key(app, key)?,
+        InputMode::SecretCreate => crate::screens::secret::handle_create_key(app, key)?,
+        InputMode::SecretVersions => crate::screens::secret::handle_versions_key(app, key)?,
+        InputMode::SecretAddVersion => crate::screens::secret::handle_add_version_key(app, key)?,
+        InputMode::SecretDeleteConfirm => {
+            crate::screens::secret::handle_delete_confirm_key(app, key)?
+        }
+        InputMode::SecretVersionDestroyConfirm => {
+            crate::screens::secret::handle_version_destroy_confirm_key(app, key)?
+        }
+    }
+    Ok(())
+}
+
 /// Dispatch a Normal-mode key through the table. Returns without effect if no
 /// binding matches.
 pub async fn dispatch_normal(app: &mut App, key: KeyEvent) -> crate::Result<()> {
