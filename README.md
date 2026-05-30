@@ -94,8 +94,29 @@ cargo run             # launches the TUI
 cargo run -- --help   # CLI subcommands
 cargo run -- agent    # foreground daemon (auto-spawned otherwise)
 cargo run -- login    # unlock the agent for this session
-cargo run -- esv list # talk to the active tenant via the agent
 ```
+
+The CLI mirrors the TUI's ESV capabilities (variables and secrets), talking to
+the active tenant through the agent:
+
+```bash
+aic esv list                                  # variables
+aic esv get  esv-my-var
+aic esv set  esv-my-var --value hello --type string
+aic esv delete esv-my-var
+aic esv apply                                 # restart the runtime to apply
+
+aic esv secret list
+aic esv secret versions esv-my-secret
+aic esv secret create esv-my-secret --value s3cret           # encoding generic
+aic esv secret add-version esv-my-secret --value rotated
+aic esv secret disable esv-my-secret 2
+aic esv secret set-description esv-my-secret --description "…"
+```
+
+Mutating commands take `--yes` to confirm a write to a production-themed
+tenant (the CLI equivalent of the TUI's prod-write guard), and `--tenant
+<name>` to override the current context for a single call.
 
 ## The agent
 

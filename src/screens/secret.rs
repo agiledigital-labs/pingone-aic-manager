@@ -17,8 +17,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as B64;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, InputMode};
@@ -522,40 +520,11 @@ fn set_create_error(app: &mut App, msg: &str) {
     }
 }
 
-/// Turn the on-screen value into the wire `valueBase64`, validating per
-/// encoding so we surface a friendly error instead of AIC's opaque 500.
+/// Turn the on-screen value into the wire `valueBase64`. Thin wrapper over the
+/// shared [`crate::aic::esv::encode_secret_value`] (keyed by encoding string),
+/// so the TUI and CLI validate identically.
 fn encode_value(encoding: Encoding, value: &str, as_json: bool) -> std::result::Result<String, String> {
-    if value.is_empty() {
-        return Err("Value cannot be empty".into());
-    }
-    match encoding {
-        Encoding::Generic => {
-            if as_json && serde_json::from_str::<serde_json::Value>(value.trim()).is_err() {
-                return Err("Value is not valid JSON (toggle JSON off for plain text)".into());
-            }
-            Ok(B64.encode(value.as_bytes()))
-        }
-        Encoding::Pem => {
-            if !value.contains("-----BEGIN") {
-                return Err("PEM value must contain a -----BEGIN … block".into());
-            }
-            Ok(B64.encode(value.as_bytes()))
-        }
-        Encoding::Base64Hmac | Encoding::Base64Aes => {
-            let trimmed = value.trim();
-            let decoded = B64
-                .decode(trimmed)
-                .map_err(|_| "Value must be a base64-encoded key".to_string())?;
-            if encoding == Encoding::Base64Aes && !matches!(decoded.len(), 16 | 24 | 32) {
-                return Err(format!(
-                    "AES key must decode to 16/24/32 bytes (got {})",
-                    decoded.len()
-                ));
-            }
-            // Double-encode: the value is itself the base64 key string.
-            Ok(B64.encode(trimmed.as_bytes()))
-        }
-    }
+    crate::aic::esv::encode_secret_value(encoding.as_str(), value, as_json)
 }
 
 #[derive(Debug, Clone)]
@@ -1388,6 +1357,8 @@ pub async fn undo_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as B64;
 
     fn decode(b64: &str) -> Vec<u8> {
         B64.decode(b64).unwrap()
