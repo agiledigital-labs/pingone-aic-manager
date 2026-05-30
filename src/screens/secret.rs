@@ -25,8 +25,9 @@ use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
 use crate::event::{AppEvent, ToastKind};
 use crate::screens::esv::{LoadState, id_of};
+use crate::screens::list_state::TenantListState;
 use crate::screens::prod_confirm::PendingProdAction;
-use crate::ui::widgets::{LineEditor, TextField};
+use crate::ui::widgets::TextField;
 use crate::undo::{Capability, ConflictCheck, Sensitivity, UndoEntry, UndoOp};
 
 /// The four secret kinds the console offers map 1:1 to the API `encoding`.
@@ -169,14 +170,10 @@ pub enum SecretOpKind {
 
 #[derive(Debug)]
 pub struct State {
-    /// Per-tenant secret metadata lists (from the shared poll).
-    pub data: HashMap<String, LoadState>,
-    /// Ids the `?_onlyPending=true` endpoint reports — authoritative for which
-    /// secrets gate a restart (only `useInPlaceholders:true` appear).
-    pub pending_ids: HashMap<String, HashSet<String>>,
-    pub query: LineEditor,
-    pub selected: usize,
-    pub scroll: usize,
+    /// Shared per-tenant list mechanics (data, pending ids, query, cursor).
+    /// `pending_ids` here is authoritative for which secrets gate a restart
+    /// (only `useInPlaceholders:true` secrets ever appear).
+    pub list: TenantListState,
 
     /// Versions of a secret, loaded on demand when the version panel opens.
     pub versions: HashMap<(String, String), LoadState>,
@@ -199,11 +196,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
-            data: HashMap::new(),
-            pending_ids: HashMap::new(),
-            query: LineEditor::new(),
-            selected: 0,
-            scroll: 0,
+            list: TenantListState::new(),
             versions: HashMap::new(),
             version_selected: 0,
             version_target: None,
@@ -224,9 +217,9 @@ impl State {
     /// Drop view state (filter, selection, open version panel) on tenant
     /// switch — the data behind it changed.
     pub fn reset_view(&mut self) {
-        self.query.clear();
-        self.selected = 0;
-        self.scroll = 0;
+        self.list.query.clear();
+        self.list.selected = 0;
+        self.list.scroll = 0;
         self.version_target = None;
         self.version_selected = 0;
         self.pending_version_destroy = None;
@@ -249,6 +242,7 @@ pub fn encoding_of(v: &serde_json::Value) -> &str {
 /// set. Folded into the ESV tab's overall pending count.
 pub fn pending_count(app: &App, tenant: &str) -> usize {
     app.secret
+        .list
         .pending_ids
         .get(tenant)
         .map(|s| s.len())
@@ -271,11 +265,11 @@ pub fn rows(app: &App, tenant: Option<&str>) -> Vec<SecretRow> {
     let Some(name) = tenant else {
         return Vec::new();
     };
-    let Some(LoadState::Loaded(items)) = app.secret.data.get(name) else {
+    let Some(LoadState::Loaded(items)) = app.secret.list.data.get(name) else {
         return Vec::new();
     };
-    let query = app.secret.query.value().to_lowercase();
-    let pending = app.secret.pending_ids.get(name);
+    let query = app.secret.list.query.value().to_lowercase();
+    let pending = app.secret.list.pending_ids.get(name);
     let mut out: Vec<SecretRow> = items
         .iter()
         .enumerate()
@@ -300,8 +294,8 @@ pub fn rows(app: &App, tenant: Option<&str>) -> Vec<SecretRow> {
 pub fn selected_secret(app: &App) -> Option<serde_json::Value> {
     let tenant = app.active_tenant()?.name.clone();
     let rows = rows(app, Some(&tenant));
-    let row = rows.get(app.secret.selected)?;
-    let LoadState::Loaded(items) = app.secret.data.get(&tenant)? else {
+    let row = rows.get(app.secret.list.selected)?;
+    let LoadState::Loaded(items) = app.secret.list.data.get(&tenant)? else {
         return None;
     };
     items.get(row.idx).cloned()
@@ -318,16 +312,18 @@ pub fn apply_refresh(
     match secrets {
         Ok(vs) => {
             app.secret
+                .list
                 .data
                 .insert(tenant.to_string(), LoadState::Loaded(vs.clone()));
             let n = rows(app, Some(tenant)).len();
-            if app.secret.selected >= n {
-                app.secret.selected = n.saturating_sub(1);
+            if app.secret.list.selected >= n {
+                app.secret.list.selected = n.saturating_sub(1);
             }
         }
         Err(e) => {
-            if !matches!(app.secret.data.get(tenant), Some(LoadState::Loaded(_))) {
+            if !matches!(app.secret.list.data.get(tenant), Some(LoadState::Loaded(_))) {
                 app.secret
+                    .list
                     .data
                     .insert(tenant.to_string(), LoadState::Failed(e.clone()));
             } else {
@@ -336,7 +332,7 @@ pub fn apply_refresh(
         }
     }
     if let Ok(vs) = pending {
-        app.secret.pending_ids.insert(
+        app.secret.list.pending_ids.insert(
             tenant.to_string(),
             vs.iter().map(|v| id_of(v).to_string()).collect(),
         );
@@ -354,28 +350,28 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
             app.input_mode = InputMode::EsvSearch;
             true
         }
-        KeyCode::Esc if !app.secret.query.is_empty() => {
-            app.secret.query.clear();
-            app.secret.selected = 0;
-            app.secret.scroll = 0;
+        KeyCode::Esc if !app.secret.list.query.is_empty() => {
+            app.secret.list.query.clear();
+            app.secret.list.selected = 0;
+            app.secret.list.scroll = 0;
             true
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            if n > 0 && app.secret.selected + 1 < n {
-                app.secret.selected += 1;
+            if n > 0 && app.secret.list.selected + 1 < n {
+                app.secret.list.selected += 1;
             }
             true
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.secret.selected = app.secret.selected.saturating_sub(1);
+            app.secret.list.selected = app.secret.list.selected.saturating_sub(1);
             true
         }
         KeyCode::Char('g') => {
-            app.secret.selected = 0;
+            app.secret.list.selected = 0;
             true
         }
         KeyCode::Char('G') => {
-            app.secret.selected = n.saturating_sub(1);
+            app.secret.list.selected = n.saturating_sub(1);
             true
         }
         KeyCode::Enter | KeyCode::Char('v') if n > 0 => {
@@ -480,6 +476,7 @@ fn commit_create(app: &mut App) {
     }
     if app
         .secret
+        .list
         .data
         .get(&tenant)
         .and_then(|s| match s {
@@ -634,7 +631,7 @@ fn open_add_version(app: &mut App) {
 
 /// Look up a secret object in the per-tenant cache by id.
 fn secret_in_cache(app: &App, tenant: &str, id: &str) -> Option<serde_json::Value> {
-    match app.secret.data.get(tenant) {
+    match app.secret.list.data.get(tenant) {
         Some(LoadState::Loaded(items)) => items.iter().find(|v| id_of(v) == id).cloned(),
         _ => None,
     }

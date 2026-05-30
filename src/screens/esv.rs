@@ -13,11 +13,12 @@ use crate::aic::esv::StartupStatus;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
 use crate::event::{AppEvent, ToastKind};
+use crate::screens::list_state::TenantListState;
 use crate::screens::prod_confirm::PendingProdAction;
-use crate::ui::widgets::{LineEditor, TextField};
+use crate::ui::widgets::TextField;
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
-/// Per-tenant ESV load state. `app.esv.data` maps tenant name → this.
+/// Per-tenant ESV load state. `app.esv.list.data` maps tenant name → this.
 #[derive(Debug, Clone)]
 pub enum LoadState {
     Loading,
@@ -114,8 +115,8 @@ pub struct EsvPending {
 }
 
 pub fn pending_summary(app: &App, tenant: &str) -> EsvPending {
-    let mut ids = app.esv.pending_ids.get(tenant).cloned().unwrap_or_default();
-    if let Some(LoadState::Loaded(items)) = app.esv.data.get(tenant) {
+    let mut ids = app.esv.list.pending_ids.get(tenant).cloned().unwrap_or_default();
+    if let Some(LoadState::Loaded(items)) = app.esv.list.data.get(tenant) {
         ids.extend(
             items
                 .iter()
@@ -369,24 +370,15 @@ pub struct DeleteTombstone {
 
 #[derive(Debug)]
 pub struct State {
-    /// Cached ESV lists, keyed by tenant name. Populated lazily on first
-    /// visit; refreshed on a 30s tick.
-    pub data: HashMap<String, LoadState>,
+    /// Shared per-tenant list mechanics: cached data, pending ids, the search
+    /// query, and cursor/scroll. See [`TenantListState`].
+    pub list: TenantListState,
     /// Tenants whose ESV refetch is currently in flight — guards against
     /// duplicate spawns when the user re-enters the tab or the poll fires.
     pub refreshing: HashSet<String>,
     /// When the last poll-refresh ran. Drives the 30s cadence in `tick`.
     pub last_poll: Instant,
 
-    /// Fuzzy search query + cursor. Empty = show everything. Updated while
-    /// in `InputMode::EsvSearch`; persists after Enter so the filter stays
-    /// applied. Cleared on tenant switch + on Esc-from-search.
-    pub query: LineEditor,
-    /// Index into the filtered list. Always clamped to len-1 (or 0 when
-    /// the filter eliminates everything).
-    pub selected: usize,
-    /// First visible row — drives windowed rendering.
-    pub scroll: usize,
     /// In-flight edit. `None` = preview pane (read-only display). `Some`
     /// = the right pane is the editable form. See `start_edit` / `cancel_edit`.
     pub editing: Option<EditState>,
@@ -402,11 +394,6 @@ pub struct State {
     /// Variables deleted locally/through AIC that we keep visible as local
     /// undo tombstones. Ping's pending endpoints do not report deletes.
     pub recent_deletes: HashMap<(String, String), DeleteTombstone>,
-
-    /// Last successful `GET /environment/variables?_onlyPending=true` result,
-    /// keyed by tenant. This is authoritative for existing variables that
-    /// need restart/apply.
-    pub pending_ids: HashMap<String, HashSet<String>>,
 
     /// (tenant, id) for any optimistic save whose background request
     /// failed. The local cache still holds the user's attempted body
@@ -455,16 +442,12 @@ pub const DELETE_TOMBSTONE_TTL: std::time::Duration = std::time::Duration::from_
 impl Default for State {
     fn default() -> Self {
         Self {
-            data: HashMap::new(),
+            list: TenantListState::new(),
             refreshing: HashSet::new(),
             last_poll: Instant::now(),
-            query: LineEditor::new(),
-            selected: 0,
-            scroll: 0,
             editing: None,
             recent_writes: HashMap::new(),
             recent_deletes: HashMap::new(),
-            pending_ids: HashMap::new(),
             failed_writes: HashSet::new(),
             apply_states: HashMap::new(),
             restart_started_at: HashMap::new(),
@@ -539,9 +522,9 @@ impl State {
 
     /// Drop view state (filter + selection). Called on tenant switch.
     pub fn reset_view(&mut self) {
-        self.query.clear();
-        self.selected = 0;
-        self.scroll = 0;
+        self.list.query.clear();
+        self.list.selected = 0;
+        self.list.scroll = 0;
     }
 
     /// Apply the fuzzy filter to a tenant's loaded ESV list. Returns
@@ -551,10 +534,10 @@ impl State {
         let Some(name) = tenant else {
             return Vec::new();
         };
-        let Some(LoadState::Loaded(items)) = self.data.get(name) else {
+        let Some(LoadState::Loaded(items)) = self.list.data.get(name) else {
             return Vec::new();
         };
-        if self.query.is_empty() {
+        if self.list.query.is_empty() {
             let mut indexed: Vec<Match> = items
                 .iter()
                 .enumerate()
@@ -588,7 +571,7 @@ impl State {
         };
         let mut matcher = Matcher::new(Config::DEFAULT);
         let pattern = Pattern::new(
-            self.query.value(),
+            self.list.query.value(),
             CaseMatching::Ignore,
             Normalization::Smart,
             AtomKind::Fuzzy,
@@ -604,6 +587,7 @@ impl State {
                 let id = id_of(v).to_string();
                 let pending = is_pending(v)
                     || self
+                        .list
                         .pending_ids
                         .get(name)
                         .is_some_and(|ids| ids.contains(&id));
@@ -657,8 +641,8 @@ impl State {
     /// Re-clamp the selection in case the matched list shrunk (e.g. after
     /// a refetch returns a shorter list, or after the filter changed).
     pub fn clamp_selection(&mut self, n: usize) {
-        if self.selected >= n {
-            self.selected = n.saturating_sub(1);
+        if self.list.selected >= n {
+            self.list.selected = n.saturating_sub(1);
         }
     }
 }
@@ -696,14 +680,14 @@ pub fn refresh_tenant(app: &mut App, name: &str, force: bool) {
     if app.esv.refreshing.contains(&name) {
         return;
     }
-    if !force && app.esv.data.contains_key(&name) {
+    if !force && app.esv.list.data.contains_key(&name) {
         return;
     }
 
     // Only show the Loading spinner when there's nothing cached yet;
     // refetches keep the previous Loaded entry visible.
-    if !app.esv.data.contains_key(&name) {
-        app.esv.data.insert(name.clone(), LoadState::Loading);
+    if !app.esv.list.data.contains_key(&name) {
+        app.esv.list.data.insert(name.clone(), LoadState::Loading);
     }
     app.esv.refreshing.insert(name.clone());
     app.esv.last_poll = Instant::now();
@@ -770,36 +754,36 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
             app.input_mode = InputMode::EsvSearch;
             true
         }
-        KeyCode::Esc if !app.esv.query.is_empty() => {
+        KeyCode::Esc if !app.esv.list.query.is_empty() => {
             app.esv.reset_view();
             true
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            if n > 0 && app.esv.selected + 1 < n {
-                app.esv.selected += 1;
+            if n > 0 && app.esv.list.selected + 1 < n {
+                app.esv.list.selected += 1;
             }
             true
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if app.esv.selected > 0 {
-                app.esv.selected -= 1;
+            if app.esv.list.selected > 0 {
+                app.esv.list.selected -= 1;
             }
             true
         }
         KeyCode::PageDown => {
-            app.esv.selected = (app.esv.selected + 10).min(n.saturating_sub(1));
+            app.esv.list.selected = (app.esv.list.selected + 10).min(n.saturating_sub(1));
             true
         }
         KeyCode::PageUp => {
-            app.esv.selected = app.esv.selected.saturating_sub(10);
+            app.esv.list.selected = app.esv.list.selected.saturating_sub(10);
             true
         }
         KeyCode::Char('g') => {
-            app.esv.selected = 0;
+            app.esv.list.selected = 0;
             true
         }
         KeyCode::Char('G') => {
-            app.esv.selected = n.saturating_sub(1);
+            app.esv.list.selected = n.saturating_sub(1);
             true
         }
         KeyCode::Enter if n > 0 => {
@@ -854,7 +838,7 @@ fn build_delete_plan(app: &mut App) -> Option<DeletePlan> {
     let tenant = app.active_tenant()?;
     let tenant_name = tenant.name.clone();
     let matches = app.esv.matches(Some(&tenant_name));
-    let m = matches.get(app.esv.selected)?;
+    let m = matches.get(app.esv.list.selected)?;
     if m.deleted {
         app.push_toast(
             ToastKind::Info,
@@ -873,7 +857,7 @@ fn build_delete_plan(app: &mut App) -> Option<DeletePlan> {
         );
         return None;
     }
-    let Some(LoadState::Loaded(items)) = app.esv.data.get(&tenant_name) else {
+    let Some(LoadState::Loaded(items)) = app.esv.list.data.get(&tenant_name) else {
         return None;
     };
     let original = items.get(m.idx?).cloned()?;
@@ -991,9 +975,9 @@ pub fn handle_search_key(app: &mut App, key: KeyEvent) {
     if app.esv.view == EsvView::Secrets {
         match key.code {
             KeyCode::Esc => {
-                app.secret.query.clear();
-                app.secret.selected = 0;
-                app.secret.scroll = 0;
+                app.secret.list.query.clear();
+                app.secret.list.selected = 0;
+                app.secret.list.scroll = 0;
                 app.input_mode = InputMode::Normal;
             }
             KeyCode::Enter => {
@@ -1003,10 +987,10 @@ pub fn handle_search_key(app: &mut App, key: KeyEvent) {
                 crate::screens::secret::handle_normal_key(app, key);
             }
             _ => {
-                let before = app.secret.query.value().to_string();
-                if app.secret.query.handle_key(&key) && app.secret.query.value() != before {
-                    app.secret.selected = 0;
-                    app.secret.scroll = 0;
+                let before = app.secret.list.query.value().to_string();
+                if app.secret.list.query.handle_key(&key) && app.secret.list.query.value() != before {
+                    app.secret.list.selected = 0;
+                    app.secret.list.scroll = 0;
                 }
             }
         }
@@ -1028,10 +1012,10 @@ pub fn handle_search_key(app: &mut App, key: KeyEvent) {
         }
         _ => {}
     }
-    let before = app.esv.query.value().to_string();
-    if app.esv.query.handle_key(&key) && app.esv.query.value() != before {
-        app.esv.selected = 0;
-        app.esv.scroll = 0;
+    let before = app.esv.list.query.value().to_string();
+    if app.esv.list.query.handle_key(&key) && app.esv.list.query.value() != before {
+        app.esv.list.selected = 0;
+        app.esv.list.scroll = 0;
     }
 }
 
@@ -1085,7 +1069,7 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
                 .map(|(_, id)| id.clone())
                 .collect();
             vs.retain(|v| !suppressed.contains(id_of(v)));
-            app.esv.data.insert(tenant.clone(), LoadState::Loaded(vs));
+            app.esv.list.data.insert(tenant.clone(), LoadState::Loaded(vs));
             if is_active {
                 let n = app
                     .esv
@@ -1098,17 +1082,17 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
         Err(e) => {
             // Don't clobber a previously-cached list with a background-
             // refresh failure — keep showing the stale data and just log.
-            if matches!(app.esv.data.get(&tenant), Some(LoadState::Loaded(_))) {
+            if matches!(app.esv.list.data.get(&tenant), Some(LoadState::Loaded(_))) {
                 tracing::warn!("ESV refresh failed for {tenant}: {e}");
             } else {
-                app.esv.data.insert(tenant.clone(), LoadState::Failed(e));
+                app.esv.list.data.insert(tenant.clone(), LoadState::Failed(e));
             }
             false
         }
     };
     let pending_refreshed = match outcome.pending_variables {
         Ok(vs) => {
-            app.esv.pending_ids.insert(
+            app.esv.list.pending_ids.insert(
                 tenant.clone(),
                 vs.iter().map(|v| id_of(v).to_string()).collect(),
             );
@@ -1193,7 +1177,7 @@ pub fn start_edit(app: &mut App) {
     };
     let tenant_name = tenant.name.clone();
     let matches = app.esv.matches(Some(&tenant_name));
-    let Some(m) = matches.get(app.esv.selected) else {
+    let Some(m) = matches.get(app.esv.list.selected) else {
         return;
     };
     if m.deleted {
@@ -1211,7 +1195,7 @@ pub fn start_edit(app: &mut App) {
         );
         return;
     }
-    let Some(LoadState::Loaded(items)) = app.esv.data.get(&tenant_name) else {
+    let Some(LoadState::Loaded(items)) = app.esv.list.data.get(&tenant_name) else {
         return;
     };
     let Some(idx) = m.idx else { return };
@@ -1483,7 +1467,7 @@ pub fn execute_save_plan(app: &mut App, plan: SavePlan, confirmed_prod: bool) {
     }
 
     // Apply locally + pin across polls.
-    if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant_name) {
+    if let Some(LoadState::Loaded(items)) = app.esv.list.data.get_mut(&tenant_name) {
         if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
             *slot = optimistic.clone();
         } else {
@@ -1512,7 +1496,7 @@ pub fn execute_save_plan(app: &mut App, plan: SavePlan, confirmed_prod: bool) {
     if was_creating {
         let matches = app.esv.matches(Some(&tenant_name));
         if let Some(pos) = matches.iter().position(|m| m.id == id) {
-            app.esv.selected = pos;
+            app.esv.list.selected = pos;
         }
     }
 
@@ -1609,7 +1593,7 @@ pub fn execute_delete_plan(app: &mut App, plan: DeletePlan, confirmed_prod: bool
     }
 
     let mut remaining = None;
-    if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant_name) {
+    if let Some(LoadState::Loaded(items)) = app.esv.list.data.get_mut(&tenant_name) {
         items.retain(|v| id_of(v) != id);
         remaining = Some(items.len());
     }
@@ -2025,7 +2009,7 @@ pub fn apply_save_result(
         .remove(&(tenant.clone(), id.clone()));
     match result {
         Ok(SaveOutcome { body, created }) => {
-            if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant) {
+            if let Some(LoadState::Loaded(items)) = app.esv.list.data.get_mut(&tenant) {
                 if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
                     *slot = body.clone();
                 }
@@ -2083,7 +2067,7 @@ pub fn apply_delete_result(
         Err(e) => {
             app.esv.recent_deletes.remove(&(tenant.clone(), id.clone()));
             if let Some(original) = original {
-                if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant) {
+                if let Some(LoadState::Loaded(items)) = app.esv.list.data.get_mut(&tenant) {
                     if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
                         *slot = original.clone();
                     } else {
@@ -2115,7 +2099,7 @@ pub fn apply_undo_result(
             }
             match applied {
                 UndoApplied::Upsert { id, body } => {
-                    if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant) {
+                    if let Some(LoadState::Loaded(items)) = app.esv.list.data.get_mut(&tenant) {
                         if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
                             *slot = body.clone();
                         } else {
@@ -2131,7 +2115,7 @@ pub fn apply_undo_result(
                 }
                 UndoApplied::Delete { id, body } => {
                     let mut remaining = None;
-                    if let Some(LoadState::Loaded(items)) = app.esv.data.get_mut(&tenant) {
+                    if let Some(LoadState::Loaded(items)) = app.esv.list.data.get_mut(&tenant) {
                         items.retain(|v| id_of(v) != id);
                         remaining = Some(items.len());
                     }
@@ -2153,7 +2137,7 @@ pub fn apply_undo_result(
                 UndoApplied::SecretRemoved { id } => {
                     // Drop the secret locally and re-poll so the list + pending
                     // state reflect the removal.
-                    if let Some(LoadState::Loaded(items)) = app.secret.data.get_mut(&tenant) {
+                    if let Some(LoadState::Loaded(items)) = app.secret.list.data.get_mut(&tenant) {
                         items.retain(|v| id_of(v) != id);
                     }
                     refresh(app, true);
@@ -2180,7 +2164,7 @@ pub fn apply_undo_result(
 fn select_id(app: &mut App, tenant: &str, id: &str) {
     let matches = app.esv.matches(Some(tenant));
     if let Some(pos) = matches.iter().position(|m| m.id == id) {
-        app.esv.selected = pos;
+        app.esv.list.selected = pos;
     }
 }
 

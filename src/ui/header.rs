@@ -135,7 +135,7 @@ fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
                 let matches = app.esv_matches();
                 let mut selected_deleted = false;
                 if let Some(selected) =
-                    matches.get(app.esv.selected.min(matches.len().saturating_sub(1)))
+                    matches.get(app.esv.list.selected.min(matches.len().saturating_sub(1)))
                 {
                     if selected.deleted {
                         selected_deleted = true;
