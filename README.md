@@ -97,9 +97,54 @@ cargo run -- login    # unlock the agent for this session
 cargo run -- esv list # talk to the active tenant via the agent
 ```
 
-The agent listens on `.aic-edit/agent.sock` (mode 0600). Killing it (`aic
-stop`) clears in-memory credentials; an idle timeout does the same after
-1 h by default (overridable via `settings.toml` or `--idle-timeout`).
+## The agent
+
+Every tenant call — from the TUI or the CLI — goes through a small background
+process called the **agent**, modelled on `ssh-agent`. You don't normally start
+it yourself; the TUI and CLI spawn it automatically the first time they need it.
+
+**Why it exists.** AIC bearer tokens expire after ~15 minutes, and minting a new
+one needs your decrypted service-account private key. Rather than ask for your
+master password on every action, the agent holds the decrypted keys in memory
+and mints/refreshes tokens on demand. You authenticate once; everything that
+follows reuses the same unlocked agent — including a second TUI window or a CLI
+command in another terminal, since they all share one agent.
+
+**Locked vs. unlocked.** The agent is always one of two states:
+
+- **Unlocked** — your keys are decrypted in memory and it can mint tokens.
+- **Locked** — it's running, but holds *nothing sensitive*: no keys, no tokens.
+  Every request just gets "locked" back until you log in again.
+
+When you first launch, the agent starts locked and the TUI shows the **Unlock**
+screen (or the CLI's `aic login` prompts you). If your keys are stored
+unencrypted (you chose "no master password" during setup), the agent unlocks
+itself and you're never prompted.
+
+**The commands:**
+
+| Command      | What it does                                                              |
+| ------------ | ------------------------------------------------------------------------- |
+| `aic login`  | Unlock the agent (prompts for your master password).                      |
+| `aic logout` | **Lock** the agent — wipes keys + tokens from memory, but leaves it running. |
+| `aic stop`   | **Stop** the agent — shut the process down entirely.                      |
+| `aic status` | Show whether it's running, unlocked, the active tenant, and token expiry. |
+
+**Why `logout` doesn't kill the process.** This trips people up: `logout`
+*locks* the agent, it doesn't stop it. The two are different on purpose. Locking
+already removes everything sensitive from memory, so for security it's
+equivalent to killing it — but it keeps the process (and its shared connection)
+alive, so the next `aic login` re-unlocks everyone instantly instead of paying
+to spawn a fresh process. Use `aic logout` when you're stepping away and want to
+re-lock; use `aic stop` when you actually want the agent gone.
+
+**Auto-lock.** If left idle, the agent locks itself automatically after **1 hour**
+by default — the same effect as `aic logout`. Override the timeout in
+`.aic-edit/settings.toml` or with `aic agent --idle-timeout <seconds>`.
+
+**Where it lives.** The agent listens on a Unix socket at
+`.aic-edit/agent.sock`, restricted to your user (mode 0600). It's per-project:
+each checkout with its own `.aic-edit/` gets its own agent.
 
 ## Implementation status
 
