@@ -96,7 +96,15 @@ impl AicClient {
     async fn check_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {
         let status = resp.status();
         if status.is_success() {
-            Ok(resp.json().await?)
+            // Some AIC write actions return `200` with an **empty body** —
+            // verified for secret `setDescription` (2026-05-31), which the docs
+            // wrongly claimed echoes the object. Treat an empty success body as
+            // JSON null instead of failing to decode.
+            let bytes = resp.bytes().await?;
+            if bytes.is_empty() {
+                return Ok(serde_json::Value::Null);
+            }
+            Ok(serde_json::from_slice(&bytes)?)
         } else {
             let body = resp.text().await.unwrap_or_default();
             Err(Error::Api {

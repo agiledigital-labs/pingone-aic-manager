@@ -38,7 +38,7 @@ claims in this table were **wrong** — corrected below.
 | List pending | `GET` | `/environment/secrets?_onlyPending=true` | Secrets whose `activeVersion != loadedVersion` AND `useInPlaceholders=true`. |
 | Read | `GET` | `/environment/secrets/{id}` | Metadata only — values never returned. |
 | **Create** | `PUT` | `/environment/secrets/{id}` | **Create-only, NOT upsert.** PUT on an existing id → `400 "Failed to create secret, the secret already exists"`. Body **requires** `encoding`, `useInPlaceholders`, `valueBase64` (and optional `description`). |
-| Set description | `POST` | `/environment/secrets/{id}?_action=setDescription` | Body `{ "description": "…" }` → 200, echoes object. **Only action allowed** on a secret. |
+| Set description | `POST` | `/environment/secrets/{id}?_action=setDescription` | Body `{ "description": "…" }` → **`200` with an EMPTY body** (does NOT echo the object — earlier claim was wrong, corrected 2026-05-31). **Only action allowed** on a secret. |
 | Delete (all versions) | `DELETE` | `/environment/secrets/{id}` | Permanent; removes the whole secret. |
 | List versions | `GET` | `/environment/secrets/{id}/versions` | Returns a **bare JSON array** (no `result` wrapper), newest-first. |
 | Create new version | `POST` | `/environment/secrets/{id}/versions?_action=create` | Body `{ "valueBase64": "…" }`. Returns the new version object. New version is auto-`ENABLED` and becomes `activeVersion`. |
@@ -215,7 +215,8 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-05-26 (variables); 2026-05-30 (full secrets lifecycle)
+- Date: 2026-05-26 (variables); 2026-05-30 (full secrets lifecycle);
+  2026-05-31 (`setDescription` returns empty `200`)
 - Calls: `GET /environment/variables`, `GET /environment/variables/{id}`,
   `GET /environment/secrets`, `GET /environment/startup`. All 200 OK.
 - Secrets lifecycle (2026-05-30), throwaway `esv-aicedit-sec*`, all cleaned up:
@@ -230,6 +231,11 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
     `useInPlaceholders:false` create → `loaded:true`, not pending.
   - Encodings: `generic`/`base64aes` (valid 16-byte key) → 200; `pem` (valid
     cert) → 200; `pem`/`base64hmac` with invalid content → 500.
+- `setDescription` (2026-05-31, on throwaway `esv-secret-test1`): `POST
+  …?_action=setDescription` with `{"description":"…"}` → **`200` with a
+  zero-byte body**. The earlier "echoes object" claim was wrong. A strict
+  JSON-decode of the success body therefore fails ("error decoding response
+  body"); `AicClient::check_response` now maps an empty `200` to JSON null.
 - Type-change round-trip on `/environment/variables/{id}`:
   `PUT (string → int)` → 400 "Changing the type ... not permitted";
   `DELETE` → 200; subsequent `PUT (int)` → 200; `DELETE` → 200. No restart
