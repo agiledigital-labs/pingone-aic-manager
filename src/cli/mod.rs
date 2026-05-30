@@ -3,8 +3,10 @@
 //! Two layers:
 //!   * agent lifecycle + auth (`agent`, `login`, `logout`, `stop`, `status`,
 //!     `ctx`, `whoami`) — talks directly to the daemon over its socket.
-//!   * resource commands (`esv list`, future `script`, `oauth2`, ...) — go
-//!     through `aic::api` / `aic::esv`, which are shared with the TUI. Do
+//!   * resource commands (`esv list/get/set/delete/apply`, `esv secret …`,
+//!     future `script`, `oauth2`, ...) — go through `aic::api` / `aic::esv`,
+//!     which are shared with the TUI. Mutations take `--yes` to confirm a
+//!     write to a production-themed tenant (mirrors the TUI's prod guard). Do
 //!     NOT add tenant-scoped HTTP via reqwest in here; everything tenant-
 //!     facing belongs in `aic/` so both surfaces stay in sync.
 //!
@@ -82,6 +84,147 @@ pub enum EsvCommand {
         /// Override the current context for this call.
         #[arg(long)]
         tenant: Option<String>,
+    },
+    /// Get a single variable as JSON.
+    Get {
+        id: String,
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Create or update a variable.
+    Set {
+        id: String,
+        /// Plain value (stored base64-encoded as `valueBase64`).
+        #[arg(long)]
+        value: String,
+        /// expressionType: string, int, bool, list, object, array, keyvaluelist.
+        #[arg(long = "type", default_value = "string")]
+        expr_type: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete a variable.
+    Delete {
+        id: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Apply pending changes by restarting the tenant runtime.
+    Apply {
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Secret operations (versioned, write-only values).
+    Secret {
+        #[command(subcommand)]
+        command: SecretCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SecretCommand {
+    /// List secrets (metadata only — values are write-only).
+    List {
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Get a single secret's metadata as JSON.
+    Get {
+        id: String,
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Create a secret (PUT is create-only; change values via add-version).
+    Create {
+        id: String,
+        #[arg(long)]
+        value: String,
+        /// generic | pem | base64hmac | base64aes.
+        #[arg(long, default_value = "generic")]
+        encoding: String,
+        /// Validate the value as JSON (generic encoding only).
+        #[arg(long)]
+        json: bool,
+        /// Don't expose as `&{esv.id}` placeholder (loads immediately, no restart).
+        #[arg(long)]
+        no_placeholders: bool,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Set a secret's description.
+    SetDescription {
+        id: String,
+        #[arg(long)]
+        description: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List a secret's versions (newest first).
+    Versions {
+        id: String,
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Add a new version (becomes the active version). Value is encoded with
+    /// the secret's existing encoding.
+    AddVersion {
+        id: String,
+        #[arg(long)]
+        value: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Enable a version.
+    Enable {
+        id: String,
+        version: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Disable a version (the latest version can't be disabled).
+    Disable {
+        id: String,
+        version: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Destroy a version — irreversible.
+    Destroy {
+        id: String,
+        version: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete a secret and all its versions — irreversible.
+    Delete {
+        id: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -393,17 +536,181 @@ async fn whoami(tenant_arg: Option<String>) -> Result<()> {
 }
 
 async fn esv(cmd: EsvCommand) -> Result<()> {
+    use crate::aic::esv;
     match cmd {
-        EsvCommand::List { tenant } => esv_list(tenant).await,
+        EsvCommand::List { tenant } => {
+            let t = tenant_for(tenant)?;
+            print_json(&esv::list_variables(&t).await?)
+        }
+        EsvCommand::Get { id, tenant } => {
+            let t = tenant_for(tenant)?;
+            print_json(&esv::get_variable(&t, &id).await?)
+        }
+        EsvCommand::Set {
+            id,
+            value,
+            expr_type,
+            description,
+            tenant,
+            yes,
+        } => {
+            let t = tenant_for(tenant)?;
+            use base64::Engine as _;
+            let value_b64 = base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
+            prod_hint(esv::update_variable(&t, &id, &description, &expr_type, &value_b64, yes).await)?;
+            println!("variable {id} saved");
+            Ok(())
+        }
+        EsvCommand::Delete { id, tenant, yes } => {
+            let t = tenant_for(tenant)?;
+            prod_hint(esv::delete_variable(&t, &id, yes).await)?;
+            println!("variable {id} deleted");
+            Ok(())
+        }
+        EsvCommand::Apply { tenant, yes } => {
+            let t = tenant_for(tenant)?;
+            print_json(&prod_hint(esv::trigger_restart(&t, yes).await)?)
+        }
+        EsvCommand::Secret { command } => secret(command).await,
     }
 }
 
-async fn esv_list(tenant_arg: Option<String>) -> Result<()> {
+async fn secret(cmd: SecretCommand) -> Result<()> {
+    use crate::aic::esv;
+    match cmd {
+        SecretCommand::List { tenant } => {
+            let t = tenant_for(tenant)?;
+            print_json(&esv::list_secrets(&t).await?)
+        }
+        SecretCommand::Get { id, tenant } => {
+            let t = tenant_for(tenant)?;
+            print_json(&esv::get_secret(&t, &id).await?)
+        }
+        SecretCommand::Create {
+            id,
+            value,
+            encoding,
+            json,
+            no_placeholders,
+            description,
+            tenant,
+            yes,
+        } => {
+            let t = tenant_for(tenant)?;
+            let value_b64 =
+                esv::encode_secret_value(&encoding, &value, json).map_err(Error::Config)?;
+            prod_hint(
+                esv::create_secret(&t, &id, &encoding, !no_placeholders, &value_b64, &description, yes)
+                    .await,
+            )?;
+            println!("secret {id} created");
+            Ok(())
+        }
+        SecretCommand::SetDescription {
+            id,
+            description,
+            tenant,
+            yes,
+        } => {
+            let t = tenant_for(tenant)?;
+            prod_hint(esv::set_secret_description(&t, &id, &description, yes).await)?;
+            println!("secret {id} description updated");
+            Ok(())
+        }
+        SecretCommand::Versions { id, tenant } => {
+            let t = tenant_for(tenant)?;
+            print_json(&esv::list_secret_versions(&t, &id).await?)
+        }
+        SecretCommand::AddVersion {
+            id,
+            value,
+            tenant,
+            yes,
+        } => {
+            let t = tenant_for(tenant)?;
+            // A secret's encoding is fixed at create; re-use it for the new
+            // version so the value is encoded the same way.
+            let encoding = esv::get_secret(&t, &id)
+                .await?
+                .get("encoding")
+                .and_then(|x| x.as_str())
+                .unwrap_or("generic")
+                .to_string();
+            let value_b64 =
+                esv::encode_secret_value(&encoding, &value, false).map_err(Error::Config)?;
+            let created = prod_hint(esv::create_secret_version(&t, &id, &value_b64, yes).await)?;
+            let v = created
+                .get("version")
+                .map(|x| x.to_string())
+                .unwrap_or_default();
+            println!("secret {id}: added version {v}");
+            Ok(())
+        }
+        SecretCommand::Enable {
+            id,
+            version,
+            tenant,
+            yes,
+        } => set_version_status(&id, &version, "ENABLED", tenant, yes).await,
+        SecretCommand::Disable {
+            id,
+            version,
+            tenant,
+            yes,
+        } => set_version_status(&id, &version, "DISABLED", tenant, yes).await,
+        SecretCommand::Destroy {
+            id,
+            version,
+            tenant,
+            yes,
+        } => {
+            let t = tenant_for(tenant)?;
+            prod_hint(esv::destroy_secret_version(&t, &id, &version, yes).await)?;
+            println!("secret {id} version {version} destroyed");
+            Ok(())
+        }
+        SecretCommand::Delete { id, tenant, yes } => {
+            let t = tenant_for(tenant)?;
+            prod_hint(esv::delete_secret(&t, &id, yes).await)?;
+            println!("secret {id} deleted");
+            Ok(())
+        }
+    }
+}
+
+async fn set_version_status(
+    id: &str,
+    version: &str,
+    status: &str,
+    tenant: Option<String>,
+    yes: bool,
+) -> Result<()> {
+    let t = tenant_for(tenant)?;
+    prod_hint(crate::aic::esv::change_version_status(&t, id, version, status, yes).await)?;
+    println!("secret {id} version {version} → {status}");
+    Ok(())
+}
+
+/// Resolve the tenant for a resource command (flag → current context →
+/// default), loading the project config.
+fn tenant_for(tenant_arg: Option<String>) -> Result<String> {
     let cfg = ProjectConfig::load()?
         .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
-    let tenant_name = resolve_tenant(tenant_arg, &cfg)?;
-    let result = crate::aic::esv::list_variables(&tenant_name).await?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    resolve_tenant(tenant_arg, &cfg)
+}
+
+/// Turn the agent's prod-confirm refusal into an actionable CLI message.
+fn prod_hint<T>(r: Result<T>) -> Result<T> {
+    match r {
+        Err(Error::ProdConfirmRequired) => Err(Error::Config(
+            "tenant is production — re-run with --yes to confirm the write".into(),
+        )),
+        other => other,
+    }
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }
 

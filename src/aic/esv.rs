@@ -279,6 +279,53 @@ pub async fn trigger_restart(tenant: &str, confirmed_prod: bool) -> Result<serde
     .await
 }
 
+/// Validate + encode a secret value for `encoding`, returning the wire
+/// `valueBase64`. Shared by the TUI create form and the CLI so both reject the
+/// same bad input instead of relaying AIC's opaque 500s. `as_json` only applies
+/// to `generic` (mirrors the console's JSON toggle). The two key encodings are
+/// double-base64-encoded (the value is itself the base64 key string).
+pub fn encode_secret_value(
+    encoding: &str,
+    value: &str,
+    as_json: bool,
+) -> std::result::Result<String, String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as B64;
+    if value.is_empty() {
+        return Err("Value cannot be empty".into());
+    }
+    match encoding {
+        "generic" => {
+            if as_json && serde_json::from_str::<serde_json::Value>(value.trim()).is_err() {
+                return Err("Value is not valid JSON (toggle JSON off for plain text)".into());
+            }
+            Ok(B64.encode(value.as_bytes()))
+        }
+        "pem" => {
+            if !value.contains("-----BEGIN") {
+                return Err("PEM value must contain a -----BEGIN … block".into());
+            }
+            Ok(B64.encode(value.as_bytes()))
+        }
+        "base64hmac" | "base64aes" => {
+            let trimmed = value.trim();
+            let decoded = B64
+                .decode(trimmed)
+                .map_err(|_| "Value must be a base64-encoded key".to_string())?;
+            if encoding == "base64aes" && !matches!(decoded.len(), 16 | 24 | 32) {
+                return Err(format!(
+                    "AES key must decode to 16/24/32 bytes (got {})",
+                    decoded.len()
+                ));
+            }
+            Ok(B64.encode(trimmed.as_bytes()))
+        }
+        other => Err(format!(
+            "unknown encoding '{other}' (expected generic|pem|base64hmac|base64aes)"
+        )),
+    }
+}
+
 /// True iff the editable content of two variable objects matches. Used
 /// for conflict detection just before a PUT — we refetch and compare
 /// against the snapshot the user started editing from. Server-managed
