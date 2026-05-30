@@ -148,7 +148,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.input_mode == InputMode::EsvDeleteConfirm {
         let id = app
             .esv_matches()
-            .get(app.esv.selected)
+            .get(app.esv.list.selected)
             .map(|m| m.id.clone())
             .unwrap_or_else(|| "selected variable".to_string());
         let message = format!("Delete {id}?\n\nThis can be undone from the undo log.");
@@ -253,7 +253,7 @@ fn draw_esvs(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Loading / failed / empty: full-width status; no split, no preview pane.
-    match app.esv.data.get(tenant_name) {
+    match app.esv.list.data.get(tenant_name) {
         None | Some(EsvLoadState::Loading) => {
             f.render_widget(
                 Paragraph::new(Line::from(Span::styled(
@@ -319,11 +319,11 @@ fn draw_view_toggle(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     let searching = app.input_mode == InputMode::EsvSearch;
-    let total = match app.active_tenant().and_then(|t| app.esv.data.get(&t.name)) {
+    let total = match app.active_tenant().and_then(|t| app.esv.list.data.get(&t.name)) {
         Some(EsvLoadState::Loaded(vs)) => vs.len(),
         _ => 0,
     };
-    let count_text = if app.esv.query.is_empty() {
+    let count_text = if app.esv.list.query.is_empty() {
         format!("{} ESVs ", total)
     } else {
         format!("{}/{} ESVs ", matches.len(), total)
@@ -352,8 +352,8 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     // characters double-wide.
     let cursor_style = query_style.add_modifier(Modifier::REVERSED);
     let mut spans: Vec<Span> = vec![Span::styled(" /", query_style)];
-    let cursor_idx = app.esv.query.cursor();
-    let chars: Vec<char> = app.esv.query.value().chars().collect();
+    let cursor_idx = app.esv.list.query.cursor();
+    let chars: Vec<char> = app.esv.list.query.value().chars().collect();
     if searching {
         for (i, c) in chars.iter().enumerate() {
             let style = if i == cursor_idx {
@@ -367,7 +367,7 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
             spans.push(Span::styled(" ", cursor_style));
         }
     } else {
-        spans.push(Span::styled(app.esv.query.value().to_string(), query_style));
+        spans.push(Span::styled(app.esv.list.query.value().to_string(), query_style));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
     f.render_widget(
@@ -384,13 +384,13 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     // Visible window: keep the selection inside [scroll, scroll + h).
     let h = rows[1].height as usize;
     let n = matches.len();
-    let selected = app.esv.selected.min(n.saturating_sub(1));
-    let scroll = clamp_scroll(app.esv.scroll, selected, h, n);
+    let selected = app.esv.list.selected.min(n.saturating_sub(1));
+    let scroll = clamp_scroll(app.esv.list.scroll, selected, h, n);
 
     let tenant_name = app.active_tenant().map(|t| t.name.clone());
     let loaded_items: Option<&Vec<serde_json::Value>> = tenant_name
         .as_ref()
-        .and_then(|t| app.esv.data.get(t))
+        .and_then(|t| app.esv.list.data.get(t))
         .and_then(|s| match s {
             EsvLoadState::Loaded(v) => Some(v),
             _ => None,
@@ -411,7 +411,7 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
                     crate::screens::esv::is_pending(v)
                         || tenant_name
                             .as_ref()
-                            .and_then(|t| app.esv.pending_ids.get(t))
+                            .and_then(|t| app.esv.list.pending_ids.get(t))
                             .is_some_and(|ids| ids.contains(&m.id))
                 })
                 .unwrap_or(false);
@@ -423,7 +423,7 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
 
 /// Pick the new top-of-window so `selected` stays visible. We can't compute
 /// this purely from app state because the height comes from the rendered
-/// rect; do it here, leave `app.esv.scroll` as a hint only.
+/// rect; do it here, leave `app.esv.list.scroll` as a hint only.
 fn clamp_scroll(prev: usize, selected: usize, height: usize, n: usize) -> usize {
     if n == 0 || height == 0 {
         return 0;
@@ -565,12 +565,12 @@ fn draw_esv_preview(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) 
     // when we're in edit mode — that way the read-only rows still show
     // the original fields even if the user has scrolled the list away.
     let v_owned: Option<serde_json::Value> = if let (Some(id), Some(EsvLoadState::Loaded(items))) =
-        (editing_id, app.esv.data.get(&tenant.name))
+        (editing_id, app.esv.list.data.get(&tenant.name))
     {
         items.iter().find(|v| esv_id(v) == id).cloned()
     } else {
-        let selected = app.esv.selected.min(matches.len().saturating_sub(1));
-        match (matches.get(selected), app.esv.data.get(&tenant.name)) {
+        let selected = app.esv.list.selected.min(matches.len().saturating_sub(1));
+        match (matches.get(selected), app.esv.list.data.get(&tenant.name)) {
             (Some(m), _) if m.deleted => app
                 .esv
                 .recent_deletes

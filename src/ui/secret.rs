@@ -22,7 +22,7 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
         Some(t) => t.name.as_str(),
         None => return,
     };
-    match app.secret.data.get(tenant) {
+    match app.secret.list.data.get(tenant) {
         None | Some(LoadState::Loading) => {
             status(f, area, "  Loading secrets…", Color::DarkGray);
             return;
@@ -54,14 +54,14 @@ fn status(f: &mut Frame, area: Rect, msg: &str, color: Color) {
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let rows = secret::rows(app, app.active_tenant().map(|t| t.name.as_str()));
     let searching = app.input_mode == crate::app::InputMode::EsvSearch;
-    let title = if searching || !app.secret.query.value().is_empty() {
-        format!(" secrets  /{} ", app.secret.query.value())
+    let title = if searching || !app.secret.list.query.value().is_empty() {
+        format!(" secrets  /{} ", app.secret.list.query.value())
     } else {
         format!(" secrets ({}) ", rows.len())
     };
     let block = Block::default().borders(Borders::ALL).title(title);
 
-    let selected = app.secret.selected.min(rows.len().saturating_sub(1));
+    let selected = app.secret.list.selected.min(rows.len().saturating_sub(1));
     let items: Vec<ListItem> = rows
         .iter()
         .map(|r| {
