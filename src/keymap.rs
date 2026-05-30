@@ -10,7 +10,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, InputMode, Realm};
-use crate::screens::esv::EsvView;
+use crate::screens::esv::{EditField, EsvView};
 
 /// One key that fires a binding. Matching is by code + the ctrl modifier.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -267,6 +267,42 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     out.push(b(&[Trigger::Char('L')], "L", "lock & quit", false, true, Lock));
     push_global(&mut out);
     out
+}
+
+/// The footer hint bar's contents for the current mode — the single source for
+/// `header::draw_hints`. Normal comes from the binding table (footer subset);
+/// the two dashboard text modes have small curated sets; every other mode is a
+/// full-screen modal that renders its own chrome hints, so the bar is empty.
+pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    match app.input_mode {
+        InputMode::Normal => {
+            let mut out: Vec<(&str, &str)> = normal_binds(app)
+                .iter()
+                .filter(|bind| bind.footer)
+                .map(|bind| (bind.label, bind.desc))
+                .collect();
+            out.push(("?", "keys"));
+            out
+        }
+        InputMode::EsvSearch => vec![("Enter", "keep filter"), ("Esc", "clear + exit")],
+        InputMode::EsvEdit => {
+            let mut out = vec![("Tab", "navigate")];
+            let focused = app.esv.editing.as_ref().map(|edit| edit.focused);
+            match focused {
+                Some(EditField::Id | EditField::Description | EditField::Type) => {
+                    out.push(("Enter", "next"));
+                }
+                Some(EditField::Save) => out.push(("Enter", "save")),
+                _ => {}
+            }
+            if focused == Some(EditField::Type) {
+                out.push(("←/→", "change type"));
+            }
+            out.push(("Esc", "cancel"));
+            out
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Quit bindings — present in every Normal state, never shown as hints.
