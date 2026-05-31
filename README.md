@@ -156,6 +156,12 @@ revision moved but the *content* was reverted. If the remote content drifted,
 the push is blocked and the 3-way diff is shown; `--force` overrides. `--realm`
 selects `alpha` (default) or `bravo`; `--yes`/`--tenant` work as above.
 
+`aic` finds the project root by walking up from the current directory, so any
+command works from any subdirectory. When you run from inside a
+`workspace/<tenant>/<realm>/` tree, the tenant and realm are **inferred from the
+path** (so a bare `aic script list` or `aic esv list` targets that tenant);
+explicit `--tenant`/`--realm` still override.
+
 > **Note:** AM-script support adds a new `Accept-API-Version` header that the
 > agent must forward, so after upgrading restart the agent (`aic stop` then
 > `aic login`) to load the new binary. IDM endpoints work without a restart.
