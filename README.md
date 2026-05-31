@@ -6,9 +6,11 @@ configuration. Both surfaces share an `ssh-agent`-shaped background daemon
 that holds decrypted service-account keys in memory and mints / refreshes
 bearer tokens on demand, so every tenant call goes through one path.
 
-**Status:** Step 1 + Step 2 + agent / CLI + ESV listing complete. Onboarding
-(cookie / userpass / paste / sandbox-import) works end-to-end. Scripts /
-OAuth2 / SAML / journeys are the next slices — see [PLAN.md](PLAN.md).
+**Status:** Step 1 + Step 2 + agent / CLI + ESVs (variables + secrets) +
+script sync (`aic script` — AM scripts + IDM endpoints, CLI) complete.
+Onboarding (cookie / userpass / paste / sandbox-import) works end-to-end.
+OAuth2 / SAML / journeys, and a TUI Scripts tab, are the next slices — see
+[PLAN.md](PLAN.md).
 
 ## What it does (target scope)
 
@@ -118,6 +120,39 @@ Mutating commands take `--yes` to confirm a write to a production-themed
 tenant (the CLI equivalent of the TUI's prod-write guard), and `--tenant
 <name>` to override the current context for a single call.
 
+### Scripts
+
+`aic script` syncs AIC scripts to a local **typed workspace** at
+`./workspace/<tenant>/<realm>/` — the same layout (and the same `.d.ts`
+definitions + ESLint/TypeScript config) as
+[p1aic-script-editor](https://github.com/agiledigital-labs/p1aic-script-editor),
+so your editor gets full IntelliSense on script bodies. Two script "kinds" are
+supported behind one engine: **AM scripts** (`--kind am`, routed to
+`am/{src,lib,oidc}/` by context) and **IDM custom endpoints** (`--kind idm`,
+under `idm/endpoint/`).
+
+```bash
+aic script workspace init                     # scaffold the typed workspace tree
+aic script list                               # scripts on the tenant (both kinds)
+aic script pull MyDecisionNode --kind am      # → workspace/<tenant>/alpha/am/src/MyDecisionNode.cjs
+aic script pull --kind idm                    # pull all IDM endpoints
+# edit the .cjs in your editor, then:
+aic script push MyDecisionNode --kind am      # content-based conflict check, then PUT
+aic script status                             # in sync / modified locally / remote / conflict
+aic script diff MyDecisionNode --kind am      # 3-way: last-synced / remote / local
+aic script workspace update                   # refresh bundled types/config to the latest
+```
+
+Conflict detection is **content-based** (scripts have no `_rev`): a push only
+proceeds if the remote still matches what you last synced — even if the remote
+revision moved but the *content* was reverted. If the remote content drifted,
+the push is blocked and the 3-way diff is shown; `--force` overrides. `--realm`
+selects `alpha` (default) or `bravo`; `--yes`/`--tenant` work as above.
+
+> **Note:** AM-script support adds a new `Accept-API-Version` header that the
+> agent must forward, so after upgrading restart the agent (`aic stop` then
+> `aic login`) to load the new binary. IDM endpoints work without a restart.
+
 ## The agent
 
 Every tenant call — from the TUI or the CLI — goes through a small background
@@ -176,7 +211,7 @@ each checkout with its own `.aic-edit/` gets its own agent.
 | **3.** Agent + CLI                                              | ✅ done     | Single-binary `aic`, Unix-socket protocol, `aic::api` + `aic::esv` shared between TUI and CLI |
 | **4.** ESVs — list + fuzzy search + preview                     | ✅ done     | `/`-search with live scoring (nucleo), vertical split with JSON preview                       |
 | **5.** ESVs — edit + apply (`/environment/startup?_action=…`)   | next        |                                                                                               |
-| **6.** Scripts (two-way sync with content-based conflict check) | not started |                                                                                               |
+| **6.** Scripts (two-way sync with content-based conflict check) | CLI done    | `aic script` — AM scripts + IDM endpoints, kind-agnostic pull/push/diff core, typed `./workspace` (TUI tab + watch deferred) |
 | Later                                                           |             | OAuth2 / OIDC, SAML, Journeys, Logs, App.rs screen-split refactor                             |
 
 ## How to work on this codebase (for AI assistants)

@@ -75,6 +75,11 @@ pub enum Command {
         #[command(subcommand)]
         command: EsvCommand,
     },
+    /// Script workspace sync (AM scripts + IDM endpoints).
+    Script {
+        #[command(subcommand)]
+        command: ScriptCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -229,6 +234,93 @@ pub enum SecretCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum ScriptCommand {
+    /// Scaffold / refresh the local workspace tree (types, tsconfig, eslint).
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
+    /// List scripts on the tenant (not the local workspace).
+    List {
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long, default_value = "alpha")]
+        realm: String,
+        /// Limit to one kind: `am` or `idm` (default: both).
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Pull script(s) into the workspace. Without a name, pulls all of `--kind`.
+    Pull {
+        /// Script name (omit to pull all of the kind).
+        name: Option<String>,
+        /// `am` (scripts) or `idm` (endpoints).
+        #[arg(long, default_value = "am")]
+        kind: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long, default_value = "alpha")]
+        realm: String,
+        /// Overwrite local edits without backing them up first.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Push a local edit back to the tenant (requires a prior pull).
+    Push {
+        name: String,
+        #[arg(long, default_value = "am")]
+        kind: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long, default_value = "alpha")]
+        realm: String,
+        /// Push past a remote-drift conflict (overwrites remote).
+        #[arg(long)]
+        force: bool,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Show the sync state of every synced script.
+    Status {
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long, default_value = "alpha")]
+        realm: String,
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Show the 3-way diff (last-synced / remote / local) for one script.
+    Diff {
+        name: String,
+        #[arg(long, default_value = "am")]
+        kind: String,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long, default_value = "alpha")]
+        realm: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WorkspaceCommand {
+    /// Create the workspace tree + type definitions for a tenant + realm.
+    Init {
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long, default_value = "alpha")]
+        realm: String,
+    },
+    /// Refresh managed type/config files to the latest bundled version.
+    Update {
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long, default_value = "alpha")]
+        realm: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum CtxCommand {
     /// List tenants defined in `.aic-edit/config.toml`.
     List,
@@ -250,6 +342,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Ctx { command }) => ctx(command).await,
         Some(Command::Whoami { tenant }) => whoami(tenant).await,
         Some(Command::Esv { command }) => esv(command).await,
+        Some(Command::Script { command }) => script(command).await,
         None => unreachable!("dispatch handled at top level"),
     }
 }
@@ -676,6 +769,176 @@ async fn secret(cmd: SecretCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+async fn script(cmd: ScriptCommand) -> Result<()> {
+    use crate::aic::script::{sync, workspace};
+
+    match cmd {
+        ScriptCommand::Workspace { command } => match command {
+            WorkspaceCommand::Init { tenant, realm } => {
+                let t = tenant_for(tenant)?;
+                let realm = realm_for(&realm)?;
+                let r = workspace::init(&t, &realm)?;
+                println!(
+                    "workspace ready at {} ({} files written, templates v{})",
+                    r.tree.display(),
+                    r.written.len(),
+                    workspace::TEMPLATES_VERSION
+                );
+                Ok(())
+            }
+            WorkspaceCommand::Update { tenant, realm } => {
+                let t = tenant_for(tenant)?;
+                let realm = realm_for(&realm)?;
+                let r = workspace::update(&t, &realm)?;
+                println!(
+                    "templates refreshed to v{} ({} files written) at {}",
+                    workspace::TEMPLATES_VERSION,
+                    r.written.len(),
+                    r.tree.display()
+                );
+                Ok(())
+            }
+        },
+        ScriptCommand::List { tenant, realm, kind } => {
+            let t = tenant_for(tenant)?;
+            let realm = realm_for(&realm)?;
+            let kinds = kinds_for(kind.as_deref())?;
+            let mut all = Vec::new();
+            for k in kinds {
+                all.extend(k.list(&t, &realm).await?);
+            }
+            print_json(&all)
+        }
+        ScriptCommand::Pull { name, kind, tenant, realm, force } => {
+            let t = tenant_for(tenant)?;
+            let realm = realm_for(&realm)?;
+            let k = kind_for(&kind)?;
+            // Be friendly: scaffold the workspace on first use so the pulled
+            // sources land next to their type definitions.
+            if workspace::applied_version(&t, &realm)? == 0 {
+                let r = workspace::init(&t, &realm)?;
+                println!("initialised workspace at {}", r.tree.display());
+            }
+            let selector = match name {
+                Some(n) => sync::Selector::Name(n),
+                None => sync::Selector::All,
+            };
+            let outcomes = sync::pull(&t, &realm, k, &selector, force).await?;
+            if outcomes.is_empty() {
+                println!("no {} scripts to pull", k.as_str());
+            }
+            for o in &outcomes {
+                let what = match &o.status {
+                    sync::PullStatus::Created => "pulled (new)".to_string(),
+                    sync::PullStatus::Updated => "pulled (updated)".to_string(),
+                    sync::PullStatus::Unchanged => "unchanged".to_string(),
+                    sync::PullStatus::LocalBackedUp(p) => {
+                        format!("pulled; local edits backed up to {}", p.display())
+                    }
+                };
+                println!("  {} {}: {}", o.kind.as_str(), o.name, what);
+            }
+            workspace_update_hint(&t, &realm)?;
+            Ok(())
+        }
+        ScriptCommand::Push { name, kind, tenant, realm, force, yes } => {
+            let t = tenant_for(tenant)?;
+            let realm = realm_for(&realm)?;
+            let k = kind_for(&kind)?;
+            match prod_hint(sync::push(&t, &realm, k, &name, force, yes).await)? {
+                sync::PushOutcome::Pushed => println!("pushed {} {name}", k.as_str()),
+                sync::PushOutcome::Unchanged => println!("{name}: no local changes to push"),
+                sync::PushOutcome::AlreadyInSync => {
+                    println!("{name}: remote already matched local; snapshot refreshed")
+                }
+                sync::PushOutcome::Conflict(tw) => {
+                    print_conflict(&name, &tw);
+                    return Err(Error::Config(
+                        "remote changed since last sync — resolve, or re-run with --force".into(),
+                    ));
+                }
+            }
+            workspace_update_hint(&t, &realm)?;
+            Ok(())
+        }
+        ScriptCommand::Status { tenant, realm, kind } => {
+            let t = tenant_for(tenant)?;
+            let realm = realm_for(&realm)?;
+            let only = match kind.as_deref() {
+                Some(s) => Some(kind_for(s)?),
+                None => None,
+            };
+            let entries = sync::status(&t, &realm, only).await?;
+            if entries.is_empty() {
+                println!("nothing synced yet — `aic script pull …` first");
+            }
+            for e in &entries {
+                let label = match e.state {
+                    sync::ScriptState::InSync => "in sync",
+                    sync::ScriptState::LocallyModified => "modified locally",
+                    sync::ScriptState::RemotelyModified => "modified on remote",
+                    sync::ScriptState::BothModified => "CONFLICT (both changed)",
+                    sync::ScriptState::LocalMissing => "local file missing",
+                };
+                println!("  {:<4} {:<40} {}", e.kind.as_str(), e.name, label);
+            }
+            Ok(())
+        }
+        ScriptCommand::Diff { name, kind, tenant, realm } => {
+            let t = tenant_for(tenant)?;
+            let realm = realm_for(&realm)?;
+            let k = kind_for(&kind)?;
+            let tw = sync::diff(&t, &realm, k, &name).await?;
+            print_conflict(&name, &tw);
+            Ok(())
+        }
+    }
+}
+
+/// Parse a `--kind` value into a single [`Kind`].
+fn kind_for(s: &str) -> Result<crate::aic::script::Kind> {
+    crate::aic::script::Kind::parse(s)
+        .ok_or_else(|| Error::Config(format!("unknown --kind {s:?} (use `am` or `idm`)")))
+}
+
+/// Parse an optional `--kind`: `None` means all kinds.
+fn kinds_for(s: Option<&str>) -> Result<Vec<crate::aic::script::Kind>> {
+    match s {
+        Some(s) => Ok(vec![kind_for(s)?]),
+        None => Ok(crate::aic::script::Kind::all().to_vec()),
+    }
+}
+
+/// Validate a realm segment (AIC only has `alpha` + `bravo`; see CLAUDE.md §4).
+fn realm_for(realm: &str) -> Result<String> {
+    match realm {
+        "alpha" | "bravo" => Ok(realm.to_string()),
+        other => Err(Error::Config(format!(
+            "invalid realm {other:?} — AIC only has `alpha` and `bravo`"
+        ))),
+    }
+}
+
+/// Print a "templates out of date" nudge if the workspace predates the bundled
+/// template version (mirrors p1-sync's update prompt).
+fn workspace_update_hint(tenant: &str, realm: &str) -> Result<()> {
+    use crate::aic::script::workspace;
+    let applied = workspace::applied_version(tenant, realm)?;
+    if applied != 0 && applied < workspace::TEMPLATES_VERSION {
+        println!(
+            "note: workspace templates v{applied} → v{} available — run `aic script workspace update`",
+            workspace::TEMPLATES_VERSION
+        );
+    }
+    Ok(())
+}
+
+fn print_conflict(name: &str, tw: &crate::aic::script::sync::ThreeWay) {
+    println!("=== {name}: last-synced ===\n{}", tw.last_synced);
+    println!("=== {name}: remote ===\n{}", tw.remote);
+    println!("=== {name}: local ===\n{}", tw.local);
 }
 
 async fn set_version_status(
