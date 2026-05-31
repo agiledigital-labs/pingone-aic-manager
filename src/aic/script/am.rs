@@ -142,21 +142,29 @@ fn dir_for_context(context: Option<&str>) -> &'static str {
     }
 }
 
-pub fn workspace_subpath(r: &RemoteRef) -> PathBuf {
+pub fn workspace_subpath(r: &RemoteRef, realm: &str) -> PathBuf {
     PathBuf::from("am")
+        .join(realm)
         .join(dir_for_context(r.context.as_deref()))
         .join(format!("{}.cjs", r.name))
 }
 
-pub fn config_filename(r: &RemoteRef) -> String {
-    format!("{}.script.json", r.name)
+/// Snapshot config path under `.aic-sync/configs/`, realm-keyed so a script
+/// of the same name in alpha and bravo don't overwrite each other.
+pub fn config_subpath(r: &RemoteRef, realm: &str) -> PathBuf {
+    PathBuf::from("am")
+        .join(realm)
+        .join(format!("{}.script.json", r.name))
 }
 
 /// `LIBRARY` scripts get an ES-module wrapper alongside the `.cjs` so other
 /// scripts can `import`/`require` them with types (matches p1-sync).
-pub fn extra_files(r: &RemoteRef) -> Vec<(PathBuf, String)> {
+pub fn extra_files(r: &RemoteRef, realm: &str) -> Vec<(PathBuf, String)> {
     if r.context.as_deref() == Some("LIBRARY") {
-        let path = PathBuf::from("am").join("lib").join(format!("{}.js", r.name));
+        let path = PathBuf::from("am")
+            .join(realm)
+            .join("lib")
+            .join(format!("{}.js", r.name));
         vec![(path, format!("export * from \"./{}.cjs\";\n", r.name))]
     } else {
         Vec::new()
@@ -196,19 +204,26 @@ mod tests {
     }
 
     #[test]
-    fn context_routes_to_directory() {
-        assert_eq!(workspace_subpath(&rref(None)), PathBuf::from("am/src/MyScript.cjs"));
+    fn context_routes_to_realm_directory() {
         assert_eq!(
-            workspace_subpath(&rref(Some("AUTHENTICATION_TREE_DECISION_NODE"))),
-            PathBuf::from("am/src/MyScript.cjs")
+            workspace_subpath(&rref(None), "alpha"),
+            PathBuf::from("am/alpha/src/MyScript.cjs")
         );
         assert_eq!(
-            workspace_subpath(&rref(Some("LIBRARY"))),
-            PathBuf::from("am/lib/MyScript.cjs")
+            workspace_subpath(&rref(Some("AUTHENTICATION_TREE_DECISION_NODE")), "bravo"),
+            PathBuf::from("am/bravo/src/MyScript.cjs")
         );
         assert_eq!(
-            workspace_subpath(&rref(Some("OIDC_CLAIMS"))),
-            PathBuf::from("am/oidc/MyScript.cjs")
+            workspace_subpath(&rref(Some("LIBRARY")), "alpha"),
+            PathBuf::from("am/alpha/lib/MyScript.cjs")
+        );
+        assert_eq!(
+            workspace_subpath(&rref(Some("OIDC_CLAIMS")), "bravo"),
+            PathBuf::from("am/bravo/oidc/MyScript.cjs")
+        );
+        assert_eq!(
+            config_subpath(&rref(None), "bravo"),
+            PathBuf::from("am/bravo/MyScript.script.json")
         );
     }
 
@@ -221,10 +236,10 @@ mod tests {
 
     #[test]
     fn library_gets_es_wrapper_only() {
-        assert!(extra_files(&rref(None)).is_empty());
-        let extra = extra_files(&rref(Some("LIBRARY")));
+        assert!(extra_files(&rref(None), "alpha").is_empty());
+        let extra = extra_files(&rref(Some("LIBRARY")), "bravo");
         assert_eq!(extra.len(), 1);
-        assert_eq!(extra[0].0, PathBuf::from("am/lib/MyScript.js"));
+        assert_eq!(extra[0].0, PathBuf::from("am/bravo/lib/MyScript.js"));
         assert!(extra[0].1.contains("export * from \"./MyScript.cjs\""));
     }
 }

@@ -111,27 +111,36 @@ impl Kind {
         }
     }
 
-    /// Workspace-relative path of the source file (e.g. `am/src/Foo.cjs`).
-    pub fn workspace_subpath(self, r: &RemoteRef) -> PathBuf {
+    /// Whether this kind is realm-scoped (AM scripts live per realm; IDM
+    /// endpoints are tenant-global). Lets the engine key the workspace path,
+    /// snapshot, and manifest on realm without matching on the enum itself.
+    pub fn realm_scoped(self) -> bool {
+        matches!(self, Kind::Am)
+    }
+
+    /// Workspace-relative path of the source file. AM: `am/<realm>/<type>/Foo.cjs`;
+    /// IDM: `idm/endpoint/foo.cjs` (realm ignored).
+    pub fn workspace_subpath(self, r: &RemoteRef, realm: &str) -> PathBuf {
         match self {
-            Kind::Am => am::workspace_subpath(r),
+            Kind::Am => am::workspace_subpath(r, realm),
             Kind::IdmEndpoint => idm::workspace_subpath(r),
         }
     }
 
-    /// Filename for the cached raw config under `.aic-sync/snapshots/`.
-    pub fn config_filename(self, r: &RemoteRef) -> String {
+    /// Path (relative to `.aic-sync/configs/`) for the cached raw config. AM is
+    /// realm-keyed so same-named scripts in alpha/bravo don't collide.
+    pub fn config_subpath(self, r: &RemoteRef, realm: &str) -> PathBuf {
         match self {
-            Kind::Am => am::config_filename(r),
-            Kind::IdmEndpoint => idm::config_filename(r),
+            Kind::Am => am::config_subpath(r, realm),
+            Kind::IdmEndpoint => idm::config_subpath(r),
         }
     }
 
     /// Additional generated files (workspace-relative path → contents), e.g.
     /// the ES-module wrapper for AM `LIBRARY` scripts. Empty for most kinds.
-    pub fn extra_files(self, r: &RemoteRef) -> Vec<(PathBuf, String)> {
+    pub fn extra_files(self, r: &RemoteRef, realm: &str) -> Vec<(PathBuf, String)> {
         match self {
-            Kind::Am => am::extra_files(r),
+            Kind::Am => am::extra_files(r, realm),
             Kind::IdmEndpoint => idm::extra_files(r),
         }
     }

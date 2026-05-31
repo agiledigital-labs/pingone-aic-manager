@@ -95,8 +95,9 @@ pub fn workspace_subpath(r: &RemoteRef) -> PathBuf {
         .join(format!("{}.cjs", r.name))
 }
 
-pub fn config_filename(r: &RemoteRef) -> String {
-    format!("{}.idm.json", r.name)
+/// Snapshot config path under `.aic-sync/configs/` — tenant-global, no realm.
+pub fn config_subpath(r: &RemoteRef) -> PathBuf {
+    PathBuf::from("idm").join(format!("{}.idm.json", r.name))
 }
 
 pub fn extra_files(_r: &RemoteRef) -> Vec<(PathBuf, String)> {
@@ -117,7 +118,7 @@ mod tests {
             workspace_subpath(&r),
             PathBuf::from("idm/endpoint/my-endpoint.cjs")
         );
-        assert_eq!(config_filename(&r), "my-endpoint.idm.json");
+        assert_eq!(config_subpath(&r), PathBuf::from("idm/my-endpoint.idm.json"));
     }
 
     #[test]

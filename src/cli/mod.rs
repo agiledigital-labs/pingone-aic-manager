@@ -301,12 +301,10 @@ pub enum ScriptCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// Show the sync state of every synced script.
+    /// Show the sync state of every synced script (both realms + IDM).
     Status {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo")]
-        realm: Option<String>,
         #[arg(long)]
         kind: Option<String>,
     },
@@ -324,19 +322,15 @@ pub enum ScriptCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum WorkspaceCommand {
-    /// Create the workspace tree + type definitions for a tenant + realm.
+    /// Create the per-tenant workspace tree (both realms + IDM) + type defs.
     Init {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo")]
-        realm: Option<String>,
     },
     /// Refresh managed type/config files to the latest bundled version.
     Update {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo")]
-        realm: Option<String>,
     },
 }
 
@@ -898,10 +892,9 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
 
     match cmd {
         ScriptCommand::Workspace { command } => match command {
-            WorkspaceCommand::Init { tenant, realm } => {
+            WorkspaceCommand::Init { tenant } => {
                 let t = tenant_for(tenant)?;
-                let realm = realm_for(realm)?;
-                let r = workspace::init(&t, &realm)?;
+                let r = workspace::init(&t)?;
                 println!(
                     "workspace ready at {} ({} files written, templates v{})",
                     r.tree.display(),
@@ -910,10 +903,9 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                 );
                 Ok(())
             }
-            WorkspaceCommand::Update { tenant, realm } => {
+            WorkspaceCommand::Update { tenant } => {
                 let t = tenant_for(tenant)?;
-                let realm = realm_for(realm)?;
-                let r = workspace::update(&t, &realm)?;
+                let r = workspace::update(&t)?;
                 println!(
                     "templates refreshed to v{} ({} files written) at {}",
                     workspace::TEMPLATES_VERSION,
@@ -939,8 +931,8 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             let k = kind_for(&kind)?;
             // Be friendly: scaffold the workspace on first use so the pulled
             // sources land next to their type definitions.
-            if workspace::applied_version(&t, &realm)? == 0 {
-                let r = workspace::init(&t, &realm)?;
+            if workspace::applied_version(&t)? == 0 {
+                let r = workspace::init(&t)?;
                 println!("initialised workspace at {}", r.tree.display());
             }
             let selector = match name {
@@ -962,7 +954,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                 };
                 println!("  {} {}: {}", o.kind.as_str(), o.name, what);
             }
-            workspace_update_hint(&t, &realm)?;
+            workspace_update_hint(&t)?;
             Ok(())
         }
         ScriptCommand::Push { name, kind, tenant, realm, force, yes } => {
@@ -982,17 +974,16 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                     ));
                 }
             }
-            workspace_update_hint(&t, &realm)?;
+            workspace_update_hint(&t)?;
             Ok(())
         }
-        ScriptCommand::Status { tenant, realm, kind } => {
+        ScriptCommand::Status { tenant, kind } => {
             let t = tenant_for(tenant)?;
-            let realm = realm_for(realm)?;
             let only = match kind.as_deref() {
                 Some(s) => Some(kind_for(s)?),
                 None => None,
             };
-            let entries = sync::status(&t, &realm, only).await?;
+            let entries = sync::status(&t, only).await?;
             if entries.is_empty() {
                 println!("nothing synced yet — `aic script pull …` first");
             }
@@ -1004,7 +995,12 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                     sync::ScriptState::BothModified => "CONFLICT (both changed)",
                     sync::ScriptState::LocalMissing => "local file missing",
                 };
-                println!("  {:<4} {:<40} {}", e.kind.as_str(), e.name, label);
+                // Scope is `am/<realm>` for AM, `idm` for endpoints.
+                let scope = match &e.realm {
+                    Some(r) => format!("{}/{r}", e.kind.as_str()),
+                    None => e.kind.as_str().to_string(),
+                };
+                println!("  {:<10} {:<40} {}", scope, e.name, label);
             }
             Ok(())
         }
@@ -1050,9 +1046,9 @@ fn realm_for(realm: Option<String>) -> Result<String> {
 
 /// Print a "templates out of date" nudge if the workspace predates the bundled
 /// template version (mirrors p1-sync's update prompt).
-fn workspace_update_hint(tenant: &str, realm: &str) -> Result<()> {
+fn workspace_update_hint(tenant: &str) -> Result<()> {
     use crate::aic::script::workspace;
-    let applied = workspace::applied_version(tenant, realm)?;
+    let applied = workspace::applied_version(tenant)?;
     if applied != 0 && applied < workspace::TEMPLATES_VERSION {
         println!(
             "note: workspace templates v{applied} → v{} available — run `aic script workspace update`",

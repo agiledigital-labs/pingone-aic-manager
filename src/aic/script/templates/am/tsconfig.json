@@ -21,6 +21,6 @@
     "useUnknownInCatchVariables": false,
     "strictNullChecks": true
   },
-  "include": ["src/**/*", "lib/**/*", "oidc/**/*", "tests/**/*", "*.d.ts"],
-  "exclude": ["node_modules", "dist", "../.p1-sync/json-config-files"]
+  "include": ["**/*", "*.d.ts"],
+  "exclude": ["node_modules", "dist"]
 }
