@@ -5,12 +5,68 @@ pub mod wraps;
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
 pub use tenant::{Tenant, TenantTheme};
+
+/// Tenant + realm inferred from the directory a command was invoked in, when
+/// that directory is inside `workspace/<tenant>/<realm>/…`. Populated once at
+/// CLI startup ([`crate::cli`]); consulted by tenant/realm resolution so
+/// `cd workspace/<tenant>/<realm> && aic …` targets that tenant/realm without
+/// flags. Explicit `--tenant`/`--realm` still win.
+#[derive(Debug, Default, Clone)]
+pub struct WorkspaceContext {
+    pub tenant: Option<String>,
+    pub realm: Option<String>,
+}
+
+static WORKSPACE_CONTEXT: OnceLock<WorkspaceContext> = OnceLock::new();
+
+/// The detected workspace context (empty if not inside a workspace tree).
+pub fn workspace_context() -> WorkspaceContext {
+    WORKSPACE_CONTEXT.get().cloned().unwrap_or_default()
+}
+
+pub fn set_workspace_context(ctx: WorkspaceContext) {
+    let _ = WORKSPACE_CONTEXT.set(ctx);
+}
+
+/// Walk up from `start` to the first ancestor containing a `.aic-edit/`
+/// directory — the project root. Lets commands run from any subdirectory.
+pub fn find_project_root(start: &Path) -> Option<PathBuf> {
+    let mut cur = start.canonicalize().ok()?;
+    loop {
+        if cur.join(".aic-edit").is_dir() {
+            return Some(cur);
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
+/// Infer tenant + realm when `cwd` is inside `<root>/workspace/<tenant>/<realm>/…`.
+pub fn detect_workspace_context(root: &Path, cwd: &Path) -> WorkspaceContext {
+    let mut ctx = WorkspaceContext::default();
+    let (root, cwd) = match (root.canonicalize(), cwd.canonicalize()) {
+        (Ok(r), Ok(c)) => (r, c),
+        _ => return ctx,
+    };
+    if let Ok(rel) = cwd.strip_prefix(&root) {
+        let mut comps = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned());
+        if comps.next().as_deref() == Some("workspace") {
+            ctx.tenant = comps.next().filter(|s| !s.is_empty());
+            ctx.realm = comps.next().filter(|s| !s.is_empty());
+        }
+    }
+    ctx
+}
 
 /// Decrypt the DEK with the user's password (via the password wrap recorded
 /// in `wraps.toml`), then decrypt `keys.enc` with the DEK and parse the JWK

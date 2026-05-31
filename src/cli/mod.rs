@@ -264,8 +264,8 @@ pub enum ScriptCommand {
     List {
         #[arg(long)]
         tenant: Option<String>,
-        #[arg(long, default_value = "alpha")]
-        realm: String,
+        #[arg(long)]
+        realm: Option<String>,
         /// Limit to one kind: `am` or `idm` (default: both).
         #[arg(long)]
         kind: Option<String>,
@@ -279,8 +279,8 @@ pub enum ScriptCommand {
         kind: String,
         #[arg(long)]
         tenant: Option<String>,
-        #[arg(long, default_value = "alpha")]
-        realm: String,
+        #[arg(long)]
+        realm: Option<String>,
         /// Overwrite local edits without backing them up first.
         #[arg(long)]
         force: bool,
@@ -292,8 +292,8 @@ pub enum ScriptCommand {
         kind: String,
         #[arg(long)]
         tenant: Option<String>,
-        #[arg(long, default_value = "alpha")]
-        realm: String,
+        #[arg(long)]
+        realm: Option<String>,
         /// Push past a remote-drift conflict (overwrites remote).
         #[arg(long)]
         force: bool,
@@ -305,8 +305,8 @@ pub enum ScriptCommand {
     Status {
         #[arg(long)]
         tenant: Option<String>,
-        #[arg(long, default_value = "alpha")]
-        realm: String,
+        #[arg(long)]
+        realm: Option<String>,
         #[arg(long)]
         kind: Option<String>,
     },
@@ -317,8 +317,8 @@ pub enum ScriptCommand {
         kind: String,
         #[arg(long)]
         tenant: Option<String>,
-        #[arg(long, default_value = "alpha")]
-        realm: String,
+        #[arg(long)]
+        realm: Option<String>,
     },
 }
 
@@ -328,15 +328,15 @@ pub enum WorkspaceCommand {
     Init {
         #[arg(long)]
         tenant: Option<String>,
-        #[arg(long, default_value = "alpha")]
-        realm: String,
+        #[arg(long)]
+        realm: Option<String>,
     },
     /// Refresh managed type/config files to the latest bundled version.
     Update {
         #[arg(long)]
         tenant: Option<String>,
-        #[arg(long, default_value = "alpha")]
-        realm: String,
+        #[arg(long)]
+        realm: Option<String>,
     },
 }
 
@@ -351,6 +351,7 @@ pub enum CtxCommand {
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
+    bootstrap_project_root();
     match cli.command {
         Some(Command::Agent { detach, idle_timeout }) => {
             run_agent(detach, idle_timeout).await
@@ -364,6 +365,21 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Esv { command }) => esv(command).await,
         Some(Command::Script { command }) => script(command).await,
         None => unreachable!("dispatch handled at top level"),
+    }
+}
+
+/// Locate the project root (the dir containing `.aic-edit/`) by walking up
+/// from the current directory, record any tenant/realm implied by a
+/// `workspace/<tenant>/<realm>/` working directory, then chdir to the root so
+/// every project-relative path (config, keystore, agent socket) resolves the
+/// same no matter which subdirectory the command was invoked from.
+fn bootstrap_project_root() {
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    if let Some(root) = config::find_project_root(&cwd) {
+        config::set_workspace_context(config::detect_workspace_context(&root, &cwd));
+        let _ = std::env::set_current_dir(&root);
     }
 }
 
@@ -821,7 +837,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         ScriptCommand::Workspace { command } => match command {
             WorkspaceCommand::Init { tenant, realm } => {
                 let t = tenant_for(tenant)?;
-                let realm = realm_for(&realm)?;
+                let realm = realm_for(realm)?;
                 let r = workspace::init(&t, &realm)?;
                 println!(
                     "workspace ready at {} ({} files written, templates v{})",
@@ -833,7 +849,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             }
             WorkspaceCommand::Update { tenant, realm } => {
                 let t = tenant_for(tenant)?;
-                let realm = realm_for(&realm)?;
+                let realm = realm_for(realm)?;
                 let r = workspace::update(&t, &realm)?;
                 println!(
                     "templates refreshed to v{} ({} files written) at {}",
@@ -846,7 +862,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         },
         ScriptCommand::List { tenant, realm, kind } => {
             let t = tenant_for(tenant)?;
-            let realm = realm_for(&realm)?;
+            let realm = realm_for(realm)?;
             let kinds = kinds_for(kind.as_deref())?;
             let mut all = Vec::new();
             for k in kinds {
@@ -856,7 +872,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         }
         ScriptCommand::Pull { name, kind, tenant, realm, force } => {
             let t = tenant_for(tenant)?;
-            let realm = realm_for(&realm)?;
+            let realm = realm_for(realm)?;
             let k = kind_for(&kind)?;
             // Be friendly: scaffold the workspace on first use so the pulled
             // sources land next to their type definitions.
@@ -888,7 +904,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         }
         ScriptCommand::Push { name, kind, tenant, realm, force, yes } => {
             let t = tenant_for(tenant)?;
-            let realm = realm_for(&realm)?;
+            let realm = realm_for(realm)?;
             let k = kind_for(&kind)?;
             match prod_hint(sync::push(&t, &realm, k, &name, force, yes).await)? {
                 sync::PushOutcome::Pushed => println!("pushed {} {name}", k.as_str()),
@@ -908,7 +924,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         }
         ScriptCommand::Status { tenant, realm, kind } => {
             let t = tenant_for(tenant)?;
-            let realm = realm_for(&realm)?;
+            let realm = realm_for(realm)?;
             let only = match kind.as_deref() {
                 Some(s) => Some(kind_for(s)?),
                 None => None,
@@ -931,7 +947,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         }
         ScriptCommand::Diff { name, kind, tenant, realm } => {
             let t = tenant_for(tenant)?;
-            let realm = realm_for(&realm)?;
+            let realm = realm_for(realm)?;
             let k = kind_for(&kind)?;
             let tw = sync::diff(&t, &realm, k, &name).await?;
             print_conflict(&name, &tw);
@@ -954,10 +970,15 @@ fn kinds_for(s: Option<&str>) -> Result<Vec<crate::aic::script::Kind>> {
     }
 }
 
-/// Validate a realm segment (AIC only has `alpha` + `bravo`; see CLAUDE.md §4).
-fn realm_for(realm: &str) -> Result<String> {
-    match realm {
-        "alpha" | "bravo" => Ok(realm.to_string()),
+/// Resolve + validate the realm: explicit `--realm` wins, else a
+/// `workspace/<tenant>/<realm>` working directory implies it, else `alpha`.
+/// AIC only has `alpha` + `bravo` (CLAUDE.md §4).
+fn realm_for(realm: Option<String>) -> Result<String> {
+    let realm = realm
+        .or_else(|| config::workspace_context().realm)
+        .unwrap_or_else(|| "alpha".to_string());
+    match realm.as_str() {
+        "alpha" | "bravo" => Ok(realm),
         other => Err(Error::Config(format!(
             "invalid realm {other:?} — AIC only has `alpha` and `bravo`"
         ))),
@@ -1103,6 +1124,14 @@ fn json_scalar(v: &serde_json::Value) -> String {
 fn resolve_tenant(arg: Option<String>, cfg: &ProjectConfig) -> Result<String> {
     if let Some(t) = arg {
         return Ok(t);
+    }
+    // A `workspace/<tenant>/<realm>` working directory implies the tenant —
+    // but only honour it if it's a tenant we actually know, so a stale
+    // directory can't silently retarget writes.
+    if let Some(t) = config::workspace_context().tenant {
+        if cfg.tenants.iter().any(|x| x.name == t) {
+            return Ok(t);
+        }
     }
     if let Some(c) = config::read_current_context()? {
         return Ok(c);
