@@ -67,7 +67,7 @@ pub enum Command {
     },
     /// Mint and print a token for the current context (or `--tenant <name>`).
     Whoami {
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
     },
     /// ESV operations (variables, secrets).
@@ -87,13 +87,13 @@ pub enum EsvCommand {
     /// List ESV variables. Outputs the `result` array as JSON.
     List {
         /// Override the current context for this call.
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
     },
     /// Get a single variable as JSON.
     Get {
         id: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
     },
     /// Create or update a variable.
@@ -107,7 +107,7 @@ pub enum EsvCommand {
         expr_type: String,
         #[arg(long, default_value = "")]
         description: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
@@ -116,14 +116,14 @@ pub enum EsvCommand {
     /// Delete a variable.
     Delete {
         id: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
     },
     /// Apply pending changes by restarting the tenant runtime.
     Apply {
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -139,13 +139,13 @@ pub enum EsvCommand {
 pub enum SecretCommand {
     /// List secrets (metadata only — values are write-only).
     List {
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
     },
     /// Get a single secret's metadata as JSON.
     Get {
         id: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
     },
     /// Create a secret (PUT is create-only; change values via add-version).
@@ -176,7 +176,7 @@ pub enum SecretCommand {
         no_placeholders: bool,
         #[arg(long, default_value = "")]
         description: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -186,7 +186,7 @@ pub enum SecretCommand {
         id: String,
         #[arg(long)]
         description: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -194,7 +194,7 @@ pub enum SecretCommand {
     /// List a secret's versions (newest first).
     Versions {
         id: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
     },
     /// Add a new version (becomes the active version). Value is encoded with
@@ -211,7 +211,7 @@ pub enum SecretCommand {
         /// Read the value from stdin (a single trailing newline is stripped).
         #[arg(long)]
         value_stdin: bool,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -220,7 +220,7 @@ pub enum SecretCommand {
     Enable {
         id: String,
         version: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -229,7 +229,7 @@ pub enum SecretCommand {
     Disable {
         id: String,
         version: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -238,7 +238,7 @@ pub enum SecretCommand {
     Destroy {
         id: String,
         version: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -246,7 +246,7 @@ pub enum SecretCommand {
     /// Delete a secret and all its versions — irreversible.
     Delete {
         id: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -262,9 +262,9 @@ pub enum ScriptCommand {
     },
     /// List scripts on the tenant (not the local workspace).
     List {
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
         realm: Option<String>,
         /// Limit to one kind: `am` or `idm` (default: both).
         #[arg(long)]
@@ -277,9 +277,9 @@ pub enum ScriptCommand {
         /// `am` (scripts) or `idm` (endpoints).
         #[arg(long, default_value = "am")]
         kind: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
         realm: Option<String>,
         /// Overwrite local edits without backing them up first.
         #[arg(long)]
@@ -290,9 +290,9 @@ pub enum ScriptCommand {
         name: String,
         #[arg(long, default_value = "am")]
         kind: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
         realm: Option<String>,
         /// Push past a remote-drift conflict (overwrites remote).
         #[arg(long)]
@@ -303,9 +303,9 @@ pub enum ScriptCommand {
     },
     /// Show the sync state of every synced script.
     Status {
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
         realm: Option<String>,
         #[arg(long)]
         kind: Option<String>,
@@ -315,9 +315,9 @@ pub enum ScriptCommand {
         name: String,
         #[arg(long, default_value = "am")]
         kind: String,
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
         realm: Option<String>,
     },
 }
@@ -326,16 +326,16 @@ pub enum ScriptCommand {
 pub enum WorkspaceCommand {
     /// Create the workspace tree + type definitions for a tenant + realm.
     Init {
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
         realm: Option<String>,
     },
     /// Refresh managed type/config files to the latest bundled version.
     Update {
-        #[arg(long)]
+        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
         tenant: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
         realm: Option<String>,
     },
 }
