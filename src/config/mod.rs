@@ -49,7 +49,9 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Infer tenant + realm when `cwd` is inside `<root>/workspace/<tenant>/<realm>/…`.
+/// Infer tenant + realm from `cwd`'s position under `<root>/workspace/…`:
+/// `workspace/<tenant>/…` → tenant; `workspace/<tenant>/am/<realm>/…` → tenant
+/// + realm. IDM (`workspace/<tenant>/idm/…`) is tenant-global, so no realm.
 pub fn detect_workspace_context(root: &Path, cwd: &Path) -> WorkspaceContext {
     let mut ctx = WorkspaceContext::default();
     let (root, cwd) = match (root.canonicalize(), cwd.canonicalize()) {
@@ -62,7 +64,12 @@ pub fn detect_workspace_context(root: &Path, cwd: &Path) -> WorkspaceContext {
             .map(|c| c.as_os_str().to_string_lossy().into_owned());
         if comps.next().as_deref() == Some("workspace") {
             ctx.tenant = comps.next().filter(|s| !s.is_empty());
-            ctx.realm = comps.next().filter(|s| !s.is_empty());
+            // Realm only appears inside the AM tree (am/<realm>/…).
+            if comps.next().as_deref() == Some("am") {
+                ctx.realm = comps
+                    .next()
+                    .filter(|r| r == "alpha" || r == "bravo");
+            }
         }
     }
     ctx
@@ -325,16 +332,18 @@ impl ProjectConfig {
         PathBuf::from("workspace")
     }
 
-    /// `workspace/<tenant>/<realm>/` — the p1-sync-shaped tree for one
-    /// tenant + realm (contains `am/`, `idm/`, configs, and `.aic-sync/`).
-    pub fn workspace_tree(tenant: &str, realm: &str) -> PathBuf {
-        Self::workspace_dir().join(tenant).join(realm)
+    /// `workspace/<tenant>/` — the per-tenant tree. AM scripts live under
+    /// `am/<realm>/<type>/` (realm-scoped); IDM endpoints under
+    /// `idm/endpoint/` (tenant-global). Also holds configs + `.aic-sync/`.
+    pub fn workspace_tree(tenant: &str) -> PathBuf {
+        Self::workspace_dir().join(tenant)
     }
 
-    /// `workspace/<tenant>/<realm>/.aic-sync/` — our sync state (snapshots +
-    /// applied-templates version). Gitignored; never holds secrets.
-    pub fn aic_sync_dir(tenant: &str, realm: &str) -> PathBuf {
-        Self::workspace_tree(tenant, realm).join(".aic-sync")
+    /// `workspace/<tenant>/.aic-sync/` — our sync state for the whole tenant
+    /// (snapshots for both realms + IDM, applied-templates version).
+    /// Gitignored; never holds secrets.
+    pub fn aic_sync_dir(tenant: &str) -> PathBuf {
+        Self::workspace_tree(tenant).join(".aic-sync")
     }
 
     pub fn load() -> Result<Option<Self>> {

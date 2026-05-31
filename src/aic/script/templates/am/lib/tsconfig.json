@@ -1,5 +1,5 @@
 {
-  "extends": "../tsconfig.json",
-  "include": ["./**/*", "../amCommon.d.ts"],
+  "extends": "../../tsconfig.json",
+  "include": ["./**/*", "../../amCommon.d.ts", "../../lib.d.ts"],
   "compilerOptions": { "paths": { "*": ["./*"] } }
 }

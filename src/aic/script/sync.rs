@@ -1,14 +1,20 @@
 //! Kind-agnostic sync engine: snapshot store, pull, push, status, diff.
 //!
-//! This module never matches on [`Kind`] — every per-kind concern is reached
-//! through the `Kind` methods. Conflict detection is **content-based** (scripts
-//! and IDM endpoints both lack `_rev`): we keep the last-synced raw config as a
-//! snapshot and compare *decoded source bytes* (CLAUDE.md §5,
-//! `docs/api/04-scripts.md`).
+//! This module never matches on [`Kind`] — every per-kind concern (including
+//! whether it's realm-scoped) is reached through the `Kind` methods. Conflict
+//! detection is **content-based** (scripts and IDM endpoints both lack `_rev`):
+//! we keep the last-synced raw config as a snapshot and compare *decoded source
+//! bytes* (CLAUDE.md §5, `docs/api/04-scripts.md`).
+//!
+//! The workspace is **per-tenant**. AM scripts are realm-scoped (stored under
+//! `am/<realm>/…`); IDM endpoints are tenant-global. The snapshot/manifest key
+//! each entry on `realm: Option<String>` (Some for AM, None for IDM) so a
+//! same-named script in alpha and bravo never collide.
 
 use super::{Kind, RemoteRef, RemoteScript};
 use crate::config::ProjectConfig;
 use crate::{Error, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -81,22 +87,33 @@ pub enum ScriptState {
 pub struct StatusEntry {
     pub name: String,
     pub kind: Kind,
+    pub realm: Option<String>,
     pub state: ScriptState,
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot store: .aic-sync/{manifest.json, configs/<kind>/<file>, backups/}
+// Snapshot store: .aic-sync/{manifest.json, configs/<kind>/<realm?>/<file>, backups/}
 // ---------------------------------------------------------------------------
 
-/// On-disk record of the last-synced state for one tenant + realm tree.
+/// A synced script's identity plus the realm it belongs to (Some for AM, None
+/// for tenant-global IDM). Serialized into the per-tenant manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncedScript {
+    #[serde(flatten)]
+    pub reference: RemoteRef,
+    #[serde(default)]
+    pub realm: Option<String>,
+}
+
+/// On-disk record of the last-synced state for one tenant (both realms + IDM).
 pub struct SnapshotStore {
     dir: PathBuf,
 }
 
 impl SnapshotStore {
-    pub fn open(tenant: &str, realm: &str) -> Self {
+    pub fn open(tenant: &str) -> Self {
         SnapshotStore {
-            dir: ProjectConfig::aic_sync_dir(tenant, realm),
+            dir: ProjectConfig::aic_sync_dir(tenant),
         }
     }
 
@@ -104,19 +121,17 @@ impl SnapshotStore {
         self.dir.join("manifest.json")
     }
 
-    fn config_path(&self, r: &RemoteRef) -> PathBuf {
-        self.dir
-            .join("configs")
-            .join(r.kind.as_str())
-            .join(r.kind.config_filename(r))
+    fn config_path(&self, r: &RemoteRef, realm: &str) -> PathBuf {
+        // `config_subpath` already namespaces by kind (and realm for AM).
+        self.dir.join("configs").join(r.kind.config_subpath(r, realm))
     }
 
     pub fn backups_dir(&self) -> PathBuf {
         self.dir.join("backups")
     }
 
-    /// The manifest of every script we've synced into this tree.
-    pub fn load_manifest(&self) -> Result<Vec<RemoteRef>> {
+    /// The manifest of every script we've synced for this tenant.
+    pub fn load_manifest(&self) -> Result<Vec<SyncedScript>> {
         let path = self.manifest_path();
         if !path.exists() {
             return Ok(Vec::new());
@@ -125,35 +140,45 @@ impl SnapshotStore {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    fn save_manifest(&self, entries: &[RemoteRef]) -> Result<()> {
+    fn save_manifest(&self, entries: &[SyncedScript]) -> Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         std::fs::write(self.manifest_path(), serde_json::to_vec_pretty(entries)?)?;
         Ok(())
     }
 
-    /// Insert or replace a manifest entry, keyed by (kind, name).
-    fn upsert_ref(&self, r: &RemoteRef) -> Result<()> {
+    /// The realm key under which a (kind, realm) entry is stored: Some for
+    /// realm-scoped kinds, None otherwise.
+    fn realm_key(kind: Kind, realm: &str) -> Option<String> {
+        kind.realm_scoped().then(|| realm.to_string())
+    }
+
+    /// Insert or replace a manifest entry, keyed by (kind, name, realm).
+    fn upsert(&self, entry: &SyncedScript) -> Result<()> {
         let mut entries = self.load_manifest()?;
-        if let Some(slot) = entries
-            .iter_mut()
-            .find(|e| e.kind == r.kind && e.name == r.name)
-        {
-            *slot = r.clone();
+        if let Some(slot) = entries.iter_mut().find(|e| {
+            e.reference.kind == entry.reference.kind
+                && e.reference.name == entry.reference.name
+                && e.realm == entry.realm
+        }) {
+            *slot = entry.clone();
         } else {
-            entries.push(r.clone());
+            entries.push(entry.clone());
         }
         self.save_manifest(&entries)
     }
 
-    fn remove_ref(&self, kind: Kind, name: &str) -> Result<()> {
+    fn remove(&self, kind: Kind, name: &str, realm: &str) -> Result<()> {
+        let key = Self::realm_key(kind, realm);
         let mut entries = self.load_manifest()?;
-        entries.retain(|e| !(e.kind == kind && e.name == name));
+        entries.retain(|e| {
+            !(e.reference.kind == kind && e.reference.name == name && e.realm == key)
+        });
         self.save_manifest(&entries)
     }
 
     /// Last-synced raw config (the snapshot we forked from), if present.
-    pub fn load_config(&self, r: &RemoteRef) -> Result<Option<Value>> {
-        let path = self.config_path(r);
+    pub fn load_config(&self, r: &RemoteRef, realm: &str) -> Result<Option<Value>> {
+        let path = self.config_path(r, realm);
         if !path.exists() {
             return Ok(None);
         }
@@ -161,8 +186,8 @@ impl SnapshotStore {
         Ok(Some(serde_json::from_slice(&bytes)?))
     }
 
-    fn save_config(&self, r: &RemoteRef, raw: &Value) -> Result<()> {
-        let path = self.config_path(r);
+    fn save_config(&self, r: &RemoteRef, realm: &str, raw: &Value) -> Result<()> {
+        let path = self.config_path(r, realm);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -171,21 +196,25 @@ impl SnapshotStore {
     }
 
     /// Record a script as synced: store its raw config + manifest entry.
-    fn record(&self, script: &RemoteScript) -> Result<()> {
-        self.save_config(&script.reference, &script.raw_config)?;
-        self.upsert_ref(&script.reference)
+    fn record(&self, script: &RemoteScript, realm: &str) -> Result<()> {
+        self.save_config(&script.reference, realm, &script.raw_config)?;
+        self.upsert(&SyncedScript {
+            reference: script.reference.clone(),
+            realm: Self::realm_key(script.reference.kind, realm),
+        })
     }
 
-    fn manifest_lookup(&self, kind: Kind, name: &str) -> Result<Option<RemoteRef>> {
+    fn lookup(&self, kind: Kind, name: &str, realm: &str) -> Result<Option<SyncedScript>> {
+        let key = Self::realm_key(kind, realm);
         Ok(self
             .load_manifest()?
             .into_iter()
-            .find(|e| e.kind == kind && e.name == name))
+            .find(|e| e.reference.kind == kind && e.reference.name == name && e.realm == key))
     }
 }
 
 fn workspace_file(tenant: &str, realm: &str, r: &RemoteRef) -> PathBuf {
-    ProjectConfig::workspace_tree(tenant, realm).join(r.kind.workspace_subpath(r))
+    ProjectConfig::workspace_tree(tenant).join(r.kind.workspace_subpath(r, realm))
 }
 
 fn lossy(bytes: &[u8]) -> String {
@@ -198,6 +227,7 @@ fn lossy(bytes: &[u8]) -> String {
 
 /// Pull scripts of `kind` matching `selector` into the workspace, updating the
 /// snapshot store. Protects un-pushed local edits with a backup unless `force`.
+/// `realm` selects the AM realm (ignored for IDM).
 pub async fn pull(
     tenant: &str,
     realm: &str,
@@ -205,7 +235,7 @@ pub async fn pull(
     selector: &Selector,
     force: bool,
 ) -> Result<Vec<PullOutcome>> {
-    let store = SnapshotStore::open(tenant, realm);
+    let store = SnapshotStore::open(tenant);
     let refs: Vec<RemoteRef> = kind
         .list(tenant, realm)
         .await?
@@ -225,7 +255,7 @@ pub async fn pull(
         let remote_src = kind.decode_source(&script.raw_config)?;
 
         let dest = workspace_file(tenant, realm, &script.reference);
-        let snapshot_src = match store.load_config(&script.reference)? {
+        let snapshot_src = match store.load_config(&script.reference, realm)? {
             Some(cfg) => Some(kind.decode_source(&cfg)?),
             None => None,
         };
@@ -258,7 +288,7 @@ pub async fn pull(
 
         // Write source (+ any extra generated files), then refresh snapshot.
         write_workspace_files(tenant, realm, &script, &remote_src)?;
-        store.record(&script)?;
+        store.record(&script, realm)?;
 
         outcomes.push(PullOutcome {
             name: script.reference.name.clone(),
@@ -275,13 +305,14 @@ fn write_workspace_files(
     script: &RemoteScript,
     source: &[u8],
 ) -> Result<()> {
-    let tree = ProjectConfig::workspace_tree(tenant, realm);
-    let dest = tree.join(script.reference.kind.workspace_subpath(&script.reference));
+    let tree = ProjectConfig::workspace_tree(tenant);
+    let r = &script.reference;
+    let dest = tree.join(r.kind.workspace_subpath(r, realm));
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&dest, source)?;
-    for (rel, contents) in script.reference.kind.extra_files(&script.reference) {
+    for (rel, contents) in r.kind.extra_files(r, realm) {
         let p = tree.join(rel);
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
@@ -305,7 +336,8 @@ fn back_up(store: &SnapshotStore, r: &RemoteRef, local: &[u8]) -> Result<PathBuf
 // ---------------------------------------------------------------------------
 
 /// Push a local edit back to the tenant. Requires a prior pull (snapshot must
-/// exist). Content-based conflict check unless `force`.
+/// exist). Content-based conflict check unless `force`. `realm` selects the AM
+/// realm (ignored for IDM).
 pub async fn push(
     tenant: &str,
     realm: &str,
@@ -314,10 +346,11 @@ pub async fn push(
     force: bool,
     confirmed_prod: bool,
 ) -> Result<PushOutcome> {
-    let store = SnapshotStore::open(tenant, realm);
-    let r = store
-        .manifest_lookup(kind, name)?
+    let store = SnapshotStore::open(tenant);
+    let entry = store
+        .lookup(kind, name, realm)?
         .ok_or_else(|| Error::Config(format!("{name:?} not synced yet — `aic script pull {name}` first")))?;
+    let r = &entry.reference;
 
     // Product-shipped defaults shouldn't be overwritten (AIC may 403 or
     // silently no-op anyway — see docs/api/04-scripts.md). --force is the
@@ -329,11 +362,11 @@ pub async fn push(
     }
 
     let snapshot_cfg = store
-        .load_config(&r)?
+        .load_config(r, realm)?
         .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing — pull again")))?;
     let snapshot_src = kind.decode_source(&snapshot_cfg)?;
 
-    let dest = workspace_file(tenant, realm, &r);
+    let dest = workspace_file(tenant, realm, r);
     let local_src = std::fs::read(&dest)
         .map_err(|_| Error::Config(format!("local file {} not found — pull first", dest.display())))?;
 
@@ -348,7 +381,7 @@ pub async fn push(
 
     if remote_src == local_src {
         // Someone already pushed identical content; just refresh the snapshot.
-        store.record(&remote)?;
+        store.record(&remote, realm)?;
         return Ok(PushOutcome::AlreadyInSync);
     }
 
@@ -374,43 +407,41 @@ pub async fn push(
     kind.write(tenant, realm, &to_push, confirmed_prod).await?;
 
     // Refresh the snapshot to exactly what we just pushed.
-    store.record(&to_push)?;
+    store.record(&to_push, realm)?;
     Ok(PushOutcome::Pushed)
-}
-
-/// The raw config we last synced for a script — used by the CLI to record an
-/// undo entry (previous remote content) before a push.
-pub fn last_synced_config(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<Option<Value>> {
-    let store = SnapshotStore::open(tenant, realm);
-    match store.manifest_lookup(kind, name)? {
-        Some(r) => store.load_config(&r),
-        None => Ok(None),
-    }
 }
 
 // ---------------------------------------------------------------------------
 // Status / diff
 // ---------------------------------------------------------------------------
 
-/// Compute the state of every synced script (optionally just one kind).
-pub async fn status(tenant: &str, realm: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>> {
-    let store = SnapshotStore::open(tenant, realm);
+/// Compute the state of every synced script for the tenant (optionally just one
+/// kind). Realm comes from each manifest entry.
+pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>> {
+    let store = SnapshotStore::open(tenant);
     let mut out = Vec::new();
-    for r in store.load_manifest()? {
+    for entry in store.load_manifest()? {
+        let r = &entry.reference;
         if let Some(k) = only {
             if r.kind != k {
                 continue;
             }
         }
-        let snapshot_cfg = match store.load_config(&r)? {
+        let realm = entry.realm.as_deref().unwrap_or_default();
+        let snapshot_cfg = match store.load_config(r, realm)? {
             Some(c) => c,
             None => continue,
         };
         let snapshot_src = r.kind.decode_source(&snapshot_cfg)?;
 
-        let dest = workspace_file(tenant, realm, &r);
+        let dest = workspace_file(tenant, realm, r);
         if !dest.exists() {
-            out.push(StatusEntry { name: r.name.clone(), kind: r.kind, state: ScriptState::LocalMissing });
+            out.push(StatusEntry {
+                name: r.name.clone(),
+                kind: r.kind,
+                realm: entry.realm.clone(),
+                state: ScriptState::LocalMissing,
+            });
             continue;
         }
         let local_src = std::fs::read(&dest)?;
@@ -426,7 +457,12 @@ pub async fn status(tenant: &str, realm: &str, only: Option<Kind>) -> Result<Vec
             (false, true) => ScriptState::RemotelyModified,
             (true, true) => ScriptState::BothModified,
         };
-        out.push(StatusEntry { name: r.name.clone(), kind: r.kind, state });
+        out.push(StatusEntry {
+            name: r.name.clone(),
+            kind: r.kind,
+            realm: entry.realm.clone(),
+            state,
+        });
     }
     Ok(out)
 }
@@ -434,16 +470,17 @@ pub async fn status(tenant: &str, realm: &str, only: Option<Kind>) -> Result<Vec
 /// 3-way content for one script: last-synced snapshot, current remote, current
 /// local. The CLI renders these; a real merge UI is future work.
 pub async fn diff(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<ThreeWay> {
-    let store = SnapshotStore::open(tenant, realm);
-    let r = store
-        .manifest_lookup(kind, name)?
+    let store = SnapshotStore::open(tenant);
+    let entry = store
+        .lookup(kind, name, realm)?
         .ok_or_else(|| Error::Config(format!("{name:?} not synced yet")))?;
+    let r = &entry.reference;
     let snapshot_cfg = store
-        .load_config(&r)?
+        .load_config(r, realm)?
         .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing")))?;
     let snapshot_src = kind.decode_source(&snapshot_cfg)?;
 
-    let dest = workspace_file(tenant, realm, &r);
+    let dest = workspace_file(tenant, realm, r);
     let local_src = if dest.exists() {
         std::fs::read(&dest)?
     } else {
@@ -462,6 +499,6 @@ pub async fn diff(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<T
 /// Remove a script's snapshot + manifest entry after a remote delete. Does not
 /// touch the user's local `.cjs` (they may still want it).
 pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
-    let store = SnapshotStore::open(tenant, realm);
-    store.remove_ref(kind, name)
+    let store = SnapshotStore::open(tenant);
+    store.remove(kind, name, realm)
 }

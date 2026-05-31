@@ -130,19 +130,20 @@ prompt for a typed confirmation on any tenant unless `--yes` is given.
 ### Scripts
 
 `aic script` syncs AIC scripts to a local **typed workspace** at
-`./workspace/<tenant>/<realm>/` — the same layout (and the same `.d.ts`
-definitions + ESLint/TypeScript config) as
+`./workspace/<tenant>/` (one tree per tenant) — the same `.d.ts` definitions +
+ESLint/TypeScript config as
 [p1aic-script-editor](https://github.com/agiledigital-labs/p1aic-script-editor),
 so your editor gets full IntelliSense on script bodies. Two script "kinds" are
-supported behind one engine: **AM scripts** (`--kind am`, routed to
-`am/{src,lib,oidc}/` by context) and **IDM custom endpoints** (`--kind idm`,
-under `idm/endpoint/`).
+supported behind one engine: **AM scripts** (`--kind am`), which are
+realm-scoped and routed to `am/<realm>/{src,lib,oidc}/` by context, and **IDM
+custom endpoints** (`--kind idm`), which are tenant-global under
+`idm/endpoint/`.
 
 ```bash
-aic script workspace init                     # scaffold the typed workspace tree
+aic script workspace init                     # scaffold the tenant tree (both realms + idm)
 aic script list                               # scripts on the tenant (both kinds)
-aic script pull MyDecisionNode --kind am      # → workspace/<tenant>/alpha/am/src/MyDecisionNode.cjs
-aic script pull --kind idm                    # pull all IDM endpoints
+aic script pull MyDecisionNode --kind am      # → workspace/<tenant>/am/alpha/src/MyDecisionNode.cjs
+aic script pull --kind idm                    # pull all IDM endpoints → idm/endpoint/
 # edit the .cjs in your editor, then:
 aic script push MyDecisionNode --kind am      # content-based conflict check, then PUT
 aic script status                             # in sync / modified locally / remote / conflict
@@ -158,9 +159,10 @@ selects `alpha` (default) or `bravo`; `--yes`/`--tenant` work as above.
 
 `aic` finds the project root by walking up from the current directory, so any
 command works from any subdirectory. When you run from inside a
-`workspace/<tenant>/<realm>/` tree, the tenant and realm are **inferred from the
-path** (so a bare `aic script list` or `aic esv list` targets that tenant);
-explicit `--tenant`/`--realm` still override.
+`workspace/<tenant>/` tree the **tenant** is inferred from the path (so a bare
+`aic script list` or `aic esv list` targets it), and inside an `am/<realm>/`
+subtree the **realm** is inferred too; explicit `--tenant`/`--realm` still
+override.
 
 > **Note:** AM-script support adds a new `Accept-API-Version` header that the
 > agent must forward, so after upgrading restart the agent (`aic stop` then

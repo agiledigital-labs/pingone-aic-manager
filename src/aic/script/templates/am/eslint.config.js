@@ -165,7 +165,7 @@ export default [
   },
   // Configuration for source scripts (stricter rules)
   {
-    files: ["src/**/*.cjs"],
+    files: ["**/src/**/*.cjs"],
     languageOptions: {
       ecmaVersion: 2015,
       sourceType: "script",
