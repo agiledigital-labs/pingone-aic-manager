@@ -39,16 +39,46 @@ fn str_field(raw: &Value, key: &str) -> String {
 }
 
 pub async fn list(tenant: &str, realm: &str) -> Result<Vec<RemoteRef>> {
-    let path = format!("{}/scripts?_queryFilter=true", realm_path(realm));
-    let body = crate::aic::api::get_versioned(tenant, &path, API_VERSION).await?;
-    let arr = body
-        .get("result")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| Error::Api {
-            status: 0,
-            body: format!("unexpected scripts list shape: {body}"),
-        })?;
-    Ok(arr.iter().map(ref_from_config).collect())
+    // The scripts endpoint is paged; loop on `_pagedResultsCookie` so we don't
+    // miss anything past the first page (docs/api/04-scripts.md).
+    let mut refs = Vec::new();
+    let mut cookie: Option<String> = None;
+    loop {
+        let mut path = format!("{}/scripts?_queryFilter=true&_pageSize=100", realm_path(realm));
+        if let Some(c) = &cookie {
+            path.push_str("&_pagedResultsCookie=");
+            path.push_str(&encode_query(c));
+        }
+        let body = crate::aic::api::get_versioned(tenant, &path, API_VERSION).await?;
+        let arr = body
+            .get("result")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| Error::Api {
+                status: 0,
+                body: format!("unexpected scripts list shape: {body}"),
+            })?;
+        refs.extend(arr.iter().map(ref_from_config));
+        match body.get("pagedResultsCookie").and_then(|v| v.as_str()) {
+            Some(c) if !c.is_empty() => cookie = Some(c.to_string()),
+            _ => break,
+        }
+    }
+    Ok(refs)
+}
+
+/// Percent-encode a query-string value. The paged-results cookie can contain
+/// `+`, `/`, `=`; reqwest passes our query through verbatim, so we encode here.
+fn encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 pub async fn fetch(tenant: &str, realm: &str, id: &str) -> Result<RemoteScript> {
@@ -180,6 +210,13 @@ mod tests {
             workspace_subpath(&rref(Some("OIDC_CLAIMS"))),
             PathBuf::from("am/oidc/MyScript.cjs")
         );
+    }
+
+    #[test]
+    fn encode_query_escapes_cookie_specials() {
+        // A typical paged-results cookie has +, /, = which must be escaped.
+        assert_eq!(encode_query("aB9-_.~"), "aB9-_.~");
+        assert_eq!(encode_query("a+b/c=d"), "a%2Bb%2Fc%3Dd");
     }
 
     #[test]
