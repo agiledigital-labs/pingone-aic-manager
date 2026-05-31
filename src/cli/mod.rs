@@ -14,7 +14,7 @@
 //! The required flows mix browser cookies, interactive TOTP, and RSA
 //! keygen; we haven't tried to script them. Run the TUI once per tenant.
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use crate::agent::{self, AgentClient, Request, Response};
 use crate::auth;
@@ -67,7 +67,7 @@ pub enum Command {
     },
     /// Mint and print a token for the current context (or `--tenant <name>`).
     Whoami {
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
     /// ESV operations (variables, secrets).
@@ -87,13 +87,13 @@ pub enum EsvCommand {
     /// List ESV variables. Outputs the `result` array as JSON.
     List {
         /// Override the current context for this call.
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
     /// Get a single variable as JSON.
     Get {
         id: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
     /// Create or update a variable.
@@ -107,7 +107,7 @@ pub enum EsvCommand {
         expr_type: String,
         #[arg(long, default_value = "")]
         description: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
@@ -116,14 +116,14 @@ pub enum EsvCommand {
     /// Delete a variable.
     Delete {
         id: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
     },
     /// Apply pending changes by restarting the tenant runtime.
     Apply {
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -139,13 +139,13 @@ pub enum EsvCommand {
 pub enum SecretCommand {
     /// List secrets (metadata only — values are write-only).
     List {
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
     /// Get a single secret's metadata as JSON.
     Get {
         id: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
     /// Create a secret (PUT is create-only; change values via add-version).
@@ -176,7 +176,7 @@ pub enum SecretCommand {
         no_placeholders: bool,
         #[arg(long, default_value = "")]
         description: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -186,7 +186,7 @@ pub enum SecretCommand {
         id: String,
         #[arg(long)]
         description: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -194,7 +194,7 @@ pub enum SecretCommand {
     /// List a secret's versions (newest first).
     Versions {
         id: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
     /// Add a new version (becomes the active version). Value is encoded with
@@ -211,7 +211,7 @@ pub enum SecretCommand {
         /// Read the value from stdin (a single trailing newline is stripped).
         #[arg(long)]
         value_stdin: bool,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -220,7 +220,7 @@ pub enum SecretCommand {
     Enable {
         id: String,
         version: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -229,7 +229,7 @@ pub enum SecretCommand {
     Disable {
         id: String,
         version: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -238,7 +238,7 @@ pub enum SecretCommand {
     Destroy {
         id: String,
         version: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -246,7 +246,7 @@ pub enum SecretCommand {
     /// Delete a secret and all its versions — irreversible.
     Delete {
         id: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
@@ -262,9 +262,9 @@ pub enum ScriptCommand {
     },
     /// List scripts on the tenant (not the local workspace).
     List {
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
+        #[arg(long, help = "Realm: alpha or bravo")]
         realm: Option<String>,
         /// Limit to one kind: `am` or `idm` (default: both).
         #[arg(long)]
@@ -277,9 +277,9 @@ pub enum ScriptCommand {
         /// `am` (scripts) or `idm` (endpoints).
         #[arg(long, default_value = "am")]
         kind: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
+        #[arg(long, help = "Realm: alpha or bravo")]
         realm: Option<String>,
         /// Overwrite local edits without backing them up first.
         #[arg(long)]
@@ -290,9 +290,9 @@ pub enum ScriptCommand {
         name: String,
         #[arg(long, default_value = "am")]
         kind: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
+        #[arg(long, help = "Realm: alpha or bravo")]
         realm: Option<String>,
         /// Push past a remote-drift conflict (overwrites remote).
         #[arg(long)]
@@ -303,9 +303,9 @@ pub enum ScriptCommand {
     },
     /// Show the sync state of every synced script.
     Status {
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
+        #[arg(long, help = "Realm: alpha or bravo")]
         realm: Option<String>,
         #[arg(long)]
         kind: Option<String>,
@@ -315,9 +315,9 @@ pub enum ScriptCommand {
         name: String,
         #[arg(long, default_value = "am")]
         kind: String,
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
+        #[arg(long, help = "Realm: alpha or bravo")]
         realm: Option<String>,
     },
 }
@@ -326,16 +326,16 @@ pub enum ScriptCommand {
 pub enum WorkspaceCommand {
     /// Create the workspace tree + type definitions for a tenant + realm.
     Init {
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
+        #[arg(long, help = "Realm: alpha or bravo")]
         realm: Option<String>,
     },
     /// Refresh managed type/config files to the latest bundled version.
     Update {
-        #[arg(long, help = "Tenant to target (default: the workspace dir's tenant, else your current `aic ctx`)")]
+        #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo (default: the workspace dir's realm, else alpha)")]
+        #[arg(long, help = "Realm: alpha or bravo")]
         realm: Option<String>,
     },
 }
@@ -351,7 +351,6 @@ pub enum CtxCommand {
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
-    bootstrap_project_root();
     match cli.command {
         Some(Command::Agent { detach, idle_timeout }) => {
             run_agent(detach, idle_timeout).await
@@ -373,7 +372,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 /// `workspace/<tenant>/<realm>/` working directory, then chdir to the root so
 /// every project-relative path (config, keystore, agent socket) resolves the
 /// same no matter which subdirectory the command was invoked from.
-fn bootstrap_project_root() {
+pub fn bootstrap_project_root() {
     let Ok(cwd) = std::env::current_dir() else {
         return;
     };
@@ -381,6 +380,70 @@ fn bootstrap_project_root() {
         config::set_workspace_context(config::detect_workspace_context(&root, &cwd));
         let _ = std::env::set_current_dir(&root);
     }
+}
+
+/// Parse argv, but first bake the resolved tenant + realm in as the
+/// `default_value` of every `--tenant`/`--realm` flag — so `-h` shows the
+/// concrete default that will be used and an omitted flag adopts it. Call
+/// [`bootstrap_project_root`] first so the workspace context + cwd are set.
+pub fn parse_with_defaults() -> Cli {
+    let (tenant, realm) = resolved_defaults();
+    let cmd = inject_ctx_defaults(Cli::command(), tenant.as_deref(), &realm);
+    match Cli::from_arg_matches(&cmd.get_matches()) {
+        Ok(cli) => cli,
+        Err(e) => e.exit(),
+    }
+}
+
+/// The tenant + realm to surface as defaults. Tenant: a workspace-dir tenant
+/// (only if it's a configured tenant), else the current `aic ctx`, else
+/// `default_tenant`, else `None`. Realm: a valid workspace-dir realm, else
+/// `alpha`. Mirrors the resolution in [`resolve_tenant`]/[`realm_for`].
+fn resolved_defaults() -> (Option<String>, String) {
+    let ctx = config::workspace_context();
+    let realm = ctx
+        .realm
+        .as_deref()
+        .filter(|r| *r == "alpha" || *r == "bravo")
+        .unwrap_or("alpha")
+        .to_string();
+    let cfg = ProjectConfig::load().ok().flatten();
+    let tenant = (|| {
+        if let (Some(t), Some(cfg)) = (&ctx.tenant, &cfg) {
+            if cfg.tenants.iter().any(|x| &x.name == t) {
+                return Some(t.clone());
+            }
+        }
+        if let Ok(Some(c)) = config::read_current_context() {
+            return Some(c);
+        }
+        cfg.as_ref()
+            .filter(|c| !c.default_tenant.is_empty())
+            .map(|c| c.default_tenant.clone())
+    })();
+    (tenant, realm)
+}
+
+/// Recursively set `default_value` on every `--tenant`/`--realm` arg in the
+/// command tree (only where the resolved value exists).
+fn inject_ctx_defaults(mut cmd: clap::Command, tenant: Option<&str>, realm: &str) -> clap::Command {
+    // clap stores `default_value` as a `'static` borrow, so leak these
+    // program-lifetime strings (resolved once at startup) to satisfy it.
+    if let Some(t) = tenant {
+        if cmd.get_arguments().any(|a| a.get_id() == "tenant") {
+            let v: &'static str = Box::leak(t.to_string().into_boxed_str());
+            cmd = cmd.mut_arg("tenant", |a| a.default_value(v));
+        }
+    }
+    if cmd.get_arguments().any(|a| a.get_id() == "realm") {
+        let v: &'static str = Box::leak(realm.to_string().into_boxed_str());
+        cmd = cmd.mut_arg("realm", |a| a.default_value(v));
+    }
+    let subs: Vec<String> = cmd.get_subcommands().map(|s| s.get_name().to_string()).collect();
+    for name in subs {
+        cmd = cmd.mut_subcommand(&name, |s| inject_ctx_defaults(s, tenant, realm));
+    }
+    cmd
 }
 
 async fn run_agent(detach: bool, idle_timeout: Option<u64>) -> Result<()> {
