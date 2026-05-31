@@ -28,6 +28,7 @@ idm/
   idmCommon.d.ts       # IDM endpoint globals (managed)
   tsconfig.json  eslint.config.js
   endpoint/ tsconfig.json  <name>.cjs  # IDM custom endpoints (/openidm/config/endpoint/*)
+  schedule/ tsconfig.json  <name>.cjs  # IDM scheduled jobs (/openidm/config/schedule/*)
 tests/                 # your Jest tests
 package.json  .prettierrc
 .aic-sync/             # tool-managed: last-synced snapshots (per realm + idm)
@@ -56,8 +57,9 @@ aic script workspace update          # refresh the managed types/config
 ```
 
 Notes:
-- `--kind` is `am` (scripts) or `idm` (endpoints); `--realm` is `alpha` or
-  `bravo` (inferred from this directory, else defaults to `alpha`).
+- `--kind` is `am` (scripts), `idm` (endpoints), or `schedule` (scheduled jobs
+  — only script-invoking ones); `--realm` is `alpha` or `bravo` (inferred from
+  this directory, else defaults to `alpha`; ignored for IDM kinds).
 - A pull that would overwrite un-pushed local edits backs them up under
   `.aic-sync/backups/` first (use `--force` to skip the backup).
 - A push is blocked if the remote changed since your last sync (resolve from

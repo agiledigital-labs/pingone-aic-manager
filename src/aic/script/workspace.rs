@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 2;
+pub const TEMPLATES_VERSION: u32 = 3;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -39,6 +39,7 @@ const MANAGED: &[(&str, &str)] = &[
     ("idm/tsconfig.json", include_str!("templates/idm/tsconfig.json")),
     ("idm/eslint.config.js", include_str!("templates/idm/eslint.config.js")),
     ("idm/endpoint/tsconfig.json", include_str!("templates/idm/endpoint/tsconfig.json")),
+    ("idm/schedule/tsconfig.json", include_str!("templates/idm/schedule/tsconfig.json")),
 ];
 
 /// User files: seeded once on init, never overwritten (even by update).
@@ -122,6 +123,7 @@ fn scaffold(tenant: &str, is_update: bool) -> Result<WorkspaceReport> {
         }
     }
     std::fs::create_dir_all(tree.join("idm").join("endpoint"))?;
+    std::fs::create_dir_all(tree.join("idm").join("schedule"))?;
     std::fs::create_dir_all(tree.join("tests"))?;
 
     // Managed shared files (always (re)written).

@@ -89,15 +89,58 @@ curl -X DELETE "$TENANT_BASE_URL/openidm/config/endpoint/my-endpoint" \
   defaults; treat with the same care as AM `default:true` scripts (avoid
   clobbering unless the user explicitly pulls + edits them).
 
+## Scheduled jobs (`schedule/<name>`)
+
+IDM scheduled jobs are config objects at `/openidm/config/schedule/<name>` —
+same CRUD, no realm, no `_rev`. `aic-edit` syncs them as a second IDM script
+kind (`--kind schedule`). They differ from endpoints in **where the script
+lives** and **which ones have one**:
+
+- The script is nested at **`invokeContext.script.source`** (plaintext), with
+  `invokeContext.script.type: "text/javascript"`. A `globals` object may sit
+  beside `source`.
+- **Only `invokeService: "script"` schedules carry an inline script.** Others
+  (`taskscanner`, `sync`, …) have an `invokeContext` but no `script.source`
+  (they reference a script by `scriptProperty`, or scan managed objects) —
+  filter these out when listing syncable schedules.
+- On write, merge only `invokeContext.script.source` and round-trip the rest
+  (`schedule`, `enabled`, `persisted`, `type`, `globals`, …) so the cron
+  definition and flags aren't lost.
+
+Object shape (real example, `schedule/UpdateReviewList`):
+
+```json
+{
+  "_id": "schedule/UpdateReviewList",
+  "enabled": true,
+  "type": "cron",
+  "schedule": "0 0 2 * * ?",
+  "persisted": true,
+  "invokeService": "script",
+  "invokeContext": {
+    "type": "text/javascript",
+    "script": { "type": "text/javascript", "source": "var oneDay = …", "globals": {} }
+  }
+}
+```
+
+> When creating a schedule for testing, set `"enabled": false` so it doesn't
+> actually fire on its cron.
+
 ## Verified against
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-05-31
-- Calls: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
+- Date: 2026-06-01
+- Endpoints: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
   `endpoint/` ids), `GET /openidm/config/endpoint/test` (200; keys
   `_id, description, source, type`, no `_rev`, plaintext `source`),
-  `PUT /openidm/config/endpoint/aicedit-verify` (201 create, echoes object),
-  `PUT` again (200 replace), `DELETE` (200 echoes object),
-  `GET` after delete (404). Throwaway endpoint removed after the run.
+  `PUT /openidm/config/endpoint/aicedit-verify` (201 create), `PUT` again
+  (200 replace), `DELETE` (200), `GET` after delete (404).
+- Schedules (2026-06-01): `GET …?_queryFilter=true` → 4 `schedule/` configs,
+  3 `taskscanner` (no inline script) + 1 `invokeService:"script"`
+  (`UpdateReviewList`, script at `invokeContext.script.source`, no `_rev`).
+  Throwaway `schedule/aicedit-sched` (disabled): `PUT` 201 create, `PUT` 200
+  replace, source-only push preserved `enabled`/`schedule`/`script.type`,
+  `DELETE` 200. Removed after the run.
 
 ## Source citations
 - frodo-lib: `src/api/IdmConfigApi.ts` (`getConfigEntity` / `putConfigEntity`).

@@ -11,6 +11,7 @@
 
 pub mod am;
 pub mod idm;
+pub mod schedule;
 pub mod sync;
 pub mod workspace;
 
@@ -28,6 +29,10 @@ pub enum Kind {
     /// IDM custom endpoints: `/openidm/config/endpoint/{name}`, plaintext `source`.
     #[serde(rename = "idm")]
     IdmEndpoint,
+    /// IDM scheduled jobs: `/openidm/config/schedule/{name}`, script at
+    /// `invokeContext.script.source` (script-invoking schedules only).
+    #[serde(rename = "schedule")]
+    IdmSchedule,
 }
 
 impl Kind {
@@ -35,6 +40,7 @@ impl Kind {
         match self {
             Kind::Am => "am",
             Kind::IdmEndpoint => "idm",
+            Kind::IdmSchedule => "schedule",
         }
     }
 
@@ -43,12 +49,13 @@ impl Kind {
         match s.to_ascii_lowercase().as_str() {
             "am" | "script" | "scripts" => Some(Kind::Am),
             "idm" | "endpoint" | "endpoints" | "idm-endpoint" => Some(Kind::IdmEndpoint),
+            "schedule" | "schedules" | "idm-schedule" => Some(Kind::IdmSchedule),
             _ => None,
         }
     }
 
     pub fn all() -> &'static [Kind] {
-        &[Kind::Am, Kind::IdmEndpoint]
+        &[Kind::Am, Kind::IdmEndpoint, Kind::IdmSchedule]
     }
 
     // ----- async I/O (delegates to the per-kind module) ------------------
@@ -57,6 +64,7 @@ impl Kind {
         match self {
             Kind::Am => am::list(tenant, realm).await,
             Kind::IdmEndpoint => idm::list(tenant, realm).await,
+            Kind::IdmSchedule => schedule::list(tenant, realm).await,
         }
     }
 
@@ -64,6 +72,7 @@ impl Kind {
         match self {
             Kind::Am => am::fetch(tenant, realm, id).await,
             Kind::IdmEndpoint => idm::fetch(tenant, realm, id).await,
+            Kind::IdmSchedule => schedule::fetch(tenant, realm, id).await,
         }
     }
 
@@ -77,6 +86,7 @@ impl Kind {
         match self {
             Kind::Am => am::write(tenant, realm, script, confirmed_prod).await,
             Kind::IdmEndpoint => idm::write(tenant, realm, script, confirmed_prod).await,
+            Kind::IdmSchedule => schedule::write(tenant, realm, script, confirmed_prod).await,
         }
     }
 
@@ -90,6 +100,7 @@ impl Kind {
         match self {
             Kind::Am => am::delete(tenant, realm, id, confirmed_prod).await,
             Kind::IdmEndpoint => idm::delete(tenant, realm, id, confirmed_prod).await,
+            Kind::IdmSchedule => schedule::delete(tenant, realm, id, confirmed_prod).await,
         }
     }
 
@@ -100,6 +111,7 @@ impl Kind {
         match self {
             Kind::Am => am::decode_source(raw),
             Kind::IdmEndpoint => idm::decode_source(raw),
+            Kind::IdmSchedule => schedule::decode_source(raw),
         }
     }
 
@@ -108,6 +120,7 @@ impl Kind {
         match self {
             Kind::Am => am::encode_source(raw, source),
             Kind::IdmEndpoint => idm::encode_source(raw, source),
+            Kind::IdmSchedule => schedule::encode_source(raw, source),
         }
     }
 
@@ -124,6 +137,7 @@ impl Kind {
         match self {
             Kind::Am => am::workspace_subpath(r, realm),
             Kind::IdmEndpoint => idm::workspace_subpath(r),
+            Kind::IdmSchedule => schedule::workspace_subpath(r),
         }
     }
 
@@ -133,6 +147,7 @@ impl Kind {
         match self {
             Kind::Am => am::config_subpath(r, realm),
             Kind::IdmEndpoint => idm::config_subpath(r),
+            Kind::IdmSchedule => schedule::config_subpath(r),
         }
     }
 
@@ -142,6 +157,7 @@ impl Kind {
         match self {
             Kind::Am => am::extra_files(r, realm),
             Kind::IdmEndpoint => idm::extra_files(r),
+            Kind::IdmSchedule => schedule::extra_files(r),
         }
     }
 }
