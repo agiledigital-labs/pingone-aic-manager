@@ -110,15 +110,22 @@ aic esv apply                                 # restart the runtime to apply
 
 aic esv secret list
 aic esv secret versions esv-my-secret
-aic esv secret create esv-my-secret --value s3cret           # encoding generic
-aic esv secret add-version esv-my-secret --value rotated
+aic esv secret create esv-my-secret                          # prompts (no echo)
+aic esv secret create esv-my-secret --value-file ./s.txt     # or from a file
+printf 'rotated' | aic esv secret add-version esv-my-secret --value-stdin
 aic esv secret disable esv-my-secret 2
 aic esv secret set-description esv-my-secret --description "…"
+aic esv secret destroy esv-my-secret 2 --yes                 # irreversible: prompts unless --yes
+aic esv secret delete esv-my-secret --yes                    # irreversible: prompts unless --yes
 ```
 
 Mutating commands take `--yes` to confirm a write to a production-themed
 tenant (the CLI equivalent of the TUI's prod-write guard), and `--tenant
-<name>` to override the current context for a single call.
+<name>` to override the current context for a single call. Secret values are
+read from a no-echo prompt, `--value-file`, or `--value-stdin` so they stay out
+of your shell history and the process list; `--value` exists for scripting but
+is discouraged. `secret destroy` and `secret delete` are irreversible and
+prompt for a typed confirmation on any tenant unless `--yes` is given.
 
 ### Scripts
 

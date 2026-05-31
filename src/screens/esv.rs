@@ -331,7 +331,6 @@ pub struct SavePlan {
     description: String,
     expr_type: String,
     value_b64: String,
-    type_changed: bool,
     original: Option<serde_json::Value>,
     optimistic: serde_json::Value,
     was_creating: bool,
@@ -343,7 +342,6 @@ struct SaveRequest {
     description: String,
     expr_type: String,
     value_b64: String,
-    type_changed: bool,
     original: Option<serde_json::Value>,
 }
 
@@ -1308,17 +1306,10 @@ fn build_save_plan(app: &mut App) -> Option<SavePlan> {
     let id = edit.id.clone();
     let description = edit.description.value.clone();
     let expr_type = edit.expr_type.as_str().to_string();
-    let original_type = edit
-        .original
-        .get("expressionType")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
     let value_str = edit.value.value.clone();
     let value_b64 = B64.encode(value_str.as_bytes());
     let creating = edit.creating;
     let was_creating = edit.creating;
-    let type_changed = !creating && original_type != expr_type;
     let original_for_conflict = if creating {
         None
     } else {
@@ -1359,7 +1350,6 @@ fn build_save_plan(app: &mut App) -> Option<SavePlan> {
         description,
         expr_type,
         value_b64,
-        type_changed,
         original: original_for_conflict,
         optimistic,
         was_creating,
@@ -1373,7 +1363,6 @@ pub fn execute_save_plan(app: &mut App, plan: SavePlan, confirmed_prod: bool) {
         description,
         expr_type,
         value_b64,
-        type_changed,
         original,
         optimistic,
         was_creating,
@@ -1434,7 +1423,6 @@ pub fn execute_save_plan(app: &mut App, plan: SavePlan, confirmed_prod: bool) {
         description,
         expr_type,
         value_b64,
-        type_changed,
         original,
     };
     let event_tenant = request.tenant_name.clone();
@@ -1688,61 +1676,27 @@ async fn save_variable(request: SaveRequest, confirmed_prod: bool) -> Result<Sav
         description,
         expr_type,
         value_b64,
-        type_changed,
         original,
     } = request;
 
-    let mut created = false;
-    if let Some(original) = original.as_ref() {
-        match crate::aic::esv::get_variable(&tenant_name, &id).await {
-            Ok(current) => {
-                if !crate::aic::esv::content_equal(&current, original) {
-                    return Err(
-                        "remote value changed since you opened it; refresh and retry".into(),
-                    );
-                }
-            }
-            // We opened the form as an edit, but the variable is absent on
-            // AIC (typically a prior create that failed and left a local-
-            // only row). The PUT below is an upsert, so just create it.
-            Err(e) if is_not_found(&e) => created = true,
-            Err(e) => return Err(format!("conflict check: {e}")),
-        }
-    }
-
-    // A type change needs a DELETE-then-PUT, but only if the variable
-    // actually exists remotely — skip it when we're falling back to create.
-    let did_type_delete = type_changed && !created;
-    if did_type_delete {
-        // AIC rejects in-place type changes on existing variables, but
-        // accepts DELETE followed by an immediate PUT with the new type
-        // — verified on the sandbox 2026-05-26, no restart between.
-        crate::aic::esv::delete_variable(&tenant_name, &id, confirmed_prod)
-            .await
-            .map_err(|e| format!("type change: delete failed: {e}"))?;
-    }
-    let saved = crate::aic::esv::update_variable(
+    // Conflict check (against the snapshot we opened), the type-change
+    // DELETE-then-PUT quirk, and create-on-absent all live in the shared
+    // helper so the CLI takes exactly the same path.
+    let saved = crate::aic::esv::save_variable(
         &tenant_name,
         &id,
         &description,
         &expr_type,
         &value_b64,
         confirmed_prod,
+        original.as_ref(),
     )
     .await
-    .map_err(|e| {
-        if did_type_delete {
-            format!(
-                "type change: delete succeeded but recreate failed ({e}). \
-                     Variable is currently absent on AIC; re-save to recreate."
-            )
-        } else {
-            e.to_string()
-        }
-    })?;
+    .map_err(|e| e.to_string())?;
+
     Ok(SaveOutcome {
-        body: saved,
-        created,
+        body: saved.body,
+        created: saved.created,
     })
 }
 

@@ -149,10 +149,22 @@ pub enum SecretCommand {
         tenant: Option<String>,
     },
     /// Create a secret (PUT is create-only; change values via add-version).
+    ///
+    /// The value is read (in priority order) from `--value-file`,
+    /// `--value-stdin`, or an interactive no-echo prompt. `--value` exists for
+    /// scripting but leaks the secret into shell history / process listings —
+    /// prefer the file or stdin form.
     Create {
         id: String,
+        /// Secret value inline (DISCOURAGED — visible in `ps`/shell history).
         #[arg(long)]
-        value: String,
+        value: Option<String>,
+        /// Read the value from a file (a single trailing newline is stripped).
+        #[arg(long)]
+        value_file: Option<std::path::PathBuf>,
+        /// Read the value from stdin (a single trailing newline is stripped).
+        #[arg(long)]
+        value_stdin: bool,
         /// generic | pem | base64hmac | base64aes.
         #[arg(long, default_value = "generic")]
         encoding: String,
@@ -186,11 +198,19 @@ pub enum SecretCommand {
         tenant: Option<String>,
     },
     /// Add a new version (becomes the active version). Value is encoded with
-    /// the secret's existing encoding.
+    /// the secret's existing encoding. Value source as for `create` (prefer
+    /// `--value-file` / `--value-stdin` over `--value`).
     AddVersion {
         id: String,
+        /// Secret value inline (DISCOURAGED — visible in `ps`/shell history).
         #[arg(long)]
-        value: String,
+        value: Option<String>,
+        /// Read the value from a file (a single trailing newline is stripped).
+        #[arg(long)]
+        value_file: Option<std::path::PathBuf>,
+        /// Read the value from stdin (a single trailing newline is stripped).
+        #[arg(long)]
+        value_stdin: bool,
         #[arg(long)]
         tenant: Option<String>,
         #[arg(long)]
@@ -650,8 +670,14 @@ async fn esv(cmd: EsvCommand) -> Result<()> {
             let t = tenant_for(tenant)?;
             use base64::Engine as _;
             let value_b64 = base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
-            prod_hint(esv::update_variable(&t, &id, &description, &expr_type, &value_b64, yes).await)?;
-            println!("variable {id} saved");
+            // Shared with the TUI: handles the AIC quirk that an existing
+            // variable's type can't change in place (DELETE-then-PUT).
+            let saved = prod_hint(
+                esv::save_variable(&t, &id, &description, &expr_type, &value_b64, yes, None).await,
+            )?;
+            let verb = if saved.created { "created" } else { "saved" };
+            let extra = if saved.type_deleted { " (type changed — recreated)" } else { "" };
+            println!("variable {id} {verb}{extra}");
             Ok(())
         }
         EsvCommand::Delete { id, tenant, yes } => {
@@ -682,6 +708,8 @@ async fn secret(cmd: SecretCommand) -> Result<()> {
         SecretCommand::Create {
             id,
             value,
+            value_file,
+            value_stdin,
             encoding,
             json,
             no_placeholders,
@@ -690,6 +718,7 @@ async fn secret(cmd: SecretCommand) -> Result<()> {
             yes,
         } => {
             let t = tenant_for(tenant)?;
+            let value = resolve_secret_value(value, value_file, value_stdin, "Secret value: ")?;
             let value_b64 =
                 esv::encode_secret_value(&encoding, &value, json).map_err(Error::Config)?;
             prod_hint(
@@ -717,10 +746,13 @@ async fn secret(cmd: SecretCommand) -> Result<()> {
         SecretCommand::AddVersion {
             id,
             value,
+            value_file,
+            value_stdin,
             tenant,
             yes,
         } => {
             let t = tenant_for(tenant)?;
+            let value = resolve_secret_value(value, value_file, value_stdin, "New secret value: ")?;
             // A secret's encoding is fixed at create; re-use it for the new
             // version so the value is encoded the same way.
             let encoding = esv::get_secret(&t, &id)
@@ -732,10 +764,7 @@ async fn secret(cmd: SecretCommand) -> Result<()> {
             let value_b64 =
                 esv::encode_secret_value(&encoding, &value, false).map_err(Error::Config)?;
             let created = prod_hint(esv::create_secret_version(&t, &id, &value_b64, yes).await)?;
-            let v = created
-                .get("version")
-                .map(|x| x.to_string())
-                .unwrap_or_default();
+            let v = created.get("version").map(json_scalar).unwrap_or_default();
             println!("secret {id}: added version {v}");
             Ok(())
         }
@@ -758,12 +787,26 @@ async fn secret(cmd: SecretCommand) -> Result<()> {
             yes,
         } => {
             let t = tenant_for(tenant)?;
+            if !confirm_irreversible(
+                &format!("Destroy version {version} of secret {id} on {t}."),
+                yes,
+            )? {
+                println!("aborted");
+                return Ok(());
+            }
             prod_hint(esv::destroy_secret_version(&t, &id, &version, yes).await)?;
             println!("secret {id} version {version} destroyed");
             Ok(())
         }
         SecretCommand::Delete { id, tenant, yes } => {
             let t = tenant_for(tenant)?;
+            if !confirm_irreversible(
+                &format!("Delete secret {id} and all its versions on {t}."),
+                yes,
+            )? {
+                println!("aborted");
+                return Ok(());
+            }
             prod_hint(esv::delete_secret(&t, &id, yes).await)?;
             println!("secret {id} deleted");
             Ok(())
@@ -975,6 +1018,84 @@ fn prod_hint<T>(r: Result<T>) -> Result<T> {
 fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+/// Resolve a secret value from (in priority order) `--value`, `--value-file`,
+/// `--value-stdin`, or an interactive no-echo prompt. Keeping the secret out of
+/// argv is the default; `--value` stays for scripting but is discouraged.
+fn resolve_secret_value(
+    value: Option<String>,
+    value_file: Option<std::path::PathBuf>,
+    value_stdin: bool,
+    prompt: &str,
+) -> Result<String> {
+    let sources = value.is_some() as u8 + value_file.is_some() as u8 + value_stdin as u8;
+    if sources > 1 {
+        return Err(Error::Config(
+            "provide only one of --value / --value-file / --value-stdin".into(),
+        ));
+    }
+    // Strip a single trailing newline so `echo`/editor-added newlines don't end
+    // up in the secret.
+    let strip = |mut s: String| {
+        if s.ends_with('\n') {
+            s.pop();
+            if s.ends_with('\r') {
+                s.pop();
+            }
+        }
+        s
+    };
+    let v = if let Some(v) = value {
+        v
+    } else if let Some(path) = value_file {
+        strip(std::fs::read_to_string(&path).map_err(|e| {
+            Error::Config(format!("read --value-file {}: {e}", path.display()))
+        })?)
+    } else if value_stdin {
+        use std::io::Read;
+        let mut s = String::new();
+        std::io::stdin()
+            .read_to_string(&mut s)
+            .map_err(|e| Error::Config(format!("read stdin: {e}")))?;
+        strip(s)
+    } else {
+        rpassword::prompt_password(prompt)
+            .map_err(|e| Error::Config(format!("read value: {e}")))?
+    };
+    if v.is_empty() {
+        return Err(Error::Config("value cannot be empty".into()));
+    }
+    Ok(v)
+}
+
+/// Confirm an irreversible write regardless of tenant theme. `--yes` (which
+/// also greenlights prod writes) skips the prompt; otherwise we require a typed
+/// `yes` on stdin so a destroy/delete can't run on an accidental keystroke.
+fn confirm_irreversible(action: &str, yes: bool) -> Result<bool> {
+    if yes {
+        return Ok(true);
+    }
+    use std::io::Write;
+    eprint!("{action} This cannot be undone. Type 'yes' to confirm: ");
+    std::io::stderr().flush().ok();
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| Error::Config(format!("read confirmation: {e}")))?;
+    Ok(line.trim() == "yes")
+}
+
+/// Render a JSON scalar without quotes (the API returns a secret version as
+/// either a string or a number depending on context).
+fn json_scalar(v: &serde_json::Value) -> String {
+    if let Some(s) = v.as_str() {
+        s.to_string()
+    } else if let Some(n) = v.as_u64() {
+        n.to_string()
+    } else {
+        v.to_string()
+    }
 }
 
 /// Resolve a tenant name from a CLI flag, falling back to the on-disk
