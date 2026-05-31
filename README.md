@@ -143,7 +143,7 @@ custom endpoints** (`--kind idm`), tenant-global under `idm/endpoint/`; and
 
 ```bash
 aic script workspace init                     # scaffold the tenant tree (both realms + idm)
-aic script list                               # scripts on the tenant (both kinds)
+aic script list                               # all kinds; AM from both realms, each row tagged with its realm
 aic script pull MyDecisionNode --kind am      # → workspace/<tenant>/am/alpha/src/MyDecisionNode.cjs
 aic script pull --kind idm                    # pull all IDM endpoints → idm/endpoint/
 # edit the .cjs in your editor, then:

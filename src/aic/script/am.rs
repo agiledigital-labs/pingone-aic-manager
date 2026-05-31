@@ -39,16 +39,18 @@ fn str_field(raw: &Value, key: &str) -> String {
 }
 
 pub async fn list(tenant: &str, realm: &str) -> Result<Vec<RemoteRef>> {
-    // The scripts endpoint is paged; loop on `_pagedResultsCookie` so we don't
-    // miss anything past the first page (docs/api/04-scripts.md).
+    // The scripts endpoint paginates but returns a *null* `pagedResultsCookie`
+    // (verified 2026-06-01), so cookie paging silently caps at `_pageSize`.
+    // Page by offset instead and stop when the server reports none remaining.
+    // A large page keeps it to a single request for typical realms.
+    const PAGE: usize = 1000;
     let mut refs = Vec::new();
-    let mut cookie: Option<String> = None;
+    let mut offset = 0usize;
     loop {
-        let mut path = format!("{}/scripts?_queryFilter=true&_pageSize=100", realm_path(realm));
-        if let Some(c) = &cookie {
-            path.push_str("&_pagedResultsCookie=");
-            path.push_str(&encode_query(c));
-        }
+        let path = format!(
+            "{}/scripts?_queryFilter=true&_pageSize={PAGE}&_pagedResultsOffset={offset}",
+            realm_path(realm)
+        );
         let body = crate::aic::api::get_versioned(tenant, &path, API_VERSION).await?;
         let arr = body
             .get("result")
@@ -57,28 +59,20 @@ pub async fn list(tenant: &str, realm: &str) -> Result<Vec<RemoteRef>> {
                 status: 0,
                 body: format!("unexpected scripts list shape: {body}"),
             })?;
+        let n = arr.len();
         refs.extend(arr.iter().map(ref_from_config));
-        match body.get("pagedResultsCookie").and_then(|v| v.as_str()) {
-            Some(c) if !c.is_empty() => cookie = Some(c.to_string()),
-            _ => break,
+        // `remainingPagedResults` is authoritative here; `-1` (unknown) falls
+        // back to "stop once a page comes back empty".
+        let remaining = body
+            .get("remainingPagedResults")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1);
+        if n == 0 || remaining == 0 {
+            break;
         }
+        offset += n;
     }
     Ok(refs)
-}
-
-/// Percent-encode a query-string value. The paged-results cookie can contain
-/// `+`, `/`, `=`; reqwest passes our query through verbatim, so we encode here.
-fn encode_query(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 pub async fn fetch(tenant: &str, realm: &str, id: &str) -> Result<RemoteScript> {
@@ -225,13 +219,6 @@ mod tests {
             config_subpath(&rref(None), "bravo"),
             PathBuf::from("am/bravo/MyScript.script.json")
         );
-    }
-
-    #[test]
-    fn encode_query_escapes_cookie_specials() {
-        // A typical paged-results cookie has +, /, = which must be escaped.
-        assert_eq!(encode_query("aB9-_.~"), "aB9-_.~");
-        assert_eq!(encode_query("a+b/c=d"), "a%2Bb%2Fc%3Dd");
     }
 
     #[test]

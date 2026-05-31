@@ -16,7 +16,7 @@ Always send `Accept-API-Version: protocol=2.0,resource=1.0`.
 
 | Op | Method | Path | Notes |
 |----|--------|------|-------|
-| List | `GET` | `/am/json{realm-path}/scripts?_queryFilter=true` | Paged. Use `_pageSize`, `_pagedResultsCookie`. |
+| List | `GET` | `/am/json{realm-path}/scripts?_queryFilter=true` | Returns **all** results when `_pageSize` is omitted. If you set `_pageSize`, page by **`_pagedResultsOffset`** + `remainingPagedResults` — the `pagedResultsCookie` comes back `null` and is unusable (verified 2026-06-01). |
 | Filter | `GET` | `/am/json{realm-path}/scripts?_queryFilter=name+eq+"…"` | CREST filter. |
 | Read | `GET` | `/am/json{realm-path}/scripts/{id}` | `id` is a UUID. |
 | Upsert | `PUT` | `/am/json{realm-path}/scripts/{id}` | Full body. `script` MUST be base64. |
