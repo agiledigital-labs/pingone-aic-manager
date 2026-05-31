@@ -133,11 +133,13 @@ prompt for a typed confirmation on any tenant unless `--yes` is given.
 `./workspace/<tenant>/` (one tree per tenant) — the same `.d.ts` definitions +
 ESLint/TypeScript config as
 [p1aic-script-editor](https://github.com/agiledigital-labs/p1aic-script-editor),
-so your editor gets full IntelliSense on script bodies. Two script "kinds" are
-supported behind one engine: **AM scripts** (`--kind am`), which are
-realm-scoped and routed to `am/<realm>/{src,lib,oidc}/` by context, and **IDM
-custom endpoints** (`--kind idm`), which are tenant-global under
-`idm/endpoint/`.
+so your editor gets full IntelliSense on script bodies. Three script "kinds"
+are supported behind one engine: **AM scripts** (`--kind am`), which are
+realm-scoped and routed to `am/<realm>/{src,lib,oidc}/` by context; **IDM
+custom endpoints** (`--kind idm`), tenant-global under `idm/endpoint/`; and
+**IDM scheduled jobs** (`--kind schedule`), tenant-global under
+`idm/schedule/` (only script-invoking schedules — the script lives at
+`invokeContext.script.source`).
 
 ```bash
 aic script workspace init                     # scaffold the tenant tree (both realms + idm)
