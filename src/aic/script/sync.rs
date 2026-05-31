@@ -235,16 +235,22 @@ pub async fn pull(
             None
         };
 
-        // Did the user edit the local file relative to what we last synced?
-        let local_modified = matches!((&local_src, &snapshot_src), (Some(l), Some(s)) if l != s);
-        let remote_moved = matches!(&snapshot_src, Some(s) if *s != remote_src);
+        // Local content we'd lose by overwriting: either edited since the last
+        // pull, or an untracked file that was here before we ever synced (no
+        // snapshot). Both are the user's work — back it up unless --force.
+        let local_has_unsynced = match (&local_src, &snapshot_src) {
+            (Some(l), Some(s)) => l != s,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        let differs_from_remote = local_src.as_deref() != Some(remote_src.as_slice());
 
-        let status = if local_modified && remote_moved && !force {
+        let status = if local_has_unsynced && differs_from_remote && !force {
             let backup = back_up(&store, &script.reference, local_src.as_deref().unwrap())?;
             PullStatus::LocalBackedUp(backup)
         } else if local_src.is_none() {
             PullStatus::Created
-        } else if local_src.as_deref() == Some(remote_src.as_slice()) {
+        } else if !differs_from_remote {
             PullStatus::Unchanged
         } else {
             PullStatus::Updated
@@ -313,6 +319,15 @@ pub async fn push(
         .manifest_lookup(kind, name)?
         .ok_or_else(|| Error::Config(format!("{name:?} not synced yet — `aic script pull {name}` first")))?;
 
+    // Product-shipped defaults shouldn't be overwritten (AIC may 403 or
+    // silently no-op anyway — see docs/api/04-scripts.md). --force is the
+    // explicit escape hatch.
+    if r.is_default && !force {
+        return Err(Error::Config(format!(
+            "{name:?} is a default (product-shipped) script — refusing to overwrite; pass --force to override"
+        )));
+    }
+
     let snapshot_cfg = store
         .load_config(&r)?
         .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing — pull again")))?;
@@ -346,9 +361,11 @@ pub async fn push(
         }));
     }
 
-    // Safe to push (remote matches snapshot) or forced. Start from the config
-    // we forked from and merge the edited source so we round-trip every field.
-    let mut raw = snapshot_cfg.clone();
+    // Safe to push (remote matches snapshot) or forced. Start from the *current
+    // remote* config and merge only our edited source, so concurrent metadata
+    // changes (description/context/language/exports) aren't reverted by a
+    // source-only push.
+    let mut raw = remote.raw_config.clone();
     kind.encode_source(&mut raw, &local_src)?;
     let to_push = RemoteScript {
         reference: r.clone(),

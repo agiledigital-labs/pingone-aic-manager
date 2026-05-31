@@ -17,7 +17,7 @@ beforeEach(() => {
   (global as any).logger = mockLogger;
   (global as any).sharedState = mockSharedState;
   (global as any).transientState = mockTransientState;
-  
+
   // Clear mocks
   jest.clearAllMocks();
   mockSharedState.clear();
@@ -35,10 +35,10 @@ describe('Example Script Tests', () => {
   test('should test script logic', () => {
     // Example of testing script behavior
     mockSharedState.set('username', 'testuser');
-    
+
     // Your script logic would go here
     const username = mockSharedState.get('username');
-    
+
     expect(username).toBe('testuser');
   });
 });
