@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2015", "ES2016.Array.Include"],
+    "module": "commonjs",
+    "target": "ES6",
+    "strict": true,
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noUncheckedIndexedAccess": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
+    "strictNullChecks": true
+  },
+  "include": ["endpoint/**/*", "*.d.ts"],
+  "exclude": ["node_modules", "dist"]
+}

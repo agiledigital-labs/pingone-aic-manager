@@ -263,6 +263,24 @@ impl ProjectConfig {
         Self::dir().join("config.toml")
     }
 
+    /// Root of the script-sync workspace (sibling of `.aic-edit/`). Trees are
+    /// namespaced per tenant + realm so multiple tenants never share a tree.
+    pub fn workspace_dir() -> PathBuf {
+        PathBuf::from("workspace")
+    }
+
+    /// `workspace/<tenant>/<realm>/` — the p1-sync-shaped tree for one
+    /// tenant + realm (contains `am/`, `idm/`, configs, and `.aic-sync/`).
+    pub fn workspace_tree(tenant: &str, realm: &str) -> PathBuf {
+        Self::workspace_dir().join(tenant).join(realm)
+    }
+
+    /// `workspace/<tenant>/<realm>/.aic-sync/` — our sync state (snapshots +
+    /// applied-templates version). Gitignored; never holds secrets.
+    pub fn aic_sync_dir(tenant: &str, realm: &str) -> PathBuf {
+        Self::workspace_tree(tenant, realm).join(".aic-sync")
+    }
+
     pub fn load() -> Result<Option<Self>> {
         let path = Self::config_path();
         if !path.exists() {

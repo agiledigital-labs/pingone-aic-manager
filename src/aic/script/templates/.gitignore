@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.DS_Store
+*.log
+coverage/
+.nyc_output/
+.p1-sync/config.json
+.p1-sync/backups
+.p1-sync/json-config-files/*.json
+!.p1-sync
+!am
+!idm

@@ -1,0 +1,32 @@
+{
+  "name": "p1-aic-scripts",
+  "version": "1.0.0",
+  "description": "PingOne Advanced Identity Cloud scripts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint am/ idm/ --ignore-pattern=node_modules --ignore-pattern=dist",
+    "lint:fix": "eslint am/ idm/ --ignore-pattern=node_modules --ignore-pattern=dist --fix",
+    "format": "prettier --write am/**/*.{js,cjs,ts} idm/**/*.{js,cjs,ts}",
+    "format:check": "prettier --check am/**/*.{js,cjs,ts} idm/**/*.{js,cjs,ts}",
+    "test": "jest",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/lodash": "^4.17.16",
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "jest": "^29.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "lodash": "^4.17.21"
+  }
+}
