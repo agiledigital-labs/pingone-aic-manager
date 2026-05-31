@@ -19,6 +19,7 @@ hits a tenant.** Don't guess paths or headers.
 | [08-logs.md](08-logs.md) | `/monitoring/logs`, separate API-key auth |
 | [09-journeys.md](09-journeys.md) | Auth trees, nodes, custom nodes |
 | [10-managed-objects.md](10-managed-objects.md) | IDM managed config, hooks |
+| [11-idm-endpoints.md](11-idm-endpoints.md) | IDM custom endpoints (`config/endpoint/*`), plaintext `source`, no `_rev` |
 | [99-quirks-and-open-questions.md](99-quirks-and-open-questions.md) | Cross-cutting weirdness + TODOs |
 
 ## Doc template

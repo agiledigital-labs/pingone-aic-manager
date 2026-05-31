@@ -289,8 +289,8 @@ async fn handle(
             Ok(None) => Response::Locked,
             Err(e) => Response::Error { message: e.to_string() },
         },
-        Request::ApiCall { tenant, method, path, body, confirmed_prod } => {
-            match do_api_call(&tenant, &method, &path, body, confirmed_prod, state).await {
+        Request::ApiCall { tenant, method, path, body, confirmed_prod, api_version } => {
+            match do_api_call(&tenant, &method, &path, body, confirmed_prod, api_version, state).await {
                 Ok(Some(value)) => Response::Json { value },
                 Ok(None) => Response::Locked,
                 Err(Error::ProdConfirmRequired) => Response::ProdConfirmRequired,
@@ -413,6 +413,7 @@ async fn do_api_call(
     path: &str,
     body: Option<serde_json::Value>,
     confirmed_prod: bool,
+    api_version: Option<String>,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<Option<serde_json::Value>> {
     // Each `state.read()` is scoped to a let-binding so the read guard
@@ -430,8 +431,9 @@ async fn do_api_call(
         Some(c) => c,
         None => build_client(tenant, state.clone()).await?,
     };
+    let av = api_version.as_deref();
     let value = match method {
-        "GET" => client.get(path).await?,
+        "GET" => client.get(path, av).await?,
         "POST" => {
             client
                 .write(
@@ -439,6 +441,7 @@ async fn do_api_call(
                     path,
                     body.unwrap_or(serde_json::Value::Null),
                     confirmed_prod,
+                    av,
                 )
                 .await?
         }
@@ -449,6 +452,7 @@ async fn do_api_call(
                     path,
                     body.unwrap_or(serde_json::Value::Null),
                     confirmed_prod,
+                    av,
                 )
                 .await?
         }
@@ -459,6 +463,7 @@ async fn do_api_call(
                     path,
                     body.unwrap_or(serde_json::Value::Null),
                     confirmed_prod,
+                    av,
                 )
                 .await?
         }
@@ -469,6 +474,7 @@ async fn do_api_call(
                     path,
                     body.unwrap_or(serde_json::Value::Null),
                     confirmed_prod,
+                    av,
                 )
                 .await?
         }
