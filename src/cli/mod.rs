@@ -429,7 +429,9 @@ fn inject_ctx_defaults(mut cmd: clap::Command, tenant: Option<&str>, realm: &str
             cmd = cmd.mut_arg("tenant", |a| a.default_value(v));
         }
     }
-    if cmd.get_arguments().any(|a| a.get_id() == "realm") {
+    // `list` intentionally spans both realms when none is given, so it must
+    // NOT get a single realm default baked in (that would pin it to one).
+    if cmd.get_name() != "list" && cmd.get_arguments().any(|a| a.get_id() == "realm") {
         let v: &'static str = Box::leak(realm.to_string().into_boxed_str());
         cmd = cmd.mut_arg("realm", |a| a.default_value(v));
     }
@@ -917,13 +919,30 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         },
         ScriptCommand::List { tenant, realm, kind } => {
             let t = tenant_for(tenant)?;
-            let realm = realm_for(realm)?;
             let kinds = kinds_for(kind.as_deref())?;
-            let mut all = Vec::new();
+            // A realm is "specified" if passed explicitly or inferred from the
+            // working directory. When it isn't, list AM scripts from BOTH realms.
+            let specified = realm.or_else(|| config::workspace_context().realm);
+            let am_realms: Vec<String> = match specified {
+                Some(r) => vec![realm_for(Some(r))?],
+                None => vec!["alpha".to_string(), "bravo".to_string()],
+            };
+            let mut out = Vec::new();
             for k in kinds {
-                all.extend(k.list(&t, &realm).await?);
+                if k.realm_scoped() {
+                    for r in &am_realms {
+                        for sref in k.list(&t, r).await? {
+                            out.push(listed(&sref, Some(r))?);
+                        }
+                    }
+                } else {
+                    // IDM kinds are tenant-global (realm ignored, shown as null).
+                    for sref in k.list(&t, "").await? {
+                        out.push(listed(&sref, None)?);
+                    }
+                }
             }
-            print_json(&all)
+            print_json(&out)
         }
         ScriptCommand::Pull { name, kind, tenant, realm, force } => {
             let t = tenant_for(tenant)?;
@@ -1013,6 +1032,17 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Render a listed script as JSON with its realm attached (`null` for the
+/// tenant-global IDM kinds).
+fn listed(r: &crate::aic::script::RemoteRef, realm: Option<&str>) -> Result<serde_json::Value> {
+    let mut v = serde_json::to_value(r)?;
+    if let Some(obj) = v.as_object_mut() {
+        let realm = realm.map_or(serde_json::Value::Null, |r| serde_json::Value::String(r.to_string()));
+        obj.insert("realm".to_string(), realm);
+    }
+    Ok(v)
 }
 
 /// Parse a `--kind` value into a single [`Kind`].

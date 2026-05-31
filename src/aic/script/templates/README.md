@@ -47,7 +47,7 @@ are needed here (they still override if you pass them). Running from the project
 root works too, using your active `aic ctx`.
 
 ```bash
-aic script list                      # scripts on the tenant (both kinds)
+aic script list                      # all kinds; AM from both realms unless one is given/inferred
 aic script pull <Name> --kind am     # pull one AM script
 aic script pull --kind idm           # pull all IDM endpoints
 aic script push <Name> --kind am     # push your edit back (content-checked)
