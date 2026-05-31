@@ -350,6 +350,85 @@ pub fn content_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     pick(a) == pick(b)
 }
 
+/// True for an AIC `404` — the variable doesn't exist remotely.
+pub fn is_not_found(error: &Error) -> bool {
+    matches!(error, Error::Api { status: 404, .. })
+}
+
+/// Result of [`save_variable`].
+pub struct VariableSave {
+    /// The server's echo of the saved variable.
+    pub body: serde_json::Value,
+    /// The variable was absent remotely, so this save created it.
+    pub created: bool,
+    /// A type change forced a DELETE-then-PUT (AIC rejects in-place type
+    /// changes on existing variables — verified 2026-05-26).
+    pub type_deleted: bool,
+}
+
+/// Save a variable, transparently handling the AIC quirk that an existing
+/// variable's `expressionType` can't change in place: when the remote type
+/// differs we DELETE then PUT to recreate. Shared by the TUI and CLI so both
+/// take the same path (the CLI previously only did the simple PUT and hit a
+/// 400 on type changes).
+///
+/// `conflict_original`, when supplied, is the snapshot the caller began editing
+/// from; the save aborts if the remote drifted (content-based, no `_rev`).
+pub async fn save_variable(
+    tenant: &str,
+    id: &str,
+    description: &str,
+    expression_type: &str,
+    value_base64: &str,
+    confirmed_prod: bool,
+    conflict_original: Option<&serde_json::Value>,
+) -> Result<VariableSave> {
+    let mut created = false;
+    let mut type_changed = false;
+    match get_variable(tenant, id).await {
+        Ok(current) => {
+            if let Some(original) = conflict_original {
+                if !content_equal(&current, original) {
+                    return Err(Error::Config(
+                        "remote value changed since you opened it; refresh and retry".into(),
+                    ));
+                }
+            }
+            let current_type = current
+                .get("expressionType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            type_changed = current_type != expression_type;
+        }
+        // Editing a variable that's absent on AIC (e.g. a prior create that
+        // failed and left a local-only row). The PUT below is an upsert.
+        Err(e) if is_not_found(&e) => created = true,
+        Err(e) => return Err(e),
+    }
+
+    let type_deleted = type_changed && !created;
+    if type_deleted {
+        delete_variable(tenant, id, confirmed_prod)
+            .await
+            .map_err(|e| Error::Config(format!("type change: delete failed: {e}")))?;
+    }
+
+    let body = update_variable(tenant, id, description, expression_type, value_base64, confirmed_prod)
+        .await
+        .map_err(|e| {
+            if type_deleted {
+                Error::Config(format!(
+                    "type change: delete succeeded but recreate failed ({e}). \
+                     Variable is currently absent on AIC; re-save to recreate."
+                ))
+            } else {
+                e
+            }
+        })?;
+
+    Ok(VariableSave { body, created, type_deleted })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
