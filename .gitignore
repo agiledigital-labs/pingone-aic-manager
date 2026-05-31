@@ -13,7 +13,8 @@
 **/*.rs.bk
 Cargo.lock.bak
 
-# Local sync target (created at runtime by script-sync feature)
+# Script-sync workspace (created at runtime; per-tenant/realm trees + snapshots)
+/workspace/
 /local-config/
 
 # Tool venvs / caches
