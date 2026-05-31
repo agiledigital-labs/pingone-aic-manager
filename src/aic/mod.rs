@@ -2,6 +2,7 @@ pub mod api;
 pub mod auth;
 pub mod esv;
 pub mod onboard;
+pub mod script;
 
 use std::sync::{Arc, Mutex};
 
@@ -53,14 +54,14 @@ impl AicClient {
         Ok(token)
     }
 
-    pub async fn get(&self, path: &str) -> Result<serde_json::Value> {
+    pub async fn get(&self, path: &str, api_version: Option<&str>) -> Result<serde_json::Value> {
         let token = self.bearer().await?;
         let url = format!("{}{path}", self.tenant.base_url);
         let resp = self
             .http
             .get(&url)
             .header("Authorization", format!("Bearer {token}"))
-            .header("Accept-API-Version", "resource=1.0")
+            .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
             .header("Accept", "application/json")
             .send()
             .await?;
@@ -68,12 +69,15 @@ impl AicClient {
     }
 
     /// Write method — checks prod confirmation for prod-themed tenants.
+    /// `api_version` overrides the `Accept-API-Version` header (default
+    /// `resource=1.0`); AM scripts pass `protocol=2.0,resource=1.0`.
     pub async fn write(
         &self,
         method: reqwest::Method,
         path: &str,
         body: serde_json::Value,
         confirmed_prod: bool,
+        api_version: Option<&str>,
     ) -> Result<serde_json::Value> {
         if self.tenant.theme == TenantTheme::Production && !confirmed_prod {
             return Err(Error::ProdConfirmRequired);
@@ -84,7 +88,7 @@ impl AicClient {
             .http
             .request(method, &url)
             .header("Authorization", format!("Bearer {token}"))
-            .header("Accept-API-Version", "resource=1.0")
+            .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .json(&body)

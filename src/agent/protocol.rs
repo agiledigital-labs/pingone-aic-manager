@@ -47,6 +47,11 @@ pub enum Request {
         path: String,
         body: Option<serde_json::Value>,
         confirmed_prod: bool,
+        /// Override the `Accept-API-Version` header for this call. `None`
+        /// keeps the default `resource=1.0` (ESVs/secrets). AM scripts need
+        /// `protocol=2.0,resource=1.0`; IDM config endpoints set their own.
+        #[serde(default)]
+        api_version: Option<String>,
     },
     /// Tell the agent to clean up the socket and exit.
     Shutdown,

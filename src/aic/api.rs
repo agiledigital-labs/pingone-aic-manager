@@ -13,7 +13,7 @@ use crate::agent::{AgentClient, Request, Response};
 use crate::{Error, Result};
 
 pub async fn get(tenant: &str, path: &str) -> Result<serde_json::Value> {
-    call(tenant, "GET", path, None, false).await
+    call(tenant, "GET", path, None, false, None).await
 }
 
 pub async fn put(
@@ -22,7 +22,7 @@ pub async fn put(
     body: serde_json::Value,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    call(tenant, "PUT", path, Some(body), confirmed_prod).await
+    call(tenant, "PUT", path, Some(body), confirmed_prod, None).await
 }
 
 pub async fn post(
@@ -31,7 +31,7 @@ pub async fn post(
     body: serde_json::Value,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    call(tenant, "POST", path, Some(body), confirmed_prod).await
+    call(tenant, "POST", path, Some(body), confirmed_prod, None).await
 }
 
 pub async fn patch(
@@ -40,11 +40,42 @@ pub async fn patch(
     body: serde_json::Value,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    call(tenant, "PATCH", path, Some(body), confirmed_prod).await
+    call(tenant, "PATCH", path, Some(body), confirmed_prod, None).await
 }
 
 pub async fn delete(tenant: &str, path: &str, confirmed_prod: bool) -> Result<serde_json::Value> {
-    call(tenant, "DELETE", path, None, confirmed_prod).await
+    call(tenant, "DELETE", path, None, confirmed_prod, None).await
+}
+
+/// `GET` with an explicit `Accept-API-Version` (AM scripts need
+/// `protocol=2.0,resource=1.0`; IDM config endpoints set their own).
+pub async fn get_versioned(
+    tenant: &str,
+    path: &str,
+    api_version: &str,
+) -> Result<serde_json::Value> {
+    call(tenant, "GET", path, None, false, Some(api_version)).await
+}
+
+/// `PUT` with an explicit `Accept-API-Version`.
+pub async fn put_versioned(
+    tenant: &str,
+    path: &str,
+    body: serde_json::Value,
+    confirmed_prod: bool,
+    api_version: &str,
+) -> Result<serde_json::Value> {
+    call(tenant, "PUT", path, Some(body), confirmed_prod, Some(api_version)).await
+}
+
+/// `DELETE` with an explicit `Accept-API-Version`.
+pub async fn delete_versioned(
+    tenant: &str,
+    path: &str,
+    confirmed_prod: bool,
+    api_version: &str,
+) -> Result<serde_json::Value> {
+    call(tenant, "DELETE", path, None, confirmed_prod, Some(api_version)).await
 }
 
 async fn call(
@@ -53,6 +84,7 @@ async fn call(
     path: &str,
     body: Option<serde_json::Value>,
     confirmed_prod: bool,
+    api_version: Option<&str>,
 ) -> Result<serde_json::Value> {
     let agent = AgentClient::connect_or_spawn().await?;
     let resp = agent
@@ -62,6 +94,7 @@ async fn call(
             path: path.to_string(),
             body,
             confirmed_prod,
+            api_version: api_version.map(|s| s.to_string()),
         })
         .await?;
     match resp {
