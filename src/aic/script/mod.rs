@@ -177,3 +177,87 @@ pub struct RemoteScript {
     pub reference: RemoteRef,
     pub raw_config: serde_json::Value,
 }
+
+/// The first segment of a full-name addressing a script — `alpha/`, `bravo/`,
+/// `endpoint/`, `schedule/`. Each prefix uniquely maps to a (kind, realm)
+/// bucket (realm for AM, kind for the realmless IDM kinds), because AIC's realm
+/// set is fixed and disjoint from the IDM kind names. So `bravo/Foo`,
+/// `endpoint/foo`, `schedule/Job` fully identify a script without `--kind` /
+/// `--realm`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Namespace {
+    pub kind: Kind,
+    /// `Some(realm)` for AM; `None` for tenant-global IDM kinds.
+    pub realm: Option<String>,
+}
+
+impl Namespace {
+    /// Parse a prefix (`alpha`/`bravo`/`endpoint`/`schedule`).
+    pub fn parse(prefix: &str) -> Option<Namespace> {
+        match prefix {
+            "alpha" | "bravo" => Some(Namespace {
+                kind: Kind::Am,
+                realm: Some(prefix.to_string()),
+            }),
+            "endpoint" => Some(Namespace { kind: Kind::IdmEndpoint, realm: None }),
+            "schedule" => Some(Namespace { kind: Kind::IdmSchedule, realm: None }),
+            _ => None,
+        }
+    }
+
+    /// Every namespace — used to expand "act on everything".
+    pub fn all() -> Vec<Namespace> {
+        vec![
+            Namespace { kind: Kind::Am, realm: Some("alpha".to_string()) },
+            Namespace { kind: Kind::Am, realm: Some("bravo".to_string()) },
+            Namespace { kind: Kind::IdmEndpoint, realm: None },
+            Namespace { kind: Kind::IdmSchedule, realm: None },
+        ]
+    }
+
+    /// The prefix label (`alpha`/`bravo`/`endpoint`/`schedule`).
+    pub fn label(&self) -> &str {
+        match self.kind {
+            Kind::Am => self.realm.as_deref().unwrap_or("am"),
+            Kind::IdmEndpoint => "endpoint",
+            Kind::IdmSchedule => "schedule",
+        }
+    }
+
+    /// Realm string for the engine (empty + ignored for IDM kinds).
+    pub fn realm_arg(&self) -> &str {
+        self.realm.as_deref().unwrap_or("")
+    }
+}
+
+/// Render a script's full-name (`<prefix>/<name>`) for display / copy-paste.
+pub fn full_name(kind: Kind, realm: Option<&str>, name: &str) -> String {
+    let prefix = match kind {
+        Kind::Am => realm.unwrap_or("am"),
+        Kind::IdmEndpoint => "endpoint",
+        Kind::IdmSchedule => "schedule",
+    };
+    format!("{prefix}/{name}")
+}
+
+#[cfg(test)]
+mod ns_tests {
+    use super::*;
+
+    #[test]
+    fn prefixes_map_to_kind_and_realm() {
+        assert_eq!(Namespace::parse("bravo").unwrap().kind, Kind::Am);
+        assert_eq!(Namespace::parse("bravo").unwrap().realm.as_deref(), Some("bravo"));
+        assert_eq!(Namespace::parse("endpoint").unwrap().kind, Kind::IdmEndpoint);
+        assert_eq!(Namespace::parse("schedule").unwrap().kind, Kind::IdmSchedule);
+        assert!(Namespace::parse("endpoint").unwrap().realm.is_none());
+        assert!(Namespace::parse("nope").is_none());
+    }
+
+    #[test]
+    fn full_names_render() {
+        assert_eq!(full_name(Kind::Am, Some("bravo"), "Foo"), "bravo/Foo");
+        assert_eq!(full_name(Kind::IdmEndpoint, None, "bar"), "endpoint/bar");
+        assert_eq!(full_name(Kind::IdmSchedule, None, "Job"), "schedule/Job");
+    }
+}
