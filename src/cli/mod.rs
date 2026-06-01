@@ -308,6 +308,21 @@ pub enum ScriptCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
+    /// Bidirectionally sync the workspace with the tenant: push local-only
+    /// changes, pull remote-only changes, and resolve conflicts (both changed).
+    /// Scope with an optional <ref>; default reconciles everything synced.
+    Sync {
+        #[arg(help = "namespace, <namespace>/<name>, `all`, or empty for everything synced")]
+        reference: Option<String>,
+        /// Auto-resolve every conflict this way (default: prompt; skip if no TTY).
+        #[arg(long, value_enum)]
+        resolve: Option<Resolution>,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        /// Confirm writes to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Diff a script (colored, via `git diff`). Default compares your local
     /// copy against the tenant. With no <ref>, opens a fuzzy picker over synced
     /// scripts.
@@ -323,6 +338,15 @@ pub enum ScriptCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
+}
+
+/// How `sync` resolves a both-changed conflict when `--resolve` is given.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum Resolution {
+    /// Overwrite the tenant with your local copy.
+    Local,
+    /// Overwrite your local copy with the tenant's.
+    Remote,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1031,6 +1055,69 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             }
             Ok(())
         }
+        ScriptCommand::Sync { reference, resolve, tenant, yes } => {
+            let t = tenant_for(tenant)?;
+            guard_legacy_workspace(&t)?;
+            let cands = select_synced(sync::push_candidates(&t)?, reference)?;
+            if cands.is_empty() {
+                println!("nothing synced to reconcile — `aic script pull …` first");
+                return Ok(());
+            }
+            let (mut pushed, mut pulled, mut in_sync) = (0u32, 0u32, 0u32);
+            let mut conflicts: Vec<String> = Vec::new();
+            for c in cands {
+                let full = full_of(&c);
+                if c.is_default {
+                    println!("{full}: skipped (default script)");
+                    continue;
+                }
+                let ns = Namespace { kind: c.kind, realm: c.realm.clone() };
+                match prod_hint(sync::reconcile(&t, ns.realm_arg(), c.kind, &c.name, yes).await)? {
+                    sync::ReconcileOutcome::InSync => in_sync += 1,
+                    sync::ReconcileOutcome::Pushed => {
+                        pushed += 1;
+                        println!("→ pushed {full}");
+                    }
+                    sync::ReconcileOutcome::Pulled => {
+                        pulled += 1;
+                        println!("← pulled {full}");
+                    }
+                    sync::ReconcileOutcome::Converged => {
+                        in_sync += 1;
+                        println!("= {full}: converged");
+                    }
+                    sync::ReconcileOutcome::Conflict(_) => {
+                        let choice = match resolve {
+                            Some(Resolution::Local) => ConflictChoice::Local,
+                            Some(Resolution::Remote) => ConflictChoice::Remote,
+                            None => prompt_conflict(&full)?,
+                        };
+                        match choice {
+                            ConflictChoice::Local => {
+                                prod_hint(sync::push(&t, ns.realm_arg(), c.kind, &c.name, true, yes).await)?;
+                                pushed += 1;
+                                println!("→ pushed {full} (resolved: local)");
+                            }
+                            ConflictChoice::Remote => {
+                                sync::pull(&t, ns.realm_arg(), c.kind, &sync::Selector::Name(c.name.clone()), false).await?;
+                                pulled += 1;
+                                println!("← pulled {full} (resolved: remote; local backed up)");
+                            }
+                            ConflictChoice::Skip => conflicts.push(full),
+                        }
+                    }
+                }
+            }
+            println!("\nsync: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {}", conflicts.len());
+            if !conflicts.is_empty() {
+                println!("unresolved (try `aic script diff <ref>`, then push/pull --force):");
+                for c in &conflicts {
+                    println!("  {c}");
+                }
+            }
+            workspace_update_hint(&t)?;
+            Ok(())
+        }
         ScriptCommand::Diff { reference, local_vs_snapshot, snapshot_vs_remote, tenant } => {
             let t = tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
@@ -1187,6 +1274,65 @@ fn pick(
         )),
         Err(e) => Err(Error::Config(format!("picker: {e}"))),
     }
+}
+
+enum ConflictChoice {
+    Local,
+    Remote,
+    Skip,
+}
+
+/// Prompt how to resolve a both-changed conflict during `sync`. No TTY (or
+/// cancel) → `Skip` (reported at the end), never a silent clobber.
+fn prompt_conflict(full: &str) -> Result<ConflictChoice> {
+    use inquire::{error::InquireError, Select};
+    let opts = vec![
+        "skip — leave both, resolve later",
+        "local — overwrite the tenant with your copy",
+        "remote — overwrite your copy with the tenant's (local backed up)",
+    ];
+    match Select::new(&format!("Conflict on {full} (both changed) — resolve:"), opts).raw_prompt() {
+        Ok(o) => Ok(match o.index {
+            1 => ConflictChoice::Local,
+            2 => ConflictChoice::Remote,
+            _ => ConflictChoice::Skip,
+        }),
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted | InquireError::NotTTY) => {
+            Ok(ConflictChoice::Skip)
+        }
+        Err(e) => Err(Error::Config(format!("conflict prompt: {e}"))),
+    }
+}
+
+/// Does a candidate belong to namespace `ns`? (Realm matters only for AM.)
+fn same_ns(c: &script::sync::Candidate, ns: &Namespace) -> bool {
+    c.kind == ns.kind && (c.kind != script::Kind::Am || c.realm.as_deref() == ns.realm.as_deref())
+}
+
+/// Narrow the synced candidates by an optional `sync` ref: `None`/`all` →
+/// everything; a namespace → that namespace; a full-name/bare name → that one
+/// script (errors if it isn't synced).
+fn select_synced(
+    cands: Vec<script::sync::Candidate>,
+    reference: Option<String>,
+) -> Result<Vec<script::sync::Candidate>> {
+    let Some(s) = reference.filter(|s| s != "all") else {
+        return Ok(cands);
+    };
+    if !s.contains('/') {
+        if let Some(ns) = Namespace::parse(&s) {
+            return Ok(cands.into_iter().filter(|c| same_ns(c, &ns)).collect());
+        }
+    }
+    let (ns, name) = parse_one(&s)?;
+    let found: Vec<_> = cands
+        .into_iter()
+        .filter(|c| same_ns(c, &ns) && c.name == name)
+        .collect();
+    if found.is_empty() {
+        return Err(Error::Config(format!("{s:?} isn't synced — `aic script pull {s}` first")));
+    }
+    Ok(found)
 }
 
 /// Interactive yes/no (default no). `Some(answer)` if asked; `None` if there's

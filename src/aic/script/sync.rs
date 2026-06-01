@@ -603,6 +603,88 @@ pub async fn diff(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<T
     })
 }
 
+// ---------------------------------------------------------------------------
+// Sync (bidirectional reconcile)
+// ---------------------------------------------------------------------------
+
+/// Outcome of reconciling one synced script.
+#[derive(Debug, Clone)]
+pub enum ReconcileOutcome {
+    InSync,
+    Pushed,
+    Pulled,
+    /// Both sides changed to the same content; snapshot refreshed.
+    Converged,
+    /// Both sides changed differently — the caller resolves.
+    Conflict(ThreeWay),
+}
+
+/// Reconcile one synced script (one remote fetch): push if only local changed,
+/// pull if only remote changed (or the local file is missing), refresh if both
+/// converged to the same content, else return `Conflict` for the caller to
+/// resolve. Pushing obeys the prod-write guard via `confirmed_prod`.
+pub async fn reconcile(
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+    confirmed_prod: bool,
+) -> Result<ReconcileOutcome> {
+    let store = SnapshotStore::open(tenant);
+    let entry = store
+        .lookup(kind, name, realm)?
+        .ok_or_else(|| Error::Config(format!("{name:?} not synced")))?;
+    let r = &entry.reference;
+    let snap_cfg = store
+        .load_config(r, realm)?
+        .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing — pull again")))?;
+    let snapshot = kind.decode_source(&snap_cfg)?;
+
+    let remote_script = kind.fetch(tenant, realm, &r.id).await?;
+    let remote = kind.decode_source(&remote_script.raw_config)?;
+    let remote_changed = remote != snapshot;
+
+    let dest = workspace_file(tenant, realm, r);
+    let local = match std::fs::read(&dest) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            // Local file gone — restore it from the remote.
+            write_workspace_files(tenant, realm, &remote_script, &remote)?;
+            store.record(&remote_script, realm)?;
+            return Ok(ReconcileOutcome::Pulled);
+        }
+    };
+    let local_changed = local != snapshot;
+
+    match (local_changed, remote_changed) {
+        (false, false) => Ok(ReconcileOutcome::InSync),
+        (false, true) => {
+            write_workspace_files(tenant, realm, &remote_script, &remote)?;
+            store.record(&remote_script, realm)?;
+            Ok(ReconcileOutcome::Pulled)
+        }
+        (true, false) => {
+            // Remote == snapshot, so pushing the local edit is safe. Start from
+            // the current remote config and merge only the edited source.
+            let mut raw = remote_script.raw_config.clone();
+            kind.encode_source(&mut raw, &local)?;
+            let to_push = RemoteScript { reference: r.clone(), raw_config: raw };
+            kind.write(tenant, realm, &to_push, confirmed_prod).await?;
+            store.record(&to_push, realm)?;
+            Ok(ReconcileOutcome::Pushed)
+        }
+        (true, true) if local == remote => {
+            store.record(&remote_script, realm)?;
+            Ok(ReconcileOutcome::Converged)
+        }
+        (true, true) => Ok(ReconcileOutcome::Conflict(ThreeWay {
+            last_synced: lossy(&snapshot),
+            remote: lossy(&remote),
+            local: lossy(&local),
+        })),
+    }
+}
+
 /// Remove a script's snapshot + manifest entry after a remote delete. Does not
 /// touch the user's local `.cjs` (they may still want it).
 pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
