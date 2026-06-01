@@ -20,6 +20,7 @@ use crate::agent::{self, AgentClient, Request, Response};
 use crate::auth;
 use crate::config::crypto::Dek;
 use crate::config::wraps::WrapsFile;
+use crate::aic::script::Kind;
 use crate::config::{self, ProjectConfig};
 use crate::{Error, Result};
 
@@ -266,17 +267,16 @@ pub enum ScriptCommand {
         tenant: Option<String>,
         #[arg(long, help = "Realm: alpha or bravo")]
         realm: Option<String>,
-        /// Limit to one kind: `am` or `idm` (default: both).
+        /// Limit to one kind (default: all).
         #[arg(long)]
-        kind: Option<String>,
+        kind: Option<Kind>,
     },
     /// Pull script(s) into the workspace. Without a name, pulls all of `--kind`.
     Pull {
         /// Script name (omit to pull all of the kind).
         name: Option<String>,
-        /// `am` (scripts) or `idm` (endpoints).
         #[arg(long, default_value = "am")]
-        kind: String,
+        kind: Kind,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long, help = "Realm: alpha or bravo")]
@@ -289,7 +289,7 @@ pub enum ScriptCommand {
     Push {
         name: String,
         #[arg(long, default_value = "am")]
-        kind: String,
+        kind: Kind,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long, help = "Realm: alpha or bravo")]
@@ -306,13 +306,13 @@ pub enum ScriptCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long)]
-        kind: Option<String>,
+        kind: Option<Kind>,
     },
     /// Show the 3-way diff (last-synced / remote / local) for one script.
     Diff {
         name: String,
         #[arg(long, default_value = "am")]
-        kind: String,
+        kind: Kind,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long, help = "Realm: alpha or bravo")]
@@ -896,6 +896,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         ScriptCommand::Workspace { command } => match command {
             WorkspaceCommand::Init { tenant } => {
                 let t = tenant_for(tenant)?;
+                guard_legacy_workspace(&t)?;
                 let r = workspace::init(&t)?;
                 println!(
                     "workspace ready at {} ({} files written, templates v{})",
@@ -907,6 +908,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             }
             WorkspaceCommand::Update { tenant } => {
                 let t = tenant_for(tenant)?;
+                guard_legacy_workspace(&t)?;
                 let r = workspace::update(&t)?;
                 println!(
                     "templates refreshed to v{} ({} files written) at {}",
@@ -919,7 +921,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         },
         ScriptCommand::List { tenant, realm, kind } => {
             let t = tenant_for(tenant)?;
-            let kinds = kinds_for(kind.as_deref())?;
+            let kinds = kinds_for(kind);
             // A realm is "specified" if passed explicitly or inferred from the
             // working directory. When it isn't, list AM scripts from BOTH realms.
             let specified = realm.or_else(|| config::workspace_context().realm);
@@ -944,10 +946,10 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             }
             print_json(&out)
         }
-        ScriptCommand::Pull { name, kind, tenant, realm, force } => {
+        ScriptCommand::Pull { name, kind: k, tenant, realm, force } => {
             let t = tenant_for(tenant)?;
+            guard_legacy_workspace(&t)?;
             let realm = realm_for(realm)?;
-            let k = kind_for(&kind)?;
             // Be friendly: scaffold the workspace on first use so the pulled
             // sources land next to their type definitions.
             if workspace::applied_version(&t)? == 0 {
@@ -976,10 +978,10 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             workspace_update_hint(&t)?;
             Ok(())
         }
-        ScriptCommand::Push { name, kind, tenant, realm, force, yes } => {
+        ScriptCommand::Push { name, kind: k, tenant, realm, force, yes } => {
             let t = tenant_for(tenant)?;
+            guard_legacy_workspace(&t)?;
             let realm = realm_for(realm)?;
-            let k = kind_for(&kind)?;
             match prod_hint(sync::push(&t, &realm, k, &name, force, yes).await)? {
                 sync::PushOutcome::Pushed => println!("pushed {} {name}", k.as_str()),
                 sync::PushOutcome::Unchanged => println!("{name}: no local changes to push"),
@@ -998,11 +1000,8 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         }
         ScriptCommand::Status { tenant, kind } => {
             let t = tenant_for(tenant)?;
-            let only = match kind.as_deref() {
-                Some(s) => Some(kind_for(s)?),
-                None => None,
-            };
-            let entries = sync::status(&t, only).await?;
+            guard_legacy_workspace(&t)?;
+            let entries = sync::status(&t, kind).await?;
             if entries.is_empty() {
                 println!("nothing synced yet — `aic script pull …` first");
             }
@@ -1023,10 +1022,10 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             }
             Ok(())
         }
-        ScriptCommand::Diff { name, kind, tenant, realm } => {
+        ScriptCommand::Diff { name, kind: k, tenant, realm } => {
             let t = tenant_for(tenant)?;
+            guard_legacy_workspace(&t)?;
             let realm = realm_for(realm)?;
-            let k = kind_for(&kind)?;
             let tw = sync::diff(&t, &realm, k, &name).await?;
             print_conflict(&name, &tw);
             Ok(())
@@ -1045,17 +1044,26 @@ fn listed(r: &crate::aic::script::RemoteRef, realm: Option<&str>) -> Result<serd
     Ok(v)
 }
 
-/// Parse a `--kind` value into a single [`Kind`].
-fn kind_for(s: &str) -> Result<crate::aic::script::Kind> {
-    crate::aic::script::Kind::parse(s)
-        .ok_or_else(|| Error::Config(format!("unknown --kind {s:?} (use `am` or `idm`)")))
+/// Refuse to operate when a pre-redesign per-realm workspace is present, so we
+/// don't auto-init a fresh per-tenant tree over it and strand local edits.
+fn guard_legacy_workspace(tenant: &str) -> Result<()> {
+    if let Some(old) = crate::aic::script::workspace::legacy_layout(tenant) {
+        return Err(Error::Config(format!(
+            "old per-realm workspace at {} — the layout is now per-tenant (am/<realm>/…). \
+             Rescue any unpushed edits from the old <realm>/ dirs, delete them, then re-run \
+             (`aic script workspace init` + pull rebuilds the new tree).",
+            old.display()
+        )));
+    }
+    Ok(())
 }
 
-/// Parse an optional `--kind`: `None` means all kinds.
-fn kinds_for(s: Option<&str>) -> Result<Vec<crate::aic::script::Kind>> {
-    match s {
-        Some(s) => Ok(vec![kind_for(s)?]),
-        None => Ok(crate::aic::script::Kind::all().to_vec()),
+/// Expand an optional `--kind` into the kinds to act on: `None` means all.
+/// (clap validates the value against [`Kind`] and lists the choices itself.)
+fn kinds_for(kind: Option<Kind>) -> Vec<Kind> {
+    match kind {
+        Some(k) => vec![k],
+        None => Kind::all().to_vec(),
     }
 }
 

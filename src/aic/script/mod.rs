@@ -21,17 +21,20 @@ use std::path::PathBuf;
 
 /// The script-like resource families we sync. The single dispatch point for
 /// all AM-vs-IDM differences.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 pub enum Kind {
     /// AM scripts: `/am/json{realm}/scripts/{uuid}`, base64 `script` body.
     #[serde(rename = "am")]
+    #[value(name = "am")]
     Am,
     /// IDM custom endpoints: `/openidm/config/endpoint/{name}`, plaintext `source`.
     #[serde(rename = "idm")]
+    #[value(name = "idm", alias = "endpoint")]
     IdmEndpoint,
     /// IDM scheduled jobs: `/openidm/config/schedule/{name}`, script at
     /// `invokeContext.script.source` (script-invoking schedules only).
     #[serde(rename = "schedule")]
+    #[value(name = "schedule", alias = "schedules")]
     IdmSchedule,
 }
 
@@ -41,16 +44,6 @@ impl Kind {
             Kind::Am => "am",
             Kind::IdmEndpoint => "idm",
             Kind::IdmSchedule => "schedule",
-        }
-    }
-
-    /// Parse a `--kind` CLI value. Accepts a few friendly aliases.
-    pub fn parse(s: &str) -> Option<Kind> {
-        match s.to_ascii_lowercase().as_str() {
-            "am" | "script" | "scripts" => Some(Kind::Am),
-            "idm" | "endpoint" | "endpoints" | "idm-endpoint" => Some(Kind::IdmEndpoint),
-            "schedule" | "schedules" | "idm-schedule" => Some(Kind::IdmSchedule),
-            _ => None,
         }
     }
 
