@@ -159,7 +159,8 @@ aic script push bravo/MyDecisionNode            # content-based conflict check, 
 aic script push all                             # push every locally-changed script (clean/default skipped)
 aic script status                               # in sync / modified locally / remote / conflict
 aic script diff                                 # ← no ref: fuzzy-pick a synced script
-aic script diff endpoint/validateQueryFilter    # 3-way: last-synced / remote / local
+aic script diff endpoint/validateQueryFilter    # colored local-vs-remote diff (via `git diff`)
+aic script diff bravo/Foo | delta               # …or pipe the plain diff to your tool of choice
 aic script workspace update                     # refresh bundled types/config to the latest
 ```
 
@@ -172,6 +173,11 @@ them; pushing a script whose remote changed since you last synced asks before
 overwriting the remote (`--force` skips the prompt). A bare `<name>` (no prefix)
 resolves its namespace from your current directory — inside `am/bravo/…`,
 `aic script pull MyDecisionNode` means `bravo/…`.
+
+`aic script diff` renders your local copy against the tenant by shelling out to
+`git diff --no-index`, so it uses your git pager/colors (delta, etc.)
+interactively and emits a plain unified diff when piped (`aic script diff
+bravo/Foo | delta`). Requires `git` on your PATH.
 
 Conflict detection is **content-based** (scripts have no `_rev`): a push only
 proceeds if the remote still matches what you last synced — even if the remote
