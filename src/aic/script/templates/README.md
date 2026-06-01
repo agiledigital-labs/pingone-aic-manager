@@ -58,6 +58,7 @@ aic script push                      # no ref: fuzzy-pick one (locally-changed m
 aic script push bravo/MyNode         # push your edit back (content-checked)
 aic script push all                  # push every synced script
 aic script status                    # in sync / modified locally / remote / conflict
+aic script diff                      # no ref: fuzzy-pick a synced script
 aic script diff schedule/MyJob       # 3-way: last-synced / remote / local
 aic script workspace update          # refresh the managed types/config
 ```
