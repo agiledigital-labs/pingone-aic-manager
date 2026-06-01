@@ -159,6 +159,7 @@ aic script push bravo/MyDecisionNode            # content-based conflict check, 
 aic script push all                             # push every locally-changed script (clean/default skipped)
 aic script sync                                 # reconcile everything: push local-only, pull remote-only
 aic script sync bravo --resolve local           # scope to a namespace; force conflicts to your local copy
+aic script watch                                # auto-push each script you save (Ctrl-C to stop)
 aic script status                               # in sync / modified locally / remote / conflict
 aic script diff                                 # ← no ref: fuzzy-pick a synced script
 aic script diff endpoint/validateQueryFilter    # default: colored local-vs-tenant diff (via `git diff`)
@@ -184,6 +185,11 @@ a conflict. Conflicts are resolved interactively by default (local / remote /
 skip per script), or non-interactively with `--resolve local|remote`; with no
 terminal, conflicts are skipped and listed at the end (never silently
 clobbered). Ends with a `pushed N · pulled M · in sync R · conflicts K` summary.
+
+`aic script watch` watches the workspace and pushes each tracked `.cjs` as you
+save it (debounced), until Ctrl-C. It reacts to local saves only — for incoming
+remote changes run `sync`/`pull`. A save whose remote drifted is reported and
+skipped (never force-pushed); untracked files are ignored.
 
 `aic script diff` renders your local copy against the tenant by shelling out to
 `git diff --no-index`, so it uses your git pager/colors (delta, etc.)

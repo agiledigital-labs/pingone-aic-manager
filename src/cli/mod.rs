@@ -323,6 +323,16 @@ pub enum ScriptCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Watch the workspace and push each `.cjs` you save back to the tenant
+    /// (runs until Ctrl-C). Reacts to local saves only — run `sync`/`pull` to
+    /// take in remote changes. A save whose remote drifted is reported + skipped.
+    Watch {
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        /// Confirm writes to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Diff a script (colored, via `git diff`). Default compares your local
     /// copy against the tenant. With no <ref>, opens a fuzzy picker over synced
     /// scripts.
@@ -1118,6 +1128,11 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             workspace_update_hint(&t)?;
             Ok(())
         }
+        ScriptCommand::Watch { tenant, yes } => {
+            let t = tenant_for(tenant)?;
+            guard_legacy_workspace(&t)?;
+            watch(&t, yes).await
+        }
         ScriptCommand::Diff { reference, local_vs_snapshot, snapshot_vs_remote, tenant } => {
             let t = tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
@@ -1302,6 +1317,111 @@ fn prompt_conflict(full: &str) -> Result<ConflictChoice> {
         }
         Err(e) => Err(Error::Config(format!("conflict prompt: {e}"))),
     }
+}
+
+/// Map a workspace file path back to its script ref, or `None` if it isn't a
+/// syncable source file. Inverse of the per-kind `workspace_subpath`:
+/// `am/<realm>/<type>/<Name>.cjs`, `idm/endpoint/<name>.cjs`,
+/// `idm/schedule/<name>.cjs`.
+fn workspace_path_ref(tree: &std::path::Path, path: &std::path::Path) -> Option<(Namespace, String)> {
+    let rel = path.strip_prefix(tree).ok()?;
+    if rel.extension().and_then(|e| e.to_str()) != Some("cjs") {
+        return None;
+    }
+    let name = rel.file_stem()?.to_str()?.to_string();
+    let parent: Vec<String> = rel
+        .parent()?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    match parent.as_slice() {
+        [a, realm, _type] if a == "am" && (realm == "alpha" || realm == "bravo") => {
+            Some((Namespace { kind: script::Kind::Am, realm: Some(realm.clone()) }, name))
+        }
+        [i, k] if i == "idm" && k == "endpoint" => {
+            Some((Namespace { kind: script::Kind::IdmEndpoint, realm: None }, name))
+        }
+        [i, k] if i == "idm" && k == "schedule" => {
+            Some((Namespace { kind: script::Kind::IdmSchedule, realm: None }, name))
+        }
+        _ => None,
+    }
+}
+
+/// Collect the `.cjs` paths that still exist from a notify event.
+fn collect_cjs(set: &mut std::collections::BTreeSet<std::path::PathBuf>, res: notify::Result<notify::Event>) {
+    if let Ok(ev) = res {
+        for p in ev.paths {
+            if p.extension().is_some_and(|e| e == "cjs") && p.is_file() {
+                // Canonicalise so paths match the canonical workspace root
+                // regardless of whether notify reports relative or absolute.
+                set.insert(std::fs::canonicalize(&p).unwrap_or(p));
+            }
+        }
+    }
+}
+
+/// Watch the tenant workspace and push each saved `.cjs` (debounced). Pushes a
+/// file only if it's a tracked (synced) script; on remote drift it warns and
+/// skips. Runs until Ctrl-C.
+async fn watch(tenant: &str, yes: bool) -> Result<()> {
+    use notify::{RecursiveMode, Watcher};
+    use script::sync::{LocalState, PushOutcome};
+
+    let tree = ProjectConfig::workspace_tree(tenant);
+    if !tree.exists() {
+        return Err(Error::Config(format!(
+            "no workspace at {} — `aic script pull …` first",
+            tree.display()
+        )));
+    }
+    // Absolute, so it matches the (canonicalised) event paths from notify.
+    let tree = std::fs::canonicalize(&tree).map_err(|e| Error::Config(format!("watch: {e}")))?;
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<notify::Result<notify::Event>>();
+    let mut watcher = notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    })
+    .map_err(|e| Error::Config(format!("watch: {e}")))?;
+    watcher
+        .watch(&tree, RecursiveMode::Recursive)
+        .map_err(|e| Error::Config(format!("watch {}: {e}", tree.display())))?;
+    println!("watching {} — save a script to push it; Ctrl-C to stop", tree.display());
+
+    loop {
+        let first = tokio::select! {
+            _ = tokio::signal::ctrl_c() => { println!("\nstopped watching."); break; }
+            ev = rx.recv() => match ev { Some(e) => e, None => break },
+        };
+        // Debounce: coalesce the burst of events an editor emits per save.
+        let mut changed = std::collections::BTreeSet::new();
+        collect_cjs(&mut changed, first);
+        while let Ok(Some(ev)) =
+            tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await
+        {
+            collect_cjs(&mut changed, ev);
+        }
+        for path in changed {
+            let Some((ns, name)) = workspace_path_ref(&tree, &path) else {
+                continue;
+            };
+            // Only push tracked scripts (`Missing` = not synced).
+            match script::sync::local_state(tenant, ns.kind, ns.realm_arg(), &name) {
+                Ok(LocalState::Missing) | Err(_) => continue,
+                Ok(_) => {}
+            }
+            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
+            match prod_hint(script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes).await) {
+                Ok(PushOutcome::Pushed) => println!("→ pushed {full}"),
+                Ok(PushOutcome::Unchanged | PushOutcome::AlreadyInSync) => {}
+                Ok(PushOutcome::Conflict(_)) => {
+                    eprintln!("! {full}: remote changed — skipped (run `aic script sync {full}`)")
+                }
+                Err(e) => eprintln!("! {full}: {e}"),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Does a candidate belong to namespace `ns`? (Realm matters only for AM.)
