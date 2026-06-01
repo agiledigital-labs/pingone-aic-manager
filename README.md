@@ -158,6 +158,7 @@ aic script push                                 # ← no ref: fuzzy-pick one (lo
 aic script push bravo/MyDecisionNode            # content-based conflict check, then PUT
 aic script push all                             # push every synced script (unchanged = no-op)
 aic script status                               # in sync / modified locally / remote / conflict
+aic script diff                                 # ← no ref: fuzzy-pick a synced script
 aic script diff endpoint/validateQueryFilter    # 3-way: last-synced / remote / local
 aic script workspace update                     # refresh bundled types/config to the latest
 ```

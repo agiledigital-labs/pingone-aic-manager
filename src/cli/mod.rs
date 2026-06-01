@@ -308,11 +308,11 @@ pub enum ScriptCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
-    /// Show the 3-way diff (last-synced / remote / local) for one script.
-    /// <ref> is `<namespace>/<name>` (or a bare name in a workspace subdir).
+    /// Show the 3-way diff (last-synced / remote / local) for one script. With
+    /// no <ref>, opens a fuzzy picker over synced scripts.
     Diff {
-        #[arg(help = "Script as <namespace>/<name>")]
-        reference: String,
+        #[arg(help = "<namespace>/<name>, or empty to pick interactively")]
+        reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
@@ -1026,7 +1026,14 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         ScriptCommand::Diff { reference, tenant } => {
             let t = tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
-            let (ns, name) = parse_one(&reference)?;
+            // No ref → pick from synced scripts (diff needs a snapshot).
+            let (ns, name) = match reference {
+                Some(s) => parse_one(&s)?,
+                None => match pick("Diff which script?", sync::push_candidates(&t)?, true)? {
+                    Some(x) => x,
+                    None => return Ok(()),
+                },
+            };
             let tw = sync::diff(&t, ns.realm_arg(), ns.kind, &name).await?;
             print_conflict(&script::full_name(ns.kind, ns.realm.as_deref(), &name), &tw);
             Ok(())
