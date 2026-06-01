@@ -57,6 +57,8 @@ aic script pull all                  # pull everything (both realms + endpoints 
 aic script push                      # no ref: fuzzy-pick one (locally-changed marked `!`)
 aic script push bravo/MyNode         # push your edit back (content-checked)
 aic script push all                  # push every locally-changed script
+aic script sync                      # reconcile: push local-only, pull remote-only, resolve conflicts
+aic script sync --resolve remote     # force any conflict to the tenant's copy
 aic script status                    # in sync / modified locally / remote / conflict
 aic script diff                      # no ref: fuzzy-pick a synced script
 aic script diff schedule/MyJob       # local-vs-tenant diff (via git; pipe to delta etc.)
