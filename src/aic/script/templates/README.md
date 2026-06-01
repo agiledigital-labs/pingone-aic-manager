@@ -49,7 +49,7 @@ namespace of the directory you're in.
 ```bash
 aic script list                      # all scripts; each row tagged with its full-name `ref`
 aic script list bravo                # just one namespace
-aic script pull                      # no ref: fuzzy-pick one (un-synced marked `!`)
+aic script pull                      # no ref: fuzzy-pick one (`!` local changes, `-` not pulled)
 aic script pull bravo/MyNode         # pull one AM script (bravo realm)
 aic script pull endpoint/myEndpoint  # pull one IDM endpoint
 aic script pull schedule             # pull a whole namespace

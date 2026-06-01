@@ -225,65 +225,90 @@ fn lossy(bytes: &[u8]) -> String {
 // Picker candidates
 // ---------------------------------------------------------------------------
 
+/// The local file's state relative to the last-synced snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalState {
+    /// No local file (not pulled yet, or deleted). Shown as `-`.
+    Missing,
+    /// Local file matches the snapshot.
+    Clean,
+    /// Local file differs from the snapshot — un-synced changes on disk. `!`.
+    Modified,
+}
+
 /// A script offered in the interactive pull/push picker.
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub kind: Kind,
     pub realm: Option<String>,
     pub name: String,
-    /// "Changed" flag — for pull: not yet synced locally; for push: the local
-    /// file differs from the last-synced snapshot. The picker marks these and
-    /// floats them to the top.
-    pub changed: bool,
+    pub local: LocalState,
 }
 
-/// Candidates for `pull`: every remote script across all namespaces, with
-/// `changed` = not yet synced locally. Lists the tenant (a few HTTP calls); no
-/// per-script body fetch.
-pub async fn pull_candidates(tenant: &str) -> Result<Vec<Candidate>> {
+/// The local state of one (already-known) reference — snapshot vs the file on
+/// disk. Cheap (no network).
+fn local_state_for(
+    store: &SnapshotStore,
+    tenant: &str,
+    r: &RemoteRef,
+    realm: &str,
+) -> Result<LocalState> {
+    let Some(cfg) = store.load_config(r, realm)? else {
+        return Ok(LocalState::Missing);
+    };
+    let snapshot = r.kind.decode_source(&cfg)?;
+    let dest = workspace_file(tenant, realm, r);
+    Ok(match std::fs::read(&dest) {
+        Ok(local) if local == snapshot => LocalState::Clean,
+        Ok(_) => LocalState::Modified,
+        Err(_) => LocalState::Missing,
+    })
+}
+
+/// Local state of a script by (kind, realm, name) — `Missing` if never synced.
+/// Cheap (no network); used to decide whether a pull would clobber local edits.
+pub fn local_state(tenant: &str, kind: Kind, realm: &str, name: &str) -> Result<LocalState> {
     let store = SnapshotStore::open(tenant);
-    let synced: std::collections::HashSet<(Kind, Option<String>, String)> = store
-        .load_manifest()?
-        .into_iter()
-        .map(|e| (e.reference.kind, e.realm, e.reference.name))
+    match store.lookup(kind, name, realm)? {
+        Some(e) => local_state_for(&store, tenant, &e.reference, realm),
+        None => Ok(LocalState::Missing),
+    }
+}
+
+/// Candidates for `pull`: every remote script across all namespaces, tagged
+/// with its local state. Lists the tenant (a few HTTP calls) + a local file
+/// check per synced script; no per-script body fetch.
+pub async fn pull_candidates(tenant: &str) -> Result<Vec<Candidate>> {
+    use std::collections::HashMap;
+    let store = SnapshotStore::open(tenant);
+    let manifest = store.load_manifest()?;
+    let by_key: HashMap<(Kind, Option<String>, String), &SyncedScript> = manifest
+        .iter()
+        .map(|e| ((e.reference.kind, e.realm.clone(), e.reference.name.clone()), e))
         .collect();
     let mut out = Vec::new();
     for ns in super::Namespace::all() {
         for r in ns.kind.list(tenant, ns.realm_arg()).await? {
             let key = (ns.kind, ns.realm.clone(), r.name.clone());
-            out.push(Candidate {
-                kind: ns.kind,
-                realm: ns.realm.clone(),
-                name: r.name,
-                changed: !synced.contains(&key),
-            });
+            let local = match by_key.get(&key) {
+                Some(e) => local_state_for(&store, tenant, &e.reference, ns.realm_arg())?,
+                None => LocalState::Missing,
+            };
+            out.push(Candidate { kind: ns.kind, realm: ns.realm.clone(), name: r.name, local });
         }
     }
     Ok(out)
 }
 
-/// Candidates for `push`: every synced script, with `changed` = local file
-/// differs from the last-synced snapshot. Purely local — no network.
+/// Candidates for `push`: every synced script, tagged with its local state.
+/// Purely local — no network.
 pub fn push_candidates(tenant: &str) -> Result<Vec<Candidate>> {
     let store = SnapshotStore::open(tenant);
     let mut out = Vec::new();
     for e in store.load_manifest()? {
         let realm = e.realm.as_deref().unwrap_or_default();
-        let changed = match store.load_config(&e.reference, realm)? {
-            Some(cfg) => {
-                let snapshot = e.reference.kind.decode_source(&cfg)?;
-                let dest = workspace_file(tenant, realm, &e.reference);
-                // A missing local file isn't a pushable change.
-                std::fs::read(&dest).map(|local| local != snapshot).unwrap_or(false)
-            }
-            None => false,
-        };
-        out.push(Candidate {
-            kind: e.reference.kind,
-            realm: e.realm,
-            name: e.reference.name,
-            changed,
-        });
+        let local = local_state_for(&store, tenant, &e.reference, realm)?;
+        out.push(Candidate { kind: e.reference.kind, realm: e.realm, name: e.reference.name, local });
     }
     Ok(out)
 }
