@@ -222,6 +222,73 @@ fn lossy(bytes: &[u8]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Picker candidates
+// ---------------------------------------------------------------------------
+
+/// A script offered in the interactive pull/push picker.
+#[derive(Debug, Clone)]
+pub struct Candidate {
+    pub kind: Kind,
+    pub realm: Option<String>,
+    pub name: String,
+    /// "Changed" flag — for pull: not yet synced locally; for push: the local
+    /// file differs from the last-synced snapshot. The picker marks these and
+    /// floats them to the top.
+    pub changed: bool,
+}
+
+/// Candidates for `pull`: every remote script across all namespaces, with
+/// `changed` = not yet synced locally. Lists the tenant (a few HTTP calls); no
+/// per-script body fetch.
+pub async fn pull_candidates(tenant: &str) -> Result<Vec<Candidate>> {
+    let store = SnapshotStore::open(tenant);
+    let synced: std::collections::HashSet<(Kind, Option<String>, String)> = store
+        .load_manifest()?
+        .into_iter()
+        .map(|e| (e.reference.kind, e.realm, e.reference.name))
+        .collect();
+    let mut out = Vec::new();
+    for ns in super::Namespace::all() {
+        for r in ns.kind.list(tenant, ns.realm_arg()).await? {
+            let key = (ns.kind, ns.realm.clone(), r.name.clone());
+            out.push(Candidate {
+                kind: ns.kind,
+                realm: ns.realm.clone(),
+                name: r.name,
+                changed: !synced.contains(&key),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Candidates for `push`: every synced script, with `changed` = local file
+/// differs from the last-synced snapshot. Purely local — no network.
+pub fn push_candidates(tenant: &str) -> Result<Vec<Candidate>> {
+    let store = SnapshotStore::open(tenant);
+    let mut out = Vec::new();
+    for e in store.load_manifest()? {
+        let realm = e.realm.as_deref().unwrap_or_default();
+        let changed = match store.load_config(&e.reference, realm)? {
+            Some(cfg) => {
+                let snapshot = e.reference.kind.decode_source(&cfg)?;
+                let dest = workspace_file(tenant, realm, &e.reference);
+                // A missing local file isn't a pushable change.
+                std::fs::read(&dest).map(|local| local != snapshot).unwrap_or(false)
+            }
+            None => false,
+        };
+        out.push(Candidate {
+            kind: e.reference.kind,
+            realm: e.realm,
+            name: e.reference.name,
+            changed,
+        });
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // Pull
 // ---------------------------------------------------------------------------
 

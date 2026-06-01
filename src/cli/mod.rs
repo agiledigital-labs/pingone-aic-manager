@@ -271,12 +271,13 @@ pub enum ScriptCommand {
     },
     /// Pull script(s) into the workspace.
     ///
-    /// <ref> is `<namespace>/<name>` for one script (e.g. `bravo/Foo`,
-    /// `endpoint/validateQueryFilter`, `schedule/UpdateReviewList`), a bare
-    /// namespace (`bravo`, `endpoint`) to pull all of it, or omitted to pull
-    /// everything. A bare name uses the namespace of your current directory.
+    /// With no <ref>, opens a fuzzy picker (un-synced scripts marked `!`,
+    /// listed first). Otherwise <ref> is `<namespace>/<name>` for one (e.g.
+    /// `bravo/Foo`, `endpoint/validateQueryFilter`), a bare namespace
+    /// (`bravo`, `endpoint`) for all of it, or `all` for everything. A bare
+    /// name uses the namespace of your current directory.
     Pull {
-        #[arg(help = "<namespace>/<name>, a namespace (bulk), or empty for everything")]
+        #[arg(help = "<namespace>/<name>, a namespace, `all`, or empty to pick interactively")]
         reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
@@ -284,11 +285,12 @@ pub enum ScriptCommand {
         #[arg(long)]
         force: bool,
     },
-    /// Push a local edit back to the tenant (requires a prior pull).
-    /// <ref> is `<namespace>/<name>` (or a bare name in a workspace subdir).
+    /// Push a local edit back to the tenant (requires a prior pull). With no
+    /// <ref>, opens a fuzzy picker (changed scripts marked `!`, listed first).
+    /// `all` pushes every synced script. <ref> is `<namespace>/<name>`.
     Push {
-        #[arg(help = "Script as <namespace>/<name> (e.g. bravo/Foo)")]
-        reference: String,
+        #[arg(help = "<namespace>/<name>, `all`, or empty to pick interactively")]
+        reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         /// Push past a remote-drift conflict (overwrites remote).
@@ -923,8 +925,16 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                 let r = workspace::init(&t)?;
                 println!("initialised workspace at {}", r.tree.display());
             }
+            // No ref → fuzzy-pick one script; otherwise expand the ref to jobs.
+            let jobs = match reference {
+                None => match pick("Pull which script?", sync::pull_candidates(&t).await?)? {
+                    Some((ns, name)) => vec![Job { ns, selector: sync::Selector::Name(name) }],
+                    None => return Ok(()),
+                },
+                some => parse_ref(some)?,
+            };
             let mut any = false;
-            for job in parse_ref(reference)? {
+            for job in jobs {
                 for o in sync::pull(&t, job.ns.realm_arg(), job.ns.kind, &job.selector, force).await? {
                     any = true;
                     let what = match &o.status {
@@ -947,21 +957,18 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
         ScriptCommand::Push { reference, tenant, force, yes } => {
             let t = tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
-            let (ns, name) = parse_one(&reference)?;
-            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
-            match prod_hint(sync::push(&t, ns.realm_arg(), ns.kind, &name, force, yes).await)? {
-                sync::PushOutcome::Pushed => println!("pushed {full}"),
-                sync::PushOutcome::Unchanged => println!("{full}: no local changes to push"),
-                sync::PushOutcome::AlreadyInSync => {
-                    println!("{full}: remote already matched local; snapshot refreshed")
-                }
-                sync::PushOutcome::Conflict(tw) => {
-                    print_conflict(&full, &tw);
-                    return Err(Error::Config(
-                        "remote changed since last sync — resolve, or re-run with --force".into(),
-                    ));
-                }
+            if reference.as_deref() == Some("all") {
+                return push_all(&t, force, yes).await;
             }
+            // No ref → fuzzy-pick one (changed scripts marked `!`, first).
+            let (ns, name) = match reference {
+                Some(s) => parse_one(&s)?,
+                None => match pick("Push which script?", sync::push_candidates(&t)?)? {
+                    Some(x) => x,
+                    None => return Ok(()),
+                },
+            };
+            push_one(&t, &ns, &name, force, yes).await?;
             workspace_update_hint(&t)?;
             Ok(())
         }
@@ -1018,7 +1025,8 @@ struct Job {
 /// `<prefix>` → that whole namespace; `<prefix>/<name>` → one script; a bare
 /// `<name>` → one script in the current directory's namespace.
 fn parse_ref(arg: Option<String>) -> Result<Vec<Job>> {
-    let Some(s) = arg else {
+    // `None` and the explicit keyword `all` both mean every namespace.
+    let Some(s) = arg.filter(|s| s != "all") else {
         return Ok(Namespace::all()
             .into_iter()
             .map(|ns| Job { ns, selector: script::sync::Selector::All })
@@ -1077,6 +1085,80 @@ fn listed(r: &script::RemoteRef, ns: &Namespace) -> serde_json::Value {
         );
     }
     v
+}
+
+fn full_of(c: &script::sync::Candidate) -> String {
+    script::full_name(c.kind, c.realm.as_deref(), &c.name)
+}
+
+/// Interactive single-select over candidates: `!`-marks changed scripts and
+/// floats them to the top; type to filter. Returns the chosen
+/// (namespace, name), or `None` if the user cancels / there's nothing to pick.
+fn pick(prompt: &str, mut candidates: Vec<script::sync::Candidate>) -> Result<Option<(Namespace, String)>> {
+    use inquire::{error::InquireError, Select};
+    if candidates.is_empty() {
+        println!("nothing to choose from");
+        return Ok(None);
+    }
+    // Changed scripts first, then alphabetical by full-name.
+    candidates.sort_by(|a, b| b.changed.cmp(&a.changed).then_with(|| full_of(a).cmp(&full_of(b))));
+    let labels: Vec<String> = candidates
+        .iter()
+        .map(|c| format!("{}{}", if c.changed { "! " } else { "  " }, full_of(c)))
+        .collect();
+    match Select::new(prompt, labels).with_page_size(15).raw_prompt() {
+        Ok(opt) => {
+            let c = &candidates[opt.index];
+            Ok(Some((Namespace { kind: c.kind, realm: c.realm.clone() }, c.name.clone())))
+        }
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
+        Err(InquireError::NotTTY) => Err(Error::Config(
+            "no terminal for the picker — pass a script ref (e.g. bravo/Foo) or `all`".into(),
+        )),
+        Err(e) => Err(Error::Config(format!("picker: {e}"))),
+    }
+}
+
+async fn push_one(tenant: &str, ns: &Namespace, name: &str, force: bool, yes: bool) -> Result<()> {
+    let full = script::full_name(ns.kind, ns.realm.as_deref(), name);
+    match prod_hint(script::sync::push(tenant, ns.realm_arg(), ns.kind, name, force, yes).await)? {
+        script::sync::PushOutcome::Pushed => println!("pushed {full}"),
+        script::sync::PushOutcome::Unchanged => println!("{full}: no local changes to push"),
+        script::sync::PushOutcome::AlreadyInSync => {
+            println!("{full}: remote already matched local; snapshot refreshed")
+        }
+        script::sync::PushOutcome::Conflict(tw) => {
+            print_conflict(&full, &tw);
+            return Err(Error::Config(
+                "remote changed since last sync — resolve, or re-run with --force".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Push every synced script (unchanged ones are cheap no-ops — `sync::push`
+/// returns early without fetching). Conflicts are reported and skipped rather
+/// than aborting the batch.
+async fn push_all(tenant: &str, force: bool, yes: bool) -> Result<()> {
+    let cands = script::sync::push_candidates(tenant)?;
+    if cands.is_empty() {
+        println!("nothing synced to push");
+    }
+    for c in cands {
+        let ns = Namespace { kind: c.kind, realm: c.realm.clone() };
+        let full = full_of(&c);
+        match prod_hint(script::sync::push(tenant, ns.realm_arg(), c.kind, &c.name, force, yes).await)? {
+            script::sync::PushOutcome::Pushed => println!("pushed {full}"),
+            script::sync::PushOutcome::Unchanged => {}
+            script::sync::PushOutcome::AlreadyInSync => println!("{full}: already in sync"),
+            script::sync::PushOutcome::Conflict(_) => {
+                println!("{full}: CONFLICT — skipped (diff it, or push --force)")
+            }
+        }
+    }
+    workspace_update_hint(tenant)?;
+    Ok(())
 }
 
 /// Refuse to operate when a pre-redesign per-realm workspace is present, so we

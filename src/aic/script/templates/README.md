@@ -49,11 +49,14 @@ namespace of the directory you're in.
 ```bash
 aic script list                      # all scripts; each row tagged with its full-name `ref`
 aic script list bravo                # just one namespace
+aic script pull                      # no ref: fuzzy-pick one (un-synced marked `!`)
 aic script pull bravo/MyNode         # pull one AM script (bravo realm)
 aic script pull endpoint/myEndpoint  # pull one IDM endpoint
 aic script pull schedule             # pull a whole namespace
-aic script pull                      # pull everything (both realms + endpoints + schedules)
+aic script pull all                  # pull everything (both realms + endpoints + schedules)
+aic script push                      # no ref: fuzzy-pick one (locally-changed marked `!`)
 aic script push bravo/MyNode         # push your edit back (content-checked)
+aic script push all                  # push every synced script
 aic script status                    # in sync / modified locally / remote / conflict
 aic script diff schedule/MyJob       # 3-way: last-synced / remote / local
 aic script workspace update          # refresh the managed types/config
