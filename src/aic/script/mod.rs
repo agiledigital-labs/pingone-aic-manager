@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 /// The script-like resource families we sync. The single dispatch point for
 /// all AM-vs-IDM differences.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
 pub enum Kind {
     /// AM scripts: `/am/json{realm}/scripts/{uuid}`, base64 `script` body.
     #[serde(rename = "am")]

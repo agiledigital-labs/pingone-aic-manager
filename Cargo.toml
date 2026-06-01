@@ -76,6 +76,10 @@ clap       = { version = "4", features = ["derive"] }
 rpassword  = "7"
 libc       = "0.2"
 
+# Interactive single-select fuzzy picker for `aic script pull`/`push` with no
+# argument (type to filter, enter to choose).
+inquire    = "0.7"
+
 # Fuzzy matching for the ESV search (`/`) — the helix editor's matcher,
 # small, no_std-friendly, returns scored matches + indices we can use to
 # highlight matched chars in the list.
