@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 3;
+pub const TEMPLATES_VERSION: u32 = 4;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -61,6 +61,19 @@ struct WorkspaceState {
 
 fn state_path(tenant: &str) -> PathBuf {
     ProjectConfig::aic_sync_dir(tenant).join("state.toml")
+}
+
+/// Detect a pre-redesign **per-realm** workspace
+/// (`workspace/<tenant>/<realm>/.aic-sync`). The layout is now per-tenant
+/// (`am/<realm>/…`), so the old `.aic-sync` is ignored — returning the old
+/// realm dir lets callers refuse rather than silently auto-init over it and
+/// strand local edits.
+pub fn legacy_layout(tenant: &str) -> Option<PathBuf> {
+    let tree = ProjectConfig::workspace_tree(tenant);
+    REALMS
+        .iter()
+        .map(|r| tree.join(r))
+        .find(|dir| dir.join(".aic-sync").is_dir())
 }
 
 /// Templates version recorded for a tenant's workspace (0 if uninitialised).
