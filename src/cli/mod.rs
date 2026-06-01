@@ -1036,7 +1036,8 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                 },
             };
             let tw = sync::diff(&t, ns.realm_arg(), ns.kind, &name).await?;
-            print_conflict(&script::full_name(ns.kind, ns.realm.as_deref(), &name), &tw);
+            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
+            show_diff(&full, &tw.remote, &tw.local)?;
             Ok(())
         }
     }
@@ -1276,6 +1277,43 @@ fn workspace_update_hint(tenant: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Show local-vs-remote as a real diff by shelling out to `git diff
+/// --no-index` (stdio inherited) — so your git pager/color (delta, …) apply
+/// interactively, and `aic script diff X | <tool>` pipes a plain unified diff.
+/// Requires `git` on PATH.
+fn show_diff(full: &str, remote: &str, local: &str) -> Result<()> {
+    use std::process::Command;
+    if remote == local {
+        println!("{full}: local matches the tenant");
+        return Ok(());
+    }
+    let dir = std::env::temp_dir().join(format!("aic-diff-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| Error::Config(format!("temp dir: {e}")))?;
+    // `--no-prefix` makes the headers read `--- <name> (tenant)` etc.; `/` in
+    // the full-name isn't path-safe, so swap it for `_`.
+    let safe = full.replace('/', "_");
+    let tenant_name = format!("{safe} (tenant)");
+    let local_name = format!("{safe} (local)");
+    let _ = std::fs::write(dir.join(&tenant_name), remote);
+    let _ = std::fs::write(dir.join(&local_name), local);
+    // Run git *in* the temp dir with relative names so the diff headers read
+    // `--- <name> (tenant)` rather than the full temp path.
+    let status = Command::new("git")
+        .current_dir(&dir)
+        .args(["diff", "--no-index", "--no-prefix"])
+        .arg(&tenant_name)
+        .arg(&local_name)
+        .status();
+    let _ = std::fs::remove_dir_all(&dir);
+    match status {
+        // `git diff --no-index` exits 1 when the files differ — that's success.
+        Ok(_) => Ok(()),
+        Err(e) => Err(Error::Config(format!(
+            "couldn't run `git` to render the diff ({e}) — is git on your PATH?"
+        ))),
+    }
 }
 
 fn print_conflict(name: &str, tw: &crate::aic::script::sync::ThreeWay) {
