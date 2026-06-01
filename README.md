@@ -148,13 +148,13 @@ never pass `--kind`/`--realm`:
 aic script workspace init                       # scaffold the tenant tree (both realms + idm)
 aic script list                                 # all kinds; each row tagged with its full-name `ref`
 aic script list bravo                           # just one namespace
-aic script pull                                 # ← no ref: fuzzy-pick one (un-synced marked `!`, first)
+aic script pull                                 # ← no ref: fuzzy-pick one (`!` local changes, `-` not pulled)
 aic script pull bravo/MyDecisionNode            # one AM script → am/bravo/src/MyDecisionNode.cjs
 aic script pull endpoint/validateQueryFilter    # one IDM endpoint → idm/endpoint/…
 aic script pull schedule                        # a whole namespace (all script schedules)
 aic script pull all                             # everything (both realms + endpoints + schedules)
 # edit the .cjs in your editor, then:
-aic script push                                 # ← no ref: fuzzy-pick one (locally-changed marked `!`, first)
+aic script push                                 # ← no ref: fuzzy-pick one (locally-changed `!` sorted first)
 aic script push bravo/MyDecisionNode            # content-based conflict check, then PUT
 aic script push all                             # push every synced script (unchanged = no-op)
 aic script status                               # in sync / modified locally / remote / conflict
@@ -163,9 +163,14 @@ aic script workspace update                     # refresh bundled types/config t
 ```
 
 `pull`/`push` with no `<ref>` open an interactive fuzzy picker (type to filter,
-enter to choose); changed scripts are marked `!` and sorted to the top. A bare
-`<name>` (no prefix) resolves its namespace from your current directory — inside
-`am/bravo/…`, `aic script pull MyDecisionNode` means `bravo/…`.
+enter to choose). Lines are marked `!` (local changes on disk) or `-` (no local
+file yet). On **push**, locally-changed scripts sort to the top (you usually
+want to push those); on **pull** the order is alphabetical. Before overwriting,
+you're prompted: pulling a script with local changes asks before clobbering
+them; pushing a script whose remote changed since you last synced asks before
+overwriting the remote (`--force` skips the prompt). A bare `<name>` (no prefix)
+resolves its namespace from your current directory — inside `am/bravo/…`,
+`aic script pull MyDecisionNode` means `bravo/…`.
 
 Conflict detection is **content-based** (scripts have no `_rev`): a push only
 proceeds if the remote still matches what you last synced — even if the remote

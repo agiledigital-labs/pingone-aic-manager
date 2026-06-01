@@ -927,7 +927,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             }
             // No ref → fuzzy-pick one script; otherwise expand the ref to jobs.
             let jobs = match reference {
-                None => match pick("Pull which script?", sync::pull_candidates(&t).await?)? {
+                None => match pick("Pull which script?", sync::pull_candidates(&t).await?, false)? {
                     Some((ns, name)) => vec![Job { ns, selector: sync::Selector::Name(name) }],
                     None => return Ok(()),
                 },
@@ -935,7 +935,26 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             };
             let mut any = false;
             for job in jobs {
-                for o in sync::pull(&t, job.ns.realm_arg(), job.ns.kind, &job.selector, force).await? {
+                // For a single named target, confirm before clobbering local
+                // edits. (Bulk pulls fall back to the snapshot-backup path.)
+                let mut force_this = force;
+                if let sync::Selector::Name(name) = &job.selector {
+                    if !force
+                        && sync::local_state(&t, job.ns.kind, job.ns.realm_arg(), name)?
+                            == sync::LocalState::Modified
+                    {
+                        let full = script::full_name(job.ns.kind, job.ns.realm.as_deref(), name);
+                        match confirm_overwrite(&format!("{full} has local changes — overwrite them?"))? {
+                            Some(true) => force_this = true,
+                            Some(false) => {
+                                println!("{full}: skipped (kept local changes)");
+                                continue;
+                            }
+                            None => {} // no TTY → leave the snapshot-backup path
+                        }
+                    }
+                }
+                for o in sync::pull(&t, job.ns.realm_arg(), job.ns.kind, &job.selector, force_this).await? {
                     any = true;
                     let what = match &o.status {
                         sync::PullStatus::Created => "pulled (new)".to_string(),
@@ -963,7 +982,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             // No ref → fuzzy-pick one (changed scripts marked `!`, first).
             let (ns, name) = match reference {
                 Some(s) => parse_one(&s)?,
-                None => match pick("Push which script?", sync::push_candidates(&t)?)? {
+                None => match pick("Push which script?", sync::push_candidates(&t)?, true)? {
                     Some(x) => x,
                     None => return Ok(()),
                 },
@@ -1091,20 +1110,47 @@ fn full_of(c: &script::sync::Candidate) -> String {
     script::full_name(c.kind, c.realm.as_deref(), &c.name)
 }
 
-/// Interactive single-select over candidates: `!`-marks changed scripts and
-/// floats them to the top; type to filter. Returns the chosen
+/// Picker line prefix for a local state: `!` changed on disk, `-` no local
+/// file yet, blank = in sync with the snapshot.
+fn mark(s: script::sync::LocalState) -> &'static str {
+    use script::sync::LocalState::*;
+    match s {
+        Modified => "! ",
+        Missing => "- ",
+        Clean => "  ",
+    }
+}
+
+/// Interactive single-select over candidates; type to filter. `!`/`-`/blank
+/// prefixes show local state. When `prioritise`, locally-changed scripts sort
+/// to the top (for push); otherwise alphabetical (for pull). Returns the chosen
 /// (namespace, name), or `None` if the user cancels / there's nothing to pick.
-fn pick(prompt: &str, mut candidates: Vec<script::sync::Candidate>) -> Result<Option<(Namespace, String)>> {
+fn pick(
+    prompt: &str,
+    mut candidates: Vec<script::sync::Candidate>,
+    prioritise: bool,
+) -> Result<Option<(Namespace, String)>> {
     use inquire::{error::InquireError, Select};
+    use script::sync::LocalState;
     if candidates.is_empty() {
         println!("nothing to choose from");
         return Ok(None);
     }
-    // Changed scripts first, then alphabetical by full-name.
-    candidates.sort_by(|a, b| b.changed.cmp(&a.changed).then_with(|| full_of(a).cmp(&full_of(b))));
+    let rank = |s: LocalState| match s {
+        LocalState::Modified => 0,
+        LocalState::Missing => 1,
+        LocalState::Clean => 2,
+    };
+    candidates.sort_by(|a, b| {
+        if prioritise {
+            rank(a.local).cmp(&rank(b.local)).then_with(|| full_of(a).cmp(&full_of(b)))
+        } else {
+            full_of(a).cmp(&full_of(b))
+        }
+    });
     let labels: Vec<String> = candidates
         .iter()
-        .map(|c| format!("{}{}", if c.changed { "! " } else { "  " }, full_of(c)))
+        .map(|c| format!("{}{}", mark(c.local), full_of(c)))
         .collect();
     match Select::new(prompt, labels).with_page_size(15).raw_prompt() {
         Ok(opt) => {
@@ -1119,19 +1165,45 @@ fn pick(prompt: &str, mut candidates: Vec<script::sync::Candidate>) -> Result<Op
     }
 }
 
+/// Interactive yes/no (default no). `Some(answer)` if asked; `None` if there's
+/// no terminal to prompt on (caller falls back to non-interactive behaviour).
+fn confirm_overwrite(prompt: &str) -> Result<Option<bool>> {
+    use inquire::{error::InquireError, Confirm};
+    match Confirm::new(prompt).with_default(false).prompt() {
+        Ok(b) => Ok(Some(b)),
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(Some(false)),
+        Err(InquireError::NotTTY) => Ok(None),
+        Err(e) => Err(Error::Config(format!("confirm: {e}"))),
+    }
+}
+
 async fn push_one(tenant: &str, ns: &Namespace, name: &str, force: bool, yes: bool) -> Result<()> {
+    use script::sync::PushOutcome;
     let full = script::full_name(ns.kind, ns.realm.as_deref(), name);
     match prod_hint(script::sync::push(tenant, ns.realm_arg(), ns.kind, name, force, yes).await)? {
-        script::sync::PushOutcome::Pushed => println!("pushed {full}"),
-        script::sync::PushOutcome::Unchanged => println!("{full}: no local changes to push"),
-        script::sync::PushOutcome::AlreadyInSync => {
+        PushOutcome::Pushed => println!("pushed {full}"),
+        PushOutcome::Unchanged => println!("{full}: no local changes to push"),
+        PushOutcome::AlreadyInSync => {
             println!("{full}: remote already matched local; snapshot refreshed")
         }
-        script::sync::PushOutcome::Conflict(tw) => {
-            print_conflict(&full, &tw);
-            return Err(Error::Config(
-                "remote changed since last sync — resolve, or re-run with --force".into(),
-            ));
+        // Remote drifted since our last sync — offer to overwrite it.
+        PushOutcome::Conflict(tw) => {
+            match confirm_overwrite(&format!(
+                "{full} changed on the tenant since you last synced — overwrite the remote?"
+            ))? {
+                Some(true) => {
+                    prod_hint(script::sync::push(tenant, ns.realm_arg(), ns.kind, name, true, yes).await)?;
+                    println!("pushed {full} (overwrote remote changes)");
+                }
+                Some(false) => println!("{full}: skipped (remote changed)"),
+                None => {
+                    // no TTY to prompt on
+                    print_conflict(&full, &tw);
+                    return Err(Error::Config(
+                        "remote changed since last sync — resolve, or re-run with --force".into(),
+                    ));
+                }
+            }
         }
     }
     Ok(())
