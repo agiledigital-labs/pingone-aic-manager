@@ -21,9 +21,20 @@ fn ref_from_id(id: &str) -> RemoteRef {
     }
 }
 
+/// True iff an endpoint config carries an inline `source` we can sync (a
+/// string, or the nested `{source}` form). File-backed / table / jdbc
+/// endpoints have no editable inline script, so they're skipped when listing.
+fn has_inline_source(cfg: &Value) -> bool {
+    match cfg.get("source") {
+        Some(Value::String(_)) => true,
+        Some(Value::Object(o)) => o.get("source").and_then(|v| v.as_str()).is_some(),
+        _ => false,
+    }
+}
+
 pub async fn list(tenant: &str, _realm: &str) -> Result<Vec<RemoteRef>> {
-    // IDM config is tenant-global; the list is unfiltered, so we filter for
-    // `endpoint/` ids client-side (verified — see the doc).
+    // IDM config is tenant-global and unfiltered; the list returns full objects,
+    // so we keep only `endpoint/` ids that carry an inline script source.
     let body = crate::aic::api::get(tenant, "/openidm/config?_queryFilter=true").await?;
     let arr = body
         .get("result")
@@ -34,8 +45,13 @@ pub async fn list(tenant: &str, _realm: &str) -> Result<Vec<RemoteRef>> {
         })?;
     Ok(arr
         .iter()
+        .filter(|v| {
+            v.get("_id")
+                .and_then(|x| x.as_str())
+                .is_some_and(|id| id.starts_with(ID_PREFIX))
+                && has_inline_source(v)
+        })
         .filter_map(|v| v.get("_id").and_then(|x| x.as_str()))
-        .filter(|id| id.starts_with(ID_PREFIX))
         .map(ref_from_id)
         .collect())
 }

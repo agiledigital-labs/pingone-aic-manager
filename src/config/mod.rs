@@ -14,14 +14,16 @@ use crate::Result;
 pub use tenant::{Tenant, TenantTheme};
 
 /// Tenant + realm inferred from the directory a command was invoked in, when
-/// that directory is inside `workspace/<tenant>/<realm>/…`. Populated once at
-/// CLI startup ([`crate::cli`]); consulted by tenant/realm resolution so
-/// `cd workspace/<tenant>/<realm> && aic …` targets that tenant/realm without
-/// flags. Explicit `--tenant`/`--realm` still win.
+/// that directory is inside `workspace/<tenant>/…`. Populated once at CLI
+/// startup ([`crate::cli`]); consulted so `cd`-ing into a workspace subtree
+/// targets the right tenant (and supplies the script `namespace` for a bare
+/// name). Explicit args still win.
 #[derive(Debug, Default, Clone)]
 pub struct WorkspaceContext {
     pub tenant: Option<String>,
-    pub realm: Option<String>,
+    /// The script namespace implied by the cwd, if inside one: `alpha`/`bravo`
+    /// (AM realm) or `endpoint`/`schedule` (IDM kind).
+    pub namespace: Option<String>,
 }
 
 static WORKSPACE_CONTEXT: OnceLock<WorkspaceContext> = OnceLock::new();
@@ -49,9 +51,10 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Infer tenant + realm from `cwd`'s position under `<root>/workspace/…`:
-/// `workspace/<tenant>/…` → tenant; `workspace/<tenant>/am/<realm>/…` → tenant
-/// + realm. IDM (`workspace/<tenant>/idm/…`) is tenant-global, so no realm.
+/// Infer tenant + script namespace from `cwd`'s position under
+/// `<root>/workspace/…`: `workspace/<tenant>/…` → tenant;
+/// `…/am/<realm>/…` → namespace `<realm>`; `…/idm/{endpoint,schedule}/…` →
+/// namespace `endpoint`/`schedule`.
 pub fn detect_workspace_context(root: &Path, cwd: &Path) -> WorkspaceContext {
     let mut ctx = WorkspaceContext::default();
     let (root, cwd) = match (root.canonicalize(), cwd.canonicalize()) {
@@ -64,12 +67,13 @@ pub fn detect_workspace_context(root: &Path, cwd: &Path) -> WorkspaceContext {
             .map(|c| c.as_os_str().to_string_lossy().into_owned());
         if comps.next().as_deref() == Some("workspace") {
             ctx.tenant = comps.next().filter(|s| !s.is_empty());
-            // Realm only appears inside the AM tree (am/<realm>/…).
-            if comps.next().as_deref() == Some("am") {
-                ctx.realm = comps
-                    .next()
-                    .filter(|r| r == "alpha" || r == "bravo");
-            }
+            ctx.namespace = match comps.next().as_deref() {
+                // am/<realm>/… → the realm is the namespace
+                Some("am") => comps.next().filter(|r| r == "alpha" || r == "bravo"),
+                // idm/{endpoint,schedule}/… → the IDM kind is the namespace
+                Some("idm") => comps.next().filter(|k| k == "endpoint" || k == "schedule"),
+                _ => None,
+            };
         }
     }
     ctx

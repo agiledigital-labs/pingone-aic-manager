@@ -20,7 +20,7 @@ use crate::agent::{self, AgentClient, Request, Response};
 use crate::auth;
 use crate::config::crypto::Dek;
 use crate::config::wraps::WrapsFile;
-use crate::aic::script::Kind;
+use crate::aic::script::{self, Namespace};
 use crate::config::{self, ProjectConfig};
 use crate::{Error, Result};
 
@@ -261,39 +261,36 @@ pub enum ScriptCommand {
         #[command(subcommand)]
         command: WorkspaceCommand,
     },
-    /// List scripts on the tenant (not the local workspace).
+    /// List scripts on the tenant. Optional <ref> narrows the listing:
+    /// a namespace (`bravo`, `endpoint`) or one script (`bravo/Foo`).
     List {
+        /// Namespace or full-name to filter by (default: everything).
+        reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo")]
-        realm: Option<String>,
-        /// Limit to one kind (default: all).
-        #[arg(long)]
-        kind: Option<Kind>,
     },
-    /// Pull script(s) into the workspace. Without a name, pulls all of `--kind`.
+    /// Pull script(s) into the workspace.
+    ///
+    /// <ref> is `<namespace>/<name>` for one script (e.g. `bravo/Foo`,
+    /// `endpoint/validateQueryFilter`, `schedule/UpdateReviewList`), a bare
+    /// namespace (`bravo`, `endpoint`) to pull all of it, or omitted to pull
+    /// everything. A bare name uses the namespace of your current directory.
     Pull {
-        /// Script name (omit to pull all of the kind).
-        name: Option<String>,
-        #[arg(long, default_value = "am")]
-        kind: Kind,
+        #[arg(help = "<namespace>/<name>, a namespace (bulk), or empty for everything")]
+        reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo")]
-        realm: Option<String>,
         /// Overwrite local edits without backing them up first.
         #[arg(long)]
         force: bool,
     },
     /// Push a local edit back to the tenant (requires a prior pull).
+    /// <ref> is `<namespace>/<name>` (or a bare name in a workspace subdir).
     Push {
-        name: String,
-        #[arg(long, default_value = "am")]
-        kind: Kind,
+        #[arg(help = "Script as <namespace>/<name> (e.g. bravo/Foo)")]
+        reference: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo")]
-        realm: Option<String>,
         /// Push past a remote-drift conflict (overwrites remote).
         #[arg(long)]
         force: bool,
@@ -301,22 +298,21 @@ pub enum ScriptCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// Show the sync state of every synced script (both realms + IDM).
+    /// Show the sync state of synced scripts. Optional <ref> filters by
+    /// namespace (`bravo`, `endpoint`).
     Status {
+        #[arg(help = "Namespace to filter by (default: all)")]
+        reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long)]
-        kind: Option<Kind>,
     },
     /// Show the 3-way diff (last-synced / remote / local) for one script.
+    /// <ref> is `<namespace>/<name>` (or a bare name in a workspace subdir).
     Diff {
-        name: String,
-        #[arg(long, default_value = "am")]
-        kind: Kind,
+        #[arg(help = "Script as <namespace>/<name>")]
+        reference: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Realm: alpha or bravo")]
-        realm: Option<String>,
     },
 }
 
@@ -376,68 +372,51 @@ pub fn bootstrap_project_root() {
     }
 }
 
-/// Parse argv, but first bake the resolved tenant + realm in as the
-/// `default_value` of every `--tenant`/`--realm` flag — so `-h` shows the
-/// concrete default that will be used and an omitted flag adopts it. Call
-/// [`bootstrap_project_root`] first so the workspace context + cwd are set.
+/// Parse argv, but first bake the resolved tenant in as the `default_value` of
+/// every `--tenant` flag — so `-h` shows the concrete default that will be used
+/// and an omitted flag adopts it. Call [`bootstrap_project_root`] first so the
+/// workspace context + cwd are set. (Realm/kind are no longer flags — scripts
+/// are addressed by `<namespace>/<name>`.)
 pub fn parse_with_defaults() -> Cli {
-    let (tenant, realm) = resolved_defaults();
-    let cmd = inject_ctx_defaults(Cli::command(), tenant.as_deref(), &realm);
+    let cmd = inject_tenant_default(Cli::command(), resolved_tenant().as_deref());
     match Cli::from_arg_matches(&cmd.get_matches()) {
         Ok(cli) => cli,
         Err(e) => e.exit(),
     }
 }
 
-/// The tenant + realm to surface as defaults. Tenant: a workspace-dir tenant
-/// (only if it's a configured tenant), else the current `aic ctx`, else
-/// `default_tenant`, else `None`. Realm: a valid workspace-dir realm, else
-/// `alpha`. Mirrors the resolution in [`resolve_tenant`]/[`realm_for`].
-fn resolved_defaults() -> (Option<String>, String) {
+/// The tenant to surface as the `--tenant` default: a workspace-dir tenant
+/// (only if configured), else the current `aic ctx`, else `default_tenant`,
+/// else `None`. Mirrors [`resolve_tenant`].
+fn resolved_tenant() -> Option<String> {
     let ctx = config::workspace_context();
-    let realm = ctx
-        .realm
-        .as_deref()
-        .filter(|r| *r == "alpha" || *r == "bravo")
-        .unwrap_or("alpha")
-        .to_string();
     let cfg = ProjectConfig::load().ok().flatten();
-    let tenant = (|| {
-        if let (Some(t), Some(cfg)) = (&ctx.tenant, &cfg) {
-            if cfg.tenants.iter().any(|x| &x.name == t) {
-                return Some(t.clone());
-            }
+    if let (Some(t), Some(cfg)) = (&ctx.tenant, &cfg) {
+        if cfg.tenants.iter().any(|x| &x.name == t) {
+            return Some(t.clone());
         }
-        if let Ok(Some(c)) = config::read_current_context() {
-            return Some(c);
-        }
-        cfg.as_ref()
-            .filter(|c| !c.default_tenant.is_empty())
-            .map(|c| c.default_tenant.clone())
-    })();
-    (tenant, realm)
+    }
+    if let Ok(Some(c)) = config::read_current_context() {
+        return Some(c);
+    }
+    cfg.as_ref()
+        .filter(|c| !c.default_tenant.is_empty())
+        .map(|c| c.default_tenant.clone())
 }
 
-/// Recursively set `default_value` on every `--tenant`/`--realm` arg in the
-/// command tree (only where the resolved value exists).
-fn inject_ctx_defaults(mut cmd: clap::Command, tenant: Option<&str>, realm: &str) -> clap::Command {
-    // clap stores `default_value` as a `'static` borrow, so leak these
-    // program-lifetime strings (resolved once at startup) to satisfy it.
+/// Recursively set `default_value` on every `--tenant` arg in the command tree.
+fn inject_tenant_default(mut cmd: clap::Command, tenant: Option<&str>) -> clap::Command {
+    // clap stores `default_value` as a `'static` borrow, so leak this
+    // program-lifetime string (resolved once at startup) to satisfy it.
     if let Some(t) = tenant {
         if cmd.get_arguments().any(|a| a.get_id() == "tenant") {
             let v: &'static str = Box::leak(t.to_string().into_boxed_str());
             cmd = cmd.mut_arg("tenant", |a| a.default_value(v));
         }
     }
-    // `list` intentionally spans both realms when none is given, so it must
-    // NOT get a single realm default baked in (that would pin it to one).
-    if cmd.get_name() != "list" && cmd.get_arguments().any(|a| a.get_id() == "realm") {
-        let v: &'static str = Box::leak(realm.to_string().into_boxed_str());
-        cmd = cmd.mut_arg("realm", |a| a.default_value(v));
-    }
     let subs: Vec<String> = cmd.get_subcommands().map(|s| s.get_name().to_string()).collect();
     for name in subs {
-        cmd = cmd.mut_subcommand(&name, |s| inject_ctx_defaults(s, tenant, realm));
+        cmd = cmd.mut_subcommand(&name, |s| inject_tenant_default(s, tenant));
     }
     cmd
 }
@@ -919,77 +898,65 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                 Ok(())
             }
         },
-        ScriptCommand::List { tenant, realm, kind } => {
+        ScriptCommand::List { reference, tenant } => {
             let t = tenant_for(tenant)?;
-            let kinds = kinds_for(kind);
-            // A realm is "specified" if passed explicitly or inferred from the
-            // working directory. When it isn't, list AM scripts from BOTH realms.
-            let specified = realm.or_else(|| config::workspace_context().realm);
-            let am_realms: Vec<String> = match specified {
-                Some(r) => vec![realm_for(Some(r))?],
-                None => vec!["alpha".to_string(), "bravo".to_string()],
-            };
             let mut out = Vec::new();
-            for k in kinds {
-                if k.realm_scoped() {
-                    for r in &am_realms {
-                        for sref in k.list(&t, r).await? {
-                            out.push(listed(&sref, Some(r))?);
+            for job in parse_ref(reference)? {
+                for sref in job.ns.kind.list(&t, job.ns.realm_arg()).await? {
+                    // A specific-name ref filters the listing to that script.
+                    if let script::sync::Selector::Name(ref n) = job.selector {
+                        if sref.name != *n {
+                            continue;
                         }
                     }
-                } else {
-                    // IDM kinds are tenant-global (realm ignored, shown as null).
-                    for sref in k.list(&t, "").await? {
-                        out.push(listed(&sref, None)?);
-                    }
+                    out.push(listed(&sref, &job.ns));
                 }
             }
             print_json(&out)
         }
-        ScriptCommand::Pull { name, kind: k, tenant, realm, force } => {
+        ScriptCommand::Pull { reference, tenant, force } => {
             let t = tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
-            let realm = realm_for(realm)?;
             // Be friendly: scaffold the workspace on first use so the pulled
             // sources land next to their type definitions.
             if workspace::applied_version(&t)? == 0 {
                 let r = workspace::init(&t)?;
                 println!("initialised workspace at {}", r.tree.display());
             }
-            let selector = match name {
-                Some(n) => sync::Selector::Name(n),
-                None => sync::Selector::All,
-            };
-            let outcomes = sync::pull(&t, &realm, k, &selector, force).await?;
-            if outcomes.is_empty() {
-                println!("no {} scripts to pull", k.as_str());
+            let mut any = false;
+            for job in parse_ref(reference)? {
+                for o in sync::pull(&t, job.ns.realm_arg(), job.ns.kind, &job.selector, force).await? {
+                    any = true;
+                    let what = match &o.status {
+                        sync::PullStatus::Created => "pulled (new)".to_string(),
+                        sync::PullStatus::Updated => "pulled (updated)".to_string(),
+                        sync::PullStatus::Unchanged => "unchanged".to_string(),
+                        sync::PullStatus::LocalBackedUp(p) => {
+                            format!("pulled; local edits backed up to {}", p.display())
+                        }
+                    };
+                    println!("  {}: {what}", script::full_name(o.kind, job.ns.realm.as_deref(), &o.name));
+                }
             }
-            for o in &outcomes {
-                let what = match &o.status {
-                    sync::PullStatus::Created => "pulled (new)".to_string(),
-                    sync::PullStatus::Updated => "pulled (updated)".to_string(),
-                    sync::PullStatus::Unchanged => "unchanged".to_string(),
-                    sync::PullStatus::LocalBackedUp(p) => {
-                        format!("pulled; local edits backed up to {}", p.display())
-                    }
-                };
-                println!("  {} {}: {}", o.kind.as_str(), o.name, what);
+            if !any {
+                println!("nothing to pull");
             }
             workspace_update_hint(&t)?;
             Ok(())
         }
-        ScriptCommand::Push { name, kind: k, tenant, realm, force, yes } => {
+        ScriptCommand::Push { reference, tenant, force, yes } => {
             let t = tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
-            let realm = realm_for(realm)?;
-            match prod_hint(sync::push(&t, &realm, k, &name, force, yes).await)? {
-                sync::PushOutcome::Pushed => println!("pushed {} {name}", k.as_str()),
-                sync::PushOutcome::Unchanged => println!("{name}: no local changes to push"),
+            let (ns, name) = parse_one(&reference)?;
+            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
+            match prod_hint(sync::push(&t, ns.realm_arg(), ns.kind, &name, force, yes).await)? {
+                sync::PushOutcome::Pushed => println!("pushed {full}"),
+                sync::PushOutcome::Unchanged => println!("{full}: no local changes to push"),
                 sync::PushOutcome::AlreadyInSync => {
-                    println!("{name}: remote already matched local; snapshot refreshed")
+                    println!("{full}: remote already matched local; snapshot refreshed")
                 }
                 sync::PushOutcome::Conflict(tw) => {
-                    print_conflict(&name, &tw);
+                    print_conflict(&full, &tw);
                     return Err(Error::Config(
                         "remote changed since last sync — resolve, or re-run with --force".into(),
                     ));
@@ -998,14 +965,22 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             workspace_update_hint(&t)?;
             Ok(())
         }
-        ScriptCommand::Status { tenant, kind } => {
+        ScriptCommand::Status { reference, tenant } => {
             let t = tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
-            let entries = sync::status(&t, kind).await?;
-            if entries.is_empty() {
-                println!("nothing synced yet — `aic script pull …` first");
-            }
-            for e in &entries {
+            let filter = match reference {
+                Some(s) => Some(Namespace::parse(&s).ok_or_else(|| unknown_ns(&s))?),
+                None => None,
+            };
+            let mut shown = 0;
+            for e in sync::status(&t, None).await? {
+                if let Some(ns) = &filter {
+                    let same = e.kind == ns.kind
+                        && (e.kind != script::Kind::Am || e.realm.as_deref() == ns.realm.as_deref());
+                    if !same {
+                        continue;
+                    }
+                }
                 let label = match e.state {
                     sync::ScriptState::InSync => "in sync",
                     sync::ScriptState::LocallyModified => "modified locally",
@@ -1013,35 +988,95 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                     sync::ScriptState::BothModified => "CONFLICT (both changed)",
                     sync::ScriptState::LocalMissing => "local file missing",
                 };
-                // Scope is `am/<realm>` for AM, `idm` for endpoints.
-                let scope = match &e.realm {
-                    Some(r) => format!("{}/{r}", e.kind.as_str()),
-                    None => e.kind.as_str().to_string(),
-                };
-                println!("  {:<10} {:<40} {}", scope, e.name, label);
+                let full = script::full_name(e.kind, e.realm.as_deref(), &e.name);
+                println!("  {full:<48} {label}");
+                shown += 1;
+            }
+            if shown == 0 {
+                println!("nothing synced yet — `aic script pull …` first");
             }
             Ok(())
         }
-        ScriptCommand::Diff { name, kind: k, tenant, realm } => {
+        ScriptCommand::Diff { reference, tenant } => {
             let t = tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
-            let realm = realm_for(realm)?;
-            let tw = sync::diff(&t, &realm, k, &name).await?;
-            print_conflict(&name, &tw);
+            let (ns, name) = parse_one(&reference)?;
+            let tw = sync::diff(&t, ns.realm_arg(), ns.kind, &name).await?;
+            print_conflict(&script::full_name(ns.kind, ns.realm.as_deref(), &name), &tw);
             Ok(())
         }
     }
 }
 
-/// Render a listed script as JSON with its realm attached (`null` for the
-/// tenant-global IDM kinds).
-fn listed(r: &crate::aic::script::RemoteRef, realm: Option<&str>) -> Result<serde_json::Value> {
-    let mut v = serde_json::to_value(r)?;
-    if let Some(obj) = v.as_object_mut() {
-        let realm = realm.map_or(serde_json::Value::Null, |r| serde_json::Value::String(r.to_string()));
-        obj.insert("realm".to_string(), realm);
+/// One unit of script-sync work: a namespace and which scripts within it.
+struct Job {
+    ns: Namespace,
+    selector: script::sync::Selector,
+}
+
+/// Expand a positional `<ref>` into jobs. `None` → every namespace (bulk);
+/// `<prefix>` → that whole namespace; `<prefix>/<name>` → one script; a bare
+/// `<name>` → one script in the current directory's namespace.
+fn parse_ref(arg: Option<String>) -> Result<Vec<Job>> {
+    let Some(s) = arg else {
+        return Ok(Namespace::all()
+            .into_iter()
+            .map(|ns| Job { ns, selector: script::sync::Selector::All })
+            .collect());
+    };
+    if let Some((prefix, name)) = s.split_once('/') {
+        let ns = Namespace::parse(prefix).ok_or_else(|| unknown_ns(prefix))?;
+        return Ok(vec![Job { ns, selector: script::sync::Selector::Name(name.to_string()) }]);
     }
-    Ok(v)
+    if let Some(ns) = Namespace::parse(&s) {
+        return Ok(vec![Job { ns, selector: script::sync::Selector::All }]);
+    }
+    let (ns, name) = resolve_bare(&s)?;
+    Ok(vec![Job { ns, selector: script::sync::Selector::Name(name) }])
+}
+
+/// Parse a `<ref>` that must identify exactly one script (push / diff).
+fn parse_one(arg: &str) -> Result<(Namespace, String)> {
+    if let Some((prefix, name)) = arg.split_once('/') {
+        let ns = Namespace::parse(prefix).ok_or_else(|| unknown_ns(prefix))?;
+        return Ok((ns, name.to_string()));
+    }
+    if Namespace::parse(arg).is_some() {
+        return Err(Error::Config(format!(
+            "{arg:?} is a whole namespace — name a specific script, e.g. {arg}/<name>"
+        )));
+    }
+    resolve_bare(arg)
+}
+
+/// A bare name (no prefix): take the namespace from the current directory.
+fn resolve_bare(name: &str) -> Result<(Namespace, String)> {
+    let prefix = config::workspace_context().namespace.ok_or_else(|| {
+        Error::Config(format!(
+            "ambiguous {name:?} — prefix with a namespace (e.g. bravo/{name}) or run from inside a workspace subdir"
+        ))
+    })?;
+    let ns = Namespace::parse(&prefix)
+        .ok_or_else(|| Error::Config("unexpected workspace namespace".into()))?;
+    Ok((ns, name.to_string()))
+}
+
+fn unknown_ns(prefix: &str) -> Error {
+    Error::Config(format!(
+        "unknown namespace {prefix:?} (use alpha | bravo | endpoint | schedule)"
+    ))
+}
+
+/// Render a listed script as JSON, tagged with its copy-pasteable `ref`.
+fn listed(r: &script::RemoteRef, ns: &Namespace) -> serde_json::Value {
+    let mut v = serde_json::to_value(r).unwrap_or(serde_json::Value::Null);
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "ref".to_string(),
+            serde_json::Value::String(script::full_name(r.kind, ns.realm.as_deref(), &r.name)),
+        );
+    }
+    v
 }
 
 /// Refuse to operate when a pre-redesign per-realm workspace is present, so we
@@ -1056,30 +1091,6 @@ fn guard_legacy_workspace(tenant: &str) -> Result<()> {
         )));
     }
     Ok(())
-}
-
-/// Expand an optional `--kind` into the kinds to act on: `None` means all.
-/// (clap validates the value against [`Kind`] and lists the choices itself.)
-fn kinds_for(kind: Option<Kind>) -> Vec<Kind> {
-    match kind {
-        Some(k) => vec![k],
-        None => Kind::all().to_vec(),
-    }
-}
-
-/// Resolve + validate the realm: explicit `--realm` wins, else a
-/// `workspace/<tenant>/<realm>` working directory implies it, else `alpha`.
-/// AIC only has `alpha` + `bravo` (CLAUDE.md §4).
-fn realm_for(realm: Option<String>) -> Result<String> {
-    let realm = realm
-        .or_else(|| config::workspace_context().realm)
-        .unwrap_or_else(|| "alpha".to_string());
-    match realm.as_str() {
-        "alpha" | "bravo" => Ok(realm),
-        other => Err(Error::Config(format!(
-            "invalid realm {other:?} — AIC only has `alpha` and `bravo`"
-        ))),
-    }
 }
 
 /// Print a "templates out of date" nudge if the workspace predates the bundled

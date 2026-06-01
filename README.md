@@ -134,37 +134,42 @@ prompt for a typed confirmation on any tenant unless `--yes` is given.
 ESLint/TypeScript config as
 [p1aic-script-editor](https://github.com/agiledigital-labs/p1aic-script-editor),
 so your editor gets full IntelliSense on script bodies. Three script "kinds"
-are supported behind one engine: **AM scripts** (`--kind am`), which are
-realm-scoped and routed to `am/<realm>/{src,lib,oidc}/` by context; **IDM
-custom endpoints** (`--kind idm`), tenant-global under `idm/endpoint/`; and
-**IDM scheduled jobs** (`--kind schedule`), tenant-global under
-`idm/schedule/` (only script-invoking schedules — the script lives at
-`invokeContext.script.source`).
+are supported behind one engine: **AM scripts** (realm-scoped, routed to
+`am/<realm>/{src,lib,oidc}/` by context); **IDM custom endpoints**
+(tenant-global under `idm/endpoint/`); and **IDM scheduled jobs**
+(tenant-global under `idm/schedule/`; only script-invoking schedules — the
+script lives at `invokeContext.script.source`).
+
+Scripts are addressed by a **full-name** `<namespace>/<name>`, where the
+namespace is `alpha`/`bravo` (AM realm), `endpoint`, or `schedule` — so you
+never pass `--kind`/`--realm`:
 
 ```bash
-aic script workspace init                     # scaffold the tenant tree (both realms + idm)
-aic script list                               # all kinds; AM from both realms, each row tagged with its realm
-aic script pull MyDecisionNode --kind am      # → workspace/<tenant>/am/alpha/src/MyDecisionNode.cjs
-aic script pull --kind idm                    # pull all IDM endpoints → idm/endpoint/
+aic script workspace init                       # scaffold the tenant tree (both realms + idm)
+aic script list                                 # all kinds; each row tagged with its full-name `ref`
+aic script list bravo                           # just one namespace
+aic script pull bravo/MyDecisionNode            # one AM script → am/bravo/src/MyDecisionNode.cjs
+aic script pull endpoint/validateQueryFilter    # one IDM endpoint → idm/endpoint/…
+aic script pull schedule                         # a whole namespace (all script schedules)
+aic script pull                                 # everything (both realms + endpoints + schedules)
 # edit the .cjs in your editor, then:
-aic script push MyDecisionNode --kind am      # content-based conflict check, then PUT
-aic script status                             # in sync / modified locally / remote / conflict
-aic script diff MyDecisionNode --kind am      # 3-way: last-synced / remote / local
-aic script workspace update                   # refresh bundled types/config to the latest
+aic script push bravo/MyDecisionNode            # content-based conflict check, then PUT
+aic script status                               # in sync / modified locally / remote / conflict
+aic script diff endpoint/validateQueryFilter    # 3-way: last-synced / remote / local
+aic script workspace update                     # refresh bundled types/config to the latest
 ```
+
+A bare `<name>` (no prefix) resolves its namespace from your current directory
+— inside `am/bravo/…`, `aic script pull MyDecisionNode` means `bravo/…`.
 
 Conflict detection is **content-based** (scripts have no `_rev`): a push only
 proceeds if the remote still matches what you last synced — even if the remote
 revision moved but the *content* was reverted. If the remote content drifted,
-the push is blocked and the 3-way diff is shown; `--force` overrides. `--realm`
-selects `alpha` (default) or `bravo`; `--yes`/`--tenant` work as above.
+the push is blocked and the 3-way diff is shown; `--force` overrides.
 
 `aic` finds the project root by walking up from the current directory, so any
-command works from any subdirectory. When you run from inside a
-`workspace/<tenant>/` tree the **tenant** is inferred from the path (so a bare
-`aic script list` or `aic esv list` targets it), and inside an `am/<realm>/`
-subtree the **realm** is inferred too; explicit `--tenant`/`--realm` still
-override.
+command works from any subdirectory, and the **tenant** is inferred from a
+`workspace/<tenant>/` path (override with `--tenant`).
 
 > **Note:** AM-script support adds a new `Accept-API-Version` header that the
 > agent must forward, so after upgrading restart the agent (`aic stop` then
