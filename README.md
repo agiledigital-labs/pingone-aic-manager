@@ -159,7 +159,9 @@ aic script push bravo/MyDecisionNode            # content-based conflict check, 
 aic script push all                             # push every locally-changed script (clean/default skipped)
 aic script status                               # in sync / modified locally / remote / conflict
 aic script diff                                 # ← no ref: fuzzy-pick a synced script
-aic script diff endpoint/validateQueryFilter    # colored local-vs-remote diff (via `git diff`)
+aic script diff endpoint/validateQueryFilter    # default: colored local-vs-tenant diff (via `git diff`)
+aic script diff bravo/Foo --local-vs-snapshot   # just your edits since last pull
+aic script diff bravo/Foo --snapshot-vs-remote  # what changed on the tenant since you pulled (drift)
 aic script diff bravo/Foo | delta               # …or pipe the plain diff to your tool of choice
 aic script workspace update                     # refresh bundled types/config to the latest
 ```
