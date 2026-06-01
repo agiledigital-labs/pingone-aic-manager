@@ -243,6 +243,8 @@ pub struct Candidate {
     pub realm: Option<String>,
     pub name: String,
     pub local: LocalState,
+    /// Product-shipped default (AM `default:true`) — `push all` skips these.
+    pub is_default: bool,
 }
 
 /// The local state of one (already-known) reference — snapshot vs the file on
@@ -294,7 +296,13 @@ pub async fn pull_candidates(tenant: &str) -> Result<Vec<Candidate>> {
                 Some(e) => local_state_for(&store, tenant, &e.reference, ns.realm_arg())?,
                 None => LocalState::Missing,
             };
-            out.push(Candidate { kind: ns.kind, realm: ns.realm.clone(), name: r.name, local });
+            out.push(Candidate {
+                kind: ns.kind,
+                realm: ns.realm.clone(),
+                is_default: r.is_default,
+                name: r.name,
+                local,
+            });
         }
     }
     Ok(out)
@@ -308,7 +316,13 @@ pub fn push_candidates(tenant: &str) -> Result<Vec<Candidate>> {
     for e in store.load_manifest()? {
         let realm = e.realm.as_deref().unwrap_or_default();
         let local = local_state_for(&store, tenant, &e.reference, realm)?;
-        out.push(Candidate { kind: e.reference.kind, realm: e.realm, name: e.reference.name, local });
+        out.push(Candidate {
+            kind: e.reference.kind,
+            realm: e.realm,
+            is_default: e.reference.is_default,
+            name: e.reference.name,
+            local,
+        });
     }
     Ok(out)
 }
@@ -444,15 +458,6 @@ pub async fn push(
         .ok_or_else(|| Error::Config(format!("{name:?} not synced yet — `aic script pull {name}` first")))?;
     let r = &entry.reference;
 
-    // Product-shipped defaults shouldn't be overwritten (AIC may 403 or
-    // silently no-op anyway — see docs/api/04-scripts.md). --force is the
-    // explicit escape hatch.
-    if r.is_default && !force {
-        return Err(Error::Config(format!(
-            "{name:?} is a default (product-shipped) script — refusing to overwrite; pass --force to override"
-        )));
-    }
-
     let snapshot_cfg = store
         .load_config(r, realm)?
         .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing — pull again")))?;
@@ -462,9 +467,19 @@ pub async fn push(
     let local_src = std::fs::read(&dest)
         .map_err(|_| Error::Config(format!("local file {} not found — pull first", dest.display())))?;
 
-    // No local change vs the snapshot → nothing to do.
+    // No local change vs the snapshot → nothing to do. Checked *before* the
+    // default-script guard so a clean default is a quiet no-op (not an error).
     if local_src == snapshot_src {
         return Ok(PushOutcome::Unchanged);
+    }
+
+    // Product-shipped defaults shouldn't be overwritten (AIC may 403 or
+    // silently no-op anyway — see docs/api/04-scripts.md). --force is the
+    // explicit escape hatch.
+    if r.is_default && !force {
+        return Err(Error::Config(format!(
+            "{name:?} is a default (product-shipped) script — refusing to overwrite; pass --force to override"
+        )));
     }
 
     // Conflict check: refetch remote, compare decoded bytes to the snapshot.
