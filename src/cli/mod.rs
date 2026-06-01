@@ -308,11 +308,18 @@ pub enum ScriptCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
-    /// Show the 3-way diff (last-synced / remote / local) for one script. With
-    /// no <ref>, opens a fuzzy picker over synced scripts.
+    /// Diff a script (colored, via `git diff`). Default compares your local
+    /// copy against the tenant. With no <ref>, opens a fuzzy picker over synced
+    /// scripts.
     Diff {
         #[arg(help = "<namespace>/<name>, or empty to pick interactively")]
         reference: Option<String>,
+        /// Diff your local file against the last-synced snapshot (your edits only).
+        #[arg(long, conflicts_with = "snapshot_vs_remote")]
+        local_vs_snapshot: bool,
+        /// Diff the last-synced snapshot against the tenant (remote drift).
+        #[arg(long)]
+        snapshot_vs_remote: bool,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
@@ -1024,7 +1031,7 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             }
             Ok(())
         }
-        ScriptCommand::Diff { reference, tenant } => {
+        ScriptCommand::Diff { reference, local_vs_snapshot, snapshot_vs_remote, tenant } => {
             let t = tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             // No ref → pick from synced scripts (diff needs a snapshot).
@@ -1037,7 +1044,15 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             };
             let tw = sync::diff(&t, ns.realm_arg(), ns.kind, &name).await?;
             let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
-            show_diff(&full, &tw.remote, &tw.local)?;
+            // `-` is the left/older side, `+` is the right/newer side.
+            let (ll, left, rl, right) = if local_vs_snapshot {
+                ("snapshot", &tw.last_synced, "local", &tw.local)
+            } else if snapshot_vs_remote {
+                ("snapshot", &tw.last_synced, "tenant", &tw.remote)
+            } else {
+                ("tenant", &tw.remote, "local", &tw.local)
+            };
+            show_diff(&full, ll, left, rl, right)?;
             Ok(())
         }
     }
@@ -1279,14 +1294,15 @@ fn workspace_update_hint(tenant: &str) -> Result<()> {
     Ok(())
 }
 
-/// Show local-vs-remote as a real diff by shelling out to `git diff
+/// Show `left` vs `right` as a real diff by shelling out to `git diff
 /// --no-index` (stdio inherited) — so your git pager/color (delta, …) apply
 /// interactively, and `aic script diff X | <tool>` pipes a plain unified diff.
-/// Requires `git` on PATH.
-fn show_diff(full: &str, remote: &str, local: &str) -> Result<()> {
+/// `left`/`right` are side labels (e.g. "tenant", "local", "snapshot") shown in
+/// the headers. Requires `git` on PATH.
+fn show_diff(full: &str, left_label: &str, left: &str, right_label: &str, right: &str) -> Result<()> {
     use std::process::Command;
-    if remote == local {
-        println!("{full}: local matches the tenant");
+    if left == right {
+        println!("{full}: {left_label} and {right_label} are identical");
         return Ok(());
     }
     let dir = std::env::temp_dir().join(format!("aic-diff-{}", std::process::id()));
@@ -1294,17 +1310,17 @@ fn show_diff(full: &str, remote: &str, local: &str) -> Result<()> {
     // `--no-prefix` makes the headers read `--- <name> (tenant)` etc.; `/` in
     // the full-name isn't path-safe, so swap it for `_`.
     let safe = full.replace('/', "_");
-    let tenant_name = format!("{safe} (tenant)");
-    let local_name = format!("{safe} (local)");
-    let _ = std::fs::write(dir.join(&tenant_name), remote);
-    let _ = std::fs::write(dir.join(&local_name), local);
+    let left_name = format!("{safe} ({left_label})");
+    let right_name = format!("{safe} ({right_label})");
+    let _ = std::fs::write(dir.join(&left_name), left);
+    let _ = std::fs::write(dir.join(&right_name), right);
     // Run git *in* the temp dir with relative names so the diff headers read
     // `--- <name> (tenant)` rather than the full temp path.
     let status = Command::new("git")
         .current_dir(&dir)
         .args(["diff", "--no-index", "--no-prefix"])
-        .arg(&tenant_name)
-        .arg(&local_name)
+        .arg(&left_name)
+        .arg(&right_name)
         .status();
     let _ = std::fs::remove_dir_all(&dir);
     match status {
