@@ -271,8 +271,8 @@ pub enum ScriptCommand {
     },
     /// Pull script(s) into the workspace.
     ///
-    /// With no <ref>, opens a fuzzy picker (un-synced scripts marked `!`,
-    /// listed first). Otherwise <ref> is `<namespace>/<name>` for one (e.g.
+    /// With no <ref>, opens a fuzzy picker (alphabetical; `!` = local changes,
+    /// `-` = not pulled). Otherwise <ref> is `<namespace>/<name>` for one (e.g.
     /// `bravo/Foo`, `endpoint/validateQueryFilter`), a bare namespace
     /// (`bravo`, `endpoint`) for all of it, or `all` for everything. A bare
     /// name uses the namespace of your current directory.
@@ -936,25 +936,26 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             let mut any = false;
             for job in jobs {
                 // For a single named target, confirm before clobbering local
-                // edits. (Bulk pulls fall back to the snapshot-backup path.)
-                let mut force_this = force;
+                // edits. Confirmation only grants permission to proceed — the
+                // snapshot-backup still happens (only an explicit `--force`
+                // skips it). Bulk pulls don't prompt.
                 if let sync::Selector::Name(name) = &job.selector {
                     if !force
                         && sync::local_state(&t, job.ns.kind, job.ns.realm_arg(), name)?
                             == sync::LocalState::Modified
                     {
                         let full = script::full_name(job.ns.kind, job.ns.realm.as_deref(), name);
-                        match confirm_overwrite(&format!("{full} has local changes — overwrite them?"))? {
-                            Some(true) => force_this = true,
-                            Some(false) => {
-                                println!("{full}: skipped (kept local changes)");
-                                continue;
-                            }
-                            None => {} // no TTY → leave the snapshot-backup path
+                        // `Some(false)` = declined; `Some(true)`/`None` (no TTY)
+                        // → proceed (the snapshot-backup still happens).
+                        if let Some(false) = confirm_overwrite(&format!(
+                            "{full} has local changes — overwrite them? (a backup is kept under .aic-sync/backups/)"
+                        ))? {
+                            println!("{full}: skipped (kept local changes)");
+                            continue;
                         }
                     }
                 }
-                for o in sync::pull(&t, job.ns.realm_arg(), job.ns.kind, &job.selector, force_this).await? {
+                for o in sync::pull(&t, job.ns.realm_arg(), job.ns.kind, &job.selector, force).await? {
                     any = true;
                     let what = match &o.status {
                         sync::PullStatus::Created => "pulled (new)".to_string(),
@@ -1216,23 +1217,32 @@ async fn push_one(tenant: &str, ns: &Namespace, name: &str, force: bool, yes: bo
     Ok(())
 }
 
-/// Push every synced script (unchanged ones are cheap no-ops — `sync::push`
-/// returns early without fetching). Conflicts are reported and skipped rather
-/// than aborting the batch.
+/// Push every synced script with local changes. Clean / never-pulled scripts
+/// are skipped (nothing to push); product defaults are skipped (push them
+/// explicitly with `--force`); remote-drift conflicts are reported and skipped
+/// rather than aborting the batch.
 async fn push_all(tenant: &str, force: bool, yes: bool) -> Result<()> {
-    let cands = script::sync::push_candidates(tenant)?;
-    if cands.is_empty() {
-        println!("nothing synced to push");
+    use script::sync::{LocalState, PushOutcome};
+    let changed: Vec<_> = script::sync::push_candidates(tenant)?
+        .into_iter()
+        .filter(|c| c.local == LocalState::Modified)
+        .collect();
+    if changed.is_empty() {
+        println!("nothing changed to push");
+        return Ok(());
     }
-    for c in cands {
-        let ns = Namespace { kind: c.kind, realm: c.realm.clone() };
+    for c in changed {
         let full = full_of(&c);
+        if c.is_default && !force {
+            println!("{full}: skipped (default script — `push {full} --force` to override)");
+            continue;
+        }
+        let ns = Namespace { kind: c.kind, realm: c.realm.clone() };
         match prod_hint(script::sync::push(tenant, ns.realm_arg(), c.kind, &c.name, force, yes).await)? {
-            script::sync::PushOutcome::Pushed => println!("pushed {full}"),
-            script::sync::PushOutcome::Unchanged => {}
-            script::sync::PushOutcome::AlreadyInSync => println!("{full}: already in sync"),
-            script::sync::PushOutcome::Conflict(_) => {
-                println!("{full}: CONFLICT — skipped (diff it, or push --force)")
+            PushOutcome::Pushed => println!("pushed {full}"),
+            PushOutcome::Unchanged | PushOutcome::AlreadyInSync => {}
+            PushOutcome::Conflict(_) => {
+                println!("{full}: CONFLICT — skipped (`diff {full}`, or `push {full} --force`)")
             }
         }
     }

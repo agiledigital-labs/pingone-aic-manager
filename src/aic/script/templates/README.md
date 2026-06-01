@@ -56,7 +56,7 @@ aic script pull schedule             # pull a whole namespace
 aic script pull all                  # pull everything (both realms + endpoints + schedules)
 aic script push                      # no ref: fuzzy-pick one (locally-changed marked `!`)
 aic script push bravo/MyNode         # push your edit back (content-checked)
-aic script push all                  # push every synced script
+aic script push all                  # push every locally-changed script
 aic script status                    # in sync / modified locally / remote / conflict
 aic script diff                      # no ref: fuzzy-pick a synced script
 aic script diff schedule/MyJob       # 3-way: last-synced / remote / local
