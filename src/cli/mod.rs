@@ -1093,20 +1093,11 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                         in_sync += 1;
                         println!("= {full}: converged");
                     }
-                    sync::ReconcileOutcome::DefaultLocallyModified => {
-                        println!("{full}: skipped (default script has local changes; cannot push)");
-                        conflicts.push(full);
-                    }
                     sync::ReconcileOutcome::Conflict(_) => {
                         let choice = match resolve {
-                            Some(Resolution::Local) if c.is_default => {
-                                println!("{full}: skipped (default script cannot be pushed; use `--resolve remote` to restore the tenant copy)");
-                                conflicts.push(full);
-                                continue;
-                            }
                             Some(Resolution::Local) => ConflictChoice::Local,
                             Some(Resolution::Remote) => ConflictChoice::Remote,
-                            None => prompt_conflict(&full, !c.is_default)?,
+                            None => prompt_conflict(&full, true)?,
                         };
                         match choice {
                             ConflictChoice::Local => {
@@ -1538,10 +1529,6 @@ async fn push_all(tenant: &str, force: bool, yes: bool) -> Result<()> {
     }
     for c in changed {
         let full = full_of(&c);
-        if c.is_default && !force {
-            println!("{full}: skipped (default script — `push {full} --force` to override)");
-            continue;
-        }
         let ns = Namespace { kind: c.kind, realm: c.realm.clone() };
         match prod_hint(script::sync::push(tenant, ns.realm_arg(), c.kind, &c.name, force, yes).await)? {
             PushOutcome::Pushed => println!("pushed {full}"),

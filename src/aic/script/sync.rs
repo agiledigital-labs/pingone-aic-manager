@@ -507,20 +507,13 @@ pub async fn push(
         ))
     })?;
 
-    // No local change vs the snapshot → nothing to do. Checked *before* the
-    // default-script guard so a clean default is a quiet no-op (not an error).
+    // No local change vs the snapshot → nothing to do.
     if local_src == snapshot_src {
         return Ok(PushOutcome::Unchanged);
     }
 
-    // Product-shipped defaults shouldn't be overwritten (AIC may 403 or
-    // silently no-op anyway — see docs/api/04-scripts.md). --force is the
-    // explicit escape hatch.
-    if r.is_default && !force {
-        return Err(Error::Config(format!(
-            "{name:?} is a default (product-shipped) script — refusing to overwrite; pass --force to override"
-        )));
-    }
+    // Product-shipped defaults are editable too — no special guard. The only
+    // thing that blocks a push is remote drift (handled below).
 
     // Conflict check: refetch remote, compare decoded bytes to the snapshot.
     let remote = kind.fetch(tenant, realm, &r.id).await?;
@@ -678,9 +671,6 @@ pub enum ReconcileOutcome {
     InSync,
     Pushed,
     Pulled,
-    /// Local edits exist on a product default; preserve them, but never attempt
-    /// an automatic tenant write.
-    DefaultLocallyModified,
     /// Both sides changed to the same content; snapshot refreshed.
     Converged,
     /// Both sides changed differently — the caller resolves.
@@ -732,9 +722,6 @@ pub async fn reconcile(
             Ok(ReconcileOutcome::Pulled)
         }
         (true, false) => {
-            if r.is_default {
-                return Ok(ReconcileOutcome::DefaultLocallyModified);
-            }
             // Remote == snapshot, so pushing the local edit is safe. Start from
             // the current remote config and merge only the edited source.
             let mut raw = remote_script.raw_config.clone();

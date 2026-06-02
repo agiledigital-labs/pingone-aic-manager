@@ -187,9 +187,8 @@ changed it pushes, if only the tenant changed it pulls, and if both changed it's
 a conflict. Conflicts are resolved interactively by default (local / remote /
 skip per script), or non-interactively with `--resolve local|remote`; with no
 terminal, conflicts are skipped and listed at the end (never silently
-clobbered). Product-default scripts reconcile read-only: tenant changes and
-missing local files are pulled, while local edits are preserved and reported
-for manual resolution. Ends with a `pushed N · pulled M · in sync R · conflicts
+clobbered). Product-default scripts are reconciled like any other — local
+edits push normally. Ends with a `pushed N · pulled M · in sync R · conflicts
 K` summary.
 
 `aic script watch` watches the workspace and pushes each tracked `.cjs` as you
