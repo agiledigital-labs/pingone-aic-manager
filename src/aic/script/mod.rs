@@ -164,10 +164,16 @@ pub struct RemoteRef {
     pub id: String,
     /// Human name used for the workspace filename.
     pub name: String,
-    /// AM script `context` (routes lib/oidc/src); `None` for IDM endpoints.
+    /// AM script `context` — routes the workspace folder; `None` for IDM.
     pub context: Option<String>,
     /// Product-shipped default (AM `default:true`); avoid clobbering.
     pub is_default: bool,
+    /// AM script engine version (`"1.0"` legacy / `"2.0"` next-gen). The two
+    /// scripted-decision-node generations share one `context`, so this is what
+    /// splits them into separate folders. `None` for IDM (and pre-`evaluatorVersion`
+    /// snapshots).
+    #[serde(default)]
+    pub evaluator_version: Option<String>,
 }
 
 /// A fully-fetched script: identity plus the raw config object exactly as it
