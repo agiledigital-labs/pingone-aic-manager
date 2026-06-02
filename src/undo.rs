@@ -511,7 +511,7 @@ mod tests {
         secret.sensitivity = Sensitivity::SecretValue;
 
         let id = log.record(secret).unwrap();
-        assert!(path.exists() == false || fs::read_to_string(&path).unwrap().is_empty());
+        assert!(!path.exists() || fs::read_to_string(&path).unwrap().is_empty());
         assert_eq!(log.load(id).unwrap().sensitivity, Sensitivity::SecretValue);
 
         let _ = fs::remove_file(path);
