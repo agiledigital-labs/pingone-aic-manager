@@ -243,18 +243,51 @@ pub fn config_subpath(r: &RemoteRef, realm: &str) -> PathBuf {
         .join(format!("{}.script.json", r.name))
 }
 
-/// `LIBRARY` scripts get an ES-module wrapper alongside the `.cjs` so other
-/// scripts can `import`/`require` them with types (matches p1-sync).
-pub fn extra_files(r: &RemoteRef, realm: &str) -> Vec<(PathBuf, String)> {
-    if r.context.as_deref() == Some("LIBRARY") {
-        let path = PathBuf::from("am")
-            .join(realm)
-            .join(am_slug(r))
-            .join(format!("{}.js", r.name));
-        vec![(path, format!("export * from \"./{}.cjs\";\n", r.name))]
-    } else {
-        Vec::new()
+/// Per-folder `tsconfig.json` for a script type's folder. Each AM script
+/// folder needs its own leaf so the editor scopes the right `.d.ts` (loading
+/// every type's defs together would conflict) — there's no root tsconfig; the
+/// TS server picks the nearest one per file. Folders sit two levels under
+/// `am/` (`am/<realm>/<slug>/`), so `../../` reaches the shared defs.
+///
+/// Only the three types we have bindings for today get a type-specific `.d.ts`
+/// (next-gen decision node, library, OIDC claims); every other folder gets the
+/// shared globals only, until per-type definitions land.
+pub fn leaf_tsconfig(slug: &str) -> String {
+    let (extra_dts, lib_path): (Option<&str>, &str) = match slug {
+        "decision-node" => (Some("../../src.d.ts"), "../lib/*"),
+        "oidc-claims" => (Some("../../oidc.d.ts"), "../lib/*"),
+        "lib" => (Some("../../lib.d.ts"), "./*"),
+        _ => (None, "../lib/*"),
+    };
+    let mut includes = vec!["./**/*", "../../amCommon.d.ts"];
+    if let Some(d) = extra_dts {
+        includes.push(d);
     }
+    let include_json = includes
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{{\n  \"extends\": \"../../tsconfig.json\",\n  \"include\": [{include_json}],\n  \"compilerOptions\": {{ \"paths\": {{ \"*\": [\"{lib_path}\"] }} }}\n}}\n"
+    )
+}
+
+/// Files written into the script's folder on pull (overwritten each time —
+/// they're managed): the folder's leaf `tsconfig.json` (always), plus, for a
+/// `LIBRARY` script, an ES-module wrapper so other scripts can `require` it
+/// with types (matches p1-sync).
+pub fn extra_files(r: &RemoteRef, realm: &str) -> Vec<(PathBuf, String)> {
+    let slug = am_slug(r);
+    let folder = PathBuf::from("am").join(realm).join(&slug);
+    let mut out = vec![(folder.join("tsconfig.json"), leaf_tsconfig(&slug))];
+    if r.context.as_deref() == Some("LIBRARY") {
+        out.push((
+            folder.join(format!("{}.js", r.name)),
+            format!("export * from \"./{}.cjs\";\n", r.name),
+        ));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -346,11 +379,28 @@ mod tests {
     }
 
     #[test]
-    fn library_gets_es_wrapper_only() {
-        assert!(extra_files(&rref(Some("OIDC_CLAIMS")), "alpha").is_empty());
-        let extra = extra_files(&rref(Some("LIBRARY")), "bravo");
-        assert_eq!(extra.len(), 1);
-        assert_eq!(extra[0].0, PathBuf::from("am/bravo/lib/MyScript.js"));
-        assert!(extra[0].1.contains("export * from \"./MyScript.cjs\""));
+    fn extra_files_emit_folder_tsconfig_and_library_wrapper() {
+        // Every folder gets a leaf tsconfig; only LIBRARY also gets the wrapper.
+        let oidc = extra_files(&rref(Some("OIDC_CLAIMS")), "alpha");
+        assert_eq!(oidc.len(), 1);
+        assert_eq!(oidc[0].0, PathBuf::from("am/alpha/oidc-claims/tsconfig.json"));
+        assert!(oidc[0].1.contains("../../oidc.d.ts"));
+
+        let lib = extra_files(&rref(Some("LIBRARY")), "bravo");
+        assert_eq!(lib.len(), 2);
+        assert_eq!(lib[0].0, PathBuf::from("am/bravo/lib/tsconfig.json"));
+        assert!(lib[0].1.contains("../../lib.d.ts"));
+        assert_eq!(lib[1].0, PathBuf::from("am/bravo/lib/MyScript.js"));
+        assert!(lib[1].1.contains("export * from \"./MyScript.cjs\""));
+    }
+
+    #[test]
+    fn leaf_tsconfig_scopes_dts_by_type() {
+        assert!(leaf_tsconfig("decision-node").contains("../../src.d.ts"));
+        // A type without bindings yet gets only the shared globals.
+        let legacy = leaf_tsconfig("decision-node-legacy");
+        assert!(legacy.contains("../../amCommon.d.ts"));
+        assert!(!legacy.contains("src.d.ts"));
+        assert!(leaf_tsconfig("lib").contains("\"*\": [\"./*\"]"));
     }
 }
