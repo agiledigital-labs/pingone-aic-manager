@@ -20,10 +20,15 @@ am/
   src.d.ts lib.d.ts oidc.d.ts   # per-type bindings, shared across realms (managed)
   tsconfig.json  eslint.config.js
   alpha/                         # one subtree per realm (alpha, bravo)
-    src/   tsconfig.json  <Name>.cjs   # AUTHENTICATION_TREE_DECISION_NODE / SCRIPTED_DECISION_NODE …
-    lib/   tsconfig.json  <Name>.cjs   # LIBRARY (+ <Name>.js ES-module wrapper)
-    oidc/  tsconfig.json  <Name>.cjs   # OIDC_CLAIMS
+    decision-node/        <Name>.cjs   # scripted decision node (next-gen)
+    decision-node-legacy/ <Name>.cjs   # scripted decision node (legacy engine)
+    lib/                  <Name>.cjs   # LIBRARY (+ <Name>.js ES-module wrapper)
+    oidc-claims/          <Name>.cjs   # OIDC_CLAIMS
+    oauth2-access-token/ saml-idp-adapter/ …   # one folder per script type
   bravo/  (same shape as alpha)
+  # Each AM script type gets its own folder (short slug of its `context`);
+  # `…-ng` = next-gen variant. Groovy scripts are not synced. Per-type type
+  # definitions are being expanded to cover every folder.
 idm/
   idmCommon.d.ts       # IDM endpoint globals (managed)
   tsconfig.json  eslint.config.js

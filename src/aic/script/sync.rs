@@ -256,9 +256,12 @@ pub struct Candidate {
     pub local: LocalState,
     /// Product-shipped default (AM `default:true`) — `push all` skips these.
     pub is_default: bool,
-    /// AM script `context` (routes the workspace dir: src/lib/oidc); `None`
-    /// for IDM. Carried so callers can reconstruct the local file path.
+    /// AM script `context` (routes the workspace folder); `None` for IDM.
+    /// Carried so callers can reconstruct the local file path.
     pub context: Option<String>,
+    /// AM engine version — needed alongside `context` to resolve the
+    /// decision-node folder (legacy vs next-gen). `None` for IDM.
+    pub evaluator_version: Option<String>,
 }
 
 /// The local state of one (already-known) reference — snapshot vs the file on
@@ -315,6 +318,7 @@ pub async fn pull_candidates(tenant: &str) -> Result<Vec<Candidate>> {
                 realm: ns.realm.clone(),
                 is_default: r.is_default,
                 context: r.context,
+                evaluator_version: r.evaluator_version,
                 name: r.name,
                 local,
             });
@@ -336,6 +340,7 @@ pub fn push_candidates(tenant: &str) -> Result<Vec<Candidate>> {
             realm: e.realm,
             is_default: e.reference.is_default,
             context: e.reference.context,
+            evaluator_version: e.reference.evaluator_version,
             name: e.reference.name,
             local,
         });
@@ -354,6 +359,7 @@ pub fn preview_source(tenant: &str, c: &Candidate) -> Option<String> {
         name: c.name.clone(),
         context: c.context.clone(),
         is_default: c.is_default,
+        evaluator_version: c.evaluator_version.clone(),
     };
     if let Ok(Some(bytes)) = read_local(&workspace_file(tenant, realm, &r)) {
         return Some(lossy(&bytes));
@@ -796,6 +802,7 @@ mod tests {
             name: name.into(),
             context: None,
             is_default: false,
+            evaluator_version: None,
         }
     }
 
@@ -806,6 +813,7 @@ mod tests {
             name: name.into(),
             context: None,
             is_default: false,
+            evaluator_version: None,
         }
     }
 

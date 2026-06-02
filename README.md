@@ -137,8 +137,10 @@ prompt for a typed confirmation on any tenant unless `--yes` is given.
 ESLint/TypeScript config as
 [p1aic-script-editor](https://github.com/agiledigital-labs/p1aic-script-editor),
 so your editor gets full IntelliSense on script bodies. Three script "kinds"
-are supported behind one engine: **AM scripts** (realm-scoped, routed to
-`am/<realm>/{src,lib,oidc}/` by context); **IDM custom endpoints**
+are supported behind one engine: **AM scripts** (realm-scoped, routed to a
+per-type folder under `am/<realm>/<type>/` — e.g. `decision-node`,
+`decision-node-legacy`, `lib`, `oidc-claims`; Groovy scripts aren't synced);
+**IDM custom endpoints**
 (tenant-global under `idm/endpoint/`); and **IDM scheduled jobs**
 (tenant-global under `idm/schedule/`; only script-invoking schedules — the
 script lives at `invokeContext.script.source`).

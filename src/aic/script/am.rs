@@ -28,7 +28,19 @@ fn ref_from_config(raw: &Value) -> RemoteRef {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
         is_default: raw.get("default").and_then(|v| v.as_bool()).unwrap_or(false),
+        evaluator_version: raw
+            .get("evaluatorVersion")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
     }
+}
+
+/// AIC dropped Groovy support; this old tenant still has many Groovy scripts.
+/// We draw the line here: the tool only handles JavaScript. This is the single
+/// chokepoint — filtering in `list` keeps Groovy out of list/pull/push/status
+/// and the TUI alike. Lift this filter if Groovy is ever supported again.
+fn is_javascript(raw: &Value) -> bool {
+    raw.get("language").and_then(|v| v.as_str()) != Some("GROOVY")
 }
 
 fn str_field(raw: &Value, key: &str) -> String {
@@ -60,7 +72,9 @@ pub async fn list(tenant: &str, realm: &str) -> Result<Vec<RemoteRef>> {
                 body: format!("unexpected scripts list shape: {body}"),
             })?;
         let n = arr.len();
-        refs.extend(arr.iter().map(ref_from_config));
+        // `n` (the server's page size) drives paging; only JS scripts make it
+        // into `refs`. Groovy is excluded (see `is_javascript`).
+        refs.extend(arr.iter().filter(|el| is_javascript(el)).map(ref_from_config));
         // `remainingPagedResults` is authoritative here; `-1` (unknown) falls
         // back to "stop once a page comes back empty".
         let remaining = body
@@ -126,28 +140,89 @@ pub fn encode_source(raw: &mut Value, source: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// `LIBRARY`→lib, `OIDC_CLAIMS`→oidc, everything else→src (verified mapping
-/// from p1-sync; see `docs/api/04-scripts.md`).
-fn dir_for_context(context: Option<&str>) -> &'static str {
-    match context {
-        Some("LIBRARY") => "lib",
-        Some("OIDC_CLAIMS") => "oidc",
-        _ => "src",
+/// Folder slug for an AM script: a short, readable name derived from its
+/// `context`. Each script type gets its own folder so per-type TypeScript
+/// definitions can apply. Two special rules:
+///
+/// - the scripted-decision-node context carries both engine generations, so it
+///   splits by `evaluatorVersion` (`1.0` → `-legacy`); next-gen is the bare
+///   `decision-node` since the current types target it.
+/// - any `…_NEXT_GEN` / `…_NEXTGEN` context → its base slug + `-ng`.
+///
+/// Unknown contexts fall back to a lowercased, hyphenated form so a new Ping
+/// context still lands somewhere sensible.
+fn slug_for(context: Option<&str>, evaluator_version: Option<&str>) -> String {
+    let Some(ctx) = context else {
+        return "unknown".to_string();
+    };
+    if matches!(ctx, "AUTHENTICATION_TREE_DECISION_NODE" | "SCRIPTED_DECISION_NODE") {
+        return if evaluator_version == Some("1.0") {
+            "decision-node-legacy".to_string()
+        } else {
+            "decision-node".to_string()
+        };
     }
+    let (base, ng) = match ctx
+        .strip_suffix("_NEXT_GEN")
+        .or_else(|| ctx.strip_suffix("_NEXTGEN"))
+    {
+        Some(base) => (base, true),
+        None => (ctx, false),
+    };
+    let slug = base_slug(base);
+    if ng { format!("{slug}-ng") } else { slug }
+}
+
+/// Curated short slug per context base (next-gen suffix already stripped).
+fn base_slug(base: &str) -> String {
+    let mapped = match base {
+        "AUTHENTICATION_SERVER_SIDE" => "auth-server",
+        "AUTHENTICATION_CLIENT_SIDE" => "auth-client",
+        "CONFIG_PROVIDER_NODE" => "config-provider",
+        "DEVICE_MATCH_NODE" => "device-match",
+        "LIBRARY" => "lib",
+        "OIDC_CLAIMS" => "oidc-claims",
+        "OIDC_NODE" => "oidc-node",
+        "OAUTH2_ACCESS_TOKEN_MODIFICATION" => "oauth2-access-token",
+        "OAUTH2_MAY_ACT" => "oauth2-may-act",
+        "OAUTH2_SCRIPTED_JWT_ISSUER" => "oauth2-jwt-issuer",
+        "OAUTH2_VALIDATE_SCOPE" => "oauth2-validate-scope",
+        "OAUTH2_EVALUATE_SCOPE" => "oauth2-evaluate-scope",
+        "OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER" => "oauth2-authz-data",
+        "OAUTH2_DYNAMIC_CLIENT_REGISTRATION" => "oauth2-dcr",
+        "POLICY_CONDITION" => "policy-condition",
+        "CACHE_LOADER" => "cache-loader",
+        "SOCIAL_IDP_PROFILE_TRANSFORMATION" => "social-normalize",
+        "SOCIAL_PROVIDER_HANDLER_NODE" => "social-handler",
+        "PINGONE_VERIFY_COMPLETION_DECISION_NODE" => "pingone-verify",
+        "SAML2_IDP_ADAPTER" => "saml-idp-adapter",
+        "SAML2_SP_ADAPTER" => "saml-sp-adapter",
+        "SAML2_IDP_ATTRIBUTE_MAPPER" => "saml-idp-attr-mapper",
+        "SAML2_NAMEID_MAPPER" => "saml-nameid-mapper",
+        "SAML2_SP_ACCOUNT_MAPPER" => "saml-sp-account-mapper",
+        other => return other.to_ascii_lowercase().replace('_', "-"),
+    };
+    mapped.to_string()
+}
+
+fn am_slug(r: &RemoteRef) -> String {
+    slug_for(r.context.as_deref(), r.evaluator_version.as_deref())
 }
 
 pub fn workspace_subpath(r: &RemoteRef, realm: &str) -> PathBuf {
     PathBuf::from("am")
         .join(realm)
-        .join(dir_for_context(r.context.as_deref()))
+        .join(am_slug(r))
         .join(format!("{}.cjs", r.name))
 }
 
-/// Snapshot config path under `.aic-sync/configs/`, realm-keyed so a script
-/// of the same name in alpha and bravo don't overwrite each other.
+/// Snapshot config path under `.aic-sync/configs/`. Keyed by realm + folder
+/// slug + name so same-named scripts in different realms or contexts can't
+/// clobber each other's snapshot.
 pub fn config_subpath(r: &RemoteRef, realm: &str) -> PathBuf {
     PathBuf::from("am")
         .join(realm)
+        .join(am_slug(r))
         .join(format!("{}.script.json", r.name))
 }
 
@@ -157,7 +232,7 @@ pub fn extra_files(r: &RemoteRef, realm: &str) -> Vec<(PathBuf, String)> {
     if r.context.as_deref() == Some("LIBRARY") {
         let path = PathBuf::from("am")
             .join(realm)
-            .join("lib")
+            .join(am_slug(r))
             .join(format!("{}.js", r.name));
         vec![(path, format!("export * from \"./{}.cjs\";\n", r.name))]
     } else {
@@ -171,12 +246,17 @@ mod tests {
     use serde_json::json;
 
     fn rref(context: Option<&str>) -> RemoteRef {
+        rref_v(context, None)
+    }
+
+    fn rref_v(context: Option<&str>, evaluator_version: Option<&str>) -> RemoteRef {
         RemoteRef {
             kind: Kind::Am,
             id: "uuid-1".into(),
             name: "MyScript".into(),
             context: context.map(|s| s.to_string()),
             is_default: false,
+            evaluator_version: evaluator_version.map(|s| s.to_string()),
         }
     }
 
@@ -198,14 +278,15 @@ mod tests {
     }
 
     #[test]
-    fn context_routes_to_realm_directory() {
+    fn context_routes_to_per_type_folder() {
+        // Next-gen vs legacy scripted decision node split by evaluatorVersion.
         assert_eq!(
-            workspace_subpath(&rref(None), "alpha"),
-            PathBuf::from("am/alpha/src/MyScript.cjs")
+            workspace_subpath(&rref_v(Some("AUTHENTICATION_TREE_DECISION_NODE"), Some("2.0")), "bravo"),
+            PathBuf::from("am/bravo/decision-node/MyScript.cjs")
         );
         assert_eq!(
-            workspace_subpath(&rref(Some("AUTHENTICATION_TREE_DECISION_NODE")), "bravo"),
-            PathBuf::from("am/bravo/src/MyScript.cjs")
+            workspace_subpath(&rref_v(Some("AUTHENTICATION_TREE_DECISION_NODE"), Some("1.0")), "alpha"),
+            PathBuf::from("am/alpha/decision-node-legacy/MyScript.cjs")
         );
         assert_eq!(
             workspace_subpath(&rref(Some("LIBRARY")), "alpha"),
@@ -213,17 +294,32 @@ mod tests {
         );
         assert_eq!(
             workspace_subpath(&rref(Some("OIDC_CLAIMS")), "bravo"),
-            PathBuf::from("am/bravo/oidc/MyScript.cjs")
+            PathBuf::from("am/bravo/oidc-claims/MyScript.cjs")
+        );
+        // `…_NEXT_GEN` / `…_NEXTGEN` → base slug + `-ng`.
+        assert_eq!(
+            workspace_subpath(&rref(Some("OIDC_CLAIMS_NEXT_GEN")), "alpha"),
+            PathBuf::from("am/alpha/oidc-claims-ng/MyScript.cjs")
         );
         assert_eq!(
-            config_subpath(&rref(None), "bravo"),
-            PathBuf::from("am/bravo/MyScript.script.json")
+            workspace_subpath(&rref(Some("SAML2_IDP_ADAPTER_NEXTGEN")), "alpha"),
+            PathBuf::from("am/alpha/saml-idp-adapter-ng/MyScript.cjs")
+        );
+        // Unknown context → lowercased, hyphenated fallback.
+        assert_eq!(
+            workspace_subpath(&rref(Some("BRAND_NEW_CONTEXT")), "alpha"),
+            PathBuf::from("am/alpha/brand-new-context/MyScript.cjs")
+        );
+        // Config snapshot path is now folder-scoped too.
+        assert_eq!(
+            config_subpath(&rref(Some("OIDC_CLAIMS")), "bravo"),
+            PathBuf::from("am/bravo/oidc-claims/MyScript.script.json")
         );
     }
 
     #[test]
     fn library_gets_es_wrapper_only() {
-        assert!(extra_files(&rref(None), "alpha").is_empty());
+        assert!(extra_files(&rref(Some("OIDC_CLAIMS")), "alpha").is_empty());
         let extra = extra_files(&rref(Some("LIBRARY")), "bravo");
         assert_eq!(extra.len(), 1);
         assert_eq!(extra[0].0, PathBuf::from("am/bravo/lib/MyScript.js"));

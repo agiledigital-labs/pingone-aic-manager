@@ -19,6 +19,7 @@ fn ref_from_id(id: &str) -> RemoteRef {
         name,
         context: None,
         is_default: false,
+        evaluator_version: None,
     }
 }
 
