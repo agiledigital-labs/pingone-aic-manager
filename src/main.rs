@@ -32,5 +32,7 @@ async fn run_app(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
 ) -> aic_edit::Result<()> {
     let mut app = aic_edit::app::App::new()?;
-    app.run(terminal).await
+    let result = app.run(terminal).await;
+    drop(app);
+    result
 }

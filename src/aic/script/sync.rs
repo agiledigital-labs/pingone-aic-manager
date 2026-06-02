@@ -16,7 +16,7 @@ use crate::config::ProjectConfig;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Which scripts an operation targets.
 #[derive(Debug, Clone)]
@@ -217,6 +217,17 @@ fn workspace_file(tenant: &str, realm: &str, r: &RemoteRef) -> PathBuf {
     ProjectConfig::workspace_tree(tenant).join(r.kind.workspace_subpath(r, realm))
 }
 
+/// Read a local workspace file without collapsing permission / transient I/O
+/// errors into "missing". Only a genuine `NotFound` means there is no local
+/// copy.
+fn read_local(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -260,10 +271,10 @@ fn local_state_for(
     };
     let snapshot = r.kind.decode_source(&cfg)?;
     let dest = workspace_file(tenant, realm, r);
-    Ok(match std::fs::read(&dest) {
-        Ok(local) if local == snapshot => LocalState::Clean,
-        Ok(_) => LocalState::Modified,
-        Err(_) => LocalState::Missing,
+    Ok(match read_local(&dest)? {
+        Some(local) if local == snapshot => LocalState::Clean,
+        Some(_) => LocalState::Modified,
+        None => LocalState::Missing,
     })
 }
 
@@ -365,11 +376,7 @@ pub async fn pull(
             Some(cfg) => Some(kind.decode_source(&cfg)?),
             None => None,
         };
-        let local_src = if dest.exists() {
-            Some(std::fs::read(&dest)?)
-        } else {
-            None
-        };
+        let local_src = read_local(&dest)?;
 
         // Local content we'd lose by overwriting: either edited since the last
         // pull, or an untracked file that was here before we ever synced (no
@@ -464,8 +471,12 @@ pub async fn push(
     let snapshot_src = kind.decode_source(&snapshot_cfg)?;
 
     let dest = workspace_file(tenant, realm, r);
-    let local_src = std::fs::read(&dest)
-        .map_err(|_| Error::Config(format!("local file {} not found — pull first", dest.display())))?;
+    let local_src = read_local(&dest)?.ok_or_else(|| {
+        Error::Config(format!(
+            "local file {} not found — pull first",
+            dest.display()
+        ))
+    })?;
 
     // No local change vs the snapshot → nothing to do. Checked *before* the
     // default-script guard so a clean default is a quiet no-op (not an error).
@@ -542,7 +553,7 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
         let snapshot_src = r.kind.decode_source(&snapshot_cfg)?;
 
         let dest = workspace_file(tenant, realm, r);
-        if !dest.exists() {
+        let Some(local_src) = read_local(&dest)? else {
             out.push(StatusEntry {
                 name: r.name.clone(),
                 kind: r.kind,
@@ -550,8 +561,7 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
                 state: ScriptState::LocalMissing,
             });
             continue;
-        }
-        let local_src = std::fs::read(&dest)?;
+        };
         let local_modified = local_src != snapshot_src;
 
         let remote = r.kind.fetch(tenant, realm, &r.id).await?;
@@ -574,9 +584,32 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
     Ok(out)
 }
 
-/// 3-way content for one script: last-synced snapshot, current remote, current
-/// local. The CLI renders these; a real merge UI is future work.
-pub async fn diff(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<ThreeWay> {
+/// Which two script versions to load for `aic script diff`.
+#[derive(Debug, Clone, Copy)]
+pub enum DiffMode {
+    /// Local edits only. Does not require a tenant request.
+    LocalVsSnapshot,
+    /// Tenant drift only. Does not read the local workspace file.
+    SnapshotVsRemote,
+    /// Current tenant content against the local workspace file.
+    RemoteVsLocal,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiffPair {
+    pub left: String,
+    pub right: String,
+}
+
+/// Load exactly the two sides requested by the CLI. A missing local file is
+/// represented as empty content so the rendered diff shows its deletion.
+pub async fn diff(
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+    mode: DiffMode,
+) -> Result<DiffPair> {
     let store = SnapshotStore::open(tenant);
     let entry = store
         .lookup(kind, name, realm)?
@@ -587,19 +620,22 @@ pub async fn diff(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<T
         .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing")))?;
     let snapshot_src = kind.decode_source(&snapshot_cfg)?;
 
-    let dest = workspace_file(tenant, realm, r);
-    let local_src = if dest.exists() {
-        std::fs::read(&dest)?
-    } else {
-        Vec::new()
+    let load_local = || -> Result<Vec<u8>> {
+        Ok(read_local(&workspace_file(tenant, realm, r))?.unwrap_or_default())
     };
-    let remote = kind.fetch(tenant, realm, &r.id).await?;
-    let remote_src = kind.decode_source(&remote.raw_config)?;
+    let load_remote = async {
+        let remote = kind.fetch(tenant, realm, &r.id).await?;
+        kind.decode_source(&remote.raw_config)
+    };
 
-    Ok(ThreeWay {
-        last_synced: lossy(&snapshot_src),
-        remote: lossy(&remote_src),
-        local: lossy(&local_src),
+    let (left, right) = match mode {
+        DiffMode::LocalVsSnapshot => (snapshot_src, load_local()?),
+        DiffMode::SnapshotVsRemote => (snapshot_src, load_remote.await?),
+        DiffMode::RemoteVsLocal => (load_remote.await?, load_local()?),
+    };
+    Ok(DiffPair {
+        left: lossy(&left),
+        right: lossy(&right),
     })
 }
 
@@ -613,6 +649,9 @@ pub enum ReconcileOutcome {
     InSync,
     Pushed,
     Pulled,
+    /// Local edits exist on a product default; preserve them, but never attempt
+    /// an automatic tenant write.
+    DefaultLocallyModified,
     /// Both sides changed to the same content; snapshot refreshed.
     Converged,
     /// Both sides changed differently — the caller resolves.
@@ -645,9 +684,9 @@ pub async fn reconcile(
     let remote_changed = remote != snapshot;
 
     let dest = workspace_file(tenant, realm, r);
-    let local = match std::fs::read(&dest) {
-        Ok(bytes) => bytes,
-        Err(_) => {
+    let local = match read_local(&dest)? {
+        Some(bytes) => bytes,
+        None => {
             // Local file gone — restore it from the remote.
             write_workspace_files(tenant, realm, &remote_script, &remote)?;
             store.record(&remote_script, realm)?;
@@ -664,11 +703,17 @@ pub async fn reconcile(
             Ok(ReconcileOutcome::Pulled)
         }
         (true, false) => {
+            if r.is_default {
+                return Ok(ReconcileOutcome::DefaultLocallyModified);
+            }
             // Remote == snapshot, so pushing the local edit is safe. Start from
             // the current remote config and merge only the edited source.
             let mut raw = remote_script.raw_config.clone();
             kind.encode_source(&mut raw, &local)?;
-            let to_push = RemoteScript { reference: r.clone(), raw_config: raw };
+            let to_push = RemoteScript {
+                reference: r.clone(),
+                raw_config: raw,
+            };
             kind.write(tenant, realm, &to_push, confirmed_prod).await?;
             store.record(&to_push, realm)?;
             Ok(ReconcileOutcome::Pushed)
@@ -690,4 +735,23 @@ pub async fn reconcile(
 pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
     let store = SnapshotStore::open(tenant);
     store.remove(kind, name, realm)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_reads_only_treat_not_found_as_missing() {
+        let dir = std::env::temp_dir().join(format!("aic-sync-read-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("script.cjs");
+        std::fs::write(&file, b"contents").unwrap();
+
+        assert_eq!(read_local(&file).unwrap(), Some(b"contents".to_vec()));
+        assert_eq!(read_local(&dir.join("missing.cjs")).unwrap(), None);
+        assert!(read_local(&dir).is_err());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

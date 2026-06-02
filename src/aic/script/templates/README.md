@@ -75,6 +75,9 @@ Notes:
 - A push is blocked if the remote changed since your last sync (resolve from
   the `diff`, or re-run with `--force`), and refuses product-default scripts
   unless `--force`.
+- `sync` treats product-default scripts as read-only: it pulls tenant changes
+  and restores missing local files, but preserves local edits for manual
+  resolution instead of trying to push them.
 
 ## Local development
 

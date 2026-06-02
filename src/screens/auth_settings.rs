@@ -185,25 +185,29 @@ pub async fn handle_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<(
                     }
                 }
                 Some(PendingAuthAction::DisableEncryption) => {
-                    if let Some(dek) = app.dek_clone() {
-                        crate::config::disable_encryption(&dek)?;
-                        app.set_dek(None);
-                        app.wraps = WrapsFile::default();
-                        let mut s = app.settings.unwrap_or_default();
-                        s.encrypt_keys = false;
-                        app.settings = Some(s);
-                        app.auth_settings.idx = 0;
-                        // Switch the agent over to plain mode now that
-                        // keys.plain exists; otherwise the next ApiCall
-                        // would hit a daemon still holding the (now
-                        // useless) DEK.
-                        crate::screens::unlock::unlock_plain_agent(app).await;
-                        app.push_toast(
-                            ToastKind::Info,
-                            "Encryption disabled — credentials at keys.plain",
-                        );
-                    } else {
-                        app.push_toast(ToastKind::Error, "Cannot disable: not unlocked");
+                    match app.dek_clone() {
+                        Some(dek) => {
+                            crate::config::disable_encryption(&dek)?;
+                            drop(dek);
+                            app.set_dek(None);
+                            app.wraps = WrapsFile::default();
+                            let mut s = app.settings.unwrap_or_default();
+                            s.encrypt_keys = false;
+                            app.settings = Some(s);
+                            app.auth_settings.idx = 0;
+                            // Switch the agent over to plain mode now that
+                            // keys.plain exists; otherwise the next ApiCall
+                            // would hit a daemon still holding the (now
+                            // useless) DEK.
+                            crate::screens::unlock::unlock_plain_agent(app).await;
+                            app.push_toast(
+                                ToastKind::Info,
+                                "Encryption disabled — credentials at keys.plain",
+                            );
+                        }
+                        _ => {
+                            app.push_toast(ToastKind::Error, "Cannot disable: not unlocked");
+                        }
                     }
                 }
                 None => {}

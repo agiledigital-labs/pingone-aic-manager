@@ -32,14 +32,11 @@ impl AgentClient {
         let sock = super::socket_path();
 
         // 1. Live agent? Connect and return.
+        if sock.exists() && Self::answers_ping(&sock).await {
+            // Reconnect — answers_ping consumed the connection.
+            return Self::connect(&sock).await;
+        }
         if sock.exists() {
-            if let Ok(c) = Self::connect(&sock).await {
-                // Best-effort ping to confirm it answers, not a stale FD.
-                if matches!(c.ping_owned().await, Ok(())) {
-                    // Reconnect — ping_owned consumed the connection.
-                    return Self::connect(&sock).await;
-                }
-            }
             // Stale socket — agent removes its own on clean exit, but if it
             // crashed it may linger. Remove and re-spawn.
             tracing::debug!("removing stale socket {}", sock.display());
@@ -51,12 +48,8 @@ impl AgentClient {
         // Wait for the socket to appear (agent binds early in startup).
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if sock.exists() {
-                if let Ok(c) = Self::connect(&sock).await {
-                    if matches!(c.ping_owned().await, Ok(())) {
-                        return Self::connect(&sock).await;
-                    }
-                }
+            if sock.exists() && Self::answers_ping(&sock).await {
+                return Self::connect(&sock).await;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -64,6 +57,14 @@ impl AgentClient {
             "agent did not start within 5s; check {}",
             super::log_path().display()
         )))
+    }
+
+    async fn answers_ping(path: &Path) -> bool {
+        let Ok(client) = Self::connect(path).await else {
+            return false;
+        };
+        let result = client.ping_owned().await;
+        result.is_ok()
     }
 
     pub async fn send(mut self, req: &Request) -> Result<Response> {

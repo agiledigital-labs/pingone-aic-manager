@@ -526,6 +526,7 @@ async fn login() -> Result<()> {
     };
 
     auth::put_dek_to_agent(&dek).await?;
+    drop(dek);
     println!("unlocked");
     print_status_block().await
 }
@@ -1067,10 +1068,6 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
             let mut conflicts: Vec<String> = Vec::new();
             for c in cands {
                 let full = full_of(&c);
-                if c.is_default {
-                    println!("{full}: skipped (default script)");
-                    continue;
-                }
                 let ns = Namespace { kind: c.kind, realm: c.realm.clone() };
                 match prod_hint(sync::reconcile(&t, ns.realm_arg(), c.kind, &c.name, yes).await)? {
                     sync::ReconcileOutcome::InSync => in_sync += 1,
@@ -1086,11 +1083,20 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                         in_sync += 1;
                         println!("= {full}: converged");
                     }
+                    sync::ReconcileOutcome::DefaultLocallyModified => {
+                        println!("{full}: skipped (default script has local changes; cannot push)");
+                        conflicts.push(full);
+                    }
                     sync::ReconcileOutcome::Conflict(_) => {
                         let choice = match resolve {
+                            Some(Resolution::Local) if c.is_default => {
+                                println!("{full}: skipped (default script cannot be pushed; use `--resolve remote` to restore the tenant copy)");
+                                conflicts.push(full);
+                                continue;
+                            }
                             Some(Resolution::Local) => ConflictChoice::Local,
                             Some(Resolution::Remote) => ConflictChoice::Remote,
-                            None => prompt_conflict(&full)?,
+                            None => prompt_conflict(&full, !c.is_default)?,
                         };
                         match choice {
                             ConflictChoice::Local => {
@@ -1129,17 +1135,17 @@ async fn script(cmd: ScriptCommand) -> Result<()> {
                     None => return Ok(()),
                 },
             };
-            let tw = sync::diff(&t, ns.realm_arg(), ns.kind, &name).await?;
             let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
             // `-` is the left/older side, `+` is the right/newer side.
-            let (ll, left, rl, right) = if local_vs_snapshot {
-                ("snapshot", &tw.last_synced, "local", &tw.local)
+            let (mode, ll, rl) = if local_vs_snapshot {
+                (sync::DiffMode::LocalVsSnapshot, "snapshot", "local")
             } else if snapshot_vs_remote {
-                ("snapshot", &tw.last_synced, "tenant", &tw.remote)
+                (sync::DiffMode::SnapshotVsRemote, "snapshot", "tenant")
             } else {
-                ("tenant", &tw.remote, "local", &tw.local)
+                (sync::DiffMode::RemoteVsLocal, "tenant", "local")
             };
-            show_diff(&full, ll, left, rl, right)?;
+            let pair = sync::diff(&t, ns.realm_arg(), ns.kind, &name, mode).await?;
+            show_diff(&full, ll, &pair.left, rl, &pair.right)?;
             Ok(())
         }
     }
@@ -1284,18 +1290,35 @@ enum ConflictChoice {
 
 /// Prompt how to resolve a both-changed conflict during `sync`. No TTY (or
 /// cancel) → `Skip` (reported at the end), never a silent clobber.
-fn prompt_conflict(full: &str) -> Result<ConflictChoice> {
+fn prompt_conflict(full: &str, allow_local: bool) -> Result<ConflictChoice> {
     use inquire::{error::InquireError, Select};
-    let opts = vec![
-        "skip — leave both, resolve later",
-        "local — overwrite the tenant with your copy",
-        "remote — overwrite your copy with the tenant's (local backed up)",
-    ];
-    match Select::new(&format!("Conflict on {full} (both changed) — resolve:"), opts).raw_prompt() {
-        Ok(o) => Ok(match o.index {
+    let opts = if allow_local {
+        vec![
+            "skip — leave both, resolve later",
+            "local — overwrite the tenant with your copy",
+            "remote — overwrite your copy with the tenant's (local backed up)",
+        ]
+    } else {
+        vec![
+            "skip — leave both, resolve later",
+            "remote — overwrite your copy with the tenant's (local backed up)",
+        ]
+    };
+    match Select::new(
+        &format!("Conflict on {full} (both changed) — resolve:"),
+        opts,
+    )
+    .raw_prompt()
+    {
+        Ok(o) if allow_local => Ok(match o.index {
             1 => ConflictChoice::Local,
             2 => ConflictChoice::Remote,
             _ => ConflictChoice::Skip,
+        }),
+        Ok(o) => Ok(if o.index == 1 {
+            ConflictChoice::Remote
+        } else {
+            ConflictChoice::Skip
         }),
         Err(InquireError::OperationCanceled | InquireError::OperationInterrupted | InquireError::NotTTY) => {
             Ok(ConflictChoice::Skip)
@@ -1445,35 +1468,90 @@ fn workspace_update_hint(tenant: &str) -> Result<()> {
 /// interactively, and `aic script diff X | <tool>` pipes a plain unified diff.
 /// `left`/`right` are side labels (e.g. "tenant", "local", "snapshot") shown in
 /// the headers. Requires `git` on PATH.
-fn show_diff(full: &str, left_label: &str, left: &str, right_label: &str, right: &str) -> Result<()> {
+fn create_diff_dir() -> Result<std::path::PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let dir = std::env::temp_dir().join(format!("aic-diff-{}", uuid::Uuid::new_v4()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| Error::Config(format!("create temp dir {}: {e}", dir.display())))?;
+    Ok(dir)
+}
+
+fn write_diff_file(dir: &std::path::Path, name: &str, contents: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let path = dir.join(name);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| Error::Config(format!("create temp file {}: {e}", path.display())))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|e| Error::Config(format!("write temp file {}: {e}", path.display())))
+}
+
+fn show_diff(
+    full: &str,
+    left_label: &str,
+    left: &str,
+    right_label: &str,
+    right: &str,
+) -> Result<()> {
     use std::process::Command;
+
     if left == right {
         println!("{full}: {left_label} and {right_label} are identical");
         return Ok(());
     }
-    let dir = std::env::temp_dir().join(format!("aic-diff-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| Error::Config(format!("temp dir: {e}")))?;
+    let dir = create_diff_dir()?;
     // `--no-prefix` makes the headers read `--- <name> (tenant)` etc.; `/` in
     // the full-name isn't path-safe, so swap it for `_`.
     let safe = full.replace('/', "_");
     let left_name = format!("{safe} ({left_label})");
     let right_name = format!("{safe} ({right_label})");
-    let _ = std::fs::write(dir.join(&left_name), left);
-    let _ = std::fs::write(dir.join(&right_name), right);
-    // Run git *in* the temp dir with relative names so the diff headers read
-    // `--- <name> (tenant)` rather than the full temp path.
-    let status = Command::new("git")
-        .current_dir(&dir)
-        .args(["diff", "--no-index", "--no-prefix"])
-        .arg(&left_name)
-        .arg(&right_name)
-        .status();
-    let _ = std::fs::remove_dir_all(&dir);
-    match status {
-        // `git diff --no-index` exits 1 when the files differ — that's success.
-        Ok(_) => Ok(()),
-        Err(e) => Err(Error::Config(format!(
-            "couldn't run `git` to render the diff ({e}) — is git on your PATH?"
+    let render = (|| -> Result<()> {
+        for (name, contents) in [(&left_name, left), (&right_name, right)] {
+            write_diff_file(&dir, name, contents)?;
+        }
+        // Run git *in* the temp dir with relative names so the diff headers read
+        // `--- <name> (tenant)` rather than the full temp path.
+        let status = Command::new("git")
+            .current_dir(&dir)
+            .args(["diff", "--no-index", "--no-prefix", "--"])
+            .arg(&left_name)
+            .arg(&right_name)
+            .status()
+            .map_err(|e| {
+                Error::Config(format!(
+                    "couldn't run `git` to render the diff ({e}) — is git on your PATH?"
+                ))
+            })?;
+        // `git diff --no-index` exits 1 when the files differ.
+        match status.code() {
+            Some(0 | 1) => Ok(()),
+            Some(code) => Err(Error::Config(format!(
+                "`git diff --no-index` failed with exit code {code}"
+            ))),
+            None => Err(Error::Config(
+                "`git diff --no-index` terminated by signal".into(),
+            )),
+        }
+    })();
+    let cleanup = std::fs::remove_dir_all(&dir);
+    match (render, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(e), Ok(())) => Err(e),
+        (Ok(()), Err(e)) => Err(Error::Config(format!(
+            "remove temp dir {}: {e}",
+            dir.display()
+        ))),
+        (Err(render), Err(cleanup)) => Err(Error::Config(format!(
+            "{render}; also couldn't remove temp dir {}: {cleanup}",
+            dir.display()
         ))),
     }
 }
@@ -1629,4 +1707,23 @@ fn redact(token: &str) -> String {
         return "*".repeat(n);
     }
     format!("{}…{}  ({} chars)", &token[..8], &token[n - 4..], n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn diff_temp_files_are_private_and_exclusive() {
+        let dir = create_diff_dir().unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o077, 0);
+
+        write_diff_file(&dir, "left", "contents").unwrap();
+        let file = dir.join("left");
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o077, 0);
+        assert!(write_diff_file(&dir, "left", "replacement").is_err());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
