@@ -40,6 +40,9 @@ pub enum InputMode {
     /// (and clears the filter); Enter commits and returns to Normal with
     /// the filter still applied.
     EsvSearch,
+    /// `/` — fuzzy search the Scripts list. Same UX as `EsvSearch` but
+    /// edits the scripts query.
+    ScriptSearch,
     /// Editing the ESV the cursor was on. The list/preview layout stays
     /// the same; the preview pane goes editable + grows a Save button.
     EsvEdit,
@@ -78,16 +81,18 @@ pub enum Realm {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Esvs,
+    Scripts,
 }
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Esvs]
+        &[Tab::Esvs, Tab::Scripts]
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Esvs => "ESVs",
+            Tab::Scripts => "Scripts",
         }
     }
 }
@@ -159,6 +164,10 @@ pub struct App {
     /// Secrets sub-view of the ESVs tab (list, versions, create/add forms).
     /// Populated by the same poll as `esv`. See `crate::screens::secret`.
     pub secret: crate::screens::secret::State,
+
+    /// Scripts tab state — per-tenant candidate list, search + selection,
+    /// in-flight pull/push tracking. See `crate::screens::scripts`.
+    pub scripts: crate::screens::scripts::State,
 }
 
 pub use crate::screens::prod_confirm::PendingProdAction;
@@ -222,6 +231,7 @@ impl App {
             keybind_help_open: false,
             esv: crate::screens::esv::State::new(),
             secret: crate::screens::secret::State::new(),
+            scripts: crate::screens::scripts::State::new(),
         })
     }
 
@@ -317,6 +327,7 @@ impl App {
         // changes — anything else is just confusing.
         self.esv.reset_view();
         self.secret.reset_view();
+        self.scripts.reset_view();
         if let Some(t) = self.tenants.get(idx) {
             if let Err(e) = config::write_current_context(&t.name) {
                 tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
@@ -442,6 +453,17 @@ impl App {
             AppEvent::EsvListed { tenant, outcome } => {
                 crate::screens::esv::apply_refresh(self, tenant, outcome);
             }
+            AppEvent::ScriptsListed { tenant, result } => {
+                crate::screens::scripts::apply_refresh(self, tenant, result);
+            }
+            AppEvent::ScriptOpResult {
+                tenant,
+                full,
+                label,
+                result,
+            } => {
+                crate::screens::scripts::apply_op_result(self, tenant, full, label, result);
+            }
             AppEvent::SecretOpResult {
                 tenant,
                 id,
@@ -515,6 +537,13 @@ impl App {
             && self.esv.last_poll.elapsed() >= Duration::from_secs(30)
         {
             crate::screens::esv::refresh(self, true);
+        }
+        // Scripts list is heavier to fetch (one list call per namespace) and
+        // changes far less often than ESVs, so poll it on a slower cadence.
+        if self.current_tab == Tab::Scripts
+            && self.scripts.last_poll.elapsed() >= Duration::from_secs(120)
+        {
+            crate::screens::scripts::refresh(self, true);
         }
     }
 

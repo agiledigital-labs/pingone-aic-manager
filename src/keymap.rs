@@ -9,7 +9,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, InputMode, Realm};
+use crate::app::{App, InputMode, Realm, Tab};
 use crate::screens::esv::{EditField, EsvView};
 
 /// One key that fires a binding. Matching is by code + the ctrl modifier.
@@ -50,6 +50,9 @@ pub enum Act {
     Primary,
     Delete,
     NewItem,
+    Pull,
+    Push,
+    PullAll,
     Apply,
     Undo,
     UndoHistory,
@@ -117,12 +120,14 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         return out;
     }
 
-    let secrets = app.esv.view == EsvView::Secrets;
+    let scripts_tab = app.current_tab == Tab::Scripts;
+    let secrets = !scripts_tab && app.esv.view == EsvView::Secrets;
     let n = row_count(app);
-    let can_apply = app
-        .active_tenant()
-        .map(|t| crate::screens::esv::can_request_restart(app, &t.name))
-        .unwrap_or(false);
+    let can_apply = !scripts_tab
+        && app
+            .active_tenant()
+            .map(|t| crate::screens::esv::can_request_restart(app, &t.name))
+            .unwrap_or(false);
 
     if can_apply {
         out.push(b(&[Trigger::Ctrl('s')], "^S", "apply changes", true, true, Apply));
@@ -148,14 +153,18 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     ));
     // `[` / `]` switch sub-tabs within a tab (here: Variables ⇄ Secrets) — the
     // lazygit/k9s convention for inner tabs.
-    out.push(b(
-        &[Trigger::Char('['), Trigger::Char(']')],
-        "[ ]",
-        if secrets { "variables" } else { "secrets" },
-        true,
-        true,
-        ToggleView,
-    ));
+    // `[` / `]` switch the ESV tab's inner sub-tabs (Variables ⇄ Secrets);
+    // the Scripts tab has no sub-views.
+    if !scripts_tab {
+        out.push(b(
+            &[Trigger::Char('['), Trigger::Char(']')],
+            "[ ]",
+            if secrets { "variables" } else { "secrets" },
+            true,
+            true,
+            ToggleView,
+        ));
+    }
     out.push(b(&[Trigger::Char('/')], "/", "search", true, true, Search));
 
     // Movement (help-only; the footer stays uncluttered).
@@ -194,53 +203,68 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         PageUp,
     ));
 
-    if n > 0 {
-        if secrets {
+    if scripts_tab {
+        if n > 0 {
             out.push(b(
-                &[Trigger::Code(KeyCode::Enter), Trigger::Char('v')],
-                "Enter",
-                "versions",
+                &[Trigger::Char('p'), Trigger::Code(KeyCode::Enter)],
+                "p",
+                "pull",
                 true,
                 true,
-                Primary,
+                Pull,
             ));
-        } else {
+            out.push(b(&[Trigger::Char('P')], "P", "push", true, true, Push));
+        }
+        out.push(b(&[Trigger::Char('a')], "a", "pull all", true, true, PullAll));
+    } else {
+        if n > 0 {
+            if secrets {
+                out.push(b(
+                    &[Trigger::Code(KeyCode::Enter), Trigger::Char('v')],
+                    "Enter",
+                    "versions",
+                    true,
+                    true,
+                    Primary,
+                ));
+            } else {
+                out.push(b(
+                    &[Trigger::Code(KeyCode::Enter)],
+                    "Enter",
+                    "edit",
+                    true,
+                    true,
+                    Primary,
+                ));
+            }
             out.push(b(
-                &[Trigger::Code(KeyCode::Enter)],
-                "Enter",
-                "edit",
+                &[Trigger::Char('d'), Trigger::Char('D')],
+                "d",
+                "delete",
                 true,
                 true,
-                Primary,
+                Delete,
             ));
         }
+
         out.push(b(
-            &[Trigger::Char('d'), Trigger::Char('D')],
-            "d",
-            "delete",
+            &[Trigger::Ctrl('n')],
+            "^N",
+            if secrets { "new secret" } else { "new variable" },
             true,
             true,
-            Delete,
+            NewItem,
+        ));
+        out.push(b(&[Trigger::Ctrl('z')], "^Z", "undo", true, true, Undo));
+        out.push(b(
+            &[Trigger::Ctrl('y')],
+            "^Y",
+            "undo history",
+            true,
+            true,
+            UndoHistory,
         ));
     }
-
-    out.push(b(
-        &[Trigger::Ctrl('n')],
-        "^N",
-        if secrets { "new secret" } else { "new variable" },
-        true,
-        true,
-        NewItem,
-    ));
-    out.push(b(&[Trigger::Ctrl('z')], "^Z", "undo", true, true, Undo));
-    out.push(b(
-        &[Trigger::Ctrl('y')],
-        "^Y",
-        "undo history",
-        true,
-        true,
-        UndoHistory,
-    ));
 
     // Esc clears an active filter (only meaningful when one is applied).
     if filter_active(app) {
@@ -254,15 +278,18 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         ));
     }
 
-    // Global commands available on every populated screen.
-    out.push(b(
-        &[Trigger::Char('r'), Trigger::Char('R')],
-        "r",
-        "switch realm",
-        false,
-        true,
-        RealmToggle,
-    ));
+    // Global commands available on every populated screen. Realm toggle only
+    // applies to the ESV tab — scripts are addressed by namespace, not realm.
+    if !scripts_tab {
+        out.push(b(
+            &[Trigger::Char('r'), Trigger::Char('R')],
+            "r",
+            "switch realm",
+            false,
+            true,
+            RealmToggle,
+        ));
+    }
     out.push(b(
         &[Trigger::Char('t'), Trigger::Char('T')],
         "t",
@@ -307,7 +334,9 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out.push(("?", "keys"));
             out
         }
-        InputMode::EsvSearch => vec![("Enter", "keep filter"), ("Esc", "clear + exit")],
+        InputMode::EsvSearch | InputMode::ScriptSearch => {
+            vec![("Enter", "keep filter"), ("Esc", "clear + exit")]
+        }
         InputMode::SecretCreate => {
             use crate::screens::secret::CreateField;
             let mut out = vec![("Tab", "next field")];
@@ -392,6 +421,7 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::ProdConfirm => crate::screens::prod_confirm::handle_key(app, key).await?,
         InputMode::UndoHistory => crate::screens::undo_history::handle_key(app, key),
         InputMode::EsvSearch => crate::screens::esv::handle_search_key(app, key),
+        InputMode::ScriptSearch => crate::screens::scripts::handle_search_key(app, key),
         InputMode::EsvEdit => crate::screens::esv::handle_edit_key(app, key)?,
         InputMode::EsvRestartConfirm => crate::screens::esv::handle_restart_confirm_key(app, key)?,
         InputMode::EsvDeleteConfirm => crate::screens::esv::handle_delete_confirm_key(app, key)?,
@@ -428,7 +458,13 @@ async fn run_normal(app: &mut App, act: Act) {
         NextTab => cycle_tab(app, 1),
         PrevTab => cycle_tab(app, -1),
         ToggleView => app.esv.view = app.esv.view.toggled(),
-        Search => app.input_mode = InputMode::EsvSearch,
+        Search => {
+            app.input_mode = if app.current_tab == Tab::Scripts {
+                InputMode::ScriptSearch
+            } else {
+                InputMode::EsvSearch
+            }
+        }
         ClearFilter => clear_filter(app),
         MoveDown => move_selection(app, 1),
         MoveUp => move_selection(app, -1),
@@ -439,6 +475,9 @@ async fn run_normal(app: &mut App, act: Act) {
         Primary => primary(app),
         Delete => delete(app),
         NewItem => new_item(app),
+        Pull => crate::screens::scripts::pull_selected(app),
+        Push => crate::screens::scripts::push_selected(app),
+        PullAll => crate::screens::scripts::pull_all(app),
         Apply => crate::screens::esv::request_restart(app),
         Undo => crate::screens::esv::request_latest_undo(app),
         UndoHistory => {
@@ -477,9 +516,20 @@ fn cycle_tab(app: &mut App, delta: isize) {
     let cur = tabs.iter().position(|t| *t == app.current_tab).unwrap_or(0) as isize;
     let next = (cur + delta).rem_euclid(n as isize) as usize;
     app.current_tab = tabs[next];
+    // Lazily load the scripts list the first time the user lands on the tab —
+    // it's a few list calls, so we don't pay for it unless it's visited.
+    if app.current_tab == Tab::Scripts {
+        crate::screens::scripts::refresh(app, false);
+    }
 }
 
 fn row_count(app: &App) -> usize {
+    if app.current_tab == Tab::Scripts {
+        return app
+            .scripts
+            .matches(app.active_tenant().map(|t| t.name.as_str()))
+            .len();
+    }
     match app.esv.view {
         EsvView::Variables => app.esv_matches().len(),
         EsvView::Secrets => {
@@ -489,6 +539,9 @@ fn row_count(app: &App) -> usize {
 }
 
 fn current_selection(app: &App) -> usize {
+    if app.current_tab == Tab::Scripts {
+        return app.scripts.selected;
+    }
     match app.esv.view {
         EsvView::Variables => app.esv.list.selected,
         EsvView::Secrets => app.secret.list.selected,
@@ -498,6 +551,10 @@ fn current_selection(app: &App) -> usize {
 fn set_selection(app: &mut App, idx: usize) {
     let n = row_count(app);
     let clamped = if n == 0 { 0 } else { idx.min(n - 1) };
+    if app.current_tab == Tab::Scripts {
+        app.scripts.selected = clamped;
+        return;
+    }
     match app.esv.view {
         EsvView::Variables => app.esv.list.selected = clamped,
         EsvView::Secrets => app.secret.list.selected = clamped,
@@ -516,6 +573,9 @@ pub fn move_selection(app: &mut App, delta: isize) {
 }
 
 fn filter_active(app: &App) -> bool {
+    if app.current_tab == Tab::Scripts {
+        return !app.scripts.query.is_empty();
+    }
     match app.esv.view {
         EsvView::Variables => !app.esv.list.query.is_empty(),
         EsvView::Secrets => !app.secret.list.query.is_empty(),
@@ -523,6 +583,10 @@ fn filter_active(app: &App) -> bool {
 }
 
 fn clear_filter(app: &mut App) {
+    if app.current_tab == Tab::Scripts {
+        app.scripts.reset_view();
+        return;
+    }
     match app.esv.view {
         EsvView::Variables => app.esv.reset_view(),
         EsvView::Secrets => {

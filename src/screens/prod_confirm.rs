@@ -36,6 +36,13 @@ pub enum PendingProdAction {
         id: String,
         version: String,
     },
+    ScriptPush {
+        tenant: String,
+        kind: crate::aic::script::Kind,
+        realm: String,
+        name: String,
+        full: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -105,6 +112,17 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                     } => {
                         crate::screens::secret::execute_version_destroy(
                             app, tenant, id, version, true,
+                        );
+                    }
+                    PendingProdAction::ScriptPush {
+                        tenant,
+                        kind,
+                        realm,
+                        name,
+                        full,
+                    } => {
+                        crate::screens::scripts::execute_push(
+                            app, tenant, kind, realm, name, full, true,
                         );
                     }
                 }

@@ -256,6 +256,9 @@ pub struct Candidate {
     pub local: LocalState,
     /// Product-shipped default (AM `default:true`) — `push all` skips these.
     pub is_default: bool,
+    /// AM script `context` (routes the workspace dir: src/lib/oidc); `None`
+    /// for IDM. Carried so callers can reconstruct the local file path.
+    pub context: Option<String>,
 }
 
 /// The local state of one (already-known) reference — snapshot vs the file on
@@ -311,6 +314,7 @@ pub async fn pull_candidates(tenant: &str) -> Result<Vec<Candidate>> {
                 kind: ns.kind,
                 realm: ns.realm.clone(),
                 is_default: r.is_default,
+                context: r.context,
                 name: r.name,
                 local,
             });
@@ -331,11 +335,36 @@ pub fn push_candidates(tenant: &str) -> Result<Vec<Candidate>> {
             kind: e.reference.kind,
             realm: e.realm,
             is_default: e.reference.is_default,
+            context: e.reference.context,
             name: e.reference.name,
             local,
         });
     }
     Ok(out)
+}
+
+/// A candidate's source for preview: the local workspace file if present
+/// (what a push would send), else the last-synced snapshot, else `None`
+/// (never pulled — nothing local to show). Cheap; no network.
+pub fn preview_source(tenant: &str, c: &Candidate) -> Option<String> {
+    let realm = c.realm.as_deref().unwrap_or_default();
+    let r = RemoteRef {
+        kind: c.kind,
+        id: String::new(),
+        name: c.name.clone(),
+        context: c.context.clone(),
+        is_default: c.is_default,
+    };
+    if let Ok(Some(bytes)) = read_local(&workspace_file(tenant, realm, &r)) {
+        return Some(lossy(&bytes));
+    }
+    let store = SnapshotStore::open(tenant);
+    if let Ok(Some(cfg)) = store.load_config(&r, realm) {
+        if let Ok(bytes) = c.kind.decode_source(&cfg) {
+            return Some(lossy(&bytes));
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
