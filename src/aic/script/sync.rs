@@ -754,4 +754,140 @@ mod tests {
 
         std::fs::remove_dir_all(dir).unwrap();
     }
+
+    // ----- snapshot-store manifest keying ---------------------------------
+    // These exercise the engine's identity rule: every entry is keyed on
+    // (kind, name, realm), where realm is Some only for realm-scoped kinds.
+    // The store is built with an explicit temp `dir` so the tests don't depend
+    // on the cwd-relative workspace root.
+
+    use serde_json::json;
+
+    fn store_at(dir: &Path) -> SnapshotStore {
+        SnapshotStore { dir: dir.to_path_buf() }
+    }
+
+    fn tmp() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("aic-sync-store-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn am_ref(name: &str) -> RemoteRef {
+        RemoteRef {
+            kind: Kind::Am,
+            id: format!("uuid-{name}"),
+            name: name.into(),
+            context: None,
+            is_default: false,
+        }
+    }
+
+    fn endpoint_ref(name: &str) -> RemoteRef {
+        RemoteRef {
+            kind: Kind::IdmEndpoint,
+            id: format!("endpoint/{name}"),
+            name: name.into(),
+            context: None,
+            is_default: false,
+        }
+    }
+
+    fn script(reference: RemoteRef, raw: Value) -> RemoteScript {
+        RemoteScript { reference, raw_config: raw }
+    }
+
+    #[test]
+    fn realm_key_is_set_only_for_realm_scoped_kinds() {
+        assert_eq!(SnapshotStore::realm_key(Kind::Am, "alpha"), Some("alpha".into()));
+        assert_eq!(SnapshotStore::realm_key(Kind::Am, "bravo"), Some("bravo".into()));
+        assert_eq!(SnapshotStore::realm_key(Kind::IdmEndpoint, "alpha"), None);
+        assert_eq!(SnapshotStore::realm_key(Kind::IdmSchedule, "bravo"), None);
+    }
+
+    #[test]
+    fn am_same_name_in_two_realms_stays_distinct() {
+        let dir = tmp();
+        let store = store_at(&dir);
+        store
+            .record(&script(am_ref("Shared"), json!({"script": "YQ=="})), "alpha")
+            .unwrap();
+        store
+            .record(&script(am_ref("Shared"), json!({"script": "Yg=="})), "bravo")
+            .unwrap();
+
+        // Two manifest entries, one per realm — not one clobbering the other.
+        assert_eq!(store.load_manifest().unwrap().len(), 2);
+        assert_eq!(
+            store.lookup(Kind::Am, "Shared", "alpha").unwrap().unwrap().realm,
+            Some("alpha".into())
+        );
+        assert_eq!(
+            store.lookup(Kind::Am, "Shared", "bravo").unwrap().unwrap().realm,
+            Some("bravo".into())
+        );
+        // Configs are namespaced per realm too — no cross-realm clobber.
+        assert_eq!(store.load_config(&am_ref("Shared"), "alpha").unwrap(), Some(json!({"script": "YQ=="})));
+        assert_eq!(store.load_config(&am_ref("Shared"), "bravo").unwrap(), Some(json!({"script": "Yg=="})));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn idm_endpoint_normalizes_realm_to_none() {
+        let dir = tmp();
+        let store = store_at(&dir);
+        store
+            .record(&script(endpoint_ref("myEp"), json!({"source": "x"})), "alpha")
+            .unwrap();
+        // "Re-syncing" the same endpoint under a different realm arg must not
+        // create a second entry — IDM is tenant-global (realm key is None).
+        store
+            .record(&script(endpoint_ref("myEp"), json!({"source": "y"})), "bravo")
+            .unwrap();
+
+        assert_eq!(store.load_manifest().unwrap().len(), 1);
+        let found = store.lookup(Kind::IdmEndpoint, "myEp", "alpha").unwrap().unwrap();
+        assert_eq!(found.realm, None);
+        // Lookup resolves regardless of the realm argument passed.
+        assert!(store.lookup(Kind::IdmEndpoint, "myEp", "bravo").unwrap().is_some());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn re_recording_same_key_replaces_in_place() {
+        let dir = tmp();
+        let store = store_at(&dir);
+        store.record(&script(am_ref("A"), json!({"script": "YQ=="})), "alpha").unwrap();
+        store.record(&script(am_ref("A"), json!({"script": "Yg=="})), "alpha").unwrap();
+
+        assert_eq!(store.load_manifest().unwrap().len(), 1);
+        assert_eq!(store.load_config(&am_ref("A"), "alpha").unwrap(), Some(json!({"script": "Yg=="})));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn remove_drops_only_the_targeted_realm() {
+        let dir = tmp();
+        let store = store_at(&dir);
+        store.record(&script(am_ref("Shared"), json!({"script": "YQ=="})), "alpha").unwrap();
+        store.record(&script(am_ref("Shared"), json!({"script": "Yg=="})), "bravo").unwrap();
+
+        store.remove(Kind::Am, "Shared", "alpha").unwrap();
+
+        assert!(store.lookup(Kind::Am, "Shared", "alpha").unwrap().is_none());
+        assert!(store.lookup(Kind::Am, "Shared", "bravo").unwrap().is_some());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn selector_matches_all_or_exact_name() {
+        let r = am_ref("Widget");
+        assert!(Selector::All.matches(&r));
+        assert!(Selector::Name("Widget".into()).matches(&r));
+        assert!(!Selector::Name("Other".into()).matches(&r));
+    }
 }
