@@ -81,11 +81,22 @@ Each context has its own permitted `languages` (`JAVASCRIPT`, occasionally
 }
 ```
 
-- `default: true` ⇒ ForgeRock-shipped default. Cannot be modified or deleted.
+- `default: true` ⇒ ForgeRock-shipped default. **Editable** (a content PUT
+  succeeds — verified 2026-06-03); cannot be *deleted*. (`aic` pushes defaults
+  like any other script — no `--force` needed.)
 - `evaluatorVersion`: `"1.0"` or `"2.0"`. Affects available bindings; v2 is
   the current default for new scripts.
 - **No `_rev` field.** Optimistic locking via `If-Match` is not available for
   scripts. **Conflict detection must be content-based.**
+- **`GROOVY` scripts** (`language: "GROOVY"`) — AIC has dropped Groovy support;
+  old tenants still carry many. `aic` does not sync them (filtered in the list).
+- **Product-internal scripts** are named `"ForgeRock Internal: …"`. A
+  `GET …/scripts/{id}` on one returns **403** `"This operation is not available
+  in PingOne Advanced Identity Cloud."` — they're read-protected, so un-pullable.
+  **No field in the list record marks them as internal** (verified 2026-06-03 —
+  `default`, `createdBy`/`lastModifiedBy` null, `creationDate`, `context` all
+  overlap normal scripts); the only reliable signal is the name prefix. `aic`
+  hides them from the list.
 
 ## Conflict detection rule (for two-way sync)
 
