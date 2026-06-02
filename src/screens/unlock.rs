@@ -134,7 +134,9 @@ pub async fn try_agent_unlock(app: &mut App) {
 /// screen, and the TUI can keep going (agent calls will just re-prompt).
 pub async fn put_dek_to_agent(app: &App) {
     let Some(dek) = app.dek_clone() else { return };
-    if let Err(e) = crate::auth::put_dek_to_agent(&dek).await {
+    let result = crate::auth::put_dek_to_agent(&dek).await;
+    drop(dek);
+    if let Err(e) = result {
         tracing::warn!("PutDek failed: {e}");
     }
 }
@@ -187,7 +189,8 @@ fn spawn_security_key_poll(app: &mut App, pin: String) {
             // Single allowList call across every enrolled credential —
             // the device picks the one it has, we identify the wrap
             // from the returned credential_id.
-            match crate::config::unlock_with_security_key(&wraps, pin_opt) {
+            let result = crate::config::unlock_with_security_key(&wraps, pin_opt);
+            match result {
                 Ok((dek, jwks)) => {
                     let _ = tx.send(AppEvent::UnlockResult(Ok(UnlockOk { dek, jwks })));
                     return;

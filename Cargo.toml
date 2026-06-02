@@ -1,7 +1,8 @@
 [package]
 name = "aic-edit"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 description = "Ratatui TUI for managing PingOne Advanced Identity Cloud configuration"
 
 # Short binary name — `aic` instead of `aic-edit`. The library crate keeps the

@@ -162,15 +162,16 @@ pub async fn run(opts: DaemonOptions) -> Result<()> {
 
     let accept_loop = async {
         loop {
-            match listener.accept().await {
+            let accepted = listener.accept().await;
+            match accepted {
                 Ok((stream, _)) => {
                     let state = state.clone();
                     let shutdown = shutdown.clone();
-                    tokio::spawn(async move {
+                    drop(tokio::spawn(async move {
                         if let Err(e) = handle_connection(stream, state, shutdown).await {
                             tracing::warn!(error = %e, "connection handler failed");
                         }
-                    });
+                    }));
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "accept failed");
@@ -193,10 +194,13 @@ pub async fn run(opts: DaemonOptions) -> Result<()> {
 
 async fn wait_sigterm() {
     use tokio::signal::unix::{signal, SignalKind};
-    if let Ok(mut s) = signal(SignalKind::terminate()) {
-        s.recv().await;
-    } else {
-        futures::future::pending::<()>().await;
+    match signal(SignalKind::terminate()) {
+        Ok(mut s) => {
+            s.recv().await;
+        }
+        _ => {
+            futures::future::pending::<()>().await;
+        }
     }
 }
 
@@ -387,8 +391,9 @@ async fn do_get_token(
         if !s.is_unlocked() {
             return Ok(None);
         }
-        if let Some(client) = s.clients.get(tenant).cloned() {
-            drop(s);
+        let client = s.clients.get(tenant).cloned();
+        drop(s);
+        if let Some(client) = client {
             let token = client.bearer().await?;
             let expires_at = client.token_cache.lock().unwrap().expires_at();
             return Ok(Some((token, expires_at)));
