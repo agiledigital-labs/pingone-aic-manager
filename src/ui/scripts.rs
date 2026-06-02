@@ -88,11 +88,7 @@ fn render_row(m: &Match, is_selected: bool) -> Line<'static> {
     let modified = m.local == LocalState::Modified;
     let missing = m.local == LocalState::Missing;
 
-    let base_fg = if m.is_default {
-        Color::DarkGray
-    } else {
-        Color::Gray
-    };
+    let base_fg = Color::Gray;
     let row_style = if is_selected {
         Style::default()
             .fg(Color::Black)
