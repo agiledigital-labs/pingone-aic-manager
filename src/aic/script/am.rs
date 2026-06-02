@@ -43,6 +43,23 @@ fn is_javascript(raw: &Value) -> bool {
     raw.get("language").and_then(|v| v.as_str()) != Some("GROOVY")
 }
 
+/// Product-internal scripts AIC ships and protects: `fetch`-by-id 403s
+/// ("not available in PingOne Advanced Identity Cloud"), so they can't be
+/// pulled anyway. No API field marks them as internal (checked every field —
+/// `default`, `createdBy`/`lastModifiedBy`, `creationDate` all overlap normal
+/// scripts); the only reliable signal is the `"ForgeRock Internal:"` name
+/// prefix. Hide them so they don't clutter the list with un-pullable rows.
+fn is_internal(raw: &Value) -> bool {
+    raw.get("name")
+        .and_then(|v| v.as_str())
+        .is_some_and(|n| n.starts_with("ForgeRock Internal:"))
+}
+
+/// Whether a listed AM script is one the tool syncs (JavaScript, not internal).
+fn is_syncable(raw: &Value) -> bool {
+    is_javascript(raw) && !is_internal(raw)
+}
+
 fn str_field(raw: &Value, key: &str) -> String {
     raw.get(key)
         .and_then(|v| v.as_str())
@@ -72,9 +89,9 @@ pub async fn list(tenant: &str, realm: &str) -> Result<Vec<RemoteRef>> {
                 body: format!("unexpected scripts list shape: {body}"),
             })?;
         let n = arr.len();
-        // `n` (the server's page size) drives paging; only JS scripts make it
-        // into `refs`. Groovy is excluded (see `is_javascript`).
-        refs.extend(arr.iter().filter(|el| is_javascript(el)).map(ref_from_config));
+        // `n` (the server's page size) drives paging; only syncable scripts
+        // make it into `refs` — Groovy and product-internal ones are dropped.
+        refs.extend(arr.iter().filter(|el| is_syncable(el)).map(ref_from_config));
         // `remainingPagedResults` is authoritative here; `-1` (unknown) falls
         // back to "stop once a page comes back empty".
         let remaining = body
@@ -315,6 +332,17 @@ mod tests {
             config_subpath(&rref(Some("OIDC_CLAIMS")), "bravo"),
             PathBuf::from("am/bravo/oidc-claims/MyScript.script.json")
         );
+    }
+
+    #[test]
+    fn skips_groovy_and_internal_scripts() {
+        assert!(is_syncable(&json!({"name": "My Node", "language": "JAVASCRIPT"})));
+        // Groovy is no longer supported by AIC.
+        assert!(!is_syncable(&json!({"name": "Old Mapper", "language": "GROOVY"})));
+        // Product-internal scripts (only the name prefix marks them).
+        assert!(!is_syncable(
+            &json!({"name": "ForgeRock Internal: OIDC Claims Script", "language": "JAVASCRIPT"})
+        ));
     }
 
     #[test]
