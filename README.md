@@ -7,7 +7,8 @@ that holds decrypted service-account keys in memory and mints / refreshes
 bearer tokens on demand, so every tenant call goes through one path.
 
 **Status:** Step 1 + Step 2 + agent / CLI + ESVs (variables + secrets) +
-script sync (`aic script` — AM scripts + IDM endpoints, CLI) complete.
+script sync (`aic script` — AM scripts + IDM endpoints/schedules: pull/push/
+sync/watch/diff, CLI) complete.
 Onboarding (cookie / userpass / paste / sandbox-import) works end-to-end.
 OAuth2 / SAML / journeys, and a TUI Scripts tab, are the next slices — see
 [PLAN.md](PLAN.md).
@@ -271,8 +272,8 @@ each checkout with its own `.aic-edit/` gets its own agent.
 | **2.** TUI foundation, encryption, three-pattern onboarding     | ✅ done     | Unlock + onboarding screens, `keys.enc` / `wraps.toml` (master-pw + security-key envelope)    |
 | **3.** Agent + CLI                                              | ✅ done     | Single-binary `aic`, Unix-socket protocol, `aic::api` + `aic::esv` shared between TUI and CLI |
 | **4.** ESVs — list + fuzzy search + preview                     | ✅ done     | `/`-search with live scoring (nucleo), vertical split with JSON preview                       |
-| **5.** ESVs — edit + apply (`/environment/startup?_action=…`)   | next        |                                                                                               |
-| **6.** Scripts (two-way sync with content-based conflict check) | CLI done    | `aic script` — AM scripts + IDM endpoints, kind-agnostic pull/push/diff core, typed `./workspace` (TUI tab + watch deferred) |
+| **5.** ESVs — edit + apply (`/environment/startup?_action=…`)   | ✅ done     | Editable variables + secrets with banner-driven save/apply, delete + undo                     |
+| **6.** Scripts (two-way sync with content-based conflict check) | ✅ CLI      | `aic script` — AM scripts + IDM endpoints + schedules; kind-agnostic pull/push/sync/watch/status/diff core, typed `./workspace` (TUI tab deferred) |
 | Later                                                           |             | OAuth2 / OIDC, SAML, Journeys, Logs, App.rs screen-split refactor                             |
 
 ## How to work on this codebase (for AI assistants)
