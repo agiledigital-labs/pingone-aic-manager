@@ -63,7 +63,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match app.input_mode {
         InputMode::Normal => normal_lines(app, &mut lines),
-        InputMode::EsvSearch => esv_search_lines(&mut lines),
+        InputMode::EsvSearch | InputMode::ScriptSearch => esv_search_lines(&mut lines),
         InputMode::EsvEdit => esv_edit_lines(app, &mut lines),
         InputMode::EsvRestartConfirm => confirm_lines(
             &mut lines,
