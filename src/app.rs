@@ -413,7 +413,8 @@ impl App {
             if self.should_quit {
                 break;
             }
-            match self.events.rx.recv().await {
+            let event = self.events.rx.recv().await;
+            match event {
                 Some(ev) => self.handle_event(ev).await?,
                 None => break,
             }
