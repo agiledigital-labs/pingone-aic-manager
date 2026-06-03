@@ -9,6 +9,7 @@
     "noEmit": true,
     "moduleResolution": "node",
     "esModuleInterop": true,
+    "types": [],
     "moduleDetection": "force",
     "verbatimModuleSyntax": false,
     "noUnusedLocals": true,
@@ -21,6 +22,6 @@
     "useUnknownInCatchVariables": false,
     "strictNullChecks": true
   },
-  "include": ["**/*", "*.d.ts"],
+  "include": ["**/*", "types/*.d.ts"],
   "exclude": ["node_modules", "dist"]
 }

@@ -15,7 +15,7 @@ declare function _nodeStateGet(
 
 interface NodeState {
   get: typeof _nodeStateGet;
-  getObject: (key: StringLike) => Object | null | undefined;
+  getObject: (key: StringLike) => object | null | undefined;
   putShared: (key: StringLike, value: any) => void;
   putTransient: (key: StringLike, value: any) => void;
 }

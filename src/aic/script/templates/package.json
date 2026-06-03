@@ -4,14 +4,13 @@
   "description": "PingOne Advanced Identity Cloud scripts",
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "lint": "eslint am/ idm/ --ignore-pattern=node_modules --ignore-pattern=dist",
-    "lint:fix": "eslint am/ idm/ --ignore-pattern=node_modules --ignore-pattern=dist --fix",
+    "lint": "(cd am && eslint .) && (cd idm && eslint .)",
+    "lint:fix": "(cd am && eslint . --fix) && (cd idm && eslint . --fix)",
     "format": "prettier --write am/**/*.{js,cjs,ts} idm/**/*.{js,cjs,ts}",
     "format:check": "prettier --check am/**/*.{js,cjs,ts} idm/**/*.{js,cjs,ts}",
     "test": "jest",
-    "type-check": "tsc --noEmit"
+    "type-check": "node tools/check-types.mjs",
+    "build": "node tools/check-types.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

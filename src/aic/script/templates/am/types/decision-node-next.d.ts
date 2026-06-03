@@ -3,8 +3,12 @@
 //
 // Verified present in a next-gen scripted decision node (2026-06-03):
 //   callbacksBuilder, requestCookies, resumedFromSuspend, secrets.
-// (require/openidm/utils/httpClient are common to all next-gen scripts and live
-// in common.d.ts.)
+// (openidm/utils/httpClient are common to all next-gen scripts and live in
+// common.d.ts.)
+
+// Next-gen scripted decision scripts can require() library scripts (resolved via
+// the leaf tsconfig `paths` alias to ../lib/*).
+declare function require(id: string): any;
 
 type StringAttributePolicy =
   | {

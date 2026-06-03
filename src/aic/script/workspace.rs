@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 6;
+pub const TEMPLATES_VERSION: u32 = 7;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -44,6 +44,8 @@ const MANAGED: &[(&str, &str)] = &[
     ("idm/eslint.config.js", include_str!("templates/idm/eslint.config.js")),
     ("idm/endpoint/tsconfig.json", include_str!("templates/idm/endpoint/tsconfig.json")),
     ("idm/schedule/tsconfig.json", include_str!("templates/idm/schedule/tsconfig.json")),
+    // Tooling: per-leaf type-check runner used by `npm run type-check`.
+    ("tools/check-types.mjs", include_str!("templates/tools/check-types.mjs")),
 ];
 
 /// Files this tool managed under older template versions that are now obsolete
@@ -144,7 +146,15 @@ pub fn update(tenant: &str) -> Result<WorkspaceReport> {
 
 fn scaffold(tenant: &str, is_update: bool) -> Result<WorkspaceReport> {
     let tree = ProjectConfig::workspace_tree(tenant);
-    let mut report = WorkspaceReport { tree: tree.clone(), ..Default::default() };
+    let report = scaffold_at(&tree, is_update)?;
+    record_version(tenant)?;
+    Ok(report)
+}
+
+/// Scaffold into an explicit `tree` dir (no tenant state). Split out from
+/// [`scaffold`] so it can be exercised against a temp dir in tests.
+fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
+    let mut report = WorkspaceReport { tree: tree.to_path_buf(), ..Default::default() };
 
     // AM script folders are created per type on pull (each gets its own leaf
     // `tsconfig.json` then — see `am::extra_files`), so we only scaffold the
@@ -207,7 +217,6 @@ fn scaffold(tenant: &str, is_update: bool) -> Result<WorkspaceReport> {
         }
     }
 
-    record_version(tenant)?;
     Ok(report)
 }
 
@@ -240,5 +249,63 @@ mod tests {
         // The old root type defs are scheduled for cleanup on update.
         assert!(OBSOLETE.contains(&"am/src.d.ts"));
         assert!(OBSOLETE.contains(&"idm/idmCommon.d.ts"));
+    }
+
+    fn temp_tree() -> PathBuf {
+        std::env::temp_dir().join(format!("aic-ws-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn init_writes_managed_and_user_files() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+
+        // Layered managed type defs + tooling are written.
+        assert!(tree.join("am/types/common.d.ts").exists());
+        assert!(tree.join("am/types/decision-node-next.d.ts").exists());
+        assert!(tree.join("idm/types/endpoint.d.ts").exists());
+        assert!(tree.join("tools/check-types.mjs").exists());
+        assert!(tree.join("am/eslint.config.js").exists());
+        // User files seeded on init.
+        assert!(tree.join("package.json").exists());
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_deletes_obsolete_managed_files() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+
+        // Simulate a pre-v6 workspace carrying an old managed type def.
+        let stale = tree.join("am/src.d.ts");
+        std::fs::write(&stale, "// old managed file\n").unwrap();
+        assert!(stale.exists());
+
+        let report = scaffold_at(&tree, true).unwrap();
+        assert!(!stale.exists(), "obsolete file should be deleted on update");
+        assert!(report.removed.iter().any(|p| p.ends_with("am/src.d.ts")));
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_regenerates_existing_leaf_tsconfig() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+
+        // A previously-pulled folder with a stale leaf tsconfig (old type path).
+        let folder = tree.join("am/alpha/decision-node");
+        std::fs::create_dir_all(&folder).unwrap();
+        let leaf = folder.join("tsconfig.json");
+        std::fs::write(&leaf, "{ \"include\": [\"../../src.d.ts\"] }").unwrap();
+
+        scaffold_at(&tree, true).unwrap();
+
+        let refreshed = std::fs::read_to_string(&leaf).unwrap();
+        assert!(refreshed.contains("../../types/decision-node-next.d.ts"));
+        assert!(!refreshed.contains("src.d.ts"));
+
+        std::fs::remove_dir_all(&tree).ok();
     }
 }
