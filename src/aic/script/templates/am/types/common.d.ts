@@ -16,6 +16,11 @@ declare const systemEnv: SystemEnv;
 interface HttpHeaders {
   "Content-Type"?: "application/json" | "application/x-www-form-urlencoded";
   "X-Api-Key"?: string;
+  /**
+   * NOT honored by the next-gen httpClient — setting Authorization directly here
+   * has no effect. Use `HttpOptions.token` (Bearer) instead. (Basic auth via the
+   * next-gen client is an open question — see docs/api/12.)
+   */
   Authorization?: string;
   x_creation_datetime?: string;
   "x-correlation-id"?: string;
@@ -25,6 +30,11 @@ interface HttpOptions {
   method: "GET" | "POST" | "PUT" | "DELETE";
   clientName?: string;
   headers?: HttpHeaders;
+  /**
+   * Bearer token: sent as `Authorization: Bearer <token>`. In next-gen scripts
+   * you cannot set the Authorization header directly — set `token` instead.
+   * (How to send Basic auth this way is not yet known — see docs/api/12.)
+   */
   token?: string;
   body?: object;
   form?: object;

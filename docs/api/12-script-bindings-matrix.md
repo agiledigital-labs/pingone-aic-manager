@@ -235,3 +235,16 @@ binding *presence* (typeof). Resolved 2026-06-04: legacy (`evaluatorVersion:
 3. IDM: `let`, `const`, `logger`, `request`, `context`, `openidm`, and which Node
    globals (if any) exist — endpoint first, then schedule. (AM tester pattern
    transfers; needs an IDM endpoint probe resource.)
+4. **Full next-gen `callbacksBuilder` + `utils` inventory.** The current
+   `decision-node-next.d.ts` (`callbacksBuilder`) and `nextgen-common.d.ts`
+   (`utils`) only cover the methods we've actually used. Many more callback
+   builders / utility functions exist, and several documented ones have multiple
+   **argument-count overloads** not yet captured. Do a full sweep (Ping docs +
+   probing the live binding surface) and enrich each with JSDoc (param meaning,
+   message-type enums, overloads) so the editor surfaces them. Owner-flagged
+   2026-06-04 as a wanted review.
+5. **`httpClient` auth.** Verified (user, 2026-06-04): next-gen `httpClient`
+   ignores a directly-set `Authorization` header — you must use
+   `HttpOptions.token`, which is sent as `Authorization: Bearer <token>`. **Open:
+   how to send Basic auth** via the next-gen client (does `token` accept a
+   pre-encoded value? is there another option field?). Investigate, then type it.

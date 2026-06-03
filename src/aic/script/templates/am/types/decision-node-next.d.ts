@@ -39,6 +39,9 @@ type StringAttributePolicies = {
   policyRequirements: Array<StringAttributePolicyRequirements>;
 };
 
+// INCOMPLETE: only the callback builders we've used so far, and some have more
+// argument-count overloads than captured here. Full inventory + richer JSDoc is
+// a tracked review — see docs/api/12-script-bindings-matrix.md open item #4.
 interface CallbacksBuilder {
   textInputCallback(message: StringLike): void;
   confirmationCallback(
