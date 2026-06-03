@@ -70,6 +70,8 @@ pub enum Command {
     Whoami {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        #[arg(long, help = "Print only the full bearer token for scripting")]
+        token: bool,
     },
     /// ESV operations (variables, secrets).
     Esv {
@@ -393,7 +395,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Stop) => stop().await,
         Some(Command::Status) => status().await,
         Some(Command::Ctx { command }) => ctx(command).await,
-        Some(Command::Whoami { tenant }) => whoami(tenant).await,
+        Some(Command::Whoami { tenant, token }) => whoami(tenant, token).await,
         Some(Command::Esv { command }) => esv(command).await,
         Some(Command::Script { command }) => script(command).await,
         None => unreachable!("dispatch handled at top level"),
@@ -726,7 +728,7 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
     Ok(())
 }
 
-async fn whoami(tenant_arg: Option<String>) -> Result<()> {
+async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
     let cfg = ProjectConfig::load()?
         .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
     let tenant = resolve_tenant(tenant_arg, &cfg)?;
@@ -735,9 +737,13 @@ async fn whoami(tenant_arg: Option<String>) -> Result<()> {
     match client.send(&Request::GetToken { tenant: tenant.clone() }).await? {
         Response::Token { access_token, expires_at } => {
             let ttl = expires_at - chrono::Utc::now().timestamp();
-            println!("tenant:  {tenant}");
-            println!("expires: in {ttl}s (unix {expires_at})");
-            println!("token:   {}", redact(&access_token));
+            if token_only {
+                println!("{access_token}");
+            } else {
+                println!("tenant:  {tenant}");
+                println!("expires: in {ttl}s (unix {expires_at})");
+                println!("token:   {}", redact(&access_token));
+            }
             Ok(())
         }
         Response::Locked => Err(Error::Auth("agent locked; run `aic login`".into())),
