@@ -235,16 +235,19 @@ binding *presence* (typeof). Resolved 2026-06-04: legacy (`evaluatorVersion:
 3. IDM: `let`, `const`, `logger`, `request`, `context`, `openidm`, and which Node
    globals (if any) exist — endpoint first, then schedule. (AM tester pattern
    transfers; needs an IDM endpoint probe resource.)
-4. **Full next-gen `callbacksBuilder` + `utils` inventory.** The current
-   `decision-node-next.d.ts` (`callbacksBuilder`) and `nextgen-common.d.ts`
-   (`utils`) only cover the methods we've actually used. Many more callback
-   builders / utility functions exist, and several documented ones have multiple
-   **argument-count overloads** not yet captured. Do a full sweep (Ping docs +
-   probing the live binding surface) and enrich each with JSDoc (param meaning,
-   message-type enums, overloads) so the editor surfaces them. Owner-flagged
-   2026-06-04 as a wanted review.
+4. **Exact `callbacksBuilder` / `utils` argument sets.** DONE (2026-06-04): the
+   full member inventory was enumerated from the live binding and typed —
+   `callbacksBuilder` now has all 25 builders, `utils` has base64/base64url/
+   crypto/types. STILL OPEN: exact argument sets / overloads for the specialized
+   builders (validated*, redirect, metadata, selectIdP, idP, consentMapping,
+   language, x509Certificate, http — typed permissively as `(...args)`) and the
+   `crypto.subtle`/`randomValues` shapes. Reflection (`getClass`) is blocked in
+   the sandbox and Rhino reports wrapped-method arity as 0, so this needs either
+   Ping's internal API docs or careful trial-calls (mind redirect/suspend
+   callbacks, which change journey flow).
 5. **`httpClient` auth.** Verified (user, 2026-06-04): next-gen `httpClient`
-   ignores a directly-set `Authorization` header — you must use
-   `HttpOptions.token`, which is sent as `Authorization: Bearer <token>`. **Open:
-   how to send Basic auth** via the next-gen client (does `token` accept a
-   pre-encoded value? is there another option field?). Investigate, then type it.
+   ignores a directly-set `Authorization` header — use `HttpOptions.token`, sent
+   as `Authorization: Bearer <token>`. **Open: Basic auth delivery.** The Basic
+   credential itself is built with `utils.base64.encode("user:pass")` (per a
+   script-bindings doc example), but how it's *delivered* in next-gen is unknown
+   (the header is ignored; `token` is Bearer-only). Investigate, then type it.

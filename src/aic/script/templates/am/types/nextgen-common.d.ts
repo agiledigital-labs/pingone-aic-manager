@@ -16,14 +16,46 @@ interface Logger {
 }
 declare const logger: Logger;
 
-// INCOMPLETE: `utils` exposes more than crypto (base64 encode/decode, random,
-// etc.) — only what we've used is typed. Full inventory + JSDoc is a tracked
-// review — see docs/api/12-script-bindings-matrix.md open item #4.
+// `utils` surface enumerated from the live binding (2026-06-04): base64,
+// base64url, crypto, types. Method argument/return shapes follow the docs +
+// Web-Crypto conventions; crypto.subtle/randomValues exact shapes are unverified
+// (see docs/api/12 open item #4).
+interface Base64 {
+  /** Base64-encode a UTF-8 string. e.g. utils.base64.encode("user:pass"). */
+  encode(value: StringLike): string;
+  /** Decode a base64 string back to a UTF-8 string. */
+  decode(value: StringLike): string;
+  /** Decode a base64 string to raw bytes. */
+  decodeToBytes(value: StringLike): JavaByteArray;
+  /** Browser-style: encode a binary string to base64. */
+  btoa(value: StringLike): string;
+  /** Browser-style: decode base64 to a binary string. */
+  atob(value: StringLike): string;
+}
 interface Crypto {
+  /** Random RFC-4122 v4 UUID. */
   randomUUID(): string;
+  /** Web-Crypto-style random values (shape unverified — docs/api/12 #4). */
+  randomValues(...args: any[]): any;
+  getRandomValues(...args: any[]): any;
+  /** SubtleCrypto-like API (shape unverified — docs/api/12 #4). */
+  subtle: any;
+}
+interface Types {
+  /** UTF-8 string → byte array. */
+  stringToBytes(value: StringLike): JavaByteArray;
+  /** Byte array → UTF-8 string. */
+  bytesToString(bytes: JavaByteArray): string;
 }
 interface Utils {
+  /** Base64 (standard alphabet). */
+  base64: Base64;
+  /** Base64url (URL-safe alphabet). */
+  base64url: Base64;
+  /** Random values + UUIDs. */
   crypto: Crypto;
+  /** String ↔ byte conversions. */
+  types: Types;
 }
 declare const utils: Utils;
 
