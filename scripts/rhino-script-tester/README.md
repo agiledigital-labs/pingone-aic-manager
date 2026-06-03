@@ -91,3 +91,43 @@ tmp/rhino-script-tester/logs.json
 ```
 
 The repo-local `tmp/` directory is ignored. Logs can be large, so summarize or filter them before sharing output.
+
+## Batch Probe Runner
+
+`run-probes.sh` uploads each fixture in `fixtures/`, invokes the journey, and
+records structured results to `tmp/rhino-script-tester/probe-results.json`:
+
+```bash
+scripts/rhino-script-tester/run-probes.sh                         # all fixtures
+scripts/rhino-script-tester/run-probes.sh fixtures/arrow-function.script.js
+FETCH_LOGS=1 scripts/rhino-script-tester/run-probes.sh ...        # also pull per-fixture logs
+```
+
+Each fixture probes ONE parse-sensitive feature in isolation (so a parse error
+is attributable) or one grouped runtime check. Result semantics:
+
+- `callback: parsed` + `HTTP 200` → the feature parsed and ran; `payload.value`
+  is the observed result (a missing `value` key means the expression evaluated
+  to `undefined` — a silent Rhino bug, e.g. top-level `const`).
+- `callback: no-callback` + `HTTP 401` → the script failed to **parse** (the node
+  threw before emitting a callback and the journey failed). Run with
+  `FETCH_LOGS=1` to capture the `org.mozilla.javascript.EvaluatorException` text.
+
+## Probe Findings (next-gen scripted decision, 2026-06-03)
+
+Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
+
+- Works: `var`, `const` in a function, arrow functions, template literals, and
+  ES2015 `Array`/`String`/`Object` methods (`includes`, `find`, `from`,
+  `startsWith`, `endsWith`, `repeat`, `assign`, `keys`).
+- Parse errors: `let` (any scope), object shorthand, object destructuring,
+  default parameters, `const` in `for`/`for-in`/`for-of` initializers.
+- Parses but silently `undefined` (worse than a parse error): `const` at top
+  level and `const` declared in a loop body.
+- Bindings present: `require`, `openidm`, `httpClient`, `utils`, `logger`,
+  `idRepository`, `nodeState`, `action`, `callbacks`, `callbacksBuilder`,
+  `requestHeaders`, `requestParameters`, `requestCookies`, `realm`, `systemEnv`,
+  `scriptName`, `secrets`, `resumedFromSuspend`, `JavaImporter`.
+- Bindings absent (`undefined`): `sharedState`, `transientState`,
+  `existingSession`, and all Node globals (`console`, `process`, `Buffer`,
+  `setTimeout`).

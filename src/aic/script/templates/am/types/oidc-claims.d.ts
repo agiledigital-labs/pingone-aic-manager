@@ -1,0 +1,97 @@
+// OIDC claims script bindings.
+//
+// This models the LEGACY OIDC claims context (Java-heavy: claims as Java maps,
+// AMIdentity, JavaImporter, an error/message/warning logger). Next-generation
+// OIDC claims differences are a deferred probe (matrix open item #1), so the
+// oidc-claims leaf includes rhino-1.7.14.d.ts (for the Java interop types) plus
+// this file ONLY — it intentionally does NOT pull common.d.ts, because the
+// legacy OIDC `logger`/binding shapes differ from the next-gen common set.
+//
+// Class references from the default OIDC script:
+//   UserInfoClaims, Claim (org.forgerock.openidconnect.Claim), AMIdentity,
+//   SSOToken, java.util Map/Set/List, org.forgerock.http.Client.
+
+interface Session {
+  getProperty(name: string): JavaArray;
+}
+
+interface Claim {
+  name: JavaString;
+  getName(): JavaString;
+  values: JavaArray;
+  getValues(): JavaArray;
+  essential: boolean;
+  isEssential(): boolean;
+  locale?: JavaString;
+  nameWithLocale: JavaString;
+  javaLocale?: JavaString;
+}
+
+interface RequestProperties {
+  requestHeaders: JavaMap<JavaString, JavaArray<JavaString>>;
+  requestParams: JavaMap<JavaString, JavaArray<JavaString>>;
+  realm: JavaString;
+  requestUri: JavaString;
+}
+
+interface ClientProperties {
+  allowedGrantTypes: JavaArray;
+  clientId: JavaString;
+  allowedScopes: JavaArray;
+  allowedResponseTypes: JavaArray;
+}
+
+// Legacy OIDC logger shape (distinct from the next-gen slf4j logger).
+interface OidcLogger {
+  error(message: StringLike): void;
+  errorEnabled(): boolean;
+  message(message: StringLike): void;
+  messageEnabled(): boolean;
+  warning(message: StringLike): void;
+  warningEnabled(): boolean;
+}
+declare const logger: OidcLogger;
+
+interface AMIdentity {
+  getAttribute(attributeName: string): JavaArray<string>;
+  getAttributes(): JavaArray<string>;
+  getAttributes(attributeNames: string[]): JavaArray<string>;
+}
+
+interface JavaClass {}
+
+declare const scopes: JavaSet<JavaString>;
+declare const claims: JavaMap<JavaString, Object>;
+declare const requestedClaims: JavaMap<JavaString, JavaSet<JavaString>>;
+declare const claimObjects: JavaArray<Claim>;
+declare const requestedTypedClaims: JavaArray<Claim>;
+declare const claimsLocales: JavaArray<JavaString>;
+declare const requestProperties: RequestProperties;
+declare const clientProperties: ClientProperties;
+declare const scriptName: JavaString;
+declare const identity: AMIdentity;
+declare const session: Session;
+declare const httpClient: object; // org.forgerock.http.Client (legacy) — shape TBD
+declare const JavaImporter: (...classes: JavaClass[]) => void;
+
+declare const org: {
+  forgerock: {
+    oauth2: {
+      core: {
+        exceptions: {
+          InvalidRequestException: JavaClass;
+        };
+        UserInfoClaims: JavaClass;
+      };
+    };
+    openidconnect: {
+      Claim: JavaClass;
+    };
+  };
+};
+declare const java: {
+  util: {
+    LinkedHashMap: JavaClass;
+    ArrayList: JavaClass;
+  };
+};
