@@ -20,6 +20,7 @@ Cargo.lock.bak
 # Tool venvs / caches
 /.venv-tools/
 /.direnv/
+/tmp/
 __pycache__/
 
 # Logs
