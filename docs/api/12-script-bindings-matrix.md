@@ -168,9 +168,29 @@ Consequences (applied to the type layering):
   `decision-node-base`.
 - `nodeState` is present on **both** engines (legacy returns `JsonValue`-style
   values needing `.asString()`; next-gen returns coerced JS — a shape difference,
-  not a presence one). `httpClient`/`logger` are present on both but with
-  different shapes (legacy = Java client / `error`/`message`/`warning`); the base
-  uses next-gen shapes, noted in `decision-node-legacy.d.ts`.
+  not a presence one).
+
+### Method surfaces verified 2026-06-04 (legacy engine)
+
+`typeof` of each member on a legacy scripted decision node
+(`fixtures-legacy/legacy-nodestate-logger.script.js`):
+
+- **`nodeState`** (legacy): `get`, `getObject`, `putShared`, `putTransient`,
+  `mergeShared`, `mergeTransient` — plus **`isDefined` and `remove`**
+  (function; *not in the docs*). There is **no** `nodeState.sharedState(key)` /
+  `transientState(key)` / `secureState(key)` accessor — `get()` is the unified
+  accessor (reads transient→secure→shared). Legacy shared/transient state is
+  reached through the **standalone** `sharedState`/`transientState` bindings
+  (e.g. `sharedState.get('k')`), which next-gen removes.
+- **`logger`** (legacy): `error`, `message`, `warning`, `errorEnabled`,
+  `messageEnabled`, `warningEnabled` — the classic `Debug` object.
+  `trace`/`debug`/`info`/`warn` are **absent** (those are the next-gen slf4j
+  shape). Now runtime-confirmed, not just doc-claimed.
+
+Type model: the slf4j `logger` lives in `nextgen-common.d.ts`; the classic
+`Debug` `logger` in `legacy-common.d.ts` (included by the legacy decision leaf
+and the other unmigrated AM contexts). `nodeState.isDefined`/`remove` are merged
+onto `NodeState` only on the legacy leaf (via `decision-node-legacy.d.ts`).
 
 ### AM script families (folder slugs)
 

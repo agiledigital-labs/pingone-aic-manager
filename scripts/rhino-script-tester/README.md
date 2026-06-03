@@ -162,3 +162,14 @@ Findings (2026-06-04), vs next-gen:
 - Present in both: `nodeState`, `callbacks`, `idRepository`, `httpClient`,
   `requestHeaders`, `requestParameters`, `resumedFromSuspend`, `secrets`,
   `JavaImporter`, `logger`, `realm`, `systemEnv`, `scriptName`.
+
+`fixtures-legacy/legacy-nodestate-logger.script.js` enumerates the legacy
+`nodeState` and `logger` method surfaces:
+
+- legacy `nodeState`: `get`, `getObject`, `putShared`, `putTransient`,
+  `mergeShared`, `mergeTransient`, plus undocumented `isDefined`/`remove`. No
+  `nodeState.sharedState(key)`/`transientState(key)`/`secureState(key)` —
+  `get()` is the unified accessor; standalone `sharedState`/`transientState`
+  bindings provide direct access.
+- legacy `logger`: classic Debug — `error`/`message`/`warning` + `*Enabled`;
+  `trace`/`debug`/`info`/`warn` are absent (those are next-gen slf4j).

@@ -1,10 +1,9 @@
-// Bindings present in BOTH the next-generation and legacy AM scripted-decision
-// engines (verified 2026-06-03 — see docs/api/12-script-bindings-matrix.md):
-//   logger, httpClient, systemEnv, realm, scriptName.
-// Next-gen-only common bindings (openidm, utils) live in nextgen-common.d.ts so
-// the legacy leaf doesn't falsely see them. Shapes here target next-gen; legacy
-// shape differences for the shared bindings (logger/httpClient) are a deferred
-// probe, noted in decision-node-legacy.d.ts.
+// Bindings present on BOTH engines with the SAME shape (verified 2026-06-03):
+//   systemEnv, realm, scriptName.
+// `logger` differs by engine and is NOT here: the next-gen (slf4j) shape lives
+// in nextgen-common.d.ts, the classic (Debug) shape in legacy-common.d.ts, so
+// each leaf gets exactly one. `httpClient` is present on both but its legacy
+// shape is unverified, so it keeps the next-gen shape here (documented imperfection).
 
 declare const scriptName: string;
 declare const realm: string;
@@ -13,18 +12,6 @@ interface SystemEnv {
   getProperty: (key: StringLike) => JavaString | null;
 }
 declare const systemEnv: SystemEnv;
-
-// Next-gen logger is slf4j-style (trace/debug/info/warn/error). `{}` in the
-// message is a placeholder filled by the trailing args.
-type LogFunction = (message: StringLike, ...args: any[]) => void;
-interface Logger {
-  trace: LogFunction;
-  debug: LogFunction;
-  info: LogFunction;
-  warn: LogFunction;
-  error: LogFunction;
-}
-declare const logger: Logger;
 
 interface HttpHeaders {
   "Content-Type"?: "application/json" | "application/x-www-form-urlencoded";

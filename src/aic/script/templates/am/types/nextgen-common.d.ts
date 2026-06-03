@@ -3,6 +3,19 @@
 // legacy engine (2026-06-03), so the legacy decision leaf does NOT include this
 // file. Layered on top of rhino + common.
 
+// Next-gen logger is slf4j-style (trace/debug/info/warn/error). `{}` in the
+// message is a placeholder filled by the trailing args. The legacy engine uses
+// a different shape (see legacy-common.d.ts), verified 2026-06-04.
+type LogFunction = (message: StringLike, ...args: any[]) => void;
+interface Logger {
+  trace: LogFunction;
+  debug: LogFunction;
+  info: LogFunction;
+  warn: LogFunction;
+  error: LogFunction;
+}
+declare const logger: Logger;
+
 interface Crypto {
   randomUUID(): string;
 }
