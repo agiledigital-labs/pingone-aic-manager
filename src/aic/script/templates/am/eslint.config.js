@@ -3,196 +3,221 @@ import tsParser from "@typescript-eslint/parser";
 import prettierConfig from "eslint-config-prettier";
 import prettier from "eslint-plugin-prettier";
 
-const amNoRestrictedSyntax = [
+// AM scripts run on Mozilla Rhino 1.7.14 (both the legacy and next-generation
+// engines). The restrictions below are RUNTIME-VERIFIED against the sandbox —
+// see docs/api/12-script-bindings-matrix.md and scripts/rhino-script-tester/.
+// `let`, object shorthand, object/array destructuring, default parameters, and
+// `const` in any loop position are parse errors; top-level / loop-body `const`
+// parses but silently reads back `undefined`. `const` inside a function works
+// and is allowed. Arrow functions, template literals, and ES2015 Array/String/
+// Object methods all work and are NOT restricted.
+//
+// ecmaVersion is set high enough for the parser to PRODUCE these nodes so they
+// can be flagged — parsing support is not runtime permission.
+const rhinoSyntaxRestrictions = [
   "error",
   {
     selector: "VariableDeclaration[kind='let']",
     message:
-      "Using 'let' is disallowed. Use 'const' instead (or var if reassignment is absolutely necessary).",
+      "'let' is a parse error on Rhino 1.7.14 ('missing ; before statement'). Use 'var' (or 'const' inside a function).",
+  },
+  {
+    selector: "Program > VariableDeclaration[kind='const']",
+    message:
+      "Top-level 'const' parses but reads back as undefined on Rhino 1.7.14. Use 'var' at the top level.",
+  },
+  {
+    selector:
+      ":matches(ForStatement, ForInStatement, ForOfStatement) > BlockStatement > VariableDeclaration[kind='const']",
+    message:
+      "'const' inside a loop body parses but reads back as undefined on Rhino 1.7.14. Use 'var'.",
   },
   {
     selector: "ForStatement > VariableDeclaration[kind='const']",
     message:
-      "Using 'const' in for loop initialization is disallowed in Rhino. Use 'var' instead.",
+      "'const' in a for-loop initializer is a parse error on Rhino 1.7.14. Use 'var'.",
   },
   {
     selector: "ForInStatement > VariableDeclaration[kind='const']",
     message:
-      "Using 'const' in for...in loop is disallowed in Rhino. Use 'var' instead.",
+      "'const' in a for...in initializer is a parse error on Rhino 1.7.14. Use 'var'.",
   },
   {
     selector: "ForOfStatement > VariableDeclaration[kind='const']",
     message:
-      "Using 'const' in for...of loop is disallowed in Rhino. Use 'var' instead.",
+      "'const' in a for...of initializer is a parse error on Rhino 1.7.14. Use 'var'.",
   },
   {
-    selector:
-      "ForStatement > BlockStatement > VariableDeclaration[kind='const']",
+    selector: "ObjectExpression > Property[shorthand=true]",
     message:
-      "Using 'const' inside a for loop body is disallowed in Rhino. Use 'var' instead.",
+      "Object shorthand ({ a }) is a parse error on Rhino 1.7.14 ('missing : after property id'). Use full { a: a } syntax.",
   },
   {
-    selector:
-      "ForInStatement > BlockStatement > VariableDeclaration[kind='const']",
+    selector: "ObjectPattern",
     message:
-      "Using 'const' inside a for...in loop body is disallowed in Rhino. Use 'var' instead.",
+      "Object destructuring is a parse error on Rhino 1.7.14. Assign properties explicitly.",
   },
   {
-    selector:
-      "ForOfStatement > BlockStatement > VariableDeclaration[kind='const']",
+    selector: "ArrayPattern",
     message:
-      "Using 'const' inside a for...of loop body is disallowed in Rhino. Use 'var' instead.",
+      "Array destructuring is a parse error on Rhino 1.7.14. Index elements explicitly.",
   },
   {
-    selector: "ObjectExpression > Property[method=false][shorthand=true]",
+    selector: "AssignmentPattern",
     message:
-      "Using object shorthand is disallowed in Rhino. Use full property syntax instead.",
-  },
-  {
-    selector: "VariableDeclarator > ObjectPattern",
-    message: "Using object destructuring is disallowed in Rhino.",
+      "Default parameter values are a parse error on Rhino 1.7.14. Assign defaults inside the function body.",
   },
 ];
 
-const commonAmRules = {
-  ...tsEslint.configs.recommended.rules,
+// Quality rules applied to every script. `no-undef` is OFF: TypeScript (via the
+// layered types/ .d.ts files and checkJs) is the source of truth for undefined
+// bindings, so we don't duplicate it here. The per-family `globals` blocks below
+// document the binding set each family sees and keep tooling consistent.
+const scriptRules = {
   ...prettierConfig.rules,
-  "@typescript-eslint/no-unused-vars": [
-    "error",
+  "no-inner-declarations": "off",
+  "no-plusplus": ["warn", { allowForLoopAfterthoughts: true }],
+  "no-alert": "error",
+  "no-template-curly-in-string": "error",
+  "prefer-template": "warn",
+  "no-implicit-coercion": "warn",
+  curly: "error",
+  "no-unused-vars": [
+    "warn",
     {
       argsIgnorePattern: "^_",
       varsIgnorePattern: "^_",
       caughtErrorsIgnorePattern: "^_",
     },
   ],
-  "@typescript-eslint/no-explicit-any": "warn",
-  "@typescript-eslint/explicit-function-return-type": "off",
-  "@typescript-eslint/explicit-module-boundary-types": "off",
-  "@typescript-eslint/no-require-imports": "off",
-  "prettier/prettier": "error",
-  "no-inner-declarations": "off",
-  "no-plusplus": [
-    "warn",
-    {
-      allowForLoopAfterthoughts: true,
-    },
-  ],
-  "no-alert": "error",
-  "no-template-curly-in-string": "error",
-  "prefer-template": "warn",
-  "no-implicit-coercion": "warn",
-  curly: "error",
-  "object-shorthand": ["error", "never"],
   "require-unicode-regexp": "off",
   "no-undef": "off",
-  "no-restricted-syntax": amNoRestrictedSyntax,
+  "no-restricted-syntax": rhinoSyntaxRestrictions,
+  "prettier/prettier": "error",
+};
+
+// Common bindings present in all next-generation AM scripts (verified).
+const commonGlobals = {
+  logger: "readonly",
+  httpClient: "readonly",
+  openidm: "readonly",
+  utils: "readonly",
+  systemEnv: "readonly",
+  realm: "readonly",
+  scriptName: "readonly",
 };
 
 export default [
-  // Configuration for JavaScript/CommonJS files (actual scripts)
+  // All AM scripts: Rhino syntax rules + common next-gen bindings.
   {
-    files: ["**/*.cjs"],
+    files: ["*/**/*.cjs"],
     languageOptions: {
-      ecmaVersion: 2015,
+      ecmaVersion: 2022,
       sourceType: "script",
+      globals: { ...commonGlobals },
+    },
+    plugins: { prettier },
+    rules: scriptRules,
+  },
+  // Next-generation scripted decision: decision bindings + library require().
+  {
+    files: ["*/decision-node/**/*.cjs"],
+    languageOptions: {
       globals: {
-        // ForgeRock/AM script globals
-        logger: "readonly",
-        httpClient: "readonly",
-        openidm: "readonly",
-        requestHeaders: "readonly",
-        request: "readonly",
-        context: "readonly",
-        username: "readonly",
-        realm: "readonly",
-        sharedState: "readonly",
-        transientState: "readonly",
-        idRepository: "readonly",
-        systemEnv: "readonly",
-        outcome: "readonly",
         nodeState: "readonly",
-        scriptName: "readonly",
         callbacks: "readonly",
         callbacksBuilder: "readonly",
+        requestHeaders: "readonly",
+        requestParameters: "readonly",
+        requestCookies: "readonly",
+        idRepository: "readonly",
         action: "readonly",
-        // Node.js globals
-        console: "readonly",
-        process: "readonly",
-        Buffer: "readonly",
-        __dirname: "readonly",
-        __filename: "readonly",
-        module: "readonly",
+        outcome: "writable",
+        existingSession: "readonly",
+        resumedFromSuspend: "readonly",
+        secrets: "readonly",
         require: "readonly",
-        exports: "readonly",
-        global: "readonly",
-        setTimeout: "readonly",
-        clearTimeout: "readonly",
-        setInterval: "readonly",
-        clearInterval: "readonly",
+        module: "readonly",
+        exports: "writable",
       },
     },
-    plugins: {
-      prettier: prettier,
+  },
+  // Legacy scripted decision: legacy state + Java interop, NO library require().
+  {
+    files: ["*/decision-node-legacy/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        nodeState: "readonly",
+        callbacks: "readonly",
+        requestHeaders: "readonly",
+        requestParameters: "readonly",
+        idRepository: "readonly",
+        action: "readonly",
+        outcome: "writable",
+        existingSession: "readonly",
+        sharedState: "readonly",
+        transientState: "readonly",
+        JavaImporter: "readonly",
+      },
     },
+  },
+  // Library scripts: CommonJS module mechanics (next-gen only).
+  {
+    files: ["*/lib/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        require: "readonly",
+        module: "readonly",
+        exports: "writable",
+      },
+    },
+  },
+  // OIDC claims (legacy binding set).
+  {
+    files: ["*/oidc-claims/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        scopes: "readonly",
+        claims: "readonly",
+        requestedClaims: "readonly",
+        claimObjects: "readonly",
+        requestedTypedClaims: "readonly",
+        claimsLocales: "readonly",
+        requestProperties: "readonly",
+        clientProperties: "readonly",
+        identity: "readonly",
+        session: "readonly",
+        JavaImporter: "readonly",
+        org: "readonly",
+        java: "readonly",
+      },
+    },
+  },
+  // TypeScript definition files (the managed types/ set).
+  {
+    files: ["**/*.d.ts"],
+    languageOptions: {
+      parser: tsParser,
+      ecmaVersion: 2022,
+      sourceType: "module",
+    },
+    plugins: { "@typescript-eslint": tsEslint, prettier },
     rules: {
+      ...tsEslint.configs.recommended.rules,
       ...prettierConfig.rules,
-      "no-inner-declarations": "off",
-      "no-plusplus": [
-        "warn",
-        {
-          allowForLoopAfterthoughts: true,
-        },
-      ],
-      "no-alert": "error",
-      "no-template-curly-in-string": "error",
-      "prefer-template": "warn",
-      "no-implicit-coercion": "warn",
-      curly: "error",
-      "object-shorthand": ["error", "never"],
-      "no-unused-vars": [
-        "warn",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
         {
           argsIgnorePattern: "^_",
           varsIgnorePattern: "^_",
           caughtErrorsIgnorePattern: "^_",
         },
       ],
-      "require-unicode-regexp": "off",
-      "no-undef": "off",
-      "no-restricted-syntax": amNoRestrictedSyntax,
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/explicit-function-return-type": "off",
+      "@typescript-eslint/explicit-module-boundary-types": "off",
+      "@typescript-eslint/no-require-imports": "off",
       "prettier/prettier": "error",
     },
-  },
-  // Configuration for source scripts (stricter rules)
-  {
-    files: ["**/src/**/*.cjs"],
-    languageOptions: {
-      ecmaVersion: 2015,
-      sourceType: "script",
-    },
-    rules: {
-      "no-restricted-syntax": [
-        ...amNoRestrictedSyntax,
-        {
-          selector: "Program > VariableDeclaration[kind='const']",
-          message:
-            "Using 'const' at the root level is disallowed in Rhino. Use 'var' instead.",
-        },
-      ],
-    },
-  },
-  // Configuration for TypeScript definition files
-  {
-    files: ["**/*.d.ts"],
-    languageOptions: {
-      parser: tsParser,
-      ecmaVersion: 2015,
-      sourceType: "module",
-    },
-    plugins: {
-      "@typescript-eslint": tsEslint,
-      prettier: prettier,
-    },
-    rules: commonAmRules,
   },
 ];
