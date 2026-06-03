@@ -51,19 +51,21 @@ interface IdRepository {
 }
 declare const idRepository: IdRepository;
 
-interface Action {
-  goTo: (outcome: StringLike) => Action;
-  withHeader: (header: StringLike) => Action;
-  withDescription: (html: StringLike) => Action;
-  withStage: (stage: StringLike) => Action;
-  putSessionProperty: (sessionKey: StringLike, value: any) => Action;
-}
-declare const action: Action;
-
-// Legacy way to set the outcome (next-gen prefers action.goTo). Still works.
+// Both engines let you set the journey outcome by assigning `outcome`
+// (next-gen also offers the `action` binding — see decision-node-next.d.ts).
 declare let outcome: StringLike | undefined;
 
 interface ExistingSession {
   Principal: string;
 }
 declare const existingSession: ExistingSession | undefined;
+
+// Verified present on BOTH engines (2026-06-03): resume flag + secrets API.
+declare const resumedFromSuspend: boolean;
+
+// `secrets` is present on both engines; its method shape is the documented AM
+// SecretsApi shape (treat as provisional — matrix open item #2).
+interface Secrets {
+  getGenericSecret(name: StringLike): JavaString;
+}
+declare const secrets: Secrets;

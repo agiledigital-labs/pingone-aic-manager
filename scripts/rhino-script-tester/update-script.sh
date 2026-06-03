@@ -12,6 +12,7 @@ AIC_BIN="${AIC_BIN:-$ROOT/target/debug/aic}"
 SCRIPT_SOURCE="${1:-$SCRIPT_DIR/scripts/rhino-let-behaviour.script.js}"
 SCRIPT_NAME="${SCRIPT_NAME:-AIC Rhino Let Probe}"
 SCRIPT_ID="${SCRIPT_ID:-2e87a29c-0e30-4d85-bf0e-a1c0a11e7001}"
+EVALUATOR_VERSION="${EVALUATOR_VERSION:-2.0}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -91,6 +92,7 @@ jq -n \
   --arg id "$SCRIPT_ID" \
   --arg name "$SCRIPT_NAME" \
   --arg script "$SCRIPT_B64" \
+  --arg ev "$EVALUATOR_VERSION" \
   '{
     _id: $id,
     name: $name,
@@ -99,7 +101,7 @@ jq -n \
     default: false,
     language: "JAVASCRIPT",
     context: "AUTHENTICATION_TREE_DECISION_NODE",
-    evaluatorVersion: "2.0"
+    evaluatorVersion: $ev
   }' > "$tmpdir/script.json"
 
 curl_json PUT "$BASE$REALM_PATH/scripts/$SCRIPT_ID" "$tmpdir/script.json" > "$tmpdir/script.out.json"

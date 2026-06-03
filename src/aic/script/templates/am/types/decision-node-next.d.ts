@@ -1,14 +1,25 @@
 // Next-generation-only scripted-decision bindings (evaluatorVersion 2.0).
-// Layered on top of rhino + common + decision-node-base.
+// Layered on top of rhino + common + nextgen-common + decision-node-base.
 //
-// Verified present in a next-gen scripted decision node (2026-06-03):
-//   callbacksBuilder, requestCookies, resumedFromSuspend, secrets.
-// (openidm/utils/httpClient are common to all next-gen scripts and live in
-// common.d.ts.)
+// Verified next-gen-only (absent on the legacy engine, 2026-06-03):
+//   action, callbacksBuilder, requestCookies, require.
+// (openidm/utils live in nextgen-common.d.ts; resumedFromSuspend/secrets are in
+// both engines and live in decision-node-base.d.ts.)
 
 // Next-gen scripted decision scripts can require() library scripts (resolved via
 // the leaf tsconfig `paths` alias to ../lib/*).
 declare function require(id: string): any;
+
+// Next-gen `action` binding (legacy imports the Action class via JavaImporter
+// instead — verified: no `action` binding on the legacy engine).
+interface Action {
+  goTo: (outcome: StringLike) => Action;
+  withHeader: (header: StringLike) => Action;
+  withDescription: (html: StringLike) => Action;
+  withStage: (stage: StringLike) => Action;
+  putSessionProperty: (sessionKey: StringLike, value: any) => Action;
+}
+declare const action: Action;
 
 type StringAttributePolicy =
   | {
@@ -75,13 +86,3 @@ interface RequestCookies {
   containsKey: (key: StringLike) => boolean;
 }
 declare const requestCookies: RequestCookies;
-
-// True when the journey resumed after action.suspend().
-declare const resumedFromSuspend: boolean;
-
-// `secrets` is verified present, but its method shape is not yet probed; this is
-// the documented AM SecretsApi shape (treat as provisional — matrix open #2).
-interface Secrets {
-  getGenericSecret(name: StringLike): JavaString;
-}
-declare const secrets: Secrets;

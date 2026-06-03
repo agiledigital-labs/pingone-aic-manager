@@ -264,6 +264,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "nextgen-common.d.ts",
                 "decision-node-base.d.ts",
                 "decision-node-next.d.ts",
             ],
@@ -278,7 +279,10 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             ],
             None,
         ),
-        "lib" => (&["rhino-1.7.14.d.ts", "common.d.ts", "library.d.ts"], Some("./*")),
+        "lib" => (
+            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "library.d.ts"],
+            Some("./*"),
+        ),
         // OIDC claims is self-contained (its legacy logger/binding shapes clash
         // with the next-gen common set), so it pulls rhino + its own defs only.
         "oidc-claims" => (&["rhino-1.7.14.d.ts", "oidc-claims.d.ts"], None),
@@ -428,24 +432,28 @@ mod tests {
 
     #[test]
     fn leaf_tsconfig_scopes_dts_by_type() {
-        // Next-gen decision: base + next overlay + common, with the lib alias.
+        // Next-gen decision: base + next overlay + (next-gen) common, lib alias.
         let next = leaf_tsconfig("decision-node");
         assert!(next.contains("../../types/decision-node-base.d.ts"));
         assert!(next.contains("../../types/decision-node-next.d.ts"));
         assert!(next.contains("../../types/common.d.ts"));
+        assert!(next.contains("../../types/nextgen-common.d.ts"));
         assert!(next.contains("\"*\": [\"../lib/*\"]"));
 
-        // Legacy shares the base but gets the legacy overlay (not next-gen) and
-        // no library alias — legacy scripts can't require libraries.
+        // Legacy shares the base but gets the legacy overlay (not next-gen), no
+        // nextgen-common (openidm/utils are absent on the legacy engine), and no
+        // library alias — legacy scripts can't require libraries.
         let legacy = leaf_tsconfig("decision-node-legacy");
         assert!(legacy.contains("../../types/decision-node-base.d.ts"));
         assert!(legacy.contains("../../types/decision-node-legacy.d.ts"));
         assert!(!legacy.contains("decision-node-next.d.ts"));
+        assert!(!legacy.contains("nextgen-common.d.ts"));
         assert!(!legacy.contains("paths"));
 
-        // Library scripts: library overlay + sibling alias.
+        // Library scripts: next-gen common + library overlay + sibling alias.
         let lib = leaf_tsconfig("lib");
         assert!(lib.contains("../../types/library.d.ts"));
+        assert!(lib.contains("../../types/nextgen-common.d.ts"));
         assert!(lib.contains("\"*\": [\"./*\"]"));
 
         // OIDC claims is self-contained (no next-gen common set).

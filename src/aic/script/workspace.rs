@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 7;
+pub const TEMPLATES_VERSION: u32 = 8;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -28,6 +28,7 @@ const MANAGED: &[(&str, &str)] = &[
     // AM shared type defs.
     ("am/types/rhino-1.7.14.d.ts", include_str!("templates/am/types/rhino-1.7.14.d.ts")),
     ("am/types/common.d.ts", include_str!("templates/am/types/common.d.ts")),
+    ("am/types/nextgen-common.d.ts", include_str!("templates/am/types/nextgen-common.d.ts")),
     ("am/types/decision-node-base.d.ts", include_str!("templates/am/types/decision-node-base.d.ts")),
     ("am/types/decision-node-next.d.ts", include_str!("templates/am/types/decision-node-next.d.ts")),
     ("am/types/decision-node-legacy.d.ts", include_str!("templates/am/types/decision-node-legacy.d.ts")),

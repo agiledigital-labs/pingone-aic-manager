@@ -31,14 +31,14 @@ mkdir -p "$WS/am/alpha/decision-node" "$WS/am/alpha/lib" "$WS/idm/endpoint"
 cat > "$WS/am/alpha/decision-node/tsconfig.json" <<'JSON'
 {
   "extends": "../../tsconfig.json",
-  "include": ["./**/*", "../../types/rhino-1.7.14.d.ts", "../../types/common.d.ts", "../../types/decision-node-base.d.ts", "../../types/decision-node-next.d.ts"],
+  "include": ["./**/*", "../../types/rhino-1.7.14.d.ts", "../../types/common.d.ts", "../../types/nextgen-common.d.ts", "../../types/decision-node-base.d.ts", "../../types/decision-node-next.d.ts"],
   "compilerOptions": { "paths": { "*": ["../lib/*"] } }
 }
 JSON
 cat > "$WS/am/alpha/lib/tsconfig.json" <<'JSON'
 {
   "extends": "../../tsconfig.json",
-  "include": ["./**/*", "../../types/rhino-1.7.14.d.ts", "../../types/common.d.ts", "../../types/library.d.ts"],
+  "include": ["./**/*", "../../types/rhino-1.7.14.d.ts", "../../types/common.d.ts", "../../types/nextgen-common.d.ts", "../../types/library.d.ts"],
   "compilerOptions": { "paths": { "*": ["./*"] } }
 }
 JSON

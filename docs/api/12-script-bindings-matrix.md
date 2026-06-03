@@ -142,6 +142,36 @@ Consequences:
 - `existingSession` was `undefined` here only because the probe has no prior
   session; treat as context-dependent, not globally absent.
 
+### Runtime-verified binding presence (LEGACY scripted decision, 2026-06-04)
+
+Same `typeof` probe on a legacy (`evaluatorVersion: 1.0`) scripted decision node
+(`scripts/rhino-script-tester/fixtures-legacy/legacy-bindings.script.js`; emits
+via the classic `JavaImporter` + `Action.send(HiddenValueCallback)` path since
+legacy has no `callbacksBuilder`).
+
+- **Present (both engines):** `nodeState`, `callbacks`, `idRepository`,
+  `httpClient`, `requestHeaders`, `requestParameters`, `resumedFromSuspend`,
+  `secrets`, `JavaImporter`, `logger`, `realm`, `systemEnv`, `scriptName`.
+- **Legacy-only (absent in next-gen):** `sharedState`, `transientState`.
+- **Next-gen-only (absent in legacy):** `action`, `callbacksBuilder`, `openidm`,
+  `utils`, `requestCookies`.
+
+Consequences (applied to the type layering):
+
+- `action` is **next-gen-only** (legacy imports the `Action` class via
+  `JavaImporter` instead) → moved from `decision-node-base` to
+  `decision-node-next`.
+- `openidm` + `utils` are **next-gen-only** → moved from the shared `common.d.ts`
+  to a new `nextgen-common.d.ts` included only by next-gen decision + library
+  leaves, so the legacy leaf no longer mistypes them as present.
+- `secrets` + `resumedFromSuspend` are in **both** → moved into
+  `decision-node-base`.
+- `nodeState` is present on **both** engines (legacy returns `JsonValue`-style
+  values needing `.asString()`; next-gen returns coerced JS — a shape difference,
+  not a presence one). `httpClient`/`logger` are present on both but with
+  different shapes (legacy = Java client / `error`/`message`/`warning`); the base
+  uses next-gen shapes, noted in `decision-node-legacy.d.ts`.
+
 ### AM script families (folder slugs)
 
 | Family | Slug | `evaluatorVersion` | Library support | Bindings overlay |
@@ -173,17 +203,15 @@ IDM rows lean on the existing `idmCommon.d.ts` template + docs and need probing.
 ## Open items still requiring runtime probes
 
 Resolved 2026-06-03 (next-gen scripted decision): all syntax rows above;
-binding *presence* (typeof). Still open:
+binding *presence* (typeof). Resolved 2026-06-04: legacy (`evaluatorVersion:
+1.0`) binding *presence* (see the legacy section above; the tester now takes
+`EVALUATOR_VERSION`). Still open:
 
-1. **Legacy** (`evaluatorVersion: 1.0`) scripted decision: does it expose the
-   same `action`/`nodeState`/`callbacks` objects, and do `sharedState`/
-   `transientState`/`JavaImporter` behave differently? (Needs a legacy probe —
-   set `EVALUATOR_VERSION=1.0` once the tester supports it.)
-2. Binding *shapes* (not just presence): `logger` method names + slf4j-style `{}`
+1. Binding *shapes* (not just presence): `logger` method names + slf4j-style `{}`
    placeholder formatting; `httpClient.send(...).get()` response shape; `openidm`
    call return shapes. Presence is verified; exact shapes still lean on docs.
-3. `require()` of a real library from a next-gen scripted decision (presence of
+2. `require()` of a real library from a next-gen scripted decision (presence of
    the `require` function is verified; an end-to-end library import is not).
-4. IDM: `let`, `const`, `logger`, `request`, `context`, `openidm`, and which Node
+3. IDM: `let`, `const`, `logger`, `request`, `context`, `openidm`, and which Node
    globals (if any) exist — endpoint first, then schedule. (AM tester pattern
    transfers; needs an IDM endpoint probe resource.)

@@ -16,6 +16,7 @@ SCRIPT_ID="${SCRIPT_ID:-2e87a29c-0e30-4d85-bf0e-a1c0a11e7001}"
 NODE_ID="${NODE_ID:-2e87a29c-0e30-4d85-bf0e-a1c0a11e7002}"
 SUCCESS_NODE_ID="${SUCCESS_NODE_ID:-70e691a5-1e33-4ac3-a356-e7b6d60d92e0}"
 FAILURE_NODE_ID="${FAILURE_NODE_ID:-e301438c-0bd0-429c-ab0c-66126501069a}"
+EVALUATOR_VERSION="${EVALUATOR_VERSION:-2.0}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -98,15 +99,16 @@ jq -n \
   --arg id "$SCRIPT_ID" \
   --arg name "$SCRIPT_NAME" \
   --arg script "$SCRIPT_B64" \
+  --arg ev "$EVALUATOR_VERSION" \
   '{
     _id: $id,
     name: $name,
-    description: "AIC Rhino let behavior probe. Safe to delete.",
+    description: "AIC Rhino behavior probe. Safe to delete.",
     script: $script,
     default: false,
     language: "JAVASCRIPT",
     context: "AUTHENTICATION_TREE_DECISION_NODE",
-    evaluatorVersion: "2.0"
+    evaluatorVersion: $ev
   }' > "$tmpdir/script.json"
 
 curl_json PUT "$BASE$REALM_PATH/scripts/$SCRIPT_ID" "$tmpdir/script.json" > "$tmpdir/script.out.json"
