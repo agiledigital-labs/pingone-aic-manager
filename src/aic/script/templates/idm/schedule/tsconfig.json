@@ -1,4 +1,9 @@
 {
   "extends": "../tsconfig.json",
-  "include": ["./**/*", "../idmCommon.d.ts"]
+  "include": [
+    "./**/*",
+    "../types/rhino-1.7.14.d.ts",
+    "../types/common.d.ts",
+    "../types/schedule.d.ts"
+  ]
 }

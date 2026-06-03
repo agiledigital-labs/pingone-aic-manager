@@ -244,32 +244,64 @@ pub fn config_subpath(r: &RemoteRef, realm: &str) -> PathBuf {
 }
 
 /// Per-folder `tsconfig.json` for a script type's folder. Each AM script
-/// folder needs its own leaf so the editor scopes the right `.d.ts` (loading
-/// every type's defs together would conflict) — there's no root tsconfig; the
-/// TS server picks the nearest one per file. Folders sit two levels under
-/// `am/` (`am/<realm>/<slug>/`), so `../../` reaches the shared defs.
+/// folder needs its own leaf so the editor scopes the right `.d.ts` set
+/// (loading every type's defs together would conflict) — there's no root
+/// tsconfig; the TS server picks the nearest one per file. Folders sit two
+/// levels under `am/` (`am/<realm>/<slug>/`), so `../../` reaches the shared
+/// base tsconfig and `../../types/` the declarations.
 ///
-/// Only the three types we have bindings for today get a type-specific `.d.ts`
-/// (next-gen decision node, library, OIDC claims); every other folder gets the
-/// shared globals only, until per-type definitions land.
+/// The declaration set per slug follows the verified binding matrix
+/// (`docs/api/12-script-bindings-matrix.md`): a shared Rhino interop layer, the
+/// next-gen common bindings, and per-family overlays. Scripted decision shares
+/// one base across both engine generations, with a thin next-gen / legacy
+/// overlay on top. The library path alias is emitted **only** where libraries
+/// are actually supported — next-gen scripted decision (`require` from
+/// `../lib/*`) and library scripts themselves (sibling `./*`).
 pub fn leaf_tsconfig(slug: &str) -> String {
-    let (extra_dts, lib_path): (Option<&str>, &str) = match slug {
-        "decision-node" => (Some("../../src.d.ts"), "../lib/*"),
-        "oidc-claims" => (Some("../../oidc.d.ts"), "../lib/*"),
-        "lib" => (Some("../../lib.d.ts"), "./*"),
-        _ => (None, "../lib/*"),
+    // Type files (under `../../types/`) and an optional `require()` path alias.
+    let (types, lib_alias): (&[&str], Option<&str>) = match slug {
+        "decision-node" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "decision-node-base.d.ts",
+                "decision-node-next.d.ts",
+            ],
+            Some("../lib/*"),
+        ),
+        "decision-node-legacy" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "decision-node-base.d.ts",
+                "decision-node-legacy.d.ts",
+            ],
+            None,
+        ),
+        "lib" => (&["rhino-1.7.14.d.ts", "common.d.ts", "library.d.ts"], Some("./*")),
+        // OIDC claims is self-contained (its legacy logger/binding shapes clash
+        // with the next-gen common set), so it pulls rhino + its own defs only.
+        "oidc-claims" => (&["rhino-1.7.14.d.ts", "oidc-claims.d.ts"], None),
+        // Any other context: the shared Rhino + common globals only, until a
+        // per-family overlay lands.
+        _ => (&["rhino-1.7.14.d.ts", "common.d.ts"], None),
     };
-    let mut includes = vec!["./**/*", "../../amCommon.d.ts"];
-    if let Some(d) = extra_dts {
-        includes.push(d);
-    }
+
+    let mut includes = vec!["./**/*".to_string()];
+    includes.extend(types.iter().map(|t| format!("../../types/{t}")));
     let include_json = includes
         .iter()
         .map(|s| format!("\"{s}\""))
         .collect::<Vec<_>>()
         .join(", ");
+    let compiler_opts = match lib_alias {
+        Some(path) => {
+            format!(",\n  \"compilerOptions\": {{ \"paths\": {{ \"*\": [\"{path}\"] }} }}")
+        }
+        None => String::new(),
+    };
     format!(
-        "{{\n  \"extends\": \"../../tsconfig.json\",\n  \"include\": [{include_json}],\n  \"compilerOptions\": {{ \"paths\": {{ \"*\": [\"{lib_path}\"] }} }}\n}}\n"
+        "{{\n  \"extends\": \"../../tsconfig.json\",\n  \"include\": [{include_json}]{compiler_opts}\n}}\n"
     )
 }
 
@@ -384,23 +416,49 @@ mod tests {
         let oidc = extra_files(&rref(Some("OIDC_CLAIMS")), "alpha");
         assert_eq!(oidc.len(), 1);
         assert_eq!(oidc[0].0, PathBuf::from("am/alpha/oidc-claims/tsconfig.json"));
-        assert!(oidc[0].1.contains("../../oidc.d.ts"));
+        assert!(oidc[0].1.contains("../../types/oidc-claims.d.ts"));
 
         let lib = extra_files(&rref(Some("LIBRARY")), "bravo");
         assert_eq!(lib.len(), 2);
         assert_eq!(lib[0].0, PathBuf::from("am/bravo/lib/tsconfig.json"));
-        assert!(lib[0].1.contains("../../lib.d.ts"));
+        assert!(lib[0].1.contains("../../types/library.d.ts"));
         assert_eq!(lib[1].0, PathBuf::from("am/bravo/lib/MyScript.js"));
         assert!(lib[1].1.contains("export * from \"./MyScript.cjs\""));
     }
 
     #[test]
     fn leaf_tsconfig_scopes_dts_by_type() {
-        assert!(leaf_tsconfig("decision-node").contains("../../src.d.ts"));
-        // A type without bindings yet gets only the shared globals.
+        // Next-gen decision: base + next overlay + common, with the lib alias.
+        let next = leaf_tsconfig("decision-node");
+        assert!(next.contains("../../types/decision-node-base.d.ts"));
+        assert!(next.contains("../../types/decision-node-next.d.ts"));
+        assert!(next.contains("../../types/common.d.ts"));
+        assert!(next.contains("\"*\": [\"../lib/*\"]"));
+
+        // Legacy shares the base but gets the legacy overlay (not next-gen) and
+        // no library alias — legacy scripts can't require libraries.
         let legacy = leaf_tsconfig("decision-node-legacy");
-        assert!(legacy.contains("../../amCommon.d.ts"));
-        assert!(!legacy.contains("src.d.ts"));
-        assert!(leaf_tsconfig("lib").contains("\"*\": [\"./*\"]"));
+        assert!(legacy.contains("../../types/decision-node-base.d.ts"));
+        assert!(legacy.contains("../../types/decision-node-legacy.d.ts"));
+        assert!(!legacy.contains("decision-node-next.d.ts"));
+        assert!(!legacy.contains("paths"));
+
+        // Library scripts: library overlay + sibling alias.
+        let lib = leaf_tsconfig("lib");
+        assert!(lib.contains("../../types/library.d.ts"));
+        assert!(lib.contains("\"*\": [\"./*\"]"));
+
+        // OIDC claims is self-contained (no next-gen common set).
+        let oidc = leaf_tsconfig("oidc-claims");
+        assert!(oidc.contains("../../types/oidc-claims.d.ts"));
+        assert!(!oidc.contains("common.d.ts"));
+        assert!(!oidc.contains("paths"));
+
+        // Any other context: shared rhino + common globals only.
+        let other = leaf_tsconfig("config-provider");
+        assert!(other.contains("../../types/rhino-1.7.14.d.ts"));
+        assert!(other.contains("../../types/common.d.ts"));
+        assert!(!other.contains("decision-node"));
+        assert!(!other.contains("paths"));
     }
 }

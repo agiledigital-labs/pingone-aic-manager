@@ -1,5 +1,0 @@
-{
-  "extends": "../../tsconfig.json",
-  "include": ["./**/*", "../../amCommon.d.ts", "../../oidc.d.ts"],
-  "compilerOptions": { "paths": { "*": ["../lib/*"] } }
-}

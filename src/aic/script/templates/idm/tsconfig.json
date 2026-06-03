@@ -21,6 +21,6 @@
     "useUnknownInCatchVariables": false,
     "strictNullChecks": true
   },
-  "include": ["endpoint/**/*", "schedule/**/*", "*.d.ts"],
+  "include": ["endpoint/**/*", "schedule/**/*", "types/*.d.ts"],
   "exclude": ["node_modules", "dist"]
 }
