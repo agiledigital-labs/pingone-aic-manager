@@ -131,3 +131,34 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
 - Bindings absent (`undefined`): `sharedState`, `transientState`,
   `existingSession`, and all Node globals (`console`, `process`, `Buffer`,
   `setTimeout`).
+
+## Legacy engine probes (evaluatorVersion 1.0)
+
+`setup.sh` and `update-script.sh` take `EVALUATOR_VERSION` (default `2.0`). To
+stand up a separate legacy probe (own script/node/tree, so the next-gen probe is
+untouched):
+
+```bash
+SCRIPT_NAME="AIC Rhino Legacy Probe" TREE_NAME="AIC-Rhino-Legacy-Probe" \
+  SCRIPT_ID=2e87a29c-0e30-4d85-bf0e-a1c0a11e7101 \
+  NODE_ID=2e87a29c-0e30-4d85-bf0e-a1c0a11e7102 \
+  EVALUATOR_VERSION=1.0 \
+  scripts/rhino-script-tester/setup.sh scripts/rhino-script-tester/fixtures-legacy/legacy-bindings.script.js
+
+SCRIPT_NAME="AIC Rhino Legacy Probe" TREE_NAME="AIC-Rhino-Legacy-Probe" \
+  EVALUATOR_VERSION=1.0 FETCH_LOGS=1 \
+  scripts/rhino-script-tester/run-probes.sh \
+  "$PWD/scripts/rhino-script-tester/fixtures-legacy/legacy-bindings.script.js"
+```
+
+Legacy has no `callbacksBuilder`, so `fixtures-legacy/` emit results via the
+classic `JavaImporter` + `Action.send(HiddenValueCallback)` path.
+
+Findings (2026-06-04), vs next-gen:
+
+- Legacy-only: `sharedState`, `transientState`.
+- Next-gen-only (absent in legacy): `action`, `callbacksBuilder`, `openidm`,
+  `utils`, `requestCookies`.
+- Present in both: `nodeState`, `callbacks`, `idRepository`, `httpClient`,
+  `requestHeaders`, `requestParameters`, `resumedFromSuspend`, `secrets`,
+  `JavaImporter`, `logger`, `realm`, `systemEnv`, `scriptName`.

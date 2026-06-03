@@ -1,23 +1,13 @@
-// Common bindings for next-generation AM scripts (scripted decision, library,
-// and other next-gen families). Shapes target the next-generation engine, which
-// is what these workspaces primarily edit.
-//
-// Verified present in a next-gen scripted decision node (2026-06-03):
-//   logger, httpClient, openidm, utils, systemEnv, realm, scriptName.
-// The legacy decision overlay (decision-node-legacy.d.ts) adds legacy-only
-// globals rather than redeclaring these; legacy shape differences for these
-// bindings are a deferred probe (matrix open item #1).
+// Bindings present in BOTH the next-generation and legacy AM scripted-decision
+// engines (verified 2026-06-03 — see docs/api/12-script-bindings-matrix.md):
+//   logger, httpClient, systemEnv, realm, scriptName.
+// Next-gen-only common bindings (openidm, utils) live in nextgen-common.d.ts so
+// the legacy leaf doesn't falsely see them. Shapes here target next-gen; legacy
+// shape differences for the shared bindings (logger/httpClient) are a deferred
+// probe, noted in decision-node-legacy.d.ts.
 
 declare const scriptName: string;
 declare const realm: string;
-
-interface Crypto {
-  randomUUID(): string;
-}
-interface Utils {
-  crypto: Crypto;
-}
-declare const utils: Utils;
 
 interface SystemEnv {
   getProperty: (key: StringLike) => JavaString | null;
@@ -69,72 +59,3 @@ interface HttpClient {
   };
 }
 declare const httpClient: HttpClient;
-
-// openidm CRUDPAQ. Tenant-specific managed-object paths keep the editor honest
-// about which resources exist.
-type Patch =
-  | {
-      operation: "add" | "replace";
-      field: string;
-      value: string | string[] | object;
-    }
-  | {
-      operation: "remove";
-      field: string;
-    };
-
-type IdmManagedObject =
-  | "alpha_user"
-  | "alpha_organization"
-  | "providerProvisioningQueue"
-  | "bravo_user"
-  | "bravo_organization";
-
-type IdmObjectPath = `managed/${IdmManagedObject}`;
-
-type QueryResponse = {
-  result: [
-    {
-      _id: string;
-      _rev: string;
-    } & object,
-  ];
-  resultCount: number;
-  pagedResultsCookie: string | null;
-  totalPagedResultsPolicy: string;
-  totalPagedResults: number;
-  remainingPagedResults: number;
-};
-
-declare const openidm: {
-  read: (
-    path: `${IdmObjectPath}/${string}`,
-    params?: Record<string, string> | null,
-    fields?: string[]
-  ) => object | null;
-  query: (
-    path: IdmObjectPath,
-    params: { _queryFilter: string },
-    fields?: string[]
-  ) => QueryResponse;
-  create: (
-    path: IdmObjectPath,
-    newResourceId: string | null,
-    content: Record<string, any> | null,
-    params?: Record<string, string> | null,
-    fields?: string[]
-  ) => object;
-  patch: (
-    path: `${IdmObjectPath}/${string}`,
-    revision: string | null,
-    patch: Patch[],
-    params?: Record<string, string> | null,
-    fields?: string[]
-  ) => object;
-  delete: (
-    path: `${IdmObjectPath}/${string}`,
-    revision: string | null,
-    params?: Record<string, string> | null,
-    fields?: string[]
-  ) => object;
-};
