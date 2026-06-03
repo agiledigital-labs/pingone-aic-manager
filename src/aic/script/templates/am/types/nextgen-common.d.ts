@@ -16,6 +16,9 @@ interface Logger {
 }
 declare const logger: Logger;
 
+// INCOMPLETE: `utils` exposes more than crypto (base64 encode/decode, random,
+// etc.) — only what we've used is typed. Full inventory + JSDoc is a tracked
+// review — see docs/api/12-script-bindings-matrix.md open item #4.
 interface Crypto {
   randomUUID(): string;
 }
