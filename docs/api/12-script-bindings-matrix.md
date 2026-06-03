@@ -1,0 +1,189 @@
+# Script Bindings & Runtime Feature Matrix
+
+Feature matrix backing the script-linting/type-update work
+(`script-linting-uplift-plan.md`). It records, per AM/IDM script family, which
+language features and bindings are available, **and how we know** — so the
+TypeScript declarations and ESLint rules can be grounded in fact rather than
+copied assumptions.
+
+> **Status legend (provenance of each claim):**
+>
+> - **D** — Documented by Ping (URL cited).
+> - **V** — Runtime-verified in the sandbox via `scripts/rhino-script-tester/`.
+> - **I** — Inferred from the existing sandbox corpus (`<client-checkout>/sandbox-scripts`)
+>   — real scripts use it, so it must work, but not isolated-probe confirmed.
+> - **U** — Unknown / not yet verified. **Do not** encode as fact in types or lint.
+
+Compiled 2026-06-03 from the Ping docs listed below + the existing template
+`.d.ts` files + a usage scan of the 384 `src/`, 56 `lib/`, 10 `oidc/` sandbox
+scripts. Runtime-probe rows are filled in as probes land (see
+`scripts/rhino-script-tester/`).
+
+## Documentation sources
+
+- Next-generation scripts —
+  https://docs.pingidentity.com/pingoneaic/latest/am-scripting/next-generation-scripts.html
+- Scripted Decision Node API —
+  https://docs.pingidentity.com/pingoneaic/latest/am-scripting/scripting-api-node.html
+- Migrate decision-node scripts to next-gen —
+  https://docs.pingidentity.com/pingoneaic/latest/am-scripting/scripting-api-node-migrate.html
+- Script bindings —
+  https://docs.pingidentity.com/pingoneaic/latest/am-scripting/script-bindings.html
+- Scripting environment —
+  https://docs.pingidentity.com/pingoneaic/am-scripting/scripting-env.html
+- Library scripts —
+  https://docs.pingidentity.com/pingoneaic/am-scripting/library-scripts.html
+
+## Key conclusion: engine generation is a *bindings* axis, not a *syntax* axis
+
+Both legacy and next-generation AM scripts run on **Mozilla Rhino 1.7.14** with
+"limited ES6 / ES2015 support" (scripting-env doc, **D**). The runtime probe
+confirms next-gen still **rejects `let`** (`missing ; before statement`, **V**).
+So "next-generation" does **not** mean a newer JS engine — it means a different
+*binding set* (simplified `logger`, fetch-like `httpClient`, `openidm`, `utils`,
+`require()`/library support, `action`/`callbacksBuilder`/`nodeState` instead of
+`Action`/`callbacks`/`sharedState`).
+
+Practical consequence for this work:
+
+- **One** Rhino syntax layer (`rhino-1.7.14.d.ts` + the shared ESLint syntax
+  restrictions) applies to **all** AM and IDM scripts.
+- Legacy vs next-gen splits only the **bindings** overlay, not the syntax rules.
+- Naming the type file `rhino-1.7.14.d.ts` per product is correct; there is no
+  separate "next-gen engine" type file needed for syntax.
+
+## Language / syntax feature matrix (Rhino 1.7.14)
+
+Applies to every script family. **All rows runtime-verified 2026-06-03** via the
+next-gen scripted decision probe (`scripts/rhino-script-tester/fixtures/`,
+results in `tmp/rhino-script-tester/probe-results.json`). Probe semantics:
+a fixture that PARSES + RUNS returns a `HiddenValueCallback` (`HTTP 200`); a
+fixture that fails to PARSE returns no callback and the journey fails
+(`HTTP 401`, confirmed via logs, e.g. object shorthand →
+`org.mozilla.javascript.EvaluatorException: missing : after property id`).
+
+| Feature | Status | Result | Lint action |
+| --- | --- | --- | --- |
+| `var` | **V** | ✅ works | allow |
+| `const` in a function body | **V** | ✅ works, correct value | **allow** |
+| `const` at top level | **V** | ⚠️ parses but value reads back `undefined` — silent data bug | **ban** (all AM) |
+| `const` in a loop body | **V** | ⚠️ parses but value reads back `undefined` — silent data bug | **ban** |
+| `const` in `for` init | **V** | ❌ parse error | ban |
+| `const` in `for-in` | **V** | ❌ parse error | ban |
+| `const` in `for-of` | **V** | ❌ parse error | ban |
+| `let` (any scope) | **V** | ❌ parse error (`missing ; before statement`) | ban (all AM) |
+| object shorthand `{a, b}` | **V** | ❌ parse error (`missing : after property id`) | ban |
+| object destructuring `var {x} = o` | **V** | ❌ parse error | ban |
+| default parameters `f(a, b = 2)` | **V** | ❌ parse error | **ban (NEW — not in current config)** |
+| arrow functions `=>` | **V** | ✅ works | allow |
+| template literals | **V** | ✅ works | allow |
+| ES2015 methods: `Array` `includes`/`find`/`from`, `String` `includes`/`startsWith`/`endsWith`/`repeat`, `Object` `assign`/`keys` | **V** | ✅ all work | allow |
+
+> **Key takeaways for ESLint:** the existing AM bans on `let`, object shorthand,
+> object destructuring, and `const` in loops are all now runtime-justified.
+> `const` *inside functions* must stay **allowed** (it works and is idiomatic).
+> The top-level/loop-body `const` bans should apply to **all** AM scripted
+> decision scripts, not just the old `src` glob, because the failure is a silent
+> `undefined` (worse than a parse error). **Add a default-parameters ban** — it
+> is a parse error and the current config misses it. Array destructuring was not
+> probed separately but object destructuring fails, so treat both as banned.
+
+## AM binding matrix
+
+`evaluatorVersion`: `2.0` = next-gen, `1.0` = legacy. "Folder slug" is the
+workspace routing slug from `src/aic/script/am.rs::slug_for`.
+
+| Binding | Legacy | Next-gen | Status | Shape / notes |
+| --- | --- | --- | --- | --- |
+| `logger` | yes | yes | **D/I** | Legacy: `error/message/warning(+Enabled)`. Next-gen: slf4j-style `trace/debug/info/warn/error`. **Shapes differ** — must split legacy vs next-gen. |
+| `httpClient` | partial | yes | **D/I** | Next-gen: `httpClient.send(url, opts).get()` returning fetch-like `{status,ok,json(),text()}`. Legacy: Java `Request`/`Response`. Used in 25 `src/`. |
+| `openidm` | no | yes | **D/I** | CRUDPAQ. Next-gen scripted decision + IDM only. Used in 63 `src/`. Not a legacy decision-node binding. |
+| `utils` | no | yes | **D/I** | base64/UUID/random. Used in 86 `src/`. Next-gen only. |
+| `nodeState` | yes | yes | **D/I** | Next-gen returns coerced JS types; legacy returns `JsonValue` needing `.asString()`. Used in 250 `src/`. |
+| `sharedState`/`transientState` | yes | **deprecated/removed** | **D/I** | Replaced by `nodeState.putShared/putTransient` in next-gen. Still in 34/4 `src/` (legacy). |
+| `action` | via `Action` class | binding | **D/I** | Next-gen: `action.goTo(...)` chainable `ActionWrapper`. Legacy: static `Action.goTo()` (`ActionBuilder`). Used in 106 `src/`. |
+| `callbacks` / `callbacksBuilder` | `callbacks` | `callbacksBuilder` | **D/I** | Legacy reads `callbacks`; next-gen builds via `callbacksBuilder.*`. Both names appear (~142 each). |
+| `idRepository` | direct attr methods | `getIdentity()` → `ScriptedIdentity` | **D/I** | Next-gen: `getIdentity().getAttributeValues()/store()`. Legacy: `getAttribute(user,attr)`. Used in 40 `src/`. |
+| `requestHeaders`/`requestParameters` | yes | yes | **D/I** | `Map<String,String[]>`-ish `.get()`. |
+| `requestCookies` | no | yes | **D** | Next-gen only (migrate doc). |
+| `existingSession` / `resumedFromSuspend` | yes | yes | **D** | |
+| `cacheManager` | no | yes | **D** | Next-gen scripted decision only. |
+| `oauthApplication` / `samlApplication` | no | yes | **D** | Next-gen only, journey-associated. |
+| `auditEntryDetail` | yes | yes | **D** | |
+| `realm` / `systemEnv` / `scriptName` | yes | yes | **D** | |
+| `require()` / library scripts | **no** | **yes** | **D/I** | Only next-gen can `require` libraries. Libraries can require other libraries (17 `lib/` files do). Used in 225 `src/`. |
+| `JavaImporter` / Java allowlist | yes | **no** | **D/I** | Legacy only. 26 `src/` use `JavaImporter`. Next-gen has no configurable Java access. |
+
+### Runtime-verified binding presence (next-gen scripted decision, 2026-06-03)
+
+`typeof <binding>` from inside a next-gen (`evaluatorVersion: 2.0`) scripted
+decision node. Non-destructive (no method calls, no reads).
+
+- **Present:** `require` (function), `openidm` (object), `httpClient` (object),
+  `utils` (object), `logger` (object), `idRepository` (object), `nodeState`
+  (object), `action` (object), `callbacks` (object), `callbacksBuilder`
+  (object), `requestHeaders` (object), `requestParameters` (object),
+  `requestCookies` (object), `realm` (string), `systemEnv` (object),
+  `scriptName` (string), `secrets` (object), `resumedFromSuspend` (boolean),
+  `JavaImporter` (function).
+- **Absent (`undefined`):** `sharedState`, `transientState`, `existingSession`,
+  `console`, `process`, `Buffer`, `setTimeout`.
+
+Consequences:
+
+- **No Node globals exist** — strip `console`/`process`/`Buffer`/timers from the
+  AM ESLint globals (verified, not assumed).
+- `sharedState`/`transientState` are **gone in next-gen** → keep them only in the
+  legacy decision-node overlay; the next-gen overlay must not declare them.
+- `secrets` exists but is absent from current `.d.ts` — candidate to add.
+- `JavaImporter` is still defined as a binding even in next-gen (docs say next-gen
+  has no Java allowlist — the symbol exists but allowlisting may not; do not rely
+  on it for next-gen).
+- `existingSession` was `undefined` here only because the probe has no prior
+  session; treat as context-dependent, not globally absent.
+
+### AM script families (folder slugs)
+
+| Family | Slug | `evaluatorVersion` | Library support | Bindings overlay |
+| --- | --- | --- | --- | --- |
+| Scripted decision (next-gen) | `decision-node` | `2.0` | yes | decision-node-base + next-gen |
+| Scripted decision (legacy) | `decision-node-legacy` | `1.0` | no | decision-node-base + legacy |
+| Library | `lib` | (next-gen) | yes (CommonJS) | library |
+| OIDC claims | `oidc-claims` | mixed | next-gen only | oidc-claims |
+| OAuth2 (token mod, scope, jwt, dcr, …) | `oauth2-*` | mixed | next-gen only | per-context (future) |
+| SAML2 (idp/sp adapter, mappers) | `saml-*` | mixed | next-gen only | per-context (future) |
+| Social normalization/handler | `social-*` | mixed | — | per-context (future) |
+| Config provider / device match / policy | various | mixed | — | shared globals only (today) |
+
+## IDM binding matrix
+
+IDM scripts are tenant-global (no realm). Engine is Rhino too. **No local IDM
+sample corpus exists** in `<client-checkout>/sandbox-scripts` (only AM `src/lib/oidc`), so
+IDM rows lean on the existing `idmCommon.d.ts` template + docs and need probing.
+
+| Binding | Endpoint | Schedule | Status | Notes |
+| --- | --- | --- | --- | --- |
+| `openidm` | yes | yes | **I** | CRUDPAQ + `update`. From `idmCommon.d.ts`. |
+| `logger` | yes | yes | **I** | slf4j-style. |
+| `request` | yes | ? | **I/U** | `IdmRequest` shape (method/resourcePath/content/…). Schedule may not have it. |
+| `context` | yes | ? | **I/U** | Deeply nested `current.parent…headers/method`. Verify per family. |
+| `let` | **U** | **U** | **U** | Plan open question: IDM may allow `let`. Do **not** copy AM's ban until probed. |
+| Node globals (`process`, `Buffer`, `console`, timers) | **U** | **U** | **U** | Currently exposed broadly; almost certainly wrong for Rhino — probe before keeping. |
+
+## Open items still requiring runtime probes
+
+Resolved 2026-06-03 (next-gen scripted decision): all syntax rows above;
+binding *presence* (typeof). Still open:
+
+1. **Legacy** (`evaluatorVersion: 1.0`) scripted decision: does it expose the
+   same `action`/`nodeState`/`callbacks` objects, and do `sharedState`/
+   `transientState`/`JavaImporter` behave differently? (Needs a legacy probe —
+   set `EVALUATOR_VERSION=1.0` once the tester supports it.)
+2. Binding *shapes* (not just presence): `logger` method names + slf4j-style `{}`
+   placeholder formatting; `httpClient.send(...).get()` response shape; `openidm`
+   call return shapes. Presence is verified; exact shapes still lean on docs.
+3. `require()` of a real library from a next-gen scripted decision (presence of
+   the `require` function is verified; an end-to-end library import is not).
+4. IDM: `let`, `const`, `logger`, `request`, `context`, `openidm`, and which Node
+   globals (if any) exist — endpoint first, then schedule. (AM tester pattern
+   transfers; needs an IDM endpoint probe resource.)
