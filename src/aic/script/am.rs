@@ -274,6 +274,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "legacy-common.d.ts",
                 "decision-node-base.d.ts",
                 "decision-node-legacy.d.ts",
             ],
@@ -286,9 +287,10 @@ pub fn leaf_tsconfig(slug: &str) -> String {
         // OIDC claims is self-contained (its legacy logger/binding shapes clash
         // with the next-gen common set), so it pulls rhino + its own defs only.
         "oidc-claims" => (&["rhino-1.7.14.d.ts", "oidc-claims.d.ts"], None),
-        // Any other context: the shared Rhino + common globals only, until a
-        // per-family overlay lands.
-        _ => (&["rhino-1.7.14.d.ts", "common.d.ts"], None),
+        // Any other context (oauth2, saml, social, policy, …): shared Rhino +
+        // common globals, plus the classic Debug `logger` (these are mostly
+        // unmigrated/legacy-style scripts), until a per-family overlay lands.
+        _ => (&["rhino-1.7.14.d.ts", "common.d.ts", "legacy-common.d.ts"], None),
     };
 
     let mut includes = vec!["./**/*".to_string()];
@@ -438,14 +440,16 @@ mod tests {
         assert!(next.contains("../../types/decision-node-next.d.ts"));
         assert!(next.contains("../../types/common.d.ts"));
         assert!(next.contains("../../types/nextgen-common.d.ts"));
+        assert!(!next.contains("legacy-common.d.ts"));
         assert!(next.contains("\"*\": [\"../lib/*\"]"));
 
-        // Legacy shares the base but gets the legacy overlay (not next-gen), no
-        // nextgen-common (openidm/utils are absent on the legacy engine), and no
-        // library alias — legacy scripts can't require libraries.
+        // Legacy shares the base but gets the legacy overlay (not next-gen), the
+        // classic logger via legacy-common (not nextgen-common's slf4j one), and
+        // no library alias — legacy scripts can't require libraries.
         let legacy = leaf_tsconfig("decision-node-legacy");
         assert!(legacy.contains("../../types/decision-node-base.d.ts"));
         assert!(legacy.contains("../../types/decision-node-legacy.d.ts"));
+        assert!(legacy.contains("../../types/legacy-common.d.ts"));
         assert!(!legacy.contains("decision-node-next.d.ts"));
         assert!(!legacy.contains("nextgen-common.d.ts"));
         assert!(!legacy.contains("paths"));
@@ -462,10 +466,11 @@ mod tests {
         assert!(!oidc.contains("common.d.ts"));
         assert!(!oidc.contains("paths"));
 
-        // Any other context: shared rhino + common globals only.
+        // Any other context: shared rhino + common globals + classic logger.
         let other = leaf_tsconfig("config-provider");
         assert!(other.contains("../../types/rhino-1.7.14.d.ts"));
         assert!(other.contains("../../types/common.d.ts"));
+        assert!(other.contains("../../types/legacy-common.d.ts"));
         assert!(!other.contains("decision-node"));
         assert!(!other.contains("paths"));
     }

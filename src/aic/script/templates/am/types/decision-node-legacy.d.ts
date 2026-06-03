@@ -5,10 +5,11 @@
 // way to nodeState.putShared/putTransient (both verified ABSENT in next-gen,
 // 2026-06-03), and `JavaImporter` (Java allowlist) is gone in next-gen.
 //
-// NOTE: the common.d.ts / decision-node-base.d.ts bindings this overlay sits on
-// use next-generation shapes. Legacy shape differences (e.g. logger
-// error/message/warning, JsonValue nodeState returns) are not yet probed — see
-// matrix open item #1. Until then this overlay only adds the legacy-only names.
+// The legacy `logger` (classic Debug) shape comes from legacy-common.d.ts, which
+// this leaf includes instead of the next-gen logger. NOTE: `nodeState.get()`
+// returns a Java JsonValue on the legacy engine (needs .asString()/.asMap()),
+// and `httpClient`'s legacy shape is unverified — those shape differences from
+// decision-node-base.d.ts / common.d.ts remain documented imperfections.
 
 interface MutableState {
   get: (key: StringLike) => any;
@@ -19,3 +20,10 @@ declare const transientState: MutableState;
 
 interface JavaClass {}
 declare const JavaImporter: (...classes: JavaClass[]) => void;
+
+// Legacy nodeState also exposes these (undocumented; verified 2026-06-04). Merged
+// onto the shared NodeState (decision-node-base.d.ts) only on the legacy leaf.
+interface NodeState {
+  isDefined(key: StringLike): boolean;
+  remove(key: StringLike): void;
+}
