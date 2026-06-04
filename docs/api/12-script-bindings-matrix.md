@@ -209,18 +209,37 @@ onto `NodeState` only on the legacy leaf (via `decision-node-legacy.d.ts`).
 
 ## IDM binding matrix
 
-IDM scripts are tenant-global (no realm). Engine is Rhino too. **No local IDM
-sample corpus exists** in `<client-checkout>/sandbox-scripts` (only AM `src/lib/oidc`), so
-IDM rows lean on the existing `idmCommon.d.ts` template + docs and need probing.
+IDM scripts are tenant-global (no realm). The IDM **endpoint** `request`/`context`
+shapes are runtime-verified (2026-06-04 — see `docs/api/11`). The endpoint
+`request` is a discriminated union on `method`; `context.http` carries the HTTP
+request.
 
 | Binding | Endpoint | Schedule | Status | Notes |
 | --- | --- | --- | --- | --- |
 | `openidm` | yes | yes | **I** | CRUDPAQ + `update`. From `idmCommon.d.ts`. |
 | `logger` | yes | yes | **I** | slf4j-style. |
-| `request` | yes | ? | **I/U** | `IdmRequest` shape (method/resourcePath/content/…). Schedule may not have it. |
-| `context` | yes | ? | **I/U** | Deeply nested `current.parent…headers/method`. Verify per family. |
-| `let` | **U** | **U** | **U** | Plan open question: IDM may allow `let`. Do **not** copy AM's ban until probed. |
-| Node globals (`process`, `Buffer`, `console`, timers) | **U** | **U** | **U** | Currently exposed broadly; almost certainly wrong for Rhino — probe before keeping. |
+| `request` | yes | no | **V** | Discriminated union per CREST method (read/create/update/patch/delete/action/query). `docs/api/11`. |
+| `context` | yes | no | **V** | `context.http` = {method,path,headers,parameters}; `context.security` = {authenticationId,authorization}. |
+
+### IDM endpoint engine — syntax (verified 2026-06-04)
+
+The IDM script engine is **newer than AM's Rhino 1.7.14** — a source that fails
+to compile makes the endpoint un-routable (404 on invoke; reverting to `var`
+restores 200), which is how each row below was checked:
+
+| Feature | IDM endpoint | AM Rhino 1.7.14 (contrast) |
+| --- | --- | --- |
+| `var` | ✅ | ✅ |
+| `let` (any scope) | ✅ works | ❌ parse error |
+| `const` top-level / in-function | ✅ works | ⚠️ top-level reads undefined |
+| arrow fns, template literals | ✅ | ✅ |
+| object shorthand, destructuring | ✅ works | ❌ parse error |
+| default parameters | ❌ compile-fails | ❌ parse error |
+| `const` in `for`/`for-of` initializer | ❌ compile-fails | ❌ parse error |
+
+So IDM ESLint bans only **default parameters** and **`const` in a loop
+initializer** — NOT `let`/`const`/shorthand/destructuring (those work). Schedule
+scripts are not yet probed (cron-triggered; harder to invoke synchronously).
 
 ## Open items still requiring runtime probes
 
@@ -234,9 +253,9 @@ binding *presence* (typeof). Resolved 2026-06-04: legacy (`evaluatorVersion:
    call return shapes. Presence is verified; exact shapes still lean on docs.
 2. `require()` of a real library from a next-gen scripted decision (presence of
    the `require` function is verified; an end-to-end library import is not).
-3. IDM: `let`, `const`, `logger`, `request`, `context`, `openidm`, and which Node
-   globals (if any) exist — endpoint first, then schedule. (AM tester pattern
-   transfers; needs an IDM endpoint probe resource.)
+3. IDM **schedule** scripts: bindings + syntax (the endpoint side is now
+   verified — see the IDM section above). Schedules are cron-triggered, so they
+   need a trigger mechanism to probe synchronously.
 4. **Exact `callbacksBuilder` / `utils` argument sets.** RESOLVED (2026-06-04).
    The tenant owner extracted the script editor's authoritative binding metadata
    — saved at `docs/api/bindings/scripted-decision-next.json` (the
