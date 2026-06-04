@@ -34,7 +34,7 @@ declare const openidm: {
   query: (path: string, params: { _queryFilter: string }) => any;
   create: (
     path: string,
-    newResourceId: string,
+    newResourceId: string | null,
     content: Record<string, any> | null,
     params?: Record<string, string> | null
   ) => any;
