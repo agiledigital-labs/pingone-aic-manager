@@ -250,6 +250,13 @@ binding *presence* (typeof). Resolved 2026-06-04: legacy (`evaluatorVersion:
    message)`; `utils.crypto` has no `randomValues`.) The metadata only covers
    `evaluatorVersion 2.0`; the equivalent legacy dump would let us tighten the
    legacy leaf the same way.
+
+   Source: the script-context endpoint `GET /am/json/{realm}/contexts/{ID}` (see
+   `docs/api/13-script-contexts.md`). It exposes the same metadata for any
+   context **once upgraded to next-gen** — 9 have it today (artifacts in
+   `docs/api/bindings/`). Legacy-only contexts (plain OIDC claims, most OAuth2,
+   policy condition, SAML adapters/attr-mapper, config provider) return 0
+   bindings until upgraded.
 5. **`httpClient` auth.** Verified (user, 2026-06-04): next-gen `httpClient`
    ignores a directly-set `Authorization` header — use `HttpOptions.token`, sent
    as `Authorization: Bearer <token>`. **Open: Basic auth delivery.** The Basic
