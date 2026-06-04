@@ -61,10 +61,12 @@ const scriptRules = {
   "prettier/prettier": "error",
 };
 
-// Common IDM bindings (inferred from the prior template + docs; not yet probed).
+// Common IDM bindings (endpoint + schedule). `context` is shared; only endpoints
+// additionally get `request`.
 const commonGlobals = {
   openidm: "readonly",
   logger: "readonly",
+  context: "readonly",
 };
 
 export default [
@@ -79,15 +81,13 @@ export default [
     plugins: { prettier },
     rules: scriptRules,
   },
-  // Endpoint scripts additionally get the CREST request + context bindings.
-  // Schedule scripts run on a trigger (no HTTP request), so they get neither —
-  // see types/schedule.d.ts.
+  // Only endpoint scripts get the CREST `request` binding (schedules have no
+  // incoming request — see types/schedule.d.ts). `context` is common to both.
   {
     files: ["endpoint/**/*.cjs"],
     languageOptions: {
       globals: {
         request: "readonly",
-        context: "readonly",
       },
     },
   },

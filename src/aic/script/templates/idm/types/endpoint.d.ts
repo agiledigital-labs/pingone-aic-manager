@@ -44,23 +44,8 @@ type IdmRequest =
 
 declare const request: IdmRequest;
 
-// The CREST call chain. The originating HTTP request is at `context.http`
-// (verified keys below); other contexts (security, oauth2, transactionId, …)
-// are present but vary, hence the index signature.
-interface IdmContext {
-  http: {
-    method: string;
-    path: string;
-    headers: Record<string, string>;
-    parameters: Record<string, string>;
-  };
-  security: {
-    authenticationId: string;
-    authorization: { id: string; component: string; roles: string[] };
-  };
-  [key: string]: any;
-}
-declare const context: IdmContext;
+// `context` (the CREST call chain, incl. context.http) is shared with schedule
+// scripts and lives in common.d.ts.
 
 // ---- response shapes -----------------------------------------------------
 //

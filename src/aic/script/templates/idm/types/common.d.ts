@@ -25,6 +25,25 @@ type Patch =
       field: string;
     };
 
+// The CREST call chain, shared by endpoint + schedule scripts. The originating
+// HTTP request is at `context.http` for endpoint calls (verified 2026-06-04);
+// scheduled runs have no HTTP request, so `http` may be absent there. Other
+// contexts (security, oauth2, transactionId, …) vary, hence the index signature.
+interface IdmContext {
+  http?: {
+    method: string;
+    path: string;
+    headers: Record<string, string>;
+    parameters: Record<string, string>;
+  };
+  security?: {
+    authenticationId: string;
+    authorization: { id: string; component: string; roles: string[] };
+  };
+  [key: string]: any;
+}
+declare const context: IdmContext;
+
 declare const openidm: {
   read: (
     path: string,
