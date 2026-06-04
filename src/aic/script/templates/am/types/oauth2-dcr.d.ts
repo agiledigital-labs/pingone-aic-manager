@@ -77,4 +77,3 @@ interface ClientIdentity {
   isAIAgent(): boolean;
 }
 declare const clientIdentity: ClientIdentity;
-

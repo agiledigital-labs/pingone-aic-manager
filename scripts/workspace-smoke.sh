@@ -50,7 +50,7 @@ var lib = require("MyLib");
 action.goTo(lib.ok ? "true" : "false");
 JS
 cat > "$WS/am/alpha/lib/MyLib.cjs" <<'JS'
-var ok = true;
+const ok = true;
 exports.ok = ok;
 JS
 cat > "$WS/am/alpha/lib/MyLib.js" <<'JS'

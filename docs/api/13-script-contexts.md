@@ -86,5 +86,20 @@ Intersecting the three contexts we type (`SCRIPTED_DECISION_NODE`, `LIBRARY`,
 `cookieName`, `httpClient`, `jwtAssertion`, `jwtValidator`, `logger`,
 `openidm`, `policy`, `realm`, `scriptName`, `secrets`, `utils`.
 
-`systemEnv` is **not** a next-gen binding (it appeared only on the legacy probe),
-so it belongs in the legacy overlay, not the shared `common.d.ts`.
+### Listed bindings vs runtime globals
+
+This metadata is the **editor's binding list**, which is narrower than what's
+actually reachable at runtime. Two globals are present at runtime on next-gen
+(verified via `typeof` probe — see `docs/api/12`) but are **not** in any
+next-gen context's binding list:
+
+- `systemEnv` — present at runtime on both engines; kept in the shared
+  `common.d.ts` so next-gen scripts that use it still type-check.
+- `JavaImporter` — present at runtime on both engines, but next-gen has no
+  configurable Java allow-list (it's fixed; see the `allowLists` array in each
+  artifact). Typed only in the legacy overlay to steer next-gen scripts toward
+  the documented bindings.
+
+So "not in the binding metadata" ≠ "absent at runtime"; the matrix
+(`docs/api/12`) records the runtime-`typeof` results, this file records the
+editor's declared surface.

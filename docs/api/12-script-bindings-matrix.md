@@ -135,10 +135,12 @@ Consequences:
   AM ESLint globals (verified, not assumed).
 - `sharedState`/`transientState` are **gone in next-gen** → keep them only in the
   legacy decision-node overlay; the next-gen overlay must not declare them.
-- `secrets` exists but is absent from current `.d.ts` — candidate to add.
-- `JavaImporter` is still defined as a binding even in next-gen (docs say next-gen
-  has no Java allowlist — the symbol exists but allowlisting may not; do not rely
-  on it for next-gen).
+- `systemEnv` and `JavaImporter` are present at runtime here (typeof) but are
+  NOT in the editor binding metadata for any next-gen context (see
+  `docs/api/13`). They're unlisted runtime globals: `systemEnv` is kept in the
+  shared `common.d.ts` (usable everywhere); `JavaImporter` is typed only in the
+  legacy overlay because next-gen has a fixed Java allow-list (the `allowLists`
+  array in each artifact), so it shouldn't be relied on in next-gen.
 - `existingSession` was `undefined` here only because the probe has no prior
   session; treat as context-dependent, not globally absent.
 

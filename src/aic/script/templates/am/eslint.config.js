@@ -7,31 +7,17 @@ import prettier from "eslint-plugin-prettier";
 // AM scripts run on Mozilla Rhino 1.7.14 (both the legacy and next-generation
 // engines). The restrictions below are RUNTIME-VERIFIED against the sandbox —
 // see docs/api/12-script-bindings-matrix.md and scripts/rhino-script-tester/.
-// `let`, object shorthand, object/array destructuring, default parameters, and
-// `const` in any loop position are parse errors; top-level / loop-body `const`
-// parses but silently reads back `undefined`. `const` inside a function works
-// and is allowed. Arrow functions, template literals, and ES2015 Array/String/
-// Object methods all work and are NOT restricted.
-//
 // ecmaVersion is set high enough for the parser to PRODUCE these nodes so they
 // can be flagged — parsing support is not runtime permission.
-const rhinoSyntaxRestrictions = [
-  "error",
+//
+// PARSE ERRORS are engine-level: they fail to parse regardless of script kind,
+// so they're banned for every AM script. `const` inside a function works and is
+// allowed; arrow functions, template literals and ES2015 methods all work.
+const rhinoParseErrors = [
   {
     selector: "VariableDeclaration[kind='let']",
     message:
       "'let' is a parse error on Rhino 1.7.14 ('missing ; before statement'). Use 'var' (or 'const' inside a function).",
-  },
-  {
-    selector: "Program > VariableDeclaration[kind='const']",
-    message:
-      "Top-level 'const' parses but reads back as undefined on Rhino 1.7.14. Use 'var' at the top level.",
-  },
-  {
-    selector:
-      ":matches(ForStatement, ForInStatement, ForOfStatement) > BlockStatement > VariableDeclaration[kind='const']",
-    message:
-      "'const' inside a loop body parses but reads back as undefined on Rhino 1.7.14. Use 'var'.",
   },
   {
     selector: "ForStatement > VariableDeclaration[kind='const']",
@@ -70,6 +56,25 @@ const rhinoSyntaxRestrictions = [
   },
 ];
 
+// These parse fine but `const` silently reads back `undefined`. This is
+// SCOPE-dependent and was only verified in scripted-decision GLOBAL scope, so it
+// is applied only to the decision-node folders below — NOT to libraries (which
+// are module-scoped and use top-level `const` in the real corpus) or other
+// contexts, until probed. See P1 in the review + the lib-const-* probe fixtures.
+const decisionConstScopeBugs = [
+  {
+    selector: "Program > VariableDeclaration[kind='const']",
+    message:
+      "Top-level 'const' parses but reads back as undefined in a scripted-decision script on Rhino 1.7.14. Use 'var' at the top level.",
+  },
+  {
+    selector:
+      ":matches(ForStatement, ForInStatement, ForOfStatement) > BlockStatement > VariableDeclaration[kind='const']",
+    message:
+      "'const' inside a loop body parses but reads back as undefined on Rhino 1.7.14. Use 'var'.",
+  },
+];
+
 // Quality rules applied to every script. `no-undef` is OFF: TypeScript (via the
 // layered types/ .d.ts files and checkJs) is the source of truth for undefined
 // bindings, so we don't duplicate it here. The per-family `globals` blocks below
@@ -93,7 +98,7 @@ const scriptRules = {
   ],
   "require-unicode-regexp": "off",
   "no-undef": "off",
-  "no-restricted-syntax": rhinoSyntaxRestrictions,
+  "no-restricted-syntax": ["error", ...rhinoParseErrors],
   "prettier/prettier": "error",
 };
 
@@ -119,6 +124,14 @@ export default [
     },
     plugins: { prettier },
     rules: scriptRules,
+  },
+  // Scripted-decision scripts (global scope) additionally ban the const-value
+  // bugs verified there. Not applied to libraries/other contexts (unproven).
+  {
+    files: ["*/decision-node/**/*.cjs", "*/decision-node-legacy/**/*.cjs"],
+    rules: {
+      "no-restricted-syntax": ["error", ...rhinoParseErrors, ...decisionConstScopeBugs],
+    },
   },
   // Next-generation scripted decision: decision bindings + library require().
   {

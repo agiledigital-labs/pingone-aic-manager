@@ -67,4 +67,5 @@ for (const b of ctx.bindings) {
   const iface = pascal(b.name);
   out.push(`interface ${iface} {`, body(b.elements), `}`, `declare const ${safe(b.name)}: ${iface};`, "");
 }
+while (out.length && out[out.length - 1] === "") out.pop();
 process.stdout.write(out.join("\n") + "\n");

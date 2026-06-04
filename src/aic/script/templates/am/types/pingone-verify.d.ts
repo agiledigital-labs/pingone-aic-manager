@@ -34,4 +34,3 @@ interface Action {
   withMaxIdleTime(maxIdleTime: number): object;
 }
 declare const action: Action;
-
