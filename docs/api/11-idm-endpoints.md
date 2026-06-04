@@ -75,6 +75,53 @@ curl -X DELETE "$TENANT_BASE_URL/openidm/config/endpoint/my-endpoint" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+## Scripted-endpoint runtime bindings (`request` / `context`)
+
+Verified 2026-06-04 by creating a throwaway `endpoint/rhino-probe` that echoes
+the `request` binding, then invoking it once per CREST method. The endpoint is
+invoked at `/openidm/endpoint/<name>` (NOT `/config/...`), and a freshly-created
+endpoint takes a few seconds to register (first calls 404 until it does).
+
+`request.method` is the CREST verb, mapped from the HTTP call:
+
+| HTTP call | `request.method` | Method-specific fields (beyond the common set) |
+|-----------|------------------|------------------------------------------------|
+| `GET /endpoint/x` | `read` | — |
+| `GET /endpoint/x?_queryFilter=…` or `?_queryId=…` | `query` | `queryFilter`, `queryId`, `queryExpression` (string\|null), `pageSize`, `pagedResultsOffset` (number), `pagedResultsCookie` (string\|null), `sortKeys` |
+| `POST /endpoint/x?_action=create` | `create` | `newResourceId` (string\|null), `content` |
+| `POST /endpoint/x?_action=NAME` | `action` | `action` (the action name), `content` |
+| `PUT /endpoint/x/id` | `update` | `revision` (string\|null), `content` |
+| `PATCH /endpoint/x/id` | `patch` | `revision` (string\|null), `patchOperations` |
+| `DELETE /endpoint/x/id` | `delete` | `revision` (string\|null) |
+
+Common to every method: `method`, `resourcePath` (string; `""` at the endpoint
+root), `additionalParameters` (a map of any non-`_` query params), `fields`
+(the `_fields` list).
+
+- **`patchOperations`** is a list of `{ operation, field, value }` (mirrored over
+  the wire as an index-keyed object `{"0": {...}}` because it's a Java list).
+  `operation` is `add`/`remove`/`replace`/`increment`/`move`/`copy`/`transform`,
+  `field` is a JSON pointer (`/foo`). This is the strict body that has blocked
+  mocking other PATCH APIs — the request must be CREST patch ops, not an
+  arbitrary JSON body.
+- **`content`** is the request body for create/update/action.
+- **`context`** is the CREST call chain. The originating HTTP request is at
+  `context.http`: `{ method, path, headers (map), parameters (map) }`. Identity
+  is at `context.security`: `{ authenticationId, authorization: { id, component,
+  roles } }`. Many other contexts exist (`oauth2`, `transactionId`, `session`,
+  `current`, `parent`, …) and vary by call. (Note `context.http.headers`
+  includes the bearer `Authorization` — never log the full context.)
+
+### Response shape
+
+The script's returned value is the HTTP response body. A **`query` handler MUST
+return** `{ result: [...], resultCount, pagedResultsCookie, … }` — returning a
+plain object fails with `500 "Script returned unexpected query result structure
+of type class java.util.HashMap"`. Other methods return a resource object. The
+return value is not statically type-checkable (a script isn't a typed function),
+but `idm/types/endpoint.d.ts` exposes `IdmQueryResult` / `IdmResource` aliases to
+annotate with `/** @type {…} */`.
+
 ## Quirks
 
 - **`source` is plain text, not base64** (the opposite of AM scripts). Don't
@@ -129,7 +176,9 @@ Object shape (real example, `schedule/UpdateReviewList`):
 
 ## Verified against
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-06-01
+- Date: 2026-06-01 (CRUD); 2026-06-04 (`request`/`context` runtime shapes per
+  method, via `endpoint/rhino-probe` echo — created, probed read/create/update/
+  patch/delete/action/query, deleted)
 - Endpoints: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
   `endpoint/` ids), `GET /openidm/config/endpoint/test` (200; keys
   `_id, description, source, type`, no `_rev`, plaintext `source`),
