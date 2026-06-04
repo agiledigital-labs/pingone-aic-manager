@@ -163,3 +163,36 @@ interface OpenIdm {
   ): any;
 }
 declare const openidm: OpenIdm;
+
+// ---- other next-gen-common bindings (present in every next-gen context) ----
+
+/** Name of the current request cookie. */
+declare const cookieName: string;
+
+/** Generate a signed JWT assertion from the given claims. */
+interface JwtAssertion {
+  generateJwt(jwtData: object): string;
+}
+declare const jwtAssertion: JwtAssertion;
+
+/** Validate a JWT's claims. */
+interface JwtValidator {
+  validateJwtClaims(jwtData: object): object;
+}
+declare const jwtValidator: JwtValidator;
+
+/** Evaluate policies via the policy engine. */
+interface Policy {
+  evaluate(
+    subject: object,
+    application: string,
+    resourceNames: string[],
+    environment: object
+  ): any[];
+}
+declare const policy: Policy;
+
+// Only next-generation scripts can require() library scripts (resolved via the
+// leaf tsconfig `paths` alias to ../lib/*). `require` is a module mechanism, not
+// a listed binding, so it's shared here across all next-gen contexts.
+declare function require(id: string): any;

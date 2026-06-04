@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 12;
+pub const TEMPLATES_VERSION: u32 = 13;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -35,6 +35,14 @@ const MANAGED: &[(&str, &str)] = &[
     ("am/types/decision-node-legacy.d.ts", include_str!("templates/am/types/decision-node-legacy.d.ts")),
     ("am/types/library.d.ts", include_str!("templates/am/types/library.d.ts")),
     ("am/types/oidc-claims.d.ts", include_str!("templates/am/types/oidc-claims.d.ts")),
+    // Next-gen context overlays generated from the editor binding metadata.
+    ("am/types/oidc-claims-ng.d.ts", include_str!("templates/am/types/oidc-claims-ng.d.ts")),
+    ("am/types/device-match.d.ts", include_str!("templates/am/types/device-match.d.ts")),
+    ("am/types/social-handler.d.ts", include_str!("templates/am/types/social-handler.d.ts")),
+    ("am/types/saml-nameid-mapper.d.ts", include_str!("templates/am/types/saml-nameid-mapper.d.ts")),
+    ("am/types/saml-sp-account-mapper.d.ts", include_str!("templates/am/types/saml-sp-account-mapper.d.ts")),
+    ("am/types/oauth2-dcr.d.ts", include_str!("templates/am/types/oauth2-dcr.d.ts")),
+    ("am/types/pingone-verify.d.ts", include_str!("templates/am/types/pingone-verify.d.ts")),
     ("am/tsconfig.json", include_str!("templates/am/tsconfig.json")),
     ("am/eslint.config.js", include_str!("templates/am/eslint.config.js")),
     // IDM shared type defs.

@@ -5,13 +5,10 @@
 // (docs/api/bindings/scripted-decision-next.json, 2026-06-04) — authoritative.
 // All verified ABSENT on the legacy engine (2026-06-03).
 
-// Next-gen scripted decision scripts can require() library scripts (resolved via
-// the leaf tsconfig `paths` alias to ../lib/*). `require` is a module mechanism,
-// not a listed binding.
-declare function require(id: string): any;
+// (require lives in nextgen-common.d.ts — shared by all next-gen contexts.)
 
-// Current request cookie name.
-declare const cookieName: string;
+// Localized-message helper (shape not enumerated in the editor metadata).
+declare const locales: any;
 
 // ---- action (ActionWrapper, all methods chain) ---------------------------
 interface Action {
@@ -303,11 +300,7 @@ interface CallbacksBuilder {
 }
 declare const callbacksBuilder: CallbacksBuilder;
 
-interface RequestCookies {
-  get: (key: StringLike) => JavaArray<JavaString> | null;
-  containsKey: (key: StringLike) => boolean;
-}
-declare const requestCookies: RequestCookies;
+declare const requestCookies: RequestMap;
 
 // ---- other next-gen-only bindings ---------------------------------------
 
@@ -336,29 +329,6 @@ interface SamlApplication {
   getFlowInitiator(): string;
 }
 declare const samlApplication: SamlApplication;
-
-/** Generate a signed JWT assertion from the given claims. */
-interface JwtAssertion {
-  generateJwt(jwtData: object): string;
-}
-declare const jwtAssertion: JwtAssertion;
-
-/** Validate a JWT's claims. */
-interface JwtValidator {
-  validateJwtClaims(jwtData: object): object;
-}
-declare const jwtValidator: JwtValidator;
-
-/** Evaluate policies via the policy engine. */
-interface Policy {
-  evaluate(
-    subject: object,
-    application: string,
-    resourceNames: string[],
-    environment: object
-  ): any[];
-}
-declare const policy: Policy;
 
 /** Information about the current journey/tree. */
 interface Journey {

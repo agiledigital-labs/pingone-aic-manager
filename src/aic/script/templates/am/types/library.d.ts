@@ -6,8 +6,7 @@
 //
 // Libraries receive per-call state (e.g. nodeState) as function arguments via
 // the common `.load(...)` factory pattern, so the scripted-decision globals are
-// intentionally NOT in scope here.
+// intentionally NOT in scope here. (`require` comes from nextgen-common.d.ts.)
 
-declare function require(id: string): any;
 declare const module: { exports: any };
 declare const exports: any;

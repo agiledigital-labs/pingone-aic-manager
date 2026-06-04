@@ -284,12 +284,43 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "library.d.ts"],
             Some("./*"),
         ),
-        // OIDC claims is self-contained (its legacy logger/binding shapes clash
-        // with the next-gen common set), so it pulls rhino + its own defs only.
+        // Legacy OIDC claims is self-contained (its legacy logger/binding shapes
+        // clash with the next-gen common set), so it pulls rhino + its own defs.
         "oidc-claims" => (&["rhino-1.7.14.d.ts", "oidc-claims.d.ts"], None),
-        // Any other context (oauth2, saml, social, policy, …): shared Rhino +
-        // common globals, plus the classic Debug `logger` (these are mostly
-        // unmigrated/legacy-style scripts), until a per-family overlay lands.
+        // Next-gen contexts (typed from the editor binding metadata via
+        // scripts/gen-binding-types.mjs): shared next-gen common + a generated
+        // per-context overlay.
+        "oidc-claims-ng" => (
+            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "oidc-claims-ng.d.ts"],
+            Some("../lib/*"),
+        ),
+        "device-match" => (
+            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "device-match.d.ts"],
+            Some("../lib/*"),
+        ),
+        "social-handler" => (
+            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "social-handler.d.ts"],
+            Some("../lib/*"),
+        ),
+        "saml-nameid-mapper" => (
+            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "saml-nameid-mapper.d.ts"],
+            Some("../lib/*"),
+        ),
+        "saml-sp-account-mapper" => (
+            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "saml-sp-account-mapper.d.ts"],
+            Some("../lib/*"),
+        ),
+        "oauth2-dcr" => (
+            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "oauth2-dcr.d.ts"],
+            Some("../lib/*"),
+        ),
+        "pingone-verify" => (
+            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "pingone-verify.d.ts"],
+            Some("../lib/*"),
+        ),
+        // Any other context (legacy OAuth2, SAML adapters, policy condition, …):
+        // shared Rhino + common globals, plus the classic Debug `logger` (these
+        // are mostly unmigrated/legacy-style scripts), until they go next-gen.
         _ => (&["rhino-1.7.14.d.ts", "common.d.ts", "legacy-common.d.ts"], None),
     };
 
@@ -466,12 +497,32 @@ mod tests {
         assert!(!oidc.contains("common.d.ts"));
         assert!(!oidc.contains("paths"));
 
-        // Any other context: shared rhino + common globals + classic logger.
+        // Next-gen context overlays: shared next-gen common + their generated
+        // per-context defs, with the library alias (all next-gen can require).
+        for (slug, overlay) in [
+            ("oidc-claims-ng", "oidc-claims-ng.d.ts"),
+            ("device-match", "device-match.d.ts"),
+            ("social-handler", "social-handler.d.ts"),
+            ("saml-nameid-mapper", "saml-nameid-mapper.d.ts"),
+            ("saml-sp-account-mapper", "saml-sp-account-mapper.d.ts"),
+            ("oauth2-dcr", "oauth2-dcr.d.ts"),
+            ("pingone-verify", "pingone-verify.d.ts"),
+        ] {
+            let cfg = leaf_tsconfig(slug);
+            assert!(cfg.contains("../../types/nextgen-common.d.ts"), "{slug} nextgen-common");
+            assert!(cfg.contains(&format!("../../types/{overlay}")), "{slug} overlay");
+            assert!(!cfg.contains("legacy-common"), "{slug} no legacy-common");
+            assert!(cfg.contains("\"*\": [\"../lib/*\"]"), "{slug} lib alias");
+        }
+
+        // Any other (legacy/unmigrated) context: shared rhino + common + classic
+        // Debug logger, no next-gen overlay, no library alias.
         let other = leaf_tsconfig("config-provider");
         assert!(other.contains("../../types/rhino-1.7.14.d.ts"));
         assert!(other.contains("../../types/common.d.ts"));
         assert!(other.contains("../../types/legacy-common.d.ts"));
         assert!(!other.contains("decision-node"));
+        assert!(!other.contains("nextgen-common"));
         assert!(!other.contains("paths"));
     }
 }
