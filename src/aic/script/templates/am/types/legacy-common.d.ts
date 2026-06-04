@@ -14,3 +14,10 @@ interface Logger {
   warningEnabled(): boolean;
 }
 declare const logger: Logger;
+
+// systemEnv is a legacy-only binding (present on the legacy probe; absent from
+// every next-gen context's binding metadata).
+interface SystemEnv {
+  getProperty: (key: StringLike) => JavaString | null;
+}
+declare const systemEnv: SystemEnv;

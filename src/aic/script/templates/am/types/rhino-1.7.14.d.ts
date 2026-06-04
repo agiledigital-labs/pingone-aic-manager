@@ -42,6 +42,13 @@ interface JavaMap<Key = JavaString, Value = JavaString> {
   containsKey?(key: Key): boolean;
 }
 
+// Request header/parameter/cookie bindings are Java multimaps surfaced without
+// enumerated methods in the editor metadata; this is the shape scripts use.
+interface RequestMap {
+  get(key: StringLike): JavaArray<JavaString> | null;
+  containsKey(key: StringLike): boolean;
+}
+
 interface JavaSet<T = JavaString> {
   contains(key: T): boolean;
   size(): number;

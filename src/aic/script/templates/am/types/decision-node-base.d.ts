@@ -31,16 +31,8 @@ interface NodeState {
 }
 declare const nodeState: NodeState;
 
-interface RequestParameters {
-  get: (key: StringLike) => JavaArray<JavaString> | null;
-}
-declare const requestParameters: RequestParameters;
-
-interface RequestHeaders {
-  get: (key: StringLike) => JavaArray<JavaString> | null;
-  containsKey: (key: StringLike) => boolean;
-}
-declare const requestHeaders: RequestHeaders;
+declare const requestParameters: RequestMap;
+declare const requestHeaders: RequestMap;
 
 // Accessors for callbacks returned from a previous pass through this node.
 interface Callbacks {
@@ -89,14 +81,3 @@ declare const existingSession: ExistingSession | undefined;
 
 // Present on both engines (verified 2026-06-04).
 declare const resumedFromSuspend: boolean;
-
-// Secrets API. Each accessor returns a secret object (read it via its own
-// methods). Method set from the next-gen binding metadata.
-interface Secrets {
-  getGenericSecret(secretId: StringLike): object;
-  getDecryptionKey(secretId: StringLike): object;
-  getEncryptionKey(secretId: StringLike): object;
-  getSigningKey(secretId: StringLike): object;
-  getVerificationKey(secretId: StringLike): object;
-}
-declare const secrets: Secrets;
