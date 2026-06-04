@@ -22,6 +22,7 @@
     "useUnknownInCatchVariables": false,
     "strictNullChecks": true
   },
-  "include": ["**/*", "types/*.d.ts"],
+  "//": "Settings-only base. The per-folder leaf tsconfigs extend this and set their own `include`; this base intentionally includes no files because the types/ overlays redeclare globals and cannot share one program. Type-check via `npm run type-check` (tools/check-types.mjs runs each leaf).",
+  "files": [],
   "exclude": ["node_modules", "dist"]
 }

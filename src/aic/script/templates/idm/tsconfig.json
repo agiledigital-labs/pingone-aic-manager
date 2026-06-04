@@ -22,6 +22,7 @@
     "useUnknownInCatchVariables": false,
     "strictNullChecks": true
   },
-  "include": ["endpoint/**/*", "schedule/**/*", "types/*.d.ts"],
+  "//": "Settings-only base. The per-folder leaf tsconfigs (endpoint/, schedule/) extend this and set their own `include`. Type-check via `npm run type-check` (tools/check-types.mjs).",
+  "files": [],
   "exclude": ["node_modules", "dist"]
 }

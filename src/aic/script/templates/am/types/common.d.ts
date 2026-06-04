@@ -10,6 +10,15 @@
 declare const scriptName: string;
 declare const realm: string;
 
+// `systemEnv` is present at RUNTIME on both engines (verified via typeof probe,
+// 2026-06-04) but is NOT in the next-gen editor binding metadata — an unlisted
+// global. Kept here (available everywhere) rather than removed, so next-gen
+// scripts that use it still type-check. Prefer documented bindings where possible.
+interface SystemEnv {
+  getProperty: (key: StringLike) => JavaString | null;
+}
+declare const systemEnv: SystemEnv;
+
 interface HttpHeaders {
   "Content-Type"?: "application/json" | "application/x-www-form-urlencoded";
   "X-Api-Key"?: string;
