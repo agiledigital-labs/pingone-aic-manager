@@ -20,10 +20,3 @@ declare const transientState: MutableState;
 
 interface JavaClass {}
 declare const JavaImporter: (...classes: JavaClass[]) => void;
-
-// Legacy nodeState also exposes these (undocumented; verified 2026-06-04). Merged
-// onto the shared NodeState (decision-node-base.d.ts) only on the legacy leaf.
-interface NodeState {
-  isDefined(key: StringLike): boolean;
-  remove(key: StringLike): void;
-}

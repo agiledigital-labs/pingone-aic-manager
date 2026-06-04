@@ -2,65 +2,113 @@
 // library scripts (both run on the next-gen engine). Verified ABSENT on the
 // legacy engine (2026-06-03), so the legacy decision leaf does NOT include this
 // file. Layered on top of rhino + common.
+//
+// Signatures transcribed from the script editor's binding metadata
+// (docs/api/bindings/scripted-decision-next.json, 2026-06-04) — authoritative.
 
-// Next-gen logger is slf4j-style (trace/debug/info/warn/error). `{}` in the
-// message is a placeholder filled by the trailing args. The legacy engine uses
-// a different shape (see legacy-common.d.ts), verified 2026-06-04.
+// slf4j-style logger. `{}` placeholders in `format` are filled by the args.
 type LogFunction = (message: StringLike, ...args: any[]) => void;
 interface Logger {
+  getName(): string;
   trace: LogFunction;
   debug: LogFunction;
   info: LogFunction;
   warn: LogFunction;
   error: LogFunction;
+  isTraceEnabled(): boolean;
+  isDebugEnabled(): boolean;
+  isInfoEnabled(): boolean;
+  isWarnEnabled(): boolean;
+  isErrorEnabled(): boolean;
 }
 declare const logger: Logger;
 
-// `utils` surface enumerated from the live binding (2026-06-04): base64,
-// base64url, crypto, types. Method argument/return shapes follow the docs +
-// Web-Crypto conventions; crypto.subtle/randomValues exact shapes are unverified
-// (see docs/api/12 open item #4).
-interface Base64 {
-  /** Base64-encode a UTF-8 string. e.g. utils.base64.encode("user:pass"). */
-  encode(value: StringLike): string;
-  /** Decode a base64 string back to a UTF-8 string. */
-  decode(value: StringLike): string;
-  /** Decode a base64 string to raw bytes. */
-  decodeToBytes(value: StringLike): JavaByteArray;
-  /** Browser-style: encode a binary string to base64. */
-  btoa(value: StringLike): string;
-  /** Browser-style: decode base64 to a binary string. */
-  atob(value: StringLike): string;
+// ---- utils ---------------------------------------------------------------
+
+/** SubtleCrypto-like API (utils.crypto.subtle). Byte arrays are number[]. */
+interface ScriptSubtle {
+  sign(algorithm: StringLike, key: number[], data: number[]): number[];
+  sign(algorithmOptions: object, key: number[], data: number[]): number[];
+  verify(
+    algorithm: StringLike,
+    key: number[],
+    data: number[],
+    signature: number[]
+  ): boolean;
+  verify(
+    algorithmOptions: object,
+    key: number[],
+    data: number[],
+    signature: number[]
+  ): boolean;
+  digest(algorithm: StringLike, data: number[]): number[];
+  encrypt(algorithm: StringLike, key: number[], data: number[]): number[];
+  encrypt(algorithmOptions: object, key: number[], data: number[]): number[];
+  decrypt(algorithm: StringLike, key: number[], data: number[]): number[];
+  decrypt(algorithmOptions: object, key: number[], data: number[]): number[];
+  generateKey(algorithm: StringLike): object;
+  generateKey(algorithm: object): object;
+  deriveKey(
+    algorithmName: StringLike,
+    baseKey: number[],
+    derivedKeyLength: number
+  ): number[];
+  deriveKey(
+    algorithm: object,
+    baseKey: number[],
+    derivedKeyLength: number
+  ): number[];
 }
-interface Crypto {
+
+interface ScriptCrypto {
   /** Random RFC-4122 v4 UUID. */
   randomUUID(): string;
-  /** Web-Crypto-style random values (shape unverified — docs/api/12 #4). */
-  randomValues(...args: any[]): any;
-  getRandomValues(...args: any[]): any;
-  /** SubtleCrypto-like API (shape unverified — docs/api/12 #4). */
-  subtle: any;
+  /** Fill the given array with random values and return it. */
+  getRandomValues(array: number[]): number[];
+  /** Web-Crypto SubtleCrypto-style operations. */
+  subtle: ScriptSubtle;
 }
-interface Types {
-  /** UTF-8 string → byte array. */
-  stringToBytes(value: StringLike): JavaByteArray;
+
+interface Base64 {
+  /** Decode a base64 string to a UTF-8 string. */
+  decode(toDecode: StringLike): string;
+  /** Base64-encode a UTF-8 string, e.g. utils.base64.encode("user:pass"). */
+  encode(toEncode: StringLike): string;
+  /** Base64-encode raw bytes. */
+  encode(toEncode: number[]): string;
+  /** Decode a base64 string to raw bytes. */
+  decodeToBytes(toDecode: StringLike): number[];
+  /** Browser-style: encode a binary string to base64. */
+  btoa(toEncode: StringLike): string;
+  /** Browser-style: decode base64 to a binary string. */
+  atob(toDecode: StringLike): string;
+}
+
+interface ScriptTypes {
   /** Byte array → UTF-8 string. */
-  bytesToString(bytes: JavaByteArray): string;
+  bytesToString(bytes: number[]): string;
+  /** UTF-8 string → byte array. */
+  stringToBytes(value: StringLike): number[];
 }
+
 interface Utils {
+  /** Random values + UUIDs + Web-Crypto subtle. */
+  crypto: ScriptCrypto;
   /** Base64 (standard alphabet). */
   base64: Base64;
   /** Base64url (URL-safe alphabet). */
   base64url: Base64;
-  /** Random values + UUIDs. */
-  crypto: Crypto;
   /** String ↔ byte conversions. */
-  types: Types;
+  types: ScriptTypes;
 }
 declare const utils: Utils;
 
-// openidm CRUDPAQ. Tenant-specific managed-object paths keep the editor honest
-// about which resources exist.
+// ---- openidm (CRUDPAQ) ---------------------------------------------------
+//
+// Resource names are plain strings (e.g. "managed/alpha_user",
+// "managed/alpha_user/<id>", "internal/role/<id>"). Overloads mirror the binding
+// metadata: trailing params (`params`, `fields`) are optional.
+
 type Patch =
   | {
       operation: "add" | "replace";
@@ -72,22 +120,8 @@ type Patch =
       field: string;
     };
 
-type IdmManagedObject =
-  | "alpha_user"
-  | "alpha_organization"
-  | "providerProvisioningQueue"
-  | "bravo_user"
-  | "bravo_organization";
-
-type IdmObjectPath = `managed/${IdmManagedObject}`;
-
 type QueryResponse = {
-  result: [
-    {
-      _id: string;
-      _rev: string;
-    } & object,
-  ];
+  result: Array<{ _id: string; _rev: string } & Record<string, any>>;
   resultCount: number;
   pagedResultsCookie: string | null;
   totalPagedResultsPolicy: string;
@@ -95,35 +129,37 @@ type QueryResponse = {
   remainingPagedResults: number;
 };
 
-declare const openidm: {
-  read: (
-    path: `${IdmObjectPath}/${string}`,
-    params?: Record<string, string> | null,
-    fields?: string[]
-  ) => object | null;
-  query: (
-    path: IdmObjectPath,
-    params: { _queryFilter: string },
-    fields?: string[]
-  ) => QueryResponse;
-  create: (
-    path: IdmObjectPath,
+interface OpenIdm {
+  read(resourceName: string, params?: object, fields?: string[]): any;
+  create(
+    resourceName: string,
     newResourceId: string | null,
-    content: Record<string, any> | null,
-    params?: Record<string, string> | null,
+    content: object,
+    params?: object,
     fields?: string[]
-  ) => object;
-  patch: (
-    path: `${IdmObjectPath}/${string}`,
-    revision: string | null,
+  ): any;
+  update(
+    id: string,
+    rev: string | null,
+    value: object,
+    params?: object,
+    fields?: string[]
+  ): any;
+  patch(
+    resourceName: string,
+    rev: string | null,
     patch: Patch[],
-    params?: Record<string, string> | null,
+    params?: object,
     fields?: string[]
-  ) => object;
-  delete: (
-    path: `${IdmObjectPath}/${string}`,
-    revision: string | null,
-    params?: Record<string, string> | null,
+  ): any;
+  delete(resourceName: string, rev: string | null, params?: object, fields?: string[]): any;
+  query(resourceName: string, params: { _queryFilter: string } | object, fields?: string[]): QueryResponse;
+  action(
+    resource: string,
+    actionName: string,
+    content?: object,
+    params?: object,
     fields?: string[]
-  ) => object;
-};
+  ): any;
+}
+declare const openidm: OpenIdm;

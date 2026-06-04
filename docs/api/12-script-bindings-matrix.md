@@ -235,16 +235,21 @@ binding *presence* (typeof). Resolved 2026-06-04: legacy (`evaluatorVersion:
 3. IDM: `let`, `const`, `logger`, `request`, `context`, `openidm`, and which Node
    globals (if any) exist — endpoint first, then schedule. (AM tester pattern
    transfers; needs an IDM endpoint probe resource.)
-4. **Exact `callbacksBuilder` / `utils` argument sets.** DONE (2026-06-04): the
-   full member inventory was enumerated from the live binding and typed —
-   `callbacksBuilder` now has all 25 builders, `utils` has base64/base64url/
-   crypto/types. STILL OPEN: exact argument sets / overloads for the specialized
-   builders (validated*, redirect, metadata, selectIdP, idP, consentMapping,
-   language, x509Certificate, http — typed permissively as `(...args)`) and the
-   `crypto.subtle`/`randomValues` shapes. Reflection (`getClass`) is blocked in
-   the sandbox and Rhino reports wrapped-method arity as 0, so this needs either
-   Ping's internal API docs or careful trial-calls (mind redirect/suspend
-   callbacks, which change journey flow).
+4. **Exact `callbacksBuilder` / `utils` argument sets.** RESOLVED (2026-06-04).
+   The tenant owner extracted the script editor's authoritative binding metadata
+   — saved at `docs/api/bindings/scripted-decision-next.json` (the
+   `SCRIPTED_DECISION_NODE` next-gen binding surface: 25 bindings, every method
+   with named params + types + overloads + the Java allow-list). All of it is
+   now typed from that source: `callbacksBuilder` (every overload), `utils`
+   (base64/base64url/crypto incl. full `subtle`, types), `action` (full
+   chainable surface), `openidm` (CRUDPAQ + overloads), `nodeState`
+   (incl. `isDefined`/`remove`/`keys`), `callbacks` getters, enriched `secrets`,
+   and previously-missing bindings: `samlApplication`, `oauthApplication`,
+   `jwtAssertion`, `jwtValidator`, `policy`, `journey`, `cacheManager`,
+   `cookieName`. (Corrected guesses: `suspendedTextOutputCallback(messageType,
+   message)`; `utils.crypto` has no `randomValues`.) The metadata only covers
+   `evaluatorVersion 2.0`; the equivalent legacy dump would let us tighten the
+   legacy leaf the same way.
 5. **`httpClient` auth.** Verified (user, 2026-06-04): next-gen `httpClient`
    ignores a directly-set `Authorization` header — use `HttpOptions.token`, sent
    as `Authorization: Bearer <token>`. **Open: Basic auth delivery.** The Basic

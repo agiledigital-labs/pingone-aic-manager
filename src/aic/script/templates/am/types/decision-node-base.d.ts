@@ -2,9 +2,11 @@
 // of rhino-1.7.14.d.ts + common.d.ts. The next-gen and legacy overlays add only
 // the globals unique to each generation.
 //
-// Shapes target the next-generation engine (the primary edit target). Whether
-// legacy (evaluatorVersion 1.0) exposes identical object shapes is a deferred
-// probe (matrix open item #1).
+// nodeState/secrets shapes are transcribed from the next-gen binding metadata
+// (docs/api/bindings/scripted-decision-next.json) and confirmed present on the
+// legacy engine too (probe 2026-06-04). On legacy, nodeState.get() returns a
+// Java JsonValue needing .asString()/.asMap(); on next-gen it returns a coerced
+// JS value — a return-shape difference, not a presence one.
 
 declare function _nodeStateGet(
   key: StringLike
@@ -16,8 +18,16 @@ declare function _nodeStateGet(
 interface NodeState {
   get: typeof _nodeStateGet;
   getObject: (key: StringLike) => object | null | undefined;
-  putShared: (key: StringLike, value: any) => void;
-  putTransient: (key: StringLike, value: any) => void;
+  /** True if the key is set in any state. */
+  isDefined: (key: StringLike) => boolean;
+  /** All defined state keys. */
+  keys: () => object;
+  /** Remove a key from shared state. */
+  remove: (key: StringLike) => void;
+  putShared: (key: StringLike, value: any) => NodeState;
+  putTransient: (key: StringLike, value: any) => NodeState;
+  mergeShared: (object: object) => NodeState;
+  mergeTransient: (object: object) => NodeState;
 }
 declare const nodeState: NodeState;
 
@@ -32,12 +42,29 @@ interface RequestHeaders {
 }
 declare const requestHeaders: RequestHeaders;
 
+// Accessors for callbacks returned from a previous pass through this node.
 interface Callbacks {
-  getTextInputCallbacks: () => JavaArray<string>;
-  getHiddenValueCallbacks: () => JavaArray<string>;
-  getStringAttributeInputCallbacks: () => JavaArray<string>;
-  getConfirmationCallbacks: () => JavaArray<number>;
   isEmpty(): boolean;
+  getNameCallbacks(): JavaArray<string>;
+  getPasswordCallbacks(): JavaArray<string>;
+  getHiddenValueCallbacks(): object;
+  getChoiceCallbacks(): JavaArray<string>;
+  getConfirmationCallbacks(): JavaArray<number>;
+  getTextInputCallbacks(): JavaArray<string>;
+  getStringAttributeInputCallbacks(): JavaArray<string>;
+  getNumberAttributeInputCallbacks(): JavaArray<string>;
+  getBooleanAttributeInputCallbacks(): JavaArray<string>;
+  getDeviceProfileCallbacks(): JavaArray<string>;
+  getKbaCreateCallbacks(): JavaArray<string>;
+  getSelectIdPCallbacks(): JavaArray<string>;
+  getTermsAndConditionsCallbacks(): JavaArray<string>;
+  getLanguageCallbacks(): JavaArray<string>;
+  getIdpCallbacks(): JavaArray<string>;
+  getValidatedUsernameCallbacks(): JavaArray<string>;
+  getValidatedPasswordCallbacks(): JavaArray<string>;
+  getHttpCallbacks(): JavaArray<string>;
+  getX509CertificateCallbacks(): JavaArray<string>;
+  getConsentMappingCallbacks(): JavaArray<string>;
 }
 declare const callbacks: Callbacks;
 
@@ -47,7 +74,7 @@ interface Identity {
   store: () => void;
 }
 interface IdRepository {
-  getIdentity: (id: string) => Identity;
+  getIdentity: (userName: string) => Identity;
 }
 declare const idRepository: IdRepository;
 
@@ -60,12 +87,16 @@ interface ExistingSession {
 }
 declare const existingSession: ExistingSession | undefined;
 
-// Verified present on BOTH engines (2026-06-03): resume flag + secrets API.
+// Present on both engines (verified 2026-06-04).
 declare const resumedFromSuspend: boolean;
 
-// `secrets` is present on both engines; its method shape is the documented AM
-// SecretsApi shape (treat as provisional — matrix open item #2).
+// Secrets API. Each accessor returns a secret object (read it via its own
+// methods). Method set from the next-gen binding metadata.
 interface Secrets {
-  getGenericSecret(name: StringLike): JavaString;
+  getGenericSecret(secretId: StringLike): object;
+  getDecryptionKey(secretId: StringLike): object;
+  getEncryptionKey(secretId: StringLike): object;
+  getSigningKey(secretId: StringLike): object;
+  getVerificationKey(secretId: StringLike): object;
 }
 declare const secrets: Secrets;
