@@ -7,7 +7,6 @@ pub mod modal;
 pub mod modal_chrome;
 pub mod onboard;
 pub mod popup_confirm;
-pub mod scripts;
 pub mod secret;
 pub mod toast;
 pub mod undo_history;
@@ -97,7 +96,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         InputMode::Normal
         | InputMode::EsvSearch
-        | InputMode::ScriptSearch
+        | InputMode::Scripts(_)
         | InputMode::EsvEdit
         | InputMode::EsvRestartConfirm
         | InputMode::EsvDeleteConfirm
@@ -228,7 +227,7 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             chunks[1],
         );
     } else if app.current_tab == crate::app::Tab::Scripts {
-        scripts::draw_body(f, app, area);
+        crate::scripts::view::draw_body(f, app, area);
     } else {
         draw_esvs(f, app, area);
     }

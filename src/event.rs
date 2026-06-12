@@ -99,20 +99,7 @@ pub enum AppEvent {
         tenant: String,
         outcome: crate::screens::esv::RefreshOutcome,
     },
-    /// Background scripts-tab refresh finished: the candidate list (every
-    /// script across all namespaces) tagged with its local state, or an error.
-    ScriptsListed {
-        tenant: String,
-        result: std::result::Result<Vec<crate::aic::script::sync::Candidate>, String>,
-    },
-    /// A background script pull/push finished. `full` is the full-name (or
-    /// "all"); `label` is the verb for the toast on failure.
-    ScriptOpResult {
-        tenant: String,
-        full: String,
-        label: String,
-        result: std::result::Result<String, String>,
-    },
+    Scripts(crate::scripts::screen::Event),
     Toast(ToastKind, String),
 }
 

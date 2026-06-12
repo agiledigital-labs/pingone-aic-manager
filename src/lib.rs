@@ -9,6 +9,7 @@ pub mod event;
 pub mod keymap;
 pub mod logging;
 pub mod screens;
+pub mod scripts;
 pub mod theme;
 pub mod ui;
 pub mod undo;

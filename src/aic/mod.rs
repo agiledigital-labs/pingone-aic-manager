@@ -2,7 +2,6 @@ pub mod api;
 pub mod auth;
 pub mod esv;
 pub mod onboard;
-pub mod script;
 
 use std::sync::{Arc, Mutex};
 

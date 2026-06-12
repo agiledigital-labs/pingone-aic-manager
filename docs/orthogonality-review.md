@@ -3,7 +3,12 @@
 Goal: an AI coding agent should be able to make a feature change by pulling
 **one directory plus one docs/api file** into context. This report maps where
 that breaks today, proposes a feature-vertical layout (approved direction),
-and sequences the migration. No code has been changed yet.
+and sequences the migration.
+
+**Phase status:** Phase 0 (docs) ✅ · Phase 1 (`src/scripts/` pilot) ✅ ·
+Phase 2 (esv + secrets) ⏳ next · Phase 3 (onboard + vault) · Phase 4 (residue).
+Sections 1–3 below describe the **pre-restructure** state and are kept as the
+rationale; the CLAUDE.md §9 routing map tracks current reality.
 
 ## 1. How a feature change spreads today
 

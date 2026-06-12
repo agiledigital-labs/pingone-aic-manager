@@ -38,7 +38,7 @@ pub enum PendingProdAction {
     },
     ScriptPush {
         tenant: String,
-        kind: crate::aic::script::Kind,
+        kind: crate::scripts::Kind,
         realm: String,
         name: String,
         full: String,
@@ -121,7 +121,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                         name,
                         full,
                     } => {
-                        crate::screens::scripts::execute_push(
+                        crate::scripts::screen::execute_push(
                             app, tenant, kind, realm, name, full, true,
                         );
                     }
