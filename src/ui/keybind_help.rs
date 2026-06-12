@@ -15,6 +15,7 @@ use ratatui::{
 use crate::app::{App, AuthMethod, InputMode, SetupContext};
 use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::EditField;
+use crate::onboard::screen::Mode as OnboardMode;
 use crate::secrets::screen::Mode as SecretsMode;
 use crate::ui::modal_chrome::hint_line;
 
@@ -90,14 +91,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
         ),
         InputMode::SetupAuth => setup_auth_lines(app, &mut lines),
         InputMode::Unlock => unlock_lines(app, &mut lines),
-        InputMode::OnboardMenu => onboard_menu_lines(app, &mut lines),
-        InputMode::OnboardCookie | InputMode::OnboardPaste => onboard_form_lines(&mut lines),
-        InputMode::OnboardUserPass => onboard_userpass_lines(app, &mut lines),
-        InputMode::OverwriteConfirm => confirm_lines(
-            &mut lines,
-            "Overwrite existing tenant",
-            &[("y", "overwrite"), ("n/Esc", "cancel")],
-        ),
+        InputMode::Onboard(mode) => onboard_lines(app, mode, &mut lines),
         InputMode::EnvPicker => env_picker_lines(app, &mut lines),
         InputMode::ProdConfirm => confirm_lines(
             &mut lines,
@@ -279,6 +273,19 @@ fn onboard_menu_lines(app: &App, lines: &mut Vec<Line<'static>>) {
         bind(lines, range, "choose numbered method");
     }
     bind(lines, "F1/?", "show keybinds");
+}
+
+fn onboard_lines(app: &App, mode: OnboardMode, lines: &mut Vec<Line<'static>>) {
+    match mode {
+        OnboardMode::Menu => onboard_menu_lines(app, lines),
+        OnboardMode::Cookie | OnboardMode::Paste => onboard_form_lines(lines),
+        OnboardMode::UserPass => onboard_userpass_lines(app, lines),
+        OnboardMode::OverwriteConfirm => confirm_lines(
+            lines,
+            "Overwrite existing tenant",
+            &[("y", "overwrite"), ("n/Esc", "cancel")],
+        ),
+    }
 }
 
 fn onboard_form_lines(lines: &mut Vec<Line<'static>>) {

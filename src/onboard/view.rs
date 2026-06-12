@@ -1,6 +1,5 @@
-//! Add-tenant flows: the picker menu and the three onboarding form
-//! variants (session cookie / username+password / paste-JWK). Each one
-//! is a full-screen modal that goes through `ui::modal_chrome`.
+//! Add-tenant rendering: the picker menu, three onboarding forms, and the
+//! duplicate-name confirmation. Each is a full-screen modal.
 
 use ratatui::{
     Frame,
@@ -10,33 +9,61 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::aic::onboard::cookie::{CookieField, CookieForm};
-use crate::aic::onboard::paste::{PasteField, PasteForm};
-use crate::aic::onboard::userpass::{UpField, UpForm};
-use crate::app::{App, InputMode};
-use crate::theme::style_for;
-use crate::ui::modal_chrome::Modal;
+use crate::{app::App, theme::style_for, ui::modal_chrome::Modal};
 
-pub fn draw(f: &mut Frame, app: &App) {
-    match app.input_mode {
-        InputMode::OnboardMenu => draw_menu(f, app),
-        InputMode::OnboardCookie => {
+use super::cookie::{CookieField, CookieForm};
+use super::paste::{PasteField, PasteForm};
+use super::screen::Mode;
+use super::userpass::{UpField, UpForm};
+
+pub fn draw(f: &mut Frame, app: &App, mode: Mode) {
+    match mode {
+        Mode::Menu => draw_menu(f, app),
+        Mode::Cookie => {
             if let Some(form) = &app.onboard.cookie_form {
                 draw_cookie_form(f, form);
             }
         }
-        InputMode::OnboardUserPass => {
+        Mode::UserPass => {
             if let Some(form) = &app.onboard.up_form {
                 draw_up_form(f, form);
             }
         }
-        InputMode::OnboardPaste => {
+        Mode::Paste => {
             if let Some(form) = &app.onboard.paste_form {
                 draw_paste_form(f, form);
             }
         }
-        _ => {}
+        Mode::OverwriteConfirm => draw_overwrite_confirm(f, app),
     }
+}
+
+fn draw_overwrite_confirm(f: &mut Frame, app: &App) {
+    let name = app
+        .onboard
+        .pending_overwrite
+        .as_ref()
+        .map(|(tenant, _)| tenant.name.as_str())
+        .unwrap_or("?");
+    let body = Modal {
+        title: "⚠ Tenant already exists",
+        status: None,
+        hints: &[("y", "overwrite"), ("n/Esc", "cancel")],
+        body_height: 2,
+    }
+    .draw(f, f.area());
+
+    let text = vec![
+        Line::from(Span::styled(
+            format!("A tenant with the name \"{name}\" already exists."),
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "Do you want to overwrite it?",
+            Style::default().fg(Color::White),
+        )),
+    ];
+    f.render_widget(Paragraph::new(text), body);
 }
 
 fn draw_menu(f: &mut Frame, app: &App) {

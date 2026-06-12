@@ -155,7 +155,7 @@ need into context.
 | Script workspace templates (lint/types) | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs` | `docs/api/12-script-bindings-matrix.md` |
 | Tokens / HTTP transport / daemon | `src/aic/api.rs`, `src/aic/auth.rs`, `src/agent/` | `docs/api/00-auth.md`, `01`, `02`; `src/agent/mod.rs` header |
 | Local credential vault / unlock | `src/screens/{unlock,auth_setup,auth_settings}.rs` + `src/ui/` twins, `src/security_key.rs`, `src/config/{crypto,wraps}.rs` | — (local-only, no AIC docs) |
-| Onboarding (add tenant) | `src/aic/onboard/`, `src/screens/onboard.rs`, `src/ui/onboard.rs` | `docs/api/00-auth.md`, `99-…` Q11/Q12 |
+| Onboarding (add tenant) | `src/onboard/` | `docs/api/00-auth.md`, `99-…` Q11/Q12 |
 | Undo | `src/undo.rs`, `src/screens/undo_history.rs`, `src/ui/undo_history.rs` | — |
 | TUI look & feel / keybindings | `src/ui/`, `src/theme.rs`, `src/keymap.rs` | `docs/DESIGN.md` |
 | CLI plumbing (clap, ctx, login) | `src/cli/mod.rs` | — |

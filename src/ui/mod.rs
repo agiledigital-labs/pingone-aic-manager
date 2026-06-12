@@ -5,7 +5,6 @@ pub mod header;
 pub mod keybind_help;
 pub mod modal;
 pub mod modal_chrome;
-pub mod onboard;
 pub mod popup_confirm;
 pub mod toast;
 pub mod undo_history;
@@ -58,17 +57,8 @@ pub fn draw(f: &mut Frame, app: &App) {
             toast::draw(f, app);
             return;
         }
-        InputMode::OnboardMenu
-        | InputMode::OnboardCookie
-        | InputMode::OnboardUserPass
-        | InputMode::OnboardPaste => {
-            onboard::draw(f, app);
-            draw_keybind_help(f, app);
-            toast::draw(f, app);
-            return;
-        }
-        InputMode::OverwriteConfirm => {
-            modal::draw_overwrite_confirm(f, app);
+        InputMode::Onboard(mode) => {
+            crate::onboard::view::draw(f, app, mode);
             draw_keybind_help(f, app);
             toast::draw(f, app);
             return;

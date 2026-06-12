@@ -28,11 +28,7 @@ pub enum InputMode {
     AuthSettingsConfirm,
     /// Inline editor for renaming the focused security-key wrap.
     AuthSettingsRename,
-    OnboardMenu,
-    OnboardCookie,
-    OnboardUserPass,
-    OnboardPaste,
-    OverwriteConfirm,
+    Onboard(crate::onboard::screen::Mode),
     EnvPicker,
     ProdConfirm,
     UndoHistory,
@@ -114,10 +110,10 @@ pub struct App {
     // need a JWK to mint a token from this process.
     jwks: HashMap<String, serde_json::Value>,
 
-    /// Onboarding state — see `screens::onboard`. Owns the four form
+    /// Onboarding state — see `crate::onboard`. Owns the form
     /// drafts, the in-flight bootstrap id, the OTP callback body, and the
     /// overwrite-confirm draft.
-    pub onboard: crate::screens::onboard::State,
+    pub onboard: crate::onboard::screen::State,
 
     /// Pending production write confirmation shared by onboarding, ESV edits,
     /// and any future write-capable screens.
@@ -199,7 +195,7 @@ impl App {
             dek: None,
             wraps,
             jwks: HashMap::new(),
-            onboard: crate::screens::onboard::State::new(),
+            onboard: crate::onboard::screen::State::new(),
             prod_confirm: crate::screens::prod_confirm::State::new(),
             undo,
             keybind_help_open: false,
@@ -424,44 +420,13 @@ impl App {
         match event {
             AppEvent::Key(key) => self.handle_key(key).await?,
             AppEvent::Tick => self.tick(),
-            AppEvent::ServiceAccountCreated {
-                onboard_id,
-                tenant_name,
-                base_url,
-                theme,
-                sa_id,
-                jwk,
-            } => {
-                crate::screens::onboard::handle_sa_created(
-                    self,
-                    onboard_id,
-                    tenant_name,
-                    base_url,
-                    theme,
-                    sa_id,
-                    jwk,
-                )?;
-            }
+            AppEvent::Onboard(event) => crate::onboard::screen::apply_event(self, event)?,
             AppEvent::Toast(kind, msg) => {
                 self.push_toast(kind, msg);
             }
             AppEvent::Esv(event) => crate::esv::screen::apply_event(self, event),
             AppEvent::Secrets(event) => crate::secrets::screen::apply_event(self, event),
             AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
-            AppEvent::AuthCallbackProgress {
-                onboard_id,
-                body,
-                prompt,
-            } => {
-                crate::screens::onboard::handle_auth_progress(self, onboard_id, body, prompt);
-            }
-            AppEvent::OnboardError {
-                onboard_id,
-                message: msg,
-            } => {
-                tracing::error!(error = %msg, "onboard error");
-                crate::screens::onboard::handle_onboard_error(self, onboard_id, msg);
-            }
             AppEvent::UnlockResult(r) => crate::screens::unlock::handle_result(self, r).await,
             AppEvent::SecurityKeyEnrollResult(r) => {
                 crate::screens::auth_setup::handle_enroll_result(self, r).await
@@ -529,14 +494,9 @@ impl App {
                 self.input_mode,
                 InputMode::Normal
                     | InputMode::AuthSettings
-                    | InputMode::OnboardMenu
+                    | InputMode::Onboard(crate::onboard::screen::Mode::Menu)
                     | InputMode::EnvPicker
             )
-    }
-
-    /// Backwards-compat shim for `ui::modal::draw_overwrite_confirm`.
-    pub fn pending_overwrite_name(&self) -> Option<&str> {
-        self.onboard.pending_overwrite_name()
     }
 
     /// Backwards-compat shim so existing UI callers
