@@ -26,7 +26,7 @@ pub async fn list_pending_variables(tenant: &str) -> Result<Vec<serde_json::Valu
 }
 
 async fn list_variables_at(tenant: &str, path: &str) -> Result<Vec<serde_json::Value>> {
-    let body = super::api::get(tenant, path).await?;
+    let body = crate::aic::api::get(tenant, path).await?;
     match body.get("result") {
         Some(serde_json::Value::Array(arr)) => Ok(arr.clone()),
         _ => Err(Error::Api {
@@ -38,7 +38,7 @@ async fn list_variables_at(tenant: &str, path: &str) -> Result<Vec<serde_json::V
 
 /// `GET /environment/startup` → current runtime restart status.
 pub async fn startup_status(tenant: &str) -> Result<StartupStatus> {
-    let body = super::api::get(tenant, "/environment/startup").await?;
+    let body = crate::aic::api::get(tenant, "/environment/startup").await?;
     parse_startup_status(&body)
 }
 
@@ -57,7 +57,7 @@ pub fn parse_startup_status(body: &serde_json::Value) -> Result<StartupStatus> {
 /// refresh a record right before saving so we can do content-based
 /// conflict detection (variables have no `_rev`).
 pub async fn get_variable(tenant: &str, id: &str) -> Result<serde_json::Value> {
-    super::api::get(tenant, &format!("/environment/variables/{id}")).await
+    crate::aic::api::get(tenant, &format!("/environment/variables/{id}")).await
 }
 
 /// `PUT /environment/variables/{id}` with the editable fields. Returns the
@@ -77,7 +77,7 @@ pub async fn update_variable(
         "expressionType": expression_type,
         "description": description,
     });
-    super::api::put(
+    crate::aic::api::put(
         tenant,
         &format!("/environment/variables/{id}"),
         body,
@@ -96,7 +96,7 @@ pub async fn delete_variable(
     id: &str,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    super::api::delete(
+    crate::aic::api::delete(
         tenant,
         &format!("/environment/variables/{id}"),
         confirmed_prod,
@@ -131,7 +131,7 @@ pub async fn list_pending_secrets(tenant: &str) -> Result<Vec<serde_json::Value>
 }
 
 async fn list_result_at(tenant: &str, path: &str) -> Result<Vec<serde_json::Value>> {
-    let body = super::api::get(tenant, path).await?;
+    let body = crate::aic::api::get(tenant, path).await?;
     match body.get("result") {
         Some(serde_json::Value::Array(arr)) => Ok(arr.clone()),
         _ => Err(Error::Api {
@@ -143,7 +143,7 @@ async fn list_result_at(tenant: &str, path: &str) -> Result<Vec<serde_json::Valu
 
 /// `GET /environment/secrets/{id}` → single secret metadata (no value).
 pub async fn get_secret(tenant: &str, id: &str) -> Result<serde_json::Value> {
-    super::api::get(tenant, &format!("/environment/secrets/{id}")).await
+    crate::aic::api::get(tenant, &format!("/environment/secrets/{id}")).await
 }
 
 /// `PUT /environment/secrets/{id}` — **create only**. All three of `encoding`,
@@ -164,7 +164,7 @@ pub async fn create_secret(
         "valueBase64": value_base64,
         "description": description,
     });
-    super::api::put(
+    crate::aic::api::put(
         tenant,
         &format!("/environment/secrets/{id}"),
         body,
@@ -181,7 +181,7 @@ pub async fn set_secret_description(
     description: &str,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    super::api::post(
+    crate::aic::api::post(
         tenant,
         &format!("/environment/secrets/{id}?_action=setDescription"),
         serde_json::json!({ "description": description }),
@@ -196,7 +196,7 @@ pub async fn delete_secret(
     id: &str,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    super::api::delete(
+    crate::aic::api::delete(
         tenant,
         &format!("/environment/secrets/{id}"),
         confirmed_prod,
@@ -207,7 +207,7 @@ pub async fn delete_secret(
 /// `GET /environment/secrets/{id}/versions` → a **bare array** (no `result`
 /// wrapper), newest-first. Each entry is `{version, createDate, loaded, status}`.
 pub async fn list_secret_versions(tenant: &str, id: &str) -> Result<Vec<serde_json::Value>> {
-    let body = super::api::get(tenant, &format!("/environment/secrets/{id}/versions")).await?;
+    let body = crate::aic::api::get(tenant, &format!("/environment/secrets/{id}/versions")).await?;
     match body {
         serde_json::Value::Array(arr) => Ok(arr),
         other => Err(Error::Api {
@@ -225,7 +225,7 @@ pub async fn create_secret_version(
     value_base64: &str,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    super::api::post(
+    crate::aic::api::post(
         tenant,
         &format!("/environment/secrets/{id}/versions?_action=create"),
         serde_json::json!({ "valueBase64": value_base64 }),
@@ -244,7 +244,7 @@ pub async fn change_version_status(
     status: &str,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    super::api::post(
+    crate::aic::api::post(
         tenant,
         &format!("/environment/secrets/{id}/versions/{version}?_action=changestatus"),
         serde_json::json!({ "status": status }),
@@ -261,7 +261,7 @@ pub async fn destroy_secret_version(
     version: &str,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    super::api::delete(
+    crate::aic::api::delete(
         tenant,
         &format!("/environment/secrets/{id}/versions/{version}"),
         confirmed_prod,
@@ -275,7 +275,7 @@ pub async fn destroy_secret_version(
 /// behind a user-confirmed action, never poll. Returns the server's
 /// response body (typically `{"restartStatus":"restarting"}`).
 pub async fn trigger_restart(tenant: &str, confirmed_prod: bool) -> Result<serde_json::Value> {
-    super::api::post(
+    crate::aic::api::post(
         tenant,
         "/environment/startup?_action=restart",
         serde_json::json!({}),

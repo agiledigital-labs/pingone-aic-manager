@@ -320,7 +320,7 @@ pub async fn handle_result(app: &mut App, result: std::result::Result<UnlockOk, 
             // off the ESV refresh, otherwise the ApiCall lands on a
             // still-locked daemon and we surface a spurious "agent locked".
             put_dek_to_agent(app).await;
-            crate::screens::esv::refresh(app, false);
+            crate::esv::ops::refresh(app, false);
         }
         Err(e) => {
             // A security-key failure shouldn't take the screen down — let

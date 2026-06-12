@@ -149,7 +149,7 @@ need into context.
 
 | To change… | Code lives in | Read first |
 |---|---|---|
-| ESV variables | `src/screens/esv.rs`, ESV rendering inline in `src/ui/mod.rs`, `src/aic/esv.rs`, `aic esv` in `src/cli/mod.rs` | `docs/api/03-esvs.md` |
+| ESV variables | `src/esv/` (api, state, ops, screen, view, CLI) | `docs/api/03-esvs.md` |
 | ESV secrets | `src/screens/secret.rs`, `src/ui/secret.rs`, `aic esv secret` in `src/cli/mod.rs` | `docs/api/03-esvs.md` |
 | Script sync (pull/push/sync/watch/diff) | `src/scripts/` (engine, screen, view, CLI) | `docs/api/04-scripts.md`, `11`, `12`, `13` |
 | Script workspace templates (lint/types) | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs` | `docs/api/12-script-bindings-matrix.md` |

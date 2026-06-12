@@ -10,7 +10,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, InputMode, Realm, Tab};
-use crate::screens::esv::{EditField, EsvView};
+use crate::esv::screen::Mode as EsvMode;
+use crate::esv::state::{EditField, EsvView};
 
 /// One key that fires a binding. Matching is by code + the ctrl modifier.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,7 +127,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     let can_apply = !scripts_tab
         && app
             .active_tenant()
-            .map(|t| crate::screens::esv::can_request_restart(app, &t.name))
+            .map(|t| crate::esv::state::can_request_restart(app, &t.name))
             .unwrap_or(false);
 
     if can_apply {
@@ -359,7 +360,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out.push(("?", "keys"));
             out
         }
-        InputMode::EsvSearch | InputMode::Scripts(_) => {
+        InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) => {
             vec![("Enter", "keep filter"), ("Esc", "clear + exit")]
         }
         InputMode::SecretCreate => {
@@ -395,7 +396,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 ],
             }
         }
-        InputMode::EsvEdit => {
+        InputMode::Esv(EsvMode::Edit) => {
             let mut out = vec![("Tab", "navigate")];
             let focused = app.esv.editing.as_ref().map(|edit| edit.focused);
             match focused {
@@ -459,11 +460,8 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::EnvPicker => app.handle_env_picker_key(key),
         InputMode::ProdConfirm => crate::screens::prod_confirm::handle_key(app, key).await?,
         InputMode::UndoHistory => crate::screens::undo_history::handle_key(app, key),
-        InputMode::EsvSearch => crate::screens::esv::handle_search_key(app, key),
+        InputMode::Esv(mode) => crate::esv::screen::handle_key(app, key, mode)?,
         InputMode::Scripts(mode) => crate::scripts::screen::handle_key(app, key, mode),
-        InputMode::EsvEdit => crate::screens::esv::handle_edit_key(app, key)?,
-        InputMode::EsvRestartConfirm => crate::screens::esv::handle_restart_confirm_key(app, key)?,
-        InputMode::EsvDeleteConfirm => crate::screens::esv::handle_delete_confirm_key(app, key)?,
         InputMode::SecretCreate => crate::screens::secret::handle_create_key(app, key)?,
         InputMode::SecretVersions => crate::screens::secret::handle_versions_key(app, key)?,
         InputMode::SecretAddVersion => crate::screens::secret::handle_add_version_key(app, key)?,
@@ -501,7 +499,7 @@ async fn run_normal(app: &mut App, act: Act) {
             app.input_mode = if app.current_tab == Tab::Scripts {
                 InputMode::Scripts(crate::scripts::screen::Mode::Search)
             } else {
-                InputMode::EsvSearch
+                InputMode::Esv(EsvMode::Search)
             }
         }
         ClearFilter => clear_filter(app),
@@ -517,8 +515,8 @@ async fn run_normal(app: &mut App, act: Act) {
         Pull => crate::scripts::screen::pull_selected(app),
         Push => crate::scripts::screen::push_selected(app),
         PullAll => crate::scripts::screen::pull_all(app),
-        Apply => crate::screens::esv::request_restart(app),
-        Undo => crate::screens::esv::request_latest_undo(app),
+        Apply => crate::esv::ops::request_restart(app),
+        Undo => crate::esv::ops::request_latest_undo(app),
         UndoHistory => {
             app.undo_history_idx = 0;
             app.input_mode = InputMode::UndoHistory;
@@ -638,21 +636,21 @@ fn clear_filter(app: &mut App) {
 
 fn primary(app: &mut App) {
     match app.esv.view {
-        EsvView::Variables => crate::screens::esv::start_edit(app),
+        EsvView::Variables => crate::esv::screen::start_edit(app),
         EsvView::Secrets => crate::screens::secret::open_versions(app),
     }
 }
 
 fn delete(app: &mut App) {
     match app.esv.view {
-        EsvView::Variables => crate::screens::esv::request_delete(app),
+        EsvView::Variables => crate::esv::ops::request_delete(app),
         EsvView::Secrets => crate::screens::secret::request_delete(app),
     }
 }
 
 fn new_item(app: &mut App) {
     match app.esv.view {
-        EsvView::Variables => crate::screens::esv::start_create(app),
+        EsvView::Variables => crate::esv::screen::start_create(app),
         EsvView::Secrets => crate::screens::secret::start_create(app),
     }
 }

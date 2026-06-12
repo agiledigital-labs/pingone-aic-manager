@@ -15,8 +15,8 @@ pub enum PendingProdAction {
         tenant: Tenant,
         jwk: serde_json::Value,
     },
-    EsvSave(crate::screens::esv::SavePlan),
-    EsvDelete(crate::screens::esv::DeletePlan),
+    EsvSave(crate::esv::state::SavePlan),
+    EsvDelete(crate::esv::state::DeletePlan),
     EsvUndo(crate::undo::UndoId),
     EsvRestart {
         tenant_name: String,
@@ -70,16 +70,16 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                         }
                     }
                     PendingProdAction::EsvSave(plan) => {
-                        crate::screens::esv::execute_save_plan(app, plan, true);
+                        crate::esv::ops::execute_save_plan(app, plan, true);
                     }
                     PendingProdAction::EsvDelete(plan) => {
-                        crate::screens::esv::execute_delete_plan(app, plan, true);
+                        crate::esv::ops::execute_delete_plan(app, plan, true);
                     }
                     PendingProdAction::EsvUndo(undo_id) => {
-                        crate::screens::esv::execute_undo(app, undo_id, true);
+                        crate::esv::ops::execute_undo(app, undo_id, true);
                     }
                     PendingProdAction::EsvRestart { tenant_name } => {
-                        crate::screens::esv::trigger_restart_confirmed(app, tenant_name, true);
+                        crate::esv::ops::trigger_restart_confirmed(app, tenant_name, true);
                     }
                     PendingProdAction::SecretCreate(plan) => {
                         crate::screens::secret::execute_create(app, plan, true);
@@ -130,7 +130,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             let action = app.prod_confirm.pending.take();
             app.input_mode = match action {
                 Some(PendingProdAction::EsvSave(_)) if app.esv.editing.is_some() => {
-                    InputMode::EsvEdit
+                    InputMode::Esv(crate::esv::screen::Mode::Edit)
                 }
                 _ => InputMode::Normal,
             };

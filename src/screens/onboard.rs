@@ -644,7 +644,7 @@ fn persist_tenant_overwriting(
     // the user lands on the dashboard after a fresh import and has to
     // wait up to 30s for the next poll tick — feels broken even though
     // it isn't.
-    crate::screens::esv::refresh(app, false);
+    crate::esv::ops::refresh(app, false);
     Ok(())
 }
 

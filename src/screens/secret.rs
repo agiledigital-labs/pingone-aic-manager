@@ -21,8 +21,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
+use crate::esv::state::{LoadState, id_of};
 use crate::event::{AppEvent, ToastKind};
-use crate::screens::esv::{LoadState, id_of};
 use crate::screens::list_state::TenantListState;
 use crate::screens::prod_confirm::PendingProdAction;
 use crate::ui::widgets::TextField;
@@ -528,14 +528,14 @@ fn set_create_error(app: &mut App, msg: &str) {
 }
 
 /// Turn the on-screen value into the wire `valueBase64`. Thin wrapper over the
-/// shared [`crate::aic::esv::encode_secret_value`] (keyed by encoding string),
+/// shared [`crate::esv::api::encode_secret_value`] (keyed by encoding string),
 /// so the TUI and CLI validate identically.
 fn encode_value(
     encoding: Encoding,
     value: &str,
     as_json: bool,
 ) -> std::result::Result<String, String> {
-    crate::aic::esv::encode_secret_value(encoding.as_str(), value, as_json)
+    crate::esv::api::encode_secret_value(encoding.as_str(), value, as_json)
 }
 
 #[derive(Debug, Clone)]
@@ -558,7 +558,7 @@ pub fn execute_create(app: &mut App, plan: CreatePlan, confirmed_prod: bool) {
     // pre-existing secret of the same id.
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let result = crate::aic::esv::create_secret(
+        let result = crate::esv::api::create_secret(
             &plan.tenant,
             &plan.id,
             &plan.encoding,
@@ -681,7 +681,7 @@ pub fn execute_add_version(app: &mut App, plan: VersionAddPlan, confirmed_prod: 
     app.input_mode = InputMode::SecretVersions;
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let result = crate::aic::esv::create_secret_version(
+        let result = crate::esv::api::create_secret_version(
             &plan.tenant,
             &plan.id,
             &plan.value_b64,
@@ -738,7 +738,7 @@ pub fn open_versions(app: &mut App) {
 fn reload_versions(app: &mut App, tenant: String, id: String) {
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let result = crate::aic::esv::list_secret_versions(&tenant, &id)
+        let result = crate::esv::api::list_secret_versions(&tenant, &id)
             .await
             .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::SecretVersionsListed { tenant, id, result });
@@ -913,7 +913,7 @@ pub fn execute_set_description(app: &mut App, plan: SetDescriptionPlan, confirme
 
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let result = crate::aic::esv::set_secret_description(
+        let result = crate::esv::api::set_secret_description(
             &plan.tenant,
             &plan.id,
             &plan.description,
@@ -964,9 +964,9 @@ pub async fn undo_set_description(
     previous: &str,
     expected: &str,
     confirmed_prod: bool,
-) -> std::result::Result<(), crate::screens::esv::UndoFailure> {
-    use crate::screens::esv::UndoFailure;
-    match crate::aic::esv::get_secret(tenant, id).await {
+) -> std::result::Result<(), crate::esv::state::UndoFailure> {
+    use crate::esv::state::UndoFailure;
+    match crate::esv::api::get_secret(tenant, id).await {
         Ok(current) => {
             if description_of(&current) != expected {
                 return Err(UndoFailure::Conflict(format!(
@@ -979,7 +979,7 @@ pub async fn undo_set_description(
         }
         Err(e) => return Err(UndoFailure::Failed(format!("conflict check failed: {e}"))),
     }
-    crate::aic::esv::set_secret_description(tenant, id, previous, confirmed_prod)
+    crate::esv::api::set_secret_description(tenant, id, previous, confirmed_prod)
         .await
         .map(|_| ())
         .map_err(|e| UndoFailure::Failed(e.to_string()))
@@ -1086,7 +1086,7 @@ pub fn execute_version_status(
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
         let result =
-            crate::aic::esv::change_version_status(&tenant, &id, &version, &status, confirmed_prod)
+            crate::esv::api::change_version_status(&tenant, &id, &version, &status, confirmed_prod)
                 .await
                 .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::SecretOpResult {
@@ -1161,7 +1161,7 @@ pub fn execute_version_destroy(
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
         let result =
-            crate::aic::esv::destroy_secret_version(&tenant, &id, &version, confirmed_prod)
+            crate::esv::api::destroy_secret_version(&tenant, &id, &version, confirmed_prod)
                 .await
                 .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::SecretOpResult {
@@ -1226,7 +1226,7 @@ pub fn execute_delete(app: &mut App, plan: DeletePlan, confirmed_prod: bool) {
     // succeeds (see `apply_op_result`).
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let result = crate::aic::esv::delete_secret(&plan.tenant, &plan.id, confirmed_prod)
+        let result = crate::esv::api::delete_secret(&plan.tenant, &plan.id, confirmed_prod)
             .await
             .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::SecretOpResult {
@@ -1289,7 +1289,7 @@ pub fn apply_op_result(
             app.push_toast(ToastKind::Success, format!("{label}: {id}{suffix}"));
             // Re-poll the *event's* tenant (not whatever is active now, in case
             // the user switched tenants while the request was in flight).
-            crate::screens::esv::refresh_tenant(app, &tenant, true);
+            crate::esv::ops::refresh_tenant(app, &tenant, true);
             if reload {
                 reload_versions(app, tenant, id);
             }
@@ -1300,7 +1300,7 @@ pub fn apply_op_result(
             if reload {
                 reload_versions(app, tenant, id);
             } else {
-                crate::screens::esv::refresh_tenant(app, &tenant, true);
+                crate::esv::ops::refresh_tenant(app, &tenant, true);
             }
         }
     }
@@ -1353,16 +1353,16 @@ fn record_delete_history(app: &mut App, tenant: &str, id: &str) {
 
 /// Execute the undo of a secret create: refuse unless the secret still exists
 /// and its `lastChangeDate` matches what the create returned, then delete it.
-/// Lives here (not in `screens::esv`) so the secret-specific conflict logic
+/// Lives here (not in `esv`) so the secret-specific conflict logic
 /// stays with the rest of the secrets code.
 pub async fn undo_delete(
     tenant: &str,
     id: &str,
     active_version: &str,
     confirmed_prod: bool,
-) -> std::result::Result<(), crate::screens::esv::UndoFailure> {
-    use crate::screens::esv::UndoFailure;
-    match crate::aic::esv::get_secret(tenant, id).await {
+) -> std::result::Result<(), crate::esv::state::UndoFailure> {
+    use crate::esv::state::UndoFailure;
+    match crate::esv::api::get_secret(tenant, id).await {
         Ok(current) => {
             let current_version = current
                 .get("activeVersion")
@@ -1379,7 +1379,7 @@ pub async fn undo_delete(
         }
         Err(e) => return Err(UndoFailure::Failed(format!("conflict check failed: {e}"))),
     }
-    crate::aic::esv::delete_secret(tenant, id, confirmed_prod)
+    crate::esv::api::delete_secret(tenant, id, confirmed_prod)
         .await
         .map(|_| ())
         .map_err(|e| UndoFailure::Failed(e.to_string()))

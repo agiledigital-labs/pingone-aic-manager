@@ -4,7 +4,7 @@
 //!   * agent lifecycle + auth (`agent`, `login`, `logout`, `stop`, `status`,
 //!     `ctx`, `whoami`) — talks directly to the daemon over its socket.
 //!   * resource commands (`esv list/get/set/delete/apply`, `esv secret …`,
-//!     future `script`, `oauth2`, ...) — go through `aic::api` / `aic::esv`,
+//!     future `script`, `oauth2`, ...) — go through feature API modules,
 //!     which are shared with the TUI. Mutations take `--yes` to confirm a
 //!     write to a production-themed tenant (mirrors the TUI's prod guard). Do
 //!     NOT add tenant-scoped HTTP via reqwest in here; everything tenant-
@@ -75,65 +75,12 @@ pub enum Command {
     /// ESV operations (variables, secrets).
     Esv {
         #[command(subcommand)]
-        command: EsvCommand,
+        command: crate::esv::cli::EsvCommand,
     },
     /// Script workspace sync (AM scripts + IDM endpoints).
     Script {
         #[command(subcommand)]
         command: crate::scripts::cli::ScriptCommand,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum EsvCommand {
-    /// List ESV variables. Outputs the `result` array as JSON.
-    List {
-        /// Override the current context for this call.
-        #[arg(long, help = "Tenant to target")]
-        tenant: Option<String>,
-    },
-    /// Get a single variable as JSON.
-    Get {
-        id: String,
-        #[arg(long, help = "Tenant to target")]
-        tenant: Option<String>,
-    },
-    /// Create or update a variable.
-    Set {
-        id: String,
-        /// Plain value (stored base64-encoded as `valueBase64`).
-        #[arg(long)]
-        value: String,
-        /// expressionType: string, int, bool, list, object, array, keyvaluelist.
-        #[arg(long = "type", default_value = "string")]
-        expr_type: String,
-        #[arg(long, default_value = "")]
-        description: String,
-        #[arg(long, help = "Tenant to target")]
-        tenant: Option<String>,
-        /// Confirm a write to a production-themed tenant.
-        #[arg(long)]
-        yes: bool,
-    },
-    /// Delete a variable.
-    Delete {
-        id: String,
-        #[arg(long, help = "Tenant to target")]
-        tenant: Option<String>,
-        #[arg(long)]
-        yes: bool,
-    },
-    /// Apply pending changes by restarting the tenant runtime.
-    Apply {
-        #[arg(long, help = "Tenant to target")]
-        tenant: Option<String>,
-        #[arg(long)]
-        yes: bool,
-    },
-    /// Secret operations (versioned, write-only values).
-    Secret {
-        #[command(subcommand)]
-        command: SecretCommand,
     },
 }
 
@@ -277,7 +224,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Status) => status().await,
         Some(Command::Ctx { command }) => ctx(command).await,
         Some(Command::Whoami { tenant, token }) => whoami(tenant, token).await,
-        Some(Command::Esv { command }) => esv(command).await,
+        Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Script { command }) => crate::scripts::cli::run(command).await,
         None => unreachable!("dispatch handled at top level"),
     }
@@ -645,58 +592,8 @@ async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
     }
 }
 
-async fn esv(cmd: EsvCommand) -> Result<()> {
-    use crate::aic::esv;
-    match cmd {
-        EsvCommand::List { tenant } => {
-            let t = tenant_for(tenant)?;
-            print_json(&esv::list_variables(&t).await?)
-        }
-        EsvCommand::Get { id, tenant } => {
-            let t = tenant_for(tenant)?;
-            print_json(&esv::get_variable(&t, &id).await?)
-        }
-        EsvCommand::Set {
-            id,
-            value,
-            expr_type,
-            description,
-            tenant,
-            yes,
-        } => {
-            let t = tenant_for(tenant)?;
-            use base64::Engine as _;
-            let value_b64 = base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
-            // Shared with the TUI: handles the AIC quirk that an existing
-            // variable's type can't change in place (DELETE-then-PUT).
-            let saved = prod_hint(
-                esv::save_variable(&t, &id, &description, &expr_type, &value_b64, yes, None).await,
-            )?;
-            let verb = if saved.created { "created" } else { "saved" };
-            let extra = if saved.type_deleted {
-                " (type changed — recreated)"
-            } else {
-                ""
-            };
-            println!("variable {id} {verb}{extra}");
-            Ok(())
-        }
-        EsvCommand::Delete { id, tenant, yes } => {
-            let t = tenant_for(tenant)?;
-            prod_hint(esv::delete_variable(&t, &id, yes).await)?;
-            println!("variable {id} deleted");
-            Ok(())
-        }
-        EsvCommand::Apply { tenant, yes } => {
-            let t = tenant_for(tenant)?;
-            print_json(&prod_hint(esv::trigger_restart(&t, yes).await)?)
-        }
-        EsvCommand::Secret { command } => secret(command).await,
-    }
-}
-
-async fn secret(cmd: SecretCommand) -> Result<()> {
-    use crate::aic::esv;
+pub(crate) async fn secret(cmd: SecretCommand) -> Result<()> {
+    use crate::esv::api as esv;
     match cmd {
         SecretCommand::List { tenant } => {
             let t = tenant_for(tenant)?;
@@ -831,7 +728,7 @@ async fn set_version_status(
     yes: bool,
 ) -> Result<()> {
     let t = tenant_for(tenant)?;
-    prod_hint(crate::aic::esv::change_version_status(&t, id, version, status, yes).await)?;
+    prod_hint(crate::esv::api::change_version_status(&t, id, version, status, yes).await)?;
     println!("secret {id} version {version} → {status}");
     Ok(())
 }

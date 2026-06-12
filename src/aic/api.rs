@@ -5,7 +5,7 @@
 //! request/response in the `agent::Request::ApiCall` envelope.
 //!
 //! Add a new resource (scripts, OAuth2, journeys) by adding a module
-//! alongside this one (e.g. `aic::esv`) that uses these primitives — do
+//! alongside this one (e.g. `esv::api`) that uses these primitives — do
 //! NOT thread a parallel HTTP path through `AicClient::*` in either
 //! frontend.
 

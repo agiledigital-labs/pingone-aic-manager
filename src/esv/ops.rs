@@ -1,346 +1,24 @@
-//! ESV tab — list, fuzzy search, preview. The state struct lives on `App`
-//! as a single field (`app.esv`); handlers are free functions that take
-//! `&mut App` so the dispatch table in `app.rs` stays one-liner per arm.
+//! Background operations for ESV variables: refresh, save, delete, restart,
+//! and undo execution plus their event-result handlers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::Instant;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::aic::esv::StartupStatus;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
+use crate::esv::api::StartupStatus;
+use crate::esv::screen::{Event, Mode};
+use crate::esv::state::{
+    ApplyState, DELETE_TOMBSTONE_TTL, DeleteOutcome, DeletePlan, DeleteTombstone, LoadState,
+    RECENT_WRITE_TTL, RefreshOutcome, SaveOutcome, SavePlan, UndoApplied, UndoFailure, UndoOutcome,
+    can_request_restart, id_of, is_applying, pending_count, queued_count,
+};
 use crate::event::{AppEvent, ToastKind};
-use crate::screens::list_state::TenantListState;
 use crate::screens::prod_confirm::PendingProdAction;
-use crate::ui::widgets::TextField;
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
-
-/// Per-tenant ESV load state. `app.esv.list.data` maps tenant name → this.
-#[derive(Debug, Clone)]
-pub enum LoadState {
-    Loading,
-    Loaded(Vec<serde_json::Value>),
-    Failed(String),
-}
-
-/// Which half of the ESVs tab is showing. Toggled with Tab/Shift-Tab in
-/// Normal mode. Secrets and variables share the tab's apply/restart banner
-/// and a single background poll, but render and edit very differently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EsvView {
-    Variables,
-    Secrets,
-}
-
-impl EsvView {
-    pub fn toggled(self) -> Self {
-        match self {
-            EsvView::Variables => EsvView::Secrets,
-            EsvView::Secrets => EsvView::Variables,
-        }
-    }
-}
-
-/// Per-tenant apply state shown in the ESV banner. This is sticky: refreshes
-/// keep showing the previous value until a tenant response lets us replace it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplyState {
-    NoChanges,
-    Unapplied(usize),
-    Restarting(usize),
-}
-
-impl ApplyState {
-    pub fn from_authoritative(startup: StartupStatus, pending: usize) -> Self {
-        match startup {
-            StartupStatus::Restarting => Self::Restarting(pending),
-            StartupStatus::Ready if pending > 0 => Self::Unapplied(pending),
-            StartupStatus::Ready => Self::NoChanges,
-        }
-    }
-}
-
-/// Result of a background ESV refresh. Variables and startup status are kept
-/// separate so we can update whichever half succeeded without clobbering the
-/// cached state owned by the other half.
-#[derive(Debug)]
-pub struct RefreshOutcome {
-    pub variables: std::result::Result<Vec<serde_json::Value>, String>,
-    pub pending_variables: std::result::Result<Vec<serde_json::Value>, String>,
-    pub secrets: std::result::Result<Vec<serde_json::Value>, String>,
-    pub pending_secrets: std::result::Result<Vec<serde_json::Value>, String>,
-    pub startup: std::result::Result<StartupStatus, String>,
-}
-
-/// One row in the rendered ESV list. The UI consumes `Vec<Match>` from
-/// [`State::matches`]; sorted-by-score with match positions in `_id` for
-/// per-char highlight.
-#[derive(Debug, Clone)]
-pub struct Match {
-    pub idx: Option<usize>,
-    pub id: String,
-    pub score: u32,
-    pub positions: Vec<u32>,
-    pub deleted: bool,
-}
-
-/// Extract the `_id` field of an ESV variable; falls back to `"?"` when
-/// the API returned something unexpected.
-pub fn id_of(v: &serde_json::Value) -> &str {
-    v.get("_id").and_then(|x| x.as_str()).unwrap_or("?")
-}
-
-/// True iff a variable's `loaded` flag is `false` — i.e. the runtime
-/// hasn't picked it up yet and a tenant restart is needed. New variables
-/// land with `loaded=false`, as do recently-saved edits.
-pub fn is_pending(v: &serde_json::Value) -> bool {
-    !v.get("loaded").and_then(|x| x.as_bool()).unwrap_or(true)
-}
-
-/// How many variables in this tenant's cached list still need a restart
-/// to take effect. Drives the banner above the preview pane and gates
-/// the `^S` apply keybind.
-/// The single source of truth for the ESV tab's restart gating. Folds both
-/// halves of the tab together: variable + secret changes that need a restart
-/// (`pending`), and variable + secret writes still in flight (`in_flight`).
-/// All banner / `^S` / apply-state decisions go through here so the two halves
-/// can never disagree.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct EsvPending {
-    pub pending: usize,
-    pub in_flight: usize,
-}
-
-pub fn pending_summary(app: &App, tenant: &str) -> EsvPending {
-    let mut ids = app
-        .esv
-        .list
-        .pending_ids
-        .get(tenant)
-        .cloned()
-        .unwrap_or_default();
-    if let Some(LoadState::Loaded(items)) = app.esv.list.data.get(tenant) {
-        ids.extend(
-            items
-                .iter()
-                .filter(|v| is_pending(v))
-                .map(|v| id_of(v).to_string()),
-        );
-    }
-    // Secrets share the tab's restart gate: a `useInPlaceholders:true` secret
-    // whose active version hasn't loaded also needs the tenant restart.
-    let pending = ids.len() + crate::screens::secret::pending_count(app, tenant);
-    let var_in_flight = app
-        .esv
-        .in_flight_writes
-        .iter()
-        .filter(|(t, _)| t == tenant)
-        .count();
-    let secret_in_flight = app
-        .secret
-        .in_flight
-        .iter()
-        .filter(|(t, _)| t == tenant)
-        .count();
-    EsvPending {
-        pending,
-        in_flight: var_in_flight + secret_in_flight,
-    }
-}
-
-pub fn pending_count(app: &App, tenant: &str) -> usize {
-    pending_summary(app, tenant).pending
-}
-
-/// AIC's documented set of expression types for variables. Acts as a chip
-/// cycle on the edit form — `←/→` step through `ORDER`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExpressionType {
-    String,
-    Array,
-    Bool,
-    Int,
-    Number,
-    Object,
-    List,
-    KeyValueList,
-    Base64EncodedInlined,
-}
-
-impl ExpressionType {
-    pub const ORDER: &'static [ExpressionType] = &[
-        ExpressionType::String,
-        ExpressionType::Array,
-        ExpressionType::Bool,
-        ExpressionType::Int,
-        ExpressionType::Number,
-        ExpressionType::Object,
-        ExpressionType::List,
-        ExpressionType::KeyValueList,
-        ExpressionType::Base64EncodedInlined,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ExpressionType::String => "string",
-            ExpressionType::Array => "array",
-            ExpressionType::Bool => "bool",
-            ExpressionType::Int => "int",
-            ExpressionType::Number => "number",
-            ExpressionType::Object => "object",
-            ExpressionType::List => "list",
-            ExpressionType::KeyValueList => "keyvaluelist",
-            ExpressionType::Base64EncodedInlined => "base64encodedinlined",
-        }
-    }
-
-    /// Parse an AIC-emitted expressionType string. Falls back to `String`
-    /// for unknown values rather than refusing to load — better to let the
-    /// user re-pick than to block editing.
-    pub fn parse(s: &str) -> Self {
-        Self::ORDER
-            .iter()
-            .copied()
-            .find(|e| e.as_str() == s)
-            .unwrap_or(ExpressionType::String)
-    }
-
-    pub fn cycle(self, delta: i32) -> Self {
-        let i = Self::ORDER.iter().position(|e| *e == self).unwrap_or(0) as i32;
-        let n = Self::ORDER.len() as i32;
-        let next = (i + delta).rem_euclid(n) as usize;
-        Self::ORDER[next]
-    }
-
-    /// Local pre-flight validation of the on-screen value against the
-    /// selected type. Catches type / value mismatches before we ship a
-    /// PUT that would either be rejected by AIC or — worse — accepted
-    /// and confuse the runtime. Returns `Ok(())` for types we don't have
-    /// a strong contract for (string, list, keyvaluelist,
-    /// base64encodedinlined).
-    pub fn validate(self, value: &str) -> Result<(), String> {
-        match self {
-            ExpressionType::String
-            | ExpressionType::List
-            | ExpressionType::KeyValueList
-            | ExpressionType::Base64EncodedInlined => Ok(()),
-            ExpressionType::Bool => match value.trim() {
-                "true" | "false" => Ok(()),
-                _ => Err("Value must be 'true' or 'false'".into()),
-            },
-            ExpressionType::Int => value
-                .trim()
-                .parse::<i64>()
-                .map(|_| ())
-                .map_err(|_| "Value must be an integer".into()),
-            ExpressionType::Number => value
-                .trim()
-                .parse::<f64>()
-                .map(|_| ())
-                .map_err(|_| "Value must be a number".into()),
-            ExpressionType::Object => match serde_json::from_str::<serde_json::Value>(value.trim())
-            {
-                Ok(serde_json::Value::Object(_)) => Ok(()),
-                Ok(_) => Err("Value must be a JSON object (e.g. {\"k\":\"v\"})".into()),
-                Err(e) => Err(format!("Value must be valid JSON: {e}")),
-            },
-            ExpressionType::Array => {
-                match serde_json::from_str::<serde_json::Value>(value.trim()) {
-                    Ok(serde_json::Value::Array(_)) => Ok(()),
-                    Ok(_) => Err("Value must be a JSON array (e.g. [1,2,3])".into()),
-                    Err(e) => Err(format!("Value must be valid JSON: {e}")),
-                }
-            }
-        }
-    }
-}
-
-/// Focusable fields on the edit form. Tab/Shift-Tab walks through these
-/// in order, skipping read-only rows. `Id` is only focusable when
-/// creating a new variable; the edit form has it pinned as read-only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EditField {
-    Id,
-    Description,
-    Type,
-    Value,
-    Save,
-}
-
-impl EditField {
-    const EDIT_ORDER: &'static [EditField] = &[
-        EditField::Description,
-        EditField::Type,
-        EditField::Value,
-        EditField::Save,
-    ];
-    const CREATE_ORDER: &'static [EditField] = &[
-        EditField::Id,
-        EditField::Description,
-        EditField::Type,
-        EditField::Value,
-        EditField::Save,
-    ];
-
-    fn order(creating: bool) -> &'static [EditField] {
-        if creating {
-            Self::CREATE_ORDER
-        } else {
-            Self::EDIT_ORDER
-        }
-    }
-
-    pub fn next(self, creating: bool) -> Self {
-        let order = Self::order(creating);
-        let i = order.iter().position(|f| *f == self).unwrap_or(0);
-        order[(i + 1) % order.len()]
-    }
-
-    pub fn prev(self, creating: bool) -> Self {
-        let order = Self::order(creating);
-        let i = order.iter().position(|f| *f == self).unwrap_or(0);
-        order[(i + order.len() - 1) % order.len()]
-    }
-}
-
-/// Live state for the edit form. `original` is the snapshot we were
-/// editing from — we compare against a fresh refetch on Save for
-/// content-based conflict detection (variables have no `_rev`). For a
-/// create flow, `creating` is true, `original` is `null`, and `id_input`
-/// is the user-typed identifier.
-#[derive(Debug)]
-pub struct EditState {
-    pub id: String,
-    pub original: serde_json::Value,
-    pub creating: bool,
-    /// Editable identifier when `creating`; ignored otherwise.
-    pub id_input: TextField,
-    pub description: TextField,
-    pub expr_type: ExpressionType,
-    pub value: TextField,
-    pub focused: EditField,
-    /// Pre-flight validation error to surface in the form. Set on bad
-    /// id / type-value mismatch; cleared on any user input.
-    pub error: Option<String>,
-}
-
-/// Fully-validated save payload, captured before any production confirmation
-/// modal takes focus. Executing the plan performs the optimistic local update
-/// and spawns the tenant write.
-#[derive(Debug)]
-pub struct SavePlan {
-    tenant_name: String,
-    id: String,
-    description: String,
-    expr_type: String,
-    value_b64: String,
-    original: Option<serde_json::Value>,
-    optimistic: serde_json::Value,
-    was_creating: bool,
-}
 
 struct SaveRequest {
     tenant_name: String,
@@ -351,304 +29,10 @@ struct SaveRequest {
     original: Option<serde_json::Value>,
 }
 
-/// Fully-captured delete payload. The original body is required both for
-/// conflict detection and for undo.
-#[derive(Debug, Clone)]
-pub struct DeletePlan {
-    tenant_name: String,
-    id: String,
-    original: serde_json::Value,
-}
-
 struct DeleteRequest {
     tenant_name: String,
     id: String,
     original: serde_json::Value,
-}
-
-#[derive(Debug, Clone)]
-pub struct DeleteTombstone {
-    pub deleted_at: Instant,
-    pub body: serde_json::Value,
-}
-
-#[derive(Debug)]
-pub struct State {
-    /// Shared per-tenant list mechanics: cached data, pending ids, the search
-    /// query, and cursor/scroll. See [`TenantListState`].
-    pub list: TenantListState,
-    /// Tenants whose ESV refetch is currently in flight — guards against
-    /// duplicate spawns when the user re-enters the tab or the poll fires.
-    pub refreshing: HashSet<String>,
-    /// When the last poll-refresh ran. Drives the 30s cadence in `tick`.
-    pub last_poll: Instant,
-
-    /// In-flight edit. `None` = preview pane (read-only display). `Some`
-    /// = the right pane is the editable form. See `start_edit` / `cancel_edit`.
-    pub editing: Option<EditState>,
-
-    /// Variables we just saved that may not yet appear in a polled list
-    /// (AIC's `/environment/variables` is eventually consistent — a brand-
-    /// new variable can take a few seconds to show up). Keyed by
-    /// `(tenant, id)`; each value is `(saved_at, body)`. On every
-    /// `apply_refresh` we re-merge any entries still within
-    /// `RECENT_WRITE_TTL` so the local view never loses them.
-    pub recent_writes: HashMap<(String, String), (Instant, serde_json::Value)>,
-
-    /// Variables deleted locally/through AIC that we keep visible as local
-    /// undo tombstones. Ping's pending endpoints do not report deletes.
-    pub recent_deletes: HashMap<(String, String), DeleteTombstone>,
-
-    /// (tenant, id) for any optimistic save whose background request
-    /// failed. The local cache still holds the user's attempted body
-    /// (via `recent_writes`); the list renders these rows in red so the
-    /// user can re-open and retry. Cleared on a subsequent successful
-    /// save for the same id.
-    pub failed_writes: HashSet<(String, String)>,
-
-    /// Last known apply state per tenant. Refreshes update this only after
-    /// authoritative tenant responses arrive; while a refresh is in flight
-    /// the previous value keeps rendering.
-    pub apply_states: HashMap<String, ApplyState>,
-
-    /// When a restart first moved into `ApplyState::Restarting`. This is
-    /// display metadata only; it never times the state out.
-    pub restart_started_at: HashMap<String, Instant>,
-
-    /// (tenant, id) for every optimistic save whose background PUT
-    /// hasn't returned yet. Drives the "queued" banner colour and gates
-    /// the `^S` apply keybind — we don't want to restart while a write
-    /// is in flight. Cleared by `apply_save_result` regardless of
-    /// success / failure.
-    pub in_flight_writes: HashSet<(String, String)>,
-
-    /// Original values for optimistic deletes that are still in flight.
-    /// Used to restore the local cache if the background DELETE fails.
-    pub in_flight_deletes: HashMap<(String, String), serde_json::Value>,
-
-    /// Delete plan waiting on the local y/n confirmation popover.
-    pub pending_delete: Option<DeletePlan>,
-
-    /// Which half of the tab (variables / secrets) is showing.
-    pub view: EsvView,
-}
-
-/// How long we keep a freshly-saved variable pinned to the local cache
-/// after a save. Long enough to cover AIC's indexing lag on creates.
-pub const RECENT_WRITE_TTL: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// How long we keep a delete tombstone: both the red `!` ghost row in the
-/// list and the negative pin that suppresses the deleted id if AIC's
-/// eventually-consistent list endpoint still returns it. After this the
-/// ghost drops off; the undo entry itself outlives it (recover via `^Y`).
-pub const DELETE_TOMBSTONE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            list: TenantListState::new(),
-            refreshing: HashSet::new(),
-            last_poll: Instant::now(),
-            editing: None,
-            recent_writes: HashMap::new(),
-            recent_deletes: HashMap::new(),
-            failed_writes: HashSet::new(),
-            apply_states: HashMap::new(),
-            restart_started_at: HashMap::new(),
-            in_flight_writes: HashSet::new(),
-            in_flight_deletes: HashMap::new(),
-            pending_delete: None,
-            view: EsvView::Variables,
-        }
-    }
-}
-
-/// Banner display mode — picks the colour and the wording. Computed
-/// fresh on every draw from the cached apply state plus in-flight saves.
-#[derive(Debug, Clone, Copy)]
-pub enum BannerState {
-    None,
-    /// `n` variables have been saved and need a tenant restart to take
-    /// effect. The default state — pastel blue.
-    ToApply(usize),
-    /// `n` background saves haven't returned yet. Pastel purple. `^S`
-    /// is disabled until queued drops to zero.
-    Queued(usize),
-    /// `n` variables are mid-restart. Pastel yellow. `^S` is a no-op.
-    Applying(usize),
-}
-
-/// Number of background ESV saves currently in flight for `tenant`.
-pub fn queued_count(app: &App, tenant: &str) -> usize {
-    // In-flight writes for *both* halves of the tab — a secret mutation in
-    // flight must gate `^S` just like a variable one.
-    pending_summary(app, tenant).in_flight
-}
-
-/// Pick which banner (if any) to display. Precedence is applying, then
-/// queued, then to-apply. The applying state wins even when queued > 0
-/// because a restart in progress is the more important signal.
-pub fn banner_state(app: &App, tenant: &str) -> BannerState {
-    if let Some(ApplyState::Restarting(n)) = app.esv.apply_states.get(tenant).copied() {
-        return BannerState::Applying(n);
-    }
-    let q = queued_count(app, tenant);
-    if q > 0 {
-        return BannerState::Queued(q);
-    }
-    if let Some(ApplyState::Unapplied(n)) = app.esv.apply_states.get(tenant).copied() {
-        return BannerState::ToApply(n);
-    }
-    BannerState::None
-}
-
-/// True when the "applying" banner state should be shown. This is driven by
-/// cached tenant state, not elapsed local time.
-pub fn is_applying(app: &App, tenant: &str) -> bool {
-    matches!(
-        app.esv.apply_states.get(tenant),
-        Some(ApplyState::Restarting(_))
-    )
-}
-
-/// True when `^S` can open the restart confirmation for this tenant.
-pub fn can_request_restart(app: &App, tenant: &str) -> bool {
-    matches!(
-        app.esv.apply_states.get(tenant),
-        Some(ApplyState::Unapplied(n)) if *n > 0
-    ) && queued_count(app, tenant) == 0
-}
-
-impl State {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Drop view state (filter + selection). Called on tenant switch.
-    pub fn reset_view(&mut self) {
-        self.list.query.clear();
-        self.list.selected = 0;
-        self.list.scroll = 0;
-    }
-
-    /// Apply the fuzzy filter to a tenant's loaded ESV list. Returns
-    /// matches sorted by score (descending), with match positions for
-    /// per-char highlighting. Empty when the tenant isn't `Loaded`.
-    pub fn matches(&self, tenant: Option<&str>) -> Vec<Match> {
-        let Some(name) = tenant else {
-            return Vec::new();
-        };
-        let Some(LoadState::Loaded(items)) = self.list.data.get(name) else {
-            return Vec::new();
-        };
-        if self.list.query.is_empty() {
-            let mut indexed: Vec<Match> = items
-                .iter()
-                .enumerate()
-                .map(|(i, v)| Match {
-                    idx: Some(i),
-                    id: id_of(v).to_string(),
-                    score: 0,
-                    positions: Vec::new(),
-                    deleted: false,
-                })
-                .collect();
-            let live_ids: HashSet<String> = items.iter().map(|v| id_of(v).to_string()).collect();
-            indexed.extend(
-                self.recent_deletes
-                    .iter()
-                    .filter(|((t, id), _)| t == name && !live_ids.contains(id))
-                    .map(|((_, id), _)| Match {
-                        idx: None,
-                        id: id.clone(),
-                        score: 0,
-                        positions: Vec::new(),
-                        deleted: true,
-                    }),
-            );
-            indexed.sort_by(|a, b| a.id.cmp(&b.id));
-            return indexed;
-        }
-        use nucleo_matcher::{
-            Config, Matcher, Utf32Str,
-            pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-        };
-        let mut matcher = Matcher::new(Config::DEFAULT);
-        let pattern = Pattern::new(
-            self.list.query.value(),
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-        );
-        let mut out: Vec<Match> = Vec::new();
-        let mut buf = Vec::new();
-        let mut positions: Vec<u32> = Vec::new();
-        let live_ids: HashSet<String> = items.iter().map(|v| id_of(v).to_string()).collect();
-        let mut rows: Vec<(Option<usize>, String, bool, bool)> = items
-            .iter()
-            .enumerate()
-            .map(|(i, v)| {
-                let id = id_of(v).to_string();
-                let pending = is_pending(v)
-                    || self
-                        .list
-                        .pending_ids
-                        .get(name)
-                        .is_some_and(|ids| ids.contains(&id));
-                (Some(i), id, false, pending)
-            })
-            .collect();
-        rows.extend(
-            self.recent_deletes
-                .iter()
-                .filter(|((t, id), _)| t == name && !live_ids.contains(id))
-                .map(|((_, id), _)| (None, id.clone(), true, false)),
-        );
-        for (idx, id, deleted, pending) in rows {
-            // Build the fuzzy haystack from `id` plus synthetic tags so
-            // `/!`, `/!pending`, `/!failed` filter to those rows. The
-            // tags are stripped from the highlight positions so the id
-            // renders without spurious tag chars.
-            let failed = self.failed_writes.contains(&(name.to_string(), id.clone()));
-            let mut haystack_text = id.clone();
-            if pending {
-                haystack_text.push_str(" !pending");
-            }
-            if failed {
-                haystack_text.push_str(" !failed");
-            }
-            if deleted {
-                haystack_text.push_str(" !deleted");
-            }
-            let id_chars = id.chars().count();
-            let haystack = Utf32Str::new(&haystack_text, &mut buf);
-            positions.clear();
-            if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
-                let display_positions: Vec<u32> = positions
-                    .iter()
-                    .copied()
-                    .filter(|p| (*p as usize) < id_chars)
-                    .collect();
-                out.push(Match {
-                    idx,
-                    id: id.clone(),
-                    score,
-                    positions: display_positions,
-                    deleted,
-                });
-            }
-        }
-        out.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
-        out
-    }
-
-    /// Re-clamp the selection in case the matched list shrunk (e.g. after
-    /// a refetch returns a shorter list, or after the filter changed).
-    pub fn clamp_selection(&mut self, n: usize) {
-        if self.list.selected >= n {
-            self.list.selected = n.saturating_sub(1);
-        }
-    }
 }
 
 /// Kick off a background ESV fetch for the active tenant.
@@ -657,7 +41,7 @@ impl State {
 ///   (initial load on startup / tenant switch).
 /// - `force = true`: always fetches, even if a `Loaded` entry exists.
 ///   The stale data stays visible until the new fetch completes; failed
-///   refetches don't clobber the cached value (see the `EsvListed`
+///   refetches don't clobber the cached value (see the nested ESV list
 ///   handler in `app::handle_event`).
 ///
 /// A no-op when (a) the app is locked (still on the unlock screen — the
@@ -700,11 +84,11 @@ pub fn refresh_tenant(app: &mut App, name: &str, force: bool) {
     let tenant_name = name.clone();
     tokio::spawn(async move {
         let (variables, pending_variables, secrets, pending_secrets, startup) = tokio::join!(
-            crate::aic::esv::list_variables(&tenant_name),
-            crate::aic::esv::list_pending_variables(&tenant_name),
-            crate::aic::esv::list_secrets(&tenant_name),
-            crate::aic::esv::list_pending_secrets(&tenant_name),
-            crate::aic::esv::startup_status(&tenant_name),
+            crate::esv::api::list_variables(&tenant_name),
+            crate::esv::api::list_pending_variables(&tenant_name),
+            crate::esv::api::list_secrets(&tenant_name),
+            crate::esv::api::list_pending_secrets(&tenant_name),
+            crate::esv::api::startup_status(&tenant_name),
         );
         let outcome = RefreshOutcome {
             variables: variables.map_err(|e| e.to_string()),
@@ -713,10 +97,10 @@ pub fn refresh_tenant(app: &mut App, name: &str, force: bool) {
             pending_secrets: pending_secrets.map_err(|e| e.to_string()),
             startup: startup.map_err(|e| e.to_string()),
         };
-        let _ = tx.send(AppEvent::EsvListed {
+        let _ = tx.send(AppEvent::Esv(Event::Listed {
             tenant: name,
             outcome,
-        });
+        }));
     });
 }
 
@@ -741,7 +125,7 @@ pub fn request_restart(app: &mut App) {
         app.push_toast(crate::event::ToastKind::Info, "No pending changes to apply");
         return;
     }
-    app.input_mode = InputMode::EsvRestartConfirm;
+    app.input_mode = InputMode::Esv(Mode::RestartConfirm);
 }
 
 pub fn request_delete(app: &mut App) {
@@ -749,7 +133,7 @@ pub fn request_delete(app: &mut App) {
         return;
     };
     app.esv.pending_delete = Some(plan);
-    app.input_mode = InputMode::EsvDeleteConfirm;
+    app.input_mode = InputMode::Esv(Mode::DeleteConfirm);
 }
 
 fn build_delete_plan(app: &mut App) -> Option<DeletePlan> {
@@ -786,50 +170,7 @@ fn build_delete_plan(app: &mut App) -> Option<DeletePlan> {
     })
 }
 
-/// Dispatched from the y/n delete popup. `y` may still route through the
-/// shared production confirmation before executing the delete.
-pub fn handle_delete_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let Some(plan) = app.esv.pending_delete.take() else {
-                app.input_mode = InputMode::Normal;
-                return Ok(());
-            };
-            let is_prod = app
-                .active_tenant()
-                .is_some_and(|t| t.theme == TenantTheme::Production);
-            if is_prod {
-                app.prod_confirm.pending = Some(PendingProdAction::EsvDelete(plan));
-                app.input_mode = InputMode::ProdConfirm;
-            } else {
-                execute_delete_plan(app, plan, false);
-            }
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.esv.pending_delete = None;
-            app.input_mode = InputMode::Normal;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// Dispatched from the y/n popup. `y` triggers the restart, `n`/`Esc`
-/// closes the popup.
-pub fn handle_restart_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            trigger_restart(app);
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.input_mode = InputMode::Normal;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn trigger_restart(app: &mut App) {
+pub(crate) fn trigger_restart(app: &mut App) {
     let Some(tenant) = app.active_tenant() else {
         return;
     };
@@ -855,13 +196,13 @@ pub fn trigger_restart_confirmed(app: &mut App, tenant_name: String, confirmed_p
     );
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let result = crate::aic::esv::trigger_restart(&tenant_name, confirmed_prod)
+        let result = crate::esv::api::trigger_restart(&tenant_name, confirmed_prod)
             .await
             .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::EsvRestartResult {
+        let _ = tx.send(AppEvent::Esv(Event::RestartResult {
             tenant: tenant_name,
             result,
-        });
+        }));
     });
 }
 
@@ -885,73 +226,7 @@ pub fn apply_restart_result(
     }
 }
 
-/// EsvSearch keys: chars/backspace/cursor → editor; ↑/↓/PgUp/PgDn keep
-/// scrolling the results list while the user is still typing; Esc clears
-/// the filter; Enter commits and returns to Normal mode.
-pub fn handle_search_key(app: &mut App, key: KeyEvent) {
-    // The search box edits whichever half's query is showing.
-    if app.esv.view == EsvView::Secrets {
-        match key.code {
-            KeyCode::Esc => {
-                app.secret.list.query.clear();
-                app.secret.list.selected = 0;
-                app.secret.list.scroll = 0;
-                app.input_mode = InputMode::Normal;
-            }
-            KeyCode::Enter => {
-                app.input_mode = InputMode::Normal;
-            }
-            KeyCode::Up => crate::keymap::move_selection(app, -1),
-            KeyCode::Down => crate::keymap::move_selection(app, 1),
-            KeyCode::PageUp => crate::keymap::move_selection(app, -10),
-            KeyCode::PageDown => crate::keymap::move_selection(app, 10),
-            _ => {
-                let before = app.secret.list.query.value().to_string();
-                if app.secret.list.query.handle_key(&key) && app.secret.list.query.value() != before
-                {
-                    app.secret.list.selected = 0;
-                    app.secret.list.scroll = 0;
-                }
-            }
-        }
-        return;
-    }
-    match key.code {
-        KeyCode::Esc => {
-            app.esv.reset_view();
-            app.input_mode = InputMode::Normal;
-            return;
-        }
-        KeyCode::Enter => {
-            app.input_mode = InputMode::Normal;
-            return;
-        }
-        KeyCode::Up => {
-            crate::keymap::move_selection(app, -1);
-            return;
-        }
-        KeyCode::Down => {
-            crate::keymap::move_selection(app, 1);
-            return;
-        }
-        KeyCode::PageUp => {
-            crate::keymap::move_selection(app, -10);
-            return;
-        }
-        KeyCode::PageDown => {
-            crate::keymap::move_selection(app, 10);
-            return;
-        }
-        _ => {}
-    }
-    let before = app.esv.list.query.value().to_string();
-    if app.esv.list.query.handle_key(&key) && app.esv.list.query.value() != before {
-        app.esv.list.selected = 0;
-        app.esv.list.scroll = 0;
-    }
-}
-
-/// Apply an `EsvListed` event to the tab. Caller is `app::handle_event`.
+/// Apply a completed ESV list event to the tab.
 pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
     let is_active = app.active_tenant().is_some_and(|t| t.name == tenant);
     app.esv.refreshing.remove(&tenant);
@@ -1101,183 +376,7 @@ fn refresh_apply_state_from_cache(app: &mut App, tenant: &str) {
     set_apply_state(app, tenant, state);
 }
 
-/// Open the edit form for the currently-selected list row. Snapshots the
-/// variable so we have something to diff against on save, decodes the
-/// base64 value, and switches input mode.
-pub fn start_edit(app: &mut App) {
-    let Some(tenant) = app.active_tenant() else {
-        return;
-    };
-    let tenant_name = tenant.name.clone();
-    let matches = app.esv.matches(Some(&tenant_name));
-    let Some(m) = matches.get(app.esv.list.selected) else {
-        return;
-    };
-    if m.deleted {
-        app.push_toast(ToastKind::Info, "Deleted variable; press ^Z to restore it");
-        return;
-    }
-    if app
-        .esv
-        .in_flight_writes
-        .contains(&(tenant_name.clone(), m.id.clone()))
-    {
-        app.push_toast(
-            ToastKind::Info,
-            format!("Save already in progress: {}", m.id),
-        );
-        return;
-    }
-    let Some(LoadState::Loaded(items)) = app.esv.list.data.get(&tenant_name) else {
-        return;
-    };
-    let Some(idx) = m.idx else { return };
-    let Some(v) = items.get(idx).cloned() else {
-        return;
-    };
-
-    let description = v
-        .get("description")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .to_string();
-    let expr_type = ExpressionType::parse(
-        v.get("expressionType")
-            .and_then(|x| x.as_str())
-            .unwrap_or(""),
-    );
-    let value_b64 = v.get("valueBase64").and_then(|x| x.as_str()).unwrap_or("");
-    // Try to render the value as UTF-8 text. Binary values fall back to
-    // the base64 string itself — they can still be edited (the save path
-    // re-encodes whatever we display), they just won't look pretty.
-    let value_str = match B64.decode(value_b64) {
-        Ok(bytes) => String::from_utf8(bytes).unwrap_or_else(|e| {
-            tracing::debug!(id = %m.id, "value is not UTF-8: {e}");
-            value_b64.to_string()
-        }),
-        Err(_) => value_b64.to_string(),
-    };
-
-    app.esv.editing = Some(EditState {
-        id: m.id.clone(),
-        original: v,
-        creating: false,
-        id_input: TextField::single_line("_id"),
-        description: TextField::single_line("Description").with_initial(description),
-        expr_type,
-        value: TextField::textarea("Value").with_initial(value_str),
-        focused: EditField::Description,
-        error: None,
-    });
-    app.input_mode = InputMode::EsvEdit;
-}
-
-/// Open the create-new-variable form. Same fields as edit, except `_id`
-/// is now an editable field at the top and the save path is a plain PUT
-/// (no DELETE step, no conflict refetch — server creates if absent).
-pub fn start_create(app: &mut App) {
-    if !app.is_unlocked() {
-        return;
-    }
-    if app.active_tenant().is_none() {
-        return;
-    }
-    app.esv.editing = Some(EditState {
-        id: String::new(),
-        original: serde_json::Value::Null,
-        creating: true,
-        // The `esv-` prefix is required by AIC, so lock it in: the user
-        // types only the suffix and can't delete the prefix.
-        id_input: TextField::single_line("_id").with_locked_prefix("esv-"),
-        description: TextField::single_line("Description"),
-        expr_type: ExpressionType::String,
-        value: TextField::textarea("Value"),
-        focused: EditField::Id,
-        error: None,
-    });
-    app.input_mode = InputMode::EsvEdit;
-}
-
-/// Discard the in-flight edit and return to preview mode.
-pub fn cancel_edit(app: &mut App) {
-    app.esv.editing = None;
-    app.input_mode = InputMode::Normal;
-}
-
-pub fn handle_edit_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    let Some(edit) = app.esv.editing.as_mut() else {
-        return Ok(());
-    };
-    let creating = edit.creating;
-    // Keys that the form owns regardless of which field is focused.
-    match key.code {
-        KeyCode::Esc => {
-            cancel_edit(app);
-            return Ok(());
-        }
-        KeyCode::Tab => {
-            edit.focused = edit.focused.next(creating);
-            return Ok(());
-        }
-        KeyCode::BackTab => {
-            edit.focused = edit.focused.prev(creating);
-            return Ok(());
-        }
-        KeyCode::Enter => {
-            match edit.focused {
-                EditField::Save => commit_save(app),
-                EditField::Value => edit.value.push_newline(),
-                // Enter on a non-textarea field advances focus.
-                _ => edit.focused = edit.focused.next(creating),
-            }
-            return Ok(());
-        }
-        // ←/→ cycle the chip on the Type row; on any other field they
-        // fall through to the TextField's cursor nav below.
-        KeyCode::Left if edit.focused == EditField::Type => {
-            edit.expr_type = edit.expr_type.cycle(-1);
-            return Ok(());
-        }
-        KeyCode::Right if edit.focused == EditField::Type => {
-            edit.expr_type = edit.expr_type.cycle(1);
-            return Ok(());
-        }
-        _ => {}
-    }
-
-    // Everything else is per-field text editing — cursor moves, char
-    // inserts, backspace, delete-forward.
-    match edit.focused {
-        EditField::Id if creating => {
-            edit.id_input.handle_key(&key);
-        }
-        EditField::Description => {
-            edit.description.handle_key(&key);
-        }
-        EditField::Value => {
-            edit.value.handle_key(&key);
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn commit_save(app: &mut App) {
-    let Some(plan) = build_save_plan(app) else {
-        return;
-    };
-    let is_prod = app
-        .active_tenant()
-        .is_some_and(|t| t.theme == TenantTheme::Production);
-    if is_prod {
-        app.prod_confirm.pending = Some(PendingProdAction::EsvSave(plan));
-        app.input_mode = InputMode::ProdConfirm;
-        return;
-    }
-    execute_save_plan(app, plan, false);
-}
-
-fn build_save_plan(app: &mut App) -> Option<SavePlan> {
+pub(crate) fn build_save_plan(app: &mut App) -> Option<SavePlan> {
     let tenant_name = app.active_tenant().map(|t| t.name.clone())?;
     let edit = app.esv.editing.as_mut()?;
 
@@ -1438,11 +537,11 @@ pub fn execute_save_plan(app: &mut App, plan: SavePlan, confirmed_prod: bool) {
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
         let result = save_variable(request, confirmed_prod).await;
-        let _ = tx.send(AppEvent::EsvSaveResult {
+        let _ = tx.send(AppEvent::Esv(Event::SaveResult {
             tenant: event_tenant,
             id: event_id,
             result,
-        });
+        }));
     });
 }
 
@@ -1556,11 +655,11 @@ pub fn execute_delete_plan(app: &mut App, plan: DeletePlan, confirmed_prod: bool
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
         let result = delete_variable_request(request, confirmed_prod).await;
-        let _ = tx.send(AppEvent::EsvDeleteResult {
+        let _ = tx.send(AppEvent::Esv(Event::DeleteResult {
             tenant: event_tenant,
             id: event_id,
             result,
-        });
+        }));
     });
 }
 
@@ -1582,51 +681,6 @@ fn record_delete_undo(
         }),
         ConflictCheck::ResourceAbsent,
     ))
-}
-
-/// Outcome of a background save attempt. Carries the server's echo on
-/// success so the local cache can absorb server-managed fields
-/// (`lastChangeDate`, `lastChangedBy`).
-#[derive(Debug)]
-pub struct SaveOutcome {
-    pub body: serde_json::Value,
-    /// True when we opened the form as an "edit" but the variable was
-    /// absent on AIC (a prior create failed), so the save became a create.
-    pub created: bool,
-}
-
-#[derive(Debug)]
-pub struct DeleteOutcome;
-
-#[derive(Debug)]
-pub struct UndoOutcome {
-    description: String,
-    applied: UndoApplied,
-}
-
-#[derive(Debug)]
-enum UndoApplied {
-    Upsert {
-        id: String,
-        body: serde_json::Value,
-    },
-    Delete {
-        id: String,
-        body: Option<serde_json::Value>,
-    },
-    /// A secret was deleted as the undo of its create. The secrets list owns
-    /// the local-state update (variables and secrets are cached separately).
-    SecretRemoved {
-        id: String,
-    },
-    /// A secret's description was reverted. Just re-poll the secrets list.
-    SecretDescriptionSet,
-}
-
-#[derive(Debug)]
-pub enum UndoFailure {
-    Conflict(String),
-    Failed(String),
 }
 
 pub fn request_latest_undo(app: &mut App) {
@@ -1669,11 +723,11 @@ pub fn execute_undo(app: &mut App, undo_id: UndoId, confirmed_prod: bool) {
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
         let result = apply_undo_entry(entry, confirmed_prod).await;
-        let _ = tx.send(AppEvent::EsvUndoResult {
+        let _ = tx.send(AppEvent::Esv(Event::UndoResult {
             undo_id,
             tenant: event_tenant,
             result,
-        });
+        }));
     });
 }
 
@@ -1690,7 +744,7 @@ async fn save_variable(request: SaveRequest, confirmed_prod: bool) -> Result<Sav
     // Conflict check (against the snapshot we opened), the type-change
     // DELETE-then-PUT quirk, and create-on-absent all live in the shared
     // helper so the CLI takes exactly the same path.
-    let saved = crate::aic::esv::save_variable(
+    let saved = crate::esv::api::save_variable(
         &tenant_name,
         &id,
         &description,
@@ -1718,13 +772,13 @@ async fn delete_variable_request(
         original,
     } = request;
 
-    let current = crate::aic::esv::get_variable(&tenant_name, &id)
+    let current = crate::esv::api::get_variable(&tenant_name, &id)
         .await
         .map_err(|e| format!("conflict check: {e}"))?;
-    if !crate::aic::esv::content_equal(&current, &original) {
+    if !crate::esv::api::content_equal(&current, &original) {
         return Err("remote value changed since you selected it; refresh and retry".into());
     }
-    crate::aic::esv::delete_variable(&tenant_name, &id, confirmed_prod)
+    crate::esv::api::delete_variable(&tenant_name, &id, confirmed_prod)
         .await
         .map_err(|e| e.to_string())?;
     Ok(DeleteOutcome)
@@ -1761,7 +815,7 @@ async fn apply_undo_entry(
             id,
             recorded_body,
         } => {
-            crate::aic::esv::delete_variable(&tenant, &id, confirmed_prod)
+            crate::esv::api::delete_variable(&tenant, &id, confirmed_prod)
                 .await
                 .map_err(|e| UndoFailure::Failed(e.to_string()))?;
             Ok(UndoOutcome {
@@ -1814,10 +868,10 @@ async fn check_undo_conflict(op: &UndoOp, check: &ConflictCheck) -> Result<(), U
             let id = op
                 .resource_id()
                 .ok_or_else(|| UndoFailure::Failed("undo operation has no resource id".into()))?;
-            let current = crate::aic::esv::get_variable(tenant, id)
+            let current = crate::esv::api::get_variable(tenant, id)
                 .await
                 .map_err(|e| UndoFailure::Conflict(format!("current value unavailable: {e}")))?;
-            if crate::aic::esv::content_equal(&current, body) {
+            if crate::esv::api::content_equal(&current, body) {
                 Ok(())
             } else {
                 Err(UndoFailure::Conflict(
@@ -1830,7 +884,7 @@ async fn check_undo_conflict(op: &UndoOp, check: &ConflictCheck) -> Result<(), U
             let id = op
                 .resource_id()
                 .ok_or_else(|| UndoFailure::Failed("undo operation has no resource id".into()))?;
-            match crate::aic::esv::get_variable(tenant, id).await {
+            match crate::esv::api::get_variable(tenant, id).await {
                 Ok(_) => Err(UndoFailure::Conflict(format!(
                     "{id} already exists; refusing to restore over it"
                 ))),
@@ -1861,7 +915,7 @@ async fn upsert_variable_body(
         .and_then(|v| v.as_str())
         .ok_or_else(|| UndoFailure::Failed(format!("{id} has no valueBase64")))?;
 
-    let delete_first = match crate::aic::esv::get_variable(tenant, &id).await {
+    let delete_first = match crate::esv::api::get_variable(tenant, &id).await {
         Ok(current) => {
             current
                 .get("expressionType")
@@ -1873,12 +927,12 @@ async fn upsert_variable_body(
         Err(e) => return Err(UndoFailure::Failed(format!("preflight fetch failed: {e}"))),
     };
     if delete_first {
-        crate::aic::esv::delete_variable(tenant, &id, confirmed_prod)
+        crate::esv::api::delete_variable(tenant, &id, confirmed_prod)
             .await
             .map_err(|e| UndoFailure::Failed(format!("type change delete failed: {e}")))?;
     }
 
-    crate::aic::esv::update_variable(
+    crate::esv::api::update_variable(
         tenant,
         &id,
         description,
@@ -2081,34 +1135,5 @@ fn select_id(app: &mut App, tenant: &str, id: &str) {
     let matches = app.esv.matches(Some(tenant));
     if let Some(pos) = matches.iter().position(|m| m.id == id) {
         app.esv.list.selected = pos;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn authoritative_apply_state_prefers_startup_restarting() {
-        assert_eq!(
-            ApplyState::from_authoritative(StartupStatus::Restarting, 0),
-            ApplyState::Restarting(0)
-        );
-        assert_eq!(
-            ApplyState::from_authoritative(StartupStatus::Restarting, 3),
-            ApplyState::Restarting(3)
-        );
-    }
-
-    #[test]
-    fn authoritative_apply_state_uses_pending_when_ready() {
-        assert_eq!(
-            ApplyState::from_authoritative(StartupStatus::Ready, 0),
-            ApplyState::NoChanges
-        );
-        assert_eq!(
-            ApplyState::from_authoritative(StartupStatus::Ready, 2),
-            ApplyState::Unapplied(2)
-        );
     }
 }

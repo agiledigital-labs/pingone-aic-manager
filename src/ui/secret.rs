@@ -10,13 +10,14 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::screens::esv::{LoadState, id_of};
+use crate::esv::screen::Mode as EsvMode;
+use crate::esv::state::{LoadState, id_of};
 use crate::screens::secret::{self, CreateField, Encoding};
 use crate::ui::modal_chrome::Modal;
 
 /// The secrets list (left) + selected-secret detail (right). Mirrors the
 /// variables view: borderless list, a left-border divider on the detail pane.
-/// Called from `draw_esvs` when the tab is in the Secrets view; `area` excludes
+/// Called from `esv::view::draw` when the tab is in the Secrets view; `area` excludes
 /// the sub-view header row.
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let tenant = match app.active_tenant() {
@@ -64,7 +65,7 @@ fn status(f: &mut Frame, area: Rect, msg: &str, color: Color) {
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let rows = secret::rows(app, app.active_tenant().map(|t| t.name.as_str()));
-    let searching = app.input_mode == crate::app::InputMode::EsvSearch;
+    let searching = app.input_mode == crate::app::InputMode::Esv(EsvMode::Search);
     let total = match app
         .active_tenant()
         .and_then(|t| app.secret.list.data.get(&t.name))
