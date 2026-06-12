@@ -135,6 +135,21 @@ annotate with `/** @type {…} */`.
 - Some shipped endpoints (e.g. `oauthproxy`, `gettasksview`) are product
   defaults; treat with the same care as AM `default:true` scripts (avoid
   clobbering unless the user explicitly pulls + edits them).
+- **`Date.now()` and `java.lang.Thread.sleep(ms)` both work** in IDM scripts
+  (verified 2026-06-10 via a throwaway endpoint: `Date.now()` returns epoch ms;
+  `Thread.sleep(250)` measured ~263ms — Java access is permitted, unlike AM
+  next-gen which blocks reflection). Useful for retry/backoff loops (see the
+  advisory-lock template `scripts/idm-recon-lock.template.js`).
+- **Trailing comma in a function PARAMETER list compile-fails** (un-routable
+  404), e.g. `function f(a, b,) {}`. Verified 2026-06-10. Trailing commas in a
+  function *call* argument list (`f(1, 2,)`) and in object/array literals are
+  both fine. This is a third IDM syntax ban alongside default-params and
+  `const`-in-for-initializer. Practical impact: prettier's default
+  `trailingComma: "all"` will wrap long signatures and add the fatal comma —
+  IDM script workspaces must use `trailingComma: "es5"` (the existing
+  `templates/.prettierrc` and `workspace/*/.prettierrc` already do; a matching
+  `scripts/.prettierrc` was added for the standalone template). Consider an
+  eslint `comma-dangle: ["error", {"functions": "never"}]` for IDM as a guard.
 
 ## Scheduled jobs (`schedule/<name>`)
 

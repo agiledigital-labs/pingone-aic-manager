@@ -18,6 +18,74 @@ Service-account bearer. Scope: `fr:idm:*`.
 | Read repo mapping | `GET` | `/openidm/config/repo.ds` | Maps managed properties to DJ attributes. |
 | Read object instance | `GET` | `/openidm/managed/{type}/{id}` | Per-record. `{type}` e.g. `alpha_user`. |
 | List records | `GET` | `/openidm/managed/{type}?_queryFilter=true` | CREST. |
+| Create (client-set `_id`) | `PUT` | `/openidm/managed/{type}/{id}` + `If-None-Match: *` | Atomic create-if-absent. 201 on create (returns instance `_rev`); **412 "Entry Already Exists"** if the id is taken. |
+| Delete instance | `DELETE` | `/openidm/managed/{type}/{id}` | 200 on delete. |
+
+## Create-if-absent observations
+
+`PUT /openidm/managed/{type}/{id}` with header `If-None-Match: *` creates the
+record **only if it doesn't exist**. The uniqueness check is enforced by the DJ
+directory backend as an atomic LDAP add (the 412 body references the DN, e.g.
+`uid=...,ou=role,o=alpha,o=root`), **not** by an IDM read-then-write when the
+precondition is honored.
+
+Sandbox verification 2026-06-09: 8 rounds × 25 truly-parallel PUTs of the same
+`_id` → **exactly one 201 and 24×412 every round, zero anomalies**. This makes a
+"lock" managed object (e.g. `_id = "${object}-${id}"`) look viable in a
+single-node sandbox. Production cluster testing later disproved the `PUT` +
+`If-None-Match` form as a reliable distributed lock; see the caveat below.
+Reproduce the sandbox test with `scripts/experiment-lock-uniqueness.sh`.
+
+Note: managed-object **instances** DO carry `_rev` (unlike scripts/ESVs and
+unlike the `managed` *schema* config, which is `_rev`-less). The 412 here is
+driven by `If-None-Match: *`, independent of `_rev`.
+
+### Three create paths — only two are "create-only" (verified 2026-06-10)
+
+| Path | Exists already → | Notes |
+|------|------------------|-------|
+| `PUT /managed/{t}/{id}` (no header) | **200, silent UPDATE** | CREST maps bare PUT to create-or-**update** (upsert). |
+| `PUT /managed/{t}/{id}` + `If-None-Match: *` | 412 | Create-only *iff the precondition is honored* — see caveat. |
+| `POST /managed/{t}?_action=create` (`_id` in body) | 412 "Entry Already Exists" | CREST `CreateRequest`; **no** update fallback. |
+| `openidm.create(container, id, content)` (script) | throws `PreconditionFailedException` "Entry Already Exists" | Same `CreateRequest`. `id=null` → server-assigned UUID. **Never** updates. |
+
+**Caveat — `If-None-Match: *` is NOT a safe distributed lock in production.**
+Observed in a clustered prod tenant: 20 concurrent `PUT … If-None-Match: *` of
+one `_id` returned **1×201, 4×200, 15×412** — the four 200s were *silent
+updates*, i.e. the precondition was not enforced for those requests (LB/proxy
+dropping the conditional header, or differing CREST routing). Four extra callers
+got a 2xx "success" and would each have believed they held the lock. The
+single-node sandbox cannot reproduce this (always 1×201 / N−1×412).
+
+Because `POST ?_action=create` and `openidm.create` are `CreateRequest`s with
+**no upsert path**, they cannot silently 200-update — a duplicate always errors.
+They remain subject, in principle, to a DS multi-master add-add replication
+conflict (two replicas both accept the add before replicating), which no
+single-node test reproduces. Prefer create-based acquisition over PUT-upsert,
+but do not treat any managed-object create as a hard mutex in a replicated
+deployment without further validation.
+
+### `managed/alpha_lock` advisory-lock type (sandbox, 2026-06-10)
+
+A minimal custom type `alpha_lock` was added to the sandbox `managed` schema for
+the reconById-serialisation lock: fields `lockKey`/`owner`/`acquiredAt`/
+`expiresAt` (epoch-ms numbers), **no hooks and no sync mapping** so creating a
+lock has no side effects. `_id` is the lock key (e.g. `${mapping}-${objectId}`).
+The full acquire/retry/auto-expire/owner-fenced-release/lease-renew template is
+`scripts/idm-recon-lock.template.js`; every path was exercised in-engine via a
+scripted-endpoint harness (acquire/release, finally-on-throw, contention 503,
+stale reclaim, owner-fenced release, lease renewal + fence, 12-way parallel
+serialisation). The open question (is `openidm.create` reliably exclusive in
+clustered prod?) is with Ping; the retry+expiry makes the template usable either
+way but is not a hard multi-master mutex.
+
+Exact duplicate-create error, as caught in an IDM script (verified 2026-06-10):
+a Rhino-wrapped Java exception — `e.name === "JavaException"`,
+`e.javaException.getClass().getName() === "org.forgerock.json.resource.PreconditionFailedException"`,
+`e.message` starts `org.forgerock.json.resource.PreconditionFailedException: Entry Already Exists: The entry 'uid=<id>,ou=alpha_lock,ou=managed,dc=openidm,dc=example,dc=com' …`,
+and **`e.code` is undefined** (there is no numeric code property — match on the
+class or the message, not a code). `getClass()` reflection is available in IDM
+scripts (unlike AM next-gen), so the class is the most precise discriminator.
 
 ## Naming convention
 
@@ -82,8 +150,10 @@ $SCRIPTS/verify-endpoint.sh "/openidm/managed/alpha_user?_queryFilter=true&_page
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-05-17
-- Calls: `GET /openidm/config/managed` (200 OK).
+- Date: 2026-06-09 (sandbox create-if-absent test); 2026-05-17 (schema read).
+- Calls: `GET /openidm/config/managed` (200 OK);
+  `PUT /openidm/managed/alpha_role/{id}` + `If-None-Match: *`
+  (201 create, 412 on duplicate); `DELETE …` (200).
 
 ## Source citations
 
