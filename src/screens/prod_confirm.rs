@@ -66,9 +66,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                     PendingProdAction::SaveTenant { tenant, jwk } => {
                         match crate::screens::onboard::persist_new_tenant(app, tenant, jwk) {
                             Ok(()) => app.push_toast(ToastKind::Success, "Tenant added!"),
-                            Err(e) => {
-                                app.push_toast(ToastKind::Error, format!("Save failed: {e}"))
-                            }
+                            Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
                         }
                     }
                     PendingProdAction::EsvSave(plan) => {

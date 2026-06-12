@@ -54,7 +54,10 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
 
 fn status(f: &mut Frame, area: Rect, msg: &str, color: Color) {
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(msg.to_string(), Style::default().fg(color)))),
+        Paragraph::new(Line::from(Span::styled(
+            msg.to_string(),
+            Style::default().fg(color),
+        ))),
         area,
     );
 }
@@ -62,7 +65,10 @@ fn status(f: &mut Frame, area: Rect, msg: &str, color: Color) {
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     let rows = secret::rows(app, app.active_tenant().map(|t| t.name.as_str()));
     let searching = app.input_mode == crate::app::InputMode::EsvSearch;
-    let total = match app.active_tenant().and_then(|t| app.secret.list.data.get(&t.name)) {
+    let total = match app
+        .active_tenant()
+        .and_then(|t| app.secret.list.data.get(&t.name))
+    {
         Some(LoadState::Loaded(vs)) => vs.len(),
         _ => 0,
     };
@@ -116,7 +122,9 @@ fn render_secret_row(r: &secret::SecretRow, is_selected: bool) -> Line<'static> 
         (true, false) => ("▶ ", row_style),
         (false, true) => (
             "! ",
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         ),
         (false, false) => ("  ", row_style),
     };
@@ -163,7 +171,10 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
 
     let Some(secret) = secret::selected_secret(app) else {
         f.render_widget(
-            Paragraph::new(Span::styled("no match", Style::default().fg(Color::DarkGray))),
+            Paragraph::new(Span::styled(
+                "no match",
+                Style::default().fg(Color::DarkGray),
+            )),
             inner,
         );
         return;
@@ -217,22 +228,40 @@ fn meta_lines(secret: &serde_json::Value) -> Vec<Line<'static>> {
     let use_ph = secret::use_in_placeholders(secret);
     let active = field_str(secret, "activeVersion");
     let loaded_v = field_str(secret, "loadedVersion");
-    let loaded = secret.get("loaded").and_then(|v| v.as_bool()).unwrap_or(false);
+    let loaded = secret
+        .get("loaded")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let pending = use_ph && active != loaded_v;
     let mut lines = vec![
         Line::from(vec![meta_label("ID"), Span::raw(id)]),
         Line::from(vec![meta_label("Encoding"), Span::raw(encoding)]),
         Line::from(vec![
             meta_label("In placeholders"),
-            Span::raw(if use_ph { "yes (gates restart)" } else { "no (loads immediately)" }.to_string()),
+            Span::raw(
+                if use_ph {
+                    "yes (gates restart)"
+                } else {
+                    "no (loads immediately)"
+                }
+                .to_string(),
+            ),
         ]),
         Line::from(vec![
             meta_label("Active version"),
-            Span::raw(if active.is_empty() { "—".into() } else { active }),
+            Span::raw(if active.is_empty() {
+                "—".into()
+            } else {
+                active
+            }),
         ]),
         Line::from(vec![
             meta_label("Loaded version"),
-            Span::raw(if loaded_v.is_empty() { "—".into() } else { loaded_v }),
+            Span::raw(if loaded_v.is_empty() {
+                "—".into()
+            } else {
+                loaded_v
+            }),
         ]),
         Line::from(vec![
             meta_label("Loaded"),
@@ -292,7 +321,9 @@ fn draw_version_list(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Span::styled(
             "Versions",
             if vers_focused {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             },
@@ -329,7 +360,10 @@ fn draw_version_list(f: &mut Frame, app: &App, area: Rect) {
 
     if versions.is_empty() {
         f.render_widget(
-            Paragraph::new(Span::styled("No versions.", Style::default().fg(Color::DarkGray))),
+            Paragraph::new(Span::styled(
+                "No versions.",
+                Style::default().fg(Color::DarkGray),
+            )),
             body,
         );
         return;
@@ -340,7 +374,11 @@ fn draw_version_list(f: &mut Frame, app: &App, area: Rect) {
         .map(|v| {
             let version = v
                 .get("version")
-                .and_then(|x| x.as_str().map(|s| s.to_string()).or_else(|| x.as_u64().map(|n| n.to_string())))
+                .and_then(|x| {
+                    x.as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| x.as_u64().map(|n| n.to_string()))
+                })
                 .unwrap_or_default();
             let stat = v.get("status").and_then(|x| x.as_str()).unwrap_or("?");
             let loaded = v.get("loaded").and_then(|x| x.as_bool()).unwrap_or(false);
@@ -351,7 +389,10 @@ fn draw_version_list(f: &mut Frame, app: &App, area: Rect) {
                 _ => Style::default().fg(Color::DarkGray),
             };
             ListItem::new(Line::from(vec![
-                Span::styled(format!("v{version:<4} "), Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("v{version:<4} "),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(format!("{stat:<10} "), stat_style),
                 Span::styled(
                     if loaded { "loaded" } else { "" }.to_string(),
@@ -362,12 +403,18 @@ fn draw_version_list(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let mut state = ListState::default();
-    state.select(Some(app.secret.version_selected.min(versions.len().saturating_sub(1))));
+    state.select(Some(
+        app.secret
+            .version_selected
+            .min(versions.len().saturating_sub(1)),
+    ));
     // De-emphasise the selection when the description editor holds focus, so it
     // reads clearly which half `j/k`, `e/d`, `x` act on.
     let (hl_style, hl_symbol) = if vers_focused {
         (
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
             "▶ ",
         )
     } else {
@@ -416,12 +463,16 @@ fn draw_create_form(f: &mut Frame, app: &App, area: Rect) {
         rows[0],
     );
     form.id.draw(f, rows[2], form.focused == CreateField::Id);
-    form.description.draw(f, rows[3], form.focused == CreateField::Description);
+    form.description
+        .draw(f, rows[3], form.focused == CreateField::Description);
     draw_chip_row(
         f,
         rows[5],
         "Encoding",
-        Encoding::ALL.iter().map(|e| (e.label(), *e == form.encoding)).collect(),
+        Encoding::ALL
+            .iter()
+            .map(|e| (e.label(), *e == form.encoding))
+            .collect(),
         form.focused == CreateField::Encoding,
     );
     draw_toggle_row(
@@ -438,9 +489,14 @@ fn draw_create_form(f: &mut Frame, app: &App, area: Rect) {
         "Validate as JSON",
         form.as_json,
         form.focused == CreateField::Json,
-        if json_relevant { "(generic only)" } else { "(ignored for this encoding)" },
+        if json_relevant {
+            "(generic only)"
+        } else {
+            "(ignored for this encoding)"
+        },
     );
-    form.value.draw(f, rows[9], form.focused == CreateField::Value);
+    form.value
+        .draw(f, rows[9], form.focused == CreateField::Value);
     draw_save(f, rows[11], form.focused == CreateField::Save);
 
     if let Some(err) = &form.error {
@@ -466,8 +522,12 @@ pub fn draw_add_version(f: &mut Frame, app: &App) {
         body_height: 4,
     }
     .draw(f, f.area());
-    let rows = Layout::vertical([Constraint::Length(2), Constraint::Length(1), Constraint::Length(1)])
-        .split(body);
+    let rows = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(body);
     form.value.draw(f, rows[0], true);
     f.render_widget(
         Paragraph::new(Span::styled(
@@ -488,13 +548,12 @@ pub fn draw_add_version(f: &mut Frame, app: &App) {
 }
 
 fn draw_chip_row(f: &mut Frame, area: Rect, label: &str, chips: Vec<(&str, bool)>, focused: bool) {
-    let mut spans = vec![Span::styled(
-        format!("{label:<20} "),
-        label_style(focused),
-    )];
+    let mut spans = vec![Span::styled(format!("{label:<20} "), label_style(focused))];
     for (text, selected) in chips {
         let style = if selected {
-            Style::default().fg(Color::Black).bg(if focused { Color::Yellow } else { Color::Gray })
+            Style::default()
+                .fg(Color::Black)
+                .bg(if focused { Color::Yellow } else { Color::Gray })
         } else {
             Style::default().fg(Color::DarkGray)
         };
@@ -511,7 +570,9 @@ fn draw_toggle_row(f: &mut Frame, area: Rect, label: &str, on: bool, focused: bo
         Span::styled(
             box_.to_string(),
             if focused {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Gray)
             },
@@ -523,19 +584,21 @@ fn draw_toggle_row(f: &mut Frame, area: Rect, label: &str, on: bool, focused: bo
 
 fn draw_save(f: &mut Frame, area: Rect, focused: bool) {
     let style = if focused {
-        Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Green)
     };
-    f.render_widget(
-        Paragraph::new(Span::styled(" Create secret ", style)),
-        area,
-    );
+    f.render_widget(Paragraph::new(Span::styled(" Create secret ", style)), area);
 }
 
 fn label_style(focused: bool) -> Style {
     if focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     }

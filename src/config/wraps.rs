@@ -73,9 +73,9 @@ impl Wrap {
     pub fn label(&self) -> String {
         match self {
             Wrap::Password { .. } => "Master password".into(),
-            Wrap::SecurityKey { label, .. } => label
-                .clone()
-                .unwrap_or_else(|| "Security key".into()),
+            Wrap::SecurityKey { label, .. } => {
+                label.clone().unwrap_or_else(|| "Security key".into())
+            }
         }
     }
 }

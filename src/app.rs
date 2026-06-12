@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent};
 use futures::StreamExt;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 
 use crate::config::crypto::{self, Dek};
 use crate::config::tenant::Tenant;
@@ -66,9 +66,7 @@ pub enum InputMode {
 /// `SetupContext` / `AuthSetupForm` paths (used in `ui/auth_setup.rs`,
 /// `ui/auth_settings.rs`, and inside `App`) keep compiling against the
 /// moved types.
-pub use crate::screens::auth_setup::{
-    AuthMethod, AuthSetupField, AuthSetupForm, SetupContext,
-};
+pub use crate::screens::auth_setup::{AuthMethod, AuthSetupField, AuthSetupForm, SetupContext};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Realm {
@@ -114,7 +112,6 @@ pub struct App {
     /// for handlers; the field lives here because lifecycle code
     /// (`decide_initial_mode`, etc.) needs to pre-seed focus.
     pub unlock: crate::screens::unlock::State,
-
 
     /// First-run + add-factor screen state. See `screens::auth_setup`.
     pub auth_setup: crate::screens::auth_setup::State,
@@ -244,7 +241,9 @@ impl App {
             return;
         }
         match self.settings {
-            Some(Settings { encrypt_keys: true, .. }) => {
+            Some(Settings {
+                encrypt_keys: true, ..
+            }) => {
                 self.input_mode = InputMode::Unlock;
                 // Default focus to whichever method is actually enrolled.
                 // If both are enrolled we prefer the security key field — it's the
@@ -271,7 +270,6 @@ impl App {
         // so the user has to enter it on the Unlock screen first. The poll
         // is spawned from `handle_unlock_key` once that happens.
     }
-
 
     fn load_plain_keys(&mut self) {
         if let Ok(Some(bytes)) = ProjectConfig::load_keys_plain() {
@@ -378,7 +376,13 @@ impl App {
         if self.dek.is_some() {
             return true;
         }
-        matches!(self.settings, Some(Settings { encrypt_keys: false, .. }))
+        matches!(
+            self.settings,
+            Some(Settings {
+                encrypt_keys: false,
+                ..
+            })
+        )
     }
 
     pub async fn run(
@@ -391,7 +395,13 @@ impl App {
         // knows what state we're in before any ESV refresh hits its socket.
         // Encrypted mode either gets the DEK from `try_agent_unlock` (idle-
         // window resume) or via `handle_unlock_result` once the user types.
-        if matches!(self.settings, Some(Settings { encrypt_keys: false, .. })) {
+        if matches!(
+            self.settings,
+            Some(Settings {
+                encrypt_keys: false,
+                ..
+            })
+        ) {
             crate::screens::unlock::unlock_plain_agent(self).await;
         }
         crate::screens::esv::refresh(self, false);
@@ -443,7 +453,15 @@ impl App {
                 sa_id,
                 jwk,
             } => {
-                crate::screens::onboard::handle_sa_created(self, onboard_id, tenant_name, base_url, theme, sa_id, jwk)?;
+                crate::screens::onboard::handle_sa_created(
+                    self,
+                    onboard_id,
+                    tenant_name,
+                    base_url,
+                    theme,
+                    sa_id,
+                    jwk,
+                )?;
             }
             AppEvent::Toast(kind, msg) => {
                 self.push_toast(kind, msg);
@@ -479,7 +497,11 @@ impl App {
             AppEvent::EsvDeleteResult { tenant, id, result } => {
                 crate::screens::esv::apply_delete_result(self, tenant, id, result);
             }
-            AppEvent::EsvUndoResult { undo_id, tenant, result } => {
+            AppEvent::EsvUndoResult {
+                undo_id,
+                tenant,
+                result,
+            } => {
                 crate::screens::esv::apply_undo_result(self, undo_id, tenant, result);
             }
             AppEvent::EsvRestartResult { tenant, result } => {
@@ -521,8 +543,7 @@ impl App {
         // 30s cadence is a tradeoff between freshness and sandbox load —
         // the sandbox API itself takes ~7s to answer a list, so polling
         // faster than that just stacks in-flight requests.
-        if self.current_tab == Tab::Esvs
-            && self.esv.last_poll.elapsed() >= Duration::from_secs(30)
+        if self.current_tab == Tab::Esvs && self.esv.last_poll.elapsed() >= Duration::from_secs(30)
         {
             crate::screens::esv::refresh(self, true);
         }
@@ -577,7 +598,6 @@ impl App {
         self.onboard.pending_overwrite_name()
     }
 
-
     /// Backwards-compat shim so existing UI callers
     /// (`ui::auth_settings::draw_confirm`) keep working without touching
     /// the rendering code.
@@ -619,10 +639,7 @@ impl App {
             _ => {}
         }
     }
-
 }
-
-
 
 // Re-exported from `crate::auth` so existing `app::UnlockOk` call sites
 // (event.rs, etc.) keep compiling against the moved type.

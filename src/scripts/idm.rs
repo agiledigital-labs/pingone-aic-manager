@@ -135,7 +135,10 @@ mod tests {
             workspace_subpath(&r),
             PathBuf::from("idm/endpoint/my-endpoint.cjs")
         );
-        assert_eq!(config_subpath(&r), PathBuf::from("idm/my-endpoint.idm.json"));
+        assert_eq!(
+            config_subpath(&r),
+            PathBuf::from("idm/my-endpoint.idm.json")
+        );
     }
 
     #[test]

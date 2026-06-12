@@ -267,9 +267,10 @@ pub enum CtxCommand {
 
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Some(Command::Agent { detach, idle_timeout }) => {
-            run_agent(detach, idle_timeout).await
-        }
+        Some(Command::Agent {
+            detach,
+            idle_timeout,
+        }) => run_agent(detach, idle_timeout).await,
         Some(Command::Login) => login().await,
         Some(Command::Logout) => logout().await,
         Some(Command::Stop) => stop().await,
@@ -339,7 +340,10 @@ fn inject_tenant_default(mut cmd: clap::Command, tenant: Option<&str>) -> clap::
             cmd = cmd.mut_arg("tenant", |a| a.default_value(v));
         }
     }
-    let subs: Vec<String> = cmd.get_subcommands().map(|s| s.get_name().to_string()).collect();
+    let subs: Vec<String> = cmd
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .collect();
     for name in subs {
         cmd = cmd.mut_subcommand(&name, |s| inject_tenant_default(s, tenant));
     }
@@ -371,8 +375,8 @@ async fn run_agent(detach: bool, idle_timeout: Option<u64>) -> Result<()> {
 fn spawn_detached_then_exit() -> Result<()> {
     // Reuse the CLI's spawn path by going through connect_or_spawn — that
     // gives us the "wait for socket" handshake too.
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| Error::Config(format!("tokio runtime: {e}")))?;
+    let rt =
+        tokio::runtime::Runtime::new().map_err(|e| Error::Config(format!("tokio runtime: {e}")))?;
     rt.block_on(async {
         let _ = AgentClient::connect_or_spawn().await?;
         eprintln!("agent running at {}", agent::socket_path().display());
@@ -391,7 +395,10 @@ async fn login() -> Result<()> {
     // prompt. Just tell the agent to load keys.plain and exit.
     let plain_mode = matches!(
         config::Settings::load()?,
-        Some(config::Settings { encrypt_keys: false, .. })
+        Some(config::Settings {
+            encrypt_keys: false,
+            ..
+        })
     );
     if plain_mode {
         if ProjectConfig::load_keys_plain()?.is_none() {
@@ -409,8 +416,9 @@ async fn login() -> Result<()> {
             "no .aic-edit/keys.enc — set up an auth factor in the TUI first".into(),
         ));
     }
-    let wraps_file = WrapsFile::load()?
-        .ok_or_else(|| Error::Config("no .aic-edit/wraps.toml — set up an auth factor in the TUI first".into()))?;
+    let wraps_file = WrapsFile::load()?.ok_or_else(|| {
+        Error::Config("no .aic-edit/wraps.toml — set up an auth factor in the TUI first".into())
+    })?;
 
     let dek = match pick_method(&wraps_file)? {
         MethodChoice::Password => unlock_with_password_prompt().await?,
@@ -476,7 +484,9 @@ async fn unlock_with_security_key_prompt(wraps_file: &WrapsFile) -> Result<Dek> 
     let pin = rpassword::prompt_password("Security key PIN: ")
         .map_err(|e| Error::Config(format!("read pin: {e}")))?;
     eprintln!("{}", crate::security_key::TAP_MESSAGE);
-    Ok(auth::unlock_security_key(wraps_file.clone(), pin).await?.dek)
+    Ok(auth::unlock_security_key(wraps_file.clone(), pin)
+        .await?
+        .dek)
 }
 
 async fn logout() -> Result<()> {
@@ -577,12 +587,7 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
                 } else {
                     "  "
                 };
-                println!(
-                    "{marker}{}  ({}, {})",
-                    t.name,
-                    t.theme.label(),
-                    t.base_url
-                );
+                println!("{marker}{}  ({}, {})", t.name, t.theme.label(), t.base_url);
             }
         }
         CtxCommand::Current => match current {
@@ -614,8 +619,16 @@ async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
     let tenant = resolve_tenant(tenant_arg, &cfg)?;
 
     let client = AgentClient::connect_or_spawn().await?;
-    match client.send(&Request::GetToken { tenant: tenant.clone() }).await? {
-        Response::Token { access_token, expires_at } => {
+    match client
+        .send(&Request::GetToken {
+            tenant: tenant.clone(),
+        })
+        .await?
+    {
+        Response::Token {
+            access_token,
+            expires_at,
+        } => {
             let ttl = expires_at - chrono::Utc::now().timestamp();
             if token_only {
                 println!("{access_token}");
@@ -660,7 +673,11 @@ async fn esv(cmd: EsvCommand) -> Result<()> {
                 esv::save_variable(&t, &id, &description, &expr_type, &value_b64, yes, None).await,
             )?;
             let verb = if saved.created { "created" } else { "saved" };
-            let extra = if saved.type_deleted { " (type changed — recreated)" } else { "" };
+            let extra = if saved.type_deleted {
+                " (type changed — recreated)"
+            } else {
+                ""
+            };
             println!("variable {id} {verb}{extra}");
             Ok(())
         }
@@ -706,8 +723,16 @@ async fn secret(cmd: SecretCommand) -> Result<()> {
             let value_b64 =
                 esv::encode_secret_value(&encoding, &value, json).map_err(Error::Config)?;
             prod_hint(
-                esv::create_secret(&t, &id, &encoding, !no_placeholders, &value_b64, &description, yes)
-                    .await,
+                esv::create_secret(
+                    &t,
+                    &id,
+                    &encoding,
+                    !no_placeholders,
+                    &value_b64,
+                    &description,
+                    yes,
+                )
+                .await,
             )?;
             println!("secret {id} created");
             Ok(())
@@ -863,9 +888,10 @@ fn resolve_secret_value(
     let v = if let Some(v) = value {
         v
     } else if let Some(path) = value_file {
-        strip(std::fs::read_to_string(&path).map_err(|e| {
-            Error::Config(format!("read --value-file {}: {e}", path.display()))
-        })?)
+        strip(
+            std::fs::read_to_string(&path)
+                .map_err(|e| Error::Config(format!("read --value-file {}: {e}", path.display())))?,
+        )
     } else if value_stdin {
         use std::io::Read;
         let mut s = String::new();
@@ -874,8 +900,7 @@ fn resolve_secret_value(
             .map_err(|e| Error::Config(format!("read stdin: {e}")))?;
         strip(s)
     } else {
-        rpassword::prompt_password(prompt)
-            .map_err(|e| Error::Config(format!("read value: {e}")))?
+        rpassword::prompt_password(prompt).map_err(|e| Error::Config(format!("read value: {e}")))?
     };
     if v.is_empty() {
         return Err(Error::Config("value cannot be empty".into()));

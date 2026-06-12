@@ -398,7 +398,10 @@ fn load_entries(path: &Path) -> Result<Vec<UndoEntry>> {
 }
 
 fn persistable(sensitivity: Sensitivity) -> bool {
-    matches!(sensitivity, Sensitivity::PublicMetadata | Sensitivity::TenantConfig)
+    matches!(
+        sensitivity,
+        Sensitivity::PublicMetadata | Sensitivity::TenantConfig
+    )
 }
 
 fn summaries(entries: &[UndoEntry], limit: usize) -> Vec<UndoSummary> {
@@ -419,7 +422,10 @@ fn latest_pending_summary(
             entry.tenant == tenant
                 && entry.status == EntryStatus::Pending
                 && !entry.is_expired(now)
-                && matches!(entry.capability, Capability::Undoable | Capability::BestEffort)
+                && matches!(
+                    entry.capability,
+                    Capability::Undoable | Capability::BestEffort
+                )
                 && entry.op.is_some()
         })
         .max_by_key(|entry| entry.created_at)
@@ -459,7 +465,8 @@ mod tests {
         assert_eq!(listed[0].id, second);
         assert_eq!(listed[1].id, first);
 
-        log.mark_applied(second, EntryStatus::AppliedSuccess).unwrap();
+        log.mark_applied(second, EntryStatus::AppliedSuccess)
+            .unwrap();
         assert_eq!(
             log.load(second).unwrap().status,
             EntryStatus::AppliedSuccess

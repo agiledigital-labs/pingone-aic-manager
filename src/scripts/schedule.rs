@@ -156,7 +156,10 @@ mod tests {
         assert_eq!(decode_source(&raw).unwrap(), body);
         // siblings preserved
         assert_eq!(raw["schedule"], json!("0 0 * * * ?"));
-        assert_eq!(raw["invokeContext"]["script"]["type"], json!("text/javascript"));
+        assert_eq!(
+            raw["invokeContext"]["script"]["type"],
+            json!("text/javascript")
+        );
         assert!(raw["invokeContext"]["script"].get("globals").is_some());
     }
 }

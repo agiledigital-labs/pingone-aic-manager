@@ -8,10 +8,10 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::{App, InputMode};
+use crate::config::ProjectConfig;
+use crate::config::Settings;
 use crate::config::crypto::{self, Dek};
 use crate::config::wraps::{self, Wrap};
-use crate::config::Settings;
-use crate::config::ProjectConfig;
 use crate::event::{AppEvent, ToastKind};
 
 /// Auth methods offered on the first-run picker (and on the in-app
@@ -406,7 +406,13 @@ async fn finalize_factor_addition(
     context: SetupContext,
     success_toast: &str,
 ) -> crate::Result<()> {
-    let already_encrypted = matches!(app.settings, Some(Settings { encrypt_keys: true, .. }));
+    let already_encrypted = matches!(
+        app.settings,
+        Some(Settings {
+            encrypt_keys: true,
+            ..
+        })
+    );
 
     if !already_encrypted {
         // We just added the first factor while encryption was disabled
@@ -448,8 +454,13 @@ async fn finalize_factor_addition(
 /// on `App`.
 pub async fn handle_enroll_result(app: &mut App, result: std::result::Result<Wrap, String>) {
     let context = app.auth_setup.context;
-    let was_dek_minted_for_this_op =
-        !matches!(app.settings, Some(Settings { encrypt_keys: true, .. }));
+    let was_dek_minted_for_this_op = !matches!(
+        app.settings,
+        Some(Settings {
+            encrypt_keys: true,
+            ..
+        })
+    );
 
     match result {
         Ok(wrap) => {

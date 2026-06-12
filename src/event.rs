@@ -69,10 +69,8 @@ pub enum AppEvent {
     EsvUndoResult {
         undo_id: crate::undo::UndoId,
         tenant: String,
-        result: std::result::Result<
-            crate::screens::esv::UndoOutcome,
-            crate::screens::esv::UndoFailure,
-        >,
+        result:
+            std::result::Result<crate::screens::esv::UndoOutcome, crate::screens::esv::UndoFailure>,
     },
     /// A background secret mutation finished. `kind` lets the handler record
     /// the right undo entry post-success; `label` is the toast verb;

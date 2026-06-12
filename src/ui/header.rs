@@ -95,4 +95,3 @@ fn hint(key: &'static str, desc: &'static str) -> Vec<Span<'static>> {
         Span::styled(format!(" {desc}"), Style::default().fg(Color::DarkGray)),
     ]
 }
-

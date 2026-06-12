@@ -123,7 +123,9 @@ impl SnapshotStore {
 
     fn config_path(&self, r: &RemoteRef, realm: &str) -> PathBuf {
         // `config_subpath` already namespaces by kind (and realm for AM).
-        self.dir.join("configs").join(r.kind.config_subpath(r, realm))
+        self.dir
+            .join("configs")
+            .join(r.kind.config_subpath(r, realm))
     }
 
     pub fn backups_dir(&self) -> PathBuf {
@@ -170,9 +172,8 @@ impl SnapshotStore {
     fn remove(&self, kind: Kind, name: &str, realm: &str) -> Result<()> {
         let key = Self::realm_key(kind, realm);
         let mut entries = self.load_manifest()?;
-        entries.retain(|e| {
-            !(e.reference.kind == kind && e.reference.name == name && e.realm == key)
-        });
+        entries
+            .retain(|e| !(e.reference.kind == kind && e.reference.name == name && e.realm == key));
         self.save_manifest(&entries)
     }
 
@@ -303,7 +304,12 @@ pub async fn pull_candidates(tenant: &str) -> Result<Vec<Candidate>> {
     let manifest = store.load_manifest()?;
     let by_key: HashMap<(Kind, Option<String>, String), &SyncedScript> = manifest
         .iter()
-        .map(|e| ((e.reference.kind, e.realm.clone(), e.reference.name.clone()), e))
+        .map(|e| {
+            (
+                (e.reference.kind, e.realm.clone(), e.reference.name.clone()),
+                e,
+            )
+        })
         .collect();
     let mut out = Vec::new();
     for ns in super::Namespace::all() {
@@ -397,7 +403,10 @@ pub async fn pull(
 
     if let Selector::Name(n) = selector {
         if refs.is_empty() {
-            return Err(Error::Config(format!("no {} script named {n:?}", kind.as_str())));
+            return Err(Error::Config(format!(
+                "no {} script named {n:?}",
+                kind.as_str()
+            )));
         }
     }
 
@@ -495,9 +504,11 @@ pub async fn push(
     confirmed_prod: bool,
 ) -> Result<PushOutcome> {
     let store = SnapshotStore::open(tenant);
-    let entry = store
-        .lookup(kind, name, realm)?
-        .ok_or_else(|| Error::Config(format!("{name:?} not synced yet — `aic script pull {name}` first")))?;
+    let entry = store.lookup(kind, name, realm)?.ok_or_else(|| {
+        Error::Config(format!(
+            "{name:?} not synced yet — `aic script pull {name}` first"
+        ))
+    })?;
     let r = &entry.reference;
 
     let snapshot_cfg = store
@@ -786,7 +797,9 @@ mod tests {
     use serde_json::json;
 
     fn store_at(dir: &Path) -> SnapshotStore {
-        SnapshotStore { dir: dir.to_path_buf() }
+        SnapshotStore {
+            dir: dir.to_path_buf(),
+        }
     }
 
     fn tmp() -> PathBuf {
@@ -818,13 +831,22 @@ mod tests {
     }
 
     fn script(reference: RemoteRef, raw: Value) -> RemoteScript {
-        RemoteScript { reference, raw_config: raw }
+        RemoteScript {
+            reference,
+            raw_config: raw,
+        }
     }
 
     #[test]
     fn realm_key_is_set_only_for_realm_scoped_kinds() {
-        assert_eq!(SnapshotStore::realm_key(Kind::Am, "alpha"), Some("alpha".into()));
-        assert_eq!(SnapshotStore::realm_key(Kind::Am, "bravo"), Some("bravo".into()));
+        assert_eq!(
+            SnapshotStore::realm_key(Kind::Am, "alpha"),
+            Some("alpha".into())
+        );
+        assert_eq!(
+            SnapshotStore::realm_key(Kind::Am, "bravo"),
+            Some("bravo".into())
+        );
         assert_eq!(SnapshotStore::realm_key(Kind::IdmEndpoint, "alpha"), None);
         assert_eq!(SnapshotStore::realm_key(Kind::IdmSchedule, "bravo"), None);
     }
@@ -834,25 +856,45 @@ mod tests {
         let dir = tmp();
         let store = store_at(&dir);
         store
-            .record(&script(am_ref("Shared"), json!({"script": "YQ=="})), "alpha")
+            .record(
+                &script(am_ref("Shared"), json!({"script": "YQ=="})),
+                "alpha",
+            )
             .unwrap();
         store
-            .record(&script(am_ref("Shared"), json!({"script": "Yg=="})), "bravo")
+            .record(
+                &script(am_ref("Shared"), json!({"script": "Yg=="})),
+                "bravo",
+            )
             .unwrap();
 
         // Two manifest entries, one per realm — not one clobbering the other.
         assert_eq!(store.load_manifest().unwrap().len(), 2);
         assert_eq!(
-            store.lookup(Kind::Am, "Shared", "alpha").unwrap().unwrap().realm,
+            store
+                .lookup(Kind::Am, "Shared", "alpha")
+                .unwrap()
+                .unwrap()
+                .realm,
             Some("alpha".into())
         );
         assert_eq!(
-            store.lookup(Kind::Am, "Shared", "bravo").unwrap().unwrap().realm,
+            store
+                .lookup(Kind::Am, "Shared", "bravo")
+                .unwrap()
+                .unwrap()
+                .realm,
             Some("bravo".into())
         );
         // Configs are namespaced per realm too — no cross-realm clobber.
-        assert_eq!(store.load_config(&am_ref("Shared"), "alpha").unwrap(), Some(json!({"script": "YQ=="})));
-        assert_eq!(store.load_config(&am_ref("Shared"), "bravo").unwrap(), Some(json!({"script": "Yg=="})));
+        assert_eq!(
+            store.load_config(&am_ref("Shared"), "alpha").unwrap(),
+            Some(json!({"script": "YQ=="}))
+        );
+        assert_eq!(
+            store.load_config(&am_ref("Shared"), "bravo").unwrap(),
+            Some(json!({"script": "Yg=="}))
+        );
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -862,19 +904,33 @@ mod tests {
         let dir = tmp();
         let store = store_at(&dir);
         store
-            .record(&script(endpoint_ref("myEp"), json!({"source": "x"})), "alpha")
+            .record(
+                &script(endpoint_ref("myEp"), json!({"source": "x"})),
+                "alpha",
+            )
             .unwrap();
         // "Re-syncing" the same endpoint under a different realm arg must not
         // create a second entry — IDM is tenant-global (realm key is None).
         store
-            .record(&script(endpoint_ref("myEp"), json!({"source": "y"})), "bravo")
+            .record(
+                &script(endpoint_ref("myEp"), json!({"source": "y"})),
+                "bravo",
+            )
             .unwrap();
 
         assert_eq!(store.load_manifest().unwrap().len(), 1);
-        let found = store.lookup(Kind::IdmEndpoint, "myEp", "alpha").unwrap().unwrap();
+        let found = store
+            .lookup(Kind::IdmEndpoint, "myEp", "alpha")
+            .unwrap()
+            .unwrap();
         assert_eq!(found.realm, None);
         // Lookup resolves regardless of the realm argument passed.
-        assert!(store.lookup(Kind::IdmEndpoint, "myEp", "bravo").unwrap().is_some());
+        assert!(
+            store
+                .lookup(Kind::IdmEndpoint, "myEp", "bravo")
+                .unwrap()
+                .is_some()
+        );
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -883,11 +939,18 @@ mod tests {
     fn re_recording_same_key_replaces_in_place() {
         let dir = tmp();
         let store = store_at(&dir);
-        store.record(&script(am_ref("A"), json!({"script": "YQ=="})), "alpha").unwrap();
-        store.record(&script(am_ref("A"), json!({"script": "Yg=="})), "alpha").unwrap();
+        store
+            .record(&script(am_ref("A"), json!({"script": "YQ=="})), "alpha")
+            .unwrap();
+        store
+            .record(&script(am_ref("A"), json!({"script": "Yg=="})), "alpha")
+            .unwrap();
 
         assert_eq!(store.load_manifest().unwrap().len(), 1);
-        assert_eq!(store.load_config(&am_ref("A"), "alpha").unwrap(), Some(json!({"script": "Yg=="})));
+        assert_eq!(
+            store.load_config(&am_ref("A"), "alpha").unwrap(),
+            Some(json!({"script": "Yg=="}))
+        );
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -896,8 +959,18 @@ mod tests {
     fn remove_drops_only_the_targeted_realm() {
         let dir = tmp();
         let store = store_at(&dir);
-        store.record(&script(am_ref("Shared"), json!({"script": "YQ=="})), "alpha").unwrap();
-        store.record(&script(am_ref("Shared"), json!({"script": "Yg=="})), "bravo").unwrap();
+        store
+            .record(
+                &script(am_ref("Shared"), json!({"script": "YQ=="})),
+                "alpha",
+            )
+            .unwrap();
+        store
+            .record(
+                &script(am_ref("Shared"), json!({"script": "Yg=="})),
+                "bravo",
+            )
+            .unwrap();
 
         store.remove(Kind::Am, "Shared", "alpha").unwrap();
 

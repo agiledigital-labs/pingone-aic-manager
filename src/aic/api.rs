@@ -65,7 +65,15 @@ pub async fn put_versioned(
     confirmed_prod: bool,
     api_version: &str,
 ) -> Result<serde_json::Value> {
-    call(tenant, "PUT", path, Some(body), confirmed_prod, Some(api_version)).await
+    call(
+        tenant,
+        "PUT",
+        path,
+        Some(body),
+        confirmed_prod,
+        Some(api_version),
+    )
+    .await
 }
 
 /// `DELETE` with an explicit `Accept-API-Version`.
@@ -75,7 +83,15 @@ pub async fn delete_versioned(
     confirmed_prod: bool,
     api_version: &str,
 ) -> Result<serde_json::Value> {
-    call(tenant, "DELETE", path, None, confirmed_prod, Some(api_version)).await
+    call(
+        tenant,
+        "DELETE",
+        path,
+        None,
+        confirmed_prod,
+        Some(api_version),
+    )
+    .await
 }
 
 async fn call(

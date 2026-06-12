@@ -298,7 +298,9 @@ fn draw_view_toggle(f: &mut Frame, app: &App, area: Rect) {
     let active = app.esv.view;
     let tab = |label: &'static str, is_active: bool| {
         let style = if is_active {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };
@@ -316,7 +318,10 @@ fn draw_view_toggle(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     let searching = app.input_mode == InputMode::EsvSearch;
-    let total = match app.active_tenant().and_then(|t| app.esv.list.data.get(&t.name)) {
+    let total = match app
+        .active_tenant()
+        .and_then(|t| app.esv.list.data.get(&t.name))
+    {
         Some(EsvLoadState::Loaded(vs)) => vs.len(),
         _ => 0,
     };

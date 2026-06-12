@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
 
 use crate::agent::{AgentClient, Request as AgentRequest, Response as AgentResponse};
 use crate::config::crypto::Dek;
@@ -40,7 +40,11 @@ pub async fn unlock_password(password: String) -> Result<UnlockOk> {
 /// device once, regardless of how many keys are enrolled.
 pub async fn unlock_security_key(wraps_file: WrapsFile, pin: String) -> Result<UnlockOk> {
     let (dek, jwks) = tokio::task::spawn_blocking(move || {
-        let pin_opt = if pin.is_empty() { None } else { Some(pin.as_str()) };
+        let pin_opt = if pin.is_empty() {
+            None
+        } else {
+            Some(pin.as_str())
+        };
         config::unlock_with_security_key(&wraps_file, pin_opt)
     })
     .await

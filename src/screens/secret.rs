@@ -407,7 +407,11 @@ pub fn handle_create_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             let left = key.code == KeyCode::Left;
             match focused {
                 CreateField::Encoding => {
-                    form.encoding = if left { form.encoding.prev() } else { form.encoding.next() };
+                    form.encoding = if left {
+                        form.encoding.prev()
+                    } else {
+                        form.encoding.next()
+                    };
                     return Ok(());
                 }
                 CreateField::Placeholders => {
@@ -480,7 +484,10 @@ fn commit_create(app: &mut App) {
         })
         .unwrap_or(false)
     {
-        set_create_error(app, "A secret with that ID already exists (PUT is create-only)");
+        set_create_error(
+            app,
+            "A secret with that ID already exists (PUT is create-only)",
+        );
         return;
     }
 
@@ -523,7 +530,11 @@ fn set_create_error(app: &mut App, msg: &str) {
 /// Turn the on-screen value into the wire `valueBase64`. Thin wrapper over the
 /// shared [`crate::aic::esv::encode_secret_value`] (keyed by encoding string),
 /// so the TUI and CLI validate identically.
-fn encode_value(encoding: Encoding, value: &str, as_json: bool) -> std::result::Result<String, String> {
+fn encode_value(
+    encoding: Encoding,
+    value: &str,
+    as_json: bool,
+) -> std::result::Result<String, String> {
     crate::aic::esv::encode_secret_value(encoding.as_str(), value, as_json)
 }
 
@@ -748,15 +759,17 @@ pub enum VersionsView {
 
 pub fn versions_view(app: &App) -> Option<VersionsView> {
     let (tenant, id) = app.secret.version_target.clone()?;
-    Some(match app.secret.versions.get(&(tenant.clone(), id.clone())) {
-        Some(LoadState::Loaded(vs)) => VersionsView::Loaded {
-            tenant,
-            id,
-            versions: vs.clone(),
+    Some(
+        match app.secret.versions.get(&(tenant.clone(), id.clone())) {
+            Some(LoadState::Loaded(vs)) => VersionsView::Loaded {
+                tenant,
+                id,
+                versions: vs.clone(),
+            },
+            Some(LoadState::Failed(e)) => VersionsView::Failed(e.clone()),
+            Some(LoadState::Loading) | None => VersionsView::Loading,
         },
-        Some(LoadState::Failed(e)) => VersionsView::Failed(e.clone()),
-        Some(LoadState::Loading) | None => VersionsView::Loading,
-    })
+    )
 }
 
 pub fn handle_versions_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
@@ -900,10 +913,14 @@ pub fn execute_set_description(app: &mut App, plan: SetDescriptionPlan, confirme
 
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let result =
-            crate::aic::esv::set_secret_description(&plan.tenant, &plan.id, &plan.description, confirmed_prod)
-                .await
-                .map_err(|e| e.to_string());
+        let result = crate::aic::esv::set_secret_description(
+            &plan.tenant,
+            &plan.id,
+            &plan.description,
+            confirmed_prod,
+        )
+        .await
+        .map_err(|e| e.to_string());
         let _ = tx.send(AppEvent::SecretOpResult {
             tenant: plan.tenant,
             id: plan.id,
@@ -931,7 +948,10 @@ fn record_set_description_undo(app: &mut App, plan: &SetDescriptionPlan) {
         ConflictCheck::None,
     );
     if let Err(e) = app.undo.record(entry) {
-        tracing::warn!("failed to record secret-description undo for {}: {e}", plan.id);
+        tracing::warn!(
+            "failed to record secret-description undo for {}: {e}",
+            plan.id
+        );
     }
 }
 
@@ -969,13 +989,18 @@ pub async fn undo_set_description(
 /// repaints immediately. The authoritative list is reloaded on op completion
 /// (success *or* failure), so a rejected change self-corrects.
 fn set_local_version_status(app: &mut App, tenant: &str, id: &str, version: &str, status: &str) {
-    if let Some(LoadState::Loaded(vs)) =
-        app.secret.versions.get_mut(&(tenant.to_string(), id.to_string()))
+    if let Some(LoadState::Loaded(vs)) = app
+        .secret
+        .versions
+        .get_mut(&(tenant.to_string(), id.to_string()))
     {
         for v in vs.iter_mut() {
             if version_num(v).as_deref() == Some(version) {
                 if let Some(obj) = v.as_object_mut() {
-                    obj.insert("status".into(), serde_json::Value::String(status.to_string()));
+                    obj.insert(
+                        "status".into(),
+                        serde_json::Value::String(status.to_string()),
+                    );
                 }
             }
         }
@@ -999,8 +1024,11 @@ fn set_local_secret_description(app: &mut App, tenant: &str, id: &str, descripti
 }
 
 fn version_num(v: &serde_json::Value) -> Option<String> {
-    v.get("version")
-        .and_then(|x| x.as_str().map(|s| s.to_string()).or_else(|| x.as_u64().map(|n| n.to_string())))
+    v.get("version").and_then(|x| {
+        x.as_str()
+            .map(|s| s.to_string())
+            .or_else(|| x.as_u64().map(|n| n.to_string()))
+    })
 }
 
 fn version_status(v: &serde_json::Value) -> &str {
@@ -1077,7 +1105,10 @@ fn destroy_version(app: &mut App, tenant: &str, id: &str, v: &serde_json::Value)
         return;
     };
     if version_status(v) == "DESTROYED" {
-        app.push_toast(ToastKind::Info, format!("Version {version} already destroyed"));
+        app.push_toast(
+            ToastKind::Info,
+            format!("Version {version} already destroyed"),
+        );
         return;
     }
     // Destroy is irreversible, so always confirm locally first (even outside

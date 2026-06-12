@@ -17,12 +17,9 @@ pub struct AgentClient {
 
 impl AgentClient {
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
-        let stream = UnixStream::connect(path.as_ref()).await.map_err(|e| {
-            Error::Config(format!(
-                "connect {}: {e}",
-                path.as_ref().display()
-            ))
-        })?;
+        let stream = UnixStream::connect(path.as_ref())
+            .await
+            .map_err(|e| Error::Config(format!("connect {}: {e}", path.as_ref().display())))?;
         Ok(Self { stream })
     }
 
@@ -80,7 +77,9 @@ impl AgentClient {
         let mut line = String::new();
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
-            return Err(Error::Config("agent closed connection without reply".into()));
+            return Err(Error::Config(
+                "agent closed connection without reply".into(),
+            ));
         }
         let resp: Response = serde_json::from_str(line.trim())?;
         Ok(resp)
@@ -95,8 +94,7 @@ impl AgentClient {
 }
 
 fn current_exe() -> Result<PathBuf> {
-    std::env::current_exe()
-        .map_err(|e| Error::Config(format!("current_exe: {e}")))
+    std::env::current_exe().map_err(|e| Error::Config(format!("current_exe: {e}")))
 }
 
 fn spawn_detached_agent() -> Result<()> {
@@ -131,9 +129,9 @@ fn spawn_detached_agent() -> Result<()> {
         });
     }
 
-    let child = cmd.spawn().map_err(|e| {
-        Error::Config(format!("spawn agent: {e}"))
-    })?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| Error::Config(format!("spawn agent: {e}")))?;
     tracing::debug!(pid = child.id(), "spawned agent");
     // Intentionally do not wait — agent runs detached. Dropping `child` does
     // not kill it; only the file handles are closed.

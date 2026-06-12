@@ -8,8 +8,8 @@ fn log_dir() -> Result<PathBuf> {
     let dir = if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         PathBuf::from(xdg).join("aic-edit")
     } else {
-        let home = std::env::var("HOME")
-            .map_err(|_| crate::Error::Config("HOME not set".into()))?;
+        let home =
+            std::env::var("HOME").map_err(|_| crate::Error::Config("HOME not set".into()))?;
         PathBuf::from(home).join(".local/share/aic-edit")
     };
     std::fs::create_dir_all(&dir)?;
@@ -34,8 +34,7 @@ pub fn init() -> Result<PathBuf> {
     // Leak the guard so the background thread stays alive for the process lifetime.
     std::mem::forget(_guard);
 
-    let filter = EnvFilter::try_new(&level_str)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_new(&level_str).unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::registry()
         .with(filter)

@@ -41,9 +41,9 @@ impl State {
                 .wraps
                 .get(*idx)
                 .map(|w| format!("Remove factor: {}?", w.label())),
-            Some(PendingAuthAction::DisableEncryption) => Some(
-                "Disable encryption? Credentials will be written to keys.plain.".into(),
-            ),
+            Some(PendingAuthAction::DisableEncryption) => {
+                Some("Disable encryption? Credentials will be written to keys.plain.".into())
+            }
             None => None,
         }
     }
