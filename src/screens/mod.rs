@@ -14,6 +14,5 @@ pub mod auth_setup;
 pub mod list_state;
 pub mod onboard;
 pub mod prod_confirm;
-pub mod secret;
 pub mod undo_history;
 pub mod unlock;

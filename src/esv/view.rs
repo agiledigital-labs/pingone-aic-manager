@@ -27,7 +27,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let area = rows[1];
 
     if app.esv.view == crate::esv::state::EsvView::Secrets {
-        crate::ui::secret::draw_body(f, app, area);
+        crate::secrets::view::draw_body(f, app, area);
         return;
     }
 

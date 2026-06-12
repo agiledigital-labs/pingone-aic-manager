@@ -37,17 +37,8 @@ pub enum InputMode {
     ProdConfirm,
     UndoHistory,
     Esv(crate::esv::screen::Mode),
+    Secrets(crate::secrets::screen::Mode),
     Scripts(crate::scripts::screen::Mode),
-    /// Secret create form (id + encoding + placeholders + value).
-    SecretCreate,
-    /// Version panel for the selected secret (enable/disable/destroy/add).
-    SecretVersions,
-    /// Value entry for a new version of the selected secret.
-    SecretAddVersion,
-    /// Confirm before deleting a secret (and all its versions).
-    SecretDeleteConfirm,
-    /// Confirm before the irreversible destroy of a secret version.
-    SecretVersionDestroyConfirm,
 }
 
 /// Re-export so existing `crate::app::AuthMethod` / `AuthSetupField` /
@@ -145,8 +136,8 @@ pub struct App {
     pub esv: crate::esv::state::State,
 
     /// Secrets sub-view of the ESVs tab (list, versions, create/add forms).
-    /// Populated by the same poll as `esv`. See `crate::screens::secret`.
-    pub secret: crate::screens::secret::State,
+    /// Populated by the same poll as `esv`. See `crate::secrets`.
+    pub secret: crate::secrets::state::State,
 
     /// Scripts tab state — per-tenant candidate list, search + selection,
     /// in-flight pull/push tracking. See `crate::scripts::screen`.
@@ -213,7 +204,7 @@ impl App {
             undo,
             keybind_help_open: false,
             esv: crate::esv::state::State::new(),
-            secret: crate::screens::secret::State::new(),
+            secret: crate::secrets::state::State::new(),
             scripts: crate::scripts::screen::State::new(),
         })
     }
@@ -455,28 +446,8 @@ impl App {
                 self.push_toast(kind, msg);
             }
             AppEvent::Esv(event) => crate::esv::screen::apply_event(self, event),
+            AppEvent::Secrets(event) => crate::secrets::screen::apply_event(self, event),
             AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
-            AppEvent::SecretOpResult {
-                tenant,
-                id,
-                kind,
-                label,
-                reload_versions,
-                result,
-            } => {
-                crate::screens::secret::apply_op_result(
-                    self,
-                    tenant,
-                    id,
-                    kind,
-                    label,
-                    reload_versions,
-                    result,
-                );
-            }
-            AppEvent::SecretVersionsListed { tenant, id, result } => {
-                crate::screens::secret::apply_versions_listed(self, tenant, id, result);
-            }
             AppEvent::AuthCallbackProgress {
                 onboard_id,
                 body,

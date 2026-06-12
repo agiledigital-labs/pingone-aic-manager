@@ -21,10 +21,10 @@ pub enum PendingProdAction {
     EsvRestart {
         tenant_name: String,
     },
-    SecretCreate(crate::screens::secret::CreatePlan),
-    SecretAddVersion(crate::screens::secret::VersionAddPlan),
-    SecretDelete(crate::screens::secret::DeletePlan),
-    SecretSetDescription(crate::screens::secret::SetDescriptionPlan),
+    SecretsCreate(crate::secrets::state::CreatePlan),
+    SecretsAddVersion(crate::secrets::state::VersionAddPlan),
+    SecretDelete(crate::secrets::state::DeletePlan),
+    SecretSetDescription(crate::secrets::state::SetDescriptionPlan),
     SecretVersionStatus {
         tenant: String,
         id: String,
@@ -81,17 +81,17 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                     PendingProdAction::EsvRestart { tenant_name } => {
                         crate::esv::ops::trigger_restart_confirmed(app, tenant_name, true);
                     }
-                    PendingProdAction::SecretCreate(plan) => {
-                        crate::screens::secret::execute_create(app, plan, true);
+                    PendingProdAction::SecretsCreate(plan) => {
+                        crate::secrets::ops::execute_create(app, plan, true);
                     }
-                    PendingProdAction::SecretAddVersion(plan) => {
-                        crate::screens::secret::execute_add_version(app, plan, true);
+                    PendingProdAction::SecretsAddVersion(plan) => {
+                        crate::secrets::ops::execute_add_version(app, plan, true);
                     }
                     PendingProdAction::SecretDelete(plan) => {
-                        crate::screens::secret::execute_delete(app, plan, true);
+                        crate::secrets::ops::execute_delete(app, plan, true);
                     }
                     PendingProdAction::SecretSetDescription(plan) => {
-                        crate::screens::secret::execute_set_description(app, plan, true);
+                        crate::secrets::ops::execute_set_description(app, plan, true);
                     }
                     PendingProdAction::SecretVersionStatus {
                         tenant,
@@ -99,7 +99,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                         version,
                         status,
                     } => {
-                        crate::screens::secret::execute_version_status(
+                        crate::secrets::ops::execute_version_status(
                             app, tenant, id, version, status, true,
                         );
                     }
@@ -108,7 +108,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                         id,
                         version,
                     } => {
-                        crate::screens::secret::execute_version_destroy(
+                        crate::secrets::ops::execute_version_destroy(
                             app, tenant, id, version, true,
                         );
                     }

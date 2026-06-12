@@ -10,8 +10,7 @@
 //! - [`cli`] implements `aic esv` variable commands.
 //!
 //! ESV variables and secrets deliberately share one poll: [`ops::apply_refresh`]
-//! forwards the secret payload to [`crate::screens::secret::apply_refresh`].
-//! Secrets remain under `screens::secret` until their next migration phase.
+//! forwards the secret payload to [`crate::secrets::ops::apply_refresh`].
 //!
 //! API ground truth: `docs/api/03-esvs.md`. Variables have no `_rev`; writes
 //! use content comparison against the last observed body for conflict checks,

@@ -11,6 +11,7 @@ pub mod keymap;
 pub mod logging;
 pub mod screens;
 pub mod scripts;
+pub mod secrets;
 pub mod security_key;
 pub mod theme;
 pub mod ui;
