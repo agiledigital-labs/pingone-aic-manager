@@ -1,18 +1,97 @@
-//! Tenant onboarding screens: cookie / userpass / paste / sandbox-import.
-//! Owns the four form structs (well, three — paste is synchronous), the
-//! overwrite confirm, in-flight bootstrap id, OTP callback body, and the
-//! background bootstrap tasks that hit AIC pre-tenant.
+//! Tenant onboarding state, nested modes/events, key handling, persistence,
+//! and the background bootstrap tasks that hit AIC before a tenant exists.
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::aic::onboard::cookie::{CookieField, CookieForm};
-use crate::aic::onboard::paste::{PasteField, PasteForm};
-use crate::aic::onboard::userpass::{CallbackOutcome, UpField, UpForm};
 use crate::app::{App, InputMode};
 use crate::config::ProjectConfig;
 use crate::config::tenant::{Tenant, TenantTheme};
 use crate::event::{AppEvent, ToastKind};
 use crate::screens::prod_confirm::PendingProdAction;
+
+use super::cookie::{CookieField, CookieForm};
+use super::paste::{PasteField, PasteForm};
+use super::userpass::{CallbackOutcome, UpField, UpForm};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    Menu,
+    Cookie,
+    UserPass,
+    Paste,
+    OverwriteConfirm,
+}
+
+#[derive(Debug)]
+pub enum Event {
+    /// Pattern 2: the AM authentication journey returned a callback we need
+    /// extra user input to satisfy (TOTP). `body` is the JSON to POST back
+    /// once the user supplies the missing value.
+    AuthProgress {
+        onboard_id: uuid::Uuid,
+        body: serde_json::Value,
+        prompt: String,
+    },
+    /// Onboarding failed somewhere in the background task.
+    Error {
+        onboard_id: uuid::Uuid,
+        message: String,
+    },
+    /// Service account creation completed. `onboard_id` matches the
+    /// `pending_id` stamped on the App when the bootstrap was kicked off;
+    /// the handler must drop the event when the id does not match because the
+    /// user cancelled or a stale completion arrived after another bootstrap.
+    /// The task carries `base_url` + `theme` so the handler does not have to
+    /// inspect a form that may already have been cleared.
+    ServiceAccountReady {
+        onboard_id: uuid::Uuid,
+        tenant_name: String,
+        base_url: String,
+        theme: TenantTheme,
+        sa_id: String,
+        jwk: serde_json::Value,
+    },
+}
+
+pub fn apply_event(app: &mut App, event: Event) -> crate::Result<()> {
+    match event {
+        Event::AuthProgress {
+            onboard_id,
+            body,
+            prompt,
+        } => {
+            handle_auth_progress(app, onboard_id, body, prompt);
+            Ok(())
+        }
+        Event::Error {
+            onboard_id,
+            message,
+        } => {
+            tracing::error!(error = %message, "onboard error");
+            handle_onboard_error(app, onboard_id, message);
+            Ok(())
+        }
+        Event::ServiceAccountReady {
+            onboard_id,
+            tenant_name,
+            base_url,
+            theme,
+            sa_id,
+            jwk,
+        } => handle_sa_created(app, onboard_id, tenant_name, base_url, theme, sa_id, jwk),
+    }
+}
+
+pub async fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) -> crate::Result<()> {
+    match mode {
+        Mode::Menu => handle_menu_key(app, key).await?,
+        Mode::Cookie => handle_cookie_key(app, key).await?,
+        Mode::UserPass => handle_up_key(app, key).await?,
+        Mode::Paste => handle_paste_key(app, key).await?,
+        Mode::OverwriteConfirm => handle_overwrite_key(app, key)?,
+    }
+    Ok(())
+}
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -23,7 +102,7 @@ pub struct State {
 
     /// UUID stamped on the in-flight bootstrap task. Set when the user
     /// kicks off Pattern 1/2 (cookie / userpass), cleared on Esc-cancel.
-    /// When a `ServiceAccountCreated` event arrives with a non-matching
+    /// When a service-account completion arrives with a non-matching
     /// id, the handler drops it instead of persisting a tenant the user
     /// no longer wants.
     pub pending_id: Option<uuid::Uuid>,
@@ -40,12 +119,6 @@ pub struct State {
 impl State {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn pending_overwrite_name(&self) -> Option<&str> {
-        self.pending_overwrite
-            .as_ref()
-            .map(|(t, _)| t.name.as_str())
     }
 }
 
@@ -79,15 +152,15 @@ async fn enter_choice(app: &mut App, idx: usize) -> crate::Result<()> {
     match idx {
         0 => {
             app.onboard.cookie_form = Some(CookieForm::default());
-            app.input_mode = InputMode::OnboardCookie;
+            app.input_mode = InputMode::Onboard(Mode::Cookie);
         }
         1 => {
             app.onboard.up_form = Some(UpForm::default());
-            app.input_mode = InputMode::OnboardUserPass;
+            app.input_mode = InputMode::Onboard(Mode::UserPass);
         }
         2 => {
             app.onboard.paste_form = Some(PasteForm::default());
-            app.input_mode = InputMode::OnboardPaste;
+            app.input_mode = InputMode::Onboard(Mode::Paste);
         }
         3 if app.has_env_creds => {
             import_env_creds(app).await?;
@@ -110,10 +183,10 @@ pub async fn handle_cookie_key(app: &mut App, key: KeyEvent) -> crate::Result<()
             form.busy = false;
             app.onboard.cookie_form = None;
             // Drop the in-flight bootstrap's id so its
-            // ServiceAccountCreated event (if it still arrives) is
+            // Any bootstrap completion that still arrives is
             // recognised as stale and ignored.
             app.onboard.pending_id = None;
-            app.input_mode = InputMode::OnboardMenu;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
         }
         return Ok(());
     }
@@ -122,14 +195,14 @@ pub async fn handle_cookie_key(app: &mut App, key: KeyEvent) -> crate::Result<()
     let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
         && form.focused == CookieField::Domain;
     if leaving_domain {
-        let cleaned = crate::aic::onboard::normalise_domain(&form.domain.value);
+        let cleaned = super::normalise_domain(&form.domain.value);
         form.domain.set(cleaned);
     }
 
     match key.code {
         KeyCode::Esc => {
             app.onboard.cookie_form = None;
-            app.input_mode = InputMode::OnboardMenu;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
         }
         KeyCode::Tab => form.focused = form.focused.next(),
         KeyCode::BackTab => form.focused = form.focused.prev(),
@@ -227,7 +300,7 @@ pub async fn handle_up_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             form.status = None;
             app.onboard.up_form = None;
             app.onboard.pending_id = None;
-            app.input_mode = InputMode::OnboardMenu;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
         }
         return Ok(());
     }
@@ -235,14 +308,14 @@ pub async fn handle_up_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
         && form.focused == UpField::Domain;
     if leaving_domain {
-        let cleaned = crate::aic::onboard::normalise_domain(&form.domain.value);
+        let cleaned = super::normalise_domain(&form.domain.value);
         form.domain.set(cleaned);
     }
 
     match key.code {
         KeyCode::Esc => {
             app.onboard.up_form = None;
-            app.input_mode = InputMode::OnboardMenu;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
         }
         KeyCode::Tab => form.focused = form.focused.next(),
         KeyCode::BackTab => form.focused = form.focused.prev(),
@@ -280,7 +353,7 @@ fn start_up_bootstrap(app: &mut App) {
     let password = form.password.value.clone();
     let realm_path = form.realm_path();
     let tx = app.events.tx.clone();
-    let scopes: Vec<String> = crate::aic::onboard::bootstrap::SA_SCOPES
+    let scopes: Vec<String> = super::bootstrap::SA_SCOPES
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -311,7 +384,7 @@ fn continue_up_with_extra(app: &mut App, extra: String) {
     let username = form.username.trimmed().to_string();
     let password = form.password.value.clone();
     let realm_path = form.realm_path();
-    let scopes: Vec<String> = crate::aic::onboard::bootstrap::SA_SCOPES
+    let scopes: Vec<String> = super::bootstrap::SA_SCOPES
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -350,7 +423,7 @@ pub fn handle_auth_progress(
         tracing::debug!(
             event_id = %onboard_id,
             pending = ?app.onboard.pending_id,
-            "dropping stale AuthCallbackProgress"
+            "dropping stale onboarding auth progress"
         );
         return;
     }
@@ -366,7 +439,7 @@ pub fn handle_onboard_error(app: &mut App, onboard_id: uuid::Uuid, msg: String) 
         tracing::debug!(
             event_id = %onboard_id,
             pending = ?app.onboard.pending_id,
-            "dropping stale OnboardError"
+            "dropping stale onboarding error"
         );
         return;
     }
@@ -397,14 +470,14 @@ pub async fn handle_paste_key(app: &mut App, key: KeyEvent) -> crate::Result<()>
     let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
         && form.focused == PasteField::Domain;
     if leaving_domain {
-        let cleaned = crate::aic::onboard::normalise_domain(&form.domain.value);
+        let cleaned = super::normalise_domain(&form.domain.value);
         form.domain.set(cleaned);
     }
 
     match key.code {
         KeyCode::Esc => {
             app.onboard.paste_form = None;
-            app.input_mode = InputMode::OnboardMenu;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
         }
         KeyCode::Tab => form.focused = form.focused.next(),
         KeyCode::BackTab => form.focused = form.focused.prev(),
@@ -484,13 +557,13 @@ pub fn handle_sa_created(
         tracing::debug!(
             event_id = %onboard_id,
             pending = ?app.onboard.pending_id,
-            "dropping stale ServiceAccountCreated"
+            "dropping stale service-account completion"
         );
         return Ok(());
     }
     app.onboard.pending_id = None;
 
-    let scopes: Vec<String> = crate::aic::onboard::bootstrap::SA_SCOPES
+    let scopes: Vec<String> = super::bootstrap::SA_SCOPES
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -552,7 +625,7 @@ async fn import_env_creds(app: &mut App) -> crate::Result<()> {
         }
     };
 
-    let scopes: Vec<String> = crate::aic::onboard::bootstrap::SA_SCOPES
+    let scopes: Vec<String> = super::bootstrap::SA_SCOPES
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -583,7 +656,7 @@ async fn import_env_creds(app: &mut App) -> crate::Result<()> {
 // ---- Persist helpers (jwks + tenants config) ----
 
 /// Persist a new tenant. If a tenant with the same name already exists,
-/// switch to the OverwriteConfirm modal and bail out — the caller's flow
+/// switch to the duplicate-name confirmation and bail out; the caller's flow
 /// is paused until the user answers.
 pub(crate) fn persist_new_tenant(
     app: &mut App,
@@ -592,7 +665,7 @@ pub(crate) fn persist_new_tenant(
 ) -> crate::Result<()> {
     if app.tenants.iter().any(|t| t.name == tenant.name) {
         app.onboard.pending_overwrite = Some((tenant, jwk));
-        app.input_mode = InputMode::OverwriteConfirm;
+        app.input_mode = InputMode::Onboard(Mode::OverwriteConfirm);
         return Ok(());
     }
     persist_tenant_overwriting(app, tenant, jwk)
@@ -655,10 +728,10 @@ fn send_onboard_error(
     onboard_id: uuid::Uuid,
     message: impl Into<String>,
 ) {
-    let _ = tx.send(AppEvent::OnboardError {
+    let _ = tx.send(AppEvent::Onboard(Event::Error {
         onboard_id,
         message: message.into(),
-    });
+    }));
 }
 
 async fn run_bootstrap_from_cookie(
@@ -670,7 +743,7 @@ async fn run_bootstrap_from_cookie(
     session_value: String,
     tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
 ) {
-    use crate::aic::onboard::bootstrap::*;
+    use super::bootstrap::*;
     let http = match no_redirect_client() {
         Ok(c) => c,
         Err(e) => {
@@ -711,14 +784,14 @@ async fn run_bootstrap_from_cookie(
             return;
         }
     };
-    let _ = tx.send(AppEvent::ServiceAccountCreated {
+    let _ = tx.send(AppEvent::Onboard(Event::ServiceAccountReady {
         onboard_id,
         tenant_name,
         base_url,
         theme,
         sa_id,
         jwk: priv_jwk,
-    });
+    }));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -735,7 +808,7 @@ async fn run_bootstrap_from_userpass(
     _scopes: Vec<String>,
     tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
 ) {
-    use crate::aic::onboard::bootstrap::*;
+    use super::bootstrap::*;
     let http = match no_redirect_client() {
         Ok(c) => c,
         Err(e) => {
@@ -830,23 +903,19 @@ async fn run_bootstrap_from_userpass(
                     return;
                 }
             };
-            let _ = tx.send(AppEvent::ServiceAccountCreated {
+            let _ = tx.send(AppEvent::Onboard(Event::ServiceAccountReady {
                 onboard_id,
                 tenant_name,
                 base_url,
                 theme,
                 sa_id,
                 jwk: priv_jwk,
-            });
+            }));
             return;
         }
 
-        let outcome = crate::aic::onboard::userpass::walk_with_extra(
-            &body,
-            &username,
-            &password,
-            current_extra.as_deref(),
-        );
+        let outcome =
+            super::userpass::walk_with_extra(&body, &username, &password, current_extra.as_deref());
         current_extra = None;
         match outcome {
             CallbackOutcome::Ready(filled) => {
@@ -886,11 +955,11 @@ async fn run_bootstrap_from_userpass(
                 prompt,
                 body: pending,
             } => {
-                let _ = tx.send(AppEvent::AuthCallbackProgress {
+                let _ = tx.send(AppEvent::Onboard(Event::AuthProgress {
                     onboard_id,
                     body: pending,
                     prompt,
-                });
+                }));
                 return;
             }
             CallbackOutcome::Unsupported(msg) => {

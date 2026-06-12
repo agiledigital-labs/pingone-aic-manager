@@ -1,7 +1,5 @@
 pub mod api;
 pub mod auth;
-pub mod onboard;
-
 use std::sync::{Arc, Mutex};
 
 use auth::TokenCache;

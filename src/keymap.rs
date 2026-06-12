@@ -12,6 +12,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::{App, InputMode, Realm, Tab};
 use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::{EditField, EsvView};
+use crate::onboard::screen::Mode as OnboardMode;
 use crate::secrets::screen::Mode as SecretsMode;
 
 /// One key that fires a binding. Matching is by code + the ctrl modifier.
@@ -60,7 +61,7 @@ pub enum Act {
     UndoHistory,
     RealmToggle,
     TenantPicker,
-    OnboardMenu,
+    Onboard,
     AuthSettings,
     Lock,
 }
@@ -108,7 +109,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             "add tenant",
             true,
             true,
-            OnboardMenu,
+            Onboard,
         ));
         out.push(b(
             &[Trigger::Ctrl('a')],
@@ -324,7 +325,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         "add tenant",
         false,
         true,
-        OnboardMenu,
+        Onboard,
     ));
     out.push(b(
         &[Trigger::Ctrl('a')],
@@ -453,11 +454,7 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::AuthSettingsRename => {
             crate::screens::auth_settings::handle_rename_key(app, key)?
         }
-        InputMode::OnboardMenu => crate::screens::onboard::handle_menu_key(app, key).await?,
-        InputMode::OnboardCookie => crate::screens::onboard::handle_cookie_key(app, key).await?,
-        InputMode::OnboardUserPass => crate::screens::onboard::handle_up_key(app, key).await?,
-        InputMode::OnboardPaste => crate::screens::onboard::handle_paste_key(app, key).await?,
-        InputMode::OverwriteConfirm => crate::screens::onboard::handle_overwrite_key(app, key)?,
+        InputMode::Onboard(mode) => crate::onboard::screen::handle_key(app, key, mode).await?,
         InputMode::EnvPicker => app.handle_env_picker_key(key),
         InputMode::ProdConfirm => crate::screens::prod_confirm::handle_key(app, key).await?,
         InputMode::UndoHistory => crate::screens::undo_history::handle_key(app, key),
@@ -526,9 +523,9 @@ async fn run_normal(app: &mut App, act: Act) {
                 app.input_mode = InputMode::EnvPicker;
             }
         }
-        OnboardMenu => {
+        Onboard => {
             app.onboard.menu_idx = 0;
-            app.input_mode = InputMode::OnboardMenu;
+            app.input_mode = InputMode::Onboard(OnboardMode::Menu);
         }
         AuthSettings => crate::screens::auth_settings::open(app),
         Lock => crate::screens::unlock::lock_and_quit(app).await,

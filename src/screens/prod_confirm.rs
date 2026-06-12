@@ -64,7 +64,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             if let Some(action) = action {
                 match action {
                     PendingProdAction::SaveTenant { tenant, jwk } => {
-                        match crate::screens::onboard::persist_new_tenant(app, tenant, jwk) {
+                        match crate::onboard::screen::persist_new_tenant(app, tenant, jwk) {
                             Ok(()) => app.push_toast(ToastKind::Success, "Tenant added!"),
                             Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
                         }

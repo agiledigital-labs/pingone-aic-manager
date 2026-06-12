@@ -9,6 +9,7 @@ pub mod esv;
 pub mod event;
 pub mod keymap;
 pub mod logging;
+pub mod onboard;
 pub mod screens;
 pub mod scripts;
 pub mod secrets;
