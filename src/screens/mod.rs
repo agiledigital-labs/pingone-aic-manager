@@ -15,7 +15,6 @@ pub mod esv;
 pub mod list_state;
 pub mod onboard;
 pub mod prod_confirm;
-pub mod scripts;
 pub mod secret;
 pub mod undo_history;
 pub mod unlock;

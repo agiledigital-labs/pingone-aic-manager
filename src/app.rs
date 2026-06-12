@@ -40,9 +40,7 @@ pub enum InputMode {
     /// (and clears the filter); Enter commits and returns to Normal with
     /// the filter still applied.
     EsvSearch,
-    /// `/` — fuzzy search the Scripts list. Same UX as `EsvSearch` but
-    /// edits the scripts query.
-    ScriptSearch,
+    Scripts(crate::scripts::screen::Mode),
     /// Editing the ESV the cursor was on. The list/preview layout stays
     /// the same; the preview pane goes editable + grows a Save button.
     EsvEdit,
@@ -166,8 +164,8 @@ pub struct App {
     pub secret: crate::screens::secret::State,
 
     /// Scripts tab state — per-tenant candidate list, search + selection,
-    /// in-flight pull/push tracking. See `crate::screens::scripts`.
-    pub scripts: crate::screens::scripts::State,
+    /// in-flight pull/push tracking. See `crate::scripts::screen`.
+    pub scripts: crate::scripts::screen::State,
 }
 
 pub use crate::screens::prod_confirm::PendingProdAction;
@@ -231,7 +229,7 @@ impl App {
             keybind_help_open: false,
             esv: crate::screens::esv::State::new(),
             secret: crate::screens::secret::State::new(),
-            scripts: crate::screens::scripts::State::new(),
+            scripts: crate::scripts::screen::State::new(),
         })
     }
 
@@ -453,17 +451,7 @@ impl App {
             AppEvent::EsvListed { tenant, outcome } => {
                 crate::screens::esv::apply_refresh(self, tenant, outcome);
             }
-            AppEvent::ScriptsListed { tenant, result } => {
-                crate::screens::scripts::apply_refresh(self, tenant, result);
-            }
-            AppEvent::ScriptOpResult {
-                tenant,
-                full,
-                label,
-                result,
-            } => {
-                crate::screens::scripts::apply_op_result(self, tenant, full, label, result);
-            }
+            AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
             AppEvent::SecretOpResult {
                 tenant,
                 id,
@@ -543,7 +531,7 @@ impl App {
         if self.current_tab == Tab::Scripts
             && self.scripts.last_poll.elapsed() >= Duration::from_secs(120)
         {
-            crate::screens::scripts::refresh(self, true);
+            crate::scripts::screen::refresh(self, true);
         }
     }
 

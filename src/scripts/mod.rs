@@ -1,5 +1,5 @@
-//! Script-sync core: pull/push AIC scripts to a local typed workspace, with
-//! content-based conflict detection (CLAUDE.md §5 — scripts have no `_rev`).
+//! Scripts feature vertical: pull/push AIC scripts to a local typed workspace,
+//! with content-based conflict detection (CLAUDE.md §5 — scripts have no `_rev`).
 //!
 //! Architecture: the sync **engine** (`sync`) and **workspace scaffolding**
 //! (`workspace`) are entirely kind-agnostic. Everything that differs between
@@ -8,11 +8,19 @@
 //! [`Kind`] enum, which delegates to the `am` / `idm` modules. The engine
 //! never matches on `Kind` — to add journeys later, add a variant + a module
 //! and wire the dispatch arms here; nothing in `sync`/`workspace` changes.
+//!
+//! Feature seams: `mod.rs` + engine modules, `screen`, `view`, `cli`, and
+//! `workspace`/templates. API ground truth: `docs/api/04-scripts.md`,
+//! `docs/api/11-idm-endpoints.md`, `docs/api/12-script-bindings-matrix.md`,
+//! and `docs/api/13-script-contexts.md`.
 
 pub mod am;
+pub mod cli;
 pub mod idm;
 pub mod schedule;
+pub mod screen;
 pub mod sync;
+pub mod view;
 pub mod workspace;
 
 use crate::Result;
@@ -205,8 +213,14 @@ impl Namespace {
                 kind: Kind::Am,
                 realm: Some(prefix.to_string()),
             }),
-            "endpoint" => Some(Namespace { kind: Kind::IdmEndpoint, realm: None }),
-            "schedule" => Some(Namespace { kind: Kind::IdmSchedule, realm: None }),
+            "endpoint" => Some(Namespace {
+                kind: Kind::IdmEndpoint,
+                realm: None,
+            }),
+            "schedule" => Some(Namespace {
+                kind: Kind::IdmSchedule,
+                realm: None,
+            }),
             _ => None,
         }
     }
@@ -214,10 +228,22 @@ impl Namespace {
     /// Every namespace — used to expand "act on everything".
     pub fn all() -> Vec<Namespace> {
         vec![
-            Namespace { kind: Kind::Am, realm: Some("alpha".to_string()) },
-            Namespace { kind: Kind::Am, realm: Some("bravo".to_string()) },
-            Namespace { kind: Kind::IdmEndpoint, realm: None },
-            Namespace { kind: Kind::IdmSchedule, realm: None },
+            Namespace {
+                kind: Kind::Am,
+                realm: Some("alpha".to_string()),
+            },
+            Namespace {
+                kind: Kind::Am,
+                realm: Some("bravo".to_string()),
+            },
+            Namespace {
+                kind: Kind::IdmEndpoint,
+                realm: None,
+            },
+            Namespace {
+                kind: Kind::IdmSchedule,
+                realm: None,
+            },
         ]
     }
 
@@ -253,9 +279,18 @@ mod ns_tests {
     #[test]
     fn prefixes_map_to_kind_and_realm() {
         assert_eq!(Namespace::parse("bravo").unwrap().kind, Kind::Am);
-        assert_eq!(Namespace::parse("bravo").unwrap().realm.as_deref(), Some("bravo"));
-        assert_eq!(Namespace::parse("endpoint").unwrap().kind, Kind::IdmEndpoint);
-        assert_eq!(Namespace::parse("schedule").unwrap().kind, Kind::IdmSchedule);
+        assert_eq!(
+            Namespace::parse("bravo").unwrap().realm.as_deref(),
+            Some("bravo")
+        );
+        assert_eq!(
+            Namespace::parse("endpoint").unwrap().kind,
+            Kind::IdmEndpoint
+        );
+        assert_eq!(
+            Namespace::parse("schedule").unwrap().kind,
+            Kind::IdmSchedule
+        );
         assert!(Namespace::parse("endpoint").unwrap().realm.is_none());
         assert!(Namespace::parse("nope").is_none());
     }

@@ -116,7 +116,7 @@ cargo run             # no args → TUI; subcommands → CLI (see `aic --help`)
 For TUI work, follow the visual + interaction rules in `docs/DESIGN.md`
 (borderless panels, tally-style tabs, semantic colors). Don't redebate them.
 
-For script-template work (`src/aic/script/templates/`), the runtime ground
+For script-template work (`src/scripts/templates/`), the runtime ground
 truth is `scripts/rhino-script-tester/` — paired probe fixtures run against a
 live journey. New syntax/binding claims get a fixture pair before they get a
 lint rule or a doc row.
@@ -136,8 +136,8 @@ lint rule or a doc row.
 - **Don't expect `src/agent/` code changes to take effect while an agent is
   running.** `aic logout` only *locks* the daemon — the old binary stays
   resident. Run `aic stop`, then relaunch, before testing agent changes.
-- **Don't edit `src/aic/script/templates/` without bumping
-  `TEMPLATES_VERSION`** in `src/aic/script/workspace.rs` — otherwise
+- **Don't edit `src/scripts/templates/` without bumping
+  `TEMPLATES_VERSION`** in `src/scripts/workspace.rs` — otherwise
   scaffolded workspaces never receive the update.
 
 ## 9. Project layout — routing map
@@ -151,8 +151,8 @@ need into context.
 |---|---|---|
 | ESV variables | `src/screens/esv.rs`, ESV rendering inline in `src/ui/mod.rs`, `src/aic/esv.rs`, `aic esv` in `src/cli/mod.rs` | `docs/api/03-esvs.md` |
 | ESV secrets | `src/screens/secret.rs`, `src/ui/secret.rs`, `aic esv secret` in `src/cli/mod.rs` | `docs/api/03-esvs.md` |
-| Script sync (pull/push/sync/watch/diff) | `src/aic/script/`, `src/screens/scripts.rs`, `src/ui/scripts.rs`, `aic script` in `src/cli/mod.rs` | `docs/api/04-scripts.md`, `11`, `12`, `13` |
-| Script workspace templates (lint/types) | `src/aic/script/templates/` + `TEMPLATES_VERSION` in `workspace.rs` | `docs/api/12-script-bindings-matrix.md` |
+| Script sync (pull/push/sync/watch/diff) | `src/scripts/` (engine, screen, view, CLI) | `docs/api/04-scripts.md`, `11`, `12`, `13` |
+| Script workspace templates (lint/types) | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs` | `docs/api/12-script-bindings-matrix.md` |
 | Tokens / HTTP transport / daemon | `src/aic/api.rs`, `src/aic/auth.rs`, `src/agent/` | `docs/api/00-auth.md`, `01`, `02`; `src/agent/mod.rs` header |
 | Local credential vault / unlock | `src/screens/{unlock,auth_setup,auth_settings}.rs` + `src/ui/` twins, `src/security_key.rs`, `src/config/{crypto,wraps}.rs` | — (local-only, no AIC docs) |
 | Onboarding (add tenant) | `src/aic/onboard/`, `src/screens/onboard.rs`, `src/ui/onboard.rs` | `docs/api/00-auth.md`, `99-…` Q11/Q12 |

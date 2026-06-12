@@ -334,7 +334,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out.push(("?", "keys"));
             out
         }
-        InputMode::EsvSearch | InputMode::ScriptSearch => {
+        InputMode::EsvSearch | InputMode::Scripts(_) => {
             vec![("Enter", "keep filter"), ("Esc", "clear + exit")]
         }
         InputMode::SecretCreate => {
@@ -421,7 +421,7 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::ProdConfirm => crate::screens::prod_confirm::handle_key(app, key).await?,
         InputMode::UndoHistory => crate::screens::undo_history::handle_key(app, key),
         InputMode::EsvSearch => crate::screens::esv::handle_search_key(app, key),
-        InputMode::ScriptSearch => crate::screens::scripts::handle_search_key(app, key),
+        InputMode::Scripts(mode) => crate::scripts::screen::handle_key(app, key, mode),
         InputMode::EsvEdit => crate::screens::esv::handle_edit_key(app, key)?,
         InputMode::EsvRestartConfirm => crate::screens::esv::handle_restart_confirm_key(app, key)?,
         InputMode::EsvDeleteConfirm => crate::screens::esv::handle_delete_confirm_key(app, key)?,
@@ -460,7 +460,7 @@ async fn run_normal(app: &mut App, act: Act) {
         ToggleView => app.esv.view = app.esv.view.toggled(),
         Search => {
             app.input_mode = if app.current_tab == Tab::Scripts {
-                InputMode::ScriptSearch
+                InputMode::Scripts(crate::scripts::screen::Mode::Search)
             } else {
                 InputMode::EsvSearch
             }
@@ -475,9 +475,9 @@ async fn run_normal(app: &mut App, act: Act) {
         Primary => primary(app),
         Delete => delete(app),
         NewItem => new_item(app),
-        Pull => crate::screens::scripts::pull_selected(app),
-        Push => crate::screens::scripts::push_selected(app),
-        PullAll => crate::screens::scripts::pull_all(app),
+        Pull => crate::scripts::screen::pull_selected(app),
+        Push => crate::scripts::screen::push_selected(app),
+        PullAll => crate::scripts::screen::pull_all(app),
         Apply => crate::screens::esv::request_restart(app),
         Undo => crate::screens::esv::request_latest_undo(app),
         UndoHistory => {
@@ -519,7 +519,7 @@ fn cycle_tab(app: &mut App, delta: isize) {
     // Lazily load the scripts list the first time the user lands on the tab —
     // it's a few list calls, so we don't pay for it unless it's visited.
     if app.current_tab == Tab::Scripts {
-        crate::screens::scripts::refresh(app, false);
+        crate::scripts::screen::refresh(app, false);
     }
 }
 

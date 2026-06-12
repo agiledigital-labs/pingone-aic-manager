@@ -11,9 +11,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::aic::script::sync::LocalState;
 use crate::app::{App, InputMode};
-use crate::screens::scripts::{LoadState, Match};
+use crate::scripts::screen::{LoadState, Match, Mode};
+use crate::scripts::sync::LocalState;
 
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let tenant_name = match app.active_tenant() {
@@ -46,13 +46,16 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
 
 fn status_line(f: &mut Frame, area: Rect, text: &str, color: Color) {
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(text.to_string(), Style::default().fg(color)))),
+        Paragraph::new(Line::from(Span::styled(
+            text.to_string(),
+            Style::default().fg(color),
+        ))),
         area,
     );
 }
 
 fn draw_list(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area: Rect) {
-    let searching = app.input_mode == InputMode::ScriptSearch;
+    let searching = app.input_mode == InputMode::Scripts(Mode::Search);
     let total = match app.scripts.data.get(tenant) {
         Some(LoadState::Loaded(items)) => items.len(),
         _ => 0,
@@ -100,7 +103,9 @@ fn render_row(m: &Match, is_selected: bool) -> Line<'static> {
     let match_style = if is_selected {
         row_style.add_modifier(Modifier::UNDERLINED)
     } else {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     };
 
     let (marker, marker_style) = match (is_selected, modified, missing) {
@@ -108,7 +113,9 @@ fn render_row(m: &Match, is_selected: bool) -> Line<'static> {
         (true, _, _) => ("▶ ", row_style),
         (false, true, _) => (
             "! ",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ),
         (false, _, true) => ("- ", Style::default().fg(Color::DarkGray)),
         (false, _, _) => ("  ", row_style),
@@ -161,8 +168,14 @@ fn draw_preview(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area:
     // Header: full-name (cyan) + status line.
     let (status_text, status_color) = match candidate.local {
         LocalState::Clean => ("in sync".to_string(), Color::Green),
-        LocalState::Modified => ("modified locally (!) — press P to push".to_string(), Color::Yellow),
-        LocalState::Missing => ("not pulled (-) — press p to pull".to_string(), Color::DarkGray),
+        LocalState::Modified => (
+            "modified locally (!) — press P to push".to_string(),
+            Color::Yellow,
+        ),
+        LocalState::Missing => (
+            "not pulled (-) — press p to pull".to_string(),
+            Color::DarkGray,
+        ),
     };
     let default_note = if candidate.is_default {
         "  ·  default (product-shipped)"
@@ -181,7 +194,9 @@ fn draw_preview(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area:
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             m.full.clone(),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))),
         rows[0],
     );
@@ -193,14 +208,19 @@ fn draw_preview(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area:
         rows[1],
     );
 
-    let source = crate::aic::script::sync::preview_source(tenant, candidate);
+    let source = crate::scripts::sync::preview_source(tenant, candidate);
     let body = match source {
         Some(src) => {
             let max = rows[3].height as usize;
             let lines: Vec<Line> = src
                 .lines()
                 .take(max)
-                .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(Color::Gray))))
+                .map(|l| {
+                    Line::from(Span::styled(
+                        l.to_string(),
+                        Style::default().fg(Color::Gray),
+                    ))
+                })
                 .collect();
             Paragraph::new(lines)
         }

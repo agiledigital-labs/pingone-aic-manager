@@ -5,19 +5,57 @@
 //!
 //! The state struct lives on `App` as `app.scripts`; handlers are free
 //! functions taking `&mut App` so the keymap dispatch stays one line per arm.
+//! This module also owns the feature's nested [`Mode`] and [`Event`] enums.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::aic::script::sync::{self, Candidate, LocalState, PushOutcome, Selector};
-use crate::aic::script::{self, Kind};
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
 use crate::event::{AppEvent, ToastKind};
 use crate::screens::prod_confirm::PendingProdAction;
+use crate::scripts::sync::{self, Candidate, LocalState, PushOutcome, Selector};
+use crate::scripts::{self as script, Kind};
 use crate::ui::widgets::LineEditor;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    Search,
+}
+
+#[derive(Debug)]
+pub enum Event {
+    Listed {
+        tenant: String,
+        result: std::result::Result<Vec<Candidate>, String>,
+    },
+    OpResult {
+        tenant: String,
+        full: String,
+        label: String,
+        result: std::result::Result<String, String>,
+    },
+}
+
+pub fn apply_event(app: &mut App, event: Event) {
+    match event {
+        Event::Listed { tenant, result } => apply_refresh(app, tenant, result),
+        Event::OpResult {
+            tenant,
+            full,
+            label,
+            result,
+        } => apply_op_result(app, tenant, full, label, result),
+    }
+}
+
+pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
+    match mode {
+        Mode::Search => handle_search_key(app, key),
+    }
+}
 
 /// Per-tenant load state for the script candidate list.
 #[derive(Debug)]
@@ -193,14 +231,19 @@ pub fn refresh(app: &mut App, force: bool) {
     let tx = app.events.tx.clone();
     let tenant = name.clone();
     tokio::spawn(async move {
-        let result = sync::pull_candidates(&tenant).await.map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::ScriptsListed { tenant: name, result });
+        let result = sync::pull_candidates(&tenant)
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx.send(AppEvent::Scripts(Event::Listed {
+            tenant: name,
+            result,
+        }));
     });
 }
 
-/// Apply a `ScriptsListed` event. A failed background refresh keeps the
+/// Apply a completed background refresh. A failure keeps the
 /// previously-cached list (just logs); a first-load failure shows the error.
-pub fn apply_refresh(
+fn apply_refresh(
     app: &mut App,
     tenant: String,
     result: std::result::Result<Vec<Candidate>, String>,
@@ -209,7 +252,9 @@ pub fn apply_refresh(
     let is_active = app.active_tenant().is_some_and(|t| t.name == tenant);
     match result {
         Ok(items) => {
-            app.scripts.data.insert(tenant.clone(), LoadState::Loaded(items));
+            app.scripts
+                .data
+                .insert(tenant.clone(), LoadState::Loaded(items));
             if is_active {
                 let n = app.scripts.matches(Some(&tenant)).len();
                 app.scripts.clamp_selection(n);
@@ -219,7 +264,9 @@ pub fn apply_refresh(
             if matches!(app.scripts.data.get(&tenant), Some(LoadState::Loaded(_))) {
                 tracing::warn!("scripts refresh failed for {tenant}: {e}");
             } else {
-                app.scripts.data.insert(tenant.clone(), LoadState::Failed(e));
+                app.scripts
+                    .data
+                    .insert(tenant.clone(), LoadState::Failed(e));
             }
         }
     }
@@ -238,7 +285,7 @@ fn selected_candidate(app: &App) -> Option<Candidate> {
 }
 
 /// EsvSearch-style search keys for the scripts list.
-pub fn handle_search_key(app: &mut App, key: KeyEvent) {
+fn handle_search_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
             app.scripts.reset_view();
@@ -295,7 +342,12 @@ pub fn pull_selected(app: &mut App) {
                 None => format!("{full}: nothing to pull"),
             })
             .map_err(|e| e.to_string());
-        let _ = tx.send(AppEvent::ScriptOpResult { tenant, full: full.clone(), label, result });
+        let _ = tx.send(AppEvent::Scripts(Event::OpResult {
+            tenant,
+            full: full.clone(),
+            label,
+            result,
+        }));
     });
 }
 
@@ -334,9 +386,16 @@ pub fn pull_all(app: &mut App) {
         let result = if errors == 0 {
             Ok(format!("pulled {pulled} scripts"))
         } else {
-            Ok(format!("pulled {pulled} scripts ({errors} namespace(s) failed)"))
+            Ok(format!(
+                "pulled {pulled} scripts ({errors} namespace(s) failed)"
+            ))
         };
-        let _ = tx.send(AppEvent::ScriptOpResult { tenant, full, label, result });
+        let _ = tx.send(AppEvent::Scripts(Event::OpResult {
+            tenant,
+            full,
+            label,
+            result,
+        }));
     });
 }
 
@@ -353,7 +412,10 @@ pub fn push_selected(app: &mut App) {
     };
     let full = script::full_name(c.kind, c.realm.as_deref(), &c.name);
     if c.local == LocalState::Missing {
-        app.push_toast(ToastKind::Info, format!("{full}: not pulled yet — press p to pull"));
+        app.push_toast(
+            ToastKind::Info,
+            format!("{full}: not pulled yet — press p to pull"),
+        );
         return;
     }
     let realm = c.realm.clone().unwrap_or_default();
@@ -403,18 +465,18 @@ pub fn execute_push(
                     "{full}: remote changed since last pull — resolve with `aic script diff {full}`"
                 )),
             });
-        let _ = tx.send(AppEvent::ScriptOpResult {
+        let _ = tx.send(AppEvent::Scripts(Event::OpResult {
             tenant,
             full: full_for_event,
             label,
             result,
-        });
+        }));
     });
 }
 
 /// Apply a finished pull/push. Clears the in-flight marker, toasts the
 /// outcome, and refreshes the list so local-state markers update.
-pub fn apply_op_result(
+fn apply_op_result(
     app: &mut App,
     tenant: String,
     full: String,
@@ -447,7 +509,10 @@ fn ensure_workspace_ready(app: &mut App, tenant: &str) -> bool {
     if let Some(dir) = script::workspace::legacy_layout(tenant) {
         app.push_toast(
             ToastKind::Error,
-            format!("old per-realm workspace at {} — migrate via the CLI first", dir.display()),
+            format!(
+                "old per-realm workspace at {} — migrate via the CLI first",
+                dir.display()
+            ),
         );
         return false;
     }
