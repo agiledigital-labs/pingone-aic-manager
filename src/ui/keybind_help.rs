@@ -13,7 +13,8 @@ use ratatui::{
 };
 
 use crate::app::{App, AuthMethod, InputMode, SetupContext};
-use crate::screens::esv::EditField;
+use crate::esv::screen::Mode as EsvMode;
+use crate::esv::state::EditField;
 use crate::ui::modal_chrome::hint_line;
 
 const WIDTH: u16 = 84;
@@ -63,14 +64,14 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match app.input_mode {
         InputMode::Normal => normal_lines(app, &mut lines),
-        InputMode::EsvSearch | InputMode::Scripts(_) => esv_search_lines(&mut lines),
-        InputMode::EsvEdit => esv_edit_lines(app, &mut lines),
-        InputMode::EsvRestartConfirm => confirm_lines(
+        InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) => esv_search_lines(&mut lines),
+        InputMode::Esv(EsvMode::Edit) => esv_edit_lines(app, &mut lines),
+        InputMode::Esv(EsvMode::RestartConfirm) => confirm_lines(
             &mut lines,
             "Apply pending changes",
             &[("y", "restart tenant runtime"), ("n/Esc", "cancel")],
         ),
-        InputMode::EsvDeleteConfirm => confirm_lines(
+        InputMode::Esv(EsvMode::DeleteConfirm) => confirm_lines(
             &mut lines,
             "Delete ESV variable",
             &[("y", "delete variable"), ("n/Esc", "cancel")],

@@ -284,7 +284,7 @@ fn selected_candidate(app: &App) -> Option<Candidate> {
     }
 }
 
-/// EsvSearch-style search keys for the scripts list.
+/// ESV-style search keys for the scripts list.
 fn handle_search_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {

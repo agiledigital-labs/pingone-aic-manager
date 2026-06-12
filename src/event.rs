@@ -46,32 +46,7 @@ pub enum AppEvent {
     /// User-triggered security key enrolment finished. The payload is the new
     /// wrap entry ready to be appended to `wraps.toml`, or an error string.
     SecurityKeyEnrollResult(std::result::Result<crate::config::wraps::Wrap, String>),
-    /// Background tenant-restart trigger finished. Toasts on error.
-    EsvRestartResult {
-        tenant: String,
-        result: std::result::Result<serde_json::Value, String>,
-    },
-    /// Background ESV-edit save finished. `tenant` + `id` identify the
-    /// variable so a stale result for a previously-edited entry can be
-    /// dropped.
-    EsvSaveResult {
-        tenant: String,
-        id: String,
-        result: std::result::Result<crate::screens::esv::SaveOutcome, String>,
-    },
-    /// Background ESV delete finished.
-    EsvDeleteResult {
-        tenant: String,
-        id: String,
-        result: std::result::Result<crate::screens::esv::DeleteOutcome, String>,
-    },
-    /// Background undo attempt finished.
-    EsvUndoResult {
-        undo_id: crate::undo::UndoId,
-        tenant: String,
-        result:
-            std::result::Result<crate::screens::esv::UndoOutcome, crate::screens::esv::UndoFailure>,
-    },
+    Esv(crate::esv::screen::Event),
     /// A background secret mutation finished. `kind` lets the handler record
     /// the right undo entry post-success; `label` is the toast verb;
     /// `reload_versions` requests a version-panel refetch. The Ok payload is
@@ -89,13 +64,6 @@ pub enum AppEvent {
         tenant: String,
         id: String,
         result: std::result::Result<Vec<serde_json::Value>, String>,
-    },
-    /// Background ESV refresh finished for `tenant`. The payload keeps the
-    /// variable list and startup status separate so a partial failure doesn't
-    /// force us to throw away useful cached state.
-    EsvListed {
-        tenant: String,
-        outcome: crate::screens::esv::RefreshOutcome,
     },
     Scripts(crate::scripts::screen::Event),
     Toast(ToastKind, String),

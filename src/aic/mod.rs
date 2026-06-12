@@ -1,6 +1,5 @@
 pub mod api;
 pub mod auth;
-pub mod esv;
 pub mod onboard;
 
 use std::sync::{Arc, Mutex};
@@ -11,7 +10,7 @@ use crate::config::tenant::{Tenant, TenantTheme};
 use crate::{Error, Result};
 
 /// Internal-only: the in-process AIC HTTP client used by the agent daemon.
-/// Frontends (TUI + CLI) **must** go through `aic::api` / `aic::esv` so
+/// Frontends (TUI + CLI) **must** go through `aic::api` / feature API modules so
 /// every tenant call lands on the daemon's token cache + connection pool;
 /// `pub(crate)` is the type-level guard rail.
 #[derive(Clone)]

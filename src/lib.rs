@@ -5,6 +5,7 @@ pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod esv;
 pub mod event;
 pub mod keymap;
 pub mod logging;

@@ -36,20 +36,8 @@ pub enum InputMode {
     EnvPicker,
     ProdConfirm,
     UndoHistory,
-    /// `/` — fuzzy search the ESV list. Chars edit the query; Esc cancels
-    /// (and clears the filter); Enter commits and returns to Normal with
-    /// the filter still applied.
-    EsvSearch,
+    Esv(crate::esv::screen::Mode),
     Scripts(crate::scripts::screen::Mode),
-    /// Editing the ESV the cursor was on. The list/preview layout stays
-    /// the same; the preview pane goes editable + grows a Save button.
-    EsvEdit,
-    /// Small overlay confirm: are you sure you want to apply pending ESV
-    /// changes (i.e. trigger a tenant restart)? Unlike most modals, the
-    /// dashboard underneath stays drawn.
-    EsvRestartConfirm,
-    /// Small overlay confirm before deleting the selected ESV variable.
-    EsvDeleteConfirm,
     /// Secret create form (id + encoding + placeholders + value).
     SecretCreate,
     /// Version panel for the selected secret (enable/disable/destroy/add).
@@ -153,8 +141,8 @@ pub struct App {
     pub keybind_help_open: bool,
 
     /// ESV tab state — list cache, refresh book-keeping, search query +
-    /// selection. See `crate::screens::esv` for the handlers.
-    pub esv: crate::screens::esv::State,
+    /// selection. See `crate::esv` for the handlers.
+    pub esv: crate::esv::state::State,
 
     /// Secrets sub-view of the ESVs tab (list, versions, create/add forms).
     /// Populated by the same poll as `esv`. See `crate::screens::secret`.
@@ -224,7 +212,7 @@ impl App {
             prod_confirm: crate::screens::prod_confirm::State::new(),
             undo,
             keybind_help_open: false,
-            esv: crate::screens::esv::State::new(),
+            esv: crate::esv::state::State::new(),
             secret: crate::screens::secret::State::new(),
             scripts: crate::scripts::screen::State::new(),
         })
@@ -331,10 +319,10 @@ impl App {
         }
     }
 
-    /// Convenience wrapper around `screens::esv::State::matches` that
+    /// Convenience wrapper around `esv::state::State::matches` that
     /// supplies the active tenant. Keeps existing callers (UI mostly)
     /// from threading `app.active_tenant()` in every call.
-    pub fn esv_matches(&self) -> Vec<crate::screens::esv::Match> {
+    pub fn esv_matches(&self) -> Vec<crate::esv::state::Match> {
         self.esv
             .matches(self.active_tenant().map(|t| t.name.as_str()))
     }
@@ -404,7 +392,7 @@ impl App {
         ) {
             crate::screens::unlock::unlock_plain_agent(self).await;
         }
-        crate::screens::esv::refresh(self, false);
+        crate::esv::ops::refresh(self, false);
 
         let tx = self.events.tx.clone();
         tokio::spawn(async move {
@@ -466,9 +454,7 @@ impl App {
             AppEvent::Toast(kind, msg) => {
                 self.push_toast(kind, msg);
             }
-            AppEvent::EsvListed { tenant, outcome } => {
-                crate::screens::esv::apply_refresh(self, tenant, outcome);
-            }
+            AppEvent::Esv(event) => crate::esv::screen::apply_event(self, event),
             AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
             AppEvent::SecretOpResult {
                 tenant,
@@ -490,22 +476,6 @@ impl App {
             }
             AppEvent::SecretVersionsListed { tenant, id, result } => {
                 crate::screens::secret::apply_versions_listed(self, tenant, id, result);
-            }
-            AppEvent::EsvSaveResult { tenant, id, result } => {
-                crate::screens::esv::apply_save_result(self, tenant, id, result);
-            }
-            AppEvent::EsvDeleteResult { tenant, id, result } => {
-                crate::screens::esv::apply_delete_result(self, tenant, id, result);
-            }
-            AppEvent::EsvUndoResult {
-                undo_id,
-                tenant,
-                result,
-            } => {
-                crate::screens::esv::apply_undo_result(self, undo_id, tenant, result);
-            }
-            AppEvent::EsvRestartResult { tenant, result } => {
-                crate::screens::esv::apply_restart_result(self, tenant, result);
             }
             AppEvent::AuthCallbackProgress {
                 onboard_id,
@@ -545,7 +515,7 @@ impl App {
         // faster than that just stacks in-flight requests.
         if self.current_tab == Tab::Esvs && self.esv.last_poll.elapsed() >= Duration::from_secs(30)
         {
-            crate::screens::esv::refresh(self, true);
+            crate::esv::ops::refresh(self, true);
         }
         // Scripts list is heavier to fetch (one list call per namespace) and
         // changes far less often than ESVs, so poll it on a slower cadence.
@@ -623,7 +593,7 @@ impl App {
             KeyCode::Enter => {
                 self.set_active_tenant(self.env_picker_idx);
                 self.input_mode = InputMode::Normal;
-                crate::screens::esv::refresh(self, true);
+                crate::esv::ops::refresh(self, true);
             }
             KeyCode::Char(c @ '1'..='9') => {
                 // Number-key hotkey, matching the Add Tenant menu: switch
@@ -633,7 +603,7 @@ impl App {
                     self.env_picker_idx = target;
                     self.set_active_tenant(target);
                     self.input_mode = InputMode::Normal;
-                    crate::screens::esv::refresh(self, true);
+                    crate::esv::ops::refresh(self, true);
                 }
             }
             _ => {}
