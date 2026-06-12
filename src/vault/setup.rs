@@ -2,8 +2,8 @@
 //!
 //! Owns the picker / password / security-key form (`State.form`), the
 //! context (first-run vs add-factor), the input handler, the submit path,
-//! and the post-enrolment finaliser. Rendering still lives in
-//! `src/ui/auth_setup.rs`.
+//! and the post-enrolment finaliser. Rendering lives in sibling
+//! `setup_view.rs`.
 
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -13,6 +13,9 @@ use crate::config::Settings;
 use crate::config::crypto::{self, Dek};
 use crate::config::wraps::{self, Wrap};
 use crate::event::{AppEvent, ToastKind};
+
+use super::screen::{Event, Mode};
+use super::{security_key, unlock};
 
 /// Auth methods offered on the first-run picker (and on the in-app
 /// "add factor" flow). "None" = `keys.plain`, no DEK; the other two share
@@ -207,16 +210,15 @@ fn enroll_security_key_blocking(
     dek: Dek,
     label: String,
     pin: Option<String>,
-    hmac_salt: [u8; crate::security_key::HMAC_SALT_LEN],
+    hmac_salt: [u8; security_key::HMAC_SALT_LEN],
 ) -> std::result::Result<Wrap, String> {
-    let enrolment =
-        crate::security_key::enroll(pin.as_deref(), &hmac_salt).map_err(|e| e.to_string())?;
+    let enrolment = security_key::enroll(pin.as_deref(), &hmac_salt).map_err(|e| e.to_string())?;
     let (nonce, ct) =
         crypto::wrap_dek_with_kek(&dek, &enrolment.hmac).map_err(|e| e.to_string())?;
     Ok(Wrap::SecurityKey {
         label: Some(label),
         credential_id: wraps::b64_encode(&enrolment.credential_id),
-        rp_id: crate::security_key::RP_ID.to_string(),
+        rp_id: security_key::RP_ID.to_string(),
         nonce: wraps::b64_encode(&nonce),
         ciphertext: wraps::b64_encode(&ct),
     })
@@ -239,7 +241,7 @@ pub fn start_add_factor(app: &mut App, method: AuthMethod) {
         );
     }
     app.auth_setup.context = SetupContext::AddFactor;
-    app.input_mode = InputMode::SetupAuth;
+    app.input_mode = InputMode::Vault(Mode::Setup);
 }
 
 pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
@@ -259,7 +261,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             SetupContext::AddFactor => {
                 app.auth_setup.form = AuthSetupForm::default();
                 app.auth_setup.context = SetupContext::FirstRun;
-                app.input_mode = InputMode::AuthSettings;
+                app.input_mode = InputMode::Vault(Mode::Settings);
             }
         },
         KeyCode::Tab => app.auth_setup.form.next(app.auth_setup.context),
@@ -335,7 +337,7 @@ pub async fn commit(app: &mut App) -> crate::Result<()> {
             app.auth_setup.form = AuthSetupForm::default();
             app.auth_setup.context = SetupContext::FirstRun;
             app.input_mode = InputMode::Normal;
-            crate::screens::unlock::unlock_plain_agent(app).await;
+            unlock::unlock_plain_agent(app).await;
         }
         AuthMethod::Password => {
             if app.auth_setup.form.password.is_empty() {
@@ -388,7 +390,7 @@ pub async fn commit(app: &mut App) -> crate::Result<()> {
             let tx = app.events.tx.clone();
             tokio::task::spawn_blocking(move || {
                 let result = enroll_security_key_blocking(dek, label, Some(pin), hmac_salt);
-                let _ = tx.send(AppEvent::SecurityKeyEnrollResult(result));
+                let _ = tx.send(AppEvent::Vault(Event::EnrollmentFinished(result)));
             });
         }
     }
@@ -435,7 +437,7 @@ async fn finalize_factor_addition(
     app.auth_setup.form = AuthSetupForm::default();
     let next_mode = match context {
         SetupContext::FirstRun => InputMode::Normal,
-        SetupContext::AddFactor => InputMode::AuthSettings,
+        SetupContext::AddFactor => InputMode::Vault(Mode::Settings),
     };
     app.auth_setup.context = SetupContext::FirstRun;
     app.input_mode = next_mode;
@@ -444,7 +446,7 @@ async fn finalize_factor_addition(
     // initial fetch, and the agent rejects it as Locked — even though the
     // TUI itself has the DEK in memory. Awaited (not spawned) so any
     // refresh that runs straight after sees an unlocked agent.
-    crate::screens::unlock::put_dek_to_agent(app).await;
+    unlock::put_dek_to_agent(app).await;
     app.push_toast(ToastKind::Success, success_toast);
     Ok(())
 }

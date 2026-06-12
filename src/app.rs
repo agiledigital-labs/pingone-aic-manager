@@ -15,19 +15,7 @@ use crate::{Error, Result};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InputMode {
     Normal,
-    /// First-run only: pick an auth method (none / master password /
-    /// security key) and provide credentials for it.
-    SetupAuth,
-    /// Subsequent launches: enter the master password and/or tap the
-    /// security key to decrypt `keys.enc`.
-    Unlock,
-    /// Auth settings panel — list factors, add/remove/change-password.
-    AuthSettings,
-    /// Last-step confirmation overlay (y/n) for destructive auth-settings
-    /// actions: remove a factor, disable encryption.
-    AuthSettingsConfirm,
-    /// Inline editor for renaming the focused security-key wrap.
-    AuthSettingsRename,
+    Vault(crate::vault::screen::Mode),
     Onboard(crate::onboard::screen::Mode),
     EnvPicker,
     ProdConfirm,
@@ -36,12 +24,6 @@ pub enum InputMode {
     Secrets(crate::secrets::screen::Mode),
     Scripts(crate::scripts::screen::Mode),
 }
-
-/// Re-export so existing `crate::app::AuthMethod` / `AuthSetupField` /
-/// `SetupContext` / `AuthSetupForm` paths (used in `ui/auth_setup.rs`,
-/// `ui/auth_settings.rs`, and inside `App`) keep compiling against the
-/// moved types.
-pub use crate::screens::auth_setup::{AuthMethod, AuthSetupField, AuthSetupForm, SetupContext};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Realm {
@@ -83,16 +65,16 @@ pub struct App {
     pub should_quit: bool,
     pub has_env_creds: bool,
 
-    /// Unlock-screen state — owned by `screens::unlock`. See that module
+    /// Unlock-screen state — owned by `vault::unlock`. See that module
     /// for handlers; the field lives here because lifecycle code
     /// (`decide_initial_mode`, etc.) needs to pre-seed focus.
-    pub unlock: crate::screens::unlock::State,
+    pub unlock: crate::vault::unlock::State,
 
-    /// First-run + add-factor screen state. See `screens::auth_setup`.
-    pub auth_setup: crate::screens::auth_setup::State,
+    /// First-run + add-factor screen state. See `vault::setup`.
+    pub auth_setup: crate::vault::setup::State,
 
-    /// Auth Settings screen state. See `screens::auth_settings`.
-    pub auth_settings: crate::screens::auth_settings::State,
+    /// Auth Settings screen state. See `vault::settings`.
+    pub auth_settings: crate::vault::settings::State,
 
     /// Data encryption key (random 32 bytes), held only while unlocked.
     /// `None` either means "not yet unlocked" or "user opted out of
@@ -140,10 +122,6 @@ pub struct App {
     pub scripts: crate::scripts::screen::State,
 }
 
-pub use crate::screens::prod_confirm::PendingProdAction;
-
-pub use crate::screens::auth_settings::PendingAuthAction;
-
 impl App {
     pub fn new() -> Result<Self> {
         let config = ProjectConfig::load()?;
@@ -189,9 +167,9 @@ impl App {
             toasts: VecDeque::new(),
             should_quit: false,
             has_env_creds,
-            unlock: crate::screens::unlock::State::new(),
-            auth_setup: crate::screens::auth_setup::State::new(),
-            auth_settings: crate::screens::auth_settings::State::new(),
+            unlock: crate::vault::unlock::State::new(),
+            auth_setup: crate::vault::setup::State::new(),
+            auth_settings: crate::vault::settings::State::new(),
             dek: None,
             wraps,
             jwks: HashMap::new(),
@@ -219,14 +197,14 @@ impl App {
             Some(Settings {
                 encrypt_keys: true, ..
             }) => {
-                self.input_mode = InputMode::Unlock;
+                self.input_mode = InputMode::Vault(crate::vault::screen::Mode::Unlock);
                 // Default focus to whichever method is actually enrolled.
                 // If both are enrolled we prefer the security key field — it's the
                 // stronger factor and the user can Tab away if they want.
                 self.unlock.focus = if self.wraps.has_security_key() {
-                    crate::screens::unlock::Focus::SecurityKeyPin
+                    crate::vault::unlock::Focus::SecurityKeyPin
                 } else {
-                    crate::screens::unlock::Focus::Password
+                    crate::vault::unlock::Focus::Password
                 };
             }
             Some(Settings {
@@ -237,7 +215,7 @@ impl App {
                 self.input_mode = InputMode::Normal;
             }
             None => {
-                self.input_mode = InputMode::SetupAuth;
+                self.input_mode = InputMode::Vault(crate::vault::screen::Mode::Setup);
             }
         }
 
@@ -364,7 +342,7 @@ impl App {
         &mut self,
         terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
-        crate::screens::unlock::try_agent_unlock(self).await;
+        crate::vault::unlock::try_agent_unlock(self).await;
         self.decide_initial_mode();
         // Plain mode skips the unlock screen entirely; make sure the agent
         // knows what state we're in before any ESV refresh hits its socket.
@@ -377,7 +355,7 @@ impl App {
                 ..
             })
         ) {
-            crate::screens::unlock::unlock_plain_agent(self).await;
+            crate::vault::unlock::unlock_plain_agent(self).await;
         }
         crate::esv::ops::refresh(self, false);
 
@@ -420,6 +398,7 @@ impl App {
         match event {
             AppEvent::Key(key) => self.handle_key(key).await?,
             AppEvent::Tick => self.tick(),
+            AppEvent::Vault(event) => crate::vault::screen::apply_event(self, event).await,
             AppEvent::Onboard(event) => crate::onboard::screen::apply_event(self, event)?,
             AppEvent::Toast(kind, msg) => {
                 self.push_toast(kind, msg);
@@ -427,10 +406,6 @@ impl App {
             AppEvent::Esv(event) => crate::esv::screen::apply_event(self, event),
             AppEvent::Secrets(event) => crate::secrets::screen::apply_event(self, event),
             AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
-            AppEvent::UnlockResult(r) => crate::screens::unlock::handle_result(self, r).await,
-            AppEvent::SecurityKeyEnrollResult(r) => {
-                crate::screens::auth_setup::handle_enroll_result(self, r).await
-            }
         }
         Ok(())
     }
@@ -493,17 +468,10 @@ impl App {
             && matches!(
                 self.input_mode,
                 InputMode::Normal
-                    | InputMode::AuthSettings
+                    | InputMode::Vault(crate::vault::screen::Mode::Settings)
                     | InputMode::Onboard(crate::onboard::screen::Mode::Menu)
                     | InputMode::EnvPicker
             )
-    }
-
-    /// Backwards-compat shim so existing UI callers
-    /// (`ui::auth_settings::draw_confirm`) keep working without touching
-    /// the rendering code.
-    pub fn pending_auth_action_label(&self) -> Option<String> {
-        self.auth_settings.pending_action_label(&self.wraps)
     }
 
     pub fn handle_env_picker_key(&mut self, key: KeyEvent) {
@@ -542,12 +510,6 @@ impl App {
     }
 }
 
-// Re-exported from `crate::auth` so existing `app::UnlockOk` call sites
-// (event.rs, etc.) keep compiling against the moved type.
-pub use crate::auth::UnlockOk;
-
-/// Enrol a security key and produce a wrap entry that the event handler can
-/// append to `wraps.toml`. Blocks until the user taps the device. `hmac_salt`
 /// Pick which tenant should be active on startup. Order:
 ///   1. `.aic-edit/current-context` (set by `aic ctx use ...` or by the env
 ///      picker on the previous TUI session)

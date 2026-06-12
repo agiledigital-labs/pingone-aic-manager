@@ -12,12 +12,14 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 
-use crate::app::{App, AuthMethod, InputMode, SetupContext};
+use crate::app::{App, InputMode};
 use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::EditField;
 use crate::onboard::screen::Mode as OnboardMode;
 use crate::secrets::screen::Mode as SecretsMode;
 use crate::ui::modal_chrome::hint_line;
+use crate::vault::screen::Mode as VaultMode;
+use crate::vault::setup::{AuthMethod, SetupContext};
 
 const WIDTH: u16 = 84;
 
@@ -78,19 +80,19 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
             "Delete ESV variable",
             &[("y", "delete variable"), ("n/Esc", "cancel")],
         ),
-        InputMode::AuthSettings => auth_settings_lines(app, &mut lines),
-        InputMode::AuthSettingsConfirm => confirm_lines(
+        InputMode::Vault(VaultMode::Settings) => auth_settings_lines(app, &mut lines),
+        InputMode::Vault(VaultMode::SettingsConfirm) => confirm_lines(
             &mut lines,
             "Auth Settings confirmation",
             &[("y", "confirm"), ("n/Esc", "cancel")],
         ),
-        InputMode::AuthSettingsRename => text_modal_lines(
+        InputMode::Vault(VaultMode::SettingsRename) => text_modal_lines(
             &mut lines,
             "Rename security key",
             &[("Enter", "save"), ("Esc", "cancel")],
         ),
-        InputMode::SetupAuth => setup_auth_lines(app, &mut lines),
-        InputMode::Unlock => unlock_lines(app, &mut lines),
+        InputMode::Vault(VaultMode::Setup) => setup_auth_lines(app, &mut lines),
+        InputMode::Vault(VaultMode::Unlock) => unlock_lines(app, &mut lines),
         InputMode::Onboard(mode) => onboard_lines(app, mode, &mut lines),
         InputMode::EnvPicker => env_picker_lines(app, &mut lines),
         InputMode::ProdConfirm => confirm_lines(

@@ -12,10 +12,13 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::agent::{AgentClient, Request as AgentRequest, Response as AgentResponse};
 use crate::app::{App, InputMode};
-use crate::auth::UnlockOk;
 use crate::config::Settings;
 use crate::config::crypto::Dek;
 use crate::event::AppEvent;
+
+use super::auth::{self, UnlockOk};
+use super::screen::{Event, Mode};
+use super::security_key;
 
 /// Which input on the Unlock screen has focus. Only meaningful when a
 /// security-key wrap is enrolled; otherwise the Master password is the
@@ -140,7 +143,7 @@ pub async fn try_agent_unlock(app: &mut App) {
 /// screen, and the TUI can keep going (agent calls will just re-prompt).
 pub async fn put_dek_to_agent(app: &App) {
     let Some(dek) = app.dek_clone() else { return };
-    let result = crate::auth::put_dek_to_agent(&dek).await;
+    let result = auth::put_dek_to_agent(&dek).await;
     drop(dek);
     if let Err(e) = result {
         tracing::warn!("PutDek failed: {e}");
@@ -152,7 +155,7 @@ pub async fn put_dek_to_agent(app: &App) {
 /// `ApiCall`s find it in the "unlocked, plain" vault state instead of
 /// returning `Locked` and stranding the request.
 pub async fn unlock_plain_agent(_app: &App) {
-    if let Err(e) = crate::auth::unlock_plain_agent().await {
+    if let Err(e) = auth::unlock_plain_agent().await {
         tracing::warn!("UnlockPlain failed: {e}");
     }
 }
@@ -193,7 +196,7 @@ fn spawn_security_key_poll(app: &mut App, pin: String) {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            if !crate::security_key::device_present() {
+            if !security_key::device_present() {
                 // No security key plugged in; poll again in a moment.
                 std::thread::sleep(Duration::from_secs(1));
                 continue;
@@ -204,7 +207,10 @@ fn spawn_security_key_poll(app: &mut App, pin: String) {
             let result = crate::config::unlock_with_security_key(&wraps, pin_opt);
             match result {
                 Ok((dek, jwks)) => {
-                    let _ = tx.send(AppEvent::UnlockResult(Ok(UnlockOk { dek, jwks })));
+                    let _ = tx.send(AppEvent::Vault(Event::UnlockFinished(Ok(UnlockOk {
+                        dek,
+                        jwks,
+                    }))));
                     return;
                 }
                 Err(e) => {
@@ -219,7 +225,9 @@ fn spawn_security_key_poll(app: &mut App, pin: String) {
                         std::thread::sleep(Duration::from_secs(2));
                         continue;
                     }
-                    let _ = tx.send(AppEvent::UnlockResult(Err(format!("security key: {msg}"))));
+                    let _ = tx.send(AppEvent::Vault(Event::UnlockFinished(Err(format!(
+                        "security key: {msg}"
+                    )))));
                     return;
                 }
             }
@@ -259,7 +267,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                     app.unlock.error = Some("Security key PIN cannot be empty".into());
                     return;
                 }
-                app.unlock.error = Some(crate::ui::unlock::TAP_MESSAGE.into());
+                app.unlock.error = Some(security_key::TAP_MESSAGE.into());
                 let pin = std::mem::take(&mut app.unlock.pin_input);
                 spawn_security_key_poll(app, pin);
             } else {
@@ -272,10 +280,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 app.unlock.busy = true;
                 let tx = app.events.tx.clone();
                 tokio::spawn(async move {
-                    let result = crate::auth::unlock_password(password)
+                    let result = auth::unlock_password(password)
                         .await
                         .map_err(|e| e.to_string());
-                    let _ = tx.send(AppEvent::UnlockResult(result));
+                    let _ = tx.send(AppEvent::Vault(Event::UnlockFinished(result)));
                 });
             }
         }
@@ -300,7 +308,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 pub async fn handle_result(app: &mut App, result: std::result::Result<UnlockOk, String>) {
     // A late-arriving second result (e.g. security-key unlock fired
     // after we already accepted the password) — drop it.
-    if app.input_mode != InputMode::Unlock {
+    if app.input_mode != InputMode::Vault(Mode::Unlock) {
         return;
     }
     app.unlock.busy = false;

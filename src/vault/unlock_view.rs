@@ -7,13 +7,11 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::screens::unlock::Focus as UnlockFocus;
-use crate::security_key;
 use crate::ui::modal_chrome::Modal;
 use crate::ui::widgets::secret_field;
 
-/// Re-export so `app.rs` can compare `unlock_error` against the tap status.
-pub use crate::security_key::TAP_MESSAGE;
+use super::security_key;
+use super::unlock::Focus as UnlockFocus;
 
 const UNLOCKING: &str = "Unlocking…";
 
@@ -49,7 +47,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     .draw(f, f.area());
 
-    let waiting_for_tap = app.unlock.error.as_deref() == Some(TAP_MESSAGE);
+    let waiting_for_tap = app.unlock.error.as_deref() == Some(security_key::TAP_MESSAGE);
     let chunks = Layout::vertical([
         Constraint::Length(secret_field::HEIGHT), // active field
         Constraint::Length(1),                    // gap
