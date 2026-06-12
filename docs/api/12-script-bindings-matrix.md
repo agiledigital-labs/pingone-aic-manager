@@ -54,7 +54,8 @@ Practical consequence for this work:
 
 ## Language / syntax feature matrix (Rhino 1.7.14)
 
-Applies to every script family. **All rows runtime-verified 2026-06-03** via the
+Applies to every script family. **All rows runtime-verified 2026-06-03** (the
+duplicate-`const`-per-function row added 2026-06-06) via the
 next-gen scripted decision probe (`scripts/rhino-script-tester/fixtures/`,
 results in `tmp/rhino-script-tester/probe-results.json`). Probe semantics:
 a fixture that PARSES + RUNS returns a `HiddenValueCallback` (`HTTP 200`); a
@@ -66,6 +67,7 @@ fixture that fails to PARSE returns no callback and the journey fails
 | --- | --- | --- | --- |
 | `var` | **V** | ✅ works | allow |
 | `const` in a function body | **V** | ✅ works, correct value | **allow** |
+| same `const` name twice in one function (separate, non-nested blocks) | **V** | ❌ parse error (Rhino scopes `const` to the function for redeclaration) | **ban (all AM) — custom `rhino/no-dup-const` rule** |
 | `const` at top level | **V** | ⚠️ parses but value reads back `undefined` — silent data bug | **ban** (all AM) |
 | `const` in a loop body | **V** | ⚠️ parses but value reads back `undefined` — silent data bug | **ban** |
 | `const` in `for` init | **V** | ❌ parse error | ban |
