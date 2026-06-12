@@ -1,4 +1,4 @@
-//! Auth Settings screen — list enrolled factors, add (→ `auth_setup`),
+//! Auth Settings screen — list enrolled factors, add (through `setup`),
 //! remove, rename, or disable encryption entirely. Owns the selection
 //! cursor, the rename buffer, and the pending y/n action.
 
@@ -7,7 +7,10 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::{App, InputMode};
 use crate::config::wraps::{Wrap, WrapsFile};
 use crate::event::ToastKind;
-use crate::screens::auth_setup::AuthMethod;
+
+use super::screen::Mode;
+use super::setup::{self, AuthMethod};
+use super::unlock;
 
 /// Action waiting on a y/n confirmation overlay.
 #[derive(Debug)]
@@ -58,7 +61,7 @@ pub fn open(app: &mut App) {
     } else if app.auth_settings.idx >= n {
         app.auth_settings.idx = n - 1;
     }
-    app.input_mode = InputMode::AuthSettings;
+    app.input_mode = InputMode::Vault(Mode::Settings);
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
@@ -78,10 +81,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             }
         }
         KeyCode::Char('p') | KeyCode::Char('P') => {
-            crate::screens::auth_setup::start_add_factor(app, AuthMethod::Password);
+            setup::start_add_factor(app, AuthMethod::Password);
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
-            crate::screens::auth_setup::start_add_factor(app, AuthMethod::SecurityKey);
+            setup::start_add_factor(app, AuthMethod::SecurityKey);
         }
         KeyCode::Char('d') | KeyCode::Char('D') if n > 0 => {
             // Last-factor guard — falls through to disable-encryption.
@@ -91,7 +94,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                 app.auth_settings.pending =
                     Some(PendingAuthAction::RemoveWrap(app.auth_settings.idx));
             }
-            app.input_mode = InputMode::AuthSettingsConfirm;
+            app.input_mode = InputMode::Vault(Mode::SettingsConfirm);
         }
         KeyCode::Enter if n > 0 => edit_factor(app, app.auth_settings.idx),
         KeyCode::Char(c @ '1'..='9') => {
@@ -113,7 +116,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
 fn edit_factor(app: &mut App, idx: usize) {
     match app.wraps.wraps.get(idx) {
         Some(Wrap::Password { .. }) => {
-            crate::screens::auth_setup::start_add_factor(app, AuthMethod::Password);
+            setup::start_add_factor(app, AuthMethod::Password);
         }
         Some(Wrap::SecurityKey { .. }) => {
             app.auth_settings.idx = idx;
@@ -126,7 +129,7 @@ fn edit_factor(app: &mut App, idx: usize) {
 fn start_rename(app: &mut App) {
     if let Some(Wrap::SecurityKey { label, .. }) = app.wraps.wraps.get(app.auth_settings.idx) {
         app.auth_settings.rename_input = label.clone().unwrap_or_default();
-        app.input_mode = InputMode::AuthSettingsRename;
+        app.input_mode = InputMode::Vault(Mode::SettingsRename);
     }
 }
 
@@ -134,7 +137,7 @@ pub fn handle_rename_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     match key.code {
         KeyCode::Esc => {
             app.auth_settings.rename_input.clear();
-            app.input_mode = InputMode::AuthSettings;
+            app.input_mode = InputMode::Vault(Mode::Settings);
         }
         KeyCode::Enter => {
             let new_label = app.auth_settings.rename_input.trim().to_string();
@@ -150,7 +153,7 @@ pub fn handle_rename_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                 app.push_toast(ToastKind::Success, "Renamed");
             }
             app.auth_settings.rename_input.clear();
-            app.input_mode = InputMode::AuthSettings;
+            app.input_mode = InputMode::Vault(Mode::Settings);
         }
         KeyCode::Backspace => {
             app.auth_settings.rename_input.pop();
@@ -199,7 +202,7 @@ pub async fn handle_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<(
                             // keys.plain exists; otherwise the next ApiCall
                             // would hit a daemon still holding the (now
                             // useless) DEK.
-                            crate::screens::unlock::unlock_plain_agent(app).await;
+                            unlock::unlock_plain_agent(app).await;
                             app.push_toast(
                                 ToastKind::Info,
                                 "Encryption disabled — credentials at keys.plain",
@@ -212,11 +215,11 @@ pub async fn handle_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<(
                 }
                 None => {}
             }
-            app.input_mode = InputMode::AuthSettings;
+            app.input_mode = InputMode::Vault(Mode::Settings);
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             app.auth_settings.pending = None;
-            app.input_mode = InputMode::AuthSettings;
+            app.input_mode = InputMode::Vault(Mode::Settings);
         }
         _ => {}
     }

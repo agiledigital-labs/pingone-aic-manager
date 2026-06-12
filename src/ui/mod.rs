@@ -1,5 +1,3 @@
-pub mod auth_settings;
-pub mod auth_setup;
 pub mod env_picker;
 pub mod header;
 pub mod keybind_help;
@@ -8,7 +6,6 @@ pub mod modal_chrome;
 pub mod popup_confirm;
 pub mod toast;
 pub mod undo_history;
-pub mod unlock;
 pub mod widgets;
 
 use ratatui::{
@@ -27,34 +24,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Every modal owns the whole screen. The dashboard (Normal + ESV search)
     // is the only thing that gets the header / body / global-hints layout.
     match app.input_mode {
-        InputMode::Unlock => {
-            unlock::draw(f, app);
-            draw_keybind_help(f, app);
-            toast::draw(f, app);
-            return;
-        }
-        InputMode::SetupAuth => {
-            auth_setup::draw(f, app);
-            draw_keybind_help(f, app);
-            toast::draw(f, app);
-            return;
-        }
-        InputMode::AuthSettings => {
-            auth_settings::draw(f, app);
-            draw_keybind_help(f, app);
-            toast::draw(f, app);
-            return;
-        }
-        InputMode::AuthSettingsConfirm => {
-            auth_settings::draw_confirm(f, app);
-            draw_keybind_help(f, app);
-            toast::draw(f, app);
-            return;
-        }
-        InputMode::AuthSettingsRename => {
-            auth_settings::draw_rename(f, app);
-            draw_keybind_help(f, app);
-            toast::draw(f, app);
+        InputMode::Vault(mode) => {
+            crate::vault::draw(f, app, mode);
             return;
         }
         InputMode::Onboard(mode) => {

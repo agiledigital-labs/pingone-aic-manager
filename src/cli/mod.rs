@@ -17,10 +17,10 @@
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use crate::agent::{self, AgentClient, Request, Response};
-use crate::auth;
 use crate::config::crypto::Dek;
 use crate::config::wraps::WrapsFile;
 use crate::config::{self, ProjectConfig};
+use crate::vault::auth;
 use crate::{Error, Result};
 
 #[derive(Parser, Debug)]
@@ -312,7 +312,7 @@ async fn unlock_with_password_prompt() -> Result<Dek> {
 async fn unlock_with_security_key_prompt(wraps_file: &WrapsFile) -> Result<Dek> {
     let pin = rpassword::prompt_password("Security key PIN: ")
         .map_err(|e| Error::Config(format!("read pin: {e}")))?;
-    eprintln!("{}", crate::security_key::TAP_MESSAGE);
+    eprintln!("{}", crate::vault::security_key::TAP_MESSAGE);
     Ok(auth::unlock_security_key(wraps_file.clone(), pin)
         .await?
         .dek)

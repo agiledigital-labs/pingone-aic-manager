@@ -414,6 +414,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out.push(("Esc", "cancel"));
             out
         }
+        InputMode::Vault(_) => Vec::new(),
         _ => Vec::new(),
     }
 }
@@ -445,15 +446,7 @@ fn push_global(out: &mut Vec<Bind>) {
 pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     match app.input_mode {
         InputMode::Normal => dispatch_normal(app, key).await?,
-        InputMode::SetupAuth => crate::screens::auth_setup::handle_key(app, key).await?,
-        InputMode::Unlock => crate::screens::unlock::handle_key(app, key),
-        InputMode::AuthSettings => crate::screens::auth_settings::handle_key(app, key)?,
-        InputMode::AuthSettingsConfirm => {
-            crate::screens::auth_settings::handle_confirm_key(app, key).await?
-        }
-        InputMode::AuthSettingsRename => {
-            crate::screens::auth_settings::handle_rename_key(app, key)?
-        }
+        InputMode::Vault(mode) => crate::vault::screen::handle_key(app, key, mode).await?,
         InputMode::Onboard(mode) => crate::onboard::screen::handle_key(app, key, mode).await?,
         InputMode::EnvPicker => app.handle_env_picker_key(key),
         InputMode::ProdConfirm => crate::screens::prod_confirm::handle_key(app, key).await?,
@@ -527,8 +520,8 @@ async fn run_normal(app: &mut App, act: Act) {
             app.onboard.menu_idx = 0;
             app.input_mode = InputMode::Onboard(OnboardMode::Menu);
         }
-        AuthSettings => crate::screens::auth_settings::open(app),
-        Lock => crate::screens::unlock::lock_and_quit(app).await,
+        AuthSettings => crate::vault::settings::open(app),
+        Lock => crate::vault::unlock::lock_and_quit(app).await,
     }
 }
 

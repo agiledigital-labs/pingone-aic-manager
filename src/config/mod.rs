@@ -191,7 +191,7 @@ pub fn unlock_with_security_key(
                 .into(),
         )
     })?;
-    let hmac_salt: [u8; crate::security_key::HMAC_SALT_LEN] = wraps::b64_decode(salt_b64)?
+    let hmac_salt: [u8; crate::vault::security_key::HMAC_SALT_LEN] = wraps::b64_decode(salt_b64)?
         .as_slice()
         .try_into()
         .map_err(|_| crate::Error::Crypto("security_key_hmac_salt length".into()))?;
@@ -210,7 +210,8 @@ pub fn unlock_with_security_key(
         })
         .collect::<Result<_>>()?;
 
-    let (matched_id, hmac) = crate::security_key::unlock_any(&credential_ids, &hmac_salt, pin)?;
+    let (matched_id, hmac) =
+        crate::vault::security_key::unlock_any(&credential_ids, &hmac_salt, pin)?;
 
     // Find the wrap whose credential_id matches what the device returned.
     let matched_wrap = security_wraps

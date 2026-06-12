@@ -9,7 +9,7 @@ pub enum Request {
     Ping,
     /// Cache an already-derived 32-byte DEK (base64). The CLI and TUI both
     /// derive the DEK themselves (Argon2 from a password, or hmac-secret
-    /// from a security key) via `crate::auth::*` and hand it to the agent —
+    /// from a security key) via `crate::vault::auth::*` and hand it to the agent —
     /// the daemon never sees the password or PIN. There used to be a
     /// `Request::Unlock { password }` that did the Argon2 work inside the
     /// daemon; it was removed to keep one canonical unlock path.

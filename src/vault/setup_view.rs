@@ -10,10 +10,12 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-use crate::app::{App, AuthMethod, AuthSetupField, SetupContext};
-use crate::security_key;
+use crate::app::App;
 use crate::ui::modal_chrome::Modal;
 use crate::ui::widgets::secret_field;
+
+use super::security_key;
+use super::setup::{AuthMethod, AuthSetupField, SetupContext};
 
 const BG_UNFOCUSED: Color = Color::Indexed(234);
 const BG_FOCUSED: Color = Color::Indexed(236);

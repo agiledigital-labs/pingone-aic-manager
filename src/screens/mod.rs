@@ -9,9 +9,6 @@
 //! add a draw function in `ui/`. Try not to put new state on `App`
 //! directly — the whole point of this split is to keep `App` thin.
 
-pub mod auth_settings;
-pub mod auth_setup;
 pub mod list_state;
 pub mod prod_confirm;
 pub mod undo_history;
-pub mod unlock;

@@ -178,7 +178,8 @@ pub fn draw_rename(f: &mut Frame, app: &App) {
 
 pub fn draw_confirm(f: &mut Frame, app: &App) {
     let prompt = app
-        .pending_auth_action_label()
+        .auth_settings
+        .pending_action_label(&app.wraps)
         .unwrap_or_else(|| "Confirm?".into());
     let body = Modal {
         title: "⚠ Confirm",
