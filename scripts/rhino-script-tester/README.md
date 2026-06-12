@@ -121,7 +121,11 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
   ES2015 `Array`/`String`/`Object` methods (`includes`, `find`, `from`,
   `startsWith`, `endsWith`, `repeat`, `assign`, `keys`).
 - Parse errors: `let` (any scope), object shorthand, object destructuring,
-  default parameters, `const` in `for`/`for-in`/`for-of` initializers.
+  default parameters, `const` in `for`/`for-in`/`for-of` initializers, and the
+  same `const` name re-declared in one function across separate non-nested
+  blocks (Rhino scopes `const` to the function for redeclaration; verified
+  2026-06-06 — `fixtures/const-dup-across-blocks.script.js` 401s while
+  `const-uniq-across-blocks.script.js` runs).
 - Parses but silently `undefined` (worse than a parse error): `const` at top
   level and `const` declared in a loop body.
 - Bindings present: `require`, `openidm`, `httpClient`, `utils`, `logger`,

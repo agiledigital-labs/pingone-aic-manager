@@ -64,6 +64,9 @@ The ESLint config flags the constructs that are runtime-verified to break
   **parse errors**.
 - `const` in a `for`/`for-in`/`for-of` initializer — **parse error**; `const` at
   the top level or in a loop body parses but reads back `undefined`.
+- the same `const` name declared twice in one function — **parse error**, even
+  across separate, non-nested blocks (Rhino scopes `const` to the whole function
+  for redeclaration). Use distinct names, or `var`.
 - Arrow functions, template literals, and ES2015 `Array`/`String`/`Object`
   methods all work and are allowed.
 

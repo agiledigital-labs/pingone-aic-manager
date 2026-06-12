@@ -56,6 +56,72 @@ const rhinoParseErrors = [
   },
 ];
 
+// Rhino treats `const` as FUNCTION-scoped for redeclaration: the same name
+// declared by two `const`s in one function is a parse error
+// ("Redeclaration of const …" → "missing ; before statement"), even when the
+// declarations sit in separate, non-nested blocks and don't shadow. This is
+// RUNTIME-VERIFIED (next-gen scripted decision, 2026-06-06): two sibling-block
+// `const dup` in one function → HTTP 401 / no callback (parse failure); the
+// same structure with distinct names runs fine. No single esquery selector can
+// express "duplicate within the enclosing function", so this is a custom rule:
+// track a stack of const-name sets, one frame per function (Program counts as
+// the top-level frame), and report the second declaration of any name. Applied
+// to every AM script because it is a parser-level constraint, like `let`.
+const noDupConstFunctionScoped = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "disallow re-declaring the same const name within one function (Rhino function-scoped const)",
+    },
+    schema: [],
+  },
+  create(context) {
+    const stack = [];
+    const push = function () {
+      stack.push(new Set());
+    };
+    const pop = function () {
+      stack.pop();
+    };
+    return {
+      Program: push,
+      "Program:exit": pop,
+      FunctionDeclaration: push,
+      "FunctionDeclaration:exit": pop,
+      FunctionExpression: push,
+      "FunctionExpression:exit": pop,
+      ArrowFunctionExpression: push,
+      "ArrowFunctionExpression:exit": pop,
+      VariableDeclaration: function (node) {
+        if (node.kind !== "const") return;
+        const seen = stack[stack.length - 1];
+        if (!seen) return;
+        for (const decl of node.declarations) {
+          if (!decl.id || decl.id.type !== "Identifier") continue;
+          if (seen.has(decl.id.name)) {
+            context.report({
+              node: decl.id,
+              message:
+                "'{{name}}' const is re-declared in this function. Rhino 1.7.14 scopes const to the whole function, so the name must be unique per function (even across separate blocks). Rename one, or use 'var'.",
+              data: { name: decl.id.name },
+            });
+          } else {
+            seen.add(decl.id.name);
+          }
+        }
+      },
+    };
+  },
+};
+
+// Local plugin housing our runtime-verified custom rules.
+const rhinoPlugin = {
+  rules: {
+    "no-dup-const": noDupConstFunctionScoped,
+  },
+};
+
 // These parse fine but `const` silently reads back `undefined`. This is
 // SCOPE-dependent and was only verified in scripted-decision GLOBAL scope, so it
 // is applied only to the decision-node folders below — NOT to libraries (which
@@ -99,6 +165,7 @@ const scriptRules = {
   "require-unicode-regexp": "off",
   "no-undef": "off",
   "no-restricted-syntax": ["error", ...rhinoParseErrors],
+  "rhino/no-dup-const": "error",
   "prettier/prettier": "error",
 };
 
@@ -122,7 +189,7 @@ export default [
       sourceType: "script",
       globals: { ...commonGlobals },
     },
-    plugins: { prettier },
+    plugins: { prettier, rhino: rhinoPlugin },
     rules: scriptRules,
   },
   // Scripted-decision scripts (global scope) additionally ban the const-value
