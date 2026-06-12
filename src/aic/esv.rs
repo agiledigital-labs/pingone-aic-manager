@@ -196,7 +196,12 @@ pub async fn delete_secret(
     id: &str,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    super::api::delete(tenant, &format!("/environment/secrets/{id}"), confirmed_prod).await
+    super::api::delete(
+        tenant,
+        &format!("/environment/secrets/{id}"),
+        confirmed_prod,
+    )
+    .await
 }
 
 /// `GET /environment/secrets/{id}/versions` → a **bare array** (no `result`
@@ -413,20 +418,31 @@ pub async fn save_variable(
             .map_err(|e| Error::Config(format!("type change: delete failed: {e}")))?;
     }
 
-    let body = update_variable(tenant, id, description, expression_type, value_base64, confirmed_prod)
-        .await
-        .map_err(|e| {
-            if type_deleted {
-                Error::Config(format!(
-                    "type change: delete succeeded but recreate failed ({e}). \
+    let body = update_variable(
+        tenant,
+        id,
+        description,
+        expression_type,
+        value_base64,
+        confirmed_prod,
+    )
+    .await
+    .map_err(|e| {
+        if type_deleted {
+            Error::Config(format!(
+                "type change: delete succeeded but recreate failed ({e}). \
                      Variable is currently absent on AIC; re-save to recreate."
-                ))
-            } else {
-                e
-            }
-        })?;
+            ))
+        } else {
+            e
+        }
+    })?;
 
-    Ok(VariableSave { body, created, type_deleted })
+    Ok(VariableSave {
+        body,
+        created,
+        type_deleted,
+    })
 }
 
 #[cfg(test)]

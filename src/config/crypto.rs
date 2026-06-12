@@ -73,8 +73,8 @@ pub fn encrypt_data(plaintext: &[u8], dek: &Dek) -> Result<Vec<u8>> {
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
 
-    let cipher = Aes256Gcm::new_from_slice(dek.as_bytes())
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(dek.as_bytes()).map_err(|e| Error::Crypto(e.to_string()))?;
     let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
@@ -103,8 +103,8 @@ pub fn decrypt_data(data: &[u8], dek: &Dek) -> Result<Vec<u8>> {
     }
     let nonce_bytes: [u8; 12] = data[5..17].try_into().unwrap();
     let ciphertext = &data[17..];
-    let cipher = Aes256Gcm::new_from_slice(dek.as_bytes())
-        .map_err(|e| Error::Crypto(e.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(dek.as_bytes()).map_err(|e| Error::Crypto(e.to_string()))?;
     let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
     cipher
         .decrypt(nonce, ciphertext)
@@ -115,10 +115,7 @@ pub fn decrypt_data(data: &[u8], dek: &Dek) -> Result<Vec<u8>> {
 
 /// Wrap a DEK with a key derived from the user's master password (Argon2id).
 /// Returns (salt, nonce, ciphertext).
-pub fn wrap_dek_with_password(
-    dek: &Dek,
-    password: &str,
-) -> Result<([u8; 16], [u8; 12], Vec<u8>)> {
+pub fn wrap_dek_with_password(dek: &Dek, password: &str) -> Result<([u8; 16], [u8; 12], Vec<u8>)> {
     let mut salt = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut salt);
     let kek = derive_password_kek(password, &salt)?;
@@ -149,11 +146,7 @@ pub fn wrap_dek_with_kek(dek: &Dek, kek: &[u8; 32]) -> Result<([u8; 12], Vec<u8>
     Ok((nonce_bytes, ct))
 }
 
-pub fn unwrap_dek_with_kek(
-    kek: &[u8; 32],
-    nonce: &[u8; 12],
-    ciphertext: &[u8],
-) -> Result<Dek> {
+pub fn unwrap_dek_with_kek(kek: &[u8; 32], nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Dek> {
     let cipher = Aes256Gcm::new_from_slice(kek).map_err(|e| Error::Crypto(e.to_string()))?;
     let nonce = aes_gcm::Nonce::from_slice(nonce);
     let mut plaintext = cipher

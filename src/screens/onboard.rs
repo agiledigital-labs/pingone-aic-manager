@@ -9,8 +9,8 @@ use crate::aic::onboard::cookie::{CookieField, CookieForm};
 use crate::aic::onboard::paste::{PasteField, PasteForm};
 use crate::aic::onboard::userpass::{CallbackOutcome, UpField, UpForm};
 use crate::app::{App, InputMode};
-use crate::config::tenant::{Tenant, TenantTheme};
 use crate::config::ProjectConfig;
+use crate::config::tenant::{Tenant, TenantTheme};
 use crate::event::{AppEvent, ToastKind};
 use crate::screens::prod_confirm::PendingProdAction;
 
@@ -43,7 +43,9 @@ impl State {
     }
 
     pub fn pending_overwrite_name(&self) -> Option<&str> {
-        self.pending_overwrite.as_ref().map(|(t, _)| t.name.as_str())
+        self.pending_overwrite
+            .as_ref()
+            .map(|(t, _)| t.name.as_str())
     }
 }
 
@@ -168,8 +170,16 @@ fn start_cookie_bootstrap(app: &mut App) {
     app.onboard.pending_id = Some(onboard_id);
 
     tokio::spawn(async move {
-        run_bootstrap_from_cookie(onboard_id, name, base_url, theme, cookie_name, cookie_value, tx)
-            .await;
+        run_bootstrap_from_cookie(
+            onboard_id,
+            name,
+            base_url,
+            theme,
+            cookie_name,
+            cookie_value,
+            tx,
+        )
+        .await;
     });
 }
 
@@ -309,7 +319,9 @@ fn continue_up_with_extra(app: &mut App, extra: String) {
     // Re-use the existing onboard id — this is a continuation of the same
     // user-initiated bootstrap. If the user cancelled and the id is gone,
     // there's nothing to continue.
-    let Some(onboard_id) = app.onboard.pending_id else { return };
+    let Some(onboard_id) = app.onboard.pending_id else {
+        return;
+    };
     tokio::spawn(async move {
         run_bootstrap_from_userpass(
             onboard_id,
@@ -554,7 +566,10 @@ async fn import_env_creds(app: &mut App) -> crate::Result<()> {
 
     match persist_new_tenant(app, tenant, jwk) {
         Ok(()) => {
-            app.push_toast(ToastKind::Success, "Imported sandbox tenant from environment");
+            app.push_toast(
+                ToastKind::Success,
+                "Imported sandbox tenant from environment",
+            );
             app.input_mode = InputMode::Normal;
         }
         Err(e) => {
@@ -754,10 +769,11 @@ async fn run_bootstrap_from_userpass(
                 }
             };
             if !resp.status().is_success() {
-                send_onboard_error(&tx, onboard_id, format!(
-                    "authenticate: HTTP {}",
-                    resp.status()
-                ));
+                send_onboard_error(
+                    &tx,
+                    onboard_id,
+                    format!("authenticate: HTTP {}", resp.status()),
+                );
                 return;
             }
             match resp.json::<serde_json::Value>().await {
@@ -851,9 +867,11 @@ async fn run_bootstrap_from_userpass(
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let txt = resp.text().await.unwrap_or_default();
-                    send_onboard_error(&tx, onboard_id, format!(
-                        "authentication failed ({status}): {txt}"
-                    ));
+                    send_onboard_error(
+                        &tx,
+                        onboard_id,
+                        format!("authentication failed ({status}): {txt}"),
+                    );
                     return;
                 }
                 body = match resp.json::<serde_json::Value>().await {

@@ -23,14 +23,15 @@
 //! Talking to the device is fully synchronous; callers should run these
 //! functions inside `tokio::task::spawn_blocking`.
 
+use crate::{Error, Result};
 use ctap_hid_fido2::{
+    Cfg, FidoKeyHidFactory,
     fidokey::{
         AssertionExtension as Aext, CredentialExtension as Cext, FidoKeyHid,
         GetAssertionArgsBuilder, MakeCredentialArgsBuilder,
     },
-    verifier, Cfg, FidoKeyHidFactory,
+    verifier,
 };
-use crate::{Error, Result};
 
 /// Stable RP ID used for every aic-edit credential. The security key scopes its
 /// HMAC outputs by (credential_id, rp_id, salt), so this just needs to be
@@ -64,9 +65,7 @@ fn open_device() -> Result<FidoKeyHid> {
     FidoKeyHidFactory::create(&cfg).map_err(|e| {
         let raw = e.to_string();
         if raw.contains("FIDO device not found") {
-            Error::Crypto(
-                "no security key detected — plug in a FIDO2 device and try again".into(),
-            )
+            Error::Crypto("no security key detected — plug in a FIDO2 device and try again".into())
         } else {
             Error::Crypto(format!("could not open security key: {raw}"))
         }
@@ -132,10 +131,17 @@ pub fn enroll(pin: Option<&str>, hmac_salt: &[u8; HMAC_SALT_LEN]) -> Result<Enro
     let credential_id = attestation.credential_descriptor.id.clone();
 
     // 2. Ask for the first HMAC against the shared salt.
-    let (_matched, hmac) =
-        unlock_with_device(&device, std::slice::from_ref(&credential_id), hmac_salt, pin)?;
+    let (_matched, hmac) = unlock_with_device(
+        &device,
+        std::slice::from_ref(&credential_id),
+        hmac_salt,
+        pin,
+    )?;
 
-    Ok(Enrolment { credential_id, hmac })
+    Ok(Enrolment {
+        credential_id,
+        hmac,
+    })
 }
 
 /// Single `getAssertion` against an allowList of every enrolled credential
@@ -152,9 +158,7 @@ pub fn unlock_any(
     pin: Option<&str>,
 ) -> Result<(Vec<u8>, [u8; HMAC_OUT_LEN])> {
     if credential_ids.is_empty() {
-        return Err(Error::Crypto(
-            "no security key credentials enrolled".into(),
-        ));
+        return Err(Error::Crypto("no security key credentials enrolled".into()));
     }
     let device = open_device()?;
     unlock_with_device(&device, credential_ids, hmac_salt, pin)

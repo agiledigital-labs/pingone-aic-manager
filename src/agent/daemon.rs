@@ -6,14 +6,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 
 use crate::aic::AicClient;
-use crate::config::{self, crypto::Dek, ProjectConfig};
+use crate::config::{self, ProjectConfig, crypto::Dek};
 use crate::{Error, Result};
 
 use super::protocol::{CachedTokenInfo, Request, Response, StatusInfo};
@@ -32,8 +32,12 @@ const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 ///   to fish out, so `GetDek` answers `Locked` even though API calls work.
 enum Vault {
     Locked,
-    Encrypted { dek: Dek },
-    Plain { jwks: HashMap<String, serde_json::Value> },
+    Encrypted {
+        dek: Dek,
+    },
+    Plain {
+        jwks: HashMap<String, serde_json::Value>,
+    },
 }
 
 struct AgentState {
@@ -117,7 +121,10 @@ pub async fn run(opts: DaemonOptions) -> Result<()> {
     let _ = std::fs::write(pid_path(), std::process::id().to_string());
 
     let idle_timeout = Duration::from_secs(opts.idle_timeout_secs);
-    let state = Arc::new(RwLock::new(AgentState::new(project_dir.clone(), idle_timeout)));
+    let state = Arc::new(RwLock::new(AgentState::new(
+        project_dir.clone(),
+        idle_timeout,
+    )));
 
     tracing::info!(
         socket = %sock.display(),
@@ -193,7 +200,7 @@ pub async fn run(opts: DaemonOptions) -> Result<()> {
 }
 
 async fn wait_sigterm() {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     match signal(SignalKind::terminate()) {
         Ok(mut s) => {
             s.recv().await;
@@ -227,9 +234,13 @@ async fn handle_connection(
     let req: Request = match serde_json::from_str(line.trim()) {
         Ok(r) => r,
         Err(e) => {
-            send(&mut write, &Response::Error {
-                message: format!("bad request: {e}"),
-            }).await?;
+            send(
+                &mut write,
+                &Response::Error {
+                    message: format!("bad request: {e}"),
+                },
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -268,11 +279,15 @@ async fn handle(
         },
         Request::PutDek { dek_b64 } => match do_put_dek(&dek_b64, state).await {
             Ok(()) => Response::Ok,
-            Err(e) => Response::Error { message: e.to_string() },
+            Err(e) => Response::Error {
+                message: e.to_string(),
+            },
         },
         Request::UnlockPlain => match do_unlock_plain(state).await {
             Ok(()) => Response::Ok,
-            Err(e) => Response::Error { message: e.to_string() },
+            Err(e) => Response::Error {
+                message: e.to_string(),
+            },
         },
         Request::GetDek => {
             let s = state.read().await;
@@ -289,17 +304,41 @@ async fn handle(
         }
         Request::Status => Response::Status(do_status(state).await),
         Request::GetToken { tenant } => match do_get_token(&tenant, state).await {
-            Ok(Some((token, expires_at))) => Response::Token { access_token: token, expires_at },
+            Ok(Some((token, expires_at))) => Response::Token {
+                access_token: token,
+                expires_at,
+            },
             Ok(None) => Response::Locked,
-            Err(e) => Response::Error { message: e.to_string() },
+            Err(e) => Response::Error {
+                message: e.to_string(),
+            },
         },
-        Request::ApiCall { tenant, method, path, body, confirmed_prod, api_version } => {
-            match do_api_call(&tenant, &method, &path, body, confirmed_prod, api_version, state).await {
+        Request::ApiCall {
+            tenant,
+            method,
+            path,
+            body,
+            confirmed_prod,
+            api_version,
+        } => {
+            match do_api_call(
+                &tenant,
+                &method,
+                &path,
+                body,
+                confirmed_prod,
+                api_version,
+                state,
+            )
+            .await
+            {
                 Ok(Some(value)) => Response::Json { value },
                 Ok(None) => Response::Locked,
                 Err(Error::ProdConfirmRequired) => Response::ProdConfirmRequired,
                 Err(Error::Api { status, body }) => Response::ApiError { status, body },
-                Err(e) => Response::Error { message: e.to_string() },
+                Err(e) => Response::Error {
+                    message: e.to_string(),
+                },
             }
         }
         Request::Shutdown => {
@@ -317,7 +356,13 @@ async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()>
         .as_slice()
         .try_into()
         .map_err(|_| Error::Crypto("put_dek: DEK must be 32 bytes".into()))?;
-    set_vault(state, Vault::Encrypted { dek: Dek::from_bytes(arr) }).await;
+    set_vault(
+        state,
+        Vault::Encrypted {
+            dek: Dek::from_bytes(arr),
+        },
+    )
+    .await;
     Ok(())
 }
 
@@ -354,7 +399,10 @@ async fn do_status(state: Arc<RwLock<AgentState>>) -> StatusInfo {
         .filter_map(|(name, c)| {
             let exp = c.token_cache.lock().unwrap().expires_at();
             if exp > 0 {
-                Some(CachedTokenInfo { tenant: name.clone(), expires_at: exp })
+                Some(CachedTokenInfo {
+                    tenant: name.clone(),
+                    expires_at: exp,
+                })
             } else {
                 None
             }
@@ -488,10 +536,7 @@ async fn do_api_call(
     Ok(Some(value))
 }
 
-async fn build_client(
-    tenant: &str,
-    state: Arc<RwLock<AgentState>>,
-) -> Result<Arc<AicClient>> {
+async fn build_client(tenant: &str, state: Arc<RwLock<AgentState>>) -> Result<Arc<AicClient>> {
     let jwk = {
         let s = state.read().await;
         match &s.vault {

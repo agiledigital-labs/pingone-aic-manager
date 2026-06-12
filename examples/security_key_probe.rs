@@ -13,14 +13,15 @@
 //! `<device-index>` defaults to 0; values come from `list`.
 //! Set `SECURITY_KEY_PIN=…` before the command to skip the interactive prompt.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use ctap_hid_fido2::{
+    Cfg, FidoKeyHidFactory, HidInfo,
     fidokey::{
-        get_info::InfoOption, AssertionExtension as Aext, CredentialExtension as Cext,
-        FidoKeyHid, GetAssertionArgsBuilder, MakeCredentialArgsBuilder,
+        AssertionExtension as Aext, CredentialExtension as Cext, FidoKeyHid,
+        GetAssertionArgsBuilder, MakeCredentialArgsBuilder, get_info::InfoOption,
     },
-    get_fidokey_devices, util, verifier, Cfg, FidoKeyHidFactory, HidInfo,
+    get_fidokey_devices, util, verifier,
 };
 
 const RP_ID: &str = "aic-edit-probe";
@@ -52,7 +53,9 @@ fn list_devices() -> Result<(), String> {
     let devices = get_fidokey_devices();
     if devices.is_empty() {
         println!("No FIDO HID devices found.");
-        println!("(check `lsusb` shows the key, and that you're in the right user group for hidraw)");
+        println!(
+            "(check `lsusb` shows the key, and that you're in the right user group for hidraw)"
+        );
         return Ok(());
     }
     println!("Found {} FIDO HID device(s):", devices.len());
@@ -116,12 +119,14 @@ fn device_info(idx: Option<usize>) -> Result<(), String> {
     }
     println!();
 
-    println!("Key claims to support `hmac-secret`?  {}",
+    println!(
+        "Key claims to support `hmac-secret`?  {}",
         if info.extensions.iter().any(|e| e == "hmac-secret") {
             "YES"
         } else {
             "NO"
-        });
+        }
+    );
     println!(
         "Client PIN set?  {}",
         match device.enable_info_option(&InfoOption::ClientPin) {
@@ -166,8 +171,7 @@ fn enroll(idx: Option<usize>) -> Result<(), String> {
         .any(|e| matches!(e, Cext::HmacSecret(Some(true))));
     if !hmac_supported {
         return Err(
-            "device returned attestation, but hmac-secret extension is not enabled on it"
-                .into(),
+            "device returned attestation, but hmac-secret extension is not enabled on it".into(),
         );
     }
 

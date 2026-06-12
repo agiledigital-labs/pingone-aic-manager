@@ -115,7 +115,13 @@ pub struct EsvPending {
 }
 
 pub fn pending_summary(app: &App, tenant: &str) -> EsvPending {
-    let mut ids = app.esv.list.pending_ids.get(tenant).cloned().unwrap_or_default();
+    let mut ids = app
+        .esv
+        .list
+        .pending_ids
+        .get(tenant)
+        .cloned()
+        .unwrap_or_default();
     if let Some(LoadState::Loaded(items)) = app.esv.list.data.get(tenant) {
         ids.extend(
             items
@@ -901,7 +907,8 @@ pub fn handle_search_key(app: &mut App, key: KeyEvent) {
             KeyCode::PageDown => crate::keymap::move_selection(app, 10),
             _ => {
                 let before = app.secret.list.query.value().to_string();
-                if app.secret.list.query.handle_key(&key) && app.secret.list.query.value() != before {
+                if app.secret.list.query.handle_key(&key) && app.secret.list.query.value() != before
+                {
                     app.secret.list.selected = 0;
                     app.secret.list.scroll = 0;
                 }
@@ -994,7 +1001,10 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
                 .map(|(_, id)| id.clone())
                 .collect();
             vs.retain(|v| !suppressed.contains(id_of(v)));
-            app.esv.list.data.insert(tenant.clone(), LoadState::Loaded(vs));
+            app.esv
+                .list
+                .data
+                .insert(tenant.clone(), LoadState::Loaded(vs));
             if is_active {
                 let n = app
                     .esv
@@ -1010,7 +1020,10 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
             if matches!(app.esv.list.data.get(&tenant), Some(LoadState::Loaded(_))) {
                 tracing::warn!("ESV refresh failed for {tenant}: {e}");
             } else {
-                app.esv.list.data.insert(tenant.clone(), LoadState::Failed(e));
+                app.esv
+                    .list
+                    .data
+                    .insert(tenant.clone(), LoadState::Failed(e));
             }
             false
         }
@@ -1033,12 +1046,7 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
     // pending-secret fetch succeeded gates "authoritative" below, since the
     // pending count now folds in secrets.
     let secret_pending_refreshed = outcome.pending_secrets.is_ok();
-    crate::screens::secret::apply_refresh(
-        app,
-        &tenant,
-        &outcome.secrets,
-        &outcome.pending_secrets,
-    );
+    crate::screens::secret::apply_refresh(app, &tenant, &outcome.secrets, &outcome.pending_secrets);
 
     match outcome.startup {
         Ok(StartupStatus::Restarting) => {

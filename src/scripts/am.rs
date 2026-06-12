@@ -27,7 +27,10 @@ fn ref_from_config(raw: &Value) -> RemoteRef {
             .get("context")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        is_default: raw.get("default").and_then(|v| v.as_bool()).unwrap_or(false),
+        is_default: raw
+            .get("default")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         evaluator_version: raw
             .get("evaluatorVersion")
             .and_then(|v| v.as_str())
@@ -122,8 +125,14 @@ pub async fn write(
     confirmed_prod: bool,
 ) -> Result<Value> {
     let path = format!("{}/scripts/{}", realm_path(realm), script.reference.id);
-    crate::aic::api::put_versioned(tenant, &path, script.raw_config.clone(), confirmed_prod, API_VERSION)
-        .await
+    crate::aic::api::put_versioned(
+        tenant,
+        &path,
+        script.raw_config.clone(),
+        confirmed_prod,
+        API_VERSION,
+    )
+    .await
 }
 
 pub async fn delete(tenant: &str, realm: &str, id: &str, confirmed_prod: bool) -> Result<Value> {
@@ -172,7 +181,10 @@ fn slug_for(context: Option<&str>, evaluator_version: Option<&str>) -> String {
     let Some(ctx) = context else {
         return "unknown".to_string();
     };
-    if matches!(ctx, "AUTHENTICATION_TREE_DECISION_NODE" | "SCRIPTED_DECISION_NODE") {
+    if matches!(
+        ctx,
+        "AUTHENTICATION_TREE_DECISION_NODE" | "SCRIPTED_DECISION_NODE"
+    ) {
         return if evaluator_version == Some("1.0") {
             "decision-node-legacy".to_string()
         } else {
@@ -281,7 +293,12 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             None,
         ),
         "lib" => (
-            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "library.d.ts"],
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "library.d.ts",
+            ],
             Some("./*"),
         ),
         // Legacy OIDC claims is self-contained (its legacy logger/binding shapes
@@ -291,37 +308,75 @@ pub fn leaf_tsconfig(slug: &str) -> String {
         // scripts/gen-binding-types.mjs): shared next-gen common + a generated
         // per-context overlay.
         "oidc-claims-ng" => (
-            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "oidc-claims-ng.d.ts"],
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "oidc-claims-ng.d.ts",
+            ],
             Some("../lib/*"),
         ),
         "device-match" => (
-            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "device-match.d.ts"],
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "device-match.d.ts",
+            ],
             Some("../lib/*"),
         ),
         "social-handler" => (
-            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "social-handler.d.ts"],
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "social-handler.d.ts",
+            ],
             Some("../lib/*"),
         ),
         "saml-nameid-mapper" => (
-            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "saml-nameid-mapper.d.ts"],
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "saml-nameid-mapper.d.ts",
+            ],
             Some("../lib/*"),
         ),
         "saml-sp-account-mapper" => (
-            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "saml-sp-account-mapper.d.ts"],
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "saml-sp-account-mapper.d.ts",
+            ],
             Some("../lib/*"),
         ),
         "oauth2-dcr" => (
-            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "oauth2-dcr.d.ts"],
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "oauth2-dcr.d.ts",
+            ],
             Some("../lib/*"),
         ),
         "pingone-verify" => (
-            &["rhino-1.7.14.d.ts", "common.d.ts", "nextgen-common.d.ts", "pingone-verify.d.ts"],
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "pingone-verify.d.ts",
+            ],
             Some("../lib/*"),
         ),
         // Any other context (legacy OAuth2, SAML adapters, policy condition, …):
         // shared Rhino + common globals, plus the classic Debug `logger` (these
         // are mostly unmigrated/legacy-style scripts), until they go next-gen.
-        _ => (&["rhino-1.7.14.d.ts", "common.d.ts", "legacy-common.d.ts"], None),
+        _ => (
+            &["rhino-1.7.14.d.ts", "common.d.ts", "legacy-common.d.ts"],
+            None,
+        ),
     };
 
     let mut includes = vec!["./**/*".to_string()];
@@ -400,11 +455,17 @@ mod tests {
     fn context_routes_to_per_type_folder() {
         // Next-gen vs legacy scripted decision node split by evaluatorVersion.
         assert_eq!(
-            workspace_subpath(&rref_v(Some("AUTHENTICATION_TREE_DECISION_NODE"), Some("2.0")), "bravo"),
+            workspace_subpath(
+                &rref_v(Some("AUTHENTICATION_TREE_DECISION_NODE"), Some("2.0")),
+                "bravo"
+            ),
             PathBuf::from("am/bravo/decision-node/MyScript.cjs")
         );
         assert_eq!(
-            workspace_subpath(&rref_v(Some("AUTHENTICATION_TREE_DECISION_NODE"), Some("1.0")), "alpha"),
+            workspace_subpath(
+                &rref_v(Some("AUTHENTICATION_TREE_DECISION_NODE"), Some("1.0")),
+                "alpha"
+            ),
             PathBuf::from("am/alpha/decision-node-legacy/MyScript.cjs")
         );
         assert_eq!(
@@ -438,9 +499,13 @@ mod tests {
 
     #[test]
     fn skips_groovy_and_internal_scripts() {
-        assert!(is_syncable(&json!({"name": "My Node", "language": "JAVASCRIPT"})));
+        assert!(is_syncable(
+            &json!({"name": "My Node", "language": "JAVASCRIPT"})
+        ));
         // Groovy is no longer supported by AIC.
-        assert!(!is_syncable(&json!({"name": "Old Mapper", "language": "GROOVY"})));
+        assert!(!is_syncable(
+            &json!({"name": "Old Mapper", "language": "GROOVY"})
+        ));
         // Product-internal scripts (only the name prefix marks them).
         assert!(!is_syncable(
             &json!({"name": "ForgeRock Internal: OIDC Claims Script", "language": "JAVASCRIPT"})
@@ -452,7 +517,10 @@ mod tests {
         // Every folder gets a leaf tsconfig; only LIBRARY also gets the wrapper.
         let oidc = extra_files(&rref(Some("OIDC_CLAIMS")), "alpha");
         assert_eq!(oidc.len(), 1);
-        assert_eq!(oidc[0].0, PathBuf::from("am/alpha/oidc-claims/tsconfig.json"));
+        assert_eq!(
+            oidc[0].0,
+            PathBuf::from("am/alpha/oidc-claims/tsconfig.json")
+        );
         assert!(oidc[0].1.contains("../../types/oidc-claims.d.ts"));
 
         let lib = extra_files(&rref(Some("LIBRARY")), "bravo");
@@ -509,8 +577,14 @@ mod tests {
             ("pingone-verify", "pingone-verify.d.ts"),
         ] {
             let cfg = leaf_tsconfig(slug);
-            assert!(cfg.contains("../../types/nextgen-common.d.ts"), "{slug} nextgen-common");
-            assert!(cfg.contains(&format!("../../types/{overlay}")), "{slug} overlay");
+            assert!(
+                cfg.contains("../../types/nextgen-common.d.ts"),
+                "{slug} nextgen-common"
+            );
+            assert!(
+                cfg.contains(&format!("../../types/{overlay}")),
+                "{slug} overlay"
+            );
             assert!(!cfg.contains("legacy-common"), "{slug} no legacy-common");
             assert!(cfg.contains("\"*\": [\"../lib/*\"]"), "{slug} lib alias");
         }

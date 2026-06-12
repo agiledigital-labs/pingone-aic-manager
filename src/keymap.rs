@@ -130,7 +130,14 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             .unwrap_or(false);
 
     if can_apply {
-        out.push(b(&[Trigger::Ctrl('s')], "^S", "apply changes", true, true, Apply));
+        out.push(b(
+            &[Trigger::Ctrl('s')],
+            "^S",
+            "apply changes",
+            true,
+            true,
+            Apply,
+        ));
     }
     // Tab / Shift-Tab cycle the top-level tabs (ESVs, Scripts, …). Only worth a
     // footer hint once there's more than one tab; help documents it regardless.
@@ -215,7 +222,14 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             ));
             out.push(b(&[Trigger::Char('P')], "P", "push", true, true, Push));
         }
-        out.push(b(&[Trigger::Char('a')], "a", "pull all", true, true, PullAll));
+        out.push(b(
+            &[Trigger::Char('a')],
+            "a",
+            "pull all",
+            true,
+            true,
+            PullAll,
+        ));
     } else {
         if n > 0 {
             if secrets {
@@ -250,7 +264,11 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         out.push(b(
             &[Trigger::Ctrl('n')],
             "^N",
-            if secrets { "new secret" } else { "new variable" },
+            if secrets {
+                "new secret"
+            } else {
+                "new variable"
+            },
             true,
             true,
             NewItem,
@@ -314,7 +332,14 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         true,
         AuthSettings,
     ));
-    out.push(b(&[Trigger::Char('L')], "L", "lock & quit", false, true, Lock));
+    out.push(b(
+        &[Trigger::Char('L')],
+        "L",
+        "lock & quit",
+        false,
+        true,
+        Lock,
+    ));
     push_global(&mut out);
     out
 }
@@ -392,8 +417,22 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
 
 /// Quit bindings — present in every Normal state, never shown as hints.
 fn push_global(out: &mut Vec<Bind>) {
-    out.push(b(&[Trigger::Char('q')], "q", "quit", false, false, Act::Quit));
-    out.push(b(&[Trigger::Ctrl('c')], "^C", "quit", false, false, Act::Quit));
+    out.push(b(
+        &[Trigger::Char('q')],
+        "q",
+        "quit",
+        false,
+        false,
+        Act::Quit,
+    ));
+    out.push(b(
+        &[Trigger::Ctrl('c')],
+        "^C",
+        "quit",
+        false,
+        false,
+        Act::Quit,
+    ));
 }
 
 /// The single key-dispatch entry point for every input mode. `app::handle_key`

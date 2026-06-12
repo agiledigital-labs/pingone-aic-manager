@@ -92,7 +92,11 @@ pub fn unlock_with_password(
         .password_wrap()
         .ok_or_else(|| crate::Error::Crypto("no password wrap on file".into()))?;
     let (salt_b64, nonce_b64, ct_b64) = match pw_wrap {
-        wraps::Wrap::Password { salt, nonce, ciphertext } => (salt, nonce, ciphertext),
+        wraps::Wrap::Password {
+            salt,
+            nonce,
+            ciphertext,
+        } => (salt, nonce, ciphertext),
         _ => unreachable!(),
     };
     let salt: [u8; 16] = wraps::b64_decode(salt_b64)?
@@ -109,9 +113,7 @@ pub fn unlock_with_password(
     Ok((dek, jwks))
 }
 
-pub fn decrypt_keys_file(
-    dek: &crypto::Dek,
-) -> Result<HashMap<String, serde_json::Value>> {
+pub fn decrypt_keys_file(dek: &crypto::Dek) -> Result<HashMap<String, serde_json::Value>> {
     match ProjectConfig::load_keys_enc()? {
         Some(data) => {
             let plaintext = crypto::decrypt_data(&data, dek)?;
@@ -122,10 +124,7 @@ pub fn decrypt_keys_file(
 }
 
 /// Encrypt + persist the JWK map using the in-memory DEK.
-pub fn save_jwk_map(
-    map: &HashMap<String, serde_json::Value>,
-    dek: &crypto::Dek,
-) -> Result<()> {
+pub fn save_jwk_map(map: &HashMap<String, serde_json::Value>, dek: &crypto::Dek) -> Result<()> {
     let bytes = serde_json::to_vec(map)?;
     let enc = crypto::encrypt_data(&bytes, dek)?;
     ProjectConfig::save_keys_enc(&enc)?;
@@ -185,16 +184,13 @@ pub fn unlock_with_security_key(
     wraps_file: &wraps::WrapsFile,
     pin: Option<&str>,
 ) -> Result<(crypto::Dek, HashMap<String, serde_json::Value>)> {
-    let salt_b64 = wraps_file
-        .security_key_hmac_salt
-        .as_ref()
-        .ok_or_else(|| {
-            crate::Error::Crypto(
-                "wraps.toml has security keys enrolled but no security_key_hmac_salt — \
+    let salt_b64 = wraps_file.security_key_hmac_salt.as_ref().ok_or_else(|| {
+        crate::Error::Crypto(
+            "wraps.toml has security keys enrolled but no security_key_hmac_salt — \
                  the salt was moved file-level; please remove and re-enrol your keys"
-                    .into(),
-            )
-        })?;
+                .into(),
+        )
+    })?;
     let hmac_salt: [u8; crate::security_key::HMAC_SALT_LEN] = wraps::b64_decode(salt_b64)?
         .as_slice()
         .try_into()
@@ -220,19 +216,20 @@ pub fn unlock_with_security_key(
     let matched_wrap = security_wraps
         .iter()
         .find(|w| match w {
-            wraps::Wrap::SecurityKey { credential_id, .. } => {
-                wraps::b64_decode(credential_id).map(|b| b == matched_id).unwrap_or(false)
-            }
+            wraps::Wrap::SecurityKey { credential_id, .. } => wraps::b64_decode(credential_id)
+                .map(|b| b == matched_id)
+                .unwrap_or(false),
             _ => false,
         })
         .ok_or_else(|| {
             crate::Error::Crypto(
-                "security key returned a credential id that doesn't match any enrolled wrap"
-                    .into(),
+                "security key returned a credential id that doesn't match any enrolled wrap".into(),
             )
         })?;
     let (nonce_b64, ct_b64) = match matched_wrap {
-        wraps::Wrap::SecurityKey { nonce, ciphertext, .. } => (nonce, ciphertext),
+        wraps::Wrap::SecurityKey {
+            nonce, ciphertext, ..
+        } => (nonce, ciphertext),
         _ => unreachable!("filtered above"),
     };
     let nonce: [u8; 12] = wraps::b64_decode(nonce_b64)?
@@ -414,5 +411,4 @@ impl ProjectConfig {
         }
         Ok(Some(fs::read(path)?))
     }
-
 }

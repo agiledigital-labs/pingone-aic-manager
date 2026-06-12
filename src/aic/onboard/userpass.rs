@@ -9,7 +9,7 @@
 //! flows need a real browser. Pattern 1 is the answer in that case.
 
 use crate::config::tenant::TenantTheme;
-use crate::ui::widgets::text_field::{fields, TextField};
+use crate::ui::widgets::text_field::{TextField, fields};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpField {
@@ -136,7 +136,10 @@ pub enum CallbackOutcome {
     Ready(serde_json::Value),
     /// The journey is asking for an additional input (e.g. TOTP). The UI should
     /// display `prompt`, collect a string, and call `walk_with_extra` to retry.
-    PromptRequired { prompt: String, body: serde_json::Value },
+    PromptRequired {
+        prompt: String,
+        body: serde_json::Value,
+    },
     /// Cannot continue from here (e.g. PollingWaitCallback for passkey/push).
     Unsupported(String),
 }
@@ -156,11 +159,7 @@ fn looks_like(prompt: &str, hints: &[&str]) -> bool {
 /// Fill the callbacks in `resp_body` using known credentials. If we hit a
 /// callback that needs user input (TOTP), return `PromptRequired` so the
 /// caller can collect the value and call `walk_with_extra`.
-pub fn walk(
-    resp_body: &serde_json::Value,
-    username: &str,
-    password: &str,
-) -> CallbackOutcome {
+pub fn walk(resp_body: &serde_json::Value, username: &str, password: &str) -> CallbackOutcome {
     walk_with_extra(resp_body, username, password, None)
 }
 
@@ -173,10 +172,7 @@ pub fn walk_with_extra(
     extra: Option<&str>,
 ) -> CallbackOutcome {
     let mut body = resp_body.clone();
-    let cbs = match body
-        .get_mut("callbacks")
-        .and_then(|v| v.as_array_mut())
-    {
+    let cbs = match body.get_mut("callbacks").and_then(|v| v.as_array_mut()) {
         Some(c) => c,
         None => return CallbackOutcome::Unsupported("response has no callbacks".into()),
     };
@@ -184,7 +180,11 @@ pub fn walk_with_extra(
     let mut name_used = false;
     for cb in cbs.iter_mut() {
         // Pre-extract all read-only fields before taking a mutable borrow of `input`.
-        let ty = cb.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let ty = cb
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let outputs = cb.get("output").cloned();
         let prompt = outputs
             .as_ref()
@@ -192,7 +192,9 @@ pub fn walk_with_extra(
             .and_then(|arr| {
                 arr.iter().find_map(|item| {
                     if item.get("name").and_then(|n| n.as_str()) == Some("prompt") {
-                        item.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
+                        item.get("value")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
                     } else {
                         None
                     }
@@ -218,13 +220,11 @@ pub fn walk_with_extra(
             .and_then(|arr| {
                 arr.iter().find_map(|item| {
                     if item.get("name").and_then(|n| n.as_str()) == Some("choices") {
-                        item.get("value")
-                            .and_then(|v| v.as_array())
-                            .map(|vs| {
-                                vs.iter()
-                                    .map(|v| v.as_str().unwrap_or("").to_string())
-                                    .collect()
-                            })
+                        item.get("value").and_then(|v| v.as_array()).map(|vs| {
+                            vs.iter()
+                                .map(|v| v.as_str().unwrap_or("").to_string())
+                                .collect()
+                        })
                     } else {
                         None
                     }
@@ -239,7 +239,8 @@ pub fn walk_with_extra(
 
         match ty.as_str() {
             "NameCallback" => {
-                if !name_used && looks_like(&prompt, USER_HINTS) && !looks_like(&prompt, OTP_HINTS) {
+                if !name_used && looks_like(&prompt, USER_HINTS) && !looks_like(&prompt, OTP_HINTS)
+                {
                     inp[0]["value"] = serde_json::Value::String(username.to_string());
                     name_used = true;
                 } else if looks_like(&prompt, OTP_HINTS) {

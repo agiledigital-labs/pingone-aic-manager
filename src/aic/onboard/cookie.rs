@@ -4,7 +4,7 @@
 //! account.
 
 use crate::config::tenant::TenantTheme;
-use crate::ui::widgets::text_field::{fields, TextField};
+use crate::ui::widgets::text_field::{TextField, fields};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CookieField {

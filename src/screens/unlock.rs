@@ -2,19 +2,19 @@
 //! the agent doesn't already hold the DEK. Owns the master-password +
 //! security-key PIN fields and the background hmac-secret poll task.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::agent::{AgentClient, Request as AgentRequest, Response as AgentResponse};
 use crate::app::{App, InputMode};
 use crate::auth::UnlockOk;
-use crate::config::crypto::Dek;
 use crate::config::Settings;
+use crate::config::crypto::Dek;
 use crate::event::AppEvent;
 
 /// Which input on the Unlock screen has focus. Only meaningful when a
@@ -77,7 +77,13 @@ impl State {
 /// normal unlock path.
 pub async fn try_agent_unlock(app: &mut App) {
     // Only meaningful when there's an encrypted blob to unlock.
-    if !matches!(app.settings, Some(Settings { encrypt_keys: true, .. })) {
+    if !matches!(
+        app.settings,
+        Some(Settings {
+            encrypt_keys: true,
+            ..
+        })
+    ) {
         return;
     }
 
@@ -171,12 +177,18 @@ fn spawn_security_key_poll(app: &mut App, pin: String) {
         return;
     }
     app.unlock.security_key_armed = true;
-    app.unlock.security_key_cancel.store(false, Ordering::Relaxed);
+    app.unlock
+        .security_key_cancel
+        .store(false, Ordering::Relaxed);
     let wraps = app.wraps.clone();
     let tx = app.events.tx.clone();
     let cancel = app.unlock.security_key_cancel.clone();
     tokio::task::spawn_blocking(move || {
-        let pin_opt = if pin.is_empty() { None } else { Some(pin.as_str()) };
+        let pin_opt = if pin.is_empty() {
+            None
+        } else {
+            Some(pin.as_str())
+        };
         loop {
             if cancel.load(Ordering::Relaxed) {
                 return;
@@ -207,9 +219,7 @@ fn spawn_security_key_poll(app: &mut App, pin: String) {
                         std::thread::sleep(Duration::from_secs(2));
                         continue;
                     }
-                    let _ = tx.send(AppEvent::UnlockResult(Err(format!(
-                        "security key: {msg}"
-                    ))));
+                    let _ = tx.send(AppEvent::UnlockResult(Err(format!("security key: {msg}"))));
                     return;
                 }
             }
@@ -287,10 +297,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-pub async fn handle_result(
-    app: &mut App,
-    result: std::result::Result<UnlockOk, String>,
-) {
+pub async fn handle_result(app: &mut App, result: std::result::Result<UnlockOk, String>) {
     // A late-arriving second result (e.g. security-key unlock fired
     // after we already accepted the password) — drop it.
     if app.input_mode != InputMode::Unlock {
@@ -305,7 +312,9 @@ pub async fn handle_result(
             app.unlock.pin_input.clear();
             app.input_mode = InputMode::Normal;
             // Tell the security-key poll task to stop (if it was running).
-            app.unlock.security_key_cancel.store(true, Ordering::Relaxed);
+            app.unlock
+                .security_key_cancel
+                .store(true, Ordering::Relaxed);
             app.unlock.security_key_armed = false;
             // Order matters: the agent must hold the DEK *before* we fire
             // off the ESV refresh, otherwise the ApiCall lands on a
@@ -316,7 +325,9 @@ pub async fn handle_result(
         Err(e) => {
             // A security-key failure shouldn't take the screen down — let
             // the user retry the tap or fall back to the password field.
-            app.unlock.security_key_cancel.store(true, Ordering::Relaxed);
+            app.unlock
+                .security_key_cancel
+                .store(true, Ordering::Relaxed);
             app.unlock.security_key_armed = false;
             app.unlock.error = Some(format!("Unlock failed: {e}"));
         }

@@ -5,8 +5,8 @@
 //! Both Pattern 1 (paste cookie) and Pattern 2 (in-app u/p) end up here once
 //! they have a session cookie value.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use rand::RngCore;
 use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, traits::PrivateKeyParts};
@@ -218,9 +218,7 @@ fn extract_query_param(url_or_query: &str, key: &str) -> Option<String> {
     for pair in q.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
             if k == key {
-                return Some(
-                    percent_decode(v),
-                );
+                return Some(percent_decode(v));
             }
         }
     }
@@ -246,4 +244,3 @@ fn percent_decode(s: &str) -> String {
     }
     out
 }
-

@@ -1,10 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use rsa::{BigUint, RsaPrivateKey};
 use rsa::pkcs1::EncodeRsaPrivateKey;
+use rsa::{BigUint, RsaPrivateKey};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -18,7 +18,10 @@ pub struct TokenCache {
 
 impl TokenCache {
     pub fn new() -> Self {
-        Self { token: None, expires_at: 0 }
+        Self {
+            token: None,
+            expires_at: 0,
+        }
     }
 
     pub fn get_valid(&self) -> Option<&str> {
@@ -64,9 +67,15 @@ struct JwtClaims {
 }
 
 fn jwk_to_encoding_key(jwk: &serde_json::Value) -> Result<EncodingKey> {
-    let n_b64 = jwk["n"].as_str().ok_or_else(|| Error::Auth("JWK missing 'n'".into()))?;
-    let e_b64 = jwk["e"].as_str().ok_or_else(|| Error::Auth("JWK missing 'e'".into()))?;
-    let d_b64 = jwk["d"].as_str().ok_or_else(|| Error::Auth("JWK missing 'd'".into()))?;
+    let n_b64 = jwk["n"]
+        .as_str()
+        .ok_or_else(|| Error::Auth("JWK missing 'n'".into()))?;
+    let e_b64 = jwk["e"]
+        .as_str()
+        .ok_or_else(|| Error::Auth("JWK missing 'e'".into()))?;
+    let d_b64 = jwk["d"]
+        .as_str()
+        .ok_or_else(|| Error::Auth("JWK missing 'd'".into()))?;
 
     let n = BigUint::from_bytes_be(&B64URL.decode(n_b64)?);
     let e = BigUint::from_bytes_be(&B64URL.decode(e_b64)?);
@@ -78,8 +87,7 @@ fn jwk_to_encoding_key(jwk: &serde_json::Value) -> Result<EncodingKey> {
         RsaPrivateKey::from_components(n, e, d, vec![p, q])
             .map_err(|e| Error::Rsa(e.to_string()))?
     } else {
-        RsaPrivateKey::from_components(n, e, d, vec![])
-            .map_err(|e| Error::Rsa(e.to_string()))?
+        RsaPrivateKey::from_components(n, e, d, vec![]).map_err(|e| Error::Rsa(e.to_string()))?
     };
 
     // jsonwebtoken's `rust_crypto` feature expects PKCS#1 DER, not PKCS#8.
@@ -140,7 +148,10 @@ pub async fn mint_token(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(Error::Api { status: status.as_u16(), body });
+        return Err(Error::Api {
+            status: status.as_u16(),
+            body,
+        });
     }
 
     let json: serde_json::Value = resp.json().await?;

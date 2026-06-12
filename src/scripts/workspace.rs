@@ -7,8 +7,8 @@
 //! [`TEMPLATES_VERSION`] lets us ship updated types/config to existing
 //! workspaces via `aic script workspace update`.
 
-use crate::config::ProjectConfig;
 use crate::Result;
+use crate::config::ProjectConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -26,36 +26,117 @@ const REALMS: &[&str] = &["alpha", "bravo"];
 /// per-folder leaf tsconfigs compose them.
 const MANAGED: &[(&str, &str)] = &[
     // AM shared type defs.
-    ("am/types/rhino-1.7.14.d.ts", include_str!("templates/am/types/rhino-1.7.14.d.ts")),
-    ("am/types/common.d.ts", include_str!("templates/am/types/common.d.ts")),
-    ("am/types/nextgen-common.d.ts", include_str!("templates/am/types/nextgen-common.d.ts")),
-    ("am/types/legacy-common.d.ts", include_str!("templates/am/types/legacy-common.d.ts")),
-    ("am/types/decision-node-base.d.ts", include_str!("templates/am/types/decision-node-base.d.ts")),
-    ("am/types/decision-node-next.d.ts", include_str!("templates/am/types/decision-node-next.d.ts")),
-    ("am/types/decision-node-legacy.d.ts", include_str!("templates/am/types/decision-node-legacy.d.ts")),
-    ("am/types/library.d.ts", include_str!("templates/am/types/library.d.ts")),
-    ("am/types/oidc-claims.d.ts", include_str!("templates/am/types/oidc-claims.d.ts")),
+    (
+        "am/types/rhino-1.7.14.d.ts",
+        include_str!("templates/am/types/rhino-1.7.14.d.ts"),
+    ),
+    (
+        "am/types/common.d.ts",
+        include_str!("templates/am/types/common.d.ts"),
+    ),
+    (
+        "am/types/nextgen-common.d.ts",
+        include_str!("templates/am/types/nextgen-common.d.ts"),
+    ),
+    (
+        "am/types/legacy-common.d.ts",
+        include_str!("templates/am/types/legacy-common.d.ts"),
+    ),
+    (
+        "am/types/decision-node-base.d.ts",
+        include_str!("templates/am/types/decision-node-base.d.ts"),
+    ),
+    (
+        "am/types/decision-node-next.d.ts",
+        include_str!("templates/am/types/decision-node-next.d.ts"),
+    ),
+    (
+        "am/types/decision-node-legacy.d.ts",
+        include_str!("templates/am/types/decision-node-legacy.d.ts"),
+    ),
+    (
+        "am/types/library.d.ts",
+        include_str!("templates/am/types/library.d.ts"),
+    ),
+    (
+        "am/types/oidc-claims.d.ts",
+        include_str!("templates/am/types/oidc-claims.d.ts"),
+    ),
     // Next-gen context overlays generated from the editor binding metadata.
-    ("am/types/oidc-claims-ng.d.ts", include_str!("templates/am/types/oidc-claims-ng.d.ts")),
-    ("am/types/device-match.d.ts", include_str!("templates/am/types/device-match.d.ts")),
-    ("am/types/social-handler.d.ts", include_str!("templates/am/types/social-handler.d.ts")),
-    ("am/types/saml-nameid-mapper.d.ts", include_str!("templates/am/types/saml-nameid-mapper.d.ts")),
-    ("am/types/saml-sp-account-mapper.d.ts", include_str!("templates/am/types/saml-sp-account-mapper.d.ts")),
-    ("am/types/oauth2-dcr.d.ts", include_str!("templates/am/types/oauth2-dcr.d.ts")),
-    ("am/types/pingone-verify.d.ts", include_str!("templates/am/types/pingone-verify.d.ts")),
-    ("am/tsconfig.json", include_str!("templates/am/tsconfig.json")),
-    ("am/eslint.config.js", include_str!("templates/am/eslint.config.js")),
+    (
+        "am/types/oidc-claims-ng.d.ts",
+        include_str!("templates/am/types/oidc-claims-ng.d.ts"),
+    ),
+    (
+        "am/types/device-match.d.ts",
+        include_str!("templates/am/types/device-match.d.ts"),
+    ),
+    (
+        "am/types/social-handler.d.ts",
+        include_str!("templates/am/types/social-handler.d.ts"),
+    ),
+    (
+        "am/types/saml-nameid-mapper.d.ts",
+        include_str!("templates/am/types/saml-nameid-mapper.d.ts"),
+    ),
+    (
+        "am/types/saml-sp-account-mapper.d.ts",
+        include_str!("templates/am/types/saml-sp-account-mapper.d.ts"),
+    ),
+    (
+        "am/types/oauth2-dcr.d.ts",
+        include_str!("templates/am/types/oauth2-dcr.d.ts"),
+    ),
+    (
+        "am/types/pingone-verify.d.ts",
+        include_str!("templates/am/types/pingone-verify.d.ts"),
+    ),
+    (
+        "am/tsconfig.json",
+        include_str!("templates/am/tsconfig.json"),
+    ),
+    (
+        "am/eslint.config.js",
+        include_str!("templates/am/eslint.config.js"),
+    ),
     // IDM shared type defs.
-    ("idm/types/rhino-1.7.14.d.ts", include_str!("templates/idm/types/rhino-1.7.14.d.ts")),
-    ("idm/types/common.d.ts", include_str!("templates/idm/types/common.d.ts")),
-    ("idm/types/endpoint.d.ts", include_str!("templates/idm/types/endpoint.d.ts")),
-    ("idm/types/schedule.d.ts", include_str!("templates/idm/types/schedule.d.ts")),
-    ("idm/tsconfig.json", include_str!("templates/idm/tsconfig.json")),
-    ("idm/eslint.config.js", include_str!("templates/idm/eslint.config.js")),
-    ("idm/endpoint/tsconfig.json", include_str!("templates/idm/endpoint/tsconfig.json")),
-    ("idm/schedule/tsconfig.json", include_str!("templates/idm/schedule/tsconfig.json")),
+    (
+        "idm/types/rhino-1.7.14.d.ts",
+        include_str!("templates/idm/types/rhino-1.7.14.d.ts"),
+    ),
+    (
+        "idm/types/common.d.ts",
+        include_str!("templates/idm/types/common.d.ts"),
+    ),
+    (
+        "idm/types/endpoint.d.ts",
+        include_str!("templates/idm/types/endpoint.d.ts"),
+    ),
+    (
+        "idm/types/schedule.d.ts",
+        include_str!("templates/idm/types/schedule.d.ts"),
+    ),
+    (
+        "idm/tsconfig.json",
+        include_str!("templates/idm/tsconfig.json"),
+    ),
+    (
+        "idm/eslint.config.js",
+        include_str!("templates/idm/eslint.config.js"),
+    ),
+    (
+        "idm/endpoint/tsconfig.json",
+        include_str!("templates/idm/endpoint/tsconfig.json"),
+    ),
+    (
+        "idm/schedule/tsconfig.json",
+        include_str!("templates/idm/schedule/tsconfig.json"),
+    ),
     // Tooling: per-leaf type-check runner used by `npm run type-check`.
-    ("tools/check-types.mjs", include_str!("templates/tools/check-types.mjs")),
+    (
+        "tools/check-types.mjs",
+        include_str!("templates/tools/check-types.mjs"),
+    ),
 ];
 
 /// Files this tool managed under older template versions that are now obsolete
@@ -75,7 +156,10 @@ const USER: &[(&str, &str)] = &[
     ("package.json", include_str!("templates/package.json")),
     (".prettierrc", include_str!("templates/.prettierrc")),
     ("README.md", include_str!("templates/README.md")),
-    ("tests/example.test.ts", include_str!("templates/tests/example.test.ts")),
+    (
+        "tests/example.test.ts",
+        include_str!("templates/tests/example.test.ts"),
+    ),
 ];
 
 /// Our own `.gitignore` (the p1-sync one references `.p1-sync/`). Ignores build
@@ -117,7 +201,9 @@ pub fn applied_version(tenant: &str) -> Result<u32> {
 fn record_version(tenant: &str) -> Result<()> {
     let dir = ProjectConfig::aic_sync_dir(tenant);
     std::fs::create_dir_all(&dir)?;
-    let state = WorkspaceState { templates_version: TEMPLATES_VERSION };
+    let state = WorkspaceState {
+        templates_version: TEMPLATES_VERSION,
+    };
     std::fs::write(state_path(tenant), toml::to_string_pretty(&state)?)?;
     Ok(())
 }
@@ -164,7 +250,10 @@ fn scaffold(tenant: &str, is_update: bool) -> Result<WorkspaceReport> {
 /// Scaffold into an explicit `tree` dir (no tenant state). Split out from
 /// [`scaffold`] so it can be exercised against a temp dir in tests.
 fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
-    let mut report = WorkspaceReport { tree: tree.to_path_buf(), ..Default::default() };
+    let mut report = WorkspaceReport {
+        tree: tree.to_path_buf(),
+        ..Default::default()
+    };
 
     // AM script folders are created per type on pull (each gets its own leaf
     // `tsconfig.json` then — see `am::extra_files`), so we only scaffold the
@@ -241,7 +330,11 @@ mod tests {
         }
         // The layered type set replaced the old root `*.d.ts` files.
         assert!(MANAGED.iter().any(|(r, _)| *r == "am/types/common.d.ts"));
-        assert!(MANAGED.iter().any(|(r, _)| *r == "am/types/decision-node-base.d.ts"));
+        assert!(
+            MANAGED
+                .iter()
+                .any(|(r, _)| *r == "am/types/decision-node-base.d.ts")
+        );
         assert!(MANAGED.iter().any(|(r, _)| *r == "idm/types/endpoint.d.ts"));
         assert!(USER.iter().any(|(r, _)| *r == "package.json"));
     }
