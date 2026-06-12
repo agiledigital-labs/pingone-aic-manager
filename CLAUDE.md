@@ -106,10 +106,20 @@ scripts/verify-endpoint.sh
 # Hit an endpoint to inspect a shape:
 scripts/verify-endpoint.sh "/environment/variables"
 
-# Build / run:
+# Build / run / verify:
 cargo check
-cargo run
+cargo test            # unit tests are co-located in the modules they test
+cargo fmt
+cargo run             # no args → TUI; subcommands → CLI (see `aic --help`)
 ```
+
+For TUI work, follow the visual + interaction rules in `docs/DESIGN.md`
+(borderless panels, tally-style tabs, semantic colors). Don't redebate them.
+
+For script-template work (`src/aic/script/templates/`), the runtime ground
+truth is `scripts/rhino-script-tester/` — paired probe fixtures run against a
+live journey. New syntax/binding claims get a fixture pair before they get a
+lint rule or a doc row.
 
 ## 8. Things to NOT do
 
@@ -123,22 +133,36 @@ cargo run
 - **Don't try to create new realms.** AIC only allows `alpha` + `bravo` + root.
 - **Don't poll `/environment/startup?_action=restart` aggressively** —
   rate limits are tighter than the read endpoints.
+- **Don't expect `src/agent/` code changes to take effect while an agent is
+  running.** `aic logout` only *locks* the daemon — the old binary stays
+  resident. Run `aic stop`, then relaunch, before testing agent changes.
+- **Don't edit `src/aic/script/templates/` without bumping
+  `TEMPLATES_VERSION`** in `src/aic/script/workspace.rs` — otherwise
+  scaffolded workspaces never receive the update.
 
-## 9. Project layout
+## 9. Project layout — routing map
 
-```
-/home/dave/w/aic-edit/
-├── .envrc                     # sandbox tenant config — gitignored, treat as secret
-├── .gitignore
-├── Cargo.toml
-├── CLAUDE.md                  # this file
-├── src/
-│   └── main.rs                # stub — TUI implementation comes in Step 2
-├── docs/
-│   └── api/                   # verified API reference; keep in sync with live behaviour
-└── scripts/
-    └── verify-endpoint.sh     # mint token + curl helper
-```
+Updated 2026-06-13. A feature-vertical restructure is in progress
+(plan + status: `docs/orthogonality-review.md`); this table tracks **current
+reality** and must be updated as each phase lands. Pull only the rows you
+need into context.
+
+| To change… | Code lives in | Read first |
+|---|---|---|
+| ESV variables | `src/screens/esv.rs`, ESV rendering inline in `src/ui/mod.rs`, `src/aic/esv.rs`, `aic esv` in `src/cli/mod.rs` | `docs/api/03-esvs.md` |
+| ESV secrets | `src/screens/secret.rs`, `src/ui/secret.rs`, `aic esv secret` in `src/cli/mod.rs` | `docs/api/03-esvs.md` |
+| Script sync (pull/push/sync/watch/diff) | `src/aic/script/`, `src/screens/scripts.rs`, `src/ui/scripts.rs`, `aic script` in `src/cli/mod.rs` | `docs/api/04-scripts.md`, `11`, `12`, `13` |
+| Script workspace templates (lint/types) | `src/aic/script/templates/` + `TEMPLATES_VERSION` in `workspace.rs` | `docs/api/12-script-bindings-matrix.md` |
+| Tokens / HTTP transport / daemon | `src/aic/api.rs`, `src/aic/auth.rs`, `src/agent/` | `docs/api/00-auth.md`, `01`, `02`; `src/agent/mod.rs` header |
+| Local credential vault / unlock | `src/screens/{unlock,auth_setup,auth_settings}.rs` + `src/ui/` twins, `src/security_key.rs`, `src/config/{crypto,wraps}.rs` | — (local-only, no AIC docs) |
+| Onboarding (add tenant) | `src/aic/onboard/`, `src/screens/onboard.rs`, `src/ui/onboard.rs` | `docs/api/00-auth.md`, `99-…` Q11/Q12 |
+| Undo | `src/undo.rs`, `src/screens/undo_history.rs`, `src/ui/undo_history.rs` | — |
+| TUI look & feel / keybindings | `src/ui/`, `src/theme.rs`, `src/keymap.rs` | `docs/DESIGN.md` |
+| CLI plumbing (clap, ctx, login) | `src/cli/mod.rs` | — |
+
+Global registration points that **every new feature** must touch (one arm
+each): `app::InputMode`, `event::AppEvent`, `keymap::dispatch`, `ui::draw`,
+`cli::Command`.
 
 ## 10. When unsure
 

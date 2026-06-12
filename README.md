@@ -6,12 +6,8 @@ configuration. Both surfaces share an `ssh-agent`-shaped background daemon
 that holds decrypted service-account keys in memory and mints / refreshes
 bearer tokens on demand, so every tenant call goes through one path.
 
-**Status:** Step 1 + Step 2 + agent / CLI + ESVs (variables + secrets) +
-script sync (`aic script` — AM scripts + IDM endpoints/schedules: pull/push/
-sync/watch/diff, CLI) complete.
-Onboarding (cookie / userpass / paste / sandbox-import) works end-to-end.
-A TUI Scripts tab (browse + pull/push) ships too. OAuth2 / SAML / journeys are
-the next slices — see [PLAN.md](PLAN.md).
+**Status:** see [PLAN.md](PLAN.md) — the single source of truth for what's
+done, in flight, and next.
 
 ## What it does (target scope)
 
@@ -36,7 +32,7 @@ passkey 2FA — a hard requirement for the maintainer.
 
 | Path                                                       | What's in it                                                                                                                        |
 | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| [`PLAN.md`](PLAN.md)                                       | The approved Step 2 implementation plan. Start here.                                                                                |
+| [`PLAN.md`](PLAN.md)                                       | Living roadmap: done / in progress / next. Start here.                                                                              |
 | [`CLAUDE.md`](CLAUDE.md)                                   | Workflow rules for AI-assisted edits (docs-first, verify-before-update, credential hygiene).                                        |
 | [`docs/DESIGN.md`](docs/DESIGN.md)                         | TUI design rules (palette, layout, keybindings).                                                                                    |
 | [`docs/api/`](docs/api/)                                   | Verified AIC API reference. **Read before writing any code that hits a tenant.** Each file has a "Verified against" date for trust. |
@@ -275,7 +271,8 @@ each checkout with its own `.aic-edit/` gets its own agent.
 | **4.** ESVs — list + fuzzy search + preview                     | ✅ done     | `/`-search with live scoring (nucleo), vertical split with JSON preview                       |
 | **5.** ESVs — edit + apply (`/environment/startup?_action=…`)   | ✅ done     | Editable variables + secrets with banner-driven save/apply, delete + undo                     |
 | **6.** Scripts (two-way sync with content-based conflict check) | ✅ done     | `aic script` — AM scripts + IDM endpoints + schedules; kind-agnostic pull/push/sync/watch/status/diff core, typed `./workspace`; TUI Scripts tab (browse + pull/push) |
-| Later                                                           |             | OAuth2 / OIDC, SAML, Journeys, Logs, App.rs screen-split refactor                             |
+| **7.** Feature-vertical restructure ([docs/orthogonality-review.md](docs/orthogonality-review.md)) | 🔄 in progress | One directory per feature; per-feature CLI/state/view/api seams        |
+| Later                                                           |             | OAuth2 / OIDC, SAML, Journeys, Logs                                                            |
 
 ## How to work on this codebase (for AI assistants)
 
