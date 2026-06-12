@@ -1,5 +1,4 @@
-//! Rendering for the secrets sub-view of the ESVs tab. State + behaviour live
-//! in `crate::screens::secret`; this is draw-only.
+//! Rendering for the secrets sub-view of the ESVs tab.
 
 use ratatui::{
     Frame,
@@ -12,7 +11,8 @@ use ratatui::{
 use crate::app::App;
 use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::{LoadState, id_of};
-use crate::screens::secret::{self, CreateField, Encoding};
+use crate::secrets::screen::{self, Mode};
+use crate::secrets::state::{self as secret, CreateField, Encoding};
 use crate::ui::modal_chrome::Modal;
 
 /// The secrets list (left) + selected-secret detail (right). Mirrors the
@@ -27,8 +27,8 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     // While the create form is open we always show the split (form in the
     // detail pane), even on a Loading/empty tenant — the empty-state message
     // tells the user to press ^N, so the form has to appear from there too.
-    let creating =
-        app.input_mode == crate::app::InputMode::SecretCreate && app.secret.create.is_some();
+    let creating = app.input_mode == crate::app::InputMode::Secrets(Mode::Create)
+        && app.secret.create.is_some();
     if !creating {
         match app.secret.list.data.get(tenant) {
             None | Some(LoadState::Loading) => {
@@ -157,7 +157,8 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
 
     // Create flow: the New-Secret form lives in this pane (mirrors the
     // variables create form), not a modal.
-    if app.input_mode == crate::app::InputMode::SecretCreate && app.secret.create.is_some() {
+    if app.input_mode == crate::app::InputMode::Secrets(Mode::Create) && app.secret.create.is_some()
+    {
         draw_create_form(f, app, inner);
         return;
     }
@@ -165,7 +166,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     // Enter opens the interactive panel (metadata + editable description +
     // versions) in this pane, the same way Enter opens the edit form in the
     // variables pane — no modal.
-    if secret::versions_panel_open(app) {
+    if screen::versions_panel_open(app) {
         draw_secret_panel(f, app, inner);
         return;
     }

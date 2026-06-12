@@ -15,6 +15,7 @@ use ratatui::{
 use crate::app::{App, AuthMethod, InputMode, SetupContext};
 use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::EditField;
+use crate::secrets::screen::Mode as SecretsMode;
 use crate::ui::modal_chrome::hint_line;
 
 const WIDTH: u16 = 84;
@@ -104,7 +105,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
             &[("y", "confirm production write"), ("n/Esc", "cancel")],
         ),
         InputMode::UndoHistory => undo_history_lines(&mut lines),
-        InputMode::SecretCreate => text_modal_lines(
+        InputMode::Secrets(SecretsMode::Create) => text_modal_lines(
             &mut lines,
             "New secret",
             &[
@@ -114,7 +115,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
                 ("Esc", "cancel"),
             ],
         ),
-        InputMode::SecretVersions => text_modal_lines(
+        InputMode::Secrets(SecretsMode::Versions) => text_modal_lines(
             &mut lines,
             "Secret versions",
             &[
@@ -126,17 +127,17 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
                 ("Esc", "close"),
             ],
         ),
-        InputMode::SecretAddVersion => text_modal_lines(
+        InputMode::Secrets(SecretsMode::AddVersion) => text_modal_lines(
             &mut lines,
             "Add secret version",
             &[("Enter", "add version"), ("Esc", "cancel")],
         ),
-        InputMode::SecretDeleteConfirm => confirm_lines(
+        InputMode::Secrets(SecretsMode::DeleteConfirm) => confirm_lines(
             &mut lines,
             "Delete secret",
             &[("y", "delete secret + all versions"), ("n/Esc", "cancel")],
         ),
-        InputMode::SecretVersionDestroyConfirm => confirm_lines(
+        InputMode::Secrets(SecretsMode::VersionDestroyConfirm) => confirm_lines(
             &mut lines,
             "Destroy secret version",
             &[("y", "destroy version (irreversible)"), ("n/Esc", "cancel")],

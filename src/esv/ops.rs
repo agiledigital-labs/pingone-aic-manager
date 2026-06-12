@@ -321,7 +321,7 @@ pub fn apply_refresh(app: &mut App, tenant: String, outcome: RefreshOutcome) {
     // pending-secret fetch succeeded gates "authoritative" below, since the
     // pending count now folds in secrets.
     let secret_pending_refreshed = outcome.pending_secrets.is_ok();
-    crate::screens::secret::apply_refresh(app, &tenant, &outcome.secrets, &outcome.pending_secrets);
+    crate::secrets::ops::apply_refresh(app, &tenant, &outcome.secrets, &outcome.pending_secrets);
 
     match outcome.startup {
         Ok(StartupStatus::Restarting) => {
@@ -831,8 +831,7 @@ async fn apply_undo_entry(
             id,
             active_version,
         } => {
-            crate::screens::secret::undo_delete(&tenant, &id, &active_version, confirmed_prod)
-                .await?;
+            crate::secrets::ops::undo_delete(&tenant, &id, &active_version, confirmed_prod).await?;
             Ok(UndoOutcome {
                 description: entry.description,
                 applied: UndoApplied::SecretRemoved { id },
@@ -844,7 +843,7 @@ async fn apply_undo_entry(
             previous,
             expected,
         } => {
-            crate::screens::secret::undo_set_description(
+            crate::secrets::ops::undo_set_description(
                 &tenant,
                 &id,
                 &previous,

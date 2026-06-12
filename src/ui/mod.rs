@@ -7,7 +7,6 @@ pub mod modal;
 pub mod modal_chrome;
 pub mod onboard;
 pub mod popup_confirm;
-pub mod secret;
 pub mod toast;
 pub mod undo_history;
 pub mod unlock;
@@ -23,6 +22,7 @@ use ratatui::{
 
 use crate::app::{App, InputMode};
 use crate::esv::screen::Mode as EsvMode;
+use crate::secrets::{screen::Mode as SecretsMode, view as secret};
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Every modal owns the whole screen. The dashboard (Normal + ESV search)
@@ -91,14 +91,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             toast::draw(f, app);
             return;
         }
-        InputMode::Normal
-        | InputMode::Esv(_)
-        | InputMode::Scripts(_)
-        | InputMode::SecretCreate
-        | InputMode::SecretVersions
-        | InputMode::SecretAddVersion
-        | InputMode::SecretDeleteConfirm
-        | InputMode::SecretVersionDestroyConfirm => {}
+        InputMode::Normal | InputMode::Esv(_) | InputMode::Secrets(_) | InputMode::Scripts(_) => {}
     }
 
     let area = f.area();
@@ -106,9 +99,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         && !matches!(
             app.input_mode,
             InputMode::Esv(EsvMode::RestartConfirm | EsvMode::DeleteConfirm)
-                | InputMode::SecretAddVersion
-                | InputMode::SecretDeleteConfirm
-                | InputMode::SecretVersionDestroyConfirm
+                | InputMode::Secrets(
+                    SecretsMode::AddVersion
+                        | SecretsMode::DeleteConfirm
+                        | SecretsMode::VersionDestroyConfirm
+                )
         );
     let chunks = Layout::vertical([
         Constraint::Length(1),                              // top: tabs + chips
@@ -151,8 +146,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     // by `secret::draw_body`), so these are just the create / add-version
     // forms and the two y/n confirmations — each drawn over that panel.
     match app.input_mode {
-        InputMode::SecretAddVersion => secret::draw_add_version(f, app),
-        InputMode::SecretVersionDestroyConfirm => {
+        InputMode::Secrets(SecretsMode::AddVersion) => secret::draw_add_version(f, app),
+        InputMode::Secrets(SecretsMode::VersionDestroyConfirm) => {
             let version = app
                 .secret
                 .pending_version_destroy
@@ -164,7 +159,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             );
             popup_confirm::draw(f, "Destroy secret version?", &message);
         }
-        InputMode::SecretDeleteConfirm => {
+        InputMode::Secrets(SecretsMode::DeleteConfirm) => {
             let id = app
                 .secret
                 .pending_delete

@@ -150,7 +150,7 @@ need into context.
 | To change… | Code lives in | Read first |
 |---|---|---|
 | ESV variables | `src/esv/` (api, state, ops, screen, view, CLI) | `docs/api/03-esvs.md` |
-| ESV secrets | `src/screens/secret.rs`, `src/ui/secret.rs`, `aic esv secret` in `src/cli/mod.rs` | `docs/api/03-esvs.md` |
+| ESV secrets | `src/secrets/` (state, ops, screen, view, CLI) | `docs/api/03-esvs.md` |
 | Script sync (pull/push/sync/watch/diff) | `src/scripts/` (engine, screen, view, CLI) | `docs/api/04-scripts.md`, `11`, `12`, `13` |
 | Script workspace templates (lint/types) | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs` | `docs/api/12-script-bindings-matrix.md` |
 | Tokens / HTTP transport / daemon | `src/aic/api.rs`, `src/aic/auth.rs`, `src/agent/` | `docs/api/00-auth.md`, `01`, `02`; `src/agent/mod.rs` header |

@@ -126,7 +126,7 @@ pub fn pending_summary(app: &App, tenant: &str) -> EsvPending {
     }
     // Secrets share the tab's restart gate: a `useInPlaceholders:true` secret
     // whose active version hasn't loaded also needs the tenant restart.
-    let pending = ids.len() + crate::screens::secret::pending_count(app, tenant);
+    let pending = ids.len() + crate::secrets::state::pending_count(app, tenant);
     let var_in_flight = app
         .esv
         .in_flight_writes

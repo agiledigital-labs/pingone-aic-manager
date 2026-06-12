@@ -47,24 +47,7 @@ pub enum AppEvent {
     /// wrap entry ready to be appended to `wraps.toml`, or an error string.
     SecurityKeyEnrollResult(std::result::Result<crate::config::wraps::Wrap, String>),
     Esv(crate::esv::screen::Event),
-    /// A background secret mutation finished. `kind` lets the handler record
-    /// the right undo entry post-success; `label` is the toast verb;
-    /// `reload_versions` requests a version-panel refetch. The Ok payload is
-    /// the API response body (e.g. the created secret, for its `lastChangeDate`).
-    SecretOpResult {
-        tenant: String,
-        id: String,
-        kind: crate::screens::secret::SecretOpKind,
-        label: String,
-        reload_versions: bool,
-        result: std::result::Result<serde_json::Value, String>,
-    },
-    /// Background fetch of a secret's versions finished.
-    SecretVersionsListed {
-        tenant: String,
-        id: String,
-        result: std::result::Result<Vec<serde_json::Value>, String>,
-    },
+    Secrets(crate::secrets::screen::Event),
     Scripts(crate::scripts::screen::Event),
     Toast(ToastKind, String),
 }

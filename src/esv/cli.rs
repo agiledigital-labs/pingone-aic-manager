@@ -3,7 +3,8 @@
 use clap::Subcommand;
 
 use crate::Result;
-use crate::cli::{SecretCommand, print_json, prod_hint, tenant_for};
+use crate::cli::{print_json, prod_hint, tenant_for};
+use crate::secrets::cli::SecretCommand;
 
 #[derive(Subcommand, Debug)]
 pub enum EsvCommand {
@@ -104,6 +105,6 @@ pub async fn run(cmd: EsvCommand) -> Result<()> {
             let t = tenant_for(tenant)?;
             print_json(&prod_hint(api::trigger_restart(&t, yes).await)?)
         }
-        EsvCommand::Secret { command } => crate::cli::secret(command).await,
+        EsvCommand::Secret { command } => crate::secrets::cli::run(command).await,
     }
 }
