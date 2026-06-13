@@ -22,7 +22,7 @@ hits a tenant.** Don't guess paths or headers.
 | [11-idm-endpoints.md](11-idm-endpoints.md) | IDM custom endpoints + scheduled jobs (`config/endpoint/*`, `config/schedule/*`), plaintext `source`, no `_rev` |
 | [12-script-bindings-matrix.md](12-script-bindings-matrix.md) | Runtime-verified Rhino 1.7.14 syntax matrix + per-context binding tables (drives the workspace lint/type templates) |
 | [13-script-contexts.md](13-script-contexts.md) | AM `contexts/{id}` endpoint — authoritative per-context binding metadata (drives the `.d.ts` types) |
-| [bindings/](bindings/) | Raw per-context binding probe results (JSON) backing files 12–13 |
+| [bindings/](bindings/) | Raw per-context binding probe results (JSON) backing files 10, 12–13 |
 | [99-quirks-and-open-questions.md](99-quirks-and-open-questions.md) | Cross-cutting weirdness + TODOs |
 
 ## Doc template
