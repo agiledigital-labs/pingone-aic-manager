@@ -72,7 +72,7 @@ const commonGlobals = {
 export default [
   // All IDM scripts: quality rules + common bindings.
   {
-    files: ["endpoint/**/*.cjs", "schedule/**/*.cjs"],
+    files: ["endpoint/**/*.cjs", "schedule/**/*.cjs", "managed/**/*.cjs"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
@@ -88,6 +88,24 @@ export default [
     languageOptions: {
       globals: {
         request: "readonly",
+      },
+    },
+  },
+  // Managed-object hooks: the record bindings + the triggering CREST request
+  // (onCreate/onUpdate verified live 2026-06-13 — see types/managed-hook.d.ts
+  // and docs/api/10-managed-objects.md). `object`/`newObject` are writable by
+  // design: hook writes persist to the record.
+  {
+    files: ["managed/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        object: "writable",
+        oldObject: "readonly",
+        newObject: "writable",
+        request: "readonly",
+        resourceName: "readonly",
+        identityServer: "readonly",
+        require: "readonly",
       },
     },
   },

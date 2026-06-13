@@ -77,6 +77,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::esv::cli::EsvCommand,
     },
+    /// IDM managed-object schema inspection (hooks sync via `aic script`).
+    Managed {
+        #[command(subcommand)]
+        command: crate::managed::cli::ManagedCommand,
+    },
     /// Script workspace sync (AM scripts + IDM endpoints).
     Script {
         #[command(subcommand)]
@@ -107,6 +112,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Ctx { command }) => ctx(command).await,
         Some(Command::Whoami { tenant, token }) => whoami(tenant, token).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
+        Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Script { command }) => crate::scripts::cli::run(command).await,
         None => unreachable!("dispatch handled at top level"),
     }
