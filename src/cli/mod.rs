@@ -82,6 +82,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::managed::cli::ManagedCommand,
     },
+    /// Journey (authentication tree) inspection and export.
+    Journey {
+        #[command(subcommand)]
+        command: crate::journey::cli::JourneyCommand,
+    },
     /// Script workspace sync (AM scripts + IDM endpoints).
     Script {
         #[command(subcommand)]
@@ -113,6 +118,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Whoami { tenant, token }) => whoami(tenant, token).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
+        Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
         Some(Command::Script { command }) => crate::scripts::cli::run(command).await,
         None => unreachable!("dispatch handled at top level"),
     }

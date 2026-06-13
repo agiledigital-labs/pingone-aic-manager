@@ -52,6 +52,12 @@ Always send `Accept-API-Version: protocol=2.0,resource=1.0`.
   "enabled": true,
   "transactionalOnly": false,
   "uiConfig": {},
+  "staticNodes": {
+    "e301438c-0bd0-429c-ab0c-66126501069a": {
+      "x": 700,
+      "y": 300
+    }
+  },
   "nodes": {
     "06fa2a1c-…": {
       "connections": {
@@ -73,6 +79,8 @@ Always send `Accept-API-Version: protocol=2.0,resource=1.0`.
   node UUIDs (or built-in outcomes like `true`/`false`).
 - `entryNodeId` points to the entry node UUID. Built-in sentinel
   `"e301438c-0bd0-429c-ab0c-66126501069a"` = failure node.
+- `staticNodes` holds positions for built-in Success/Failure nodes. These do
+  not have separately fetchable node configuration.
 
 ## Script references
 
@@ -106,6 +114,10 @@ $SCRIPTS/verify-endpoint.sh \
 - Date: 2026-05-17
 - Calls: `GET …/authenticationtrees/trees?_queryFilter=true&_pageSize=1`
   (200 OK, full structure as shown).
+- Date: 2026-06-13
+- Calls: re-verified tree list, tree read, and node read
+  (`nodes/ScriptedDecisionNode/{id}`) live. Scripted decision nodes carry a
+  `script` UUID reference.
 
 ## Source citations
 
