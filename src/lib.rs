@@ -6,6 +6,7 @@ pub mod config;
 pub mod error;
 pub mod esv;
 pub mod logging;
+pub mod managed;
 pub mod onboard;
 pub mod scripts;
 pub mod secrets;

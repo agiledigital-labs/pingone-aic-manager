@@ -133,18 +133,21 @@ prompt for a typed confirmation on any tenant unless `--yes` is given.
 `./workspace/<tenant>/` (one tree per tenant) — the same `.d.ts` definitions +
 ESLint/TypeScript config as
 [p1aic-script-editor](https://github.com/agiledigital-labs/p1aic-script-editor),
-so your editor gets full IntelliSense on script bodies. Three script "kinds"
+so your editor gets full IntelliSense on script bodies. Four script "kinds"
 are supported behind one engine: **AM scripts** (realm-scoped, routed to a
 per-type folder under `am/<realm>/<type>/` — e.g. `decision-node`,
 `decision-node-legacy`, `lib`, `oidc-claims`; Groovy scripts aren't synced);
 **IDM custom endpoints**
-(tenant-global under `idm/endpoint/`); and **IDM scheduled jobs**
+(tenant-global under `idm/endpoint/`); **IDM scheduled jobs**
 (tenant-global under `idm/schedule/`; only script-invoking schedules — the
-script lives at `invokeContext.script.source`).
+script lives at `invokeContext.script.source`); and **IDM managed-object
+hooks** (under `idm/managed/<object>/<hook>.cjs` — `onCreate`/`onUpdate`/…
+embedded in the `managed` schema document; file-backed hooks are read-only).
 
 Scripts are addressed by a **full-name** `<namespace>/<name>`, where the
-namespace is `alpha`/`bravo` (AM realm), `endpoint`, or `schedule` — so you
-never pass `--kind`/`--realm`:
+namespace is `alpha`/`bravo` (AM realm), `endpoint`, `schedule`, or
+`managed` (hook name is `<object>.<hook>`, e.g.
+`managed/alpha_user.onCreate`) — so you never pass `--kind`/`--realm`:
 
 ```bash
 aic script workspace init                       # scaffold the tenant tree (both realms + idm)

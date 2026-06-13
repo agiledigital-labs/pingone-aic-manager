@@ -31,9 +31,18 @@ need the archaeology.)
   chrome. Rationale + phase log:
   [`docs/orthogonality-review.md`](docs/orthogonality-review.md); routing
   map: CLAUDE.md §9.
+- **Managed objects** (2026-06-13) — `aic managed list/get` inspects the
+  per-tenant IDM schema (`src/managed/`); event hooks sync as first-class
+  workspace scripts (`Kind::IdmManagedHook`, `aic script pull
+  managed/<obj>.<hook>`) with their own typed/linted template family. Push
+  is a read-modify-write of the shared `managed` document with apply-lag
+  confirmation. See `docs/api/10-managed-objects.md`.
 
 ## Next
 
+- **Managed objects — schema property editing.** Current slice is
+  read-only inspection + hook sync. Next: add/edit properties (PUT replaces
+  the whole document; no `_rev`, last-write-wins) and a TUI tab.
 - **OAuth2 / OIDC** — clients + provider service (`docs/api/05-oauth2-oidc.md`).
   Remember: strip `-encrypted` fields on PUT; use `_rev` + content snapshot.
 - **SAML** — hosted/remote entities + CoT (`docs/api/06-saml.md`).

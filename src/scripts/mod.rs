@@ -17,6 +17,7 @@
 pub mod am;
 pub mod cli;
 pub mod idm;
+pub mod managed_hooks;
 pub mod schedule;
 pub mod screen;
 pub mod sync;
@@ -44,6 +45,13 @@ pub enum Kind {
     #[serde(rename = "schedule")]
     #[value(name = "schedule", alias = "schedules")]
     IdmSchedule,
+    /// IDM managed-object hooks: scripts embedded in the single
+    /// `/openidm/config/managed` document at `objects[i].<hookKey>.source`.
+    /// Addressed as `managed/<object>.<hookKey>`; push is a fresh
+    /// read-modify-write of the shared document. See `managed_hooks`.
+    #[serde(rename = "managed-hook")]
+    #[value(name = "managed-hook", alias = "hooks")]
+    IdmManagedHook,
 }
 
 impl Kind {
@@ -52,11 +60,17 @@ impl Kind {
             Kind::Am => "am",
             Kind::IdmEndpoint => "idm",
             Kind::IdmSchedule => "schedule",
+            Kind::IdmManagedHook => "managed-hook",
         }
     }
 
     pub fn all() -> &'static [Kind] {
-        &[Kind::Am, Kind::IdmEndpoint, Kind::IdmSchedule]
+        &[
+            Kind::Am,
+            Kind::IdmEndpoint,
+            Kind::IdmSchedule,
+            Kind::IdmManagedHook,
+        ]
     }
 
     // ----- async I/O (delegates to the per-kind module) ------------------
@@ -66,6 +80,7 @@ impl Kind {
             Kind::Am => am::list(tenant, realm).await,
             Kind::IdmEndpoint => idm::list(tenant, realm).await,
             Kind::IdmSchedule => schedule::list(tenant, realm).await,
+            Kind::IdmManagedHook => managed_hooks::list(tenant, realm).await,
         }
     }
 
@@ -74,6 +89,7 @@ impl Kind {
             Kind::Am => am::fetch(tenant, realm, id).await,
             Kind::IdmEndpoint => idm::fetch(tenant, realm, id).await,
             Kind::IdmSchedule => schedule::fetch(tenant, realm, id).await,
+            Kind::IdmManagedHook => managed_hooks::fetch(tenant, realm, id).await,
         }
     }
 
@@ -88,6 +104,9 @@ impl Kind {
             Kind::Am => am::write(tenant, realm, script, confirmed_prod).await,
             Kind::IdmEndpoint => idm::write(tenant, realm, script, confirmed_prod).await,
             Kind::IdmSchedule => schedule::write(tenant, realm, script, confirmed_prod).await,
+            Kind::IdmManagedHook => {
+                managed_hooks::write(tenant, realm, script, confirmed_prod).await
+            }
         }
     }
 
@@ -102,6 +121,7 @@ impl Kind {
             Kind::Am => am::delete(tenant, realm, id, confirmed_prod).await,
             Kind::IdmEndpoint => idm::delete(tenant, realm, id, confirmed_prod).await,
             Kind::IdmSchedule => schedule::delete(tenant, realm, id, confirmed_prod).await,
+            Kind::IdmManagedHook => managed_hooks::delete(tenant, realm, id, confirmed_prod).await,
         }
     }
 
@@ -113,6 +133,7 @@ impl Kind {
             Kind::Am => am::decode_source(raw),
             Kind::IdmEndpoint => idm::decode_source(raw),
             Kind::IdmSchedule => schedule::decode_source(raw),
+            Kind::IdmManagedHook => managed_hooks::decode_source(raw),
         }
     }
 
@@ -122,6 +143,7 @@ impl Kind {
             Kind::Am => am::encode_source(raw, source),
             Kind::IdmEndpoint => idm::encode_source(raw, source),
             Kind::IdmSchedule => schedule::encode_source(raw, source),
+            Kind::IdmManagedHook => managed_hooks::encode_source(raw, source),
         }
     }
 
@@ -139,6 +161,7 @@ impl Kind {
             Kind::Am => am::workspace_subpath(r, realm),
             Kind::IdmEndpoint => idm::workspace_subpath(r),
             Kind::IdmSchedule => schedule::workspace_subpath(r),
+            Kind::IdmManagedHook => managed_hooks::workspace_subpath(r),
         }
     }
 
@@ -149,6 +172,7 @@ impl Kind {
             Kind::Am => am::config_subpath(r, realm),
             Kind::IdmEndpoint => idm::config_subpath(r),
             Kind::IdmSchedule => schedule::config_subpath(r),
+            Kind::IdmManagedHook => managed_hooks::config_subpath(r),
         }
     }
 
@@ -159,6 +183,7 @@ impl Kind {
             Kind::Am => am::extra_files(r, realm),
             Kind::IdmEndpoint => idm::extra_files(r),
             Kind::IdmSchedule => schedule::extra_files(r),
+            Kind::IdmManagedHook => managed_hooks::extra_files(r),
         }
     }
 }
@@ -193,7 +218,7 @@ pub struct RemoteScript {
 }
 
 /// The first segment of a full-name addressing a script — `alpha/`, `bravo/`,
-/// `endpoint/`, `schedule/`. Each prefix uniquely maps to a (kind, realm)
+/// `endpoint/`, `schedule/`, `managed/`. Each prefix uniquely maps to a (kind, realm)
 /// bucket (realm for AM, kind for the realmless IDM kinds), because AIC's realm
 /// set is fixed and disjoint from the IDM kind names. So `bravo/Foo`,
 /// `endpoint/foo`, `schedule/Job` fully identify a script without `--kind` /
@@ -221,6 +246,10 @@ impl Namespace {
                 kind: Kind::IdmSchedule,
                 realm: None,
             }),
+            "managed" => Some(Namespace {
+                kind: Kind::IdmManagedHook,
+                realm: None,
+            }),
             _ => None,
         }
     }
@@ -244,6 +273,10 @@ impl Namespace {
                 kind: Kind::IdmSchedule,
                 realm: None,
             },
+            Namespace {
+                kind: Kind::IdmManagedHook,
+                realm: None,
+            },
         ]
     }
 
@@ -253,6 +286,7 @@ impl Namespace {
             Kind::Am => self.realm.as_deref().unwrap_or("am"),
             Kind::IdmEndpoint => "endpoint",
             Kind::IdmSchedule => "schedule",
+            Kind::IdmManagedHook => "managed",
         }
     }
 
@@ -268,6 +302,7 @@ pub fn full_name(kind: Kind, realm: Option<&str>, name: &str) -> String {
         Kind::Am => realm.unwrap_or("am"),
         Kind::IdmEndpoint => "endpoint",
         Kind::IdmSchedule => "schedule",
+        Kind::IdmManagedHook => "managed",
     };
     format!("{prefix}/{name}")
 }
@@ -292,6 +327,11 @@ mod ns_tests {
             Kind::IdmSchedule
         );
         assert!(Namespace::parse("endpoint").unwrap().realm.is_none());
+        assert_eq!(
+            Namespace::parse("managed").unwrap().kind,
+            Kind::IdmManagedHook
+        );
+        assert!(Namespace::parse("managed").unwrap().realm.is_none());
         assert!(Namespace::parse("nope").is_none());
     }
 
@@ -300,5 +340,9 @@ mod ns_tests {
         assert_eq!(full_name(Kind::Am, Some("bravo"), "Foo"), "bravo/Foo");
         assert_eq!(full_name(Kind::IdmEndpoint, None, "bar"), "endpoint/bar");
         assert_eq!(full_name(Kind::IdmSchedule, None, "Job"), "schedule/Job");
+        assert_eq!(
+            full_name(Kind::IdmManagedHook, None, "alpha_user.onCreate"),
+            "managed/alpha_user.onCreate"
+        );
     }
 }

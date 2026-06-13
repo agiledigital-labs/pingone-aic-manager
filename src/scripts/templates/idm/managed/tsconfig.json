@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "include": [
+    "./**/*",
+    "../types/rhino-1.7.14.d.ts",
+    "../types/common.d.ts",
+    "../types/managed-hook.d.ts"
+  ]
+}
