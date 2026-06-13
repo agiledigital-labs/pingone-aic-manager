@@ -14,22 +14,25 @@ interface RelationshipRef {
   _refResourceId?: string;
   _refProperties?: { _id?: string; _rev?: string } & Record<string, any>;
 }
+
+interface QueryResult<T> {
+  result: T[];
+  resultCount: number;
+  pagedResultsCookie: string | null;
+  totalPagedResultsPolicy: string;
+  totalPagedResults: number;
+  remainingPagedResults: number;
+}
 "#;
 
 /// Workspace-relative path -> file contents for every generated managed type.
 /// `schema` is the parsed body of `GET /openidm/config/managed`.
 pub fn generate(schema: &Value) -> Result<Vec<(PathBuf, String)>> {
-    let mut files = vec![(
-        PathBuf::from("idm/types/managed/_shared.d.ts"),
-        SHARED_TYPES.to_string(),
-    )];
-
-    let Some(objects) = schema.get("objects").and_then(Value::as_array) else {
-        return Ok(files);
-    };
-
-    let mut valid_objects = objects
-        .iter()
+    let mut valid_objects = schema
+        .get("objects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
         .filter_map(|object| {
             let name = object.get("name").and_then(Value::as_str)?;
             let object_schema = object.get("schema")?;
@@ -39,16 +42,76 @@ pub fn generate(schema: &Value) -> Result<Vec<(PathBuf, String)>> {
         .collect::<Vec<_>>();
     valid_objects.sort_by(|a, b| a.0.cmp(b.0));
 
-    for (name, object_schema, properties) in valid_objects {
+    let mut files = vec![(
+        PathBuf::from("idm/types/managed/_shared.d.ts"),
+        SHARED_TYPES.to_string(),
+    )];
+    for &(name, object_schema, properties) in &valid_objects {
         let interface_name = pascal_case(name);
         let contents = render_object(&interface_name, object_schema, properties)?;
         files.push((
             PathBuf::from("idm/types/managed").join(format!("{name}.d.ts")),
             contents,
         ));
+        files.push((
+            PathBuf::from("idm/types/managed/hooks").join(format!("{name}.d.ts")),
+            render_hook_bindings(&interface_name),
+        ));
     }
+    files.push((
+        PathBuf::from("idm/types/managed/openidm-overloads.d.ts"),
+        render_openidm_overloads(&valid_objects, Engine::Idm),
+    ));
+
+    files.push((
+        PathBuf::from("am/types/managed/_shared.d.ts"),
+        SHARED_TYPES.to_string(),
+    ));
+    for &(name, object_schema, properties) in &valid_objects {
+        let interface_name = pascal_case(name);
+        files.push((
+            PathBuf::from("am/types/managed").join(format!("{name}.d.ts")),
+            render_object(&interface_name, object_schema, properties)?,
+        ));
+    }
+    files.push((
+        PathBuf::from("am/types/managed/openidm-overloads.d.ts"),
+        render_openidm_overloads(&valid_objects, Engine::Am),
+    ));
 
     Ok(files)
+}
+
+#[derive(Clone, Copy)]
+enum Engine {
+    Idm,
+    Am,
+}
+
+fn render_openidm_overloads(
+    objects: &[(&str, &Value, &Map<String, Value>)],
+    engine: Engine,
+) -> String {
+    let mut out = String::from("interface OpenIdm {\n");
+    for &(name, _, _) in objects {
+        let interface_name = pascal_case(name);
+        match engine {
+            Engine::Idm => out.push_str(&format!(
+                "  read(resourceName: `managed/{name}/${{string}}`, params?: Record<string, string> | null, fields?: string[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }}): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: Record<string, string> | null): {interface_name};\n"
+            )),
+            Engine::Am => out.push_str(&format!(
+                "  read(resourceName: `managed/{name}/${{string}}`, params?: object, fields?: string[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }} | object, fields?: string[]): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: object, fields?: string[]): {interface_name};\n"
+            )),
+        }
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn render_hook_bindings(interface_name: &str) -> String {
+    format!(
+        "declare let object: {interface_name};\ndeclare const oldObject: {interface_name} | null;\ndeclare let newObject: {interface_name};\n"
+    )
 }
 
 fn render_object(
@@ -78,9 +141,7 @@ fn render_object(
         let ty = property_type(&properties[name]);
         out.push_str(&format!("  {key}{optional}: {ty};\n"));
     }
-    out.push_str(&format!(
-        "}}\n\ndeclare let object: {interface_name};\ndeclare const oldObject: {interface_name} | null;\ndeclare let newObject: {interface_name};\n"
-    ));
+    out.push_str("}\n");
     Ok(out)
 }
 
@@ -165,6 +226,15 @@ mod tests {
             .1
     }
 
+    fn generated_contents(schema: &Value, path: &str) -> String {
+        generate(schema)
+            .unwrap()
+            .into_iter()
+            .find(|(candidate, _)| candidate == &PathBuf::from(path))
+            .unwrap()
+            .1
+    }
+
     #[test]
     fn maps_scalars_nullable_and_required_properties() {
         let contents = object_contents(
@@ -238,8 +308,15 @@ mod tests {
             .find(|(path, _)| path.ends_with("mock_sms.d.ts"))
             .unwrap()
             .1;
+        let am_alpha = &files
+            .iter()
+            .find(|(path, _)| path == &PathBuf::from("am/types/managed/alpha_user.d.ts"))
+            .unwrap()
+            .1;
         assert!(alpha.contains("interface AlphaUser"));
         assert!(alpha.contains("\"weird-key\"?: string;"));
+        assert!(!alpha.contains("declare let object"));
+        assert_eq!(alpha, am_alpha);
         assert!(sms.contains("interface MockSms"));
         assert_eq!(pascal_case("123-name"), "Obj123Name");
         assert_eq!(pascal_case("---"), "Obj");
@@ -274,32 +351,88 @@ mod tests {
   displayName?: string;
   tags?: string[];
 }
-
-declare let object: AlphaUser;
-declare const oldObject: AlphaUser | null;
-declare let newObject: AlphaUser;
 "#
         );
     }
 
     #[test]
+    fn hook_binding_output_is_stable_and_idm_only() {
+        let schema = json!({
+            "objects": [{
+                "name": "alpha_user",
+                "schema": {"properties": {}}
+            }]
+        });
+
+        assert_eq!(
+            generated_contents(&schema, "idm/types/managed/hooks/alpha_user.d.ts"),
+            "declare let object: AlphaUser;\ndeclare const oldObject: AlphaUser | null;\ndeclare let newObject: AlphaUser;\n"
+        );
+        assert!(
+            generate(&schema)
+                .unwrap()
+                .iter()
+                .all(|(path, _)| !path.starts_with("am/types/managed/hooks"))
+        );
+    }
+
+    #[test]
+    fn emits_engine_specific_openidm_overloads() {
+        let schema = json!({
+            "objects": [
+                {"name": "zeta", "schema": {"properties": {}}},
+                {"name": "alpha_user", "schema": {"properties": {}}}
+            ]
+        });
+        let idm = generated_contents(&schema, "idm/types/managed/openidm-overloads.d.ts");
+        let am = generated_contents(&schema, "am/types/managed/openidm-overloads.d.ts");
+
+        assert!(idm.contains("read(resourceName: `managed/alpha_user/${string}`"));
+        assert!(idm.contains("query(resourceName: \"managed/alpha_user\""));
+        assert!(idm.contains("QueryResult<AlphaUser>"));
+        assert!(idm.contains("params?: Record<string, string> | null"));
+        assert!(am.contains("read(resourceName: `managed/alpha_user/${string}`"));
+        assert!(am.contains("query(resourceName: \"managed/alpha_user\""));
+        assert!(am.contains("QueryResult<AlphaUser>"));
+        assert!(am.contains("params?: object"));
+        assert!(idm.find("managed/alpha_user").unwrap() < idm.find("managed/zeta").unwrap());
+        assert!(am.find("managed/alpha_user").unwrap() < am.find("managed/zeta").unwrap());
+    }
+
+    #[test]
     fn shared_types_are_always_present_and_odd_objects_are_skipped() {
-        let files = generate(&json!({
+        let schema = json!({
             "objects": [
                 {"name": "missing_schema"},
                 {"schema": {"properties": {}}},
                 {"name": "valid", "schema": {"properties": {}}}
             ]
-        }))
-        .unwrap();
+        });
+        let files = generate(&schema).unwrap();
 
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 7);
         assert_eq!(files[0].0, PathBuf::from("idm/types/managed/_shared.d.ts"));
         assert!(files[0].1.contains("interface RelationshipRef"));
-        assert!(files[1].0.ends_with("valid.d.ts"));
+        assert!(files[0].1.contains("interface QueryResult<T>"));
+        assert!(files.iter().any(|(path, _)|
+            path == &PathBuf::from("idm/types/managed/openidm-overloads.d.ts")));
+        assert!(
+            files
+                .iter()
+                .any(|(path, _)| path == &PathBuf::from("am/types/managed/openidm-overloads.d.ts"))
+        );
+        assert!(
+            generated_contents(&schema, "am/types/managed/_shared.d.ts")
+                .contains("interface QueryResult<T>")
+        );
+        assert!(
+            files
+                .iter()
+                .any(|(path, _)| path == &PathBuf::from("am/types/managed/valid.d.ts"))
+        );
 
         let shared_only = generate(&json!({})).unwrap();
-        assert_eq!(shared_only.len(), 1);
+        assert_eq!(shared_only.len(), 4);
         assert!(shared_only[0].1.contains("interface RelationshipRef"));
     }
 }

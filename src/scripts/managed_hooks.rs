@@ -253,12 +253,11 @@ pub fn config_subpath(r: &RemoteRef) -> PathBuf {
     PathBuf::from("idm-managed").join(format!("{}.hook.json", r.name))
 }
 
-/// Per-object TypeScript project. Only this object's generated declaration is
-/// included because every managed-object declaration defines the same global
-/// hook bindings (`object`, `oldObject`, and `newObject`).
+/// Per-object TypeScript project. All managed interfaces and openidm overloads
+/// are included, followed by this object's hook bindings.
 pub fn leaf_tsconfig(object: &str) -> String {
     format!(
-        "{{\n  \"extends\": \"../../tsconfig.json\",\n  \"include\": [\n    \"./**/*\",\n    \"../../types/rhino-1.7.14.d.ts\",\n    \"../../types/common.d.ts\",\n    \"../../types/managed-hook.d.ts\",\n    \"../../types/managed/_shared.d.ts\",\n    \"../../types/managed/{object}.d.ts\"\n  ]\n}}\n"
+        "{{\n  \"extends\": \"../../tsconfig.json\",\n  \"include\": [\n    \"./**/*\",\n    \"../../types/rhino-1.7.14.d.ts\",\n    \"../../types/common.d.ts\",\n    \"../../types/managed-hook.d.ts\",\n    \"../../types/managed/*.d.ts\",\n    \"../../types/managed/hooks/{object}.d.ts\"\n  ]\n}}\n"
     )
 }
 
@@ -311,8 +310,24 @@ mod tests {
             files[0].0,
             PathBuf::from("idm/managed/alpha_user/tsconfig.json")
         );
-        assert!(files[0].1.contains("../../types/managed/alpha_user.d.ts"));
+        assert!(files[0].1.contains("../../types/managed/*.d.ts"));
+        assert!(
+            files[0]
+                .1
+                .contains("../../types/managed/hooks/alpha_user.d.ts")
+        );
         assert!(files[0].1.contains("../../types/managed-hook.d.ts"));
+        assert!(
+            files[0].1.find("../../types/common.d.ts").unwrap()
+                < files[0].1.find("../../types/managed/*.d.ts").unwrap()
+        );
+        assert!(
+            files[0].1.find("../../types/managed/*.d.ts").unwrap()
+                < files[0]
+                    .1
+                    .find("../../types/managed/hooks/alpha_user.d.ts")
+                    .unwrap()
+        );
     }
 
     #[test]
