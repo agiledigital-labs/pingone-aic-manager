@@ -29,6 +29,14 @@ function leafTsconfigs() {
     const tc = join("idm", family, "tsconfig.json");
     if (existsSync(tc)) out.push(tc);
   }
+  const managedDir = join("idm", "managed");
+  if (existsSync(managedDir)) {
+    for (const object of readdirSync(managedDir, { withFileTypes: true })) {
+      if (!object.isDirectory()) continue;
+      const tc = join(managedDir, object.name, "tsconfig.json");
+      if (existsSync(tc)) out.push(tc);
+    }
+  }
   return out;
 }
 

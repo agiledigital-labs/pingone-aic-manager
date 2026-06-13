@@ -18,6 +18,7 @@ pub mod am;
 pub mod cli;
 pub mod idm;
 pub mod managed_hooks;
+pub mod managed_types;
 pub mod schedule;
 pub mod screen;
 pub mod sync;

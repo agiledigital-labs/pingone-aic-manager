@@ -253,8 +253,26 @@ pub fn config_subpath(r: &RemoteRef) -> PathBuf {
     PathBuf::from("idm-managed").join(format!("{}.hook.json", r.name))
 }
 
-pub fn extra_files(_r: &RemoteRef) -> Vec<(PathBuf, String)> {
-    Vec::new()
+/// Per-object TypeScript project. Only this object's generated declaration is
+/// included because every managed-object declaration defines the same global
+/// hook bindings (`object`, `oldObject`, and `newObject`).
+pub fn leaf_tsconfig(object: &str) -> String {
+    format!(
+        "{{\n  \"extends\": \"../../tsconfig.json\",\n  \"include\": [\n    \"./**/*\",\n    \"../../types/rhino-1.7.14.d.ts\",\n    \"../../types/common.d.ts\",\n    \"../../types/managed-hook.d.ts\",\n    \"../../types/managed/_shared.d.ts\",\n    \"../../types/managed/{object}.d.ts\"\n  ]\n}}\n"
+    )
+}
+
+pub fn extra_files(r: &RemoteRef) -> Vec<(PathBuf, String)> {
+    let Ok((object, _)) = parse_name(&r.name) else {
+        return Vec::new();
+    };
+    vec![(
+        PathBuf::from("idm")
+            .join("managed")
+            .join(object)
+            .join("tsconfig.json"),
+        leaf_tsconfig(object),
+    )]
 }
 
 #[cfg(test)]
@@ -283,6 +301,18 @@ mod tests {
             config_subpath(&r),
             PathBuf::from("idm-managed/alpha_user.onCreate.hook.json")
         );
+    }
+
+    #[test]
+    fn extra_files_emit_per_object_leaf_tsconfig() {
+        let files = extra_files(&ref_from_name("alpha_user.onCreate"));
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].0,
+            PathBuf::from("idm/managed/alpha_user/tsconfig.json")
+        );
+        assert!(files[0].1.contains("../../types/managed/alpha_user.d.ts"));
+        assert!(files[0].1.contains("../../types/managed-hook.d.ts"));
     }
 
     #[test]

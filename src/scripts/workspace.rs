@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 19;
+pub const TEMPLATES_VERSION: u32 = 20;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -133,10 +133,6 @@ const MANAGED: &[(&str, &str)] = &[
         include_str!("templates/idm/endpoint/tsconfig.json"),
     ),
     (
-        "idm/managed/tsconfig.json",
-        include_str!("templates/idm/managed/tsconfig.json"),
-    ),
-    (
         "idm/schedule/tsconfig.json",
         include_str!("templates/idm/schedule/tsconfig.json"),
     ),
@@ -148,8 +144,7 @@ const MANAGED: &[(&str, &str)] = &[
 ];
 
 /// Files this tool managed under older template versions that are now obsolete
-/// and must be **deleted** from existing workspaces on update (replaced by the
-/// `am/types/` + `idm/types/` layout in `TEMPLATES_VERSION` 6). Only ever list
+/// and must be **deleted** from existing workspaces on update. Only ever list
 /// files this tool itself wrote — never user scripts, tests, or package files.
 const OBSOLETE: &[&str] = &[
     "am/amCommon.d.ts",
@@ -157,6 +152,7 @@ const OBSOLETE: &[&str] = &[
     "am/lib.d.ts",
     "am/oidc.d.ts",
     "idm/idmCommon.d.ts",
+    "idm/managed/tsconfig.json",
 ];
 
 /// User files: seeded once on init, never overwritten (even by update).
@@ -172,7 +168,8 @@ const USER: &[(&str, &str)] = &[
 
 /// Our own `.gitignore` (the p1-sync one references `.p1-sync/`). Ignores build
 /// output and our sync state; keeps the source dirs tracked.
-const GITIGNORE: &str = "node_modules/\ndist/\ncoverage/\n.aic-sync/\n*.log\n.DS_Store\n";
+const GITIGNORE: &str =
+    "node_modules/\ndist/\ncoverage/\n.aic-sync/\nidm/types/managed/\n*.log\n.DS_Store\n";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WorkspaceState {
@@ -268,6 +265,7 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
     // shared `am/` defs here. IDM folders are fixed, so create them up front.
     std::fs::create_dir_all(tree.join("am"))?;
     std::fs::create_dir_all(tree.join("idm").join("endpoint"))?;
+    std::fs::create_dir_all(tree.join("idm").join("managed"))?;
     std::fs::create_dir_all(tree.join("idm").join("schedule"))?;
     std::fs::create_dir_all(tree.join("tests"))?;
 
@@ -324,6 +322,21 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
         }
     }
 
+    // Managed hooks also use one leaf project per object so each folder sees
+    // only its own generated `object` binding.
+    let managed_dir = tree.join("idm").join("managed");
+    if let Ok(entries) = std::fs::read_dir(&managed_dir) {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            let leaf = dir.join("tsconfig.json");
+            if dir.is_dir() && leaf.exists() {
+                let object = entry.file_name().to_string_lossy().into_owned();
+                std::fs::write(&leaf, super::managed_hooks::leaf_tsconfig(&object))?;
+                report.written.push(leaf);
+            }
+        }
+    }
+
     Ok(report)
 }
 
@@ -360,6 +373,17 @@ mod tests {
         // The old root type defs are scheduled for cleanup on update.
         assert!(OBSOLETE.contains(&"am/src.d.ts"));
         assert!(OBSOLETE.contains(&"idm/idmCommon.d.ts"));
+        assert!(OBSOLETE.contains(&"idm/managed/tsconfig.json"));
+        assert!(
+            !MANAGED
+                .iter()
+                .any(|(rel, _)| *rel == "idm/managed/tsconfig.json")
+        );
+    }
+
+    #[test]
+    fn generated_managed_types_are_gitignored() {
+        assert!(GITIGNORE.lines().any(|line| line == "idm/types/managed/"));
     }
 
     fn temp_tree() -> PathBuf {
@@ -416,6 +440,26 @@ mod tests {
         let refreshed = std::fs::read_to_string(&leaf).unwrap();
         assert!(refreshed.contains("../../types/decision-node-next.d.ts"));
         assert!(!refreshed.contains("src.d.ts"));
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_regenerates_existing_managed_leaf_tsconfig() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+
+        let folder = tree.join("idm/managed/alpha_user");
+        std::fs::create_dir_all(&folder).unwrap();
+        let leaf = folder.join("tsconfig.json");
+        std::fs::write(&leaf, "{ \"include\": [\"../types/managed-hook.d.ts\"] }").unwrap();
+
+        scaffold_at(&tree, true).unwrap();
+
+        let refreshed = std::fs::read_to_string(&leaf).unwrap();
+        assert!(refreshed.contains("../../types/managed/alpha_user.d.ts"));
+        assert!(refreshed.contains("../../types/managed/_shared.d.ts"));
+        assert!(refreshed.contains("../../types/managed-hook.d.ts"));
 
         std::fs::remove_dir_all(&tree).ok();
     }

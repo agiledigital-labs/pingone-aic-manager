@@ -1,9 +1,22 @@
 # Schema-driven script types — implementation plan
 
-Status: planned 2026-06-13, not started. High-level workstream + rationale is
-in `PLAN.md` ("Schema-driven script types"). This file is the detailed,
-codex-ready plan for **Phase 1** (managed-hook object types), with Phase 2
-(typed `openidm.*`) and Phase 3 (AM `identity`) sketched as follow-ons.
+Status: **Phase 1 implemented 2026-06-13.** Phase 2 (typed `openidm.*`) and
+Phase 3 (AM `identity`) remain follow-ons. High-level workstream + rationale is
+in `PLAN.md` ("Schema-driven script types"). This file is the detailed plan for
+**Phase 1** (managed-hook object types).
+
+Live verification done during impl (the two flagged checks):
+- **RelationshipRef shape** — confirmed against a live `alpha_user` record
+  (`authzRoles[]`) 2026-06-13: `_ref`, `_refResourceCollection`,
+  `_refResourceId`, `_refProperties{_id,_rev,…}`. Matches the emitted interface.
+- **onCreate `object` `_id`/`_rev`** — emitted **optional** by design, which is
+  correct for both phases: onUpdate `object` is the stored record (has both),
+  onCreate is the pre-persist draft (`_rev` assigned at persist; `_id` is the
+  client-supplied `request.newResourceId`). No risky scratch-hook probe needed.
+- **Vocabulary coverage** — the live schema (17 generated objects) uses only
+  `string`/`boolean`/`number`/`object`/`array`/`relationship` + `["string","null"]`,
+  all covered; array `items.type` of `object`/`array` intentionally map to
+  `any[]`.
 
 Goal: the script `.d.ts` files should type domain objects as their **real
 per-object field set** instead of `Record<string, any>` / `any`. The field
