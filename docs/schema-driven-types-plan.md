@@ -339,12 +339,28 @@ Scope (clarified by maintainer 2026-06-13):
   Custom managed objects don't get the AM-name treatment, so a typed `identity`
   is generated only for the core objects; custom objects stay opaque.
 
-When Phase 3 starts: move this table into a new `docs/api/` file (e.g.
-`docs/api/14-am-identity-attributes.md`) with a dated "Verified against …"
-after the fixture run, then generate a typed `identity` (likely a
-`getAttribute()` overload set keyed by the AM names, derived by joining this
-mapping with the Phase-1 managed-user schema). Until verified, leave `identity`
-as the current opaque `Identity`/`AMIdentity` type.
+**Verification done 2026-06-13 — see `docs/api/14-am-identity-attributes.md`.**
+Probed live via `scripts/rhino-script-tester/fixtures/identity-attr-mapping.script.js`
+in a next-gen scripted decision. Findings that change the plan:
+- `idRepository.getIdentity()` resolves by **managed-object UUID** (`fr-idm-uuid`),
+  NOT `userName` — a `userName` returns a stub whose `amIdentity` is null.
+- AM names confirmed live where the field was populated: `uid`, `cn`,
+  `givenName`, `sn`, `mail`, `telephoneNumber`, `inetUserStatus`, `fr-idm-uuid`,
+  `fr-idm-custom-attrs`. Wrong names return empty (no throw). The rest are from
+  Ping docs (unset on sampled users); the **`reports`↔`manager` swap is still
+  unconfirmed** (no test user with a manager).
+- `getAttributeValues(name)` always returns `JavaArray<string>` regardless of
+  IDM type — so typing the **name** is the win, not the return type.
+- **The AM attribute-name set is fixed/OOTB, NOT per-tenant** (custom fields
+  nest inside the single `fr-idm-custom-attrs`, not as separate AM attributes).
+
+So a typed `identity` is a **static workspace-template** change, not a
+generated-per-tenant artifact: add an AM-name union overload to
+`getAttribute`/`getAttributeValues` (+ `string` fallback) in the contexts that
+expose the binding (oidc-claims `AMIdentity`, oidc-claims-ng / SAML-mapper
+`Identity`, scripted-decision `idRepository.getIdentity(uuid): Identity`). This
+is the next increment; the verification deliverable (doc + harness fixtures) is
+done.
 
 ---
 
