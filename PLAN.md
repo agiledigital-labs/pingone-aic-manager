@@ -24,14 +24,15 @@ need the archaeology.)
   content-based conflict detection, AM scripts + IDM endpoints + IDM
   schedules, TUI tab + `aic script` CLI.
 
-## In progress
+- **Feature-vertical restructure** (2026-06-13) — one directory per feature
+  (`esv/`, `secrets/`, `scripts/`, `onboard/`, `vault/`, `undo/`) with
+  uniform api/state/ops/screen/view/cli seams, nested per-feature
+  Mode/Event enums, `app/` as the only global glue and `tui/` as passive
+  chrome. Rationale + phase log:
+  [`docs/orthogonality-review.md`](docs/orthogonality-review.md); routing
+  map: CLAUDE.md §9.
 
-- **Feature-vertical restructure** for AI-agent orthogonality — one
-  directory per feature so a change needs one directory + one API doc in
-  context. Plan, rationale, and phase status:
-  [`docs/orthogonality-review.md`](docs/orthogonality-review.md).
-
-## Next (after the restructure)
+## Next
 
 - **OAuth2 / OIDC** — clients + provider service (`docs/api/05-oauth2-oidc.md`).
   Remember: strip `-encrypted` fields on PUT; use `_rev` + content snapshot.

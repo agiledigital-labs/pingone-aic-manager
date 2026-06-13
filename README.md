@@ -38,9 +38,10 @@ passkey 2FA — a hard requirement for the maintainer.
 | [`docs/api/`](docs/api/)                                   | Verified AIC API reference. **Read before writing any code that hits a tenant.** Each file has a "Verified against" date for trust. |
 | [`scripts/verify-endpoint.sh`](scripts/verify-endpoint.sh) | Mints a service-account access token from `.envrc` and curls any AIC path. Used to verify endpoints before documenting them.        |
 | `src/agent/`                                               | The background daemon (Unix-socket protocol, AicClient cache, token mint).                                                          |
-| `src/aic/api.rs`, `src/aic/esv.rs`                         | Surface-agnostic AIC helpers — **the only path** TUI/CLI use for tenant HTTP. New resources go here.                                |
-| `src/cli/mod.rs`                                           | `aic` subcommands (login, status, ctx, esv list, …). Resource commands call `aic::api` / `aic::esv`.                                |
-| `src/app.rs`                                               | TUI coordinator: state, key dispatch, ESV view, onboarding flows.                                                                   |
+| `src/aic/api.rs`                                           | Surface-agnostic HTTP core — **the only path** TUI/CLI use for tenant HTTP (via the agent).                                         |
+| `src/esv/`, `src/secrets/`, `src/scripts/`, …              | One directory per feature (api/state/ops/screen/view/cli seams). Routing map: CLAUDE.md §9.                                         |
+| `src/app/`, `src/tui/`                                     | App shell (event loop, dispatch, prod guard) and shared TUI chrome (widgets, theme, header).                                        |
+| `src/cli/mod.rs`                                           | CLI root: clap parser + session commands (login, status, ctx). Feature subcommands live in each vertical's `cli.rs`.                |
 | `Cargo.toml`, `src/main.rs`                                | Single binary; no-args runs the TUI, any subcommand routes through `src/cli`.                                                       |
 
 ## Local setup
@@ -271,7 +272,7 @@ each checkout with its own `.aic-edit/` gets its own agent.
 | **4.** ESVs — list + fuzzy search + preview                     | ✅ done     | `/`-search with live scoring (nucleo), vertical split with JSON preview                       |
 | **5.** ESVs — edit + apply (`/environment/startup?_action=…`)   | ✅ done     | Editable variables + secrets with banner-driven save/apply, delete + undo                     |
 | **6.** Scripts (two-way sync with content-based conflict check) | ✅ done     | `aic script` — AM scripts + IDM endpoints + schedules; kind-agnostic pull/push/sync/watch/status/diff core, typed `./workspace`; TUI Scripts tab (browse + pull/push) |
-| **7.** Feature-vertical restructure ([docs/orthogonality-review.md](docs/orthogonality-review.md)) | 🔄 in progress | One directory per feature; per-feature CLI/state/view/api seams        |
+| **7.** Feature-vertical restructure ([docs/orthogonality-review.md](docs/orthogonality-review.md)) | ✅ done     | One directory per feature; per-feature api/state/ops/screen/view/cli seams; `app/` glue + `tui/` chrome |
 | Later                                                           |             | OAuth2 / OIDC, SAML, Journeys, Logs                                                            |
 
 ## How to work on this codebase (for AI assistants)
