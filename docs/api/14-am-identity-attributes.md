@@ -69,8 +69,8 @@ trusted only where marked ✓live (CLAUDE.md §2).
 | `assignedDashboard` | `assignedDashboard` | doc |
 | `assignments` | `fr-idm-managed-assignment-member` | doc |
 | `consentedMappings` | `fr-idm-consentedMapping` | doc |
-| `reports` | `manager` | **doc (swap — unverified)** |
-| `manager` | `fr-idm-managed-user-manager` | **doc (swap — unverified)** |
+| `reports` | `manager` | **not exposed here** (see below) |
+| `manager` | `fr-idm-managed-user-manager` | **not exposed here** (see below) |
 | `passwordLastChangedTime` | `pwdChangedTime` | doc |
 | `passwordExpirationTime` | `pwdExpirationTime` | doc |
 | `groups` | `fr-idm-managed-user-groups` | doc |
@@ -90,13 +90,29 @@ managed schema, all-OOTB fields). Per-field typing of this object is possible
 where a tenant has custom props (join with the managed schema's non-OOTB
 properties); here there are none.
 
-### Still to verify (no sample data)
-The **`reports` ↔ `manager` swap** is the one surprising row and remains
-unconfirmed — no sampled `alpha_user` has a `manager`/`reports` relationship
-set. Confirm by probing a user with a manager before relying on it. The address
-block (`l`/`st`/`co`/`postalCode`/`street`), `displayName`, `roles`,
-`applications`, etc. are unset on available test users — names taken from the
-Ping reference.
+### Relationship attributes are NOT exposed via scripted-decision `getAttributeValues` (verified)
+Probed with two purpose-built users — A (`probe-rpt-a`) with `manager` → B
+(`probe-mgr-b`), so B.reports = [A] (relationship confirmed in IDM). Yet on the
+`idRepository.getIdentity(uuid)` `ScriptedIdentity`, **all** of `manager`,
+`fr-idm-managed-user-manager`, `reports`, `fr-idm-managed-user-reports` returned
+size 0 for both users. So IDM relationship-typed fields (`manager`, `reports`,
+`roles`, `assignments`, `applications`, `groups`, `authzRoles`) do **not**
+surface through this binding — they're IDM-managed relationships, not
+materialised AM identity attributes here. The `reports`↔`manager` swap is
+therefore moot for scripted decision (neither side returns data); it may differ
+in the OIDC-claims `AMIdentity` context (not yet probed — needs an OIDC flow).
+`ScriptedIdentity` also exposes only `getAttributeValues` (no
+`getAttributes`/`getAttributeNames`/`asMap` enumerator).
+
+Also observed: `dn` returns the user DN (size 1) though it isn't in the Ping
+mapping. The address block (`l`/`st`/`co`/`postalCode`/`street`),
+`displayName`, etc. were unset on the test user — names taken from the Ping
+reference (status `doc`).
+
+**Typing consequence:** the typed `identity` should advertise the scalar/profile
+names (the ✓live set + the `doc` scalars) and `fr-idm-custom-attrs`; the
+relationship names are kept in the union for completeness/other contexts but
+will return empty in scripted decision.
 
 ## Typing implication (Phase 3)
 The AM attribute-name set is **fixed/OOTB** (this table) plus the single
