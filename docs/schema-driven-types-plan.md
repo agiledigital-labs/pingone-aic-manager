@@ -366,12 +366,20 @@ typed `getAttributeValues` overload merged onto `Identity` in
 value is name autocomplete (returns are always `JavaArray<string>`).
 tsc-verified.
 
-**Remaining (follow-on, reuse `AmUserAttribute`):** the same overload on the
-other identity contexts — oidc-claims-ng / SAML-mapper / oauth2-dcr / device-match
-`Identity.getAttributeValues`, and legacy oidc-claims `AMIdentity.getAttribute`
+**Extended 2026-06-13 to oidc-claims-ng + saml-nameid-mapper** — both have a
+user `interface Identity` that includes `nextgen-common`, so a typed
+`getAttributeValues(AmUserAttribute)` overload (before the `StringLike` one) was
+added directly. tsc-verified clean.
+
+Intentionally **not** typed: `oauth2-dcr`'s `ClientIdentity` (OAuth2 *client*
+attributes — a different namespace, not managed-user) and `device-match`'s
+`IdRepository.getIdentity` (returns untyped `object`, no typing point).
+
+**Remaining (optional):** legacy `oidc-claims` `AMIdentity.getAttribute`
 (self-contained leaf — would need the union copied in or wired, since it lacks
-`nextgen-common`). Optional: probe whether the OIDC-claims `AMIdentity` context
-surfaces relationship attrs (scripted decision does not).
+`nextgen-common`); legacy is deprecated so low priority. Optional: probe whether
+the OIDC-claims `AMIdentity` context surfaces relationship attrs (scripted
+decision does not).
 
 ---
 
