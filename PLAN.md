@@ -47,8 +47,12 @@ need the archaeology.)
   return the typed object (`AlphaUser` etc.) for both engines — generated into
   the workspace at `aic script workspace init/update`
   (`src/scripts/managed_types.rs`). (Return narrowing is solid; content-input
-  typo-catching is limited by overload resolution — see the plan.) **Remaining:**
-  Phase 3 (AM `identity` typing, needs the IDM→AM attribute-name fixture). See
+  typo-catching is limited by overload resolution — see the plan.) **Phase 3
+  started:** IDM→AM attribute mapping verified live
+  (`docs/api/14-am-identity-attributes.md`) and scripted-decision `identity`
+  now has typed attribute-name autocomplete (`AmUserAttribute`). **Remaining:**
+  extend the same typing to the other identity contexts (oidc-claims-ng / SAML /
+  oauth2-dcr / device-match / legacy oidc-claims). See
   `docs/schema-driven-types-plan.md`.
 
   **Mechanism.** Generate per-object TS interfaces (`AlphaUser`, `AlphaRole`,

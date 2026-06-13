@@ -357,10 +357,21 @@ in a next-gen scripted decision. Findings that change the plan:
 So a typed `identity` is a **static workspace-template** change, not a
 generated-per-tenant artifact: add an AM-name union overload to
 `getAttribute`/`getAttributeValues` (+ `string` fallback) in the contexts that
-expose the binding (oidc-claims `AMIdentity`, oidc-claims-ng / SAML-mapper
-`Identity`, scripted-decision `idRepository.getIdentity(uuid): Identity`). This
-is the next increment; the verification deliverable (doc + harness fixtures) is
-done.
+expose the binding.
+
+**Implemented for scripted decision 2026-06-13** (the verified context): the
+`AmUserAttribute` union lives in `am/types/nextgen-common.d.ts`, with a
+typed `getAttributeValues` overload merged onto `Identity` in
+`decision-node-next.d.ts` (next-gen only; legacy untouched, no wiring). The
+value is name autocomplete (returns are always `JavaArray<string>`).
+tsc-verified.
+
+**Remaining (follow-on, reuse `AmUserAttribute`):** the same overload on the
+other identity contexts — oidc-claims-ng / SAML-mapper / oauth2-dcr / device-match
+`Identity.getAttributeValues`, and legacy oidc-claims `AMIdentity.getAttribute`
+(self-contained leaf — would need the union copied in or wired, since it lacks
+`nextgen-common`). Optional: probe whether the OIDC-claims `AMIdentity` context
+surfaces relationship attrs (scripted decision does not).
 
 ---
 
