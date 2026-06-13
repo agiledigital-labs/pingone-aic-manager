@@ -240,10 +240,12 @@ The base method signatures differ, so generate an IDM variant and an AM variant:
 
 ### Staging
 
-- **Phase 2a (do now):** typed `read` + `query` + `create` for both engines
-  (highest-value, simplest arity). Plus the generator split, the IDM
-  interface conversion, `QueryResult<T>`, AM-side managed-interface generation,
-  and the leaf include-order wiring.
+- **Phase 2a (DONE 2026-06-13):** typed `read` + `query` + `create` for both
+  engines, the generator split, the IDM interface conversion, `QueryResult<T>`,
+  AM-side managed-interface generation, and the leaf include-order wiring. Live
+  tsc-verified: template-literal/bare-collection paths narrow; concat and
+  non-managed paths stay `any`; managed-hook `object` still types after the
+  split.
 - **Phase 2b (later):** `update`/`patch`/`delete`/`action` content+return
   typing (revision/patch-op semantics are fiddlier, lower marginal value).
 
