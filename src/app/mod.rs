@@ -29,6 +29,7 @@ pub enum InputMode {
     Esv(crate::esv::screen::Mode),
     Secrets(crate::secrets::screen::Mode),
     Scripts(crate::scripts::screen::Mode),
+    Managed(crate::managed::screen::Mode),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,17 +42,19 @@ pub enum Realm {
 pub enum Tab {
     Esvs,
     Scripts,
+    Managed,
 }
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Esvs, Tab::Scripts]
+        &[Tab::Esvs, Tab::Scripts, Tab::Managed]
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Esvs => "ESVs",
             Tab::Scripts => "Scripts",
+            Tab::Managed => "Managed",
         }
     }
 }
@@ -126,6 +129,10 @@ pub struct App {
     /// Scripts tab state — per-tenant candidate list, search + selection,
     /// in-flight pull/push tracking. See `crate::scripts::screen`.
     pub scripts: crate::scripts::screen::State,
+
+    /// Managed tab state — per-tenant schema cache, search + selection.
+    /// See `crate::managed::screen`.
+    pub managed: crate::managed::state::State,
 }
 
 impl App {
@@ -186,6 +193,7 @@ impl App {
             esv: crate::esv::state::State::new(),
             secret: crate::secrets::state::State::new(),
             scripts: crate::scripts::screen::State::new(),
+            managed: crate::managed::state::State::new(),
         })
     }
 
@@ -283,10 +291,14 @@ impl App {
         self.esv.reset_view();
         self.secret.reset_view();
         self.scripts.reset_view();
+        self.managed.reset_view();
         if let Some(t) = self.tenants.get(idx) {
             if let Err(e) = config::write_current_context(&t.name) {
                 tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
             }
+        }
+        if self.current_tab == Tab::Managed {
+            crate::managed::screen::refresh(self, false);
         }
     }
 
@@ -412,6 +424,7 @@ impl App {
             AppEvent::Esv(event) => crate::esv::screen::apply_event(self, event),
             AppEvent::Secrets(event) => crate::secrets::screen::apply_event(self, event),
             AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
+            AppEvent::Managed(event) => crate::managed::screen::apply_event(self, event),
         }
         Ok(())
     }

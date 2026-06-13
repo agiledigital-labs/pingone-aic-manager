@@ -17,6 +17,7 @@ pub enum AppEvent {
     Esv(crate::esv::screen::Event),
     Secrets(crate::secrets::screen::Event),
     Scripts(crate::scripts::screen::Event),
+    Managed(crate::managed::screen::Event),
     Toast(ToastKind, String),
 }
 
