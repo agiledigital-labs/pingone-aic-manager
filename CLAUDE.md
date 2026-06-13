@@ -142,27 +142,38 @@ lint rule or a doc row.
 
 ## 9. Project layout — routing map
 
-Updated 2026-06-13. A feature-vertical restructure is in progress
-(plan + status: `docs/orthogonality-review.md`); this table tracks **current
-reality** and must be updated as each phase lands. Pull only the rows you
-need into context.
+Updated 2026-06-13; the feature-vertical restructure is **complete**
+(rationale: `docs/orthogonality-review.md`). One directory per feature, with
+uniform seams: `api` (HTTP), `state`, `ops` (background work), `screen` (key
+handling + nested Mode/Event), `view` (rendering), `cli`. Pull only the rows
+you need into context.
 
 | To change… | Code lives in | Read first |
 |---|---|---|
-| ESV variables | `src/esv/` (api, state, ops, screen, view, CLI) | `docs/api/03-esvs.md` |
-| ESV secrets | `src/secrets/` (state, ops, screen, view, CLI) | `docs/api/03-esvs.md` |
-| Script sync (pull/push/sync/watch/diff) | `src/scripts/` (engine, screen, view, CLI) | `docs/api/04-scripts.md`, `11`, `12`, `13` |
+| ESV variables | `src/esv/` | `docs/api/03-esvs.md` |
+| ESV secrets | `src/secrets/` (HTTP wrappers stay in `esv/api.rs` — same API family) | `docs/api/03-esvs.md` |
+| Script sync (pull/push/sync/watch/diff) | `src/scripts/` | `docs/api/04-scripts.md`, `11`, `12`, `13` |
 | Script workspace templates (lint/types) | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs` | `docs/api/12-script-bindings-matrix.md` |
-| Tokens / HTTP transport / daemon | `src/aic/api.rs`, `src/aic/auth.rs`, `src/agent/` | `docs/api/00-auth.md`, `01`, `02`; `src/agent/mod.rs` header |
-| Local credential vault / unlock | `src/vault/` (auth, security key, screen state/handlers/views) + `src/config/{crypto,wraps}.rs` storage | — (local-only, no AIC docs) |
+| Tokens / HTTP transport / daemon | `src/aic/` (transport core), `src/agent/` | `docs/api/00-auth.md`, `01`, `02`; `src/agent/mod.rs` header |
+| Local credential vault / unlock | `src/vault/` + `src/config/{crypto,wraps}.rs` storage | — (local-only, no AIC docs) |
 | Onboarding (add tenant) | `src/onboard/` | `docs/api/00-auth.md`, `99-…` Q11/Q12 |
-| Undo | `src/undo.rs`, `src/screens/undo_history.rs`, `src/ui/undo_history.rs` | — |
-| TUI look & feel / keybindings | `src/ui/`, `src/theme.rs`, `src/keymap.rs` | `docs/DESIGN.md` |
-| CLI plumbing (clap, ctx, login) | `src/cli/mod.rs` | — |
+| Undo log + history overlay | `src/undo/` (executors live in each feature's `ops`) | — |
+| App shell: event loop, mode/tab dispatch, prod guard, env picker | `src/app/` | — |
+| Shared TUI chrome: widgets, theme, header, toasts, modals, help | `src/tui/` | `docs/DESIGN.md` |
+| CLI root (clap, login/logout/stop/status, ctx, whoami) | `src/cli/mod.rs` (feature subcommands live in each vertical's `cli.rs`) | — |
 
-Global registration points that **every new feature** must touch (one arm
-each): `app::InputMode`, `event::AppEvent`, `keymap::dispatch`, `ui::draw`,
-`cli::Command`.
+### Adding a new feature (e.g. OAuth2)
+
+1. Verify + document the API first (§2); new `docs/api/` file if needed.
+2. Create `src/<feature>/` with the standard seams; state hangs off `App`
+   as one field; `screen.rs` owns a nested `Mode` + `Event` enum.
+3. Register exactly one arm in each global: `app::InputMode::<Feature>(Mode)`,
+   `app::event::AppEvent::<Feature>(Event)`, `app::keymap::dispatch`,
+   `app::draw::draw`, `cli::Command` (+ a `Tab` variant if it's a tab).
+4. Add the routing row above and a `mod.rs` header linking the API doc.
+Feature-internal changes (new modal, new background op) must touch only the
+feature directory — if you find yourself editing `src/app/` for one, the
+design is being violated.
 
 ## 10. When unsure
 
