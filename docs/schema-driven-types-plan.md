@@ -186,8 +186,69 @@ next-gen overlays, `pingone-verify`). Do **not** add them to
 `legacy-common.d.ts` or the legacy/`oidc-claims` leaves, or the editor would
 advertise a binding the runtime doesn't have. In IDM, `openidm` is always
 present (endpoint/schedule/managed-hook), so the IDM side is unconditional.
-Confirm the AM presence/shape with a `scripts/rhino-script-tester/` fixture
-before shipping (CLAUDE.md §7).
+`legacy-common.d.ts` already has no `openidm` (verified 2026-06-13).
+
+### Verified TS ergonomics (prototyped with tsc 2026-06-13)
+
+Overloads keyed on the resource-path argument **do** narrow the return type —
+with one limitation and one ordering rule, both proven against tsc:
+
+- **Narrows:** bare collection literal (`openidm.query("managed/alpha_user", …)`
+  → `QueryResult<AlphaUser>`; `create("managed/alpha_user", …)` → `AlphaUser`),
+  a full string literal, and a **template literal**
+  (`` openidm.read(`managed/alpha_user/${id}`) `` → `AlphaUser | null`).
+- **Does NOT narrow:** string **concatenation**
+  (`openidm.read("managed/alpha_user/" + id)` widens to `string` → hits the
+  `string` fallback → `any`). So the win on `read`/`update`/`patch`/`delete`
+  (id-bearing paths) requires users to write template literals, not `"…" + id`.
+  Document this as the recommended style; query/create/action (bare collection
+  path) narrow regardless.
+- **Ordering rule (critical):** the generated overlay must be included **after**
+  the base `common.d.ts`/`nextgen-common.d.ts` in every leaf tsconfig. In
+  declaration merging the later interface's overloads are tried first; TS hoists
+  *string-literal* specialized overloads to the top regardless, but **template-
+  literal** overloads obey merge order — so base-before-generated is required or
+  `read` silently stops narrowing. (Verified both orderings with tsc.)
+- Non-managed paths (`config/…`, `internal/role/…`, `system/…`) keep the
+  `string` → `any` fallback (verified — no false narrowing).
+
+### Interface / hook-binding split (a forced Phase-1 refactor)
+
+The overloads file needs **all** managed interfaces in scope, so every
+openidm-using leaf includes the whole `types/managed/*.d.ts` interface set. But
+Phase 1 currently bundles `declare let object: <Object>` into each
+`<object>.d.ts` — including them all would declare `object` N times (conflict).
+So Phase 2 splits the generator output:
+- `types/managed/<object>.d.ts` → **pure** `interface <Object> { … }` only.
+- `types/managed/hooks/<object>.d.ts` → the `declare let object`/`oldObject`/
+  `newObject` bindings; included **only** by that object's managed-hook leaf
+  (a subdir so `types/managed/*.d.ts` globs skip it).
+- `types/managed/_shared.d.ts` → `RelationshipRef` **+ new `QueryResult<T>`**.
+- `types/managed/openidm-overloads.d.ts` → the merged `interface OpenIdm`
+  overloads (references the interfaces by global name; no imports).
+
+### Per-engine differences (the generated overloads file is engine-specific)
+
+The base method signatures differ, so generate an IDM variant and an AM variant:
+- **IDM base** (`idm/types/common.d.ts`) today is a `declare const openidm:
+  {…}` with arrow-property types — **convert to `interface OpenIdm { … }` +
+  `declare const openidm: OpenIdm`** (arrow props can't be overloaded). Methods:
+  read/query/create/update/patch (no delete/action in the base).
+- **AM base** (`am/types/nextgen-common.d.ts`) is already `interface OpenIdm`
+  with read/create/update/patch/delete/query/action; AM `update(id, rev,
+  value, …)` vs IDM `update(path, rev, content, …)`. Match each engine's arity.
+
+### Staging
+
+- **Phase 2a (do now):** typed `read` + `query` + `create` for both engines
+  (highest-value, simplest arity). Plus the generator split, the IDM
+  interface conversion, `QueryResult<T>`, AM-side managed-interface generation,
+  and the leaf include-order wiring.
+- **Phase 2b (later):** `update`/`patch`/`delete`/`action` content+return
+  typing (revision/patch-op semantics are fiddlier, lower marginal value).
+
+Confirm the AM `openidm` presence/shape with a `scripts/rhino-script-tester/`
+fixture before shipping (CLAUDE.md §7).
 
 ---
 
@@ -248,9 +309,18 @@ that access user profiles, then use AM attribute names."*
 
 Caveats to verify: the `reports` ↔ `manager` vs `manager` ↔
 `fr-idm-managed-user-manager` swap is surprising — confirm direction live.
-`custom_<property>` collapses all custom attrs into one `fr-idm-custom-attrs`
-bag, so per-field typing there isn't possible. The table is OOTB-user only;
-tenant-added custom managed properties won't appear under these names.
+
+Scope (clarified by maintainer 2026-06-13):
+- **`fr-idm-custom-attrs` is still per-field typeable.** It's the single AM
+  attribute that holds *all* custom managed-user properties, but it's an object
+  — type it as an interface whose fields are the tenant's custom managed-user
+  properties (from the Phase-1 schema, the non-OOTB props), so
+  `identity.getAttribute("fr-idm-custom-attrs")` returns a typed object rather
+  than `any`. Not a black box.
+- **This mapping applies only to the core objects, not custom objects.** The
+  IDM→AM attribute renaming is for the OOTB managed objects (`alpha_user` etc.).
+  Custom managed objects don't get the AM-name treatment, so a typed `identity`
+  is generated only for the core objects; custom objects stay opaque.
 
 When Phase 3 starts: move this table into a new `docs/api/` file (e.g.
 `docs/api/14-am-identity-attributes.md`) with a dated "Verified against …"
