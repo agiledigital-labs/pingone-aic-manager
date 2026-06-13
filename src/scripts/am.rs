@@ -381,6 +381,9 @@ pub fn leaf_tsconfig(slug: &str) -> String {
 
     let mut includes = vec!["./**/*".to_string()];
     includes.extend(types.iter().map(|t| format!("../../types/{t}")));
+    if types.contains(&"nextgen-common.d.ts") {
+        includes.push("../../types/managed/*.d.ts".to_string());
+    }
     let include_json = includes
         .iter()
         .map(|s| format!("\"{s}\""))
@@ -539,6 +542,8 @@ mod tests {
         assert!(next.contains("../../types/decision-node-next.d.ts"));
         assert!(next.contains("../../types/common.d.ts"));
         assert!(next.contains("../../types/nextgen-common.d.ts"));
+        assert!(next.contains("../../types/managed/*.d.ts"));
+        assert!(next.rfind("nextgen-common.d.ts").unwrap() < next.rfind("managed/*.d.ts").unwrap());
         assert!(!next.contains("legacy-common.d.ts"));
         assert!(next.contains("\"*\": [\"../lib/*\"]"));
 
@@ -551,18 +556,21 @@ mod tests {
         assert!(legacy.contains("../../types/legacy-common.d.ts"));
         assert!(!legacy.contains("decision-node-next.d.ts"));
         assert!(!legacy.contains("nextgen-common.d.ts"));
+        assert!(!legacy.contains("managed/*.d.ts"));
         assert!(!legacy.contains("paths"));
 
         // Library scripts: next-gen common + library overlay + sibling alias.
         let lib = leaf_tsconfig("lib");
         assert!(lib.contains("../../types/library.d.ts"));
         assert!(lib.contains("../../types/nextgen-common.d.ts"));
+        assert!(lib.contains("../../types/managed/*.d.ts"));
         assert!(lib.contains("\"*\": [\"./*\"]"));
 
         // OIDC claims is self-contained (no next-gen common set).
         let oidc = leaf_tsconfig("oidc-claims");
         assert!(oidc.contains("../../types/oidc-claims.d.ts"));
         assert!(!oidc.contains("common.d.ts"));
+        assert!(!oidc.contains("managed/*.d.ts"));
         assert!(!oidc.contains("paths"));
 
         // Next-gen context overlays: shared next-gen common + their generated
@@ -585,6 +593,12 @@ mod tests {
                 cfg.contains(&format!("../../types/{overlay}")),
                 "{slug} overlay"
             );
+            assert!(cfg.contains("../../types/managed/*.d.ts"), "{slug} managed");
+            assert!(
+                cfg.rfind(&format!("../../types/{overlay}")).unwrap()
+                    < cfg.rfind("../../types/managed/*.d.ts").unwrap(),
+                "{slug} managed types last"
+            );
             assert!(!cfg.contains("legacy-common"), "{slug} no legacy-common");
             assert!(cfg.contains("\"*\": [\"../lib/*\"]"), "{slug} lib alias");
         }
@@ -597,6 +611,7 @@ mod tests {
         assert!(other.contains("../../types/legacy-common.d.ts"));
         assert!(!other.contains("decision-node"));
         assert!(!other.contains("nextgen-common"));
+        assert!(!other.contains("managed/*.d.ts"));
         assert!(!other.contains("paths"));
     }
 }

@@ -4,6 +4,7 @@
     "./**/*",
     "../types/rhino-1.7.14.d.ts",
     "../types/common.d.ts",
-    "../types/schedule.d.ts"
+    "../types/schedule.d.ts",
+    "../types/managed/*.d.ts"
   ]
 }

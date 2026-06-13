@@ -44,24 +44,25 @@ interface IdmContext {
 }
 declare const context: IdmContext;
 
-declare const openidm: {
-  read: (
+interface OpenIdm {
+  read(
     path: string,
     params?: Record<string, string> | null,
     fields?: string[]
-  ) => any;
-  query: (path: string, params: { _queryFilter: string }) => any;
-  create: (
+  ): any;
+  query(path: string, params: { _queryFilter: string }): any;
+  create(
     path: string,
     newResourceId: string | null,
     content: Record<string, any> | null,
     params?: Record<string, string> | null
-  ) => any;
-  update: (
+  ): any;
+  update(
     path: string,
     revision: string | null,
     content: Record<string, any> | null,
     params?: Record<string, string> | null
-  ) => any;
-  patch: (path: string, revision: string | null, patch: Patch[]) => any;
-};
+  ): any;
+  patch(path: string, revision: string | null, patch: Patch[]): any;
+}
+declare const openidm: OpenIdm;

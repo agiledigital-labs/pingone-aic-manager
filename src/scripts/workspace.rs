@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 20;
+pub const TEMPLATES_VERSION: u32 = 21;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -168,8 +168,7 @@ const USER: &[(&str, &str)] = &[
 
 /// Our own `.gitignore` (the p1-sync one references `.p1-sync/`). Ignores build
 /// output and our sync state; keeps the source dirs tracked.
-const GITIGNORE: &str =
-    "node_modules/\ndist/\ncoverage/\n.aic-sync/\nidm/types/managed/\n*.log\n.DS_Store\n";
+const GITIGNORE: &str = "node_modules/\ndist/\ncoverage/\n.aic-sync/\nidm/types/managed/\nam/types/managed/\n*.log\n.DS_Store\n";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WorkspaceState {
@@ -384,6 +383,23 @@ mod tests {
     #[test]
     fn generated_managed_types_are_gitignored() {
         assert!(GITIGNORE.lines().any(|line| line == "idm/types/managed/"));
+        assert!(GITIGNORE.lines().any(|line| line == "am/types/managed/"));
+    }
+
+    #[test]
+    fn idm_leaf_templates_load_managed_types_after_common() {
+        for rel in ["idm/endpoint/tsconfig.json", "idm/schedule/tsconfig.json"] {
+            let contents = MANAGED
+                .iter()
+                .find(|(candidate, _)| *candidate == rel)
+                .unwrap()
+                .1;
+            assert!(
+                contents.find("../types/common.d.ts").unwrap()
+                    < contents.find("../types/managed/*.d.ts").unwrap(),
+                "{rel} managed types must follow common"
+            );
+        }
     }
 
     fn temp_tree() -> PathBuf {
@@ -439,6 +455,7 @@ mod tests {
 
         let refreshed = std::fs::read_to_string(&leaf).unwrap();
         assert!(refreshed.contains("../../types/decision-node-next.d.ts"));
+        assert!(refreshed.contains("../../types/managed/*.d.ts"));
         assert!(!refreshed.contains("src.d.ts"));
 
         std::fs::remove_dir_all(&tree).ok();
@@ -457,8 +474,8 @@ mod tests {
         scaffold_at(&tree, true).unwrap();
 
         let refreshed = std::fs::read_to_string(&leaf).unwrap();
-        assert!(refreshed.contains("../../types/managed/alpha_user.d.ts"));
-        assert!(refreshed.contains("../../types/managed/_shared.d.ts"));
+        assert!(refreshed.contains("../../types/managed/*.d.ts"));
+        assert!(refreshed.contains("../../types/managed/hooks/alpha_user.d.ts"));
         assert!(refreshed.contains("../../types/managed-hook.d.ts"));
 
         std::fs::remove_dir_all(&tree).ok();
