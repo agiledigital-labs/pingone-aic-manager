@@ -95,14 +95,16 @@ need the archaeology.)
   how `relationship`/`array`-typed properties map (refs to other managed
   objects → cross-interface references).
 
-- **Managed objects — schema property editing.** Current slice is
-  read-only inspection + hook sync. Next: add/edit properties (PUT replaces
-  the whole document; no `_rev`, last-write-wins) and a TUI tab. Pairs well
-  with the type generation above (same schema, same fetch).
+- **Managed objects — schema property editing.** Read-only inspection (CLI
+  `aic managed` + the **Managed TUI tab**, 2026-06-13) and hook sync are done.
+  Next: add/edit properties (PUT replaces the whole document; no `_rev`,
+  last-write-wins). Pairs well with the type generation above (same schema).
 - **OAuth2 / OIDC** — clients + provider service (`docs/api/05-oauth2-oidc.md`).
   Remember: strip `-encrypted` fields on PUT; use `_rev` + content snapshot.
 - **SAML** — hosted/remote entities + CoT (`docs/api/06-saml.md`).
-- **Journeys** — read-only browse first (`docs/api/09-journeys.md`).
+- **Journeys** — CLI `aic journey list`/`pull` (read-only export of tree +
+  nodes, 2026-06-13) done. Next: push/diff, a TUI browse tab, and the
+  "which journeys use script X" cross-reference (`docs/api/09-journeys.md`).
 
 ## Parked / stretch
 
