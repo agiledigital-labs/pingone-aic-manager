@@ -56,7 +56,9 @@ pub enum ScriptCommand {
     /// Show the sync state of synced scripts. Optional <ref> filters by
     /// namespace (`bravo`, `endpoint`).
     Status {
-        #[arg(help = "Namespace to filter by (default: all)")]
+        #[arg(
+            help = "Filter: group (am/idm), namespace (alpha/endpoint/…), full-name (alpha/Email OTP), or any fragment (default: all)"
+        )]
         reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
@@ -272,17 +274,16 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
         ScriptCommand::Status { reference, tenant } => {
             let t = tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
-            let filter = match reference {
-                Some(s) => Some(Namespace::parse(&s).ok_or_else(|| unknown_ns(&s))?),
-                None => None,
-            };
+            // `reference` is a free-text filter: a group (`am`/`idm`), a
+            // namespace (`alpha`/`endpoint`/…), a full-name (`alpha/Email OTP`),
+            // or any fragment. See `script::matches_term`.
+            let filter = reference.filter(|s| !s.trim().is_empty());
+            let mut total = 0;
             let mut shown = 0;
             for e in sync::status(&t, None).await? {
-                if let Some(ns) = &filter {
-                    let same = e.kind == ns.kind
-                        && (e.kind != script::Kind::Am
-                            || e.realm.as_deref() == ns.realm.as_deref());
-                    if !same {
+                total += 1;
+                if let Some(term) = &filter {
+                    if !script::matches_term(term, e.kind, e.realm.as_deref(), &e.name) {
                         continue;
                     }
                 }
@@ -298,7 +299,12 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 shown += 1;
             }
             if shown == 0 {
-                println!("nothing synced yet — `aic script pull …` first");
+                match &filter {
+                    Some(term) if total > 0 => {
+                        println!("no synced script matches {term:?} ({total} synced)");
+                    }
+                    _ => println!("nothing synced yet — `aic script pull …` first"),
+                }
             }
             Ok(())
         }

@@ -307,6 +307,38 @@ pub fn full_name(kind: Kind, realm: Option<&str>, name: &str) -> String {
     format!("{prefix}/{name}")
 }
 
+/// The group a script belongs to: `am` (alpha/bravo) or `idm` (endpoint,
+/// schedule, managed). Scripts already cluster this way in the workspace tree
+/// (`am/…` vs `idm/…`), so these are the natural coarse filter terms.
+pub fn group_token(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Am => "am",
+        Kind::IdmEndpoint | Kind::IdmSchedule | Kind::IdmManagedHook => "idm",
+    }
+}
+
+/// Whether a script matches a free-text filter `term` (used by `aic script
+/// status`). Case-insensitive. The term may be:
+///   - a **group** alias — exactly `am` or `idm` — matching the whole group;
+///   - a **namespace** prefix (`alpha`, `endpoint`, …), a **full-name**
+///     (`alpha/Email OTP`), or any **fragment** of the full-name (`Email`),
+///     all matched as a substring of `<prefix>/<name>`.
+/// An empty term matches everything.
+pub fn matches_term(term: &str, kind: Kind, realm: Option<&str>, name: &str) -> bool {
+    let term = term.trim().to_lowercase();
+    if term.is_empty() {
+        return true;
+    }
+    // `am`/`idm` are group selectors, not substrings — typing `am` means "all
+    // AM scripts", never "scripts with 'am' in the name" (which would also
+    // catch `saml`, `name`, …). Since the group alias already returns the
+    // whole group, nothing is lost.
+    if term == "am" || term == "idm" {
+        return group_token(kind) == term;
+    }
+    full_name(kind, realm, name).to_lowercase().contains(&term)
+}
+
 #[cfg(test)]
 mod ns_tests {
     use super::*;
@@ -344,5 +376,43 @@ mod ns_tests {
             full_name(Kind::IdmManagedHook, None, "alpha_user.onCreate"),
             "managed/alpha_user.onCreate"
         );
+    }
+
+    #[test]
+    fn filter_term_matches_group_namespace_fullname_and_fragment() {
+        let am = |t: &str| matches_term(t, Kind::Am, Some("alpha"), "Email OTP");
+        let ep = |t: &str| matches_term(t, Kind::IdmEndpoint, None, "validateQueryFilter");
+        let hook = |t: &str| matches_term(t, Kind::IdmManagedHook, None, "alpha_user.onCreate");
+
+        // group aliases
+        assert!(am("am"));
+        assert!(!am("idm"));
+        assert!(ep("idm"));
+        assert!(hook("idm"));
+        assert!(!ep("am"));
+
+        // namespace prefixes (substring of the full-name)
+        assert!(am("alpha"));
+        assert!(!am("bravo"));
+        assert!(ep("endpoint"));
+        assert!(hook("managed"));
+
+        // full-names and fragments, case-insensitively
+        assert!(am("alpha/Email OTP"));
+        assert!(am("email"));
+        assert!(ep("validate"));
+        assert!(hook("alpha_user.oncreate"));
+
+        // `am` is a group, not a substring: it must NOT leak via "Email"/"name"
+        assert!(!matches_term(
+            "am",
+            Kind::IdmEndpoint,
+            None,
+            "sendSamlAssertion"
+        ));
+
+        // empty term matches everything
+        assert!(am(""));
+        assert!(am("   "));
     }
 }
