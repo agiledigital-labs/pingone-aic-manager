@@ -61,7 +61,9 @@ interface Callbacks {
 declare const callbacks: Callbacks;
 
 interface Identity {
-  getAttributeValues: (attributeName: string) => JavaArray<string>;
+  // Method syntax (not an arrow property) so next-gen can merge a typed
+  // attribute-name overload onto it (decision-node-next.d.ts + AmUserAttribute).
+  getAttributeValues(attributeName: string): JavaArray<string>;
   setAttribute: (attributeName: string, value: [string] | []) => void;
   store: () => void;
 }

@@ -7,6 +7,17 @@
 
 // (require lives in nextgen-common.d.ts — shared by all next-gen contexts.)
 
+// Typed managed-user attribute names on the scripted-decision identity getter.
+// Merged onto the `Identity` interface from decision-node-base.d.ts; declared
+// here (next-gen only) so the legacy leaf — which lacks nextgen-common and so
+// `AmUserAttribute` — is unaffected. The literal-union overload gives the editor
+// autocomplete on AM attribute names (docs/api/14); the `string` signature in
+// the base keeps arbitrary names working. NOTE: `idRepository.getIdentity()`
+// resolves by managed-object UUID (fr-idm-uuid), NOT userName (verified).
+interface Identity {
+  getAttributeValues(attributeName: AmUserAttribute): JavaArray<string>;
+}
+
 // Localized-message helper (shape not enumerated in the editor metadata).
 declare const locales: any;
 

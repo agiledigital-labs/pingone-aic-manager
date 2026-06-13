@@ -192,6 +192,56 @@ interface Policy {
 }
 declare const policy: Policy;
 
+// ---- managed-user attribute names (for the identity binding) ----------------
+//
+// AM-side attribute names for managed-user profile data, used by
+// `identity`/`idRepository` getters (e.g. `getAttributeValues(<name>)`). These
+// differ from the IDM property names — see docs/api/14-am-identity-attributes.md
+// for the full IDM→AM mapping and what's verified. Used to give next-gen
+// identity bindings autocomplete on the attribute name (the value always comes
+// back as a string array, so only the name is typed). NOT exhaustive of every
+// possible LDAP attribute — a `string` fallback overload stays for the rest.
+//
+// Note: relationship-typed attributes (manager, fr-idm-managed-user-manager,
+// *-roles, *-member, …) do NOT surface via the scripted-decision
+// `getAttributeValues` binding (verified) — kept here for other contexts.
+type AmUserAttribute =
+  | "uid"
+  | "cn"
+  | "givenName"
+  | "sn"
+  | "mail"
+  | "displayName"
+  | "description"
+  | "userPassword"
+  | "telephoneNumber"
+  | "street"
+  | "l"
+  | "st"
+  | "postalCode"
+  | "co"
+  | "inetUserStatus"
+  | "iplanet-am-user-alias-list"
+  | "assignedDashboard"
+  | "labeledURI"
+  | "pwdChangedTime"
+  | "pwdExpirationTime"
+  | "dn"
+  | "fr-idm-uuid"
+  | "etag"
+  | "fr-idm-custom-attrs"
+  | "fr-idm-kbaInfo"
+  | "fr-idm-preferences"
+  | "fr-idm-consentedMapping"
+  | "fr-idm-managed-user-meta"
+  | "fr-idm-managed-user-manager"
+  | "manager"
+  | "fr-idm-managed-user-roles"
+  | "fr-idm-managed-user-groups"
+  | "fr-idm-managed-application-member"
+  | "fr-idm-managed-application-owner"
+  | "fr-idm-managed-assignment-member";
+
 // Only next-generation scripts can require() library scripts (resolved via the
 // leaf tsconfig `paths` alias to ../lib/*). `require` is a module mechanism, not
 // a listed binding, so it's shared here across all next-gen contexts.
