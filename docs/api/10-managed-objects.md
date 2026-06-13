@@ -119,10 +119,45 @@ mechanism on the IDM side (whereas AM uses URL path segments).
 }
 ```
 
-Hooks (`onCreate`, `onUpdate`, `onDelete`, `onValidate`, `onRead`, etc.) can
-be either inline (`{ "type": "...", "source": "..." }`) or file-backed
-(`{ "type": "...", "file": "..." }`). For on-disk storage we prefer file form
-(matches fr-config-manager's layout: separate `.js` files per hook).
+## Hook scripts (verified 2026-06-13)
+
+Hook keys **observed in use** on the sandbox schema: `onCreate`, `onUpdate`,
+`onDelete`, `postCreate`, `postUpdate`, `postDelete`. Two storage forms
+coexist on the same tenant:
+
+- **Inline** — `{ "type": "text/javascript", "source": "…" }`. Round-trips
+  through `PUT /openidm/config/managed`; this is the form tenant tooling can
+  edit.
+- **File-backed** — `{ "type": "text/javascript", "file": "roles/onDelete-roles.js" }`
+  (stock Ping hooks). The config API provides no way to read or write the
+  referenced file, so tooling must treat file-backed hooks as **read-only
+  markers** — never convert them to inline or drop them on push.
+
+Sync tooling should detect hooks **by value shape** (any object property with
+`type` + `source`/`file`), not by a hardcoded key list — which event keys
+beyond the six observed are accepted/fired remains an open question.
+
+### Hook runtime bindings (live probe, 2026-06-13)
+
+Probed by installing temporary `onCreate`/`onUpdate` hooks on the scratch
+type `alpha_lock`, dumping bindings into the created record, then restoring
+the schema byte-identical and deleting the probe records. Full sanitized
+results: [`bindings/managed-hooks-idm.json`](bindings/managed-hooks-idm.json).
+
+| Binding | onCreate | onUpdate | Notes |
+|---|---|---|---|
+| `object` | draft record, **mutable** | new state, mutable | writes persist |
+| `oldObject` | `null` | previous record state | |
+| `newObject` | `=== object` | `=== object` | alias, verified |
+| `request` | CreateRequest (`method:"create"`, `content`, `newResourceId`, …) | `method:"update"` | |
+| `context` | full context chain (http headers ⚠ incl. Authorization, security, oauth2) | same | treat as sensitive |
+| `resourceName` | `ResourcePath` (`managed/<type>/<id>`) | same | only Java-classed binding |
+| `openidm`, `logger`, `identityServer`, `require` | present | present | same surface as endpoint scripts |
+
+**Fatal gotcha:** `for (var k in this)` at hook top level throws — the
+triggering request gets **HTTP 500** and the write rolls back. Any uncaught
+hook exception surfaces the same way. Probe with `typeof <name>`, never by
+enumerating scope.
 
 ## Examples
 
@@ -146,14 +181,25 @@ $SCRIPTS/verify-endpoint.sh "/openidm/managed/alpha_user?_queryFilter=true&_page
 - **`repo.ds`** is the source of truth for which managed properties are
   indexed in DJ. Adding a searchable property requires updating both
   `managed` and `repo.ds`.
+- **Config PUT applies with a lag.** `PUT /openidm/config/managed` returns
+  200 immediately, but the running hook registry catches up a beat later
+  (observed 2026-06-13: a record created right after a 200'd schema PUT
+  still fired the *previous* hook source; ~5s later the new source was
+  live). Push tooling must not assume the new config is active at 200;
+  re-read the config to confirm, and don't fire-and-verify hooks
+  immediately after a push.
 
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-06-09 (sandbox create-if-absent test); 2026-05-17 (schema read).
-- Calls: `GET /openidm/config/managed` (200 OK);
-  `PUT /openidm/managed/alpha_role/{id}` + `If-None-Match: *`
-  (201 create, 412 on duplicate); `DELETE …` (200).
+- Date: 2026-06-13 (hook inventory, hook bindings probe, schema PUT
+  round-trip + application lag); 2026-06-09 (create-if-absent test);
+  2026-05-17 (schema read).
+- Calls: `GET /openidm/config/managed` (200); `PUT /openidm/config/managed`
+  (200, full-document replace round-trips byte-identical);
+  `PUT /openidm/managed/alpha_lock/{id}` + `If-None-Match: *` (201/412);
+  bare `PUT` update (200, fires onUpdate); `DELETE` (200);
+  `GET …?_queryFilter=true&_fields=_id` (200).
 
 ## Source citations
 
@@ -163,7 +209,11 @@ $SCRIPTS/verify-endpoint.sh "/openidm/managed/alpha_user?_queryFilter=true&_page
 
 ## Open questions
 
-- Full hook event names (`onCreate`, `onUpdate`, `onDelete`, `onValidate`,
-  `onRead`, `onRetrieve`, `onStore`, `onSync`, `postCreate`, `postUpdate`, …)
-  and which are tenant-editable in AIC. fr-config-manager has a list; copy
-  after verifying with a `GET /openidm/config/managed` and grepping hook keys.
+- Which hook event keys beyond the six observed in use (`onCreate`,
+  `onUpdate`, `onDelete`, `postCreate`, `postUpdate`, `postDelete`) are
+  accepted **and fired** by AIC (`onValidate`, `onRead`, `onRetrieve`,
+  `onStore`, `onSync`, …). Partially resolved 2026-06-13: tooling
+  sidesteps this by detecting hooks by value shape rather than key list;
+  verify firing per-key before documenting any of the others as supported.
+- Hook bindings for `onDelete`/`post*` hooks are assumed to match the
+  verified `onCreate`/`onUpdate` surface; not yet probed.

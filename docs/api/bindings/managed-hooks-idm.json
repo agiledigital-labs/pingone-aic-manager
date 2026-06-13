@@ -1,0 +1,49 @@
+{
+  "_provenance": "Live probe, sandbox tenant, 2026-06-13. Method: temporary onCreate/onUpdate hooks installed on the scratch type managed/alpha_lock dumped typeof/getClass/JSON.stringify of each binding into the created record, then schema restored byte-identical and probe records deleted. See docs/api/10-managed-objects.md 'Hook scripts'. Header/token values sanitized.",
+  "engine": "Rhino (IDM, same 1.7.14 family as endpoints/schedules — not independently re-verified for hooks)",
+  "bindings_all_hooks": {
+    "openidm": "object — the IDM functions surface (create/read/update/patch/query/delete/action). Rhino scriptable; getClass() not available on it.",
+    "logger": "object — IDM logger (info/warn/error/debug/trace).",
+    "identityServer": "object — server property access (getProperty).",
+    "require": "function — CommonJS-style require, as in endpoint scripts.",
+    "context": "object — serializable context chain, see context_chain.",
+    "request": "object — the triggering CREST request, shape depends on method; see request_create.",
+    "resourceName": "object — Java org.forgerock.json.resource.ResourcePath (the only binding where getClass() works). String(resourceName) is e.g. 'managed/alpha_lock/<id>'."
+  },
+  "bindings_onCreate": {
+    "object": "object — the draft record; mutable (writes persist to the created record).",
+    "oldObject": "null",
+    "newObject": "object — aliases `object` (object === newObject verified)."
+  },
+  "bindings_onUpdate": {
+    "object": "object — the incoming new state; mutable; object === newObject (verified).",
+    "oldObject": "object — the previous record state (verified non-null with prior field values).",
+    "newObject": "object — alias of object."
+  },
+  "request_create": {
+    "method": "create",
+    "fields": {},
+    "resourcePath": "",
+    "additionalParameters": {},
+    "content": { "_comment": "the request body as sent" },
+    "newResourceId": "<the client-supplied _id>"
+  },
+  "request_update": {
+    "method": "update",
+    "_comment": "verified via request.method === 'update' in onUpdate; full shape not dumped"
+  },
+  "context_chain": [
+    "org.forgerock.http.routing.UriRouterContext (name=router, matchedUri=managed/<type>)",
+    "org.forgerock.json.resource.AdviceContext (name=advice)",
+    "org.forgerock.http.routing.UriRouterContext (name=router)",
+    "org.forgerock.json.resource.http.HttpContext (name=http — method, path, headers incl. Authorization; treat as sensitive)",
+    "org.forgerock.services.context.SecurityContext (name=security — authenticationId, authorization{id,roles,component})",
+    "org.forgerock.http.oauth2.OAuth2Context (name=oauth2 — rawInfo{active,scope,realm,client_id,user_id,…})"
+  ],
+  "runtime_gotchas": {
+    "scope_enumeration_fatal": "`for (var k in this)` at hook top level throws → the triggering HTTP request fails with 500 and the write is rolled back. Probe binding names with `typeof <name>` instead.",
+    "eval": "not separately isolated; the failing probe used both eval and for-in — for-in alone reproduced the 500, eval-free probes all worked. Avoid both.",
+    "hook_error_surface": "any uncaught hook exception → HTTP 500 {code:500} on the caller's request; the record is not created.",
+    "getClass": "works on Java-backed bindings (resourceName); Rhino-scriptable bindings (request/context/object/openidm/…) have no getClass."
+  }
+}
