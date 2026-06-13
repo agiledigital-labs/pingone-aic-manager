@@ -48,7 +48,11 @@ pub fn draw(f: &mut Frame, app: &App) {
             toast::draw(f, app);
             return;
         }
-        InputMode::Normal | InputMode::Esv(_) | InputMode::Secrets(_) | InputMode::Scripts(_) => {}
+        InputMode::Normal
+        | InputMode::Esv(_)
+        | InputMode::Secrets(_)
+        | InputMode::Scripts(_)
+        | InputMode::Managed(_) => {}
     }
 
     let area = f.area();
@@ -173,6 +177,8 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         );
     } else if app.current_tab == crate::app::Tab::Scripts {
         crate::scripts::view::draw_body(f, app, area);
+    } else if app.current_tab == crate::app::Tab::Managed {
+        crate::managed::view::draw_body(f, app, area);
     } else {
         crate::esv::view::draw(f, app, area);
     }

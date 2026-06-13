@@ -124,9 +124,10 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     }
 
     let scripts_tab = app.current_tab == Tab::Scripts;
-    let secrets = !scripts_tab && app.esv.view == EsvView::Secrets;
+    let esv_tab = app.current_tab == Tab::Esvs;
+    let secrets = esv_tab && app.esv.view == EsvView::Secrets;
     let n = row_count(app);
-    let can_apply = !scripts_tab
+    let can_apply = esv_tab
         && app
             .active_tenant()
             .map(|t| crate::esv::state::can_request_restart(app, &t.name))
@@ -164,8 +165,8 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     // `[` / `]` switch sub-tabs within a tab (here: Variables ⇄ Secrets) — the
     // lazygit/k9s convention for inner tabs.
     // `[` / `]` switch the ESV tab's inner sub-tabs (Variables ⇄ Secrets);
-    // the Scripts tab has no sub-views.
-    if !scripts_tab {
+    // the Scripts and Managed tabs have no sub-views.
+    if esv_tab {
         out.push(b(
             &[Trigger::Char('['), Trigger::Char(']')],
             "[ ]",
@@ -233,7 +234,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             true,
             PullAll,
         ));
-    } else {
+    } else if esv_tab {
         if n > 0 {
             if secrets {
                 out.push(b(
@@ -301,7 +302,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
 
     // Global commands available on every populated screen. Realm toggle only
     // applies to the ESV tab — scripts are addressed by namespace, not realm.
-    if !scripts_tab {
+    if esv_tab {
         out.push(b(
             &[Trigger::Char('r'), Trigger::Char('R')],
             "r",
@@ -362,7 +363,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out.push(("?", "keys"));
             out
         }
-        InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) => {
+        InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) | InputMode::Managed(_) => {
             vec![("Enter", "keep filter"), ("Esc", "clear + exit")]
         }
         InputMode::Secrets(SecretsMode::Create) => {
@@ -454,6 +455,7 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::Esv(mode) => crate::esv::screen::handle_key(app, key, mode)?,
         InputMode::Secrets(mode) => crate::secrets::screen::handle_key(app, key, mode)?,
         InputMode::Scripts(mode) => crate::scripts::screen::handle_key(app, key, mode),
+        InputMode::Managed(mode) => crate::managed::screen::handle_key(app, key, mode),
     }
     Ok(())
 }
@@ -479,10 +481,10 @@ async fn run_normal(app: &mut App, act: Act) {
         PrevTab => cycle_tab(app, -1),
         ToggleView => app.esv.view = app.esv.view.toggled(),
         Search => {
-            app.input_mode = if app.current_tab == Tab::Scripts {
-                InputMode::Scripts(crate::scripts::screen::Mode::Search)
-            } else {
-                InputMode::Esv(EsvMode::Search)
+            app.input_mode = match app.current_tab {
+                Tab::Scripts => InputMode::Scripts(crate::scripts::screen::Mode::Search),
+                Tab::Managed => InputMode::Managed(crate::managed::screen::Mode::Search),
+                Tab::Esvs => InputMode::Esv(EsvMode::Search),
             }
         }
         ClearFilter => clear_filter(app),
@@ -540,6 +542,8 @@ fn cycle_tab(app: &mut App, delta: isize) {
     // it's a few list calls, so we don't pay for it unless it's visited.
     if app.current_tab == Tab::Scripts {
         crate::scripts::screen::refresh(app, false);
+    } else if app.current_tab == Tab::Managed {
+        crate::managed::screen::refresh(app, false);
     }
 }
 
@@ -547,6 +551,12 @@ fn row_count(app: &App) -> usize {
     if app.current_tab == Tab::Scripts {
         return app
             .scripts
+            .matches(app.active_tenant().map(|t| t.name.as_str()))
+            .len();
+    }
+    if app.current_tab == Tab::Managed {
+        return app
+            .managed
             .matches(app.active_tenant().map(|t| t.name.as_str()))
             .len();
     }
@@ -562,6 +572,9 @@ fn current_selection(app: &App) -> usize {
     if app.current_tab == Tab::Scripts {
         return app.scripts.selected;
     }
+    if app.current_tab == Tab::Managed {
+        return app.managed.selected;
+    }
     match app.esv.view {
         EsvView::Variables => app.esv.list.selected,
         EsvView::Secrets => app.secret.list.selected,
@@ -573,6 +586,10 @@ fn set_selection(app: &mut App, idx: usize) {
     let clamped = if n == 0 { 0 } else { idx.min(n - 1) };
     if app.current_tab == Tab::Scripts {
         app.scripts.selected = clamped;
+        return;
+    }
+    if app.current_tab == Tab::Managed {
+        app.managed.selected = clamped;
         return;
     }
     match app.esv.view {
@@ -596,6 +613,9 @@ fn filter_active(app: &App) -> bool {
     if app.current_tab == Tab::Scripts {
         return !app.scripts.query.is_empty();
     }
+    if app.current_tab == Tab::Managed {
+        return !app.managed.query.is_empty();
+    }
     match app.esv.view {
         EsvView::Variables => !app.esv.list.query.is_empty(),
         EsvView::Secrets => !app.secret.list.query.is_empty(),
@@ -605,6 +625,10 @@ fn filter_active(app: &App) -> bool {
 fn clear_filter(app: &mut App) {
     if app.current_tab == Tab::Scripts {
         app.scripts.reset_view();
+        return;
+    }
+    if app.current_tab == Tab::Managed {
+        app.managed.reset_view();
         return;
     }
     match app.esv.view {

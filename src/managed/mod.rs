@@ -6,6 +6,7 @@
 //!   the `managed` config has no `_rev` and no partial patch).
 //! - [`cli`] implements `aic managed` (read-only inspection in this slice;
 //!   schema property editing is the planned follow-up).
+//! - [`state`], [`screen`], and [`view`] implement the read-only TUI browser.
 //!
 //! **Hook scripts are synced by the scripts feature, not here**: they are
 //! `Kind::IdmManagedHook` units addressed as `managed/<object>.<hookKey>`
@@ -21,3 +22,6 @@
 
 pub mod api;
 pub mod cli;
+pub mod screen;
+pub mod state;
+pub mod view;
