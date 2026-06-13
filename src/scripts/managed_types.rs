@@ -97,10 +97,10 @@ fn render_openidm_overloads(
         let interface_name = pascal_case(name);
         match engine {
             Engine::Idm => out.push_str(&format!(
-                "  read(resourceName: `managed/{name}/${{string}}`, params?: Record<string, string> | null, fields?: string[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }}): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: Record<string, string> | null): {interface_name};\n"
+                "  read(resourceName: `managed/{name}/${{string}}`, params?: Record<string, string> | null, fields?: string[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }}): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: Record<string, string> | null): {interface_name};\n  update(resourceName: `managed/{name}/${{string}}`, revision: string | null, content: Partial<{interface_name}>, params?: Record<string, string> | null): {interface_name};\n  patch(resourceName: `managed/{name}/${{string}}`, revision: string | null, patch: Patch[]): {interface_name};\n  delete(resourceName: `managed/{name}/${{string}}`, revision: string | null, params?: Record<string, string> | null): {interface_name};\n"
             )),
             Engine::Am => out.push_str(&format!(
-                "  read(resourceName: `managed/{name}/${{string}}`, params?: object, fields?: string[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }} | object, fields?: string[]): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: object, fields?: string[]): {interface_name};\n"
+                "  read(resourceName: `managed/{name}/${{string}}`, params?: object, fields?: string[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }} | object, fields?: string[]): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: object, fields?: string[]): {interface_name};\n  update(resourceName: `managed/{name}/${{string}}`, rev: string | null, value: Partial<{interface_name}>, params?: object, fields?: string[]): {interface_name};\n  patch(resourceName: `managed/{name}/${{string}}`, rev: string | null, patch: Patch[], params?: object, fields?: string[]): {interface_name};\n  delete(resourceName: `managed/{name}/${{string}}`, rev: string | null, params?: object, fields?: string[]): {interface_name};\n"
             )),
         }
     }
@@ -389,12 +389,36 @@ mod tests {
 
         assert!(idm.contains("read(resourceName: `managed/alpha_user/${string}`"));
         assert!(idm.contains("query(resourceName: \"managed/alpha_user\""));
+        assert!(idm.contains(
+            "create(resourceName: \"managed/alpha_user\", newResourceId: string | null, content: Partial<AlphaUser>, params?: Record<string, string> | null): AlphaUser;"
+        ));
+        assert!(idm.contains(
+            "update(resourceName: `managed/alpha_user/${string}`, revision: string | null, content: Partial<AlphaUser>, params?: Record<string, string> | null): AlphaUser;"
+        ));
+        assert!(idm.contains(
+            "patch(resourceName: `managed/alpha_user/${string}`, revision: string | null, patch: Patch[]): AlphaUser;"
+        ));
+        assert!(idm.contains(
+            "delete(resourceName: `managed/alpha_user/${string}`, revision: string | null, params?: Record<string, string> | null): AlphaUser;"
+        ));
         assert!(idm.contains("QueryResult<AlphaUser>"));
-        assert!(idm.contains("params?: Record<string, string> | null"));
         assert!(am.contains("read(resourceName: `managed/alpha_user/${string}`"));
         assert!(am.contains("query(resourceName: \"managed/alpha_user\""));
+        assert!(am.contains(
+            "create(resourceName: \"managed/alpha_user\", newResourceId: string | null, content: Partial<AlphaUser>, params?: object, fields?: string[]): AlphaUser;"
+        ));
+        assert!(am.contains(
+            "update(resourceName: `managed/alpha_user/${string}`, rev: string | null, value: Partial<AlphaUser>, params?: object, fields?: string[]): AlphaUser;"
+        ));
+        assert!(am.contains(
+            "patch(resourceName: `managed/alpha_user/${string}`, rev: string | null, patch: Patch[], params?: object, fields?: string[]): AlphaUser;"
+        ));
+        assert!(am.contains(
+            "delete(resourceName: `managed/alpha_user/${string}`, rev: string | null, params?: object, fields?: string[]): AlphaUser;"
+        ));
         assert!(am.contains("QueryResult<AlphaUser>"));
-        assert!(am.contains("params?: object"));
+        assert!(!idm.contains("action("));
+        assert!(!am.contains("action("));
         assert!(idm.find("managed/alpha_user").unwrap() < idm.find("managed/zeta").unwrap());
         assert!(am.find("managed/alpha_user").unwrap() < am.find("managed/zeta").unwrap());
     }

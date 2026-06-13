@@ -64,5 +64,16 @@ interface OpenIdm {
     params?: Record<string, string> | null
   ): any;
   patch(path: string, revision: string | null, patch: Patch[]): any;
+  delete(
+    path: string,
+    revision: string | null,
+    params?: Record<string, string> | null
+  ): any;
+  action(
+    path: string,
+    actionName: string,
+    content?: Record<string, any> | null,
+    params?: Record<string, string> | null
+  ): any;
 }
 declare const openidm: OpenIdm;
