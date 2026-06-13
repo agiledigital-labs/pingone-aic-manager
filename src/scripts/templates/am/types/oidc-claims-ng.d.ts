@@ -12,6 +12,9 @@ interface Identity {
   exists(): boolean;
   setAttribute(attributeName: StringLike, attributeValues: any[]): void;
   addAttribute(attributeName: StringLike, attributeValue: StringLike): void;
+  // Typed managed-user attribute names first (autocomplete; docs/api/14), then
+  // the permissive StringLike fallback for any other attribute.
+  getAttributeValues(attributeName: AmUserAttribute): any[];
   getAttributeValues(attributeName: StringLike): any[];
   getUniversalId(): StringLike;
 }
