@@ -137,10 +137,12 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 let t = tenant_for(tenant)?;
                 guard_legacy_workspace(&t)?;
                 let r = workspace::init(&t)?;
+                let managed_types = generate_managed_types(&t).await;
                 println!(
-                    "workspace ready at {} ({} files written, templates v{})",
+                    "workspace ready at {} ({} files written, {} managed type files, templates v{})",
                     r.tree.display(),
                     r.written.len(),
+                    managed_types,
                     workspace::TEMPLATES_VERSION
                 );
                 Ok(())
@@ -149,10 +151,12 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 let t = tenant_for(tenant)?;
                 guard_legacy_workspace(&t)?;
                 let r = workspace::update(&t)?;
+                let managed_types = generate_managed_types(&t).await;
                 println!(
-                    "templates refreshed to v{} ({} files written) at {}",
+                    "templates refreshed to v{} ({} files written, {} managed type files) at {}",
                     workspace::TEMPLATES_VERSION,
                     r.written.len(),
+                    managed_types,
                     r.tree.display()
                 );
                 Ok(())
@@ -423,6 +427,49 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Fetch the tenant's managed schema and write its generated per-object types.
+/// This is best-effort because the embedded workspace scaffold is still useful
+/// when the agent is locked or unavailable.
+async fn generate_managed_types(tenant: &str) -> usize {
+    let schema = match crate::aic::api::get(tenant, "/openidm/config/managed").await {
+        Ok(schema) => schema,
+        Err(error) => {
+            eprintln!("warning: could not fetch managed schema (types not generated): {error}");
+            return 0;
+        }
+    };
+    let files = match crate::scripts::managed_types::generate(&schema) {
+        Ok(files) => files,
+        Err(error) => {
+            eprintln!("warning: could not generate managed types: {error}");
+            return 0;
+        }
+    };
+
+    let tree = ProjectConfig::workspace_tree(tenant);
+    let mut written = 0;
+    for (relative, contents) in files {
+        let path = tree.join(relative);
+        if let Some(parent) = path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "warning: could not create managed type directory {}: {error}",
+                    parent.display()
+                );
+                continue;
+            }
+        }
+        match std::fs::write(&path, contents) {
+            Ok(()) => written += 1,
+            Err(error) => eprintln!(
+                "warning: could not write managed type {}: {error}",
+                path.display()
+            ),
+        }
+    }
+    written
 }
 
 /// One unit of script-sync work: a namespace and which scripts within it.

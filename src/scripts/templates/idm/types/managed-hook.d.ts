@@ -1,5 +1,7 @@
-// IDM managed-object hook bindings. Layered on rhino + common (which declare
-// `openidm`, `logger`, `context`).
+// IDM managed-object hook shared bindings. Layered on rhino + common (which
+// declare `openidm`, `logger`, `context`). `object`, `oldObject`, and
+// `newObject` are declared per object in generated
+// `types/managed/<object>.d.ts` files.
 //
 // Provenance: live binding probe on the sandbox 2026-06-13 via temporary
 // onCreate/onUpdate hooks (docs/api/10-managed-objects.md, raw dump in
@@ -9,23 +11,6 @@
 // ⚠ Runtime gotchas (verified): any uncaught exception in a hook fails the
 // caller's request with HTTP 500 and rolls back the write. Enumerating the
 // scope (`for (var k in this)`) is itself fatal — never do it.
-
-/**
- * The record the hook operates on. Mutable — writes persist to the stored
- * record. In onCreate this is the draft being created (`oldObject` is null);
- * in onUpdate it is the incoming new state (`oldObject` holds the previous
- * state). `object === newObject` in both (verified).
- */
-declare let object: Record<string, any>;
-
-/**
- * Previous record state: `null` in onCreate, the pre-update record in
- * onUpdate (verified).
- */
-declare const oldObject: Record<string, any> | null;
-
-/** Alias of `object` (`object === newObject` verified). Prefer `object`. */
-declare let newObject: Record<string, any>;
 
 /** A single patch operation (for method:"patch" requests). */
 interface ManagedHookPatchOperation {
