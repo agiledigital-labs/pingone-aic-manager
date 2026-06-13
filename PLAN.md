@@ -40,9 +40,55 @@ need the archaeology.)
 
 ## Next
 
+- **Schema-driven script types** (next up). Today the script `.d.ts` files
+  type domain objects loosely — managed-hook `object`/`oldObject`/`newObject`
+  are `Record<string, any>`, and every `openidm.*` call returns `any`. Make
+  the editor know the *real* per-object field set.
+
+  **Mechanism.** Generate per-object TS interfaces (`AlphaUser`, `AlphaRole`,
+  …) from the live `managed` schema — the same `GET /openidm/config/managed`
+  the managed tool already fetches; each property carries a `type` and the
+  `required` array. **Key design point:** managed schema is per-tenant
+  editable, so these types are *generated into the tenant's workspace* at
+  `aic script workspace init/update` (re-fetched each update), NOT baked into
+  the `include_str!` binary templates like the static `.d.ts` files. New
+  generated files live under `idm/types/managed/` + `am/types/managed/`,
+  gitignored with the rest of the workspace.
+
+  Three pieces, increasing complexity — the first two are the near-term ask:
+
+  1. **Managed-hook object types.** Type `object`/`oldObject`/`newObject` as
+     the interface for the hook's object (e.g. an `alpha_user.onCreate` file
+     gets `object: AlphaUser`). Per-object hook folders already isolate this
+     (`idm/managed/<object>/<hook>.cjs`), so the generated tsconfig for each
+     object folder can declare the right binding type. Mind the wire envelope
+     (`_id`/`_rev` plus the schema fields) and schema→TS nullability
+     (`required` vs optional, `type: ["string","null"]`).
+  2. **Typed `openidm.*` returns (IDM + AM).** Overload `read`/`query`/
+     `create`/`update` on the resource-path literal so
+     `openidm.read("managed/alpha_user/…")` returns `AlphaUser`, `query`
+     returns `QueryResponse<AlphaUser>`, etc. Both engines address the same
+     `managed/<object>` paths, so one generated overload set serves the AM
+     `OpenIdm` interface and the IDM `openidm` binding.
+  3. **AM `identity` object typing** (planned, not immediate — flagged by the
+     maintainer). The scripted-decision / OIDC-claims `identity` binding
+     exposes managed-user attributes under **AM-side names that differ from
+     the OOTB IDM property names** (e.g. IDM `givenName`/`mail`/`telephoneNumber`
+     vs the AM attribute names). Needs a **verification pass first**: probe
+     how AM surfaces identity attributes (`identity.getAttribute(...)` keys)
+     and build the IDM-property → AM-attribute mapping table before generating
+     a typed `identity`. Until then leave `identity` as today's opaque type.
+
+  Open questions to resolve during 1–2: how to regenerate cleanly on
+  `workspace update` without clobbering user edits (types are generated, not
+  edited — safe to overwrite); whether to type `patch`/`action` payloads too;
+  how `relationship`/`array`-typed properties map (refs to other managed
+  objects → cross-interface references).
+
 - **Managed objects — schema property editing.** Current slice is
   read-only inspection + hook sync. Next: add/edit properties (PUT replaces
-  the whole document; no `_rev`, last-write-wins) and a TUI tab.
+  the whole document; no `_rev`, last-write-wins) and a TUI tab. Pairs well
+  with the type generation above (same schema, same fetch).
 - **OAuth2 / OIDC** — clients + provider service (`docs/api/05-oauth2-oidc.md`).
   Remember: strip `-encrypted` fields on PUT; use `_rev` + content snapshot.
 - **SAML** — hosted/remote entities + CoT (`docs/api/06-saml.md`).
