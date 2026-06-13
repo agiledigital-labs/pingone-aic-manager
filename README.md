@@ -166,6 +166,8 @@ aic script sync                                 # reconcile everything: push loc
 aic script sync bravo --resolve local           # scope to a namespace; force conflicts to your local copy
 aic script watch                                # auto-push each script you save (Ctrl-C to stop)
 aic script status                               # in sync / modified locally / remote / conflict
+aic script status idm                           # filter by group (am / idm)
+aic script status alpha/                        # filter by namespace, full-name, or fragment
 aic script diff                                 # ← no ref: fuzzy-pick a synced script
 aic script diff endpoint/validateQueryFilter    # default: colored local-vs-tenant diff (via `git diff`)
 aic script diff bravo/Foo --local-vs-snapshot   # just your edits since last pull
@@ -183,6 +185,21 @@ them; pushing a script whose remote changed since you last synced asks before
 overwriting the remote (`--force` skips the prompt). A bare `<name>` (no prefix)
 resolves its namespace from your current directory — inside `am/bravo/…`,
 `aic script pull MyDecisionNode` means `bravo/…`.
+
+`aic script status` takes an optional filter term so you can narrow a large
+workspace:
+
+- `am` / `idm` are **group** aliases — `idm` shows every endpoint, schedule, and
+  managed-object hook; `am` shows every AM script. (These match the group only,
+  so `am` never sneaks in via a name like `samlAssertion`.)
+- anything else is a **case-insensitive substring** of the full-name, so a
+  namespace (`alpha`, `endpoint`), a full-name (`alpha/Email OTP`), or any
+  fragment (`Email`, `saml`) all work.
+
+Because the match is a substring, `alpha` also lists `managed/alpha_user.*`
+hooks (their full-name contains `alpha`). To see **only** the AM alpha-realm
+scripts, search for `alpha/` **with the trailing slash** — `managed/alpha_user…`
+doesn't contain `alpha/`, so it's excluded, while every `alpha/<name>` matches.
 
 `aic script sync` reconciles each synced script in one pass: if only your local
 changed it pushes, if only the tenant changed it pulls, and if both changed it's
