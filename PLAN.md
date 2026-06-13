@@ -40,13 +40,15 @@ need the archaeology.)
 
 ## Next
 
-- **Schema-driven script types** (Phase 1 done 2026-06-13; Phase 2 next up).
-  Today the script `.d.ts` files type domain objects loosely — every
-  `openidm.*` call returns `any`. Make the editor know the *real* per-object
-  field set. **Phase 1 landed:** managed-hook `object`/`oldObject`/`newObject`
-  are now generated per-object interfaces (`src/scripts/managed_types.rs`),
-  written into the workspace at `aic script workspace init/update`. See
-  `docs/schema-driven-types-plan.md`.
+- **Schema-driven script types** (Phases 1 + 2a done 2026-06-13; Phase 2b +
+  Phase 3 remain). Make the editor know the *real* per-object field set.
+  **Landed:** managed-hook `object`/`oldObject`/`newObject` are generated
+  per-object interfaces, and `openidm.read`/`query`/`create` now return the
+  typed object (`AlphaUser` etc.) for both engines — generated into the
+  workspace at `aic script workspace init/update`
+  (`src/scripts/managed_types.rs`). **Remaining:** Phase 2b (typed
+  `update`/`patch`/`delete`/`action`); Phase 3 (AM `identity` typing, needs the
+  IDM→AM attribute-name fixture). See `docs/schema-driven-types-plan.md`.
 
   **Mechanism.** Generate per-object TS interfaces (`AlphaUser`, `AlphaRole`,
   …) from the live `managed` schema — the same `GET /openidm/config/managed`
