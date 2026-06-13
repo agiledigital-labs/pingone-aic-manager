@@ -9,7 +9,9 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::{app::App, theme::style_for, ui::modal_chrome::Modal};
+use crate::app::App;
+use crate::tui::modal_chrome::Modal;
+use crate::tui::theme::style_for;
 
 use super::cookie::{CookieField, CookieForm};
 use super::paste::{PasteField, PasteForm};

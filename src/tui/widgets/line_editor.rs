@@ -1,7 +1,7 @@
 //! Single-line text input with a cursor. Shared by every place in the app
 //! that needs editable text — the ESV search bar, future filter / rename /
 //! one-shot inputs. Forms with bordered multi-row inputs build on this via
-//! [`crate::ui::widgets::text_field::TextField`].
+//! [`crate::tui::widgets::text_field::TextField`].
 //!
 //! Storage is a plain `String`; the cursor is a **char** index in `0..=N`
 //! (not a byte offset) so callers don't have to think about UTF-8 boundaries.

@@ -7,6 +7,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use crossterm::event::{KeyCode, KeyEvent};
 
+use crate::app::event::ToastKind;
+use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
 use crate::esv::ops;
@@ -14,9 +16,7 @@ use crate::esv::state::{
     DeleteOutcome, EditField, EditState, EsvView, ExpressionType, LoadState, RefreshOutcome,
     SaveOutcome, UndoFailure, UndoOutcome,
 };
-use crate::event::ToastKind;
-use crate::screens::prod_confirm::PendingProdAction;
-use crate::ui::widgets::TextField;
+use crate::tui::widgets::TextField;
 use crate::undo::UndoId;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -141,10 +141,10 @@ pub fn handle_search_key(app: &mut App, key: KeyEvent) {
             KeyCode::Enter => {
                 app.input_mode = InputMode::Normal;
             }
-            KeyCode::Up => crate::keymap::move_selection(app, -1),
-            KeyCode::Down => crate::keymap::move_selection(app, 1),
-            KeyCode::PageUp => crate::keymap::move_selection(app, -10),
-            KeyCode::PageDown => crate::keymap::move_selection(app, 10),
+            KeyCode::Up => crate::app::keymap::move_selection(app, -1),
+            KeyCode::Down => crate::app::keymap::move_selection(app, 1),
+            KeyCode::PageUp => crate::app::keymap::move_selection(app, -10),
+            KeyCode::PageDown => crate::app::keymap::move_selection(app, 10),
             _ => {
                 let before = app.secret.list.query.value().to_string();
                 if app.secret.list.query.handle_key(&key) && app.secret.list.query.value() != before
@@ -167,19 +167,19 @@ pub fn handle_search_key(app: &mut App, key: KeyEvent) {
             return;
         }
         KeyCode::Up => {
-            crate::keymap::move_selection(app, -1);
+            crate::app::keymap::move_selection(app, -1);
             return;
         }
         KeyCode::Down => {
-            crate::keymap::move_selection(app, 1);
+            crate::app::keymap::move_selection(app, 1);
             return;
         }
         KeyCode::PageUp => {
-            crate::keymap::move_selection(app, -10);
+            crate::app::keymap::move_selection(app, -10);
             return;
         }
         KeyCode::PageDown => {
-            crate::keymap::move_selection(app, 10);
+            crate::app::keymap::move_selection(app, 10);
             return;
         }
         _ => {}

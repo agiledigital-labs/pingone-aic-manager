@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::esv::state::LoadState;
-use crate::ui::widgets::LineEditor;
+use crate::tui::widgets::LineEditor;
 
 #[derive(Debug, Default)]
 pub struct TenantListState {

@@ -1,8 +1,15 @@
-//! Best-effort undo log.
+//! Undo feature: best-effort undo log + the undo-history overlay.
 //!
-//! Screens record reversible writes through this module. The write path does
-//! not need to know whether entries live only in memory or are also persisted
-//! to disk.
+//! Screens record reversible writes through the [`UndoLog`] trait in this
+//! module; the write path does not need to know whether entries live only in
+//! memory or are also persisted to disk. [`screen`] owns the history
+//! overlay's key handling (`InputMode::UndoHistory` — a single app-level
+//! mode, so it is not nested like the bigger features); [`view`] renders it.
+//! Undo *executors* live with their features (e.g. `esv::ops`,
+//! `secrets::ops`) — this module only stores and dispatches entries.
+
+pub mod screen;
+pub mod view;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;

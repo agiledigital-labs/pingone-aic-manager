@@ -7,6 +7,8 @@ use std::time::Instant;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 
+use crate::app::event::{AppEvent, ToastKind};
+use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
 use crate::esv::api::StartupStatus;
@@ -16,8 +18,6 @@ use crate::esv::state::{
     RECENT_WRITE_TTL, RefreshOutcome, SaveOutcome, SavePlan, UndoApplied, UndoFailure, UndoOutcome,
     can_request_restart, id_of, is_applying, pending_count, queued_count,
 };
-use crate::event::{AppEvent, ToastKind};
-use crate::screens::prod_confirm::PendingProdAction;
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
 struct SaveRequest {
@@ -113,7 +113,10 @@ pub fn request_restart(app: &mut App) {
         return;
     };
     if is_applying(app, &tenant_name) {
-        app.push_toast(crate::event::ToastKind::Info, "Restart already in progress");
+        app.push_toast(
+            crate::app::event::ToastKind::Info,
+            "Restart already in progress",
+        );
         return;
     }
     if queued_count(app, &tenant_name) > 0 {
@@ -122,7 +125,10 @@ pub fn request_restart(app: &mut App) {
         return;
     }
     if !can_request_restart(app, &tenant_name) {
-        app.push_toast(crate::event::ToastKind::Info, "No pending changes to apply");
+        app.push_toast(
+            crate::app::event::ToastKind::Info,
+            "No pending changes to apply",
+        );
         return;
     }
     app.input_mode = InputMode::Esv(Mode::RestartConfirm);
@@ -191,7 +197,7 @@ pub fn trigger_restart_confirmed(app: &mut App, tenant_name: String, confirmed_p
     set_apply_state(app, &tenant_name, ApplyState::Restarting(pending));
     app.input_mode = InputMode::Normal;
     app.push_toast(
-        crate::event::ToastKind::Info,
+        crate::app::event::ToastKind::Info,
         "Restart triggered — runtime will pick up changes in a few minutes",
     );
     let tx = app.events.tx.clone();
@@ -219,7 +225,7 @@ pub fn apply_restart_result(
         Err(e) => {
             refresh_apply_state_from_cache(app, &tenant);
             app.push_toast(
-                crate::event::ToastKind::Error,
+                crate::app::event::ToastKind::Error,
                 format!("Restart failed: {e}"),
             );
         }

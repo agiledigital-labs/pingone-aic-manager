@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 
-use crate::ui::modal_chrome::hint_line;
+use crate::tui::modal_chrome::hint_line;
 
 const WIDTH: u16 = 72;
 const HEIGHT: u16 = 11;

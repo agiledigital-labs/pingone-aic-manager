@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::app::App;
 use crate::esv::state::{LoadState, id_of};
-use crate::screens::list_state::TenantListState;
-use crate::ui::widgets::TextField;
+use crate::tui::list_state::TenantListState;
+use crate::tui::widgets::TextField;
 
 /// The four secret kinds the console offers map 1:1 to the API `encoding`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -7,8 +7,8 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::ui::modal_chrome::Modal;
-use crate::ui::widgets::secret_field;
+use crate::tui::modal_chrome::Modal;
+use crate::tui::widgets::secret_field;
 
 use super::security_key;
 use super::unlock::Focus as UnlockFocus;

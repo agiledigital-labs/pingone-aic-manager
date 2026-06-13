@@ -1,15 +1,21 @@
+pub mod draw;
+pub mod env_picker;
+pub mod event;
+pub mod keymap;
+pub mod prod_confirm;
+
 use std::collections::{HashMap, VecDeque};
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent};
 use futures::StreamExt;
 use tokio::time::{Duration, interval};
 
+use crate::app::event::{AppEvent, EventHandler, ToastKind};
 use crate::config::crypto::{self, Dek};
 use crate::config::tenant::Tenant;
 use crate::config::wraps::WrapsFile;
 use crate::config::{self, ProjectConfig, Settings};
-use crate::event::{AppEvent, EventHandler, ToastKind};
-use crate::ui::toast::Toast;
+use crate::tui::toast::Toast;
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -99,7 +105,7 @@ pub struct App {
 
     /// Pending production write confirmation shared by onboarding, ESV edits,
     /// and any future write-capable screens.
-    pub prod_confirm: crate::screens::prod_confirm::State,
+    pub prod_confirm: crate::app::prod_confirm::State,
 
     /// Best-effort undo log. Domain screens record through the trait so
     /// they don't know whether the entry was persisted or held in memory.
@@ -174,7 +180,7 @@ impl App {
             wraps,
             jwks: HashMap::new(),
             onboard: crate::onboard::screen::State::new(),
-            prod_confirm: crate::screens::prod_confirm::State::new(),
+            prod_confirm: crate::app::prod_confirm::State::new(),
             undo,
             keybind_help_open: false,
             esv: crate::esv::state::State::new(),
@@ -381,7 +387,7 @@ impl App {
         });
 
         loop {
-            terminal.draw(|f| crate::ui::draw(f, self))?;
+            terminal.draw(|f| crate::app::draw::draw(f, self))?;
             if self.should_quit {
                 break;
             }
@@ -453,8 +459,8 @@ impl App {
             return Ok(());
         }
 
-        // One dispatch entry point for every mode — see `crate::keymap`.
-        crate::keymap::dispatch(self, key).await
+        // One dispatch entry point for every mode — see `crate::app::keymap`.
+        crate::app::keymap::dispatch(self, key).await
     }
 
     fn should_open_keybind_help(&self, key: KeyEvent) -> bool {

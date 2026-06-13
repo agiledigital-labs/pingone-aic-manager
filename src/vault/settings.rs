@@ -4,9 +4,9 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
+use crate::app::event::ToastKind;
 use crate::app::{App, InputMode};
 use crate::config::wraps::{Wrap, WrapsFile};
-use crate::event::ToastKind;
 
 use super::screen::Mode;
 use super::setup::{self, AuthMethod};

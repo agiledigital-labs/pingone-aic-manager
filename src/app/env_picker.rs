@@ -6,8 +6,8 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::theme::style_for;
-use crate::ui::modal_chrome::Modal;
+use crate::tui::modal_chrome::Modal;
+use crate::tui::theme::style_for;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let body = Modal {

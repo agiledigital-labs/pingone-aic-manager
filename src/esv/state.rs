@@ -9,8 +9,8 @@ use std::time::Instant;
 
 use crate::app::App;
 use crate::esv::api::StartupStatus;
-use crate::screens::list_state::TenantListState;
-use crate::ui::widgets::TextField;
+use crate::tui::list_state::TenantListState;
+use crate::tui::widgets::TextField;
 
 /// Per-tenant ESV load state. `app.esv.list.data` maps tenant name → this.
 #[derive(Debug, Clone)]

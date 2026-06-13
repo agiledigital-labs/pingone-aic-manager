@@ -5,18 +5,18 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::event::ToastKind;
+use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
 use crate::esv::state::{LoadState, id_of};
-use crate::event::ToastKind;
-use crate::screens::prod_confirm::PendingProdAction;
 use crate::secrets::ops;
 use crate::secrets::state::{
     AddVersionForm, CreateField, CreateForm, DeletePlan, DetailFocus, Encoding, SecretOpKind,
     VersionsView, description_of, encoding_of, secret_in_cache, selected_secret, version_num,
     version_status, versions_view,
 };
-use crate::ui::widgets::TextField;
+use crate::tui::widgets::TextField;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {

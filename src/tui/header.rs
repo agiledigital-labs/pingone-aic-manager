@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, Realm, Tab};
-use crate::theme::style_for;
+use crate::tui::theme::style_for;
 
 /// Top strip: tabs + realm/tenant chips. Caller must pass a 1-row area.
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
@@ -77,7 +77,7 @@ fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
 fn draw_hint_row(f: &mut Frame, app: &App, area: Rect) {
     // Every mode's footer comes from one place — see `keymap::footer_hints`.
     let mut spans: Vec<Span> = Vec::new();
-    for (k, d) in crate::keymap::footer_hints(app) {
+    for (k, d) in crate::app::keymap::footer_hints(app) {
         spans.extend(hint(k, d));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);

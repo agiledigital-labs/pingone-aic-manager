@@ -6,11 +6,11 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::ui::modal_chrome::Modal;
+use crate::tui::modal_chrome::Modal;
 use crate::undo::{Capability, EntryStatus, Sensitivity};
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let summaries = crate::screens::undo_history::summaries(app);
+    let summaries = crate::undo::screen::summaries(app);
     let body = Modal {
         title: "Undo History",
         status: app.active_tenant().map(|tenant| tenant.name.as_str()),
