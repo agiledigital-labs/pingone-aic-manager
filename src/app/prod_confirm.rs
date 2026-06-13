@@ -5,9 +5,9 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
+use crate::app::event::ToastKind;
 use crate::app::{App, InputMode};
 use crate::config::tenant::Tenant;
-use crate::event::ToastKind;
 
 #[derive(Debug)]
 pub enum PendingProdAction {
@@ -139,4 +139,35 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Render the production-write confirm modal (absorbed from the old
+/// `ui::modal` when `screens/` + `ui/` dissolved into feature verticals).
+pub fn draw(f: &mut ratatui::Frame, _app: &App) {
+    use ratatui::{
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::Paragraph,
+    };
+
+    let body = crate::tui::modal_chrome::Modal {
+        title: "\u{26a0} PRODUCTION WRITE",
+        status: None,
+        hints: &[("y", "confirm"), ("n/Esc", "cancel")],
+        body_height: 3,
+    }
+    .draw(f, f.area());
+
+    let text = vec![
+        Line::from(Span::styled(
+            "You are about to write to PRODUCTION.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Are you sure?",
+            Style::default().fg(Color::White),
+        )),
+    ];
+    f.render_widget(Paragraph::new(text), body);
 }

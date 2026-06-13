@@ -17,7 +17,7 @@ use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::EditField;
 use crate::onboard::screen::Mode as OnboardMode;
 use crate::secrets::screen::Mode as SecretsMode;
-use crate::ui::modal_chrome::hint_line;
+use crate::tui::modal_chrome::hint_line;
 use crate::vault::screen::Mode as VaultMode;
 use crate::vault::setup::{AuthMethod, SetupContext};
 
@@ -146,7 +146,7 @@ fn normal_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     // Derived from the same keymap table that drives dispatch + footer, so the
     // help can't list a key the dispatcher won't honour (or omit one it does).
     group(lines, "Keys");
-    for binding in crate::keymap::normal_binds(app) {
+    for binding in crate::app::keymap::normal_binds(app) {
         if binding.help {
             bind(lines, binding.label, binding.desc);
         }

@@ -12,7 +12,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::config::wraps::Wrap;
-use crate::ui::modal_chrome::Modal;
+use crate::tui::modal_chrome::Modal;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let n = app.wraps.wraps.len();

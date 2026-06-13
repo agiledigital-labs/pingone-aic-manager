@@ -7,12 +7,12 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
+use crate::app::event::{AppEvent, ToastKind};
 use crate::app::{App, InputMode};
 use crate::config::ProjectConfig;
 use crate::config::Settings;
 use crate::config::crypto::{self, Dek};
 use crate::config::wraps::{self, Wrap};
-use crate::event::{AppEvent, ToastKind};
 
 use super::screen::{Event, Mode};
 use super::{security_key, unlock};

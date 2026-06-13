@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::event::ToastKind;
+use crate::app::event::ToastKind;
 
 #[derive(Debug, Clone)]
 pub struct Toast {

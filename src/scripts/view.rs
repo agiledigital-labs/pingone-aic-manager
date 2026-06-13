@@ -67,12 +67,18 @@ fn draw_list(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area: Re
     };
 
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    crate::ui::draw_search_row(f, rows[0], &app.scripts.query, searching, &count_text);
+    crate::tui::list_chrome::draw_search_row(
+        f,
+        rows[0],
+        &app.scripts.query,
+        searching,
+        &count_text,
+    );
 
     let h = rows[1].height as usize;
     let n = matches.len();
     let selected = app.scripts.selected.min(n.saturating_sub(1));
-    let scroll = crate::ui::clamp_scroll(app.scripts.scroll, selected, h, n);
+    let scroll = crate::tui::list_chrome::clamp_scroll(app.scripts.scroll, selected, h, n);
 
     let lines: Vec<Line> = matches
         .iter()

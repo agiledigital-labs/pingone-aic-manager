@@ -5,15 +5,11 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod esv;
-pub mod event;
-pub mod keymap;
 pub mod logging;
 pub mod onboard;
-pub mod screens;
 pub mod scripts;
 pub mod secrets;
-pub mod theme;
-pub mod ui;
+pub mod tui;
 pub mod undo;
 pub mod vault;
 

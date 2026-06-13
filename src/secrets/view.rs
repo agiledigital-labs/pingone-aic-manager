@@ -13,7 +13,7 @@ use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::{LoadState, id_of};
 use crate::secrets::screen::{self, Mode};
 use crate::secrets::state::{self as secret, CreateField, Encoding};
-use crate::ui::modal_chrome::Modal;
+use crate::tui::modal_chrome::Modal;
 
 /// The secrets list (left) + selected-secret detail (right). Mirrors the
 /// variables view: borderless list, a left-border divider on the detail pane.
@@ -85,13 +85,19 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
     ])
     .split(area);
 
-    crate::ui::draw_search_row(f, layout[0], &app.secret.list.query, searching, &count_text);
+    crate::tui::list_chrome::draw_search_row(
+        f,
+        layout[0],
+        &app.secret.list.query,
+        searching,
+        &count_text,
+    );
 
     // Windowed render, same scroll math as the variables list.
     let h = layout[1].height as usize;
     let n = rows.len();
     let selected = app.secret.list.selected.min(n.saturating_sub(1));
-    let scroll = crate::ui::clamp_scroll(app.secret.list.scroll, selected, h, n);
+    let scroll = crate::tui::list_chrome::clamp_scroll(app.secret.list.scroll, selected, h, n);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -197,7 +203,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     .split(inner);
 
     f.render_widget(Paragraph::new(lines), rows[0]);
-    crate::ui::widgets::TextField::single_line("Description")
+    crate::tui::widgets::TextField::single_line("Description")
         .with_initial(secret::description_of(&secret))
         .draw(f, rows[2], false);
     f.render_widget(

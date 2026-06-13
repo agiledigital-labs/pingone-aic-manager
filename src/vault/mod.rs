@@ -43,7 +43,7 @@ pub fn draw(f: &mut Frame, app: &App, mode: screen::Mode) {
     }
 
     if app.keybind_help_open {
-        crate::ui::keybind_help::draw(f, app);
+        crate::tui::keybind_help::draw(f, app);
     }
-    crate::ui::toast::draw(f, app);
+    crate::tui::toast::draw(f, app);
 }

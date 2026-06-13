@@ -119,13 +119,19 @@ fn draw_esv_list(f: &mut Frame, app: &App, matches: &[EsvMatch], area: Rect) {
     ])
     .split(area);
 
-    crate::ui::draw_search_row(f, rows[0], &app.esv.list.query, searching, &count_text);
+    crate::tui::list_chrome::draw_search_row(
+        f,
+        rows[0],
+        &app.esv.list.query,
+        searching,
+        &count_text,
+    );
 
     // Visible window: keep the selection inside [scroll, scroll + h).
     let h = rows[1].height as usize;
     let n = matches.len();
     let selected = app.esv.list.selected.min(n.saturating_sub(1));
-    let scroll = crate::ui::clamp_scroll(app.esv.list.scroll, selected, h, n);
+    let scroll = crate::tui::list_chrome::clamp_scroll(app.esv.list.scroll, selected, h, n);
 
     let tenant_name = app.active_tenant().map(|t| t.name.clone());
     let loaded_items: Option<&Vec<serde_json::Value>> = tenant_name
@@ -441,7 +447,7 @@ fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>,
         e.description.draw(f, rows[5], description_focused);
     } else {
         let desc = v.get("description").and_then(|x| x.as_str()).unwrap_or("");
-        let field = crate::ui::widgets::TextField::single_line("Description").with_initial(desc);
+        let field = crate::tui::widgets::TextField::single_line("Description").with_initial(desc);
         field.draw(f, rows[5], false);
     }
 
@@ -471,7 +477,7 @@ fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>,
             Ok(bytes) => String::from_utf8(bytes).unwrap_or_else(|_| v_b64.to_string()),
             Err(_) => v_b64.to_string(),
         };
-        let field = crate::ui::widgets::TextField::textarea("Value").with_initial(text);
+        let field = crate::tui::widgets::TextField::textarea("Value").with_initial(text);
         field.draw(f, rows[9], false);
     }
 

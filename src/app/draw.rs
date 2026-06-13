@@ -1,16 +1,12 @@
-pub mod env_picker;
-pub mod header;
-pub mod keybind_help;
-pub mod modal;
-pub mod modal_chrome;
-pub mod popup_confirm;
-pub mod toast;
-pub mod undo_history;
-pub mod widgets;
+//! Global draw root: dispatches on `InputMode` — full-screen feature modals
+//! first, then the dashboard (header + active tab body + footer hints).
+//! One arm per feature; feature rendering lives in each vertical's `view`.
 
+use crate::app::env_picker;
+use crate::tui::{header, keybind_help, popup_confirm, toast};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -41,13 +37,13 @@ pub fn draw(f: &mut Frame, app: &App) {
             return;
         }
         InputMode::ProdConfirm => {
-            modal::draw_prod_confirm(f, app);
+            crate::app::prod_confirm::draw(f, app);
             draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
         }
         InputMode::UndoHistory => {
-            undo_history::draw(f, app);
+            crate::undo::view::draw(f, app);
             draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
@@ -180,77 +176,4 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     } else {
         crate::esv::view::draw(f, app, area);
     }
-}
-
-/// Shared `/query` + right-aligned count header for the tenant list views
-/// (variables and secrets), so both halves of the ESVs tab render the search
-/// row identically. `area` must be a 1-row rect.
-pub(crate) fn draw_search_row(
-    f: &mut Frame,
-    area: Rect,
-    query: &crate::ui::widgets::LineEditor,
-    searching: bool,
-    count_text: &str,
-) {
-    // Split horizontally so the count hugs the right edge regardless of the
-    // query length.
-    let count_width = count_text.chars().count() as u16;
-    let cols =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(count_width)]).split(area);
-
-    let query_style = Style::default().fg(if searching {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    });
-    // Standard block cursor: reverse-video the char under the cursor (or a
-    // single space at end-of-line). Inserting a separate cursor glyph like
-    // "▏" displaces following columns in fonts that render box-drawing
-    // characters double-wide.
-    let cursor_style = query_style.add_modifier(Modifier::REVERSED);
-    let mut spans: Vec<Span> = vec![Span::styled(" /", query_style)];
-    let cursor_idx = query.cursor();
-    let chars: Vec<char> = query.value().chars().collect();
-    if searching {
-        for (i, c) in chars.iter().enumerate() {
-            let style = if i == cursor_idx {
-                cursor_style
-            } else {
-                query_style
-            };
-            spans.push(Span::styled(c.to_string(), style));
-        }
-        if cursor_idx >= chars.len() {
-            spans.push(Span::styled(" ", cursor_style));
-        }
-    } else {
-        spans.push(Span::styled(query.value().to_string(), query_style));
-    }
-    f.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            count_text.to_string(),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .alignment(Alignment::Right),
-        cols[1],
-    );
-}
-
-/// Pick the new top-of-window so `selected` stays visible. We can't compute
-/// this purely from app state because the height comes from the rendered
-/// rect; do it here, leave the list's `scroll` as a hint only.
-pub(crate) fn clamp_scroll(prev: usize, selected: usize, height: usize, n: usize) -> usize {
-    if n == 0 || height == 0 {
-        return 0;
-    }
-    let mut scroll = prev.min(n.saturating_sub(1));
-    if selected < scroll {
-        scroll = selected;
-    } else if selected >= scroll + height {
-        scroll = selected + 1 - height;
-    }
-    scroll
 }

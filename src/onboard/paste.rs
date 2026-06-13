@@ -3,7 +3,7 @@
 //! and just wants aic-edit to use it.
 
 use crate::config::tenant::{Tenant, TenantTheme};
-use crate::ui::widgets::text_field::{TextField, fields};
+use crate::tui::widgets::text_field::{TextField, fields};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasteField {

@@ -11,10 +11,10 @@ use base64::engine::general_purpose::STANDARD as B64;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::agent::{AgentClient, Request as AgentRequest, Response as AgentResponse};
+use crate::app::event::AppEvent;
 use crate::app::{App, InputMode};
 use crate::config::Settings;
 use crate::config::crypto::Dek;
-use crate::event::AppEvent;
 
 use super::auth::{self, UnlockOk};
 use super::screen::{Event, Mode};

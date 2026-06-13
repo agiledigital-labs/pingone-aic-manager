@@ -12,13 +12,13 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
+use crate::app::event::{AppEvent, ToastKind};
+use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
-use crate::event::{AppEvent, ToastKind};
-use crate::screens::prod_confirm::PendingProdAction;
 use crate::scripts::sync::{self, Candidate, LocalState, PushOutcome, Selector};
 use crate::scripts::{self as script, Kind};
-use crate::ui::widgets::LineEditor;
+use crate::tui::widgets::LineEditor;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -296,10 +296,10 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
             app.input_mode = InputMode::Normal;
             return;
         }
-        KeyCode::Up => return crate::keymap::move_selection(app, -1),
-        KeyCode::Down => return crate::keymap::move_selection(app, 1),
-        KeyCode::PageUp => return crate::keymap::move_selection(app, -10),
-        KeyCode::PageDown => return crate::keymap::move_selection(app, 10),
+        KeyCode::Up => return crate::app::keymap::move_selection(app, -1),
+        KeyCode::Down => return crate::app::keymap::move_selection(app, 1),
+        KeyCode::PageUp => return crate::app::keymap::move_selection(app, -10),
+        KeyCode::PageDown => return crate::app::keymap::move_selection(app, 10),
         _ => {}
     }
     let before = app.scripts.query.value().to_string();

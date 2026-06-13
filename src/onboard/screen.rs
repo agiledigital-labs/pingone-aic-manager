@@ -3,11 +3,11 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
+use crate::app::event::{AppEvent, ToastKind};
+use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
 use crate::config::ProjectConfig;
 use crate::config::tenant::{Tenant, TenantTheme};
-use crate::event::{AppEvent, ToastKind};
-use crate::screens::prod_confirm::PendingProdAction;
 
 use super::cookie::{CookieField, CookieForm};
 use super::paste::{PasteField, PasteForm};
