@@ -177,21 +177,87 @@ literal-typed overloads (`read(resourceName: "managed/alpha_user", …):
 AlphaUser`) with a generic `string` fallback returning `any`. Prototype the TS
 ergonomics before committing to a shape.
 
+**Scoping caveat (`openidm` is next-gen-only in AM).** The `openidm` binding is
+**not** present in *legacy* AM scripts — only next-gen contexts get it. The AM
+overloads must therefore land **only** in `am/types/nextgen-common.d.ts` (which
+the `am::leaf_tsconfig` map already includes solely for next-gen slugs —
+`decision-node`, `*-ng`, `device-match`, `social-handler`, the SAML/OAuth2-DCR
+next-gen overlays, `pingone-verify`). Do **not** add them to
+`legacy-common.d.ts` or the legacy/`oidc-claims` leaves, or the editor would
+advertise a binding the runtime doesn't have. In IDM, `openidm` is always
+present (endpoint/schedule/managed-hook), so the IDM side is unconditional.
+Confirm the AM presence/shape with a `scripts/rhino-script-tester/` fixture
+before shipping (CLAUDE.md §7).
+
 ---
 
 ## Phase 3 — AM `identity` typing — planned, NOT now (verify first)
 
 The scripted-decision / OIDC-claims `identity` binding exposes managed-user
 attributes under **AM-side names that differ from the OOTB IDM property
-names** (e.g. IDM `givenName`/`mail`/`telephoneNumber` ↔ AM attribute names).
-A typed `identity` needs the IDM-property → AM-attribute **mapping table**,
-which we don't have verified.
+names**. `identity.getAttribute("<name>")` is keyed by the **AM attribute
+name**, not the IDM property name. A typed `identity` needs the
+IDM-property → AM-attribute mapping table.
 
-Required verification pass first (docs-first rule): probe how AM surfaces
-identity attributes — `identity.getAttribute("<name>")` keys actually
-accepted in a next-gen scripted decision — and record the mapping in
-`docs/api/`. Only then generate a typed `identity`. Until then leave
-`identity` as the current opaque `Identity`/`AMIdentity` type.
+**Mapping source (Ping docs, fetched 2026-06-13 — NOT yet live-verified).**
+From the [user identity properties & attributes reference][idmap]. Per
+CLAUDE.md §2/§4 this is a Ping docs claim and MUST be verified live (a
+`scripts/rhino-script-tester/` fixture calling `identity.getAttribute(...)` in
+a next-gen scripted decision) before it drives generated types — Ping docs have
+had errors before (Q1/Q2). The page says plainly: *"If you write scripts for AM
+that access user profiles, then use AM attribute names."*
+
+[idmap]: https://docs.pingidentity.com/pingoneaic/identities/user-identity-properties-attributes-reference.html
+
+| IDM property | AM attribute |
+|---|---|
+| `userName` | `uid` |
+| `cn` | `cn` |
+| `displayName` | `displayName` |
+| `password` | `userPassword` |
+| `accountStatus` | `inetUserStatus` |
+| `givenName` | `givenName` |
+| `sn` | `sn` |
+| `mail` | `mail` |
+| `description` | `description` |
+| `telephoneNumber` | `telephoneNumber` |
+| `postalAddress` | `street` |
+| `city` | `l` |
+| `stateProvince` | `st` |
+| `postalCode` | `postalCode` |
+| `country` | `co` |
+| `aliasList` | `iplanet-am-user-alias-list` |
+| `applications` | `fr-idm-managed-application-member` |
+| `ownerOfApp` | `fr-idm-managed-application-owner` |
+| `assignedDashboard` | `assignedDashboard` |
+| `assignments` | `fr-idm-managed-assignment-member` |
+| `consentedMappings` | `fr-idm-consentedMapping` |
+| `custom_<property>` | `fr-idm-custom-attrs` |
+| `reports` | `manager` |
+| `manager` | `fr-idm-managed-user-manager` |
+| `passwordLastChangedTime` | `pwdChangedTime` |
+| `passwordExpirationTime` | `pwdExpirationTime` |
+| `groups` | `fr-idm-managed-user-groups` |
+| `roles` | `fr-idm-managed-user-roles` |
+| `kbaInfo` | `fr-idm-kbaInfo` |
+| `preferences` | `fr-idm-preferences` |
+| `profileImage` | `labeledURI` |
+| `_id` | `fr-idm-uuid` |
+| `_rev` | `etag` |
+| `_meta` | `fr-idm-managed-user-meta` |
+
+Caveats to verify: the `reports` ↔ `manager` vs `manager` ↔
+`fr-idm-managed-user-manager` swap is surprising — confirm direction live.
+`custom_<property>` collapses all custom attrs into one `fr-idm-custom-attrs`
+bag, so per-field typing there isn't possible. The table is OOTB-user only;
+tenant-added custom managed properties won't appear under these names.
+
+When Phase 3 starts: move this table into a new `docs/api/` file (e.g.
+`docs/api/14-am-identity-attributes.md`) with a dated "Verified against …"
+after the fixture run, then generate a typed `identity` (likely a
+`getAttribute()` overload set keyed by the AM names, derived by joining this
+mapping with the Phase-1 managed-user schema). Until verified, leave `identity`
+as the current opaque `Identity`/`AMIdentity` type.
 
 ---
 
