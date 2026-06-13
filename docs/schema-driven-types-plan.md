@@ -246,8 +246,23 @@ The base method signatures differ, so generate an IDM variant and an AM variant:
   tsc-verified: template-literal/bare-collection paths narrow; concat and
   non-managed paths stay `any`; managed-hook `object` still types after the
   split.
-- **Phase 2b (later):** `update`/`patch`/`delete`/`action` content+return
-  typing (revision/patch-op semantics are fiddlier, lower marginal value).
+- **Phase 2b (DONE 2026-06-13):** typed **return** for
+  `update`/`patch`/`delete` both engines (update content `Partial<Object>`);
+  added the missing IDM base `delete`/`action` fallbacks. `action` return is not
+  typed (varies by actionName). Live tsc-verified: returns narrow on
+  template-literal managed paths; non-managed paths stay `any`.
+
+**Known limitation (overload resolution, verified with tsc).** Typed *return*
+narrowing is reliable, but typed *content input* does NOT hard-error on a typo:
+`openidm.update(`managed/alpha_user/${id}`, rev, { bogusField: 1 })` does not
+flag `bogusField` — when the literal doesn't fit `Partial<Object>`, overload
+resolution silently falls through to the `string` fallback (`any`) instead of
+erroring. So `create`/`update` content typing gives autocomplete on a
+well-formed literal but not typo-rejection. This is inherent to mixing a typed
+overload with a permissive `string` fallback (the fallback is required for
+non-managed paths). Don't try to "fix" it by dropping the fallback — that breaks
+`config/`, `internal/`, `system/` calls. Same family as the `"path/" + id`
+concat limitation. The headline win is return-type narrowing.
 
 Confirm the AM `openidm` presence/shape with a `scripts/rhino-script-tester/`
 fixture before shipping (CLAUDE.md §7).
