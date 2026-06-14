@@ -74,6 +74,17 @@ new things are learned.
   relationships.
 - **Documented in:** `10-managed-objects.md`.
 
+### Journey `_rev` and write semantics (resolved 2026-06-14)
+- **Status:** Resolved.
+- **Answer:** Journey trees and nodes accept plain `PUT` for both create and
+  update; no `If-Match` or `If-None-Match` header is required. Their `_rev`
+  values are content-derived: re-PUTting byte-identical content returned the
+  same `_rev`.
+- **Implication:** Use a local content snapshot for push conflict detection,
+  stripping `_rev` before comparison. Do not treat `_rev` as a monotonic
+  optimistic-lock counter for journeys.
+- **Documented in:** `09-journeys.md`.
+
 ---
 
 ## Open
@@ -123,6 +134,7 @@ new things are learned.
 | Version status `changestatus` accepts DESTROYED | 03-esvs.md (transcribed) | False — only ENABLED/DISABLED. DESTROYED is via `DELETE …/versions/{v}` (one-way). |
 | Secret version objects have `_id` | 03-esvs.md (transcribed) | False — versions are a bare array of `{version, createDate, loaded, status}`. |
 | `useInPlaceholders` defaults to true | 03-esvs.md (transcribed) | False — required on create, no default, and immutable afterwards. |
+| Journey `_rev` means use `If-Match` | 09-journeys.md (earlier note) | Superseded — `_rev` is content-derived, and plain `PUT` works for create/update. Use content snapshots, not `If-Match`. |
 
 **Lesson:** Both libraries' research summaries had errors. Always verify
 endpoints + shapes against the live tenant before writing code.

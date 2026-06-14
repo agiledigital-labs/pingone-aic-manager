@@ -34,6 +34,25 @@ pub async fn post(
     call(tenant, "POST", path, Some(body), confirmed_prod, None).await
 }
 
+/// `POST` with an explicit `Accept-API-Version`.
+pub async fn post_versioned(
+    tenant: &str,
+    path: &str,
+    body: serde_json::Value,
+    confirmed_prod: bool,
+    api_version: &str,
+) -> Result<serde_json::Value> {
+    call(
+        tenant,
+        "POST",
+        path,
+        Some(body),
+        confirmed_prod,
+        Some(api_version),
+    )
+    .await
+}
+
 pub async fn patch(
     tenant: &str,
     path: &str,
