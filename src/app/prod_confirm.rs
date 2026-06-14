@@ -36,6 +36,8 @@ pub enum PendingProdAction {
         id: String,
         version: String,
     },
+    ManagedUpdate(crate::managed::ops::ObjectReplacePlan),
+    ManagedUndo(crate::undo::UndoId),
     ScriptPush {
         tenant: String,
         kind: crate::scripts::Kind,
@@ -112,6 +114,12 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                             app, tenant, id, version, true,
                         );
                     }
+                    PendingProdAction::ManagedUpdate(plan) => {
+                        crate::managed::ops::execute_update_plan(app, plan, true);
+                    }
+                    PendingProdAction::ManagedUndo(undo_id) => {
+                        crate::managed::ops::execute_undo(app, undo_id, true);
+                    }
                     PendingProdAction::ScriptPush {
                         tenant,
                         kind,
@@ -131,6 +139,11 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             app.input_mode = match action {
                 Some(PendingProdAction::EsvSave(_)) if app.esv.editing.is_some() => {
                     InputMode::Esv(crate::esv::screen::Mode::Edit)
+                }
+                Some(PendingProdAction::ManagedUpdate(_)) => {
+                    crate::managed::screen::resume_mode_after_prod_cancel(app)
+                        .map(InputMode::Managed)
+                        .unwrap_or(InputMode::Normal)
                 }
                 _ => InputMode::Normal,
             };

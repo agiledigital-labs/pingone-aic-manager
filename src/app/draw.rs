@@ -14,6 +14,7 @@ use ratatui::{
 
 use crate::app::{App, InputMode};
 use crate::esv::screen::Mode as EsvMode;
+use crate::managed::screen::Mode as ManagedMode;
 use crate::secrets::{screen::Mode as SecretsMode, view as secret};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -60,6 +61,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         && !matches!(
             app.input_mode,
             InputMode::Esv(EsvMode::RestartConfirm | EsvMode::DeleteConfirm)
+                | InputMode::Managed(ManagedMode::DeleteFieldConfirm)
                 | InputMode::Secrets(
                     SecretsMode::AddVersion
                         | SecretsMode::DeleteConfirm
@@ -107,6 +109,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     // by `secret::draw_body`), so these are just the create / add-version
     // forms and the two y/n confirmations — each drawn over that panel.
     match app.input_mode {
+        InputMode::Managed(ManagedMode::DeleteFieldConfirm) => {
+            crate::managed::view::draw_delete_field_confirm(f, app);
+        }
         InputMode::Secrets(SecretsMode::AddVersion) => secret::draw_add_version(f, app),
         InputMode::Secrets(SecretsMode::VersionDestroyConfirm) => {
             let version = app

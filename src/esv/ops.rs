@@ -798,6 +798,11 @@ async fn apply_undo_entry(
         .op
         .clone()
         .ok_or_else(|| UndoFailure::Failed("undo entry has no operation".into()))?;
+    if matches!(op, UndoOp::ManagedObjectReplace { .. }) {
+        return Err(UndoFailure::Failed(
+            "managed-object undo must be applied from the Managed tab or undo history".into(),
+        ));
+    }
     check_undo_conflict(&op, &entry.conflict_check).await?;
 
     match op {
@@ -862,6 +867,7 @@ async fn apply_undo_entry(
                 applied: UndoApplied::SecretDescriptionSet,
             })
         }
+        UndoOp::ManagedObjectReplace { .. } => unreachable!("handled before conflict check"),
     }
 }
 

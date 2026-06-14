@@ -37,3 +37,6 @@ __pycache__/
 
 # Runtime project-local state (created by aic-edit at runtime)
 .aic-edit/
+
+# Managed-object backups (raw schema dumps for experimentation safety)
+/.managed-backup/

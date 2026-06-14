@@ -71,16 +71,11 @@ fn is_inline_hook(v: &Value) -> bool {
 }
 
 async fn fetch_managed_doc(tenant: &str) -> Result<Value> {
-    crate::aic::api::get(tenant, "/openidm/config/managed").await
+    crate::managed::api::get_managed(tenant).await
 }
 
 fn objects_of(doc: &Value) -> Result<&Vec<Value>> {
-    doc.get("objects")
-        .and_then(Value::as_array)
-        .ok_or_else(|| Error::Api {
-            status: 0,
-            body: format!("unexpected /openidm/config/managed shape: {doc}"),
-        })
+    crate::managed::api::objects(doc)
 }
 
 /// Locate `objects[name == object]`'s `<hook>` value in a mutable document.
@@ -172,7 +167,7 @@ pub async fn write(
             .expect("is_inline_hook guarantees an object")
             .insert("source".into(), Value::String(new_source_str.clone()));
     }
-    let resp = crate::aic::api::put(tenant, "/openidm/config/managed", doc, confirmed_prod).await?;
+    let resp = crate::managed::api::replace_managed(tenant, doc, confirmed_prod).await?;
 
     // The PUT 200s before the hook registry applies the change (verified —
     // see docs/api/10). Confirm the new source is actually live so callers
@@ -215,7 +210,7 @@ pub async fn delete(tenant: &str, _realm: &str, id: &str, confirmed_prod: bool) 
             "hook '{hook}' not present on managed object '{object}'"
         )));
     }
-    crate::aic::api::put(tenant, "/openidm/config/managed", doc, confirmed_prod).await
+    crate::managed::api::replace_managed(tenant, doc, confirmed_prod).await
 }
 
 /// Hook source is plaintext at `.source` of the (narrowed) hook object.

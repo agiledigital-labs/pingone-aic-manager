@@ -10,6 +10,15 @@ pub async fn get_managed(tenant: &str) -> Result<Value> {
     crate::aic::api::get(tenant, "/openidm/config/managed").await
 }
 
+/// `PUT /openidm/config/managed` with the complete managed config document.
+///
+/// The API has no object-level patch endpoint: callers must read, mutate the
+/// intended `objects[]` entry, and send the whole `{ "_id": "managed", ... }`
+/// envelope back.
+pub async fn replace_managed(tenant: &str, doc: Value, confirmed_prod: bool) -> Result<Value> {
+    crate::aic::api::put(tenant, "/openidm/config/managed", doc, confirmed_prod).await
+}
+
 /// The `objects` array of a managed document.
 pub fn objects(doc: &Value) -> Result<&Vec<Value>> {
     doc.get("objects")
@@ -20,12 +29,56 @@ pub fn objects(doc: &Value) -> Result<&Vec<Value>> {
         })
 }
 
+/// The mutable `objects` array of a managed document.
+pub fn objects_mut(doc: &mut Value) -> Result<&mut Vec<Value>> {
+    if doc.get("objects").and_then(Value::as_array).is_none() {
+        return Err(Error::Api {
+            status: 0,
+            body: format!("unexpected /openidm/config/managed shape: {doc}"),
+        });
+    }
+    Ok(doc
+        .get_mut("objects")
+        .and_then(Value::as_array_mut)
+        .expect("checked objects array above"))
+}
+
 /// Find one object definition by `name`.
 pub fn object_named<'a>(doc: &'a Value, name: &str) -> Result<&'a Value> {
     objects(doc)?
         .iter()
         .find(|o| o.get("name").and_then(Value::as_str) == Some(name))
         .ok_or_else(|| Error::Config(format!("no managed object named '{name}' on this tenant")))
+}
+
+/// Find one mutable object definition by `name`.
+pub fn object_named_mut<'a>(doc: &'a mut Value, name: &str) -> Result<&'a mut Value> {
+    objects_mut(doc)?
+        .iter_mut()
+        .find(|o| o.get("name").and_then(Value::as_str) == Some(name))
+        .ok_or_else(|| Error::Config(format!("no managed object named '{name}' on this tenant")))
+}
+
+/// Fetch the full managed document and clone out the requested object.
+pub async fn get_managed_with_object(tenant: &str, name: &str) -> Result<(Value, Value)> {
+    let doc = get_managed(tenant).await?;
+    let object = object_named(&doc, name)?.clone();
+    Ok((doc, object))
+}
+
+/// Replace one `objects[]` entry in an already-fetched managed document,
+/// preserving the full document envelope and every other object verbatim.
+pub fn replace_object(doc: &mut Value, name: &str, object: Value) -> Result<()> {
+    let slot = object_named_mut(doc, name)?;
+    *slot = object;
+    Ok(())
+}
+
+/// Content comparison for managed object subtrees. `serde_json::Value`
+/// equality compares object maps independent of key insertion order, which is
+/// exactly what we need for snapshot-based drift checks.
+pub fn object_content_equal(a: &Value, b: &Value) -> bool {
+    a == b
 }
 
 /// Summary row for `aic managed list`.
@@ -113,5 +166,36 @@ mod tests {
                 .to_string()
                 .contains("ghost")
         );
+    }
+
+    #[test]
+    fn replace_object_preserves_document_envelope() {
+        let mut doc = json!({
+            "_id": "managed",
+            "objects": [
+                {"name": "alpha_user", "schema": {"properties": {"a": {}}}},
+                {"name": "alpha_role", "schema": {"properties": {}}}
+            ],
+            "extra": true
+        });
+
+        replace_object(
+            &mut doc,
+            "alpha_user",
+            json!({"name": "alpha_user", "schema": {"properties": {"b": {}}}}),
+        )
+        .unwrap();
+
+        assert_eq!(doc["_id"], json!("managed"));
+        assert_eq!(doc["extra"], json!(true));
+        assert_eq!(doc["objects"][0]["schema"]["properties"], json!({"b": {}}));
+        assert_eq!(doc["objects"][1]["name"], json!("alpha_role"));
+    }
+
+    #[test]
+    fn object_content_equal_ignores_map_insertion_order() {
+        let a = json!({"name": "alpha_user", "schema": {"required": ["a"], "properties": {}}});
+        let b = json!({"schema": {"properties": {}, "required": ["a"]}, "name": "alpha_user"});
+        assert!(object_content_equal(&a, &b));
     }
 }

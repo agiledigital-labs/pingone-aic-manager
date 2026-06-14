@@ -123,6 +123,15 @@ pub enum UndoOp {
         previous: String,
         expected: String,
     },
+    /// Undo of a managed-object schema edit. `body` is the complete previous
+    /// object definition from `objects[]`; the write path restores it through
+    /// a whole-document managed-config replace after checking that the live
+    /// object still equals the optimistic post-edit snapshot.
+    ManagedObjectReplace {
+        tenant: String,
+        object_name: String,
+        body: serde_json::Value,
+    },
 }
 
 impl UndoOp {
@@ -132,7 +141,8 @@ impl UndoOp {
             | UndoOp::EsvVariableDelete { tenant, .. }
             | UndoOp::EsvVariableUpdateTo { tenant, .. }
             | UndoOp::SecretDelete { tenant, .. }
-            | UndoOp::SecretSetDescription { tenant, .. } => tenant,
+            | UndoOp::SecretSetDescription { tenant, .. }
+            | UndoOp::ManagedObjectReplace { tenant, .. } => tenant,
         }
     }
 
@@ -143,6 +153,7 @@ impl UndoOp {
             | UndoOp::EsvVariableUpdateTo { id, .. }
             | UndoOp::SecretDelete { id, .. }
             | UndoOp::SecretSetDescription { id, .. } => Some(id),
+            UndoOp::ManagedObjectReplace { object_name, .. } => Some(object_name),
         }
     }
 }
@@ -413,7 +424,7 @@ fn persistable(sensitivity: Sensitivity) -> bool {
 
 fn summaries(entries: &[UndoEntry], limit: usize) -> Vec<UndoSummary> {
     let mut out: Vec<_> = entries.iter().map(UndoSummary::from).collect();
-    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    out.sort_by_key(|summary| std::cmp::Reverse(summary.created_at));
     out.truncate(limit);
     out
 }
