@@ -276,17 +276,17 @@ fn draw_detail(
     let hook_lines = hook_lines(summary);
     let remaining = (inner.height as usize).saturating_sub(lines.len());
     let property_slots = remaining.saturating_sub(hook_lines.len().saturating_add(1));
-    let property_scroll = crate::tui::list_chrome::clamp_scroll(
-        0,
-        selected_property,
-        property_slots,
-        property_names.len(),
-    );
     let shown_properties = if property_names.len() > property_slots {
         property_slots.saturating_sub(1)
     } else {
         property_names.len()
     };
+    let property_scroll = crate::tui::list_chrome::clamp_scroll(
+        0,
+        selected_property,
+        shown_properties,
+        property_names.len(),
+    );
     if let Some(properties) = properties {
         for (idx, name) in property_names
             .iter()
