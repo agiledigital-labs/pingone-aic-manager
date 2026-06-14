@@ -128,15 +128,11 @@ pub async fn handle_menu_key(app: &mut App, key: KeyEvent) -> crate::Result<()> 
         KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
         }
-        KeyCode::Char('j') | KeyCode::Down => {
-            if app.onboard.menu_idx < max_idx {
-                app.onboard.menu_idx += 1;
-            }
+        KeyCode::Char('j') | KeyCode::Down if app.onboard.menu_idx < max_idx => {
+            app.onboard.menu_idx += 1;
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if app.onboard.menu_idx > 0 {
-                app.onboard.menu_idx -= 1;
-            }
+        KeyCode::Char('k') | KeyCode::Up if app.onboard.menu_idx > 0 => {
+            app.onboard.menu_idx -= 1;
         }
         KeyCode::Enter => enter_choice(app, app.onboard.menu_idx).await?,
         KeyCode::Char('1') => enter_choice(app, 0).await?,
@@ -274,14 +270,12 @@ pub async fn handle_up_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                 form.status = None;
                 app.onboard.pending_callback_body = None;
             }
-            KeyCode::Enter => {
-                if !form.prompt_input.is_empty() {
-                    let extra = form.prompt_input.clone();
-                    form.prompt_input.clear();
-                    form.pending_prompt = None;
-                    form.status = Some("Continuing authentication…".into());
-                    continue_up_with_extra(app, extra);
-                }
+            KeyCode::Enter if !form.prompt_input.is_empty() => {
+                let extra = form.prompt_input.clone();
+                form.prompt_input.clear();
+                form.pending_prompt = None;
+                form.status = Some("Continuing authentication…".into());
+                continue_up_with_extra(app, extra);
             }
             KeyCode::Backspace => {
                 form.prompt_input.pop();

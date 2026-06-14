@@ -260,10 +260,8 @@ fn handle_versions_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
 
     let n = versions.len();
     match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if n > 0 && app.secret.version_selected + 1 < n {
-                app.secret.version_selected += 1;
-            }
+        KeyCode::Char('j') | KeyCode::Down if n > 0 && app.secret.version_selected + 1 < n => {
+            app.secret.version_selected += 1;
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.secret.version_selected = app.secret.version_selected.saturating_sub(1);

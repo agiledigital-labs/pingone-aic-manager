@@ -70,15 +70,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.auth_settings.idx > 0 {
-                app.auth_settings.idx -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if app.auth_settings.idx > 0 => {
+            app.auth_settings.idx -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if n > 0 && app.auth_settings.idx + 1 < n {
-                app.auth_settings.idx += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if n > 0 && app.auth_settings.idx + 1 < n => {
+            app.auth_settings.idx += 1;
         }
         KeyCode::Char('p') | KeyCode::Char('P') => {
             setup::start_add_factor(app, AuthMethod::Password);
@@ -171,21 +167,18 @@ pub async fn handle_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<(
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             let action = app.auth_settings.pending.take();
             match action {
-                Some(PendingAuthAction::RemoveWrap(idx)) => {
-                    if idx < app.wraps.wraps.len() {
-                        app.wraps.wraps.remove(idx);
-                        // If that was the last security key, drop the
-                        // shared salt — the next enrolment generates a
-                        // fresh one.
-                        app.wraps.clear_security_key_salt_if_unused();
-                        app.wraps.save()?;
-                        if app.auth_settings.idx >= app.wraps.wraps.len()
-                            && !app.wraps.wraps.is_empty()
-                        {
-                            app.auth_settings.idx = app.wraps.wraps.len() - 1;
-                        }
-                        app.push_toast(ToastKind::Success, "Factor removed");
+                Some(PendingAuthAction::RemoveWrap(idx)) if idx < app.wraps.wraps.len() => {
+                    app.wraps.wraps.remove(idx);
+                    // If that was the last security key, drop the
+                    // shared salt — the next enrolment generates a
+                    // fresh one.
+                    app.wraps.clear_security_key_salt_if_unused();
+                    app.wraps.save()?;
+                    if app.auth_settings.idx >= app.wraps.wraps.len() && !app.wraps.wraps.is_empty()
+                    {
+                        app.auth_settings.idx = app.wraps.wraps.len() - 1;
                     }
+                    app.push_toast(ToastKind::Success, "Factor removed");
                 }
                 Some(PendingAuthAction::DisableEncryption) => {
                     match app.dek_clone() {
@@ -213,6 +206,7 @@ pub async fn handle_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<(
                         }
                     }
                 }
+                Some(PendingAuthAction::RemoveWrap(_)) => {}
                 None => {}
             }
             app.input_mode = InputMode::Vault(Mode::Settings);

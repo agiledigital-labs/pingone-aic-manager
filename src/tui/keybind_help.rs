@@ -15,6 +15,7 @@ use ratatui::{
 use crate::app::{App, InputMode};
 use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::EditField;
+use crate::managed::screen::Mode as ManagedMode;
 use crate::onboard::screen::Mode as OnboardMode;
 use crate::secrets::screen::Mode as SecretsMode;
 use crate::tui::modal_chrome::hint_line;
@@ -68,9 +69,8 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match app.input_mode {
         InputMode::Normal => normal_lines(app, &mut lines),
-        InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) | InputMode::Managed(_) => {
-            esv_search_lines(&mut lines)
-        }
+        InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) => esv_search_lines(&mut lines),
+        InputMode::Managed(mode) => managed_lines(mode, &mut lines),
         InputMode::Esv(EsvMode::Edit) => esv_edit_lines(app, &mut lines),
         InputMode::Esv(EsvMode::RestartConfirm) => confirm_lines(
             &mut lines,
@@ -195,6 +195,66 @@ fn esv_edit_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     bind(lines, "Arrows/Home/End", "move cursor");
     bind(lines, "Backspace/Delete", "delete text");
     bind(lines, "F1", "show keybinds");
+}
+
+fn managed_lines(mode: ManagedMode, lines: &mut Vec<Line<'static>>) {
+    match mode {
+        ManagedMode::Search => esv_search_lines(lines),
+        ManagedMode::EditField => text_modal_lines(
+            lines,
+            "Edit managed field",
+            &[
+                ("Tab/Shift-Tab", "move between fields"),
+                ("Enter", "advance, toggle, or save"),
+                ("Space", "toggle focused checkbox"),
+                ("Esc", "cancel"),
+            ],
+        ),
+        ManagedMode::AddField => text_modal_lines(
+            lines,
+            "Add managed field",
+            &[
+                ("Tab/Shift-Tab", "move between fields"),
+                ("←/→ or Space", "change type or toggles"),
+                ("Enter", "advance or add"),
+                ("Esc", "cancel"),
+            ],
+        ),
+        ManagedMode::AddRelationship => text_modal_lines(
+            lines,
+            "Add relationship",
+            &[
+                ("Tab/Shift-Tab", "move between fields"),
+                ("Enter", "advance, pick target, or add"),
+                ("Space", "toggle focused checkbox"),
+                ("Esc", "cancel"),
+            ],
+        ),
+        ManagedMode::PickRelationshipTarget => text_modal_lines(
+            lines,
+            "Pick target object",
+            &[
+                ("Type", "filter targets"),
+                ("j/k or ↑/↓", "move selection"),
+                ("Enter", "choose target"),
+                ("Esc", "back"),
+            ],
+        ),
+        ManagedMode::AddHook => text_modal_lines(
+            lines,
+            "Register hook",
+            &[
+                ("j/k or ↑/↓", "move selection"),
+                ("Enter", "register selected hook"),
+                ("Esc", "cancel"),
+            ],
+        ),
+        ManagedMode::DeleteFieldConfirm => confirm_lines(
+            lines,
+            "Delete managed field",
+            &[("y", "delete field"), ("n/Esc", "cancel")],
+        ),
+    }
 }
 
 fn auth_settings_lines(app: &App, lines: &mut Vec<Line<'static>>) {

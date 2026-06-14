@@ -324,6 +324,7 @@ pub fn group_token(kind: Kind) -> &'static str {
 ///   - a **namespace** prefix (`alpha`, `endpoint`, …), a **full-name**
 ///     (`alpha/Email OTP`), or any **fragment** of the full-name (`Email`),
 ///     all matched as a substring of `<prefix>/<name>`.
+///
 /// An empty term matches everything.
 pub fn matches_term(term: &str, kind: Kind, realm: Option<&str>, name: &str) -> bool {
     let term = term.trim().to_lowercase();

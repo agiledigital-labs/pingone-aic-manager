@@ -7,14 +7,16 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use serde_json::Value;
 
 use crate::app::{App, InputMode};
 use crate::managed::api::ObjectSummary;
 use crate::managed::screen::Mode;
-use crate::managed::state::{LoadState, ManagedMatch};
+use crate::managed::state::{
+    AddFieldFocus, AddRelationshipFocus, EditFieldFocus, FieldAttr, LoadState, ManagedMatch,
+};
 
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) else {
@@ -96,17 +98,37 @@ fn draw_list(f: &mut Frame, app: &App, total: usize, matches: &[ManagedMatch], a
         .enumerate()
         .skip(scroll)
         .take(height)
-        .map(|(idx, item)| render_row(item, idx == selected))
+        .map(|(idx, item)| {
+            let failed = app
+                .active_tenant()
+                .map(|tenant| {
+                    app.managed
+                        .failed_writes
+                        .contains(&(tenant.name.clone(), item.name.clone()))
+                })
+                .unwrap_or(false);
+            let saving = app
+                .active_tenant()
+                .map(|tenant| {
+                    app.managed
+                        .in_flight_writes
+                        .contains(&(tenant.name.clone(), item.name.clone()))
+                })
+                .unwrap_or(false);
+            render_row(item, idx == selected, failed, saving)
+        })
         .collect();
     f.render_widget(Paragraph::new(lines), rows[1]);
 }
 
-fn render_row(item: &ManagedMatch, selected: bool) -> Line<'static> {
+fn render_row(item: &ManagedMatch, selected: bool, failed: bool, saving: bool) -> Line<'static> {
     let row_style = if selected {
         Style::default()
-            .fg(Color::Black)
+            .fg(if failed { Color::Red } else { Color::Black })
             .bg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
+    } else if failed {
+        Style::default().fg(Color::Red)
     } else {
         Style::default().fg(Color::Gray)
     };
@@ -152,6 +174,14 @@ fn render_row(item: &ManagedMatch, selected: bool) -> Line<'static> {
             suffix_style,
         ));
     }
+    if saving {
+        spans.push(Span::styled(
+            " · saving",
+            Style::default().fg(Color::Yellow),
+        ));
+    } else if failed {
+        spans.push(Span::styled(" · failed", Style::default().fg(Color::Red)));
+    }
     Line::from(spans)
 }
 
@@ -187,6 +217,31 @@ fn draw_detail(
         return;
     };
 
+    match app.input_mode {
+        InputMode::Managed(Mode::EditField) if app.managed.editing.is_some() => {
+            draw_edit_field_form(f, app, inner);
+            return;
+        }
+        InputMode::Managed(Mode::AddField) if app.managed.add_field.is_some() => {
+            draw_add_field_form(f, app, inner);
+            return;
+        }
+        InputMode::Managed(Mode::AddRelationship | Mode::PickRelationshipTarget)
+            if app.managed.add_relationship.is_some() =>
+        {
+            draw_add_relationship_form(f, app, inner);
+            if app.input_mode == InputMode::Managed(Mode::PickRelationshipTarget) {
+                draw_relationship_target_picker(f, app, inner);
+            }
+            return;
+        }
+        InputMode::Managed(Mode::AddHook) if app.managed.add_hook.is_some() => {
+            draw_add_hook_picker(f, app, inner);
+            return;
+        }
+        _ => {}
+    }
+
     let mut lines = vec![
         Line::from(Span::styled(
             item.name.clone(),
@@ -201,39 +256,49 @@ fn draw_detail(
             ),
             Style::default().fg(Color::DarkGray),
         )),
+        Line::from(Span::styled(
+            "Enter edit selected field · [ ] change field",
+            Style::default().fg(Color::DarkGray),
+        )),
         Line::from(""),
     ];
 
     let properties = object
         .pointer("/schema/properties")
         .and_then(Value::as_object);
-    let required: HashSet<&str> = object
-        .pointer("/schema/required")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    let mut property_names: Vec<&str> = properties
-        .into_iter()
-        .flat_map(|properties| properties.keys().map(String::as_str))
-        .collect();
-    property_names.sort_unstable();
+    let required: HashSet<String> = crate::managed::state::required_fields(object);
+    let property_names = crate::managed::state::property_names(object);
+    let selected_property = app
+        .managed
+        .property_selected
+        .min(property_names.len().saturating_sub(1));
 
     let hook_lines = hook_lines(summary);
     let remaining = (inner.height as usize).saturating_sub(lines.len());
     let property_slots = remaining.saturating_sub(hook_lines.len().saturating_add(1));
+    let property_scroll = crate::tui::list_chrome::clamp_scroll(
+        0,
+        selected_property,
+        property_slots,
+        property_names.len(),
+    );
     let shown_properties = if property_names.len() > property_slots {
         property_slots.saturating_sub(1)
     } else {
         property_names.len()
     };
     if let Some(properties) = properties {
-        for name in property_names.iter().take(shown_properties) {
+        for (idx, name) in property_names
+            .iter()
+            .enumerate()
+            .skip(property_scroll)
+            .take(shown_properties)
+        {
             lines.push(property_line(
                 name,
-                &properties[*name],
+                &properties[name],
                 required.contains(name),
+                idx == selected_property,
             ));
         }
     }
@@ -252,56 +317,46 @@ fn draw_detail(
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn property_line(name: &str, property: &Value, required: bool) -> Line<'static> {
-    let mut spans = vec![Span::styled(
-        name.to_string(),
-        Style::default().fg(Color::Gray),
-    )];
+fn property_line(name: &str, property: &Value, required: bool, selected: bool) -> Line<'static> {
+    let base_style = if selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let mut spans = vec![Span::styled(if selected { "▶ " } else { "  " }, base_style)];
+    spans.push(Span::styled(name.to_string(), base_style));
     if required {
         spans.push(Span::styled(
             "*",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            if selected {
+                base_style
+            } else {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            },
         ));
     }
-    spans.push(Span::styled(": ", Style::default().fg(Color::DarkGray)));
     spans.push(Span::styled(
-        property_type(property),
-        Style::default().fg(Color::White),
+        ": ",
+        if selected {
+            base_style
+        } else {
+            Style::default().fg(Color::DarkGray)
+        },
+    ));
+    spans.push(Span::styled(
+        crate::managed::state::property_type(property),
+        if selected {
+            base_style
+        } else {
+            Style::default().fg(Color::White)
+        },
     ));
     Line::from(spans)
-}
-
-fn property_type(property: &Value) -> String {
-    match property.get("type") {
-        Some(Value::String(kind)) => base_type(kind, property),
-        Some(Value::Array(kinds)) if kinds.iter().any(|kind| kind.as_str() == Some("null")) => {
-            let base = kinds
-                .iter()
-                .filter_map(Value::as_str)
-                .find(|kind| *kind != "null")
-                .map(|kind| base_type(kind, property))
-                .unwrap_or_else(|| "any".to_string());
-            format!("{base}?")
-        }
-        _ => "any".to_string(),
-    }
-}
-
-fn base_type(kind: &str, property: &Value) -> String {
-    match kind {
-        "string" | "boolean" | "number" | "object" | "relationship" => kind.to_string(),
-        "array" => {
-            let item = property
-                .pointer("/items/type")
-                .and_then(Value::as_str)
-                .map(|kind| base_type(kind, &Value::Null))
-                .unwrap_or_else(|| "any".to_string());
-            format!("{item}[]")
-        }
-        _ => "any".to_string(),
-    }
 }
 
 fn hook_lines(summary: &ObjectSummary) -> Vec<Line<'static>> {
@@ -331,4 +386,486 @@ fn hook_lines(summary: &ObjectSummary) -> Vec<Line<'static>> {
         ]));
     }
     lines
+}
+
+fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
+    let Some(edit) = app.managed.editing.as_ref() else {
+        return;
+    };
+
+    let error_h = if edit.error.is_some() { 2 } else { 0 };
+    let rows = Layout::vertical([
+        Constraint::Length(1), // field id
+        Constraint::Length(1), // type/capability
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // key
+        Constraint::Length(1),
+        Constraint::Length(2), // title
+        Constraint::Length(1),
+        Constraint::Min(4), // description
+        Constraint::Length(1),
+        Constraint::Length(1), // required
+        Constraint::Length(1), // searchable
+        Constraint::Length(1), // viewable
+        Constraint::Length(1), // userEditable
+        Constraint::Length(error_h),
+        Constraint::Length(2), // save
+    ])
+    .split(area);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{}.{}", edit.object_name, edit.field_key),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  edit attributes", Style::default().fg(Color::DarkGray)),
+        ])),
+        rows[0],
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Type  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                edit.property_type.clone(),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(caps_label(edit.caps), Style::default().fg(Color::DarkGray)),
+        ])),
+        rows[1],
+    );
+
+    edit.key
+        .draw(f, rows[3], edit.focused == EditFieldFocus::Key);
+    if !edit.caps.rename_key {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Key rename unavailable for this field",
+                Style::default().fg(Color::DarkGray),
+            ))),
+            rows[4],
+        );
+    }
+    edit.title
+        .draw(f, rows[5], edit.focused == EditFieldFocus::Title);
+    edit.description
+        .draw(f, rows[7], edit.focused == EditFieldFocus::Description);
+
+    draw_bool_row(
+        f,
+        rows[9],
+        "Required",
+        edit.required,
+        edit.focused == EditFieldFocus::Required,
+        edit.caps.can_edit_attr(FieldAttr::Required),
+    );
+    draw_bool_row(
+        f,
+        rows[10],
+        "Searchable",
+        edit.searchable,
+        edit.focused == EditFieldFocus::Searchable,
+        edit.caps.can_edit_attr(FieldAttr::Searchable),
+    );
+    draw_bool_row(
+        f,
+        rows[11],
+        "Viewable",
+        edit.viewable,
+        edit.focused == EditFieldFocus::Viewable,
+        edit.caps.can_edit_attr(FieldAttr::Viewable),
+    );
+    draw_bool_row(
+        f,
+        rows[12],
+        "User editable",
+        edit.user_editable,
+        edit.focused == EditFieldFocus::UserEditable,
+        edit.caps.can_edit_attr(FieldAttr::UserEditable),
+    );
+
+    if let Some(error) = &edit.error {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                error.clone(),
+                Style::default().fg(Color::Yellow),
+            )))
+            .wrap(Wrap { trim: false }),
+            rows[13],
+        );
+    }
+    draw_save_button(f, rows[14], edit.focused == EditFieldFocus::Save);
+}
+
+fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
+    let Some(draft) = app.managed.add_field.as_ref() else {
+        return;
+    };
+    let error_h = if draft.error.is_some() { 2 } else { 0 };
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(4),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(error_h),
+        Constraint::Length(2),
+    ])
+    .split(area);
+
+    form_title(f, rows[0], &draft.object_name, "add scalar field");
+    draft
+        .key
+        .draw(f, rows[2], draft.focused == AddFieldFocus::Key);
+    draft
+        .title
+        .draw(f, rows[4], draft.focused == AddFieldFocus::Title);
+    draft
+        .description
+        .draw(f, rows[6], draft.focused == AddFieldFocus::Description);
+    draw_selector_row(
+        f,
+        rows[8],
+        "Type",
+        draft.field_type.label(),
+        draft.focused == AddFieldFocus::Type,
+    );
+    draw_bool_row(
+        f,
+        rows[9],
+        "Searchable",
+        draft.searchable,
+        draft.focused == AddFieldFocus::Searchable,
+        true,
+    );
+    draw_bool_row(
+        f,
+        rows[10],
+        "Viewable",
+        draft.viewable,
+        draft.focused == AddFieldFocus::Viewable,
+        true,
+    );
+    draw_bool_row(
+        f,
+        rows[11],
+        "User editable",
+        draft.user_editable,
+        draft.focused == AddFieldFocus::UserEditable,
+        true,
+    );
+    draw_bool_row(
+        f,
+        rows[12],
+        "Required",
+        draft.required,
+        draft.focused == AddFieldFocus::Required,
+        true,
+    );
+    draw_form_error(f, rows[13], draft.error.as_deref());
+    draw_save_button(f, rows[14], draft.focused == AddFieldFocus::Save);
+}
+
+fn draw_add_relationship_form(f: &mut Frame, app: &App, area: Rect) {
+    let Some(draft) = app.managed.add_relationship.as_ref() else {
+        return;
+    };
+    let error_h = if draft.error.is_some() { 2 } else { 0 };
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(4),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(error_h),
+        Constraint::Length(2),
+    ])
+    .split(area);
+
+    form_title(f, rows[0], &draft.object_name, "add relationship");
+    draft
+        .key
+        .draw(f, rows[2], draft.focused == AddRelationshipFocus::Key);
+    draft
+        .title
+        .draw(f, rows[4], draft.focused == AddRelationshipFocus::Title);
+    draft.description.draw(
+        f,
+        rows[6],
+        draft.focused == AddRelationshipFocus::Description,
+    );
+    draw_target_row(
+        f,
+        rows[8],
+        draft.target_name.as_deref().unwrap_or("(choose target)"),
+        draft.focused == AddRelationshipFocus::Target,
+    );
+    draw_bool_row(
+        f,
+        rows[9],
+        "Collection",
+        draft.collection,
+        draft.focused == AddRelationshipFocus::Collection,
+        true,
+    );
+    draw_bool_row(
+        f,
+        rows[10],
+        "Validate",
+        draft.validate,
+        draft.focused == AddRelationshipFocus::Validate,
+        true,
+    );
+    draft.reverse_property_name.draw(
+        f,
+        rows[11],
+        draft.focused == AddRelationshipFocus::ReversePropertyName,
+    );
+    draw_form_error(f, rows[12], draft.error.as_deref());
+    draw_save_button(f, rows[13], draft.focused == AddRelationshipFocus::Save);
+}
+
+fn draw_relationship_target_picker(f: &mut Frame, app: &App, area: Rect) {
+    let Some(draft) = app.managed.add_relationship.as_ref() else {
+        return;
+    };
+    let width = area.width.min(52);
+    let height = area.height.clamp(6, 18);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(
+            " Target object ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+    let matches = crate::managed::screen::relationship_target_matches(app);
+    let count_text = format!("{} objects ", matches.len());
+    crate::tui::list_chrome::draw_search_row(f, rows[0], &draft.target_query, true, &count_text);
+    let selected = draft.target_selected.min(matches.len().saturating_sub(1));
+    let height = rows[1].height as usize;
+    let scroll = crate::tui::list_chrome::clamp_scroll(0, selected, height, matches.len());
+    let lines: Vec<Line> = matches
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(height)
+        .map(|(idx, name)| simple_pick_line(name, idx == selected))
+        .collect();
+    f.render_widget(Paragraph::new(lines), rows[1]);
+}
+
+fn draw_add_hook_picker(f: &mut Frame, app: &App, area: Rect) {
+    let Some(draft) = app.managed.add_hook.as_ref() else {
+        return;
+    };
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(if draft.error.is_some() { 2 } else { 0 }),
+    ])
+    .split(area);
+    form_title(f, rows[0], &draft.object_name, "register hook");
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Body is edited from the script workspace",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        rows[1],
+    );
+    let selected = draft.selected.min(draft.events.len().saturating_sub(1));
+    let height = rows[2].height as usize;
+    let scroll = crate::tui::list_chrome::clamp_scroll(0, selected, height, draft.events.len());
+    let lines: Vec<Line> = draft
+        .events
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(height)
+        .map(|(idx, event)| simple_pick_line(event, idx == selected))
+        .collect();
+    f.render_widget(Paragraph::new(lines), rows[2]);
+    draw_form_error(f, rows[3], draft.error.as_deref());
+}
+
+pub fn draw_delete_field_confirm(f: &mut Frame, app: &App) {
+    let field = app
+        .managed
+        .pending_delete
+        .as_ref()
+        .map(|pending| format!("{}.{}", pending.object_name, pending.field_key))
+        .unwrap_or_else(|| "selected field".to_string());
+    let message = format!("Delete {field}?\n\nThis can be undone from the undo log.");
+    crate::tui::popup_confirm::draw(f, "Delete managed field?", &message);
+}
+
+fn form_title(f: &mut Frame, area: Rect, object_name: &str, action: &'static str) {
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                object_name.to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  {action}"), Style::default().fg(Color::DarkGray)),
+        ])),
+        area,
+    );
+}
+
+fn draw_form_error(f: &mut Frame, area: Rect, error: Option<&str>) {
+    if let Some(error) = error {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                error.to_string(),
+                Style::default().fg(Color::Yellow),
+            )))
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+    }
+}
+
+fn draw_selector_row(f: &mut Frame, area: Rect, label: &str, value: &str, focused: bool) {
+    let style = if focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!("{label}  "), style),
+            Span::styled(value.to_string(), Style::default().fg(Color::White)),
+            Span::styled("  ←/→ change", Style::default().fg(Color::DarkGray)),
+        ])),
+        area,
+    );
+}
+
+fn draw_target_row(f: &mut Frame, area: Rect, value: &str, focused: bool) {
+    let style = if focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Target  ", style),
+            Span::styled(value.to_string(), Style::default().fg(Color::White)),
+            Span::styled("  Enter pick", Style::default().fg(Color::DarkGray)),
+        ])),
+        area,
+    );
+}
+
+fn simple_pick_line(label: &str, selected: bool) -> Line<'static> {
+    let style = if selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    Line::from(vec![
+        Span::styled(if selected { "▶ " } else { "  " }, style),
+        Span::styled(label.to_string(), style),
+    ])
+}
+
+fn caps_label(caps: crate::managed::state::FieldCaps) -> &'static str {
+    use crate::managed::state::FieldTier;
+    match caps.tier {
+        FieldTier::StandardFieldOnStandardObject => "standard field",
+        FieldTier::CustomFieldOnStandardObject => "custom field",
+        FieldTier::FieldOnCustomObject => "custom object field",
+    }
+}
+
+fn draw_bool_row(
+    f: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: bool,
+    focused: bool,
+    enabled: bool,
+) {
+    if area.height == 0 {
+        return;
+    }
+    let fg = match (enabled, focused) {
+        (false, _) => Color::DarkGray,
+        (true, true) => Color::Yellow,
+        (true, false) => Color::Gray,
+    };
+    let style = if focused {
+        Style::default().fg(fg).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(fg)
+    };
+    let mark = if value { "x" } else { " " };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!("[{mark}] "), style),
+            Span::styled(label.to_string(), style),
+            Span::styled("  Space/Enter toggle", Style::default().fg(Color::DarkGray)),
+        ])),
+        area,
+    );
+}
+
+fn draw_save_button(f: &mut Frame, area: Rect, focused: bool) {
+    if area.height == 0 {
+        return;
+    }
+    let style = if focused {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Green).bg(Color::Indexed(234))
+    };
+    let row = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: 1,
+    };
+    f.render_widget(Paragraph::new(Span::styled(" Save ", style)), row);
 }

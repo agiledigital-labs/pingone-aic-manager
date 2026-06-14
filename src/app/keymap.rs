@@ -53,12 +53,17 @@ pub enum Act {
     Primary,
     Delete,
     NewItem,
+    AddRelationship,
+    AddHook,
     Pull,
     Push,
     PullAll,
     Apply,
+    Refresh,
     Undo,
     UndoHistory,
+    PrevField,
+    NextField,
     RealmToggle,
     TenantPicker,
     Onboard,
@@ -125,6 +130,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
 
     let scripts_tab = app.current_tab == Tab::Scripts;
     let esv_tab = app.current_tab == Tab::Esvs;
+    let managed_tab = app.current_tab == Tab::Managed;
     let secrets = esv_tab && app.esv.view == EsvView::Secrets;
     let n = row_count(app);
     let can_apply = esv_tab
@@ -286,6 +292,82 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             true,
             UndoHistory,
         ));
+    } else if managed_tab && n > 0 {
+        out.push(b(
+            &[Trigger::Code(KeyCode::Enter)],
+            "Enter",
+            "edit field",
+            true,
+            true,
+            Primary,
+        ));
+        out.push(b(
+            &[Trigger::Char('a')],
+            "a",
+            "add field",
+            true,
+            true,
+            NewItem,
+        ));
+        out.push(b(
+            &[Trigger::Char('r')],
+            "r",
+            "add relationship",
+            true,
+            true,
+            AddRelationship,
+        ));
+        out.push(b(
+            &[Trigger::Char('h')],
+            "h",
+            "add hook",
+            true,
+            true,
+            AddHook,
+        ));
+        out.push(b(
+            &[Trigger::Char('d'), Trigger::Char('D')],
+            "d",
+            "delete field",
+            true,
+            true,
+            Delete,
+        ));
+        out.push(b(
+            &[Trigger::Char('[')],
+            "[",
+            "previous field",
+            false,
+            true,
+            PrevField,
+        ));
+        out.push(b(
+            &[Trigger::Char(']')],
+            "]",
+            "next field",
+            false,
+            true,
+            NextField,
+        ));
+        out.push(b(&[Trigger::Ctrl('z')], "^Z", "undo", true, true, Undo));
+        out.push(b(
+            &[Trigger::Ctrl('y')],
+            "^Y",
+            "undo history",
+            true,
+            true,
+            UndoHistory,
+        ));
+    }
+    if managed_tab {
+        out.push(b(
+            &[Trigger::Char('R')],
+            "R",
+            "refresh",
+            true,
+            true,
+            Refresh,
+        ));
     }
 
     // Esc clears an active filter (only meaningful when one is applied).
@@ -363,9 +445,10 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out.push(("?", "keys"));
             out
         }
-        InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) | InputMode::Managed(_) => {
+        InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) => {
             vec![("Enter", "keep filter"), ("Esc", "clear + exit")]
         }
+        InputMode::Managed(_) => crate::managed::screen::footer_hints(app),
         InputMode::Secrets(SecretsMode::Create) => {
             use crate::secrets::state::CreateField;
             let mut out = vec![("Tab", "next field")];
@@ -497,15 +580,30 @@ async fn run_normal(app: &mut App, act: Act) {
         Primary => primary(app),
         Delete => delete(app),
         NewItem => new_item(app),
+        AddRelationship => crate::managed::screen::start_add_relationship(app),
+        AddHook => crate::managed::screen::start_add_hook(app),
         Pull => crate::scripts::screen::pull_selected(app),
         Push => crate::scripts::screen::push_selected(app),
         PullAll => crate::scripts::screen::pull_all(app),
         Apply => crate::esv::ops::request_restart(app),
-        Undo => crate::esv::ops::request_latest_undo(app),
+        Refresh => {
+            if app.current_tab == Tab::Managed {
+                crate::managed::screen::refresh(app, true);
+            }
+        }
+        Undo => {
+            if app.current_tab == Tab::Managed {
+                crate::managed::ops::request_latest_undo(app);
+            } else {
+                crate::esv::ops::request_latest_undo(app);
+            }
+        }
         UndoHistory => {
             app.undo_history_idx = 0;
             app.input_mode = InputMode::UndoHistory;
         }
+        PrevField => crate::managed::screen::move_property(app, -1),
+        NextField => crate::managed::screen::move_property(app, 1),
         RealmToggle => {
             app.current_realm = match app.current_realm {
                 Realm::Alpha => Realm::Bravo,
@@ -589,7 +687,7 @@ fn set_selection(app: &mut App, idx: usize) {
         return;
     }
     if app.current_tab == Tab::Managed {
-        app.managed.selected = clamped;
+        app.managed.select_object(clamped);
         return;
     }
     match app.esv.view {
@@ -642,6 +740,10 @@ fn clear_filter(app: &mut App) {
 }
 
 fn primary(app: &mut App) {
+    if app.current_tab == Tab::Managed {
+        crate::managed::screen::start_edit_field(app);
+        return;
+    }
     match app.esv.view {
         EsvView::Variables => crate::esv::screen::start_edit(app),
         EsvView::Secrets => crate::secrets::screen::open_versions(app),
@@ -649,6 +751,10 @@ fn primary(app: &mut App) {
 }
 
 fn delete(app: &mut App) {
+    if app.current_tab == Tab::Managed {
+        crate::managed::screen::request_delete_field(app);
+        return;
+    }
     match app.esv.view {
         EsvView::Variables => crate::esv::ops::request_delete(app),
         EsvView::Secrets => crate::secrets::screen::request_delete(app),
@@ -656,6 +762,10 @@ fn delete(app: &mut App) {
 }
 
 fn new_item(app: &mut App) {
+    if app.current_tab == Tab::Managed {
+        crate::managed::screen::start_add_field(app);
+        return;
+    }
     match app.esv.view {
         EsvView::Variables => crate::esv::screen::start_create(app),
         EsvView::Secrets => crate::secrets::screen::start_create(app),

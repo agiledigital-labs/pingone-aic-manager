@@ -116,6 +116,12 @@ impl CreateForm {
     }
 }
 
+impl Default for CreateForm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// In-progress "add a new version" form.
 #[derive(Debug)]
 pub struct AddVersionForm {

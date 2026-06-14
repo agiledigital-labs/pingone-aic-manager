@@ -14,7 +14,7 @@ Service-account bearer. Scope: `fr:idm:*`.
 | Op | Method | Path | Notes |
 |----|--------|------|-------|
 | Read schema (all) | `GET` | `/openidm/config/managed` | Returns `{ _id: "managed", objects: [...] }`. |
-| Replace schema | `PUT` | `/openidm/config/managed` | Body must be the full `managed` config. |
+| Replace schema | `PUT` | `/openidm/config/managed` | Whole-document replace of `{ _id: "managed", objects: [...] }`. Mutate via read-modify-write; 200 on success. |
 | Read repo mapping | `GET` | `/openidm/config/repo.ds` | Maps managed properties to DJ attributes. |
 | Read object instance | `GET` | `/openidm/managed/{type}/{id}` | Per-record. `{type}` e.g. `alpha_user`. |
 | List records | `GET` | `/openidm/managed/{type}?_queryFilter=true` | CREST. |
@@ -119,6 +119,41 @@ mechanism on the IDM side (whereas AM uses URL path segments).
 }
 ```
 
+## Schema config writes (verified 2026-06-14)
+
+`PUT /openidm/config/managed` is a whole-document replace. Mutations are
+read-modify-write edits of `{ "_id": "managed", "objects": [...] }`; all
+sandbox PUTs on throwaway `test_*` objects returned 200. The API stores
+`objects[]` entries verbatim — no field injection, normalisation, or
+reordering was observed.
+
+Config read-back is effectively immediate: after PUT returned 200, a fresh
+GET reflected the change on the first poll (~164 ms later). This is strong
+consistency for the stored config. The `managed_hooks` sync path still polls
+when needed because it waits for hook source to go live in the running IDM
+runtime, which is separate from config read-back.
+
+| Shape | Accepted / observed |
+|---|---|
+| Minimal custom object | `{ "name": "...", "schema": { "type": "object", "title": "...", "properties": {}, "required": [], "order": [] } }`. Objects carry no `_id`/`$id`; the document's `_id: "managed"` is the only id. |
+| Standard object marker | Ping-shipped standard objects (`alpha_`/`bravo_` × `user`, `role`, `organization`, `assignment`, `application`) have both top-level `type` and `meta` keys. Custom objects (`mock_*`, `alpha_lock`, `test_*`) have neither. |
+| Scalar property | `{ "title": "...", "description": "...", "type": "string", "searchable": true, "viewable": true, "userEditable": true }` round-trips. |
+| Single relationship | `{ "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] }`. `reversePropertyName`, `validate`, and explicit `_ref`/`_refProperties` are optional at config-write time. |
+| Array of relationships | `{ "type": "array", "items": { "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] } }`. |
+| Lifecycle hook | Top-level sibling of `schema`, e.g. `"onCreate": { "type": "text/javascript", "source": "..." }`. Round-trips verbatim and is immediately discoverable/pullable via `aic script list managed` / `aic script pull managed/<object>.<hook>`. |
+
+No cross-object reverse-property validation runs on config write. A PUT with
+`validate: true` and a `reversePropertyName` that did not exist on the target
+object returned 200 and stored the property. Treat `validate` and
+`reverseRelationship` as runtime relationship-integrity flags, not schema
+write gates. One-way relationships are accepted; fully bidirectional pairs
+also round-trip.
+
+There is no server-side rename or delete primitive for schema config: both are
+whole-document RMW edits. `schema.order` is independent of
+`schema.properties`, and `schema.required` is independent too; the API does
+not auto-prune either list when a property is removed or renamed.
+
 ## Hook scripts (verified 2026-06-13)
 
 Hook keys **observed in use** on the sandbox schema: `onCreate`, `onUpdate`,
@@ -172,7 +207,9 @@ $SCRIPTS/verify-endpoint.sh "/openidm/managed/alpha_user?_queryFilter=true&_page
 ## Quirks
 
 - **PUT is "replace entire schema"** — there's no partial patch. Read,
-  modify the relevant `objects[]` entry, write back.
+  modify the relevant `objects[]` entry, write back. Object entries store
+  verbatim; no server field injection, normalisation, or reordering was
+  observed.
 - **`_rev`-less at the top level** — concurrency control is at the per-record
   level for instance data, not schema. Two concurrent schema edits will
   last-write-wins.
@@ -181,22 +218,27 @@ $SCRIPTS/verify-endpoint.sh "/openidm/managed/alpha_user?_queryFilter=true&_page
 - **`repo.ds`** is the source of truth for which managed properties are
   indexed in DJ. Adding a searchable property requires updating both
   `managed` and `repo.ds`.
-- **Config PUT applies with a lag.** `PUT /openidm/config/managed` returns
-  200 immediately, but the running hook registry catches up a beat later
-  (observed 2026-06-13: a record created right after a 200'd schema PUT
-  still fired the *previous* hook source; ~5s later the new source was
-  live). Push tooling must not assume the new config is active at 200;
-  re-read the config to confirm, and don't fire-and-verify hooks
-  immediately after a push.
+- **Config read-back is immediate; hook runtime activation can lag.** A fresh
+  `GET /openidm/config/managed` reflected a 200'd PUT on the first poll
+  (~164 ms, 2026-06-14). Separately, the running hook registry can catch up a
+  beat later (observed 2026-06-13: a record created right after a 200'd
+  schema PUT still fired the *previous* hook source; ~5s later the new source
+  was live). Push tooling can re-read config to confirm storage, but should
+  not fire-and-verify hooks immediately after a push.
+- **`schema.order` / `schema.required` are manual.** The config API does not
+  auto-prune them when properties are removed or renamed.
 
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-06-13 (hook inventory, hook bindings probe, schema PUT
-  round-trip + application lag); 2026-06-09 (create-if-absent test);
-  2026-05-17 (schema read).
+- Date: 2026-06-14 (managed-config write behaviour, custom object/property/
+  relationship/hook round-trips, no reverse-property validation); 2026-06-13
+  (hook inventory, hook bindings probe, schema PUT round-trip + application
+  lag); 2026-06-09 (create-if-absent test); 2026-05-17 (schema read).
 - Calls: `GET /openidm/config/managed` (200); `PUT /openidm/config/managed`
-  (200, full-document replace round-trips byte-identical);
+  (200, full-document replace; object entries stored verbatim; fresh GET
+  reflected changes on first poll, ~164 ms); relationship PUT with
+  `validate: true` + dangling `reversePropertyName` (200, stored);
   `PUT /openidm/managed/alpha_lock/{id}` + `If-None-Match: *` (201/412);
   bare `PUT` update (200, fires onUpdate); `DELETE` (200);
   `GET …?_queryFilter=true&_fields=_id` (200).

@@ -498,15 +498,11 @@ impl App {
             KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.env_picker_idx + 1 < self.tenants.len() {
-                    self.env_picker_idx += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if self.env_picker_idx + 1 < self.tenants.len() => {
+                self.env_picker_idx += 1;
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.env_picker_idx > 0 {
-                    self.env_picker_idx -= 1;
-                }
+            KeyCode::Char('k') | KeyCode::Up if self.env_picker_idx > 0 => {
+                self.env_picker_idx -= 1;
             }
             KeyCode::Enter => {
                 self.set_active_tenant(self.env_picker_idx);

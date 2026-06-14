@@ -62,6 +62,18 @@ new things are learned.
 - **Captured in:** `04-scripts.md` (41 contexts as of 2026-05-17, including
   `_NEXT_GEN` variants the libraries' research summaries missed).
 
+### Managed config relationship reciprocity (resolved 2026-06-14)
+- **Status:** Resolved.
+- **Answer:** `PUT /openidm/config/managed` performs no cross-object
+  relationship-reciprocity validation on write. A relationship property with
+  `validate: true` and a dangling `reversePropertyName` returned 200 and was
+  stored.
+- **Implication:** Treat `validate` / `reverseRelationship` as runtime
+  relationship-integrity flags, not config-schema write gates. Tooling must
+  validate reciprocity itself if it wants to prevent one-way or dangling
+  relationships.
+- **Documented in:** `10-managed-objects.md`.
+
 ---
 
 ## Open
