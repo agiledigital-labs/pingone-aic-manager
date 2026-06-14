@@ -17,7 +17,7 @@ Always send `Accept-API-Version: protocol=2.1,resource=1.0`.
 
 | Op | Method | Path | Notes |
 |----|--------|------|-------|
-| List | `GET` | `/am/json{realm-path}/realm-config/agents/OAuth2Client?_queryFilter=true` | |
+| List | `GET` | `/am/json{realm-path}/realm-config/agents/OAuth2Client?_queryFilter=true` | Use `_fields=_id` for id-only lists; pass a large `_pageSize` and follow non-empty `pagedResultsCookie` with `_pagedResultsCookie`. |
 | Read | `GET` | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}` | `id` is the client_id string. |
 | Upsert | `PUT` | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}` | See "Update quirks" below. |
 | Delete | `DELETE` | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}` | |
@@ -67,7 +67,9 @@ Always send `Accept-API-Version: protocol=2.1,resource=1.0`.
 }
 ```
 
-- **Has `_rev`** — use `If-Match` for optimistic locking on `PUT`.
+- **Has `_rev`** — treat it as opaque metadata. OAuth2 client writes use
+  plain `PUT` without `If-Match`; conflict detection is by local content
+  snapshot.
 - Many fields are wrapped in `{"inherited": true|false, "value": …}` to indicate
   override of provider defaults.
 
@@ -93,18 +95,61 @@ Always send `Accept-API-Version: protocol=2.1,resource=1.0`.
 
 When mutating an OAuth2 client, before sending the `PUT` body:
 
-1. **Strip `_provider`** if present — read-only, server rejects.
-2. **Strip all `*-encrypted` fields.** These hold AES-wrapped values whose
+1. **Strip top-level `_id`, `_rev`, `_type`, and `_provider`.** The server
+   rejects a `PUT` body containing these server-managed fields with
+   `400 {"message":"Invalid attribute specified."}`. `_rev` must not be kept,
+   and OAuth2 client update does not use `If-Match`.
+2. **Strip all `*-encrypted` fields recursively.** These hold AES-wrapped values whose
    transport key differs per cluster — sending them back produces gibberish
    secrets. frodo-lib walks the object and removes any key ending in
-   `-encrypted` (`deleteDeepByKey`). We must do the same.
-3. **Keep `_rev`** — server uses it to detect concurrent modification.
+   `-encrypted` (`deleteDeepByKey`). We must do the same. On the 2026-06-14
+   tenant version, a freshly-set `userpassword` read back as `null` with no
+   `userpassword-encrypted` sibling; the strip is still mandatory because this
+   echo behavior is version-dependent.
+3. **Use plain `PUT` for create and update.** No `If-Match` or `If-None-Match`
+   header is needed. `PUT` to a new id creates the client and returns 201;
+   `PUT` to an existing id updates and returns 200.
 4. **Decide on `userpassword` etc.**: if the corresponding `-encrypted` was
-   stripped, leave the plain field as-is (the server keeps the existing
-   ciphertext when the plain field is null/unset).
+   stripped or absent, leave the plain field as-is. `null`/unset preserves the
+   existing write-only secret on this tenant version.
 
 Failing to strip `-encrypted` is the #1 way to silently corrupt OAuth2 client
 secrets. Build this into the Rust client as a hard pre-flight.
+
+## Editing OAuth2 clients — pull / edit / push (verified 2026-06-14)
+
+OAuth2 client edits are managed as JSON files under the workspace:
+
+```bash
+aic oauth pull service_C1
+$EDITOR workspace/<tenant>/oauth/alpha/service_C1.json
+aic oauth push service_C1
+```
+
+`pull` writes both the editable export and the last-synced snapshot:
+
+- Export: `workspace/<tenant>/oauth/{realm}/{id}.json`
+- Snapshot: `workspace/<tenant>/oauth/{realm}/.snapshots/{id}.json`
+
+`push` reads the local export, fetches the remote client, and compares remote
+content to the snapshot after stripping `_rev` recursively. If remote still
+matches the snapshot, the local file is safe to push. If remote has drifted,
+the command blocks and asks the user to re-pull or pass `--force`. `--force`
+overwrites remote with the local export and then refreshes only the snapshot;
+it does not clobber the user's local file.
+
+If the remote client id does not exist, `aic oauth push <id>` creates it with
+plain `PUT …/OAuth2Client/{id}`. A successful create returns 201. After create,
+the CLI re-reads the client and stores that as the snapshot.
+
+Delete is explicit and non-interactive:
+
+```bash
+aic oauth delete service_C1 --force
+```
+
+Delete removes the remote client and any local snapshot, but leaves the editable
+export file in place.
 
 ## Examples
 
@@ -136,6 +181,15 @@ $SCRIPTS/verify-endpoint.sh \
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-06-14
+- Calls: `PUT …/realm-config/agents/OAuth2Client/test_oauth_probe` with no
+  `If-Match` created the throwaway client (201), a second plain `PUT` updated
+  it (200), `DELETE` removed it (200), and a follow-up `GET` returned 404.
+  Sending server-managed top-level fields (`_id`, `_rev`, `_type`) in the PUT
+  body produced `400 {"message":"Invalid attribute specified."}`. The
+  throwaway `test_oauth_probe` client was cleaned up. A freshly-set
+  `userpassword` read back as `null` with no `userpassword-encrypted` sibling
+  on this tenant version.
 - Date: 2026-05-17
 - Calls: `GET …/realm-config/agents/OAuth2Client?_queryFilter=true&_pageSize=1`
   (200 OK, `_rev` present, multiple `-encrypted` fields observed),
@@ -149,10 +203,10 @@ $SCRIPTS/verify-endpoint.sh \
   `packages/fr-config-push/src/scripts/update-agents.js`.
 - Ping docs: <https://docs.pingidentity.com/pingoneaic/latest/am-oauth2/rest-api-oauth2-client-admin-endpoint.html>
 
-## Open questions
+## Open questions / out of scope
 
 - Does `?_action=create` on the provider service work, or is it auto-provisioned?
-  In alpha it's already there.
-- For "create new OAuth2 client", does `PUT` with a non-existent `_id` create,
-  or do we need `POST ?_action=create`? Probably PUT-upsert; verify before
-  implementing the create-flow UI.
+  In alpha it's already there. This remains untested and out of scope for
+  OAuth2 client pull/push.
+- OAuth2 client create is resolved: `PUT` with a non-existent id creates the
+  client and returns 201.

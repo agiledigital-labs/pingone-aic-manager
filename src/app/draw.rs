@@ -53,7 +53,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         | InputMode::Esv(_)
         | InputMode::Secrets(_)
         | InputMode::Scripts(_)
-        | InputMode::Managed(_) => {}
+        | InputMode::Managed(_)
+        | InputMode::Oauth(_) => {}
     }
 
     let area = f.area();
@@ -184,6 +185,8 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         crate::scripts::view::draw_body(f, app, area);
     } else if app.current_tab == crate::app::Tab::Managed {
         crate::managed::view::draw_body(f, app, area);
+    } else if app.current_tab == crate::app::Tab::Oauth {
+        crate::oauth::view::draw_body(f, app, area);
     } else {
         crate::esv::view::draw(f, app, area);
     }

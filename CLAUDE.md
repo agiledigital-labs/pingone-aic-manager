@@ -83,9 +83,11 @@ Scripts have **no `_rev`** anyway (verified 2026-05-17 — see
 `docs/api/04-scripts.md`), so this is the only viable algorithm. The same rule
 applies to ESV variables (also no `_rev`).
 
-For resources that DO have `_rev` (OAuth2 clients, journeys, OIDC provider,
-SAML entities, CoT), use both: send `If-Match: <_rev>` AND keep a
-content-snapshot fallback for the same "revert detection" reason.
+For resources that DO have `_rev`, use content snapshots for the same "revert
+detection" reason. Only send `If-Match: <_rev>` for API families verified to
+support conditional writes. OAuth2 clients and journeys have `_rev` but were
+verified 2026-06-14 to use plain `PUT` without `If-Match`; strip `_rev` from
+their write bodies and ignore it in content comparisons.
 
 ## 6. Tokens
 
@@ -155,6 +157,7 @@ you need into context.
 | Script sync (pull/push/sync/watch/diff) | `src/scripts/` (one module per `Kind`: `am`, `idm`, `schedule`, `managed_hooks`) | `docs/api/04-scripts.md`, `11`, `12`, `13` |
 | Script workspace templates (lint/types) | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs` | `docs/api/12-script-bindings-matrix.md` |
 | Managed-object schema (inspect); hooks sync as `managed/<obj>.<hook>` via `aic script` | `src/managed/` (schema), `src/scripts/managed_hooks.rs` (hook sync) | `docs/api/10-managed-objects.md` |
+| OAuth2 clients | `src/oauth/` | `docs/api/05-oauth2-oidc.md` |
 | Tokens / HTTP transport / daemon | `src/aic/` (transport core), `src/agent/` | `docs/api/00-auth.md`, `01`, `02`; `src/agent/mod.rs` header |
 | Local credential vault / unlock | `src/vault/` + `src/config/{crypto,wraps}.rs` storage | — (local-only, no AIC docs) |
 | Onboarding (add tenant) | `src/onboard/` | `docs/api/00-auth.md`, `99-…` Q11/Q12 |

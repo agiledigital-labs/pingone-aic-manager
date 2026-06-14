@@ -85,6 +85,17 @@ new things are learned.
   optimistic-lock counter for journeys.
 - **Documented in:** `09-journeys.md`.
 
+### OAuth2 client write semantics (resolved 2026-06-14)
+- **Status:** Resolved.
+- **Answer:** OAuth2 clients accept plain `PUT` for create and update; no
+  `If-Match` header is required or available through the agent transport. A
+  `PUT` body containing server-managed top-level fields `_id`, `_rev`, `_type`,
+  or `_provider` is rejected with `400 "Invalid attribute specified."`.
+- **Implication:** Strip those fields before every PUT, strip `*-encrypted`
+  keys recursively, and use local content snapshots for conflict detection.
+  Treat `_rev` as opaque metadata and ignore it in content comparisons.
+- **Documented in:** `05-oauth2-oidc.md`.
+
 ---
 
 ## Open
@@ -135,6 +146,7 @@ new things are learned.
 | Secret version objects have `_id` | 03-esvs.md (transcribed) | False — versions are a bare array of `{version, createDate, loaded, status}`. |
 | `useInPlaceholders` defaults to true | 03-esvs.md (transcribed) | False — required on create, no default, and immutable afterwards. |
 | Journey `_rev` means use `If-Match` | 09-journeys.md (earlier note) | Superseded — `_rev` is content-derived, and plain `PUT` works for create/update. Use content snapshots, not `If-Match`. |
+| OAuth2 client `_rev` means use `If-Match` | 05-oauth2-oidc.md (earlier note) | False — plain `PUT` works for create/update, and `_rev` must be stripped from the body. Use content snapshots, not `If-Match`. |
 
 **Lesson:** Both libraries' research summaries had errors. Always verify
 endpoints + shapes against the live tenant before writing code.
