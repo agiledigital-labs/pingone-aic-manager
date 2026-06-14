@@ -16,6 +16,7 @@ use crate::app::{App, InputMode};
 use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::EditField;
 use crate::managed::screen::Mode as ManagedMode;
+use crate::oauth::screen::Mode as OauthMode;
 use crate::onboard::screen::Mode as OnboardMode;
 use crate::secrets::screen::Mode as SecretsMode;
 use crate::tui::modal_chrome::hint_line;
@@ -71,6 +72,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
         InputMode::Normal => normal_lines(app, &mut lines),
         InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) => esv_search_lines(&mut lines),
         InputMode::Managed(mode) => managed_lines(mode, &mut lines),
+        InputMode::Oauth(mode) => oauth_lines(mode, &mut lines),
         InputMode::Esv(EsvMode::Edit) => esv_edit_lines(app, &mut lines),
         InputMode::Esv(EsvMode::RestartConfirm) => confirm_lines(
             &mut lines,
@@ -142,6 +144,23 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
         ),
     }
     lines
+}
+
+fn oauth_lines(mode: OauthMode, lines: &mut Vec<Line<'static>>) {
+    match mode {
+        OauthMode::Search => esv_search_lines(lines),
+        OauthMode::Normal => text_modal_lines(
+            lines,
+            "OAuth client config",
+            &[
+                ("j/k or ↑/↓", "move selection"),
+                ("Enter", "load selected client"),
+                ("^U/^D", "scroll detail"),
+                ("R", "refresh"),
+                ("Esc", "back"),
+            ],
+        ),
+    }
 }
 
 fn normal_lines(app: &App, lines: &mut Vec<Line<'static>>) {

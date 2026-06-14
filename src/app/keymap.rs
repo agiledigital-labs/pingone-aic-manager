@@ -64,6 +64,8 @@ pub enum Act {
     UndoHistory,
     PrevField,
     NextField,
+    DetailScrollDown,
+    DetailScrollUp,
     RealmToggle,
     TenantPicker,
     Onboard,
@@ -131,6 +133,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     let scripts_tab = app.current_tab == Tab::Scripts;
     let esv_tab = app.current_tab == Tab::Esvs;
     let managed_tab = app.current_tab == Tab::Managed;
+    let oauth_tab = app.current_tab == Tab::Oauth;
     let secrets = esv_tab && app.esv.view == EsvView::Secrets;
     let n = row_count(app);
     let can_apply = esv_tab
@@ -358,8 +361,33 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             true,
             UndoHistory,
         ));
+    } else if oauth_tab && n > 0 {
+        out.push(b(
+            &[Trigger::Code(KeyCode::Enter)],
+            "Enter",
+            "inspect",
+            true,
+            true,
+            Primary,
+        ));
+        out.push(b(
+            &[Trigger::Ctrl('d')],
+            "^D",
+            "scroll detail down",
+            true,
+            true,
+            DetailScrollDown,
+        ));
+        out.push(b(
+            &[Trigger::Ctrl('u')],
+            "^U",
+            "scroll detail up",
+            true,
+            true,
+            DetailScrollUp,
+        ));
     }
-    if managed_tab {
+    if managed_tab || oauth_tab {
         out.push(b(
             &[Trigger::Char('R')],
             "R",
@@ -449,6 +477,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             vec![("Enter", "keep filter"), ("Esc", "clear + exit")]
         }
         InputMode::Managed(_) => crate::managed::screen::footer_hints(app),
+        InputMode::Oauth(_) => crate::oauth::screen::footer_hints(app),
         InputMode::Secrets(SecretsMode::Create) => {
             use crate::secrets::state::CreateField;
             let mut out = vec![("Tab", "next field")];
@@ -539,6 +568,7 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::Secrets(mode) => crate::secrets::screen::handle_key(app, key, mode)?,
         InputMode::Scripts(mode) => crate::scripts::screen::handle_key(app, key, mode),
         InputMode::Managed(mode) => crate::managed::screen::handle_key(app, key, mode),
+        InputMode::Oauth(mode) => crate::oauth::screen::handle_key(app, key, mode),
     }
     Ok(())
 }
@@ -567,6 +597,7 @@ async fn run_normal(app: &mut App, act: Act) {
             app.input_mode = match app.current_tab {
                 Tab::Scripts => InputMode::Scripts(crate::scripts::screen::Mode::Search),
                 Tab::Managed => InputMode::Managed(crate::managed::screen::Mode::Search),
+                Tab::Oauth => InputMode::Oauth(crate::oauth::screen::Mode::Search),
                 Tab::Esvs => InputMode::Esv(EsvMode::Search),
             }
         }
@@ -589,6 +620,8 @@ async fn run_normal(app: &mut App, act: Act) {
         Refresh => {
             if app.current_tab == Tab::Managed {
                 crate::managed::screen::refresh(app, true);
+            } else if app.current_tab == Tab::Oauth {
+                crate::oauth::screen::refresh(app, true);
             }
         }
         Undo => {
@@ -604,6 +637,8 @@ async fn run_normal(app: &mut App, act: Act) {
         }
         PrevField => crate::managed::screen::move_property(app, -1),
         NextField => crate::managed::screen::move_property(app, 1),
+        DetailScrollDown => crate::oauth::screen::scroll_detail(app, 10),
+        DetailScrollUp => crate::oauth::screen::scroll_detail(app, -10),
         RealmToggle => {
             app.current_realm = match app.current_realm {
                 Realm::Alpha => Realm::Bravo,
@@ -642,6 +677,8 @@ fn cycle_tab(app: &mut App, delta: isize) {
         crate::scripts::screen::refresh(app, false);
     } else if app.current_tab == Tab::Managed {
         crate::managed::screen::refresh(app, false);
+    } else if app.current_tab == Tab::Oauth {
+        crate::oauth::screen::refresh(app, false);
     }
 }
 
@@ -658,6 +695,9 @@ fn row_count(app: &App) -> usize {
             .matches(app.active_tenant().map(|t| t.name.as_str()))
             .len();
     }
+    if app.current_tab == Tab::Oauth {
+        return crate::oauth::screen::row_count(app);
+    }
     match app.esv.view {
         EsvView::Variables => app.esv_matches().len(),
         EsvView::Secrets => {
@@ -672,6 +712,9 @@ fn current_selection(app: &App) -> usize {
     }
     if app.current_tab == Tab::Managed {
         return app.managed.selected;
+    }
+    if app.current_tab == Tab::Oauth {
+        return crate::oauth::screen::current_selection(app);
     }
     match app.esv.view {
         EsvView::Variables => app.esv.list.selected,
@@ -688,6 +731,10 @@ fn set_selection(app: &mut App, idx: usize) {
     }
     if app.current_tab == Tab::Managed {
         app.managed.select_object(clamped);
+        return;
+    }
+    if app.current_tab == Tab::Oauth {
+        crate::oauth::screen::select(app, clamped);
         return;
     }
     match app.esv.view {
@@ -714,6 +761,9 @@ fn filter_active(app: &App) -> bool {
     if app.current_tab == Tab::Managed {
         return !app.managed.query.is_empty();
     }
+    if app.current_tab == Tab::Oauth {
+        return !app.oauth.query.is_empty();
+    }
     match app.esv.view {
         EsvView::Variables => !app.esv.list.query.is_empty(),
         EsvView::Secrets => !app.secret.list.query.is_empty(),
@@ -729,6 +779,10 @@ fn clear_filter(app: &mut App) {
         app.managed.reset_view();
         return;
     }
+    if app.current_tab == Tab::Oauth {
+        crate::oauth::screen::clear_filter(app);
+        return;
+    }
     match app.esv.view {
         EsvView::Variables => app.esv.reset_view(),
         EsvView::Secrets => {
@@ -742,6 +796,10 @@ fn clear_filter(app: &mut App) {
 fn primary(app: &mut App) {
     if app.current_tab == Tab::Managed {
         crate::managed::screen::start_edit_field(app);
+        return;
+    }
+    if app.current_tab == Tab::Oauth {
+        crate::oauth::screen::load_selected(app);
         return;
     }
     match app.esv.view {

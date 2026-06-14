@@ -8,6 +8,7 @@ pub mod esv;
 pub mod journey;
 pub mod logging;
 pub mod managed;
+pub mod oauth;
 pub mod onboard;
 pub mod scripts;
 pub mod secrets;

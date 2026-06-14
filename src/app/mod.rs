@@ -30,6 +30,7 @@ pub enum InputMode {
     Secrets(crate::secrets::screen::Mode),
     Scripts(crate::scripts::screen::Mode),
     Managed(crate::managed::screen::Mode),
+    Oauth(crate::oauth::screen::Mode),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -43,11 +44,12 @@ pub enum Tab {
     Esvs,
     Scripts,
     Managed,
+    Oauth,
 }
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Esvs, Tab::Scripts, Tab::Managed]
+        &[Tab::Esvs, Tab::Scripts, Tab::Managed, Tab::Oauth]
     }
 
     pub fn label(self) -> &'static str {
@@ -55,6 +57,7 @@ impl Tab {
             Tab::Esvs => "ESVs",
             Tab::Scripts => "Scripts",
             Tab::Managed => "Managed",
+            Tab::Oauth => "OAuth",
         }
     }
 }
@@ -133,6 +136,10 @@ pub struct App {
     /// Managed tab state — per-tenant schema cache, search + selection.
     /// See `crate::managed::screen`.
     pub managed: crate::managed::state::State,
+
+    /// OAuth tab state — per-tenant alpha client list + lazy detail cache.
+    /// See `crate::oauth::screen`.
+    pub oauth: crate::oauth::state::State,
 }
 
 impl App {
@@ -194,6 +201,7 @@ impl App {
             secret: crate::secrets::state::State::new(),
             scripts: crate::scripts::screen::State::new(),
             managed: crate::managed::state::State::new(),
+            oauth: crate::oauth::state::State::new(),
         })
     }
 
@@ -292,6 +300,7 @@ impl App {
         self.secret.reset_view();
         self.scripts.reset_view();
         self.managed.reset_view();
+        self.oauth.reset_view();
         if let Some(t) = self.tenants.get(idx) {
             if let Err(e) = config::write_current_context(&t.name) {
                 tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
@@ -299,6 +308,9 @@ impl App {
         }
         if self.current_tab == Tab::Managed {
             crate::managed::screen::refresh(self, false);
+        }
+        if self.current_tab == Tab::Oauth {
+            crate::oauth::screen::refresh(self, false);
         }
     }
 
@@ -425,6 +437,7 @@ impl App {
             AppEvent::Secrets(event) => crate::secrets::screen::apply_event(self, event),
             AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
             AppEvent::Managed(event) => crate::managed::screen::apply_event(self, event),
+            AppEvent::Oauth(event) => crate::oauth::screen::apply_event(self, event),
         }
         Ok(())
     }

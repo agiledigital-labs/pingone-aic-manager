@@ -87,6 +87,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::journey::cli::JourneyCommand,
     },
+    /// OAuth2 client inspection and export.
+    Oauth {
+        #[command(subcommand)]
+        command: crate::oauth::cli::OauthCommand,
+    },
     /// Script workspace sync (AM scripts + IDM endpoints).
     Script {
         #[command(subcommand)]
@@ -119,6 +124,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
+        Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
         Some(Command::Script { command }) => crate::scripts::cli::run(command).await,
         None => unreachable!("dispatch handled at top level"),
     }
