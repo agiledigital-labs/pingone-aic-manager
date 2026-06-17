@@ -15,7 +15,7 @@ hits a tenant.** Don't guess paths or headers.
 | [04-scripts.md](04-scripts.md) | All script contexts, base64 body, no `_rev` |
 | [05-oauth2-oidc.md](05-oauth2-oidc.md) | OAuth2 clients (agents), OIDC provider service |
 | [06-saml.md](06-saml.md) | Hosted/remote entities, CoT, metadata XML |
-| [07-secret-stores.md](07-secret-stores.md) | **Not available in AIC** — use ESVs |
+| [07-secret-stores.md](07-secret-stores.md) | Store *collection* API not available — but per-type subpaths (mappings) are; see 15 |
 | [08-logs.md](08-logs.md) | `/monitoring/logs`, separate API-key auth |
 | [09-journeys.md](09-journeys.md) | Auth trees, nodes, custom nodes |
 | [10-managed-objects.md](10-managed-objects.md) | IDM managed config, hooks |
@@ -23,6 +23,7 @@ hits a tenant.** Don't guess paths or headers.
 | [12-script-bindings-matrix.md](12-script-bindings-matrix.md) | Runtime-verified Rhino 1.7.14 syntax matrix + per-context binding tables (drives the workspace lint/type templates) |
 | [13-script-contexts.md](13-script-contexts.md) | AM `contexts/{id}` endpoint — authoritative per-context binding metadata (drives the `.d.ts` types) |
 | [14-am-identity-attributes.md](14-am-identity-attributes.md) | IDM-property → AM-attribute-name mapping for the `identity`/`idRepository` binding (drives typed `identity`); `getIdentity` resolves by uuid |
+| [15-secret-mappings.md](15-secret-mappings.md) | ESV secret → AM secret-label (purpose) mappings; per-type secret-store subpath; curated helper text per label |
 | [bindings/](bindings/) | Raw per-context binding probe results (JSON) backing files 10, 12–13 |
 | [99-quirks-and-open-questions.md](99-quirks-and-open-questions.md) | Cross-cutting weirdness + TODOs |
 

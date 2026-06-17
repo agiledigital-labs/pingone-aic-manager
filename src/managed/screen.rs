@@ -147,12 +147,12 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         Mode::PickRelationshipTarget => vec![
             ("Enter", "choose target"),
-            ("j/k", "navigate"),
+            ("↑/↓", "navigate"),
             ("Esc", "back"),
         ],
         Mode::AddHook => vec![
             ("Enter", "register hook"),
-            ("j/k", "navigate"),
+            ("↑/↓", "navigate"),
             ("Esc", "cancel"),
         ],
         Mode::DeleteFieldConfirm => vec![("y", "delete"), ("n/Esc", "cancel")],
@@ -688,11 +688,11 @@ fn handle_relationship_target_key(app: &mut App, key: KeyEvent) {
             }
             return;
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        KeyCode::Up => {
             move_relationship_target(app, -1);
             return;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyCode::Down => {
             move_relationship_target(app, 1);
             return;
         }

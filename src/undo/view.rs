@@ -14,7 +14,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let body = Modal {
         title: "Undo History",
         status: app.active_tenant().map(|tenant| tenant.name.as_str()),
-        hints: &[("j/k", "navigate"), ("Enter", "undo"), ("Esc", "close")],
+        hints: &[("↑/↓", "navigate"), ("Enter", "undo"), ("Esc", "close")],
         body_height: summaries.len().max(1) as u16,
     }
     .draw(f, f.area());

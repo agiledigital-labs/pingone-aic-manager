@@ -26,9 +26,19 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     draw_view_toggle(f, app, rows[0]);
     let area = rows[1];
 
-    if app.esv.view == crate::esv::state::EsvView::Secrets {
-        crate::secrets::view::draw_body(f, app, area);
-        return;
+    let mappings_allowed = app
+        .active_tenant()
+        .is_some_and(|tenant| tenant.allows_secret_mappings());
+    match app.esv.view.clamp(mappings_allowed) {
+        crate::esv::state::EsvView::Secrets => {
+            crate::secrets::view::draw_body(f, app, area);
+            return;
+        }
+        crate::esv::state::EsvView::Mappings => {
+            crate::secretmap::view::draw(f, app, area);
+            return;
+        }
+        crate::esv::state::EsvView::Variables => {}
     }
 
     // Loading / failed / empty: full-width status; no split, no preview pane.
@@ -73,11 +83,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     draw_esv_preview(f, app, &matches, columns[1]);
 }
 
-/// One-line `Variables | Secrets` toggle header. Tab switches; the active
-/// half is bold-white, the other dim.
+/// One-line sub-view toggle header. The active view is bold-white, inactive
+/// views are dim; Mappings only appears for lower-environment tenants.
 fn draw_view_toggle(f: &mut Frame, app: &App, area: Rect) {
     use crate::esv::state::EsvView;
-    let active = app.esv.view;
+    let mappings_allowed = app
+        .active_tenant()
+        .is_some_and(|tenant| tenant.allows_secret_mappings());
+    let active = app.esv.view.clamp(mappings_allowed);
     let tab = |label: &'static str, is_active: bool| {
         let style = if is_active {
             Style::default()
@@ -88,13 +101,21 @@ fn draw_view_toggle(f: &mut Frame, app: &App, area: Rect) {
         };
         Span::styled(label, style)
     };
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::raw(" "),
         tab("Variables", active == EsvView::Variables),
         Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
         tab("Secrets", active == EsvView::Secrets),
-        Span::styled("   ([ ] to switch)", Style::default().fg(Color::DarkGray)),
-    ]);
+    ];
+    if mappings_allowed {
+        spans.push(Span::styled("  |  ", Style::default().fg(Color::DarkGray)));
+        spans.push(tab("Mappings", active == EsvView::Mappings));
+    }
+    spans.push(Span::styled(
+        "   ([ ] to switch)",
+        Style::default().fg(Color::DarkGray),
+    ));
+    let line = Line::from(spans);
     f.render_widget(Paragraph::new(line), area);
 }
 

@@ -41,7 +41,8 @@ pub enum Act {
     Quit,
     NextTab,
     PrevTab,
-    ToggleView,
+    NextView,
+    PrevView,
     Search,
     ClearFilter,
     MoveDown,
@@ -134,7 +135,10 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     let esv_tab = app.current_tab == Tab::Esvs;
     let managed_tab = app.current_tab == Tab::Managed;
     let oauth_tab = app.current_tab == Tab::Oauth;
-    let secrets = esv_tab && app.esv.view == EsvView::Secrets;
+    let mappings_allowed = mappings_allowed(app);
+    let esv_view = app.esv.view.clamp(mappings_allowed);
+    let secrets = esv_tab && esv_view == EsvView::Secrets;
+    let mappings = esv_tab && esv_view == EsvView::Mappings;
     let n = row_count(app);
     let can_apply = esv_tab
         && app
@@ -171,18 +175,36 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         true,
         PrevTab,
     ));
-    // `[` / `]` switch sub-tabs within a tab (here: Variables ⇄ Secrets) — the
-    // lazygit/k9s convention for inner tabs.
-    // `[` / `]` switch the ESV tab's inner sub-tabs (Variables ⇄ Secrets);
-    // the Scripts and Managed tabs have no sub-views.
+    // `[` / `]` switch the ESV tab's inner sub-tabs; mappings are only present
+    // on lower-environment tenants.
     if esv_tab {
+        let next_label = match (esv_view, mappings_allowed) {
+            (EsvView::Variables, _) => "secrets",
+            (EsvView::Secrets, true) => "mappings",
+            (EsvView::Secrets, false) => "variables",
+            (EsvView::Mappings, _) => "variables",
+        };
+        let prev_label = match (esv_view, mappings_allowed) {
+            (EsvView::Variables, true) => "mappings",
+            (EsvView::Variables, false) => "secrets",
+            (EsvView::Secrets, _) => "variables",
+            (EsvView::Mappings, _) => "secrets",
+        };
         out.push(b(
-            &[Trigger::Char('['), Trigger::Char(']')],
-            "[ ]",
-            if secrets { "variables" } else { "secrets" },
+            &[Trigger::Char('[')],
+            "[",
+            prev_label,
             true,
             true,
-            ToggleView,
+            PrevView,
+        ));
+        out.push(b(
+            &[Trigger::Char(']')],
+            "]",
+            next_label,
+            true,
+            true,
+            NextView,
         ));
     }
     out.push(b(&[Trigger::Char('/')], "/", "search", true, true, Search));
@@ -190,7 +212,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     // Movement (help-only; the footer stays uncluttered).
     out.push(b(
         &[Trigger::Char('j'), Trigger::Code(KeyCode::Down)],
-        "j/↓",
+        "↓",
         "move down",
         false,
         true,
@@ -198,7 +220,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     ));
     out.push(b(
         &[Trigger::Char('k'), Trigger::Code(KeyCode::Up)],
-        "k/↑",
+        "↑",
         "move up",
         false,
         true,
@@ -254,6 +276,23 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
                     true,
                     Primary,
                 ));
+            } else if mappings {
+                out.push(b(
+                    &[Trigger::Char('e')],
+                    "e",
+                    "edit alias",
+                    true,
+                    true,
+                    Primary,
+                ));
+                out.push(b(
+                    &[Trigger::Char('d'), Trigger::Char('D')],
+                    "d",
+                    "remove",
+                    true,
+                    true,
+                    Delete,
+                ));
             } else {
                 out.push(b(
                     &[Trigger::Code(KeyCode::Enter)],
@@ -264,28 +303,34 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
                     Primary,
                 ));
             }
-            out.push(b(
-                &[Trigger::Char('d'), Trigger::Char('D')],
-                "d",
-                "delete",
-                true,
-                true,
-                Delete,
-            ));
+            if !mappings {
+                out.push(b(
+                    &[Trigger::Char('d'), Trigger::Char('D')],
+                    "d",
+                    "delete",
+                    true,
+                    true,
+                    Delete,
+                ));
+            }
         }
 
-        out.push(b(
-            &[Trigger::Ctrl('n')],
-            "^N",
-            if secrets {
-                "new secret"
-            } else {
-                "new variable"
-            },
-            true,
-            true,
-            NewItem,
-        ));
+        if !mappings {
+            out.push(b(
+                &[Trigger::Ctrl('n')],
+                "^N",
+                if secrets {
+                    "new secret"
+                } else {
+                    "new variable"
+                },
+                true,
+                true,
+                NewItem,
+            ));
+        } else {
+            out.push(b(&[Trigger::Char('a')], "a", "add", true, true, NewItem));
+        }
         out.push(b(&[Trigger::Ctrl('z')], "^Z", "undo", true, true, Undo));
         out.push(b(
             &[Trigger::Ctrl('y')],
@@ -387,7 +432,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             DetailScrollUp,
         ));
     }
-    if managed_tab || oauth_tab {
+    if managed_tab || oauth_tab || mappings {
         out.push(b(
             &[Trigger::Char('R')],
             "R",
@@ -413,9 +458,14 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     // Global commands available on every populated screen. Realm toggle only
     // applies to the ESV tab — scripts are addressed by namespace, not realm.
     if esv_tab {
+        let realm_triggers: &'static [Trigger] = if mappings {
+            &[Trigger::Char('r')]
+        } else {
+            &[Trigger::Char('r'), Trigger::Char('R')]
+        };
         out.push(b(
-            &[Trigger::Char('r'), Trigger::Char('R')],
-            "r",
+            realm_triggers,
+            if mappings { "r" } else { "r/R" },
             "switch realm",
             false,
             true,
@@ -478,6 +528,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         InputMode::Managed(_) => crate::managed::screen::footer_hints(app),
         InputMode::Oauth(_) => crate::oauth::screen::footer_hints(app),
+        InputMode::Secretmap(_) => crate::secretmap::screen::footer_hints(app),
         InputMode::Secrets(SecretsMode::Create) => {
             use crate::secrets::state::CreateField;
             let mut out = vec![("Tab", "next field")];
@@ -503,7 +554,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 ],
                 DetailFocus::Versions => vec![
                     ("Tab", "edit description"),
-                    ("j/k", "navigate"),
+                    ("↑/↓", "navigate"),
                     ("e/d", "enable/disable"),
                     ("x", "destroy"),
                     ("^N", "add version"),
@@ -569,6 +620,7 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::Scripts(mode) => crate::scripts::screen::handle_key(app, key, mode),
         InputMode::Managed(mode) => crate::managed::screen::handle_key(app, key, mode),
         InputMode::Oauth(mode) => crate::oauth::screen::handle_key(app, key, mode),
+        InputMode::Secretmap(mode) => crate::secretmap::screen::handle_key(app, key, mode),
     }
     Ok(())
 }
@@ -592,13 +644,20 @@ async fn run_normal(app: &mut App, act: Act) {
         Quit => app.should_quit = true,
         NextTab => cycle_tab(app, 1),
         PrevTab => cycle_tab(app, -1),
-        ToggleView => app.esv.view = app.esv.view.toggled(),
+        NextView => switch_esv_view(app, 1),
+        PrevView => switch_esv_view(app, -1),
         Search => {
-            app.input_mode = match app.current_tab {
-                Tab::Scripts => InputMode::Scripts(crate::scripts::screen::Mode::Search),
-                Tab::Managed => InputMode::Managed(crate::managed::screen::Mode::Search),
-                Tab::Oauth => InputMode::Oauth(crate::oauth::screen::Mode::Search),
-                Tab::Esvs => InputMode::Esv(EsvMode::Search),
+            if app.current_tab == Tab::Esvs
+                && app.esv.view.clamp(mappings_allowed(app)) == EsvView::Mappings
+            {
+                crate::secretmap::screen::start_search(app);
+            } else {
+                app.input_mode = match app.current_tab {
+                    Tab::Scripts => InputMode::Scripts(crate::scripts::screen::Mode::Search),
+                    Tab::Managed => InputMode::Managed(crate::managed::screen::Mode::Search),
+                    Tab::Oauth => InputMode::Oauth(crate::oauth::screen::Mode::Search),
+                    Tab::Esvs => InputMode::Esv(EsvMode::Search),
+                };
             }
         }
         ClearFilter => clear_filter(app),
@@ -622,11 +681,19 @@ async fn run_normal(app: &mut App, act: Act) {
                 crate::managed::screen::refresh(app, true);
             } else if app.current_tab == Tab::Oauth {
                 crate::oauth::screen::refresh(app, true);
+            } else if app.current_tab == Tab::Esvs
+                && app.esv.view.clamp(mappings_allowed(app)) == EsvView::Mappings
+            {
+                crate::secretmap::screen::refresh(app, true);
             }
         }
         Undo => {
             if app.current_tab == Tab::Managed {
                 crate::managed::ops::request_latest_undo(app);
+            } else if app.current_tab == Tab::Esvs
+                && app.esv.view.clamp(mappings_allowed(app)) == EsvView::Mappings
+            {
+                crate::secretmap::ops::request_latest_undo(app);
             } else {
                 crate::esv::ops::request_latest_undo(app);
             }
@@ -682,6 +749,27 @@ fn cycle_tab(app: &mut App, delta: isize) {
     }
 }
 
+fn mappings_allowed(app: &App) -> bool {
+    app.active_tenant()
+        .is_some_and(|tenant| tenant.allows_secret_mappings())
+}
+
+fn switch_esv_view(app: &mut App, delta: isize) {
+    if app.current_tab != Tab::Esvs {
+        return;
+    }
+    let allowed = mappings_allowed(app);
+    let next = if delta < 0 {
+        app.esv.view.prev(allowed)
+    } else {
+        app.esv.view.next(allowed)
+    };
+    app.esv.view = next;
+    if next == EsvView::Mappings && allowed {
+        crate::secretmap::screen::refresh(app, false);
+    }
+}
+
 fn row_count(app: &App) -> usize {
     if app.current_tab == Tab::Scripts {
         return app
@@ -698,11 +786,12 @@ fn row_count(app: &App) -> usize {
     if app.current_tab == Tab::Oauth {
         return crate::oauth::screen::row_count(app);
     }
-    match app.esv.view {
+    match app.esv.view.clamp(mappings_allowed(app)) {
         EsvView::Variables => app.esv_matches().len(),
         EsvView::Secrets => {
             crate::secrets::state::rows(app, app.active_tenant().map(|t| t.name.as_str())).len()
         }
+        EsvView::Mappings => crate::secretmap::screen::row_count(app),
     }
 }
 
@@ -716,9 +805,10 @@ fn current_selection(app: &App) -> usize {
     if app.current_tab == Tab::Oauth {
         return crate::oauth::screen::current_selection(app);
     }
-    match app.esv.view {
+    match app.esv.view.clamp(mappings_allowed(app)) {
         EsvView::Variables => app.esv.list.selected,
         EsvView::Secrets => app.secret.list.selected,
+        EsvView::Mappings => crate::secretmap::screen::current_selection(app),
     }
 }
 
@@ -737,9 +827,10 @@ fn set_selection(app: &mut App, idx: usize) {
         crate::oauth::screen::select(app, clamped);
         return;
     }
-    match app.esv.view {
+    match app.esv.view.clamp(mappings_allowed(app)) {
         EsvView::Variables => app.esv.list.selected = clamped,
         EsvView::Secrets => app.secret.list.selected = clamped,
+        EsvView::Mappings => crate::secretmap::screen::select(app, clamped),
     }
 }
 
@@ -764,9 +855,10 @@ fn filter_active(app: &App) -> bool {
     if app.current_tab == Tab::Oauth {
         return !app.oauth.query.is_empty();
     }
-    match app.esv.view {
+    match app.esv.view.clamp(mappings_allowed(app)) {
         EsvView::Variables => !app.esv.list.query.is_empty(),
         EsvView::Secrets => !app.secret.list.query.is_empty(),
+        EsvView::Mappings => !app.secretmap.query.is_empty(),
     }
 }
 
@@ -783,13 +875,14 @@ fn clear_filter(app: &mut App) {
         crate::oauth::screen::clear_filter(app);
         return;
     }
-    match app.esv.view {
+    match app.esv.view.clamp(mappings_allowed(app)) {
         EsvView::Variables => app.esv.reset_view(),
         EsvView::Secrets => {
             app.secret.list.query.clear();
             app.secret.list.selected = 0;
             app.secret.list.scroll = 0;
         }
+        EsvView::Mappings => crate::secretmap::screen::clear_filter(app),
     }
 }
 
@@ -802,9 +895,10 @@ fn primary(app: &mut App) {
         crate::oauth::screen::load_selected(app);
         return;
     }
-    match app.esv.view {
+    match app.esv.view.clamp(mappings_allowed(app)) {
         EsvView::Variables => crate::esv::screen::start_edit(app),
         EsvView::Secrets => crate::secrets::screen::open_versions(app),
+        EsvView::Mappings => crate::secretmap::screen::start_alias_picker(app),
     }
 }
 
@@ -813,9 +907,10 @@ fn delete(app: &mut App) {
         crate::managed::screen::request_delete_field(app);
         return;
     }
-    match app.esv.view {
+    match app.esv.view.clamp(mappings_allowed(app)) {
         EsvView::Variables => crate::esv::ops::request_delete(app),
         EsvView::Secrets => crate::secrets::screen::request_delete(app),
+        EsvView::Mappings => crate::secretmap::screen::start_remove(app),
     }
 }
 
@@ -824,8 +919,9 @@ fn new_item(app: &mut App) {
         crate::managed::screen::start_add_field(app);
         return;
     }
-    match app.esv.view {
+    match app.esv.view.clamp(mappings_allowed(app)) {
         EsvView::Variables => crate::esv::screen::start_create(app),
         EsvView::Secrets => crate::secrets::screen::start_create(app),
+        EsvView::Mappings => crate::secretmap::screen::start_add(app),
     }
 }

@@ -130,6 +130,10 @@ pub fn handle_restart_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result
 /// the filter; Enter commits and returns to Normal mode.
 pub fn handle_search_key(app: &mut App, key: KeyEvent) {
     // The search box edits whichever half's query is showing.
+    if app.esv.view == EsvView::Mappings {
+        crate::secretmap::screen::handle_key(app, key, crate::secretmap::screen::Mode::Search);
+        return;
+    }
     if app.esv.view == EsvView::Secrets {
         match key.code {
             KeyCode::Esc => {

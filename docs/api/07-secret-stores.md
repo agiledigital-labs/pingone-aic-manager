@@ -1,10 +1,18 @@
-# 07 — Secret stores (NOT AVAILABLE IN AIC)
+# 07 — Secret stores (collection API NOT AVAILABLE; per-type subpaths ARE)
 
-## Status
+> **Correction (2026-06-17):** the original blanket "secret stores are entirely
+> disabled" claim was over-broad — it was tested only against the *collection*
+> calls below. The **per-store-type subpaths are open** and that is where ESV
+> **secret mappings** live (ESV secret → AM secret label). See
+> [15-secret-mappings.md](15-secret-mappings.md). What remains blocked is the
+> store-collection enumeration (`?_action=nextdescendents`, bare listing,
+> `secrets/types`, and the whole `global-config/secrets/**` tree).
 
-**The AM secret-stores API (KeyStore / HSM / FileSystem / GCP-KMS / etc.) is
-disabled in PingOne Advanced Identity Cloud.** Both realm and global variants
-return:
+## Status (collection API)
+
+**The AM secret-stores *collection* API (enumerate/create stores via
+`nextdescendents`, `secrets/types`, the global-config variants) is disabled in
+PingOne Advanced Identity Cloud.** These return:
 
 ```
 HTTP 403
@@ -42,7 +50,11 @@ isn't exposed in AIC, the implementation should be:
 
 - **Document this clearly in the UI** with a one-line note pointing users to
   the ESV management screen.
-- **Do not** expose a "Secret Stores" tab. It would 403 every call.
+- **Do not** expose a generic "Secret Stores" management tab (enumerate/create
+  stores) — those collection calls 403.
+- **A secret-*mappings* surface IS viable**, though: listing/editing the ESV
+  store's secret-label → ESV-alias mappings works fine. See
+  [15-secret-mappings.md](15-secret-mappings.md).
 
 If at some point the AIC team enables read access to a subset (e.g.
 hsm-backed default-keystore for inspection), revisit this file and add it.

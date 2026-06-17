@@ -132,6 +132,15 @@ pub enum UndoOp {
         object_name: String,
         body: serde_json::Value,
     },
+    /// Undo of an AM secret-label mapping edit. The executor lives in
+    /// `secretmap::ops` because restoring a prior alias needs the same
+    /// mapping-family conflict check as the write path.
+    SecretMappingReplace {
+        tenant: String,
+        realm: String,
+        secret_id: String,
+        prior_alias: Option<String>,
+    },
 }
 
 impl UndoOp {
@@ -142,7 +151,8 @@ impl UndoOp {
             | UndoOp::EsvVariableUpdateTo { tenant, .. }
             | UndoOp::SecretDelete { tenant, .. }
             | UndoOp::SecretSetDescription { tenant, .. }
-            | UndoOp::ManagedObjectReplace { tenant, .. } => tenant,
+            | UndoOp::ManagedObjectReplace { tenant, .. }
+            | UndoOp::SecretMappingReplace { tenant, .. } => tenant,
         }
     }
 
@@ -154,6 +164,7 @@ impl UndoOp {
             | UndoOp::SecretDelete { id, .. }
             | UndoOp::SecretSetDescription { id, .. } => Some(id),
             UndoOp::ManagedObjectReplace { object_name, .. } => Some(object_name),
+            UndoOp::SecretMappingReplace { secret_id, .. } => Some(secret_id),
         }
     }
 }

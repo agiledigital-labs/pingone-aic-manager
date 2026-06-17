@@ -19,6 +19,7 @@ pub enum AppEvent {
     Scripts(crate::scripts::screen::Event),
     Managed(crate::managed::screen::Event),
     Oauth(crate::oauth::screen::Event),
+    Secretmap(crate::secretmap::screen::Event),
     Toast(ToastKind, String),
 }
 

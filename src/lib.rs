@@ -11,6 +11,7 @@ pub mod managed;
 pub mod oauth;
 pub mod onboard;
 pub mod scripts;
+pub mod secretmap;
 pub mod secrets;
 pub mod tui;
 pub mod undo;

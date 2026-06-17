@@ -14,7 +14,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         title: "Switch Tenant",
         status: None,
         hints: &[
-            ("j/k", "navigate"),
+            ("↑/↓", "navigate"),
             ("Enter", "confirm"),
             ("1-9", "switch"),
             ("Esc", "cancel"),

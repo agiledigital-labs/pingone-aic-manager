@@ -15,6 +15,7 @@ use ratatui::{
 use crate::app::{App, InputMode};
 use crate::esv::screen::Mode as EsvMode;
 use crate::managed::screen::Mode as ManagedMode;
+use crate::secretmap::screen::Mode as SecretmapMode;
 use crate::secrets::{screen::Mode as SecretsMode, view as secret};
 
 pub fn draw(f: &mut Frame, app: &App) {
@@ -54,7 +55,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         | InputMode::Secrets(_)
         | InputMode::Scripts(_)
         | InputMode::Managed(_)
-        | InputMode::Oauth(_) => {}
+        | InputMode::Oauth(_)
+        | InputMode::Secretmap(_) => {}
     }
 
     let area = f.area();
@@ -63,6 +65,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             app.input_mode,
             InputMode::Esv(EsvMode::RestartConfirm | EsvMode::DeleteConfirm)
                 | InputMode::Managed(ManagedMode::DeleteFieldConfirm)
+                | InputMode::Secretmap(SecretmapMode::DeleteConfirm)
                 | InputMode::Secrets(
                     SecretsMode::AddVersion
                         | SecretsMode::DeleteConfirm
@@ -137,6 +140,18 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Delete secret {id} and ALL its versions?\n\nThis is irreversible — secret values cannot be recovered."
             );
             popup_confirm::draw(f, "Delete secret?", &message);
+        }
+        InputMode::Secretmap(SecretmapMode::DeleteConfirm) => {
+            let (id, alias) = app
+                .secretmap
+                .pending_delete
+                .as_ref()
+                .map(|pending| (pending.secret_id.clone(), pending.prior_alias.clone()))
+                .unwrap_or_else(|| ("selected mapping".to_string(), "unknown".to_string()));
+            let message = format!(
+                "Remove mapping {id}?\n\nCurrent alias: {alias}\nThis can be undone from the undo log."
+            );
+            popup_confirm::draw(f, "Remove secret mapping?", &message);
         }
         _ => {}
     }

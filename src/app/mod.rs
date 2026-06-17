@@ -31,6 +31,7 @@ pub enum InputMode {
     Scripts(crate::scripts::screen::Mode),
     Managed(crate::managed::screen::Mode),
     Oauth(crate::oauth::screen::Mode),
+    Secretmap(crate::secretmap::screen::Mode),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -140,6 +141,10 @@ pub struct App {
     /// OAuth tab state — per-tenant alpha client list + lazy detail cache.
     /// See `crate::oauth::screen`.
     pub oauth: crate::oauth::state::State,
+
+    /// Secret-mapping sub-view state — per-tenant alpha mapping list + alias picker.
+    /// See `crate::secretmap::screen`.
+    pub secretmap: crate::secretmap::state::State,
 }
 
 impl App {
@@ -202,6 +207,7 @@ impl App {
             scripts: crate::scripts::screen::State::new(),
             managed: crate::managed::state::State::new(),
             oauth: crate::oauth::state::State::new(),
+            secretmap: crate::secretmap::state::State::new(),
         })
     }
 
@@ -301,6 +307,12 @@ impl App {
         self.scripts.reset_view();
         self.managed.reset_view();
         self.oauth.reset_view();
+        self.secretmap.reset_view();
+        let mappings_allowed = self
+            .tenants
+            .get(idx)
+            .is_some_and(|tenant| tenant.allows_secret_mappings());
+        self.esv.view = self.esv.view.clamp(mappings_allowed);
         if let Some(t) = self.tenants.get(idx) {
             if let Err(e) = config::write_current_context(&t.name) {
                 tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
@@ -311,6 +323,12 @@ impl App {
         }
         if self.current_tab == Tab::Oauth {
             crate::oauth::screen::refresh(self, false);
+        }
+        if self.current_tab == Tab::Esvs
+            && self.esv.view == crate::esv::state::EsvView::Mappings
+            && mappings_allowed
+        {
+            crate::secretmap::screen::refresh(self, true);
         }
     }
 
@@ -438,6 +456,7 @@ impl App {
             AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
             AppEvent::Managed(event) => crate::managed::screen::apply_event(self, event),
             AppEvent::Oauth(event) => crate::oauth::screen::apply_event(self, event),
+            AppEvent::Secretmap(event) => crate::secretmap::screen::apply_event(self, event),
         }
         Ok(())
     }

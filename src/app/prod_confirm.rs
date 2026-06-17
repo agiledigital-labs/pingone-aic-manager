@@ -38,6 +38,8 @@ pub enum PendingProdAction {
     },
     ManagedUpdate(crate::managed::ops::ObjectReplacePlan),
     ManagedUndo(crate::undo::UndoId),
+    SecretMappingReplace(crate::secretmap::ops::AliasReplacePlan),
+    SecretMappingDelete(crate::secretmap::ops::MappingDeletePlan),
     ScriptPush {
         tenant: String,
         kind: crate::scripts::Kind,
@@ -119,6 +121,12 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                     }
                     PendingProdAction::ManagedUndo(undo_id) => {
                         crate::managed::ops::execute_undo(app, undo_id, true);
+                    }
+                    PendingProdAction::SecretMappingReplace(plan) => {
+                        crate::secretmap::ops::execute_write_plan(app, plan, true);
+                    }
+                    PendingProdAction::SecretMappingDelete(plan) => {
+                        crate::secretmap::ops::execute_remove_plan(app, plan, true);
                     }
                     PendingProdAction::ScriptPush {
                         tenant,
