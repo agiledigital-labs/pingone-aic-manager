@@ -18,6 +18,7 @@ use crate::esv::state::EditField;
 use crate::managed::screen::Mode as ManagedMode;
 use crate::oauth::screen::Mode as OauthMode;
 use crate::onboard::screen::Mode as OnboardMode;
+use crate::secretmap::screen::Mode as SecretmapMode;
 use crate::secrets::screen::Mode as SecretsMode;
 use crate::tui::modal_chrome::hint_line;
 use crate::vault::screen::Mode as VaultMode;
@@ -73,6 +74,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
         InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) => esv_search_lines(&mut lines),
         InputMode::Managed(mode) => managed_lines(mode, &mut lines),
         InputMode::Oauth(mode) => oauth_lines(mode, &mut lines),
+        InputMode::Secretmap(mode) => secretmap_lines(mode, &mut lines),
         InputMode::Esv(EsvMode::Edit) => esv_edit_lines(app, &mut lines),
         InputMode::Esv(EsvMode::RestartConfirm) => confirm_lines(
             &mut lines,
@@ -120,7 +122,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
             "Secret versions",
             &[
                 ("Tab", "edit description / versions"),
-                ("j/k", "navigate"),
+                ("↑/↓", "navigate"),
                 ("e/d", "enable / disable"),
                 ("x/Del", "destroy (irreversible)"),
                 ("^N", "add version"),
@@ -153,12 +155,43 @@ fn oauth_lines(mode: OauthMode, lines: &mut Vec<Line<'static>>) {
             lines,
             "OAuth client config",
             &[
-                ("j/k or ↑/↓", "move selection"),
+                ("↑/↓", "move selection"),
                 ("Enter", "load selected client"),
                 ("^U/^D", "scroll detail"),
                 ("R", "refresh"),
                 ("Esc", "back"),
             ],
+        ),
+    }
+}
+
+fn secretmap_lines(mode: SecretmapMode, lines: &mut Vec<Line<'static>>) {
+    match mode {
+        SecretmapMode::Search => esv_search_lines(lines),
+        SecretmapMode::PickLabel => text_modal_lines(
+            lines,
+            "Pick secret label",
+            &[
+                ("Type", "filter unmapped labels"),
+                ("↑/↓", "move selection"),
+                ("Enter", "choose label"),
+                ("Esc", "cancel"),
+            ],
+        ),
+        SecretmapMode::PickAlias => text_modal_lines(
+            lines,
+            "Pick ESV alias",
+            &[
+                ("Type", "filter ESV secrets"),
+                ("↑/↓", "move selection"),
+                ("Enter", "choose alias"),
+                ("Esc", "cancel"),
+            ],
+        ),
+        SecretmapMode::DeleteConfirm => confirm_lines(
+            lines,
+            "Remove secret mapping",
+            &[("y", "remove mapping"), ("n/Esc", "cancel")],
         ),
     }
 }
@@ -170,6 +203,31 @@ fn normal_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     for binding in crate::app::keymap::normal_binds(app) {
         if binding.help {
             bind(lines, binding.label, binding.desc);
+        }
+    }
+    if app.current_tab == crate::app::Tab::Esvs {
+        group(lines, "ESV Views");
+        bind(lines, "Variables", "ESV variable values and descriptions");
+        bind(
+            lines,
+            "Secrets",
+            "ESV secret values, versions, and descriptions",
+        );
+        if app
+            .active_tenant()
+            .is_some_and(|tenant| tenant.allows_secret_mappings())
+        {
+            bind(
+                lines,
+                "Mappings",
+                "AM secret-label aliases; sandbox/development tenants only",
+            );
+        } else {
+            bind(
+                lines,
+                "Mappings",
+                "hidden on staging/production; promoted from lower environments",
+            );
         }
     }
     bind(lines, "q / ^C", "quit");
@@ -254,7 +312,7 @@ fn managed_lines(mode: ManagedMode, lines: &mut Vec<Line<'static>>) {
             "Pick target object",
             &[
                 ("Type", "filter targets"),
-                ("j/k or ↑/↓", "move selection"),
+                ("↑/↓", "move selection"),
                 ("Enter", "choose target"),
                 ("Esc", "back"),
             ],
@@ -263,7 +321,7 @@ fn managed_lines(mode: ManagedMode, lines: &mut Vec<Line<'static>>) {
             lines,
             "Register hook",
             &[
-                ("j/k or ↑/↓", "move selection"),
+                ("↑/↓", "move selection"),
                 ("Enter", "register selected hook"),
                 ("Esc", "cancel"),
             ],
@@ -286,7 +344,7 @@ fn auth_settings_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     }
     bind(lines, "Esc", "close");
     group(lines, "Movement");
-    bind(lines, "j/k or ↑/↓", "move selection");
+    bind(lines, "↑/↓", "move selection");
     if let Some(range) = number_range(app.wraps.wraps.len()) {
         bind(lines, range, "edit numbered factor");
     }
@@ -350,7 +408,7 @@ fn onboard_menu_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     bind(lines, "Enter", "choose selected method");
     bind(lines, "Esc", "cancel");
     group(lines, "Movement");
-    bind(lines, "j/k or ↑/↓", "move selection");
+    bind(lines, "↑/↓", "move selection");
     let count = if app.has_env_creds { 4 } else { 3 };
     if let Some(range) = number_range(count) {
         bind(lines, range, "choose numbered method");
@@ -410,7 +468,7 @@ fn env_picker_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     bind(lines, "Enter", "switch to selected tenant");
     bind(lines, "Esc", "cancel");
     group(lines, "Movement");
-    bind(lines, "j/k or ↑/↓", "move selection");
+    bind(lines, "↑/↓", "move selection");
     if let Some(range) = number_range(app.tenants.len()) {
         bind(lines, range, "switch to numbered tenant");
     }
@@ -422,7 +480,7 @@ fn undo_history_lines(lines: &mut Vec<Line<'static>>) {
     bind(lines, "Enter", "undo selected pending entry");
     bind(lines, "Esc", "close");
     group(lines, "Movement");
-    bind(lines, "j/k or ↑/↓", "move selection");
+    bind(lines, "↑/↓", "move selection");
     bind(lines, "F1", "show keybinds");
 }
 

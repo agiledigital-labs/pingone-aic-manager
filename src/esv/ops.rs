@@ -803,6 +803,11 @@ async fn apply_undo_entry(
             "managed-object undo must be applied from the Managed tab or undo history".into(),
         ));
     }
+    if matches!(op, UndoOp::SecretMappingReplace { .. }) {
+        return Err(UndoFailure::Failed(
+            "secret-mapping undo must be applied from the ESV Mappings view or undo history".into(),
+        ));
+    }
     check_undo_conflict(&op, &entry.conflict_check).await?;
 
     match op {
@@ -868,6 +873,7 @@ async fn apply_undo_entry(
             })
         }
         UndoOp::ManagedObjectReplace { .. } => unreachable!("handled before conflict check"),
+        UndoOp::SecretMappingReplace { .. } => unreachable!("handled before conflict check"),
     }
 }
 

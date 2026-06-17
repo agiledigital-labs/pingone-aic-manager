@@ -43,12 +43,24 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             let is_prod = app
                 .active_tenant()
                 .is_some_and(|tenant| tenant.theme == TenantTheme::Production);
-            let managed = app
-                .undo
-                .load(summary.id)
-                .ok()
-                .and_then(|entry| entry.op)
+            let op = app.undo.load(summary.id).ok().and_then(|entry| entry.op);
+            let managed = op
+                .as_ref()
                 .is_some_and(|op| matches!(op, UndoOp::ManagedObjectReplace { .. }));
+            let secretmap = op
+                .as_ref()
+                .is_some_and(|op| matches!(op, UndoOp::SecretMappingReplace { .. }));
+            if secretmap
+                && !app
+                    .active_tenant()
+                    .is_some_and(|tenant| tenant.allows_secret_mappings())
+            {
+                app.push_toast(
+                    ToastKind::Warning,
+                    "Secret-mapping undo is only available on sandbox/development tenants",
+                );
+                return;
+            }
             if is_prod {
                 app.prod_confirm.pending = Some(if managed {
                     PendingProdAction::ManagedUndo(summary.id)
@@ -58,6 +70,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 app.input_mode = InputMode::ProdConfirm;
             } else if managed {
                 crate::managed::ops::execute_undo(app, summary.id, false);
+            } else if secretmap {
+                crate::secretmap::ops::execute_undo(app, summary.id, false);
             } else {
                 crate::esv::ops::execute_undo(app, summary.id, false);
             }

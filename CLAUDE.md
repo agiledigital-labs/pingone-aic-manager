@@ -154,6 +154,7 @@ you need into context.
 |---|---|---|
 | ESV variables | `src/esv/` | `docs/api/03-esvs.md` |
 | ESV secrets | `src/secrets/` (HTTP wrappers stay in `esv/api.rs` — same API family) | `docs/api/03-esvs.md` |
+| Secret mappings (ESV secret → AM label) | `src/secretmap/` (surfaced as the ESVs tab's Mappings sub-view; sandbox/development only) | `docs/api/15-secret-mappings.md` |
 | Script sync (pull/push/sync/watch/diff) | `src/scripts/` (one module per `Kind`: `am`, `idm`, `schedule`, `managed_hooks`) | `docs/api/04-scripts.md`, `11`, `12`, `13` |
 | Script workspace templates (lint/types) | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs` | `docs/api/12-script-bindings-matrix.md` |
 | Managed-object schema (inspect); hooks sync as `managed/<obj>.<hook>` via `aic script` | `src/managed/` (schema), `src/scripts/managed_hooks.rs` (hook sync) | `docs/api/10-managed-objects.md` |

@@ -20,20 +20,43 @@ pub enum LoadState {
     Failed(String),
 }
 
-/// Which half of the ESVs tab is showing. Toggled with Tab/Shift-Tab in
-/// Normal mode. Secrets and variables share the tab's apply/restart banner
-/// and a single background poll, but render and edit very differently.
+/// Which sub-view of the ESVs tab is showing. Secrets and variables share the
+/// tab's apply/restart banner and a single background poll; mappings are static
+/// content and are only surfaced on lower-environment tenants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EsvView {
     Variables,
     Secrets,
+    Mappings,
 }
 
 impl EsvView {
-    pub fn toggled(self) -> Self {
-        match self {
+    pub fn next(self, mappings_allowed: bool) -> Self {
+        match self.clamp(mappings_allowed) {
+            EsvView::Variables => EsvView::Secrets,
+            EsvView::Secrets if mappings_allowed => EsvView::Mappings,
+            EsvView::Secrets => EsvView::Variables,
+            EsvView::Mappings => EsvView::Variables,
+        }
+    }
+
+    pub fn prev(self, mappings_allowed: bool) -> Self {
+        match self.clamp(mappings_allowed) {
+            EsvView::Variables if mappings_allowed => EsvView::Mappings,
             EsvView::Variables => EsvView::Secrets,
             EsvView::Secrets => EsvView::Variables,
+            EsvView::Mappings => EsvView::Secrets,
+        }
+    }
+
+    pub fn clamp(self, mappings_allowed: bool) -> Self {
+        if mappings_allowed {
+            self
+        } else {
+            match self {
+                EsvView::Mappings => EsvView::Variables,
+                EsvView::Variables | EsvView::Secrets => self,
+            }
         }
     }
 }
@@ -678,6 +701,28 @@ pub enum UndoFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn esv_view_cycles_through_mappings_when_allowed() {
+        assert_eq!(EsvView::Variables.next(true), EsvView::Secrets);
+        assert_eq!(EsvView::Secrets.next(true), EsvView::Mappings);
+        assert_eq!(EsvView::Mappings.next(true), EsvView::Variables);
+
+        assert_eq!(EsvView::Variables.prev(true), EsvView::Mappings);
+        assert_eq!(EsvView::Mappings.prev(true), EsvView::Secrets);
+        assert_eq!(EsvView::Secrets.prev(true), EsvView::Variables);
+    }
+
+    #[test]
+    fn esv_view_cycles_between_variables_and_secrets_when_mappings_are_blocked() {
+        assert_eq!(EsvView::Variables.next(false), EsvView::Secrets);
+        assert_eq!(EsvView::Secrets.next(false), EsvView::Variables);
+        assert_eq!(EsvView::Mappings.next(false), EsvView::Secrets);
+
+        assert_eq!(EsvView::Variables.prev(false), EsvView::Secrets);
+        assert_eq!(EsvView::Secrets.prev(false), EsvView::Variables);
+        assert_eq!(EsvView::Mappings.prev(false), EsvView::Secrets);
+    }
 
     #[test]
     fn authoritative_apply_state_prefers_startup_restarting() {

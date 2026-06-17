@@ -92,6 +92,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::oauth::cli::OauthCommand,
     },
+    /// Secret mappings from AM labels to ESV secrets.
+    Secretmap {
+        #[command(subcommand)]
+        command: crate::secretmap::cli::SecretmapCommand,
+    },
     /// Script workspace sync (AM scripts + IDM endpoints).
     Script {
         #[command(subcommand)]
@@ -125,6 +130,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
+        Some(Command::Secretmap { command }) => crate::secretmap::cli::run(command).await,
         Some(Command::Script { command }) => crate::scripts::cli::run(command).await,
         None => unreachable!("dispatch handled at top level"),
     }
@@ -498,6 +504,17 @@ pub(crate) fn tenant_for(tenant_arg: Option<String>) -> Result<String> {
     let cfg = ProjectConfig::load()?
         .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
     resolve_tenant(tenant_arg, &cfg)
+}
+
+/// Resolve the tenant for a resource command and return the configured record.
+pub(crate) fn tenant_config_for(tenant_arg: Option<String>) -> Result<crate::config::Tenant> {
+    let cfg = ProjectConfig::load()?
+        .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
+    let name = resolve_tenant(tenant_arg, &cfg)?;
+    cfg.tenants
+        .into_iter()
+        .find(|tenant| tenant.name == name)
+        .ok_or_else(|| Error::Config(format!("no tenant named '{name}' in config")))
 }
 
 /// Turn the agent's prod-confirm refusal into an actionable CLI message.

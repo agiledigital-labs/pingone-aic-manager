@@ -417,7 +417,7 @@ fn draw_version_list(f: &mut Frame, app: &App, area: Rect) {
             .min(versions.len().saturating_sub(1)),
     ));
     // De-emphasise the selection when the description editor holds focus, so it
-    // reads clearly which half `j/k`, `e/d`, `x` act on.
+    // reads clearly which half list navigation, `e/d`, `x` act on.
     let (hl_style, hl_symbol) = if vers_focused {
         (
             Style::default()
