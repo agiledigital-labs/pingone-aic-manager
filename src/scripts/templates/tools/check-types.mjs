@@ -37,6 +37,18 @@ function leafTsconfigs() {
       if (existsSync(tc)) out.push(tc);
     }
   }
+  const syncDir = join("idm", "sync");
+  if (existsSync(syncDir)) {
+    for (const mapping of readdirSync(syncDir, { withFileTypes: true })) {
+      if (!mapping.isDirectory()) continue;
+      const mappingDir = join(syncDir, mapping.name);
+      for (const category of readdirSync(mappingDir, { withFileTypes: true })) {
+        if (!category.isDirectory()) continue;
+        const tc = join(mappingDir, category.name, "tsconfig.json");
+        if (existsSync(tc)) out.push(tc);
+      }
+    }
+  }
   return out;
 }
 

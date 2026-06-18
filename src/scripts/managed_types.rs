@@ -162,7 +162,7 @@ fn is_typescript_identifier(name: &str) -> bool {
         && bytes.all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'$'))
 }
 
-fn pascal_case(name: &str) -> String {
+pub(crate) fn pascal_case(name: &str) -> String {
     let mut out = String::new();
     for segment in name
         .split(|c: char| !c.is_alphanumeric())

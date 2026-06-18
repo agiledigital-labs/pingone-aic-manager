@@ -138,11 +138,13 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 guard_legacy_workspace(&t)?;
                 let r = workspace::init(&t)?;
                 let managed_types = generate_managed_types(&t).await;
+                let sync_types = generate_sync_mapping_types(&t).await;
                 println!(
-                    "workspace ready at {} ({} files written, {} managed type files, templates v{})",
+                    "workspace ready at {} ({} files written, {} managed type files, {} sync type files, templates v{})",
                     r.tree.display(),
                     r.written.len(),
                     managed_types,
+                    sync_types,
                     workspace::TEMPLATES_VERSION
                 );
                 Ok(())
@@ -152,11 +154,13 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 guard_legacy_workspace(&t)?;
                 let r = workspace::update(&t)?;
                 let managed_types = generate_managed_types(&t).await;
+                let sync_types = generate_sync_mapping_types(&t).await;
                 println!(
-                    "templates refreshed to v{} ({} files written, {} managed type files) at {}",
+                    "templates refreshed to v{} ({} files written, {} managed type files, {} sync type files) at {}",
                     workspace::TEMPLATES_VERSION,
                     r.written.len(),
                     managed_types,
+                    sync_types,
                     r.tree.display()
                 );
                 Ok(())
@@ -465,6 +469,56 @@ async fn generate_managed_types(tenant: &str) -> usize {
             Ok(()) => written += 1,
             Err(error) => eprintln!(
                 "warning: could not write managed type {}: {error}",
+                path.display()
+            ),
+        }
+    }
+    written
+}
+
+/// Fetch the tenant's sync mappings and managed schema, then write generated
+/// per-mapping binding files. Best-effort for the same reason as managed
+/// types: the static workspace scaffold should still succeed while locked.
+async fn generate_sync_mapping_types(tenant: &str) -> usize {
+    let sync_doc = match crate::aic::api::get(tenant, "/openidm/config/sync").await {
+        Ok(sync_doc) => sync_doc,
+        Err(error) => {
+            eprintln!("warning: could not fetch sync mappings (types not generated): {error}");
+            return 0;
+        }
+    };
+    let managed_schema = match crate::aic::api::get(tenant, "/openidm/config/managed").await {
+        Ok(managed_schema) => managed_schema,
+        Err(error) => {
+            eprintln!("warning: could not fetch managed schema for sync types: {error}");
+            return 0;
+        }
+    };
+    let files = match crate::scripts::sync_types::generate(&sync_doc, &managed_schema) {
+        Ok(files) => files,
+        Err(error) => {
+            eprintln!("warning: could not generate sync mapping types: {error}");
+            return 0;
+        }
+    };
+
+    let tree = ProjectConfig::workspace_tree(tenant);
+    let mut written = 0;
+    for (relative, contents) in files {
+        let path = tree.join(relative);
+        if let Some(parent) = path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "warning: could not create sync type directory {}: {error}",
+                    parent.display()
+                );
+                continue;
+            }
+        }
+        match std::fs::write(&path, contents) {
+            Ok(()) => written += 1,
+            Err(error) => eprintln!(
+                "warning: could not write sync type {}: {error}",
                 path.display()
             ),
         }

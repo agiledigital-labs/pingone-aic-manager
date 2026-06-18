@@ -24,6 +24,7 @@ hits a tenant.** Don't guess paths or headers.
 | [13-script-contexts.md](13-script-contexts.md) | AM `contexts/{id}` endpoint — authoritative per-context binding metadata (drives the `.d.ts` types) |
 | [14-am-identity-attributes.md](14-am-identity-attributes.md) | IDM-property → AM-attribute-name mapping for the `identity`/`idRepository` binding (drives typed `identity`); `getIdentity` resolves by uuid |
 | [15-secret-mappings.md](15-secret-mappings.md) | ESV secret → AM secret-label (purpose) mappings; per-type secret-store subpath; curated helper text per label |
+| [16-sync-mappings.md](16-sync-mappings.md) | IDM `config/sync` mappings; embedded behaviour/correlation/result/transform/condition scripts; whole-doc RMW PUT (no `_rev`); runtime-verified per-slot binding surface for typing |
 | [bindings/](bindings/) | Raw per-context binding probe results (JSON) backing files 10, 12–13 |
 | [99-quirks-and-open-questions.md](99-quirks-and-open-questions.md) | Cross-cutting weirdness + TODOs |
 
