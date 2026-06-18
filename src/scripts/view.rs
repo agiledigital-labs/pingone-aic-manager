@@ -1,7 +1,8 @@
 //! Scripts tab rendering: a 40/60 list + preview split, mirroring the ESV
-//! tab. The left list shows every script across all namespaces with a local
-//! sync marker (`!` = local edits, `-` = not pulled); the right pane previews
-//! the selected script's source plus a one-line status.
+//! tab. The left list shows every script across all namespaces (AM, endpoints,
+//! schedules, managed hooks, sync mappings) with a local sync marker (`!` =
+//! local edits, `-` = not pulled); the right pane previews the selected
+//! script's source plus a one-line status.
 
 use ratatui::{
     Frame,

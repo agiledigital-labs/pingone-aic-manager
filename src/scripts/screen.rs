@@ -1,7 +1,10 @@
-//! Scripts tab — browse the tenant's AM scripts + IDM endpoints/schedules,
-//! with per-script local sync state, and pull/push the selected one. Editing
-//! happens in the workspace (`aic script` CLI / your editor); this tab is a
-//! browser with pull/push actions, mirroring the read-side of the ESV tab.
+//! Scripts tab — browse every script the sync engine knows about (AM scripts,
+//! IDM endpoints/schedules, managed-object hooks, and sync-mapping scripts),
+//! with per-script local sync state, and pull/push the selected one. The list
+//! is kind-agnostic: it enumerates `Namespace::all()`, so a new `Kind` shows up
+//! here automatically. Editing happens in the workspace (`aic script` CLI /
+//! your editor); this tab is a browser with pull/push actions, mirroring the
+//! read-side of the ESV tab.
 //!
 //! The state struct lives on `App` as `app.scripts`; handlers are free
 //! functions taking `&mut App` so the keymap dispatch stays one line per arm.
