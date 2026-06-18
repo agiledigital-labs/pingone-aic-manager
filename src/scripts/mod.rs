@@ -3,16 +3,17 @@
 //!
 //! Architecture: the sync **engine** (`sync`) and **workspace scaffolding**
 //! (`workspace`) are entirely kind-agnostic. Everything that differs between
-//! AM scripts (realm-scoped, base64 `script`, context→dir routing) and IDM
-//! endpoints (`/openidm/config/endpoint`, plaintext `source`) lives behind the
-//! [`Kind`] enum, which delegates to the `am` / `idm` modules. The engine
-//! never matches on `Kind` — to add journeys later, add a variant + a module
-//! and wire the dispatch arms here; nothing in `sync`/`workspace` changes.
+//! AM scripts (realm-scoped, base64 `script`, context→dir routing), IDM
+//! endpoints (`/openidm/config/endpoint`, plaintext `source`), and embedded
+//! IDM config-document scripts live behind the [`Kind`] enum, which delegates
+//! to the per-kind modules. The engine never matches on `Kind` — to add
+//! journeys later, add a variant + a module and wire the dispatch arms here;
+//! nothing in `sync`/`workspace` changes.
 //!
 //! Feature seams: `mod.rs` + engine modules, `screen`, `view`, `cli`, and
 //! `workspace`/templates. API ground truth: `docs/api/04-scripts.md`,
 //! `docs/api/11-idm-endpoints.md`, `docs/api/12-script-bindings-matrix.md`,
-//! and `docs/api/13-script-contexts.md`.
+//! `docs/api/13-script-contexts.md`, and `docs/api/16-sync-mappings.md`.
 
 pub mod am;
 pub mod cli;
@@ -22,6 +23,8 @@ pub mod managed_types;
 pub mod schedule;
 pub mod screen;
 pub mod sync;
+pub mod sync_mapping;
+pub mod sync_types;
 pub mod view;
 pub mod workspace;
 
@@ -53,6 +56,12 @@ pub enum Kind {
     #[serde(rename = "managed-hook")]
     #[value(name = "managed-hook", alias = "hooks")]
     IdmManagedHook,
+    /// IDM sync mapping scripts: scripts embedded in the single
+    /// `/openidm/config/sync` document at mapping-level script keys or
+    /// per-property `transform`/`condition` slots.
+    #[serde(rename = "sync")]
+    #[value(name = "sync", alias = "mapping", alias = "mappings")]
+    IdmSyncMapping,
 }
 
 impl Kind {
@@ -62,6 +71,7 @@ impl Kind {
             Kind::IdmEndpoint => "idm",
             Kind::IdmSchedule => "schedule",
             Kind::IdmManagedHook => "managed-hook",
+            Kind::IdmSyncMapping => "sync",
         }
     }
 
@@ -71,6 +81,7 @@ impl Kind {
             Kind::IdmEndpoint,
             Kind::IdmSchedule,
             Kind::IdmManagedHook,
+            Kind::IdmSyncMapping,
         ]
     }
 
@@ -82,6 +93,7 @@ impl Kind {
             Kind::IdmEndpoint => idm::list(tenant, realm).await,
             Kind::IdmSchedule => schedule::list(tenant, realm).await,
             Kind::IdmManagedHook => managed_hooks::list(tenant, realm).await,
+            Kind::IdmSyncMapping => sync_mapping::list(tenant, realm).await,
         }
     }
 
@@ -91,6 +103,7 @@ impl Kind {
             Kind::IdmEndpoint => idm::fetch(tenant, realm, id).await,
             Kind::IdmSchedule => schedule::fetch(tenant, realm, id).await,
             Kind::IdmManagedHook => managed_hooks::fetch(tenant, realm, id).await,
+            Kind::IdmSyncMapping => sync_mapping::fetch(tenant, realm, id).await,
         }
     }
 
@@ -108,6 +121,9 @@ impl Kind {
             Kind::IdmManagedHook => {
                 managed_hooks::write(tenant, realm, script, confirmed_prod).await
             }
+            Kind::IdmSyncMapping => {
+                sync_mapping::write(tenant, realm, script, confirmed_prod).await
+            }
         }
     }
 
@@ -123,6 +139,7 @@ impl Kind {
             Kind::IdmEndpoint => idm::delete(tenant, realm, id, confirmed_prod).await,
             Kind::IdmSchedule => schedule::delete(tenant, realm, id, confirmed_prod).await,
             Kind::IdmManagedHook => managed_hooks::delete(tenant, realm, id, confirmed_prod).await,
+            Kind::IdmSyncMapping => sync_mapping::delete(tenant, realm, id, confirmed_prod).await,
         }
     }
 
@@ -135,6 +152,7 @@ impl Kind {
             Kind::IdmEndpoint => idm::decode_source(raw),
             Kind::IdmSchedule => schedule::decode_source(raw),
             Kind::IdmManagedHook => managed_hooks::decode_source(raw),
+            Kind::IdmSyncMapping => sync_mapping::decode_source(raw),
         }
     }
 
@@ -145,6 +163,7 @@ impl Kind {
             Kind::IdmEndpoint => idm::encode_source(raw, source),
             Kind::IdmSchedule => schedule::encode_source(raw, source),
             Kind::IdmManagedHook => managed_hooks::encode_source(raw, source),
+            Kind::IdmSyncMapping => sync_mapping::encode_source(raw, source),
         }
     }
 
@@ -163,6 +182,7 @@ impl Kind {
             Kind::IdmEndpoint => idm::workspace_subpath(r),
             Kind::IdmSchedule => schedule::workspace_subpath(r),
             Kind::IdmManagedHook => managed_hooks::workspace_subpath(r),
+            Kind::IdmSyncMapping => sync_mapping::workspace_subpath(r),
         }
     }
 
@@ -174,6 +194,7 @@ impl Kind {
             Kind::IdmEndpoint => idm::config_subpath(r),
             Kind::IdmSchedule => schedule::config_subpath(r),
             Kind::IdmManagedHook => managed_hooks::config_subpath(r),
+            Kind::IdmSyncMapping => sync_mapping::config_subpath(r),
         }
     }
 
@@ -185,6 +206,7 @@ impl Kind {
             Kind::IdmEndpoint => idm::extra_files(r),
             Kind::IdmSchedule => schedule::extra_files(r),
             Kind::IdmManagedHook => managed_hooks::extra_files(r),
+            Kind::IdmSyncMapping => sync_mapping::extra_files(r),
         }
     }
 }
@@ -194,7 +216,8 @@ impl Kind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteRef {
     pub kind: Kind,
-    /// Wire id used for fetch/write/delete (AM: UUID; IDM: `endpoint/<name>`).
+    /// Wire id used for fetch/write/delete (AM: UUID; IDM:
+    /// `endpoint/<name>`, `sync/<mapping>.<slotpath>`, ...).
     pub id: String,
     /// Human name used for the workspace filename.
     pub name: String,
@@ -219,11 +242,11 @@ pub struct RemoteScript {
 }
 
 /// The first segment of a full-name addressing a script — `alpha/`, `bravo/`,
-/// `endpoint/`, `schedule/`, `managed/`. Each prefix uniquely maps to a (kind, realm)
-/// bucket (realm for AM, kind for the realmless IDM kinds), because AIC's realm
-/// set is fixed and disjoint from the IDM kind names. So `bravo/Foo`,
-/// `endpoint/foo`, `schedule/Job` fully identify a script without `--kind` /
-/// `--realm`.
+/// `endpoint/`, `schedule/`, `managed/`, `sync/`. Each prefix uniquely maps to
+/// a (kind, realm) bucket (realm for AM, kind for the realmless IDM kinds),
+/// because AIC's realm set is fixed and disjoint from the IDM kind names. So
+/// `bravo/Foo`, `endpoint/foo`, `sync/Map.onUpdate` fully identify a script
+/// without `--kind` / `--realm`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Namespace {
     pub kind: Kind,
@@ -232,7 +255,7 @@ pub struct Namespace {
 }
 
 impl Namespace {
-    /// Parse a prefix (`alpha`/`bravo`/`endpoint`/`schedule`).
+    /// Parse a prefix (`alpha`/`bravo`/`endpoint`/`schedule`/`managed`/`sync`).
     pub fn parse(prefix: &str) -> Option<Namespace> {
         match prefix {
             "alpha" | "bravo" => Some(Namespace {
@@ -249,6 +272,10 @@ impl Namespace {
             }),
             "managed" => Some(Namespace {
                 kind: Kind::IdmManagedHook,
+                realm: None,
+            }),
+            "sync" => Some(Namespace {
+                kind: Kind::IdmSyncMapping,
                 realm: None,
             }),
             _ => None,
@@ -278,16 +305,21 @@ impl Namespace {
                 kind: Kind::IdmManagedHook,
                 realm: None,
             },
+            Namespace {
+                kind: Kind::IdmSyncMapping,
+                realm: None,
+            },
         ]
     }
 
-    /// The prefix label (`alpha`/`bravo`/`endpoint`/`schedule`).
+    /// The prefix label (`alpha`/`bravo`/`endpoint`/`schedule`/`managed`/`sync`).
     pub fn label(&self) -> &str {
         match self.kind {
             Kind::Am => self.realm.as_deref().unwrap_or("am"),
             Kind::IdmEndpoint => "endpoint",
             Kind::IdmSchedule => "schedule",
             Kind::IdmManagedHook => "managed",
+            Kind::IdmSyncMapping => "sync",
         }
     }
 
@@ -304,17 +336,20 @@ pub fn full_name(kind: Kind, realm: Option<&str>, name: &str) -> String {
         Kind::IdmEndpoint => "endpoint",
         Kind::IdmSchedule => "schedule",
         Kind::IdmManagedHook => "managed",
+        Kind::IdmSyncMapping => "sync",
     };
     format!("{prefix}/{name}")
 }
 
 /// The group a script belongs to: `am` (alpha/bravo) or `idm` (endpoint,
-/// schedule, managed). Scripts already cluster this way in the workspace tree
+/// schedule, managed, sync). Scripts already cluster this way in the workspace tree
 /// (`am/…` vs `idm/…`), so these are the natural coarse filter terms.
 pub fn group_token(kind: Kind) -> &'static str {
     match kind {
         Kind::Am => "am",
-        Kind::IdmEndpoint | Kind::IdmSchedule | Kind::IdmManagedHook => "idm",
+        Kind::IdmEndpoint | Kind::IdmSchedule | Kind::IdmManagedHook | Kind::IdmSyncMapping => {
+            "idm"
+        }
     }
 }
 
@@ -366,6 +401,8 @@ mod ns_tests {
             Kind::IdmManagedHook
         );
         assert!(Namespace::parse("managed").unwrap().realm.is_none());
+        assert_eq!(Namespace::parse("sync").unwrap().kind, Kind::IdmSyncMapping);
+        assert!(Namespace::parse("sync").unwrap().realm.is_none());
         assert!(Namespace::parse("nope").is_none());
     }
 
@@ -378,6 +415,10 @@ mod ns_tests {
             full_name(Kind::IdmManagedHook, None, "alpha_user.onCreate"),
             "managed/alpha_user.onCreate"
         );
+        assert_eq!(
+            full_name(Kind::IdmSyncMapping, None, "map.onUpdate"),
+            "sync/map.onUpdate"
+        );
     }
 
     #[test]
@@ -385,12 +426,14 @@ mod ns_tests {
         let am = |t: &str| matches_term(t, Kind::Am, Some("alpha"), "Email OTP");
         let ep = |t: &str| matches_term(t, Kind::IdmEndpoint, None, "validateQueryFilter");
         let hook = |t: &str| matches_term(t, Kind::IdmManagedHook, None, "alpha_user.onCreate");
+        let mapping = |t: &str| matches_term(t, Kind::IdmSyncMapping, None, "map.transform.name");
 
         // group aliases
         assert!(am("am"));
         assert!(!am("idm"));
         assert!(ep("idm"));
         assert!(hook("idm"));
+        assert!(mapping("idm"));
         assert!(!ep("am"));
 
         // namespace prefixes (substring of the full-name)
@@ -398,12 +441,15 @@ mod ns_tests {
         assert!(!am("bravo"));
         assert!(ep("endpoint"));
         assert!(hook("managed"));
+        assert!(mapping("sync"));
 
         // full-names and fragments, case-insensitively
         assert!(am("alpha/Email OTP"));
         assert!(am("email"));
         assert!(ep("validate"));
         assert!(hook("alpha_user.oncreate"));
+        assert!(mapping("sync/map.transform.name"));
+        assert!(mapping("transform"));
 
         // `am` is a group, not a substring: it must NOT leak via "Email"/"name"
         assert!(!matches_term(

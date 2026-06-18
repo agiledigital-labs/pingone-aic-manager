@@ -1,5 +1,5 @@
 // IDM managed-object hook shared bindings. Layered on rhino + common (which
-// declare `openidm`, `logger`, `context`). `object`, `oldObject`, and
+// declare `openidm`, `logger`, `context`, and `identityServer`). `object`, `oldObject`, and
 // `newObject` are declared per object in generated
 // `types/managed/<object>.d.ts` files.
 //
@@ -66,11 +66,6 @@ declare const request: ManagedHookRequest;
  * `"managed/alpha_user/<id>"`.
  */
 declare const resourceName: { toString(): string };
-
-/** Server property access, e.g. `identityServer.getProperty("openidm.node.id")`. */
-declare const identityServer: {
-  getProperty(name: string, defaultValue?: string, substitute?: boolean): string;
-};
 
 /** CommonJS-style require, as in endpoint scripts (verified present). */
 declare function require(id: string): any;

@@ -1,4 +1,4 @@
-// Common IDM bindings shared by all IDM script families (endpoint, schedule).
+// Common IDM bindings shared by all IDM script families.
 // Layered on top of rhino-1.7.14.d.ts.
 //
 // IDM binding availability is inferred from the prior template + docs; not yet
@@ -13,6 +13,10 @@ interface Logger {
   error: LogFunction;
 }
 declare const logger: Logger;
+
+declare const console: {
+  log(message?: any, ...args: any[]): void;
+};
 
 type Patch =
   | {
@@ -43,6 +47,13 @@ interface IdmContext {
   [key: string]: any;
 }
 declare const context: IdmContext;
+
+declare const identityServer: {
+  getProperty(name: string, defaultValue?: string, substitute?: boolean): string;
+  getInstallLocation(): string;
+  getProjectLocation(): string;
+  getWorkingLocation(): string;
+};
 
 interface OpenIdm {
   read(

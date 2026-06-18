@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 24;
+pub const TEMPLATES_VERSION: u32 = 26;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -153,6 +153,7 @@ const OBSOLETE: &[&str] = &[
     "am/oidc.d.ts",
     "idm/idmCommon.d.ts",
     "idm/managed/tsconfig.json",
+    "idm/types/sync-mapping.d.ts",
 ];
 
 /// User files: seeded once on init, never overwritten (even by update).
@@ -168,7 +169,7 @@ const USER: &[(&str, &str)] = &[
 
 /// Our own `.gitignore` (the p1-sync one references `.p1-sync/`). Ignores build
 /// output and our sync state; keeps the source dirs tracked.
-const GITIGNORE: &str = "node_modules/\ndist/\ncoverage/\n.aic-sync/\nidm/types/managed/\nam/types/managed/\n*.log\n.DS_Store\n";
+const GITIGNORE: &str = "node_modules/\ndist/\ncoverage/\n.aic-sync/\nidm/types/managed/\nidm/types/sync/\nam/types/managed/\n*.log\n.DS_Store\n";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WorkspaceState {
@@ -266,6 +267,7 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
     std::fs::create_dir_all(tree.join("idm").join("endpoint"))?;
     std::fs::create_dir_all(tree.join("idm").join("managed"))?;
     std::fs::create_dir_all(tree.join("idm").join("schedule"))?;
+    std::fs::create_dir_all(tree.join("idm").join("sync"))?;
     std::fs::create_dir_all(tree.join("tests"))?;
 
     // Managed shared files (always (re)written).
@@ -373,16 +375,23 @@ mod tests {
         assert!(OBSOLETE.contains(&"am/src.d.ts"));
         assert!(OBSOLETE.contains(&"idm/idmCommon.d.ts"));
         assert!(OBSOLETE.contains(&"idm/managed/tsconfig.json"));
+        assert!(OBSOLETE.contains(&"idm/types/sync-mapping.d.ts"));
         assert!(
             !MANAGED
                 .iter()
                 .any(|(rel, _)| *rel == "idm/managed/tsconfig.json")
         );
+        assert!(
+            !MANAGED
+                .iter()
+                .any(|(rel, _)| *rel == "idm/types/sync-mapping.d.ts")
+        );
     }
 
     #[test]
-    fn generated_managed_types_are_gitignored() {
+    fn generated_tenant_types_are_gitignored() {
         assert!(GITIGNORE.lines().any(|line| line == "idm/types/managed/"));
+        assert!(GITIGNORE.lines().any(|line| line == "idm/types/sync/"));
         assert!(GITIGNORE.lines().any(|line| line == "am/types/managed/"));
     }
 
@@ -415,6 +424,7 @@ mod tests {
         assert!(tree.join("am/types/common.d.ts").exists());
         assert!(tree.join("am/types/decision-node-next.d.ts").exists());
         assert!(tree.join("idm/types/endpoint.d.ts").exists());
+        assert!(tree.join("idm/sync").is_dir());
         assert!(tree.join("tools/check-types.mjs").exists());
         assert!(tree.join("am/eslint.config.js").exists());
         // User files seeded on init.
