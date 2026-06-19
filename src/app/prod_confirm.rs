@@ -47,6 +47,10 @@ pub enum PendingProdAction {
         name: String,
         full: String,
     },
+    MappingRecon {
+        tenant: String,
+        mapping: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -139,6 +143,9 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                             app, tenant, kind, realm, name, full, true,
                         );
                     }
+                    PendingProdAction::MappingRecon { tenant, mapping } => {
+                        crate::mappings::ops::execute_recon(app, tenant, mapping, true);
+                    }
                 }
             }
         }
@@ -164,31 +171,54 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
 
 /// Render the production-write confirm modal (absorbed from the old
 /// `ui::modal` when `screens/` + `ui/` dissolved into feature verticals).
-pub fn draw(f: &mut ratatui::Frame, _app: &App) {
+pub fn draw(f: &mut ratatui::Frame, app: &App) {
     use ratatui::{
         style::{Color, Style},
         text::{Line, Span},
         widgets::Paragraph,
     };
 
+    let description = app
+        .prod_confirm
+        .pending
+        .as_ref()
+        .and_then(pending_description);
+    let body_height = if description.is_some() { 5 } else { 3 };
     let body = crate::tui::modal_chrome::Modal {
         title: "\u{26a0} PRODUCTION WRITE",
         status: None,
         hints: &[("y", "confirm"), ("n/Esc", "cancel")],
-        body_height: 3,
+        body_height,
     }
     .draw(f, f.area());
 
-    let text = vec![
+    let mut text = vec![
         Line::from(Span::styled(
             "You are about to write to PRODUCTION.",
             Style::default().fg(Color::White),
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            "Are you sure?",
-            Style::default().fg(Color::White),
-        )),
     ];
+    if let Some(description) = description {
+        text.push(Line::from(Span::styled(
+            description,
+            Style::default().fg(Color::Yellow),
+        )));
+        text.push(Line::from(""));
+    }
+    text.push(Line::from(Span::styled(
+        "Are you sure?",
+        Style::default().fg(Color::White),
+    )));
     f.render_widget(Paragraph::new(text), body);
+}
+
+fn pending_description(action: &PendingProdAction) -> Option<String> {
+    match action {
+        PendingProdAction::ScriptPush { full, .. } => Some(format!("push script {full}")),
+        PendingProdAction::MappingRecon { mapping, .. } => Some(format!(
+            "run reconciliation on {mapping} - creates/updates/deletes target objects"
+        )),
+        _ => None,
+    }
 }

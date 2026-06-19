@@ -30,6 +30,7 @@ pub enum InputMode {
     Secrets(crate::secrets::screen::Mode),
     Scripts(crate::scripts::screen::Mode),
     Managed(crate::managed::screen::Mode),
+    Mappings(crate::mappings::screen::Mode),
     Oauth(crate::oauth::screen::Mode),
     Secretmap(crate::secretmap::screen::Mode),
 }
@@ -45,12 +46,19 @@ pub enum Tab {
     Esvs,
     Scripts,
     Managed,
+    Mappings,
     Oauth,
 }
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Esvs, Tab::Scripts, Tab::Managed, Tab::Oauth]
+        &[
+            Tab::Esvs,
+            Tab::Scripts,
+            Tab::Managed,
+            Tab::Mappings,
+            Tab::Oauth,
+        ]
     }
 
     pub fn label(self) -> &'static str {
@@ -58,6 +66,7 @@ impl Tab {
             Tab::Esvs => "ESVs",
             Tab::Scripts => "Scripts",
             Tab::Managed => "Managed",
+            Tab::Mappings => "Mappings",
             Tab::Oauth => "OAuth",
         }
     }
@@ -138,6 +147,10 @@ pub struct App {
     /// See `crate::managed::screen`.
     pub managed: crate::managed::state::State,
 
+    /// Mappings tab state — per-tenant IDM sync mappings list.
+    /// See `crate::mappings::screen`.
+    pub mappings: crate::mappings::state::State,
+
     /// OAuth tab state — per-tenant alpha client list + lazy detail cache.
     /// See `crate::oauth::screen`.
     pub oauth: crate::oauth::state::State,
@@ -206,6 +219,7 @@ impl App {
             secret: crate::secrets::state::State::new(),
             scripts: crate::scripts::screen::State::new(),
             managed: crate::managed::state::State::new(),
+            mappings: crate::mappings::state::State::new(),
             oauth: crate::oauth::state::State::new(),
             secretmap: crate::secretmap::state::State::new(),
         })
@@ -306,6 +320,7 @@ impl App {
         self.secret.reset_view();
         self.scripts.reset_view();
         self.managed.reset_view();
+        self.mappings.reset_view();
         self.oauth.reset_view();
         self.secretmap.reset_view();
         let mappings_allowed = self
@@ -320,6 +335,9 @@ impl App {
         }
         if self.current_tab == Tab::Managed {
             crate::managed::screen::refresh(self, false);
+        }
+        if self.current_tab == Tab::Mappings {
+            crate::mappings::screen::refresh(self, false);
         }
         if self.current_tab == Tab::Oauth {
             crate::oauth::screen::refresh(self, false);
@@ -455,6 +473,7 @@ impl App {
             AppEvent::Secrets(event) => crate::secrets::screen::apply_event(self, event),
             AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
             AppEvent::Managed(event) => crate::managed::screen::apply_event(self, event),
+            AppEvent::Mappings(event) => crate::mappings::screen::apply_event(self, event),
             AppEvent::Oauth(event) => crate::oauth::screen::apply_event(self, event),
             AppEvent::Secretmap(event) => crate::secretmap::screen::apply_event(self, event),
         }
