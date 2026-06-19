@@ -59,6 +59,8 @@ pub enum Act {
     Pull,
     Push,
     PullAll,
+    ReconMapping,
+    PullMappingScripts,
     Apply,
     Refresh,
     Undo,
@@ -134,6 +136,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     let scripts_tab = app.current_tab == Tab::Scripts;
     let esv_tab = app.current_tab == Tab::Esvs;
     let managed_tab = app.current_tab == Tab::Managed;
+    let mappings_tab = app.current_tab == Tab::Mappings;
     let oauth_tab = app.current_tab == Tab::Oauth;
     let mappings_allowed = mappings_allowed(app);
     let esv_view = app.esv.view.clamp(mappings_allowed);
@@ -406,6 +409,23 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             true,
             UndoHistory,
         ));
+    } else if mappings_tab && n > 0 {
+        out.push(b(
+            &[Trigger::Char('r')],
+            "r",
+            "reconcile",
+            true,
+            true,
+            ReconMapping,
+        ));
+        out.push(b(
+            &[Trigger::Char('p')],
+            "p",
+            "pull scripts",
+            true,
+            true,
+            PullMappingScripts,
+        ));
     } else if oauth_tab && n > 0 {
         out.push(b(
             &[Trigger::Code(KeyCode::Enter)],
@@ -432,7 +452,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             DetailScrollUp,
         ));
     }
-    if managed_tab || oauth_tab || mappings {
+    if managed_tab || mappings_tab || oauth_tab || mappings {
         out.push(b(
             &[Trigger::Char('R')],
             "R",
@@ -527,6 +547,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             vec![("Enter", "keep filter"), ("Esc", "clear + exit")]
         }
         InputMode::Managed(_) => crate::managed::screen::footer_hints(app),
+        InputMode::Mappings(_) => crate::mappings::screen::footer_hints(app),
         InputMode::Oauth(_) => crate::oauth::screen::footer_hints(app),
         InputMode::Secretmap(_) => crate::secretmap::screen::footer_hints(app),
         InputMode::Secrets(SecretsMode::Create) => {
@@ -619,6 +640,7 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::Secrets(mode) => crate::secrets::screen::handle_key(app, key, mode)?,
         InputMode::Scripts(mode) => crate::scripts::screen::handle_key(app, key, mode),
         InputMode::Managed(mode) => crate::managed::screen::handle_key(app, key, mode),
+        InputMode::Mappings(mode) => crate::mappings::screen::handle_key(app, key, mode),
         InputMode::Oauth(mode) => crate::oauth::screen::handle_key(app, key, mode),
         InputMode::Secretmap(mode) => crate::secretmap::screen::handle_key(app, key, mode),
     }
@@ -655,6 +677,7 @@ async fn run_normal(app: &mut App, act: Act) {
                 app.input_mode = match app.current_tab {
                     Tab::Scripts => InputMode::Scripts(crate::scripts::screen::Mode::Search),
                     Tab::Managed => InputMode::Managed(crate::managed::screen::Mode::Search),
+                    Tab::Mappings => InputMode::Mappings(crate::mappings::screen::Mode::Search),
                     Tab::Oauth => InputMode::Oauth(crate::oauth::screen::Mode::Search),
                     Tab::Esvs => InputMode::Esv(EsvMode::Search),
                 };
@@ -675,10 +698,14 @@ async fn run_normal(app: &mut App, act: Act) {
         Pull => crate::scripts::screen::pull_selected(app),
         Push => crate::scripts::screen::push_selected(app),
         PullAll => crate::scripts::screen::pull_all(app),
+        ReconMapping => crate::mappings::screen::run_recon(app),
+        PullMappingScripts => crate::mappings::screen::pull_scripts(app),
         Apply => crate::esv::ops::request_restart(app),
         Refresh => {
             if app.current_tab == Tab::Managed {
                 crate::managed::screen::refresh(app, true);
+            } else if app.current_tab == Tab::Mappings {
+                crate::mappings::screen::refresh(app, true);
             } else if app.current_tab == Tab::Oauth {
                 crate::oauth::screen::refresh(app, true);
             } else if app.current_tab == Tab::Esvs
@@ -744,6 +771,8 @@ fn cycle_tab(app: &mut App, delta: isize) {
         crate::scripts::screen::refresh(app, false);
     } else if app.current_tab == Tab::Managed {
         crate::managed::screen::refresh(app, false);
+    } else if app.current_tab == Tab::Mappings {
+        crate::mappings::screen::refresh(app, false);
     } else if app.current_tab == Tab::Oauth {
         crate::oauth::screen::refresh(app, false);
     }
@@ -783,6 +812,9 @@ fn row_count(app: &App) -> usize {
             .matches(app.active_tenant().map(|t| t.name.as_str()))
             .len();
     }
+    if app.current_tab == Tab::Mappings {
+        return crate::mappings::screen::row_count(app);
+    }
     if app.current_tab == Tab::Oauth {
         return crate::oauth::screen::row_count(app);
     }
@@ -801,6 +833,9 @@ fn current_selection(app: &App) -> usize {
     }
     if app.current_tab == Tab::Managed {
         return app.managed.selected;
+    }
+    if app.current_tab == Tab::Mappings {
+        return crate::mappings::screen::current_selection(app);
     }
     if app.current_tab == Tab::Oauth {
         return crate::oauth::screen::current_selection(app);
@@ -821,6 +856,10 @@ fn set_selection(app: &mut App, idx: usize) {
     }
     if app.current_tab == Tab::Managed {
         app.managed.select_object(clamped);
+        return;
+    }
+    if app.current_tab == Tab::Mappings {
+        crate::mappings::screen::select(app, clamped);
         return;
     }
     if app.current_tab == Tab::Oauth {
@@ -852,6 +891,9 @@ fn filter_active(app: &App) -> bool {
     if app.current_tab == Tab::Managed {
         return !app.managed.query.is_empty();
     }
+    if app.current_tab == Tab::Mappings {
+        return !app.mappings.query.is_empty();
+    }
     if app.current_tab == Tab::Oauth {
         return !app.oauth.query.is_empty();
     }
@@ -869,6 +911,10 @@ fn clear_filter(app: &mut App) {
     }
     if app.current_tab == Tab::Managed {
         app.managed.reset_view();
+        return;
+    }
+    if app.current_tab == Tab::Mappings {
+        crate::mappings::screen::clear_filter(app);
         return;
     }
     if app.current_tab == Tab::Oauth {
@@ -889,6 +935,9 @@ fn clear_filter(app: &mut App) {
 fn primary(app: &mut App) {
     if app.current_tab == Tab::Managed {
         crate::managed::screen::start_edit_field(app);
+        return;
+    }
+    if app.current_tab == Tab::Mappings {
         return;
     }
     if app.current_tab == Tab::Oauth {

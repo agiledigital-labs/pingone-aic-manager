@@ -22,6 +22,10 @@ the rest of the IDM features use. No log-API key needed.
 |----|--------|------|--------------------|-------|
 | Read all mappings | GET | `/openidm/config/sync` | *(none)* | Single document: `{ _id:"sync", mappings:[…] }`. **No `_rev`.** |
 | Write all mappings | PUT | `/openidm/config/sync` | *(none)* | **Whole-document replace** (RMW). Applies with lag — poll-verify after write, exactly like `/openidm/config/managed`. |
+| Start reconciliation | POST | `/openidm/recon?_action=recon&mapping=<name>` | *(none)* | **Async**: returns `{ "_id": "<reconId>", "state": "ACTIVE" }` immediately (HTTP 200). Add `&waitForCompletion=true` to block until done (returns the final state) — but prefer async + poll for a responsive UI. |
+| Poll a run | GET | `/openidm/recon/<reconId>` | *(none)* | Status of one run (see shape below). |
+| List recent runs | GET | `/openidm/recon` | *(none)* | `{ "_id": "recon", "reconciliations": [ … ] }` (recent/active runs, newest last). |
+| Cancel a run | POST | `/openidm/recon/<reconId>?_action=cancel` | *(none)* | Stops an `ACTIVE` run (not yet exercised here). |
 
 There is **no per-mapping endpoint** — like `managed`, the whole `sync` config is
 one document. A single-mapping edit is read-modify-write of the array:
@@ -71,6 +75,40 @@ IDM does **not** rewrite it to a `file` reference (verified 2026-06-18).
 **`correlationQuery` vs `correlationScript`.** A mapping has at most one of:
 `correlationQuery` (a structured/`file`-backed query builder — *not* synced) or
 `correlationScript` (inline JS — synced). Treat them as mutually exclusive.
+
+## Reconciliation (running a mapping)
+
+`POST /openidm/recon?_action=recon&mapping=<name>` runs the mapping: it applies
+the mapping's `policies` to the target, so it **creates / updates / deletes
+target objects** and fires the behaviour scripts. **Treat it as a data-mutating
+action** — confirm before running, and gate prod tenants behind the prod-write
+confirm (or refuse). Verified live 2026-06-18.
+
+The async form returns immediately; poll `GET /openidm/recon/<reconId>` until
+`state` is terminal:
+
+```jsonc
+{
+  "_id": "<reconId>",
+  "mapping": "managedTest_from_managedTest_to",
+  "state": "ACTIVE",            // -> SUCCESS | FAILED | CANCELED (terminal)
+  "stage": "COMPLETED_FAILED",  // ACTIVE_* while running; COMPLETED_* / COMPLETED_FAILED at end
+  "stageDescription": "reconciliation failed",
+  "progress": {
+    "source": { "existing": { "processed": 0, "total": "0" } },
+    "target": { "existing": { "processed": 0, "total": "?" },
+                "created": 0, "unchanged": 0, "updated": 0, "deleted": 0, "retried": 0 },
+    "links":  { "existing": { "processed": 0, "total": "?" }, "created": 0 }
+  },
+  "started": "2026-06-18T23:25:10.520Z",
+  "ended":   "2026-06-18T23:25:10.533Z",   // absent while ACTIVE
+  "duration": 13
+}
+```
+
+- `progress.*.total` is a **string** (`"0"`, `"?"` while unknown) — don't assume int.
+- A run can `FAILED` purely because a mapping's scripts throw (the config is
+  otherwise valid); surface `stageDescription` so the user sees why.
 
 ## Mapping script wire-ids (proposed local layout)
 
