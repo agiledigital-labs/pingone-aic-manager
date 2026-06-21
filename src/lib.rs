@@ -5,6 +5,7 @@ pub mod cli;
 pub mod config;
 pub mod error;
 pub mod esv;
+pub mod idmstore;
 pub mod journey;
 pub mod logging;
 pub mod managed;

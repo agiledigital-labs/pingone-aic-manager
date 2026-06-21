@@ -74,6 +74,19 @@ new things are learned.
   relationships.
 - **Documented in:** `10-managed-objects.md`.
 
+### Managed-object paging counts (resolved 2026-06-21)
+- **Status:** Resolved.
+- **Answer:** `totalPagedResults` is an optional hint for managed-object lists,
+  not a safe completeness bound. Empty objects can return `-1` / policy `NONE`
+  even when `_totalPagedResultsPolicy=EXACT` is requested; populated objects can
+  return policy `ESTIMATE`.
+- **Implication:** Full sync must walk cursor cookies until the cookie is empty
+  or absent. Do not use `_pagedResultsOffset` for bulk record reads: it re-runs
+  the query per page, can skip or duplicate records under concurrent backend
+  changes, and deep offsets are costly. `totalPagedResults` is only an optional
+  progress hint.
+- **Documented in:** `10-managed-objects.md`.
+
 ### Journey `_rev` and write semantics (resolved 2026-06-14)
 - **Status:** Resolved.
 - **Answer:** Journey trees and nodes accept plain `PUT` for both create and
@@ -147,6 +160,7 @@ new things are learned.
 | `useInPlaceholders` defaults to true | 03-esvs.md (transcribed) | False — required on create, no default, and immutable afterwards. |
 | Journey `_rev` means use `If-Match` | 09-journeys.md (earlier note) | Superseded — `_rev` is content-derived, and plain `PUT` works for create/update. Use content snapshots, not `If-Match`. |
 | OAuth2 client `_rev` means use `If-Match` | 05-oauth2-oidc.md (earlier note) | False — plain `PUT` works for create/update, and `_rev` must be stripped from the body. Use content snapshots, not `If-Match`. |
+| Managed-object `totalPagedResults` is exact with `_totalPagedResultsPolicy=EXACT` | 10-managed-objects.md (earlier note) | False — empty objects can report `NONE`/`-1`, and populated objects can report `ESTIMATE`. Use cursor cookies for bulk record reads; do not use offset paging as a completeness strategy. |
 
 **Lesson:** Both libraries' research summaries had errors. Always verify
 endpoints + shapes against the live tenant before writing code.

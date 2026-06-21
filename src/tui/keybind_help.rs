@@ -15,6 +15,7 @@ use ratatui::{
 use crate::app::{App, InputMode};
 use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::EditField;
+use crate::idmstore::screen::Mode as IdmStoreMode;
 use crate::managed::screen::Mode as ManagedMode;
 use crate::mappings::screen::Mode as MappingsMode;
 use crate::oauth::screen::Mode as OauthMode;
@@ -75,6 +76,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
         InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) => esv_search_lines(&mut lines),
         InputMode::Managed(mode) => managed_lines(mode, &mut lines),
         InputMode::Mappings(mode) => mappings_lines(mode, &mut lines),
+        InputMode::IdmStore(mode) => idmstore_lines(mode, &mut lines),
         InputMode::Oauth(mode) => oauth_lines(mode, &mut lines),
         InputMode::Secretmap(mode) => secretmap_lines(mode, &mut lines),
         InputMode::Esv(EsvMode::Edit) => esv_edit_lines(app, &mut lines),
@@ -153,6 +155,12 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
 fn mappings_lines(mode: MappingsMode, lines: &mut Vec<Line<'static>>) {
     match mode {
         MappingsMode::Search => esv_search_lines(lines),
+    }
+}
+
+fn idmstore_lines(mode: IdmStoreMode, lines: &mut Vec<Line<'static>>) {
+    match mode {
+        IdmStoreMode::Search => esv_search_lines(lines),
     }
 }
 

@@ -56,6 +56,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         | InputMode::Scripts(_)
         | InputMode::Managed(_)
         | InputMode::Mappings(_)
+        | InputMode::IdmStore(_)
         | InputMode::Oauth(_)
         | InputMode::Secretmap(_) => {}
     }
@@ -203,6 +204,8 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         crate::managed::view::draw_body(f, app, area);
     } else if app.current_tab == crate::app::Tab::Mappings {
         crate::mappings::view::draw_body(f, app, area);
+    } else if app.current_tab == crate::app::Tab::IdmStore {
+        crate::idmstore::view::draw_body(f, app, area);
     } else if app.current_tab == crate::app::Tab::Oauth {
         crate::oauth::view::draw_body(f, app, area);
     } else {
