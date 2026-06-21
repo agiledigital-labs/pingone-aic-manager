@@ -31,6 +31,7 @@ pub enum InputMode {
     Scripts(crate::scripts::screen::Mode),
     Managed(crate::managed::screen::Mode),
     Mappings(crate::mappings::screen::Mode),
+    IdmStore(crate::idmstore::screen::Mode),
     Oauth(crate::oauth::screen::Mode),
     Secretmap(crate::secretmap::screen::Mode),
 }
@@ -47,6 +48,7 @@ pub enum Tab {
     Scripts,
     Managed,
     Mappings,
+    IdmStore,
     Oauth,
 }
 
@@ -57,6 +59,7 @@ impl Tab {
             Tab::Scripts,
             Tab::Managed,
             Tab::Mappings,
+            Tab::IdmStore,
             Tab::Oauth,
         ]
     }
@@ -67,6 +70,7 @@ impl Tab {
             Tab::Scripts => "Scripts",
             Tab::Managed => "Managed",
             Tab::Mappings => "Mappings",
+            Tab::IdmStore => "Query",
             Tab::Oauth => "OAuth",
         }
     }
@@ -151,6 +155,10 @@ pub struct App {
     /// See `crate::mappings::screen`.
     pub mappings: crate::mappings::state::State,
 
+    /// Query tab state — local IDM managed-object record store.
+    /// See `crate::idmstore::screen`.
+    pub idmstore: crate::idmstore::state::State,
+
     /// OAuth tab state — per-tenant alpha client list + lazy detail cache.
     /// See `crate::oauth::screen`.
     pub oauth: crate::oauth::state::State,
@@ -220,6 +228,7 @@ impl App {
             scripts: crate::scripts::screen::State::new(),
             managed: crate::managed::state::State::new(),
             mappings: crate::mappings::state::State::new(),
+            idmstore: crate::idmstore::state::State::new(),
             oauth: crate::oauth::state::State::new(),
             secretmap: crate::secretmap::state::State::new(),
         })
@@ -321,6 +330,7 @@ impl App {
         self.scripts.reset_view();
         self.managed.reset_view();
         self.mappings.reset_view();
+        self.idmstore.reset_view();
         self.oauth.reset_view();
         self.secretmap.reset_view();
         let mappings_allowed = self
@@ -338,6 +348,9 @@ impl App {
         }
         if self.current_tab == Tab::Mappings {
             crate::mappings::screen::refresh(self, false);
+        }
+        if self.current_tab == Tab::IdmStore {
+            crate::idmstore::screen::refresh(self, false);
         }
         if self.current_tab == Tab::Oauth {
             crate::oauth::screen::refresh(self, false);
@@ -474,6 +487,7 @@ impl App {
             AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
             AppEvent::Managed(event) => crate::managed::screen::apply_event(self, event),
             AppEvent::Mappings(event) => crate::mappings::screen::apply_event(self, event),
+            AppEvent::IdmStore(event) => crate::idmstore::screen::apply_event(self, event),
             AppEvent::Oauth(event) => crate::oauth::screen::apply_event(self, event),
             AppEvent::Secretmap(event) => crate::secretmap::screen::apply_event(self, event),
         }

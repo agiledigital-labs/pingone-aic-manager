@@ -158,6 +158,7 @@ you need into context.
 | Script sync (pull/push/sync/watch/diff) | `src/scripts/` (one module per `Kind`: `am`, `idm`, `schedule`, `managed_hooks`) | `docs/api/04-scripts.md`, `11`, `12`, `13` |
 | Script workspace templates (lint/types) | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs` | `docs/api/12-script-bindings-matrix.md` |
 | Managed-object schema (inspect); hooks sync as `managed/<obj>.<hook>` via `aic script` | `src/managed/` (schema), `src/scripts/managed_hooks.rs` (hook sync) | `docs/api/10-managed-objects.md` |
+| IDM managed-object record store + query | `src/idmstore/` | `docs/api/10-managed-objects.md` |
 | OAuth2 clients | `src/oauth/` | `docs/api/05-oauth2-oidc.md` |
 | Tokens / HTTP transport / daemon | `src/aic/` (transport core), `src/agent/` | `docs/api/00-auth.md`, `01`, `02`; `src/agent/mod.rs` header |
 | Local credential vault / unlock | `src/vault/` + `src/config/{crypto,wraps}.rs` storage | — (local-only, no AIC docs) |

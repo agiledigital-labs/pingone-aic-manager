@@ -82,6 +82,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::managed::cli::ManagedCommand,
     },
+    /// Local IDM managed-object record store and query commands.
+    Idm {
+        #[command(subcommand)]
+        command: crate::idmstore::cli::IdmCommand,
+    },
     /// Journey (authentication tree) inspection and export.
     Journey {
         #[command(subcommand)]
@@ -128,6 +133,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Whoami { tenant, token }) => whoami(tenant, token).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
+        Some(Command::Idm { command }) => crate::idmstore::cli::run(command).await,
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
         Some(Command::Secretmap { command }) => crate::secretmap::cli::run(command).await,

@@ -204,6 +204,54 @@ $SCRIPTS/verify-endpoint.sh "/openidm/config/managed"
 $SCRIPTS/verify-endpoint.sh "/openidm/managed/alpha_user?_queryFilter=true&_pageSize=1"
 ```
 
+## Record querying + change detection (drives the `idmstore` sync feature)
+
+Verified 2026-06-20/06-21 against sandbox `alpha_user`/`bravo_user`/`alpha_role`.
+
+**Records carry no timestamp.** A managed-object instance returns only `_id`
+and `_rev` plus its declared properties — there is **no** `lastModified`/
+`created` field on the record. `_rev` is a per-object change counter (suffix
+e.g. `…-34`), **not** a global "changed-since" cursor; do not use it to detect
+which records changed across a collection.
+
+**The change signal lives in a `_meta` relationship — user objects only.**
+`alpha_user`/`bravo_user` each have a `_meta` relationship to a sidecar managed
+object `managed/<type>meta` (e.g. `alpha_usermeta`) carrying `createDate` and
+`lastChanged: { date }` (ISO-8601). Fetch it inline with
+`_fields=*,_meta/_id,_meta/lastChanged`. The sidecar collection is **directly
+queryable and sortable** by that timestamp:
+
+```
+GET /openidm/managed/alpha_usermeta
+  ?_queryFilter=lastChanged/date ge "2026-06-01T00:00:00Z"
+  &_sortKeys=-lastChanged/date&_fields=_id,lastChanged          → 200, ordered
+```
+
+This is the incremental-sync watermark source. **`alpha_rolemeta` → 404**:
+roles, organizations, assignments, applications have **no** `*meta` sidecar and
+no per-record timestamp, so they have no incremental signal — re-pull them in
+full (or use the `idm-activity` audit log, which needs a Log API key, see
+`08-logs.md`).
+
+**You cannot filter/sort the parent object by the related sidecar.** Relationship
+traversal in the query is unsupported: `_queryFilter=_meta/lastChanged/date gt …`
+returns `resultCount: 0`, and `_sortKeys=-_meta/lastChanged` → **HTTP 500**
+(`ByteString.toBase64String() … normalized is null`). So: query the *sidecar*
+for changed ids, and keep a local `meta_id ↔ record _id` map (built when records
+are pulled with `_fields=…,_meta/_id`). Detect creates/deletes with a cheap
+`_fields=_id` id-list diff against the local store.
+
+**Paging (verified 2026-06-21).** Unlike AM scripts, managed lists return a
+**usable `pagedResultsCookie`** — pass it back as `_pagedResultsCookie` to walk
+pages sequentially to completion. Bulk record reads must use this cursor, not
+`_pagedResultsOffset`: offset paging re-runs the query for each page, can skip
+or duplicate records under concurrent backend changes, and deep offsets are
+costly on DJ. Do **not** use `totalPagedResults` as a completeness bound: empty
+objects may return `totalPagedResults: -1` with policy `NONE` even when
+`_totalPagedResultsPolicy=EXACT` is requested, and populated objects may return
+policy `ESTIMATE`. Treat counts as optional progress hints only. Cursor walks
+end on an absent/empty cookie, including an empty first page.
+
 ## Quirks
 
 - **PUT is "replace entire schema"** — there's no partial patch. Read,
@@ -231,8 +279,13 @@ $SCRIPTS/verify-endpoint.sh "/openidm/managed/alpha_user?_queryFilter=true&_page
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-06-14 (managed-config write behaviour, custom object/property/
-  relationship/hook round-trips, no reverse-property validation); 2026-06-13
+- Date: 2026-06-21 (record querying + change detection: no record timestamp;
+  `_meta`→`<type>meta` sidecar with `lastChanged/createDate`, queryable/sortable
+  on the sidecar but **not** via parent traversal — `_meta/...` filter → 0, sort
+  → 500; `alpha_rolemeta` 404 / non-user objects have no sidecar; cursor paging
+  works and is the required bulk-read path; `EXACT` count policy). 2026-06-14
+  (managed-config write behaviour, custom object/property/relationship/hook
+  round-trips, no reverse-property validation); 2026-06-13
   (hook inventory, hook bindings probe, schema PUT round-trip + application
   lag); 2026-06-09 (create-if-absent test); 2026-05-17 (schema read).
 - Calls: `GET /openidm/config/managed` (200); `PUT /openidm/config/managed`
