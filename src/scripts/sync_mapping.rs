@@ -480,7 +480,7 @@ pub fn config_subpath(r: &RemoteRef) -> PathBuf {
 pub fn leaf_tsconfig(mapping: &str, category: &str) -> String {
     let mapping_file = safe_filename(mapping);
     format!(
-        "{{\n  \"extends\": \"../../../tsconfig.json\",\n  \"include\": [\n    \"./**/*\",\n    \"../../../types/rhino-1.7.14.d.ts\",\n    \"../../../types/common.d.ts\",\n    \"../../../types/managed/*.d.ts\",\n    \"../../../types/sync/_shared.d.ts\",\n    \"../../../types/sync/{mapping_file}.{category}.d.ts\"\n  ]\n}}\n"
+        "{{\n  \"extends\": \"../../../tsconfig.json\",\n  \"include\": [\n    \"./**/*\",\n    \"../../../types/rhino-1.7.14.d.ts\",\n    \"../../../types/common.d.ts\",\n    \"../../../types/idm-libs.d.ts\",\n    \"../../../types/managed/*.d.ts\",\n    \"../../../types/sync/_shared.d.ts\",\n    \"../../../types/sync/{mapping_file}.{category}.d.ts\"\n  ]\n}}\n"
     )
 }
 
