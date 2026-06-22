@@ -252,7 +252,7 @@ pub fn config_subpath(r: &RemoteRef) -> PathBuf {
 /// are included, followed by this object's hook bindings.
 pub fn leaf_tsconfig(object: &str) -> String {
     format!(
-        "{{\n  \"extends\": \"../../tsconfig.json\",\n  \"include\": [\n    \"./**/*\",\n    \"../../types/rhino-1.7.14.d.ts\",\n    \"../../types/common.d.ts\",\n    \"../../types/managed-hook.d.ts\",\n    \"../../types/managed/*.d.ts\",\n    \"../../types/managed/hooks/{object}.d.ts\"\n  ]\n}}\n"
+        "{{\n  \"extends\": \"../../tsconfig.json\",\n  \"include\": [\n    \"./**/*\",\n    \"../../types/rhino-1.7.14.d.ts\",\n    \"../../types/common.d.ts\",\n    \"../../types/idm-libs.d.ts\",\n    \"../../types/managed-hook.d.ts\",\n    \"../../types/managed/*.d.ts\",\n    \"../../types/managed/hooks/{object}.d.ts\"\n  ]\n}}\n"
     )
 }
 

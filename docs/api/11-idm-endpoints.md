@@ -122,6 +122,66 @@ return value is not statically type-checkable (a script isn't a typed function),
 but `idm/types/endpoint.d.ts` exposes `IdmQueryResult` / `IdmResource` aliases to
 annotate with `/** @type {…} */`.
 
+## Requireable bundled libraries (`require('lib/<name>')`)
+
+IDM scripts can `require()` a small, **fixed set of bundled CommonJS libraries**.
+These are baked into the IDM scripting runtime — you **cannot** push your own.
+The Ping scripting guide lists Lodash + Handlebars
+([pingidm/8.1 scripting-guide preface](https://docs.pingidentity.com/pingidm/8.1/scripting-guide/preface.html)),
+and we verified the full set 2026-06-22 with an `endpoint/aicedit-libprobe` that
+`require()`d 110+ common library names (npm-style) in both `lib/<name>` and
+bare-`<name>` forms. Only **three** resolved, and **only with the `lib/` prefix**:
+
+| `require(id)` | Library | Version | Notes |
+|---|---|---|---|
+| `require('lib/lodash')` | Lodash | **3.10.1** | The `_` function export. **v3, not v4** — e.g. `_.indexBy` (not v4's `_.keyBy`), no `_.fromPairs`. |
+| `require('lib/handlebars')` | Handlebars | **4.7.7** | Server-side use **requires a Synchronizer wrapper** — see below. |
+| `require('lib/validator')` | validator.js | **13.7.0** | `v.isEmail(...)` etc. **Not** mentioned in the Ping docs; present-and-functional verified live only. |
+
+**Workspace typing.** The script workspace (`src/scripts/templates/`) pins
+`@types/lodash@3.10.1`, `handlebars@4.7.7` (ships its own types), and
+`@types/validator@13.7.0` to these exact runtime versions, and
+`idm/types/idm-libs.d.ts` maps `require('lib/<name>')` to them via typed `require`
+overloads. So a v4-only lodash call (`_.keyBy`) correctly fails type-check
+against the v3 surface (verified end-to-end with `tsc` 2026-06-22). Available in
+every IDM script context (endpoint / schedule / managed-hook / sync-mapping).
+
+**Handlebars synchronization.** Per the Ping guide, calling Handlebars in a
+server-side JS script must be wrapped in the Rhino `Synchronizer`:
+
+```javascript
+var Handlebars = require('lib/handlebars');
+var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
+  return Handlebars.compile('Handlebars {{doesWhat}}')({ doesWhat: 'rocks!' });
+}, Handlebars)();
+```
+
+- **`lib/` prefix is mandatory.** `require('lodash')` (bare) → `Error: Module
+  "lodash" not found.` `require('lib/lodash.js')` also resolves (suffix tolerated).
+- **No other npm libs are bundled** — uuid, jwt/jose, crypto-js, moment, ajv,
+  xml parsers, jsonpath, etc. all 404. Use `utils`/`openidm`/`httpClient`
+  bindings or Java (`Date.now()`, `java.*` are allowed in IDM — see Quirks)
+  instead.
+- **You cannot push your own library.** Defining a CommonJS module in another
+  endpoint's `source` and `require()`-ing it fails for every form tried:
+  `require('aicedit-mylib')`, `'lib/aicedit-mylib'`, `'endpoint/aicedit-mylib'`,
+  `'aicedit-mylib.js'` → `Module … not found`; `require('./aicedit-mylib')` →
+  `Error: Can't resolve relative module ID "./..." when require() is used
+  outside of a module`. Relative requires only resolve **inside** a bundled
+  module (one `lib/` file requiring another). There is no SaaS-exposed path to
+  add a `lib/` module in Identity Cloud (no filesystem access). To share code,
+  inline it or call a shared endpoint over `openidm.action`/`httpClient`.
+- **Scope:** `require`/`lib` resolution is a property of the IDM Rhino engine, so
+  it is available to **every IDM script type**, not just custom endpoints —
+  scripted endpoints, `invokeService:"script"` schedules, managed-object hooks
+  (`onCreate`/`onUpdate`/virtual-property), sync-mapping transform/correlation
+  scripts, and policy/router scripts. (`require` presence is independently
+  verified for endpoints, schedules, and managed hooks — see
+  `12-script-bindings-matrix.md` and the IDM `*.d.ts` templates.)
+- **AM is different.** AM next-gen `require()` resolves **AM library scripts**
+  (the `lib`-kind scripts you author in the realm), *not* npm modules — there is
+  no `lib/lodash` on the AM side. Don't conflate the two `require()` mechanisms.
+
 ## Quirks
 
 - **`source` is plain text, not base64** (the opposite of AM scripts). Don't
@@ -193,7 +253,11 @@ Object shape (real example, `schedule/UpdateReviewList`):
 - Tenant: `<your-tenant>.forgeblocks.com`
 - Date: 2026-06-01 (CRUD); 2026-06-04 (`request`/`context` runtime shapes per
   method, via `endpoint/rhino-probe` echo — created, probed read/create/update/
-  patch/delete/action/query, deleted)
+  patch/delete/action/query, deleted); 2026-06-22 (bundled `require('lib/*')`
+  libraries — `lib/lodash` 3.10.1, `lib/handlebars` 4.7.7, `lib/validator`
+  13.7.0; 110+ other names 404; custom/own-module requires all fail; throwaway
+  `endpoint/aicedit-libprobe{,2,3}`, `aicedit-mylib`, `aicedit-func` created,
+  probed, and deleted)
 - Endpoints: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
   `endpoint/` ids), `GET /openidm/config/endpoint/test` (200; keys
   `_id, description, source, type`, no `_rev`, plaintext `source`),

@@ -66,6 +66,3 @@ declare const request: ManagedHookRequest;
  * `"managed/alpha_user/<id>"`.
  */
 declare const resourceName: { toString(): string };
-
-/** CommonJS-style require, as in endpoint scripts (verified present). */
-declare function require(id: string): any;
