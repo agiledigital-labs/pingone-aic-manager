@@ -3,6 +3,7 @@ pub mod env_picker;
 pub mod event;
 pub mod keymap;
 pub mod prod_confirm;
+pub mod selector;
 
 use std::collections::{HashMap, VecDeque};
 
@@ -24,6 +25,7 @@ pub enum InputMode {
     Vault(crate::vault::screen::Mode),
     Onboard(crate::onboard::screen::Mode),
     EnvPicker,
+    Selector,
     ProdConfirm,
     UndoHistory,
     Esv(crate::esv::screen::Mode),
@@ -43,7 +45,7 @@ pub enum Realm {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Tab {
+pub enum View {
     Esvs,
     Scripts,
     Managed,
@@ -52,26 +54,26 @@ pub enum Tab {
     Oauth,
 }
 
-impl Tab {
-    pub fn all() -> &'static [Tab] {
+impl View {
+    pub fn all() -> &'static [View] {
         &[
-            Tab::Esvs,
-            Tab::Scripts,
-            Tab::Managed,
-            Tab::Mappings,
-            Tab::IdmStore,
-            Tab::Oauth,
+            View::Esvs,
+            View::Scripts,
+            View::Managed,
+            View::Mappings,
+            View::IdmStore,
+            View::Oauth,
         ]
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Tab::Esvs => "ESVs",
-            Tab::Scripts => "Scripts",
-            Tab::Managed => "Managed",
-            Tab::Mappings => "Mappings",
-            Tab::IdmStore => "Query",
-            Tab::Oauth => "OAuth",
+            View::Esvs => "ESVs",
+            View::Scripts => "Scripts",
+            View::Managed => "Managed",
+            View::Mappings => "Mappings",
+            View::IdmStore => "Query",
+            View::Oauth => "OAuth",
         }
     }
 }
@@ -81,11 +83,12 @@ pub struct App {
     pub config: Option<ProjectConfig>,
     pub settings: Option<Settings>,
     pub input_mode: InputMode,
-    pub current_tab: Tab,
+    pub active_view: View,
     pub current_realm: Realm,
     pub tenants: Vec<Tenant>,
     pub active_tenant_idx: usize,
     pub env_picker_idx: usize,
+    pub selector: selector::State,
     pub undo_history_idx: usize,
     pub toasts: VecDeque<Toast>,
     pub should_quit: bool,
@@ -135,31 +138,31 @@ pub struct App {
     /// without changing the underlying input mode.
     pub keybind_help_open: bool,
 
-    /// ESV tab state — list cache, refresh book-keeping, search query +
+    /// ESV view state — list cache, refresh book-keeping, search query +
     /// selection. See `crate::esv` for the handlers.
     pub esv: crate::esv::state::State,
 
-    /// Secrets sub-view of the ESVs tab (list, versions, create/add forms).
+    /// Secrets sub-view of ESVs (list, versions, create/add forms).
     /// Populated by the same poll as `esv`. See `crate::secrets`.
     pub secret: crate::secrets::state::State,
 
-    /// Scripts tab state — per-tenant candidate list, search + selection,
+    /// Scripts view state — per-tenant candidate list, search + selection,
     /// in-flight pull/push tracking. See `crate::scripts::screen`.
     pub scripts: crate::scripts::screen::State,
 
-    /// Managed tab state — per-tenant schema cache, search + selection.
+    /// Managed view state — per-tenant schema cache, search + selection.
     /// See `crate::managed::screen`.
     pub managed: crate::managed::state::State,
 
-    /// Mappings tab state — per-tenant IDM sync mappings list.
+    /// Mappings view state — per-tenant IDM sync mappings list.
     /// See `crate::mappings::screen`.
     pub mappings: crate::mappings::state::State,
 
-    /// Query tab state — local IDM managed-object record store.
+    /// Query view state — local IDM managed-object record store.
     /// See `crate::idmstore::screen`.
     pub idmstore: crate::idmstore::state::State,
 
-    /// OAuth tab state — per-tenant alpha client list + lazy detail cache.
+    /// OAuth view state — per-tenant alpha client list + lazy detail cache.
     /// See `crate::oauth::screen`.
     pub oauth: crate::oauth::state::State,
 
@@ -204,11 +207,12 @@ impl App {
             config,
             settings,
             input_mode: InputMode::Normal,
-            current_tab: Tab::Esvs,
+            active_view: View::Esvs,
             current_realm: Realm::Alpha,
             tenants,
             active_tenant_idx,
             env_picker_idx: active_tenant_idx,
+            selector: selector::State::new(View::Esvs),
             undo_history_idx: 0,
             toasts: VecDeque::new(),
             should_quit: false,
@@ -343,19 +347,19 @@ impl App {
                 tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
             }
         }
-        if self.current_tab == Tab::Managed {
+        if self.active_view == View::Managed {
             crate::managed::screen::refresh(self, false);
         }
-        if self.current_tab == Tab::Mappings {
+        if self.active_view == View::Mappings {
             crate::mappings::screen::refresh(self, false);
         }
-        if self.current_tab == Tab::IdmStore {
+        if self.active_view == View::IdmStore {
             crate::idmstore::screen::refresh(self, false);
         }
-        if self.current_tab == Tab::Oauth {
+        if self.active_view == View::Oauth {
             crate::oauth::screen::refresh(self, false);
         }
-        if self.current_tab == Tab::Esvs
+        if self.active_view == View::Esvs
             && self.esv.view == crate::esv::state::EsvView::Mappings
             && mappings_allowed
         {
@@ -508,13 +512,13 @@ impl App {
         // 30s cadence is a tradeoff between freshness and sandbox load —
         // the sandbox API itself takes ~7s to answer a list, so polling
         // faster than that just stacks in-flight requests.
-        if self.current_tab == Tab::Esvs && self.esv.last_poll.elapsed() >= Duration::from_secs(30)
+        if self.active_view == View::Esvs && self.esv.last_poll.elapsed() >= Duration::from_secs(30)
         {
             crate::esv::ops::refresh(self, true);
         }
         // Scripts list is heavier to fetch (one list call per namespace) and
         // changes far less often than ESVs, so poll it on a slower cadence.
-        if self.current_tab == Tab::Scripts
+        if self.active_view == View::Scripts
             && self.scripts.last_poll.elapsed() >= Duration::from_secs(120)
         {
             crate::scripts::screen::refresh(self, true);

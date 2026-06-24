@@ -1,4 +1,4 @@
-//! Mappings tab interaction: lazy list refresh, incremental search, and
+//! Mappings view interaction: lazy list refresh, incremental search, and
 //! selection.
 
 use std::time::Instant;
@@ -6,7 +6,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::event::{AppEvent, ToastKind};
-use crate::app::{App, InputMode, Tab};
+use crate::app::{App, InputMode, View};
 use crate::mappings::api::{self, MappingSummary};
 use crate::mappings::state::{LoadState, ReconView};
 
@@ -60,7 +60,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
 
 pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.input_mode {
-        InputMode::Normal if app.current_tab == Tab::Mappings => {
+        InputMode::Normal if app.active_view == View::Mappings => {
             vec![("r", "reconcile"), ("p", "pull scripts"), ("R", "refresh")]
         }
         InputMode::Mappings(Mode::Search) => vec![

@@ -3,15 +3,15 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Tabs},
+    widgets::Paragraph,
 };
 
-use crate::app::{App, Realm, Tab};
+use crate::app::{App, Realm};
 use crate::tui::theme::style_for;
 
-/// Top strip: tabs + realm/tenant chips. Caller must pass a 1-row area.
+/// Top strip: active view + realm/tenant chips. Caller must pass a 1-row area.
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
-    draw_tab_row(f, app, area);
+    draw_header_row(f, app, area);
 }
 
 /// Bottom strip: global keybind hints. Caller must pass a 1-row area.
@@ -19,28 +19,22 @@ pub fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
     draw_hint_row(f, app, area);
 }
 
-fn draw_tab_row(f: &mut Frame, app: &App, area: Rect) {
-    // Split: tabs on left, chips on right
+fn draw_header_row(f: &mut Frame, app: &App, area: Rect) {
     let [left, right] =
         Layout::horizontal([Constraint::Min(20), Constraint::Length(30)]).areas(area);
 
-    // Tabs
-    let tab_titles: Vec<Line> = Tab::all().iter().map(|t| Line::from(t.label())).collect();
-    let tabs = Tabs::new(tab_titles)
-        .select(
-            Tab::all()
-                .iter()
-                .position(|t| *t == app.current_tab)
-                .unwrap_or(0),
-        )
-        .style(Style::default().fg(Color::DarkGray))
-        .highlight_style(
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .divider("|");
-    f.render_widget(tabs, left);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                app.active_view.label(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  Ctrl-P functions", Style::default().fg(Color::DarkGray)),
+        ])),
+        left,
+    );
 
     // Realm chip + env chip
     let realm_label = match app.current_realm {
