@@ -127,7 +127,7 @@ impl PasteForm {
             name: self.name.trimmed().to_string(),
             base_url: self.normalised_base_url(),
             theme: self.theme,
-            sa_id: self.sa_id.trimmed().to_string(),
+            sa_id: Some(self.sa_id.trimmed().to_string()),
             scopes,
         }
     }

@@ -15,7 +15,7 @@ use crate::app::event::{AppEvent, EventHandler, ToastKind};
 use crate::config::crypto::{self, Dek};
 use crate::config::tenant::Tenant;
 use crate::config::wraps::WrapsFile;
-use crate::config::{self, ProjectConfig, Settings};
+use crate::config::{self, LogKeyMap, LogKeyPair, ProjectConfig, Settings};
 use crate::tui::toast::Toast;
 use crate::{Error, Result};
 
@@ -121,6 +121,11 @@ pub struct App {
     // need a JWK to mint a token from this process.
     jwks: HashMap<String, serde_json::Value>,
 
+    /// Decrypted log API key pairs, keyed by tenant name. Kept alongside
+    /// `jwks` so onboarding can add a freshly-created pair without replacing
+    /// credentials already stored for other tenants.
+    log_keys: LogKeyMap,
+
     /// Onboarding state — see `crate::onboard`. Owns the form
     /// drafts, the in-flight bootstrap id, the OTP callback body, and the
     /// overwrite-confirm draft.
@@ -223,6 +228,7 @@ impl App {
             dek: None,
             wraps,
             jwks: HashMap::new(),
+            log_keys: HashMap::new(),
             onboard: crate::onboard::screen::State::new(),
             prod_confirm: crate::app::prod_confirm::State::new(),
             undo,
@@ -285,6 +291,9 @@ impl App {
                 self.jwks = map;
             }
         }
+        if let Ok(map) = config::load_plain_log_key_map() {
+            self.log_keys = map;
+        }
     }
 
     pub fn save_jwk(&mut self, tenant_name: &str, jwk: serde_json::Value) -> Result<()> {
@@ -306,6 +315,27 @@ impl App {
             ProjectConfig::save_keys_enc(&enc)?;
         } else {
             ProjectConfig::save_keys_plain(&bytes)?;
+        }
+        Ok(())
+    }
+
+    pub fn save_log_key(&mut self, tenant_name: &str, pair: LogKeyPair) -> Result<()> {
+        self.log_keys.insert(tenant_name.to_string(), pair);
+        self.persist_log_keys()
+    }
+
+    /// Write the current log API key map using the same vault mode and DEK
+    /// source as the service-account JWK map.
+    pub fn persist_log_keys(&self) -> Result<()> {
+        let encrypt = self.settings.map(|s| s.encrypt_keys).unwrap_or(true);
+        if encrypt {
+            let dek = self
+                .dek
+                .as_ref()
+                .ok_or_else(|| Error::Crypto("not unlocked — no DEK in memory".into()))?;
+            config::save_log_key_map(&self.log_keys, dek)?;
+        } else {
+            config::save_plain_log_key_map(&self.log_keys)?;
         }
         Ok(())
     }
@@ -395,6 +425,10 @@ impl App {
 
     pub fn set_jwks(&mut self, map: HashMap<String, serde_json::Value>) {
         self.jwks = map;
+    }
+
+    pub fn set_log_keys(&mut self, map: LogKeyMap) {
+        self.log_keys = map;
     }
 
     /// Read-only access to the decrypted JWK map for callers that need to

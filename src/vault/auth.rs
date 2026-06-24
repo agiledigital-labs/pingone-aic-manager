@@ -15,7 +15,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use crate::agent::{AgentClient, Request as AgentRequest, Response as AgentResponse};
 use crate::config::crypto::Dek;
 use crate::config::wraps::WrapsFile;
-use crate::config::{self};
+use crate::config::{self, LogKeyMap};
 use crate::{Error, Result};
 
 /// Successful unlock payload. The TUI also passes this through an event
@@ -24,6 +24,7 @@ use crate::{Error, Result};
 pub struct UnlockOk {
     pub dek: Dek,
     pub jwks: HashMap<String, serde_json::Value>,
+    pub log_keys: LogKeyMap,
 }
 
 /// Unlock with a master password. Argon2 is pushed to a blocking thread.
@@ -31,7 +32,12 @@ pub async fn unlock_password(password: String) -> Result<UnlockOk> {
     let (dek, jwks) = tokio::task::spawn_blocking(move || config::unlock_with_password(&password))
         .await
         .map_err(|e| Error::Crypto(format!("unlock task: {e}")))??;
-    Ok(UnlockOk { dek, jwks })
+    let log_keys = config::decrypt_log_keys_file(&dek)?;
+    Ok(UnlockOk {
+        dek,
+        jwks,
+        log_keys,
+    })
 }
 
 /// Unlock by tapping any enrolled security key. Builds an allowList from
@@ -49,7 +55,12 @@ pub async fn unlock_security_key(wraps_file: WrapsFile, pin: String) -> Result<U
     })
     .await
     .map_err(|e| Error::Crypto(format!("unlock task: {e}")))??;
-    Ok(UnlockOk { dek, jwks })
+    let log_keys = config::decrypt_log_keys_file(&dek)?;
+    Ok(UnlockOk {
+        dek,
+        jwks,
+        log_keys,
+    })
 }
 
 /// Hand a freshly-derived DEK to the agent so subsequent processes (other

@@ -43,6 +43,12 @@ struct CreateSaResp {
     id: String,
 }
 
+#[derive(Deserialize)]
+struct CreateLogApiKeyResp {
+    api_key_id: String,
+    api_key_secret: String,
+}
+
 /// Discover the tenant-specific AM session cookie name.
 pub async fn discover_cookie_name(http: &reqwest::Client, base_url: &str) -> Result<String> {
     let url = format!("{base_url}/am/json/serverinfo/*");
@@ -201,6 +207,34 @@ pub async fn create_service_account(
     }
     let created: CreateSaResp = resp.json().await?;
     Ok(created.id)
+}
+
+/// Create a log API key using the bootstrap admin-user bearer.
+pub async fn create_log_api_key(
+    http: &reqwest::Client,
+    base_url: &str,
+    bearer: &str,
+    name: &str,
+) -> Result<crate::config::LogKeyPair> {
+    let url = format!("{base_url}/keys?_action=create");
+    let resp = http
+        .post(&url)
+        .header("Authorization", format!("Bearer {bearer}"))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({ "name": name }))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(Error::Api {
+            status: resp.status().as_u16(),
+            body: resp.text().await.unwrap_or_default(),
+        });
+    }
+    let created: CreateLogApiKeyResp = resp.json().await?;
+    Ok(crate::config::LogKeyPair {
+        api_key_id: created.api_key_id,
+        api_key_secret: created.api_key_secret,
+    })
 }
 
 /// Build a reqwest client that does NOT follow redirects (so authorize 302 is observable).

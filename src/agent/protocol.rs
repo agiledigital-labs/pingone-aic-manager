@@ -35,6 +35,16 @@ pub enum Request {
     /// Return a valid bearer token for the named tenant, minting one if the
     /// cached token is missing or within 60s of expiry.
     GetToken { tenant: String },
+    /// Store or replace the log API key pair for a tenant.
+    PutLogKey {
+        tenant: String,
+        api_key_id: String,
+        api_key_secret: String,
+    },
+    /// Return the stored log API key pair for a tenant.
+    GetLogKey { tenant: String },
+    /// Remove the stored log API key pair for a tenant.
+    RemoveLogKey { tenant: String },
     /// Proxy a tenant-scoped AIC HTTP call. The daemon owns the bearer
     /// token cache + connection pool, so the TUI and CLI both go through
     /// here for every read and write — keeps token/HTTP machinery in one
@@ -69,6 +79,13 @@ pub enum Response {
     Token {
         access_token: String,
         expires_at: i64,
+    },
+    LogKey {
+        api_key_id: String,
+        api_key_secret: String,
+    },
+    LogKeyMissing {
+        tenant: String,
     },
     /// Reply to `GetDek` when a DEK is cached. Base64 of 32 raw bytes.
     Dek {

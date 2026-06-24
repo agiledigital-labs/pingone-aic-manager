@@ -131,8 +131,16 @@ pub async fn try_agent_unlock(app: &mut App) {
             return;
         }
     };
+    let log_keys = match crate::config::decrypt_log_keys_file(&dek) {
+        Ok(keys) => keys,
+        Err(e) => {
+            tracing::warn!("agent DEK failed to decrypt log-keys.enc: {e}");
+            return;
+        }
+    };
     app.set_dek(Some(dek));
     app.set_jwks(jwks);
+    app.set_log_keys(log_keys);
 }
 
 /// Hand the just-derived DEK to the agent so subsequent ApiCalls (this
@@ -207,9 +215,19 @@ fn spawn_security_key_poll(app: &mut App, pin: String) {
             let result = crate::config::unlock_with_security_key(&wraps, pin_opt);
             match result {
                 Ok((dek, jwks)) => {
+                    let log_keys = match crate::config::decrypt_log_keys_file(&dek) {
+                        Ok(keys) => keys,
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::Vault(Event::UnlockFinished(Err(format!(
+                                "log key vault: {e}"
+                            )))));
+                            return;
+                        }
+                    };
                     let _ = tx.send(AppEvent::Vault(Event::UnlockFinished(Ok(UnlockOk {
                         dek,
                         jwks,
+                        log_keys,
                     }))));
                     return;
                 }
@@ -313,9 +331,14 @@ pub async fn handle_result(app: &mut App, result: std::result::Result<UnlockOk, 
     }
     app.unlock.busy = false;
     match result {
-        Ok(UnlockOk { dek, jwks }) => {
+        Ok(UnlockOk {
+            dek,
+            jwks,
+            log_keys,
+        }) => {
             app.set_dek(Some(dek));
             app.set_jwks(jwks);
+            app.set_log_keys(log_keys);
             app.unlock.error = None;
             app.unlock.pin_input.clear();
             app.input_mode = InputMode::Normal;

@@ -436,7 +436,7 @@ fn onboard_menu_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     bind(lines, "Esc", "cancel");
     group(lines, "Movement");
     bind(lines, "↑/↓", "move selection");
-    let count = if app.has_env_creds { 4 } else { 3 };
+    let count = crate::onboard::screen::menu_option_count(app.has_env_creds);
     if let Some(range) = number_range(count) {
         bind(lines, range, "choose numbered method");
     }
@@ -446,7 +446,9 @@ fn onboard_menu_lines(app: &App, lines: &mut Vec<Line<'static>>) {
 fn onboard_lines(app: &App, mode: OnboardMode, lines: &mut Vec<Line<'static>>) {
     match mode {
         OnboardMode::Menu => onboard_menu_lines(app, lines),
-        OnboardMode::Cookie | OnboardMode::Paste => onboard_form_lines(lines),
+        OnboardMode::Cookie | OnboardMode::Paste | OnboardMode::LogOnly => {
+            onboard_form_lines(lines)
+        }
         OnboardMode::UserPass => onboard_userpass_lines(app, lines),
         OnboardMode::OverwriteConfirm => confirm_lines(
             lines,

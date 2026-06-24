@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+use crate::config::LogKeyPair;
 use crate::{Error, Result};
 
 use super::protocol::{Request, Response};
@@ -91,6 +92,77 @@ impl AgentClient {
             other => Err(Error::Config(format!("unexpected ping reply: {other:?}"))),
         }
     }
+
+    pub async fn put_log_key(
+        self,
+        tenant: &str,
+        api_key_id: String,
+        api_key_secret: String,
+    ) -> Result<()> {
+        match self
+            .send(&Request::PutLogKey {
+                tenant: tenant.to_string(),
+                api_key_id,
+                api_key_secret,
+            })
+            .await?
+        {
+            Response::Ok => Ok(()),
+            Response::Locked => Err(agent_locked_error()),
+            Response::Error { message } => Err(Error::Config(message)),
+            _ => Err(Error::Config("unexpected agent reply to PutLogKey".into())),
+        }
+    }
+
+    pub async fn get_log_key(self, tenant: &str) -> Result<LogKeyPair> {
+        match self
+            .send(&Request::GetLogKey {
+                tenant: tenant.to_string(),
+            })
+            .await?
+        {
+            Response::LogKey {
+                api_key_id,
+                api_key_secret,
+            } => Ok(LogKeyPair {
+                api_key_id,
+                api_key_secret,
+            }),
+            Response::LogKeyMissing { tenant } => Err(Error::LogKeyMissing { tenant }),
+            Response::Locked => Err(agent_locked_error()),
+            Response::Error { message } if is_missing_log_key_error(&message, tenant) => {
+                Err(Error::LogKeyMissing {
+                    tenant: tenant.to_string(),
+                })
+            }
+            Response::Error { message } => Err(Error::Config(message)),
+            _ => Err(Error::Config("unexpected agent reply to GetLogKey".into())),
+        }
+    }
+
+    pub async fn remove_log_key(self, tenant: &str) -> Result<()> {
+        match self
+            .send(&Request::RemoveLogKey {
+                tenant: tenant.to_string(),
+            })
+            .await?
+        {
+            Response::Ok => Ok(()),
+            Response::Locked => Err(agent_locked_error()),
+            Response::Error { message } => Err(Error::Config(message)),
+            _ => Err(Error::Config(
+                "unexpected agent reply to RemoveLogKey".into(),
+            )),
+        }
+    }
+}
+
+fn agent_locked_error() -> Error {
+    Error::Auth("agent locked; run `aic login`".into())
+}
+
+fn is_missing_log_key_error(message: &str, tenant: &str) -> bool {
+    message.ends_with(&format!("no log key stored for tenant {tenant}"))
 }
 
 fn current_exe() -> Result<PathBuf> {
@@ -136,4 +208,21 @@ fn spawn_detached_agent() -> Result<()> {
     // Intentionally do not wait — agent runs detached. Dropping `child` does
     // not kill it; only the file handles are closed.
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_missing_log_key_error;
+
+    #[test]
+    fn recognizes_the_old_agent_missing_log_key_error_without_rewrapping_it() {
+        assert!(is_missing_log_key_error(
+            "Config error: no log key stored for tenant sandbox",
+            "sandbox"
+        ));
+        assert!(!is_missing_log_key_error(
+            "Config error: no log key stored for tenant development",
+            "sandbox"
+        ));
+    }
 }

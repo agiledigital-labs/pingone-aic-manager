@@ -13,6 +13,23 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 pub use tenant::{Tenant, TenantTheme};
 
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogKeyPair {
+    pub api_key_id: String,
+    pub api_key_secret: String,
+}
+
+impl std::fmt::Debug for LogKeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogKeyPair")
+            .field("api_key_id", &self.api_key_id)
+            .field("api_key_secret", &"<hidden>")
+            .finish()
+    }
+}
+
+pub type LogKeyMap = HashMap<String, LogKeyPair>;
+
 /// Tenant + realm inferred from the directory a command was invoked in, when
 /// that directory is inside `workspace/<tenant>/…`. Populated once at CLI
 /// startup ([`crate::cli`]); consulted so `cd`-ing into a workspace subtree
@@ -131,10 +148,49 @@ pub fn save_jwk_map(map: &HashMap<String, serde_json::Value>, dek: &crypto::Dek)
     Ok(())
 }
 
+pub fn decrypt_log_keys_file(dek: &crypto::Dek) -> Result<LogKeyMap> {
+    decode_encrypted_log_key_map(ProjectConfig::load_log_keys_enc()?, dek)
+}
+
+pub fn save_log_key_map(map: &LogKeyMap, dek: &crypto::Dek) -> Result<()> {
+    let enc = encode_encrypted_log_key_map(map, dek)?;
+    ProjectConfig::save_log_keys_enc(&enc)
+}
+
+pub fn load_plain_log_key_map() -> Result<LogKeyMap> {
+    decode_plain_log_key_map(ProjectConfig::load_log_keys_plain()?)
+}
+
+pub fn save_plain_log_key_map(map: &LogKeyMap) -> Result<()> {
+    ProjectConfig::save_log_keys_plain(&serde_json::to_vec(map)?)
+}
+
+fn encode_encrypted_log_key_map(map: &LogKeyMap, dek: &crypto::Dek) -> Result<Vec<u8>> {
+    crypto::encrypt_data(&serde_json::to_vec(map)?, dek)
+}
+
+fn decode_encrypted_log_key_map(data: Option<Vec<u8>>, dek: &crypto::Dek) -> Result<LogKeyMap> {
+    match data {
+        Some(data) => {
+            let plaintext = crypto::decrypt_data(&data, dek)?;
+            Ok(serde_json::from_slice(&plaintext)?)
+        }
+        None => Ok(HashMap::new()),
+    }
+}
+
+fn decode_plain_log_key_map(data: Option<Vec<u8>>) -> Result<LogKeyMap> {
+    match data {
+        Some(data) if !data.is_empty() => Ok(serde_json::from_slice(&data)?),
+        Some(_) | None => Ok(HashMap::new()),
+    }
+}
+
 /// Transition from "no encryption" to "encrypted": read `keys.plain`,
-/// encrypt with `dek`, write `keys.enc`, delete `keys.plain`, and flip
-/// `settings.toml` to `encrypt_keys = true`. Called by the Settings screen
-/// when the user adds the first auth factor while encryption is disabled.
+/// encrypt it and any `log-keys.plain`, write the parallel encrypted files,
+/// delete the plaintext files, and flip `settings.toml` to
+/// `encrypt_keys = true`. Called by the Settings screen when the user adds
+/// the first auth factor while encryption is disabled.
 ///
 /// `wraps.toml` is not touched here — callers must have already saved the
 /// wrap that protects this DEK before calling this function, otherwise
@@ -148,24 +204,42 @@ pub fn enable_encryption(dek: &crypto::Dek) -> Result<()> {
         _ => b"{}".to_vec(),
     };
     let enc = crypto::encrypt_data(&plain, dek)?;
+    let log_keys_enc = ProjectConfig::load_log_keys_plain()?
+        .map(|bytes| crypto::encrypt_data(if bytes.is_empty() { b"{}" } else { &bytes }, dek))
+        .transpose()?;
     ProjectConfig::save_keys_enc(&enc)?;
+    if let Some(log_keys_enc) = log_keys_enc {
+        ProjectConfig::save_log_keys_enc(&log_keys_enc)?;
+    }
     let _ = fs::remove_file(ProjectConfig::keys_plain_path());
+    let _ = fs::remove_file(ProjectConfig::log_keys_plain_path());
     let mut settings = Settings::load()?.unwrap_or_default();
     settings.encrypt_keys = true;
     settings.save()?;
     Ok(())
 }
 
-/// Transition from "encrypted" to "no encryption": decrypt `keys.enc` with
-/// `dek`, write the cleartext to `keys.plain` (mode 600), then delete
-/// `keys.enc` and `wraps.toml`, and flip `settings.toml` to
-/// `encrypt_keys = false`. Called by the last-factor guard in the Settings
-/// screen.
+/// Transition from "encrypted" to "no encryption": decrypt `keys.enc` and
+/// any `log-keys.enc` with `dek`, write the cleartext files at mode 600,
+/// then delete the encrypted files and `wraps.toml`, and flip
+/// `settings.toml` to `encrypt_keys = false`. Called by the last-factor
+/// guard in the Settings screen.
 pub fn disable_encryption(dek: &crypto::Dek) -> Result<()> {
     let plain = decrypt_keys_file(dek)?;
     let bytes = serde_json::to_vec(&plain)?;
+    let log_keys = ProjectConfig::load_log_keys_enc()?
+        .map(|data| {
+            let plaintext = crypto::decrypt_data(&data, dek)?;
+            let map: LogKeyMap = serde_json::from_slice(&plaintext)?;
+            Ok::<_, crate::Error>(map)
+        })
+        .transpose()?;
     ProjectConfig::save_keys_plain(&bytes)?;
+    if let Some(log_keys) = log_keys {
+        save_plain_log_key_map(&log_keys)?;
+    }
     let _ = fs::remove_file(ProjectConfig::keys_path());
+    let _ = fs::remove_file(ProjectConfig::log_keys_path());
     let _ = fs::remove_file(ProjectConfig::wraps_path());
     let mut settings = Settings::load()?.unwrap_or_default();
     settings.encrypt_keys = false;
@@ -316,12 +390,20 @@ impl ProjectConfig {
         Self::dir().join("keys.enc")
     }
 
+    pub fn log_keys_path() -> PathBuf {
+        Self::dir().join("log-keys.enc")
+    }
+
     pub fn wraps_path() -> PathBuf {
         Self::dir().join("wraps.toml")
     }
 
     pub fn keys_plain_path() -> PathBuf {
         Self::dir().join("keys.plain")
+    }
+
+    pub fn log_keys_plain_path() -> PathBuf {
+        Self::dir().join("log-keys.plain")
     }
 
     pub fn config_path() -> PathBuf {
@@ -373,7 +455,7 @@ impl ProjectConfig {
         // wraps.toml contains the (encrypted) DEK envelope, including the
         // FIDO2 credential id for any enrolled security_keys — opaque but
         // device-specific, so we never check it in.
-        let content = "keys.enc\nkeys.plain\nwraps.toml\nlocal-config/\n*.log\n";
+        let content = "keys.enc\nkeys.plain\nlog-keys.enc\nlog-keys.plain\nwraps.toml\nlocal-config/\n*.log\n";
         fs::write(path, content)?;
         Ok(())
     }
@@ -395,6 +477,15 @@ impl ProjectConfig {
         Ok(Some(fs::read(path)?))
     }
 
+    /// Save the encrypted log API key map at mode 600.
+    pub fn save_log_keys_enc(data: &[u8]) -> Result<()> {
+        save_private_file(&Self::log_keys_path(), data)
+    }
+
+    pub fn load_log_keys_enc() -> Result<Option<Vec<u8>>> {
+        load_optional_file(&Self::log_keys_path())
+    }
+
     /// Save unencrypted JWK map (mode 600). Used when the user opts out of
     /// master-password protection.
     pub fn save_keys_plain(data: &[u8]) -> Result<()> {
@@ -411,5 +502,155 @@ impl ProjectConfig {
             return Ok(None);
         }
         Ok(Some(fs::read(path)?))
+    }
+
+    /// Save the unencrypted log API key map at mode 600.
+    pub fn save_log_keys_plain(data: &[u8]) -> Result<()> {
+        save_private_file(&Self::log_keys_plain_path(), data)
+    }
+
+    pub fn load_log_keys_plain() -> Result<Option<Vec<u8>>> {
+        load_optional_file(&Self::log_keys_plain_path())
+    }
+}
+
+fn save_private_file(path: &Path, data: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, data)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+fn load_optional_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(fs::read(path)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("aic-edit-log-keys-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn sample_log_keys() -> LogKeyMap {
+        HashMap::from([(
+            "sandbox".to_string(),
+            LogKeyPair {
+                api_key_id: "log-key-id".to_string(),
+                api_key_secret: "log-key-secret".to_string(),
+            },
+        )])
+    }
+
+    #[test]
+    fn log_key_map_plain_save_load_round_trip() {
+        let dir = TestDir::new();
+        let path = dir.path("log-keys.plain");
+        let expected = sample_log_keys();
+
+        save_private_file(&path, &serde_json::to_vec(&expected).unwrap()).unwrap();
+        let actual = decode_plain_log_key_map(load_optional_file(&path).unwrap()).unwrap();
+
+        assert_eq!(actual, expected);
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn log_key_map_encrypted_save_load_round_trip() {
+        let dir = TestDir::new();
+        let path = dir.path("log-keys.enc");
+        let expected = sample_log_keys();
+        let dek = crypto::Dek::random();
+
+        let encrypted = encode_encrypted_log_key_map(&expected, &dek).unwrap();
+        save_private_file(&path, &encrypted).unwrap();
+        let actual =
+            decode_encrypted_log_key_map(load_optional_file(&path).unwrap(), &dek).unwrap();
+
+        assert_eq!(actual, expected);
+        assert_ne!(
+            fs::read(&path).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn config_tenant_without_sa_id_round_trips_as_none() {
+        let input = r#"
+project = "test"
+default_tenant = "logs"
+
+[[tenant]]
+name = "logs"
+base_url = "https://logs.example"
+theme = "sandbox"
+scopes = []
+"#;
+
+        let config: ProjectConfig = toml::from_str(input).unwrap();
+        assert_eq!(config.tenants[0].sa_id, None);
+
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(!serialized.contains("sa_id"));
+        let reparsed: ProjectConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.tenants[0].sa_id, None);
+    }
+
+    #[test]
+    fn config_tenant_with_sa_id_round_trips_as_some() {
+        let input = r#"
+project = "test"
+default_tenant = "sandbox"
+
+[[tenant]]
+name = "sandbox"
+base_url = "https://sandbox.example"
+theme = "sandbox"
+sa_id = "service-account-id"
+scopes = ["fr:idm:*"]
+"#;
+
+        let config: ProjectConfig = toml::from_str(input).unwrap();
+        assert_eq!(
+            config.tenants[0].sa_id.as_deref(),
+            Some("service-account-id")
+        );
+
+        let serialized = toml::to_string(&config).unwrap();
+        let reparsed: ProjectConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            reparsed.tenants[0].sa_id.as_deref(),
+            Some("service-account-id")
+        );
     }
 }

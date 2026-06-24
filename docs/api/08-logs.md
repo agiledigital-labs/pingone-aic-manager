@@ -14,6 +14,13 @@ x-api-key:    <api_key_id>
 x-api-secret: <api_key_secret>
 ```
 
+**A service-account bearer cannot read logs (verified 2026-06-24).** `GET
+/monitoring/logs/sources` and `GET /monitoring/logs?…` both return **401** for an
+SA bearer — even one carrying all 13 grantable `fr:idc:*` scopes plus
+`fr:am:*`/`fr:idm:*`. 401 (not 403) means the `/monitoring/logs/*` family is a
+**separate auth plane** that only accepts the api-key header pair; scope is
+irrelevant. There is no bearer path to log search — the key pair is mandatory.
+
 These are generated in the admin console: **Tenant Settings → Log API Keys**.
 Save the secret immediately on creation — it cannot be retrieved later.
 
@@ -22,6 +29,24 @@ bearer token to mint new log keys programmatically — see frodo-lib
 `src/api/cloud/LogApi.ts`. Bearer-auth fails against `/monitoring/logs/*`
 itself (verified live: 401).
 
+**⚠ `/keys` is NOT service-account-accessible (verified 2026-06-24).** Both
+`GET /keys` and `POST /keys?_action=create` return **403 "insufficient scope"**
+for an SA bearer — and they *still* 403 after granting the SA **all 13**
+`fr:idc:*` scopes it can hold (`analytics`, `telemetry`, `dataset`,
+`certificate`, `promotion`, `release`, … — see the test in
+`99-quirks-and-open-questions.md`). The endpoint accepts the bearer (not 401)
+but no service-account scope satisfies it. Conclusion: **log-key management
+requires an admin-*user* token** (the cookie / AppAuth session our
+cookie/userpass onboarding already mints via `session_to_bearer()`), not a
+service-account token. The frodo-lib "SA mints log keys" claim is stale.
+
+Implications for aic-edit:
+- **Mint-on-demand is only possible while we hold an admin session** — i.e. at
+  cookie/userpass onboarding time, or by re-authing as admin. An existing
+  tenant that only has an SA cannot mint keys.
+- **Default path: paste console-created keys** (Tenant Settings → Log API
+  Keys) and store them in the vault. Always works.
+
 ## Endpoints (tenant-global)
 
 | Op | Method | Path | Notes |
@@ -29,9 +54,18 @@ itself (verified live: 401).
 | List sources | `GET` | `/monitoring/logs/sources` | Returns array of available source IDs. |
 | Fetch logs | `GET` | `/monitoring/logs?source={src}&beginTime=…&endTime=…` | Time-bounded query. |
 | Tail logs | `GET` | `/monitoring/logs/tail?source={src}` | Most-recent ~15s window; pageable. |
-| List API keys | `GET` | `/keys` | Bearer-auth. |
-| Get API key | `GET` | `/keys/{id}` | Bearer-auth. |
-| Create API key | `POST` | `/keys?_action=create` | Bearer-auth. Body: `{"name":"..."}`. Secret in response (only time). |
+| List API keys | `GET` | `/keys` | **Admin-user bearer** (see below). CREST paged envelope; elements `{api_key_id, created_at, name}` — no secret. |
+| Get API key | `GET` | `/keys/{id}` | Admin-user bearer. |
+| Create API key | `POST` | `/keys?_action=create` | Admin-user bearer. Body: `{"name":"..."}`. Returns `{name, api_key_id, api_key_secret, created_at}` — **secret only here, once**. |
+| Delete API key | `DELETE` | `/keys/{id}` | Admin-user bearer. → **204 No Content**. |
+
+**Auth for `/keys` (verified 2026-06-24):** these need an **admin-user bearer**,
+NOT a service-account token. Mint one via the same `idmAdminClient` PKCE flow
+onboarding already uses (`session_to_bearer`, scope `openid fr:idm:*` — no extra
+scope needed). With that token, `GET`/`POST create`/`DELETE` all succeed
+(200/200/204). An SA bearer 403s on `/keys` no matter the scope (see auth
+section). So aic-edit can auto-mint keys only while it holds an admin session
+(onboarding); otherwise paste console-created keys.
 
 ## Query params (`/monitoring/logs`)
 
@@ -40,7 +74,8 @@ itself (verified live: 401).
 | `source` | string (comma-separated) | Required. e.g. `am-access`, `idm-everything`. |
 | `beginTime` | ISO 8601 (`2026-05-17T10:00:00Z`) | ≤24h before `endTime`. |
 | `endTime` | ISO 8601 | Required if `beginTime` set. |
-| `_queryFilter` | CREST filter | e.g. `payload/transactionId eq "abc"`. Avoid array indexing. |
+| `transactionId` | string | **Direct top-level param** — `&transactionId=<id>` filters to one transaction. This is the working path (verified via the `gt`-style call), not `_queryFilter`. |
+| `_queryFilter` | CREST filter | e.g. `payload/transactionId eq "abc"`. Avoid array indexing. Prefer the `transactionId` param above for the common case. |
 | `_pageSize` | int | Default 1000, max 1000. |
 | `_pagedResultsCookie` | opaque | From previous page. |
 
@@ -122,12 +157,44 @@ curl -sS "$TENANT_BASE_URL/monitoring/logs/sources" \
 - **`transactionId` appears twice** in payload (top-level and inside `mdc`).
   They should match; use the top-level one.
 
+## Source IDs (verified)
+
+Live `GET /monitoring/logs/sources` on the sandbox returned:
+
+```
+am-access  am-activity  am-authentication  am-config  am-core  am-everything
+ctsstore  ctsstore-access  ctsstore-config-audit  ctsstore-upgrade
+idm-access  idm-activity  idm-authentication  idm-config  idm-core
+idm-everything  idm-sync
+userstore  userstore-access  userstore-config-audit  userstore-ldif-importer
+userstore-upgrade
+```
+
+Note: **`idm-recon` is NOT in the live set** (it was in an earlier guessed
+list). `am-everything` and `idm-everything` are the catch-all roll-ups and the
+right CLI defaults for transaction lookups.
+
 ## Verified against
 
-- Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-05-17
-- Calls: `GET /monitoring/logs/sources` (Bearer) → 401 (as expected — wrong
-  auth). Log API keys not present in `.envrc`; live verification deferred.
+- Tenant: `tenant.example.com` (the aic-edit sandbox)
+- Date: 2026-06-24
+- Calls:
+  - `GET /keys` (Bearer, our SA scopes) → **403 insufficient scope** (endpoint
+    exists, scope-gated — see scope-gap note above).
+  - `GET /monitoring/logs/sources` (api-key pair) → **401** because the only key
+    we had on hand had been rotated/revoked. Auth model confirmed (api-key path,
+    not bearer); a live 200 against this tenant is still pending a valid key.
+  - Source list above + `transactionId`/`beginTime`/`endTime`/
+    `_pagedResultsCookie` query shapes confirmed against working reference
+    scripts (`<client-checkout>/logs/`).
+  - `/keys` full lifecycle verified live via an **admin-user bearer**
+    (`idmAdminClient` PKCE, scope `openid fr:idm:*`): `GET /keys` → 200 (CREST
+    envelope, elements `{api_key_id, created_at, name}`); `POST
+    /keys?_action=create {name}` → 200 returning `{name, api_key_id,
+    api_key_secret, created_at}`; `DELETE /keys/{id}` → 204. SA bearer 403s
+    regardless of scope.
+- **Still deferred:** a 200 from `/monitoring/logs` on this tenant (needs a live
+  key — minting one is now unblocked via the admin flow above).
 
 ## Source citations
 

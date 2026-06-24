@@ -7,13 +7,15 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::event::ToastKind;
 use crate::app::{App, InputMode};
+use crate::config::LogKeyPair;
 use crate::config::tenant::Tenant;
 
 #[derive(Debug)]
 pub enum PendingProdAction {
     SaveTenant {
         tenant: Tenant,
-        jwk: serde_json::Value,
+        jwk: Option<serde_json::Value>,
+        log_key: Option<LogKeyPair>,
     },
     EsvSave(crate::esv::state::SavePlan),
     EsvDelete(crate::esv::state::DeletePlan),
@@ -71,8 +73,13 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             app.input_mode = InputMode::Normal;
             if let Some(action) = action {
                 match action {
-                    PendingProdAction::SaveTenant { tenant, jwk } => {
-                        match crate::onboard::screen::persist_new_tenant(app, tenant, jwk) {
+                    PendingProdAction::SaveTenant {
+                        tenant,
+                        jwk,
+                        log_key,
+                    } => {
+                        match crate::onboard::screen::persist_new_tenant(app, tenant, jwk, log_key)
+                        {
                             Ok(()) => app.push_toast(ToastKind::Success, "Tenant added!"),
                             Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
                         }
