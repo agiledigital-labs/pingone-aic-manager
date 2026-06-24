@@ -13,7 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 
 use crate::aic::AicClient;
-use crate::config::{self, ProjectConfig, crypto::Dek};
+use crate::config::{self, LogKeyMap, LogKeyPair, ProjectConfig, crypto::Dek};
 use crate::{Error, Result};
 
 use super::protocol::{CachedTokenInfo, Request, Response, StatusInfo};
@@ -313,6 +313,35 @@ async fn handle(
                 message: e.to_string(),
             },
         },
+        Request::PutLogKey {
+            tenant,
+            api_key_id,
+            api_key_secret,
+        } => match do_put_log_key(&tenant, api_key_id, api_key_secret, state).await {
+            Ok(true) => Response::Ok,
+            Ok(false) => Response::Locked,
+            Err(e) => Response::Error {
+                message: e.to_string(),
+            },
+        },
+        Request::GetLogKey { tenant } => match do_get_log_key(&tenant, state).await {
+            Ok(Some(pair)) => Response::LogKey {
+                api_key_id: pair.api_key_id,
+                api_key_secret: pair.api_key_secret,
+            },
+            Ok(None) => Response::Locked,
+            Err(Error::LogKeyMissing { tenant }) => Response::LogKeyMissing { tenant },
+            Err(e) => Response::Error {
+                message: e.to_string(),
+            },
+        },
+        Request::RemoveLogKey { tenant } => match do_remove_log_key(&tenant, state).await {
+            Ok(true) => Response::Ok,
+            Ok(false) => Response::Locked,
+            Err(e) => Response::Error {
+                message: e.to_string(),
+            },
+        },
         Request::ApiCall {
             tenant,
             method,
@@ -455,6 +484,69 @@ async fn do_get_token(
     let token = client.bearer().await?;
     let expires_at = client.token_cache.lock().unwrap().expires_at();
     Ok(Some((token, expires_at)))
+}
+
+async fn do_put_log_key(
+    tenant: &str,
+    api_key_id: String,
+    api_key_secret: String,
+    state: Arc<RwLock<AgentState>>,
+) -> Result<bool> {
+    let s = state.write().await;
+    let Some(mut map) = load_log_key_map(&s.vault)? else {
+        return Ok(false);
+    };
+    map.insert(
+        tenant.to_string(),
+        LogKeyPair {
+            api_key_id,
+            api_key_secret,
+        },
+    );
+    save_log_key_map(&s.vault, &map)?;
+    Ok(true)
+}
+
+async fn do_get_log_key(
+    tenant: &str,
+    state: Arc<RwLock<AgentState>>,
+) -> Result<Option<LogKeyPair>> {
+    let s = state.read().await;
+    let Some(map) = load_log_key_map(&s.vault)? else {
+        return Ok(None);
+    };
+    map.get(tenant)
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| Error::LogKeyMissing {
+            tenant: tenant.to_string(),
+        })
+}
+
+async fn do_remove_log_key(tenant: &str, state: Arc<RwLock<AgentState>>) -> Result<bool> {
+    let s = state.write().await;
+    let Some(mut map) = load_log_key_map(&s.vault)? else {
+        return Ok(false);
+    };
+    map.remove(tenant);
+    save_log_key_map(&s.vault, &map)?;
+    Ok(true)
+}
+
+fn load_log_key_map(vault: &Vault) -> Result<Option<LogKeyMap>> {
+    match vault {
+        Vault::Locked => Ok(None),
+        Vault::Encrypted { dek } => config::decrypt_log_keys_file(dek).map(Some),
+        Vault::Plain { .. } => config::load_plain_log_key_map().map(Some),
+    }
+}
+
+fn save_log_key_map(vault: &Vault, map: &LogKeyMap) -> Result<()> {
+    match vault {
+        Vault::Locked => Err(Error::Auth("agent is locked".into())),
+        Vault::Encrypted { dek } => config::save_log_key_map(map, dek),
+        Vault::Plain { .. } => config::save_plain_log_key_map(map),
+    }
 }
 
 /// Proxy a tenant-scoped HTTP call to AIC. Returns `Ok(None)` when the

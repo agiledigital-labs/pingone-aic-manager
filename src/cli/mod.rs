@@ -87,6 +87,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::idmstore::cli::IdmCommand,
     },
+    /// Audit/debug log fetch and API-key management.
+    Logs {
+        #[command(subcommand)]
+        command: crate::logs::cli::LogsCommand,
+    },
     /// Journey (authentication tree) inspection and export.
     Journey {
         #[command(subcommand)]
@@ -134,6 +139,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Idm { command }) => crate::idmstore::cli::run(command).await,
+        Some(Command::Logs { command }) => crate::logs::cli::run(command).await,
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
         Some(Command::Secretmap { command }) => crate::secretmap::cli::run(command).await,
@@ -244,6 +250,19 @@ fn spawn_detached_then_exit() -> Result<()> {
 }
 
 async fn login() -> Result<()> {
+    ensure_agent_unlocked().await?;
+    print_status_block().await
+}
+
+pub(crate) async fn ensure_agent_unlocked() -> Result<()> {
+    let client = AgentClient::connect_or_spawn().await?;
+    match client.send(&Request::Status).await? {
+        Response::Status(info) if info.unlocked => return Ok(()),
+        Response::Status(_) => {}
+        Response::Error { message } => return Err(Error::Config(message)),
+        other => return Err(Error::Config(format!("unexpected reply: {other:?}"))),
+    }
+
     if ProjectConfig::load()?.is_none() {
         return Err(Error::Config(
             "no .aic-edit/config.toml here — onboard a tenant in the TUI first".into(),
@@ -267,7 +286,7 @@ async fn login() -> Result<()> {
         }
         auth::unlock_plain_agent().await?;
         println!("unlocked (plain mode)");
-        return print_status_block().await;
+        return Ok(());
     }
 
     if ProjectConfig::load_keys_enc()?.is_none() {
@@ -287,7 +306,7 @@ async fn login() -> Result<()> {
     auth::put_dek_to_agent(&dek).await?;
     drop(dek);
     println!("unlocked");
-    print_status_block().await
+    Ok(())
 }
 
 enum MethodChoice {

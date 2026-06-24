@@ -40,7 +40,8 @@ pub struct Tenant {
     pub name: String,
     pub base_url: String,
     pub theme: TenantTheme,
-    pub sa_id: String,
+    #[serde(default)]
+    pub sa_id: Option<String>,
     pub scopes: Vec<String>,
 }
 

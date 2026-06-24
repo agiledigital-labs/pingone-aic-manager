@@ -106,12 +106,18 @@ pub async fn mint_token(
     tenant: &Tenant,
     jwk: &serde_json::Value,
 ) -> Result<(String, i64)> {
+    let sa_id = tenant.sa_id.as_ref().ok_or_else(|| {
+        Error::Auth(format!(
+            "tenant {} is log-only (no service account); cannot mint a bearer token",
+            tenant.name
+        ))
+    })?;
     let now = unix_now();
     let aud = format!("{}/am/oauth2/access_token", tenant.base_url);
 
     let claims = JwtClaims {
-        iss: tenant.sa_id.clone(),
-        sub: tenant.sa_id.clone(),
+        iss: sa_id.clone(),
+        sub: sa_id.clone(),
         aud: aud.clone(),
         iat: now,
         exp: now + 300,
@@ -178,4 +184,33 @@ pub fn public_jwk(private_jwk: &serde_json::Value) -> serde_json::Value {
         pub_jwk["kid"] = serde_json::Value::String(kid.to_string());
     }
     pub_jwk
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mint_token;
+    use crate::Error;
+    use crate::config::{Tenant, TenantTheme};
+
+    #[tokio::test]
+    async fn log_only_tenant_is_rejected_before_jwt_construction() {
+        let tenant = Tenant {
+            name: "logs".into(),
+            base_url: "https://example.invalid".into(),
+            theme: TenantTheme::Sandbox,
+            sa_id: None,
+            scopes: Vec::new(),
+        };
+
+        let error = mint_token(&reqwest::Client::new(), &tenant, &serde_json::Value::Null)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::Auth(message)
+                if message
+                    == "tenant logs is log-only (no service account); cannot mint a bearer token"
+        ));
+    }
 }

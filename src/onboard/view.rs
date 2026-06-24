@@ -1,4 +1,4 @@
-//! Add-tenant rendering: the picker menu, three onboarding forms, and the
+//! Add-tenant rendering: the picker menu, onboarding forms, and the
 //! duplicate-name confirmation. Each is a full-screen modal.
 
 use ratatui::{
@@ -14,6 +14,7 @@ use crate::tui::modal_chrome::Modal;
 use crate::tui::theme::style_for;
 
 use super::cookie::{CookieField, CookieForm};
+use super::log_only::{LogOnlyField, LogOnlyForm};
 use super::paste::{PasteField, PasteForm};
 use super::screen::Mode;
 use super::userpass::{UpField, UpForm};
@@ -36,6 +37,11 @@ pub fn draw(f: &mut Frame, app: &App, mode: Mode) {
                 draw_paste_form(f, form);
             }
         }
+        Mode::LogOnly => {
+            if let Some(form) = &app.onboard.log_only_form {
+                draw_log_only_form(f, form);
+            }
+        }
         Mode::OverwriteConfirm => draw_overwrite_confirm(f, app),
     }
 }
@@ -45,7 +51,7 @@ fn draw_overwrite_confirm(f: &mut Frame, app: &App) {
         .onboard
         .pending_overwrite
         .as_ref()
-        .map(|(tenant, _)| tenant.name.as_str())
+        .map(|(tenant, _, _)| tenant.name.as_str())
         .unwrap_or("?");
     let body = Modal {
         title: "⚠ Tenant already exists",
@@ -69,7 +75,7 @@ fn draw_overwrite_confirm(f: &mut Frame, app: &App) {
 }
 
 fn draw_menu(f: &mut Frame, app: &App) {
-    let n_options = if app.has_env_creds { 4 } else { 3 };
+    let n_options = super::screen::menu_option_count(app.has_env_creds);
     let body = Modal {
         title: "Add Tenant",
         status: None,
@@ -86,6 +92,10 @@ fn draw_menu(f: &mut Frame, app: &App) {
     if app.has_env_creds {
         options.push(ListItem::new("  4  Import sandbox from environment"));
     }
+    let log_only_number = super::screen::log_only_menu_number(app.has_env_creds);
+    options.push(ListItem::new(format!(
+        "  {log_only_number}  Log-only environment          (logs API key, no service account)"
+    )));
 
     let list = List::new(options)
         .highlight_style(
@@ -162,6 +172,76 @@ fn draw_cookie_form(f: &mut Frame, form: &CookieForm) {
             "Create service account"
         },
         form.focused == CookieField::Submit,
+        form.busy,
+    );
+}
+
+fn draw_log_only_form(f: &mut Frame, form: &LogOnlyForm) {
+    const BODY: u16 = 2 + (2 + 1) * 5 + 1 + 1;
+    let body = Modal {
+        title: "Add Tenant — Log-only Environment",
+        status: form_status_text(form.status.as_deref(), form.error.as_deref()),
+        hints: form_hints(form.busy),
+        body_height: BODY,
+    }
+    .draw(f, f.area());
+
+    let chunks = Layout::vertical([
+        Constraint::Length(2), // help
+        Constraint::Length(1), // gap
+        Constraint::Length(2), // name
+        Constraint::Length(1),
+        Constraint::Length(2), // domain
+        Constraint::Length(1),
+        Constraint::Length(2), // theme
+        Constraint::Length(1),
+        Constraint::Length(2), // cookie name
+        Constraint::Length(1),
+        Constraint::Length(2), // cookie value
+        Constraint::Length(1),
+        Constraint::Length(1), // submit
+        Constraint::Min(0),
+    ])
+    .split(body);
+
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Paste the random-hex admin session cookie name + value from your browser.",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                "This creates a logs API key only; service-account features will remain unavailable.",
+                Style::default().fg(Color::Gray),
+            )),
+        ])
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    form.name
+        .draw(f, chunks[2], form.focused == LogOnlyField::Name);
+    form.domain
+        .draw(f, chunks[4], form.focused == LogOnlyField::Domain);
+    draw_theme_row(
+        f,
+        chunks[6],
+        form.theme,
+        form.focused == LogOnlyField::Theme,
+    );
+    form.cookie_name
+        .draw(f, chunks[8], form.focused == LogOnlyField::CookieName);
+    form.cookie_value
+        .draw(f, chunks[10], form.focused == LogOnlyField::CookieValue);
+    draw_submit_row(
+        f,
+        chunks[12],
+        if form.busy {
+            "Working…"
+        } else {
+            "Create log API key"
+        },
+        form.focused == LogOnlyField::Submit,
         form.busy,
     );
 }

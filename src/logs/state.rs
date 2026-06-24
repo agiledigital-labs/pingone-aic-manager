@@ -1,0 +1,1 @@
+//! Log feature state placeholder.

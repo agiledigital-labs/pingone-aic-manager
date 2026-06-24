@@ -6,10 +6,12 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::event::{AppEvent, ToastKind};
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
-use crate::config::ProjectConfig;
 use crate::config::tenant::{Tenant, TenantTheme};
+use crate::config::{LogKeyPair, ProjectConfig};
 
+use super::OnboardPath;
 use super::cookie::{CookieField, CookieForm};
+use super::log_only::{LogOnlyField, LogOnlyForm, LogOnlyIntent};
 use super::paste::{PasteField, PasteForm};
 use super::userpass::{CallbackOutcome, UpField, UpForm};
 
@@ -19,6 +21,7 @@ pub enum Mode {
     Cookie,
     UserPass,
     Paste,
+    LogOnly,
     OverwriteConfirm,
 }
 
@@ -50,6 +53,16 @@ pub enum Event {
         theme: TenantTheme,
         sa_id: String,
         jwk: serde_json::Value,
+        log_key: Option<LogKeyPair>,
+    },
+    /// A log API key was created from an admin-user session without creating
+    /// a service account.
+    LogOnlyReady {
+        onboard_id: uuid::Uuid,
+        tenant_name: String,
+        base_url: String,
+        theme: TenantTheme,
+        log_key: LogKeyPair,
     },
 }
 
@@ -78,7 +91,24 @@ pub fn apply_event(app: &mut App, event: Event) -> crate::Result<()> {
             theme,
             sa_id,
             jwk,
-        } => handle_sa_created(app, onboard_id, tenant_name, base_url, theme, sa_id, jwk),
+            log_key,
+        } => handle_sa_created(
+            app,
+            onboard_id,
+            tenant_name,
+            base_url,
+            theme,
+            sa_id,
+            jwk,
+            log_key,
+        ),
+        Event::LogOnlyReady {
+            onboard_id,
+            tenant_name,
+            base_url,
+            theme,
+            log_key,
+        } => handle_log_only_created(app, onboard_id, tenant_name, base_url, theme, log_key),
     }
 }
 
@@ -88,6 +118,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) -> crate::Resu
         Mode::Cookie => handle_cookie_key(app, key).await?,
         Mode::UserPass => handle_up_key(app, key).await?,
         Mode::Paste => handle_paste_key(app, key).await?,
+        Mode::LogOnly => handle_log_only_key(app, key).await?,
         Mode::OverwriteConfirm => handle_overwrite_key(app, key)?,
     }
     Ok(())
@@ -99,12 +130,12 @@ pub struct State {
     pub cookie_form: Option<CookieForm>,
     pub up_form: Option<UpForm>,
     pub paste_form: Option<PasteForm>,
+    pub log_only_form: Option<LogOnlyForm>,
 
     /// UUID stamped on the in-flight bootstrap task. Set when the user
-    /// kicks off Pattern 1/2 (cookie / userpass), cleared on Esc-cancel.
-    /// When a service-account completion arrives with a non-matching
-    /// id, the handler drops it instead of persisting a tenant the user
-    /// no longer wants.
+    /// kicks off cookie, userpass, or log-only bootstrap, cleared on
+    /// Esc-cancel. Completion handlers drop non-matching ids instead of
+    /// persisting a tenant the user no longer wants.
     pub pending_id: Option<uuid::Uuid>,
 
     /// Pattern 2: the in-flight callback JSON we POST'd that needs an
@@ -113,7 +144,7 @@ pub struct State {
 
     /// Pending tenant whose name collides with an existing one. Set when
     /// the overwrite-confirm modal is up.
-    pub pending_overwrite: Option<(Tenant, serde_json::Value)>,
+    pub pending_overwrite: Option<(Tenant, Option<serde_json::Value>, Option<LogKeyPair>)>,
 }
 
 impl State {
@@ -123,7 +154,8 @@ impl State {
 }
 
 pub async fn handle_menu_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    let max_idx = if app.has_env_creds { 3 } else { 2 };
+    let option_count = menu_option_count(app.has_env_creds);
+    let max_idx = option_count - 1;
     match key.code {
         KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
@@ -135,33 +167,58 @@ pub async fn handle_menu_key(app: &mut App, key: KeyEvent) -> crate::Result<()> 
             app.onboard.menu_idx -= 1;
         }
         KeyCode::Enter => enter_choice(app, app.onboard.menu_idx).await?,
-        KeyCode::Char('1') => enter_choice(app, 0).await?,
-        KeyCode::Char('2') => enter_choice(app, 1).await?,
-        KeyCode::Char('3') => enter_choice(app, 2).await?,
-        KeyCode::Char('4') if app.has_env_creds => enter_choice(app, 3).await?,
+        KeyCode::Char(number @ '1'..='5') => {
+            let idx = number as usize - '1' as usize;
+            if idx < option_count {
+                enter_choice(app, idx).await?;
+            }
+        }
         _ => {}
     }
     Ok(())
 }
 
+pub(crate) fn menu_option_count(has_env_creds: bool) -> usize {
+    if has_env_creds { 5 } else { 4 }
+}
+
+pub(crate) fn log_only_menu_number(has_env_creds: bool) -> usize {
+    menu_option_count(has_env_creds)
+}
+
+fn path_for_index(idx: usize, has_env_creds: bool) -> Option<OnboardPath> {
+    match (idx, has_env_creds) {
+        (0, _) => Some(OnboardPath::Cookie),
+        (1, _) => Some(OnboardPath::UserPass),
+        (2, _) => Some(OnboardPath::Paste),
+        (3, true) => Some(OnboardPath::Envrc),
+        (3, false) | (4, true) => Some(OnboardPath::LogOnly),
+        _ => None,
+    }
+}
+
 async fn enter_choice(app: &mut App, idx: usize) -> crate::Result<()> {
-    match idx {
-        0 => {
+    match path_for_index(idx, app.has_env_creds) {
+        Some(OnboardPath::Cookie) => {
             app.onboard.cookie_form = Some(CookieForm::default());
             app.input_mode = InputMode::Onboard(Mode::Cookie);
         }
-        1 => {
+        Some(OnboardPath::UserPass) => {
             app.onboard.up_form = Some(UpForm::default());
             app.input_mode = InputMode::Onboard(Mode::UserPass);
         }
-        2 => {
+        Some(OnboardPath::Paste) => {
             app.onboard.paste_form = Some(PasteForm::default());
             app.input_mode = InputMode::Onboard(Mode::Paste);
         }
-        3 if app.has_env_creds => {
+        Some(OnboardPath::Envrc) => {
             import_env_creds(app).await?;
         }
-        _ => {}
+        Some(OnboardPath::LogOnly) => {
+            app.onboard.log_only_form = Some(LogOnlyForm::default());
+            app.input_mode = InputMode::Onboard(Mode::LogOnly);
+        }
+        None => {}
     }
     Ok(())
 }
@@ -249,6 +306,72 @@ fn start_cookie_bootstrap(app: &mut App) {
             tx,
         )
         .await;
+    });
+}
+
+// ---- Log-only environment ----
+
+pub async fn handle_log_only_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    let form = match &mut app.onboard.log_only_form {
+        Some(form) => form,
+        None => return Ok(()),
+    };
+    if form.busy {
+        if key.code == KeyCode::Esc {
+            form.busy = false;
+            app.onboard.log_only_form = None;
+            app.onboard.pending_id = None;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
+        }
+        return Ok(());
+    }
+
+    let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+        && form.focused == LogOnlyField::Domain;
+    if leaving_domain {
+        let cleaned = super::normalise_domain(&form.domain.value);
+        form.domain.set(cleaned);
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            app.onboard.log_only_form = None;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
+        }
+        KeyCode::Tab => form.focused = form.focused.next(),
+        KeyCode::BackTab => form.focused = form.focused.prev(),
+        KeyCode::Left if form.focused == LogOnlyField::Theme => form.cycle_theme_backward(),
+        KeyCode::Right if form.focused == LogOnlyField::Theme => form.cycle_theme_forward(),
+        KeyCode::Enter if form.focused == LogOnlyField::Submit => match form.validate() {
+            Ok(intent) => {
+                form.error = None;
+                start_log_only_bootstrap(app, intent);
+            }
+            Err(error) => form.error = Some(error),
+        },
+        KeyCode::Enter => form.focused = form.focused.next(),
+        _ => {
+            if let Some(field) = form.focused_field_mut() {
+                field.handle_key(&key);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn start_log_only_bootstrap(app: &mut App, intent: LogOnlyIntent) {
+    let form = match &mut app.onboard.log_only_form {
+        Some(form) => form,
+        None => return,
+    };
+    form.busy = true;
+    form.status = Some("Authenticating and creating log API key…".into());
+
+    let tx = app.events.tx.clone();
+    let onboard_id = uuid::Uuid::new_v4();
+    app.onboard.pending_id = Some(onboard_id);
+    tokio::spawn(async move {
+        run_bootstrap_log_only(onboard_id, intent, tx).await;
     });
 }
 
@@ -450,6 +573,11 @@ pub fn handle_onboard_error(app: &mut App, onboard_id: uuid::Uuid, msg: String) 
         form.status = None;
         form.pending_prompt = None;
     }
+    if let Some(form) = &mut app.onboard.log_only_form {
+        form.busy = false;
+        form.error = Some(msg.clone());
+        form.status = None;
+    }
     app.push_toast(ToastKind::Error, msg);
 }
 
@@ -489,10 +617,14 @@ pub async fn handle_paste_key(app: &mut App, key: KeyEvent) -> crate::Result<()>
             let prod = tenant.theme == TenantTheme::Production;
             app.onboard.paste_form = None;
             if prod {
-                app.prod_confirm.pending = Some(PendingProdAction::SaveTenant { tenant, jwk });
+                app.prod_confirm.pending = Some(PendingProdAction::SaveTenant {
+                    tenant,
+                    jwk: Some(jwk),
+                    log_key: None,
+                });
                 app.input_mode = InputMode::ProdConfirm;
             } else {
-                match persist_new_tenant(app, tenant, jwk) {
+                match persist_new_tenant(app, tenant, Some(jwk), None) {
                     Ok(()) => app.push_toast(ToastKind::Success, "Tenant added!"),
                     Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
                 }
@@ -517,9 +649,9 @@ pub async fn handle_paste_key(app: &mut App, key: KeyEvent) -> crate::Result<()>
 pub fn handle_overwrite_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            if let Some((tenant, jwk)) = app.onboard.pending_overwrite.take() {
+            if let Some((tenant, jwk, log_key)) = app.onboard.pending_overwrite.take() {
                 app.input_mode = InputMode::Normal;
-                match persist_tenant_overwriting(app, tenant, jwk) {
+                match persist_tenant_overwriting(app, tenant, jwk, log_key) {
                     Ok(()) => app.push_toast(ToastKind::Success, "Tenant overwritten"),
                     Err(e) => {
                         app.push_toast(ToastKind::Error, format!("Save failed: {e}"));
@@ -537,6 +669,7 @@ pub fn handle_overwrite_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_sa_created(
     app: &mut App,
     onboard_id: uuid::Uuid,
@@ -545,6 +678,7 @@ pub fn handle_sa_created(
     theme: TenantTheme,
     sa_id: String,
     jwk: serde_json::Value,
+    log_key: Option<LogKeyPair>,
 ) -> crate::Result<()> {
     // Drop the event if it doesn't match the bootstrap we're waiting on.
     if app.onboard.pending_id != Some(onboard_id) {
@@ -565,7 +699,7 @@ pub fn handle_sa_created(
         name: tenant_name,
         base_url,
         theme,
-        sa_id,
+        sa_id: Some(sa_id),
         scopes,
     };
 
@@ -575,18 +709,72 @@ pub fn handle_sa_created(
     app.onboard.pending_callback_body = None;
 
     if tenant.theme == TenantTheme::Production {
-        app.prod_confirm.pending = Some(PendingProdAction::SaveTenant { tenant, jwk });
+        app.prod_confirm.pending = Some(PendingProdAction::SaveTenant {
+            tenant,
+            jwk: Some(jwk),
+            log_key,
+        });
         app.input_mode = InputMode::ProdConfirm;
         return Ok(());
     }
 
-    match persist_new_tenant(app, tenant, jwk) {
+    match persist_new_tenant(app, tenant, Some(jwk), log_key) {
         Ok(()) => {
             app.push_toast(ToastKind::Success, "Tenant added!");
             app.input_mode = InputMode::Normal;
         }
         Err(e) => {
             app.push_toast(ToastKind::Error, format!("Save failed: {e}"));
+            app.input_mode = InputMode::Normal;
+        }
+    }
+    Ok(())
+}
+
+pub fn handle_log_only_created(
+    app: &mut App,
+    onboard_id: uuid::Uuid,
+    tenant_name: String,
+    base_url: String,
+    theme: TenantTheme,
+    log_key: LogKeyPair,
+) -> crate::Result<()> {
+    if app.onboard.pending_id != Some(onboard_id) {
+        tracing::debug!(
+            event_id = %onboard_id,
+            pending = ?app.onboard.pending_id,
+            "dropping stale log-only completion"
+        );
+        return Ok(());
+    }
+    app.onboard.pending_id = None;
+    app.onboard.log_only_form = None;
+
+    let tenant = Tenant {
+        name: tenant_name,
+        base_url,
+        theme,
+        sa_id: None,
+        scopes: Vec::new(),
+    };
+
+    if tenant.theme == TenantTheme::Production {
+        app.prod_confirm.pending = Some(PendingProdAction::SaveTenant {
+            tenant,
+            jwk: None,
+            log_key: Some(log_key),
+        });
+        app.input_mode = InputMode::ProdConfirm;
+        return Ok(());
+    }
+
+    match persist_new_tenant(app, tenant, None, Some(log_key)) {
+        Ok(()) => {
+            app.push_toast(ToastKind::Success, "Log-only environment added");
+            app.input_mode = InputMode::Normal;
+        }
+        Err(error) => {
+            app.push_toast(ToastKind::Error, format!("Save failed: {error}"));
             app.input_mode = InputMode::Normal;
         }
     }
@@ -627,11 +815,11 @@ async fn import_env_creds(app: &mut App) -> crate::Result<()> {
         name: "sandbox".into(),
         base_url,
         theme: TenantTheme::Sandbox,
-        sa_id,
+        sa_id: Some(sa_id),
         scopes,
     };
 
-    match persist_new_tenant(app, tenant, jwk) {
+    match persist_new_tenant(app, tenant, Some(jwk), None) {
         Ok(()) => {
             app.push_toast(
                 ToastKind::Success,
@@ -655,14 +843,15 @@ async fn import_env_creds(app: &mut App) -> crate::Result<()> {
 pub(crate) fn persist_new_tenant(
     app: &mut App,
     tenant: Tenant,
-    jwk: serde_json::Value,
+    jwk: Option<serde_json::Value>,
+    log_key: Option<LogKeyPair>,
 ) -> crate::Result<()> {
     if app.tenants.iter().any(|t| t.name == tenant.name) {
-        app.onboard.pending_overwrite = Some((tenant, jwk));
+        app.onboard.pending_overwrite = Some((tenant, jwk, log_key));
         app.input_mode = InputMode::Onboard(Mode::OverwriteConfirm);
         return Ok(());
     }
-    persist_tenant_overwriting(app, tenant, jwk)
+    persist_tenant_overwriting(app, tenant, jwk, log_key)
 }
 
 /// Save a tenant outright — replacing any existing entry with the same
@@ -670,9 +859,13 @@ pub(crate) fn persist_new_tenant(
 fn persist_tenant_overwriting(
     app: &mut App,
     tenant: Tenant,
-    jwk: serde_json::Value,
+    jwk: Option<serde_json::Value>,
+    log_key: Option<LogKeyPair>,
 ) -> crate::Result<()> {
-    app.save_jwk(&tenant.name, jwk)?;
+    let tenant_name = tenant.name.clone();
+    if let Some(jwk) = jwk {
+        app.save_jwk(&tenant.name, jwk)?;
+    }
 
     // Replace any existing entry with the same name, or append.
     if let Some(idx) = app.tenants.iter().position(|t| t.name == tenant.name) {
@@ -706,6 +899,10 @@ fn persist_tenant_overwriting(
     };
     config.save()?;
     app.config = Some(config);
+
+    if let Some(log_key) = log_key {
+        app.save_log_key(&tenant_name, log_key)?;
+    }
 
     // Kick the ESVs tab to fetch for the just-added tenant. Without this
     // the user lands on the dashboard after a fresh import and has to
@@ -778,6 +975,7 @@ async fn run_bootstrap_from_cookie(
             return;
         }
     };
+    let log_key = provision_log_api_key(&http, &base_url, &bearer, &tenant_name).await;
     let _ = tx.send(AppEvent::Onboard(Event::ServiceAccountReady {
         onboard_id,
         tenant_name,
@@ -785,6 +983,58 @@ async fn run_bootstrap_from_cookie(
         theme,
         sa_id,
         jwk: priv_jwk,
+        log_key,
+    }));
+}
+
+async fn run_bootstrap_log_only(
+    onboard_id: uuid::Uuid,
+    intent: LogOnlyIntent,
+    tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+) {
+    let http = match super::bootstrap::no_redirect_client() {
+        Ok(client) => client,
+        Err(error) => {
+            send_onboard_error(&tx, onboard_id, format!("HTTP client init: {error}"));
+            return;
+        }
+    };
+    let bearer = match super::bootstrap::session_to_bearer(
+        &http,
+        &intent.base_url,
+        &intent.cookie_name,
+        &intent.cookie_value,
+    )
+    .await
+    {
+        Ok(bearer) => bearer,
+        Err(error) => {
+            send_onboard_error(&tx, onboard_id, format!("authorize/token: {error}"));
+            return;
+        }
+    };
+    let key_name = format!("aic-edit-{}", intent.tenant_name);
+    let log_key =
+        match super::bootstrap::create_log_api_key(&http, &intent.base_url, &bearer, &key_name)
+            .await
+        {
+            Ok(log_key) => log_key,
+            Err(error) => {
+                send_onboard_error(&tx, onboard_id, format!("log API key create: {error}"));
+                return;
+            }
+        };
+    tracing::info!(
+        tenant = intent.tenant_name,
+        api_key_id = %log_key.api_key_id,
+        "log-only API key provisioned during onboarding"
+    );
+    let _ = tx.send(AppEvent::Onboard(Event::LogOnlyReady {
+        onboard_id,
+        tenant_name: intent.tenant_name,
+        base_url: intent.base_url,
+        theme: intent.theme,
+        log_key,
     }));
 }
 
@@ -897,6 +1147,7 @@ async fn run_bootstrap_from_userpass(
                     return;
                 }
             };
+            let log_key = provision_log_api_key(&http, &base_url, &bearer, &tenant_name).await;
             let _ = tx.send(AppEvent::Onboard(Event::ServiceAccountReady {
                 onboard_id,
                 tenant_name,
@@ -904,6 +1155,7 @@ async fn run_bootstrap_from_userpass(
                 theme,
                 sa_id,
                 jwk: priv_jwk,
+                log_key,
             }));
             return;
         }
@@ -964,4 +1216,46 @@ async fn run_bootstrap_from_userpass(
     }
 
     send_onboard_error(&tx, onboard_id, "too many authentication rounds — aborting");
+}
+
+async fn provision_log_api_key(
+    http: &reqwest::Client,
+    base_url: &str,
+    bearer: &str,
+    tenant_name: &str,
+) -> Option<LogKeyPair> {
+    let name = format!("aic-edit-{tenant_name}");
+    match super::bootstrap::create_log_api_key(http, base_url, bearer, &name).await {
+        Ok(pair) => {
+            tracing::info!(
+                tenant = tenant_name,
+                api_key_id = %pair.api_key_id,
+                "log API key provisioned during onboarding"
+            );
+            Some(pair)
+        }
+        Err(error) => {
+            tracing::warn!(
+                tenant = tenant_name,
+                error = %error,
+                "log API key provisioning failed; onboarding will continue"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_only_is_last_with_or_without_env_import() {
+        assert_eq!(path_for_index(3, false), Some(OnboardPath::LogOnly));
+        assert_eq!(path_for_index(4, false), None);
+
+        assert_eq!(path_for_index(3, true), Some(OnboardPath::Envrc));
+        assert_eq!(path_for_index(4, true), Some(OnboardPath::LogOnly));
+        assert_eq!(path_for_index(5, true), None);
+    }
 }

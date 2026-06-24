@@ -1,9 +1,9 @@
-//! Tenant onboarding: three verified bootstrap patterns plus direct sandbox
-//! import from the development environment.
+//! Tenant onboarding: verified bootstrap patterns plus direct sandbox import
+//! from the development environment.
 //!
 //! The feature is split by responsibility:
 //! - [`bootstrap`] drives delegated OAuth2, RSA key generation, and service-account creation.
-//! - [`cookie`], [`userpass`], and [`paste`] own the three pattern-specific forms.
+//! - [`cookie`], [`userpass`], [`paste`], and [`log_only`] own their forms.
 //! - [`screen`] owns state, nested input modes/events, persistence, and key handling.
 //! - [`view`] renders the menu, forms, and duplicate-name confirmation.
 //!
@@ -22,6 +22,7 @@
 
 pub mod bootstrap;
 pub mod cookie;
+pub mod log_only;
 pub mod paste;
 pub mod screen;
 pub mod userpass;
@@ -34,6 +35,7 @@ pub enum OnboardPath {
     UserPass,
     Paste,
     Envrc,
+    LogOnly,
 }
 
 /// Strip scheme + path + trailing slash from a user-supplied domain field.
