@@ -1,63 +1,58 @@
 # aic-edit
 
-A Rust + Ratatui TUI **and** a `kubectl`-style CLI for managing PingOne
-Advanced Identity Cloud (AIC, formerly ForgeRock Identity Cloud) tenant
-configuration. Both surfaces share an `ssh-agent`-shaped background daemon
-that holds decrypted service-account keys in memory and mints / refreshes
-bearer tokens on demand, so every tenant call goes through one path.
+A Rust + Ratatui **TUI** *and* a `kubectl`-style **CLI** (`aic`) for managing
+PingOne Advanced Identity Cloud (AIC, formerly ForgeRock Identity Cloud) tenant
+configuration. One binary, two surfaces: run it with no arguments for the
+interactive TUI, or with a subcommand for scripting. Both share an
+`ssh-agent`-shaped background daemon that holds your decrypted service-account
+key in memory and mints/refreshes bearer tokens on demand, so you authenticate
+once and every tenant call goes through one path.
 
-**Status:** see [PLAN.md](PLAN.md) — the single source of truth for what's
-done, in flight, and next.
+> **New here? Start with [Quick start](#quick-start), then the
+> [CLI reference](docs/CLI.md).** For the living roadmap (done / in flight /
+> next) see [PLAN.md](PLAN.md).
 
-## What it does (target scope)
+## What it does
 
-- **ESVs** — list, edit and apply environment variables and secrets.
-- **Scripts** — two-way sync to a local directory with a file watcher,
-  with **content-based** conflict detection (not `_rev`, which AIC doesn't
-  return for scripts).
-- **OAuth2 / OIDC** — manage clients and the provider service.
-- **SAML 2.0** — manage hosted/remote entities and circles of trust.
+Working today, via the CLI and (mostly) the TUI:
+
+- **ESVs** — list, edit, and apply environment variables and secrets
+  (full versioned-secret lifecycle).
+- **Scripts** — two-way sync to a local **typed workspace** (`.d.ts` +
+  ESLint/TypeScript) with a file watcher and **content-based** conflict
+  detection. Covers AM scripts, IDM endpoints, scheduled jobs, and
+  managed-object hooks.
+- **IDM managed objects** — inspect the per-tenant schema (`aic managed`), and
+  **sync records into a local SQLite store to query with SQL** (`aic idm`),
+  including joins into nested arrays.
+- **OAuth2 clients** — list, pull, push, delete.
+- **Journeys** (auth trees) — list, pull/push as JSON, inspect node types.
+- **Secret mappings** — re-point AM secret labels at ESV secrets.
 - **Fast environment switching** with per-env theme colours
   (sandbox=green, development=blue, staging=yellow, production=red + ⚠) and an
-  automatic "you're writing to PROD" guard on every mutation.
-- **Stretch:** log sync with compression + search for offline history
-  beyond AIC's 30-day retention.
+  automatic **"you're writing to PROD" guard** on every mutation.
 
-Why not [Frodo CLI](https://github.com/rockcarver/frodo-cli)? Frodo is
-excellent but command-line, not interactive. Frodo also implements its
-auth-callback chain in-terminal, which means it can't support WebAuthn /
-passkey 2FA — a hard requirement for the maintainer.
+Planned / stretch: SAML 2.0, and log sync with compression + search for
+offline history beyond AIC's 30-day retention.
 
-## Repo tour
+**Why not [Frodo CLI](https://github.com/rockcarver/frodo-cli)?** Frodo is
+excellent but command-line only, not interactive — and it runs its auth-callback
+chain in-terminal, so it can't support WebAuthn / passkey 2FA, a hard
+requirement for the maintainer.
 
-| Path                                                       | What's in it                                                                                                                        |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| [`PLAN.md`](PLAN.md)                                       | Living roadmap: done / in progress / next. Start here.                                                                              |
-| [`CLAUDE.md`](CLAUDE.md)                                   | Workflow rules for AI-assisted edits (docs-first, verify-before-update, credential hygiene).                                        |
-| [`docs/DESIGN.md`](docs/DESIGN.md)                         | TUI design rules (palette, layout, keybindings).                                                                                    |
-| [`docs/api/`](docs/api/)                                   | Verified AIC API reference. **Read before writing any code that hits a tenant.** Each file has a "Verified against" date for trust. |
-| [`scripts/verify-endpoint.sh`](scripts/verify-endpoint.sh) | Mints a service-account access token from `.envrc` and curls any AIC path. Used to verify endpoints before documenting them.        |
-| `src/agent/`                                               | The background daemon (Unix-socket protocol, AicClient cache, token mint).                                                          |
-| `src/aic/api.rs`                                           | Surface-agnostic HTTP core — **the only path** TUI/CLI use for tenant HTTP (via the agent).                                         |
-| `src/esv/`, `src/secrets/`, `src/scripts/`, …              | One directory per feature (api/state/ops/screen/view/cli seams). Routing map: CLAUDE.md §9.                                         |
-| `src/app/`, `src/tui/`                                     | App shell (event loop, dispatch, prod guard) and shared TUI chrome (widgets, theme, header).                                        |
-| `src/cli/mod.rs`                                           | CLI root: clap parser + session commands (login, status, ctx). Feature subcommands live in each vertical's `cli.rs`.                |
-| `Cargo.toml`, `src/main.rs`                                | Single binary; no-args runs the TUI, any subcommand routes through `src/cli`.                                                       |
+## Quick start
 
-## Local setup
+### 1. Get an AIC tenant + service account
 
-### 1. Get an AIC sandbox tenant + service account
-
-You need a PingOne AIC tenant (sandbox is fine) and a service account on it
-with at least these scopes:
+You need a PingOne AIC tenant (sandbox is fine) and a service account with at
+least these scopes:
 
 ```
 fr:am:* fr:idm:* fr:idc:esv:* fr:idc:cookie-domain:*
 ```
 
-Create one via the AIC admin console: **Tenant Settings → Service
-Accounts → New Service Account**. Save the JWK private key when prompted —
-it's only shown once.
+Create one in the admin console: **Tenant Settings → Service Accounts → New
+Service Account**. Save the JWK private key when prompted — it's shown only once.
 
 ### 2. Create `.envrc` (gitignored)
 
@@ -73,244 +68,145 @@ export SERVICE_ACCOUNT_KEY='{
 }'
 ```
 
-If you use [direnv](https://direnv.net), run `direnv allow`. Otherwise
-`source .envrc` each shell.
+With [direnv](https://direnv.net), run `direnv allow`; otherwise `source .envrc`
+in each shell.
 
-### 3. Verify your tenant is reachable
+### 3. Verify the tenant is reachable
 
 ```bash
-scripts/verify-endpoint.sh                              # mints + caches a token
-scripts/verify-endpoint.sh "/environment/variables"      # smoke test
+scripts/verify-endpoint.sh                          # mints + caches a token
+scripts/verify-endpoint.sh "/environment/variables"  # smoke test
 ```
 
-First run bootstraps a Python venv at `.venv-tools/` (used only for JWT
-signing in the bash helper — the Rust app does this natively).
+First run bootstraps a Python venv at `.venv-tools/` (used only for JWT signing
+in this bash helper — the Rust app does it natively).
 
-### 4. Build + run
+### 4. Build & run
 
-Requires Rust 1.85 or newer (Rust 2024 edition).
+Requires Rust 1.85+ (Rust 2024 edition).
 
 ```bash
 cargo build
-cargo run             # launches the TUI
-cargo run -- --help   # CLI subcommands
-cargo run -- agent    # foreground daemon (auto-spawned otherwise)
-cargo run -- login    # unlock the agent for this session
+cargo run                 # launch the TUI
+cargo run -- --help       # CLI subcommands
+cargo run -- login        # unlock the agent for this session
+cargo run -- esv list     # …then start issuing commands
 ```
 
-The CLI mirrors the TUI's ESV capabilities (variables and secrets), talking to
-the active tenant through the agent:
+Once built, use the `aic` binary directly (`target/debug/aic`, or install it on
+your PATH).
+
+## Using the CLI
+
+The CLI mirrors and extends the TUI. A taste across feature areas:
 
 ```bash
-aic esv list                                  # variables
-aic esv get  esv-my-var
-aic esv set  esv-my-var --value hello --type string
-aic esv delete esv-my-var
-aic esv apply                                 # restart the runtime to apply
+aic status                       # is the agent running/unlocked? which tenant?
+aic ctx use development          # switch the active tenant context
 
-aic esv secret list
-aic esv secret versions esv-my-secret
-aic esv secret create esv-my-secret                          # prompts (no echo)
-aic esv secret create esv-my-secret --value-file ./s.txt     # or from a file
-printf 'rotated' | aic esv secret add-version esv-my-secret --value-stdin
-aic esv secret disable esv-my-secret 2
-aic esv secret set-description esv-my-secret --description "…"
-aic esv secret destroy esv-my-secret 2 --yes                 # irreversible: prompts unless --yes
-aic esv secret delete esv-my-secret --yes                    # irreversible: prompts unless --yes
+aic esv list                     # environment variables
+aic esv secret create esv-api-key  # versioned secret (no-echo prompt)
+
+aic managed list                 # IDM managed-object schema
+aic idm sync                     # pick objects → sync records into a local SQLite store
+aic idm query "SELECT userName FROM obj_alpha_user WHERE accountStatus='active'"
+
+aic script pull bravo/MyNode     # sync scripts to a typed local workspace, then edit + push
+aic oauth list                   # OAuth2 clients
+aic journey list                 # authentication trees
 ```
 
-Mutating commands take `--yes` to confirm a write to a production-themed
-tenant (the CLI equivalent of the TUI's prod-write guard), and `--tenant
-<name>` to override the current context for a single call. Secret values are
-read from a no-echo prompt, `--value-file`, or `--value-stdin` so they stay out
-of your shell history and the process list; `--value` exists for scripting but
-is discouraged. `secret destroy` and `secret delete` are irreversible and
-prompt for a typed confirmation on any tenant unless `--yes` is given.
+Mutations to a production-themed tenant require `--yes`; `--tenant <name>`
+overrides the active context for one call. **Full command reference, flags, and
+examples: [docs/CLI.md](docs/CLI.md).**
 
-### Scripts
+## The TUI
 
-`aic script` syncs AIC scripts to a local **typed workspace** at
-`./workspace/<tenant>/` (one tree per tenant) — the same `.d.ts` definitions +
-ESLint/TypeScript config as
-[p1aic-script-editor](https://github.com/agiledigital-labs/p1aic-script-editor),
-so your editor gets full IntelliSense on script bodies. Four script "kinds"
-are supported behind one engine: **AM scripts** (realm-scoped, routed to a
-per-type folder under `am/<realm>/<type>/` — e.g. `decision-node`,
-`decision-node-legacy`, `lib`, `oidc-claims`; Groovy scripts aren't synced);
-**IDM custom endpoints**
-(tenant-global under `idm/endpoint/`); **IDM scheduled jobs**
-(tenant-global under `idm/schedule/`; only script-invoking schedules — the
-script lives at `invokeContext.script.source`); and **IDM managed-object
-hooks** (under `idm/managed/<object>/<hook>.cjs` — `onCreate`/`onUpdate`/…
-embedded in the `managed` schema document; file-backed hooks are read-only).
+> The TUI is a **work in progress** — the CLI is the more complete surface.
 
-Scripts are addressed by a **full-name** `<namespace>/<name>`, where the
-namespace is `alpha`/`bravo` (AM realm), `endpoint`, `schedule`, or
-`managed` (hook name is `<object>.<hook>`, e.g.
-`managed/alpha_user.onCreate`) — so you never pass `--kind`/`--realm`:
-
-```bash
-aic script workspace init                       # scaffold the tenant tree (both realms + idm)
-aic script list                                 # all kinds; each row tagged with its full-name `ref`
-aic script list bravo                           # just one namespace
-aic script pull                                 # ← no ref: fuzzy-pick one (`!` local changes, `-` not pulled)
-aic script pull bravo/MyDecisionNode            # one AM script → am/bravo/src/MyDecisionNode.cjs
-aic script pull endpoint/validateQueryFilter    # one IDM endpoint → idm/endpoint/…
-aic script pull schedule                        # a whole namespace (all script schedules)
-aic script pull all                             # everything (both realms + endpoints + schedules)
-# edit the .cjs in your editor, then:
-aic script push                                 # ← no ref: fuzzy-pick one (locally-changed `!` sorted first)
-aic script push bravo/MyDecisionNode            # content-based conflict check, then PUT
-aic script push all                             # push every locally-changed script (clean/default skipped)
-aic script sync                                 # reconcile everything: push local-only, pull remote-only
-aic script sync bravo --resolve local           # scope to a namespace; force conflicts to your local copy
-aic script watch                                # auto-push each script you save (Ctrl-C to stop)
-aic script status                               # in sync / modified locally / remote / conflict
-aic script status idm                           # filter by group (am / idm)
-aic script status alpha/                        # filter by namespace, full-name, or fragment
-aic script diff                                 # ← no ref: fuzzy-pick a synced script
-aic script diff endpoint/validateQueryFilter    # default: colored local-vs-tenant diff (via `git diff`)
-aic script diff bravo/Foo --local-vs-snapshot   # just your edits since last pull
-aic script diff bravo/Foo --snapshot-vs-remote  # what changed on the tenant since you pulled (drift)
-aic script diff bravo/Foo | delta               # …or pipe the plain diff to your tool of choice
-aic script workspace update                     # refresh bundled types/config to the latest
-```
-
-`pull`/`push` with no `<ref>` open an interactive fuzzy picker (type to filter,
-enter to choose). Lines are marked `!` (local changes on disk) or `-` (no local
-file yet). On **push**, locally-changed scripts sort to the top (you usually
-want to push those); on **pull** the order is alphabetical. Before overwriting,
-you're prompted: pulling a script with local changes asks before clobbering
-them; pushing a script whose remote changed since you last synced asks before
-overwriting the remote (`--force` skips the prompt). A bare `<name>` (no prefix)
-resolves its namespace from your current directory — inside `am/bravo/…`,
-`aic script pull MyDecisionNode` means `bravo/…`.
-
-`aic script status` takes an optional filter term so you can narrow a large
-workspace:
-
-- `am` / `idm` are **group** aliases — `idm` shows every endpoint, schedule, and
-  managed-object hook; `am` shows every AM script. (These match the group only,
-  so `am` never sneaks in via a name like `samlAssertion`.)
-- anything else is a **case-insensitive substring** of the full-name, so a
-  namespace (`alpha`, `endpoint`), a full-name (`alpha/Email OTP`), or any
-  fragment (`Email`, `saml`) all work.
-
-Because the match is a substring, `alpha` also lists `managed/alpha_user.*`
-hooks (their full-name contains `alpha`). To see **only** the AM alpha-realm
-scripts, search for `alpha/` **with the trailing slash** — `managed/alpha_user…`
-doesn't contain `alpha/`, so it's excluded, while every `alpha/<name>` matches.
-
-`aic script sync` reconciles each synced script in one pass: if only your local
-changed it pushes, if only the tenant changed it pulls, and if both changed it's
-a conflict. Conflicts are resolved interactively by default (local / remote /
-skip per script), or non-interactively with `--resolve local|remote`; with no
-terminal, conflicts are skipped and listed at the end (never silently
-clobbered). Product-default scripts are reconciled like any other — local
-edits push normally. Ends with a `pushed N · pulled M · in sync R · conflicts
-K` summary.
-
-`aic script watch` watches the workspace and pushes each tracked `.cjs` as you
-save it (debounced), until Ctrl-C. It reacts to local saves only — for incoming
-remote changes run `sync`/`pull`. A save whose remote drifted is reported and
-skipped (never force-pushed); untracked files are ignored.
-
-`aic script diff` renders your local copy against the tenant by shelling out to
-`git diff --no-index`, so it uses your git pager/colors (delta, etc.)
-interactively and emits a plain unified diff when piped (`aic script diff
-bravo/Foo | delta`). Requires `git` on your PATH.
-
-Conflict detection is **content-based** (scripts have no `_rev`): a push only
-proceeds if the remote still matches what you last synced — even if the remote
-revision moved but the *content* was reverted. If the remote content drifted,
-the push is blocked and the 3-way diff is shown; `--force` overrides.
-
-`aic` finds the project root by walking up from the current directory, so any
-command works from any subdirectory, and the **tenant** is inferred from a
-`workspace/<tenant>/` path (override with `--tenant`).
-
-> **Note:** AM-script support adds a new `Accept-API-Version` header that the
-> agent must forward, so after upgrading restart the agent (`aic stop` then
-> `aic login`) to load the new binary. IDM endpoints work without a restart.
+Run `aic` with no arguments. On first launch the agent starts locked and you'll
+see the **Unlock** screen (unless you set up with no master password). Press
+**`Ctrl-P`** to open the **function selector** — a fuzzy-searchable modal that
+switches between the feature views (ESVs, Scripts, Managed, Mappings, OAuth,
+Query). Within a view, `/` searches, `R` refreshes, and `?` shows the keymap.
+Design rules live in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## The agent
 
-Every tenant call — from the TUI or the CLI — goes through a small background
-process called the **agent**, modelled on `ssh-agent`. You don't normally start
-it yourself; the TUI and CLI spawn it automatically the first time they need it.
+Every tenant call — TUI or CLI — goes through a small background process called
+the **agent**, modelled on `ssh-agent`. You don't normally start it yourself;
+the TUI and CLI spawn it automatically the first time they need it.
 
 **Why it exists.** AIC bearer tokens expire after ~15 minutes, and minting a new
 one needs your decrypted service-account private key. Rather than ask for your
-master password on every action, the agent holds the decrypted keys in memory
-and mints/refreshes tokens on demand. You authenticate once; everything that
-follows reuses the same unlocked agent — including a second TUI window or a CLI
-command in another terminal, since they all share one agent.
+master password on every action, the agent holds the decrypted key in memory and
+mints/refreshes tokens on demand. You authenticate once; everything that follows
+reuses the same unlocked agent — including a second TUI window or a CLI command
+in another terminal, since they all share one agent.
 
 **Locked vs. unlocked.** The agent is always one of two states:
 
-- **Unlocked** — your keys are decrypted in memory and it can mint tokens.
+- **Unlocked** — your key is decrypted in memory and it can mint tokens.
 - **Locked** — it's running, but holds *nothing sensitive*: no keys, no tokens.
-  Every request just gets "locked" back until you log in again.
+  Every request gets "locked" back until you log in again.
 
 When you first launch, the agent starts locked and the TUI shows the **Unlock**
-screen (or the CLI's `aic login` prompts you). If your keys are stored
-unencrypted (you chose "no master password" during setup), the agent unlocks
-itself and you're never prompted.
+screen (or the CLI's `aic login` prompts you). If your key is stored unencrypted
+(you chose "no master password" during setup), the agent unlocks itself and
+you're never prompted.
 
-**The commands:**
-
-| Command      | What it does                                                              |
-| ------------ | ------------------------------------------------------------------------- |
-| `aic login`  | Unlock the agent (prompts for your master password).                      |
-| `aic logout` | **Lock** the agent — wipes keys + tokens from memory, but leaves it running. |
-| `aic stop`   | **Stop** the agent — shut the process down entirely.                      |
-| `aic status` | Show whether it's running, unlocked, the active tenant, and token expiry. |
+| Command | What it does |
+| --- | --- |
+| `aic login` | Unlock the agent (prompts for your master password). |
+| `aic logout` | **Lock** the agent — wipe keys + tokens from memory, leave it running. |
+| `aic stop` | **Stop** the agent — shut the process down entirely. |
+| `aic status` | Show running/unlocked state, active tenant, and token expiry. |
 
 **Why `logout` doesn't kill the process.** This trips people up: `logout`
-*locks* the agent, it doesn't stop it. The two are different on purpose. Locking
-already removes everything sensitive from memory, so for security it's
-equivalent to killing it — but it keeps the process (and its shared connection)
-alive, so the next `aic login` re-unlocks everyone instantly instead of paying
-to spawn a fresh process. Use `aic logout` when you're stepping away and want to
-re-lock; use `aic stop` when you actually want the agent gone.
+*locks* the agent, it doesn't stop it. Locking already removes everything
+sensitive from memory, so for security it's equivalent to killing it — but it
+keeps the process (and its shared connection) alive, so the next `aic login`
+re-unlocks instantly instead of paying to spawn a fresh process. Use `logout`
+when stepping away; use `stop` when you want the agent gone.
 
-**Auto-lock.** If left idle, the agent locks itself automatically after **1 hour**
-by default — the same effect as `aic logout`. Override the timeout in
-`.aic-edit/settings.toml` or with `aic agent --idle-timeout <seconds>`.
+**Auto-lock.** If left idle, the agent locks itself after **1 hour** by default
+(same effect as `logout`). Override in `.aic-edit/settings.toml` or with
+`aic agent --idle-timeout <seconds>`.
 
-**Where it lives.** The agent listens on a Unix socket at
-`.aic-edit/agent.sock`, restricted to your user (mode 0600). It's per-project:
-each checkout with its own `.aic-edit/` gets its own agent.
+**Where it lives.** A Unix socket at `.aic-edit/agent.sock`, restricted to your
+user (mode 0600). It's per-project: each checkout with its own `.aic-edit/` gets
+its own agent.
 
-## Implementation status
+## Repo tour
 
-| Step                                                            | Status      | Output                                                                                        |
-| --------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------- |
-| **1.** Research + verified API docs + cargo skeleton            | ✅ done     | `docs/api/`, `CLAUDE.md`                                                                      |
-| **2.** TUI foundation, encryption, three-pattern onboarding     | ✅ done     | Unlock + onboarding screens, `keys.enc` / `wraps.toml` (master-pw + security-key envelope)    |
-| **3.** Agent + CLI                                              | ✅ done     | Single-binary `aic`, Unix-socket protocol, `aic::api` + `aic::esv` shared between TUI and CLI |
-| **4.** ESVs — list + fuzzy search + preview                     | ✅ done     | `/`-search with live scoring (nucleo), vertical split with JSON preview                       |
-| **5.** ESVs — edit + apply (`/environment/startup?_action=…`)   | ✅ done     | Editable variables + secrets with banner-driven save/apply, delete + undo                     |
-| **6.** Scripts (two-way sync with content-based conflict check) | ✅ done     | `aic script` — AM scripts + IDM endpoints + schedules; kind-agnostic pull/push/sync/watch/status/diff core, typed `./workspace`; TUI Scripts tab (browse + pull/push) |
-| **7.** Feature-vertical restructure ([docs/orthogonality-review.md](docs/orthogonality-review.md)) | ✅ done     | One directory per feature; per-feature api/state/ops/screen/view/cli seams; `app/` glue + `tui/` chrome |
-| Later                                                           |             | OAuth2 / OIDC, SAML, Journeys, Logs                                                            |
+| Path | What's in it |
+| --- | --- |
+| [`docs/CLI.md`](docs/CLI.md) | **Full CLI reference** — every command, flag, and example. |
+| [`PLAN.md`](PLAN.md) | Living roadmap: done / in progress / next. |
+| [`docs/api/`](docs/api/) | Verified AIC API reference. **Read before writing code that hits a tenant.** Each file has a "Verified against" date. |
+| [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md) | Workflow rules for AI-assisted edits (docs-first, verify-before-update, credential hygiene; routing map in §9). Kept identical. |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | TUI design rules (palette, layout, keybindings). |
+| [`scripts/verify-endpoint.sh`](scripts/verify-endpoint.sh) | Mints a token from `.envrc` and curls any AIC path — the verify-before-document loop. |
+| `src/aic/`, `src/agent/` | HTTP core + the background daemon — the only path TUI/CLI use for tenant HTTP. |
+| `src/esv/`, `src/scripts/`, `src/managed/`, `src/idmstore/`, `src/oauth/`, `src/journey/`, … | One directory per feature (api/state/ops/screen/view/cli seams). Routing map: CLAUDE.md §9. |
+| `src/app/`, `src/tui/` | App shell (event loop, dispatch, prod guard, the `Ctrl-P` selector) and shared TUI chrome. |
+| `src/cli/mod.rs` | CLI root: clap parser + session commands. Feature subcommands live in each vertical's `cli.rs`. |
 
-## How to work on this codebase (for AI assistants)
+## Working on this codebase
 
-Read [`CLAUDE.md`](CLAUDE.md). The three rules that matter most:
+Read [`CLAUDE.md`](CLAUDE.md) (AI assistants: it's also mirrored as `AGENTS.md`).
+The three rules that matter most:
 
-1. **Always read `docs/api/` before writing AIC API code.** Don't guess
-   paths, headers, or API versions. The research that bootstrapped this
-   project contained real errors that were caught only by live verification;
-   `docs/api/` is the verified version.
-2. **Verify before updating docs.** Use `scripts/verify-endpoint.sh` against
-   a sandbox tenant. Update `docs/api/{file}.md` with today's date. If
-   observed behaviour contradicts the doc, trust observation and add a
-   dated note in `docs/api/99-quirks-and-open-questions.md`.
-3. **Credentials hygiene.** Never commit `.envrc`, `.env*`, `.token-cache`,
-   any JWK or PEM, or any access token. The `.gitignore` covers these.
+1. **Always read `docs/api/` before writing AIC API code.** Don't guess paths,
+   headers, or API versions — the bootstrapping research had real errors caught
+   only by live verification; `docs/api/` is the verified version.
+2. **Verify before updating docs.** Use `scripts/verify-endpoint.sh` against a
+   sandbox tenant, update `docs/api/{file}.md` with today's date, and note any
+   contradiction in `docs/api/99-quirks-and-open-questions.md`.
+3. **Credentials hygiene.** Never commit `.envrc`, `.env*`, `.token-cache`, any
+   JWK or PEM, or any access token. `.gitignore` covers these.
 
 ## License
 
-To be decided. Repo is currently public for collaboration; treat as
+To be decided. The repo is currently public for collaboration; treat as
 all-rights-reserved until a license file is added.
