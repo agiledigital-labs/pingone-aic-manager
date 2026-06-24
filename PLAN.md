@@ -1,6 +1,6 @@
 # aic-edit — Roadmap
 
-Updated 2026-06-13. History lives in git — this file only tracks what's
+Updated 2026-06-24. History lives in git — this file only tracks what's
 done, what's in flight, and what's next. (Earlier revisions of this file
 held the full Step 1–6 implementation narratives; see git history if you
 need the archaeology.)
@@ -37,6 +37,27 @@ need the archaeology.)
   managed/<obj>.<hook>`) with their own typed/linted template family. Push
   is a read-modify-write of the shared `managed` document with apply-lag
   confirmation. See `docs/api/10-managed-objects.md`.
+- **OAuth2 clients** — `aic oauth list/pull/push/delete` + OAuth TUI view
+  (`src/oauth/`); strips `-encrypted` fields and plain-PUTs (no `If-Match`).
+  See `docs/api/05-oauth2-oidc.md`. (Provider service still to do.)
+- **Journeys** — `aic journey list/pull/push/delete/using-script` plus node
+  type introspection (`nodes`/`node-schema`/`node-template`); JSON export of
+  tree + nodes (`src/journey/`). See `docs/api/09-journeys.md`.
+- **Sync mappings** — browse IDM `config/sync` mappings, reconcile (recon), and
+  pull/push their embedded behaviour/correlation/transform scripts; Mappings
+  TUI view (`src/mappings/`) + the `config/sync` script namespace. See
+  `docs/api/16-sync-mappings.md`.
+- **Secret mappings** — `aic secretmap` re-points AM secret labels (purposes) at
+  existing ESV secrets; surfaced as the ESVs tab's Mappings sub-view
+  (`src/secretmap/`). See `docs/api/15-secret-mappings.md`.
+- **IDM record store + query** (2026-06-21) — `aic idm sync/query/objects/
+  tables/status` syncs managed-object *records* into a per-tenant local SQLite
+  store and queries them with SQL, incl. joins into shredded nested arrays
+  (`src/idmstore/`). Parallel cursor-paged sync across objects, user-object
+  incremental via the `_meta` change timestamp, non-user full re-pull.
+- **TUI function selector** (2026-06-24) — replaced the top tab strip with a
+  `Ctrl-P` fuzzy modal view switcher (`src/app/selector.rs`), so navigation
+  scales as more feature views are added.
 
 ## Next
 
@@ -99,12 +120,15 @@ need the archaeology.)
   `aic managed` + the **Managed TUI tab**, 2026-06-13) and hook sync are done.
   Next: add/edit properties (PUT replaces the whole document; no `_rev`,
   last-write-wins). Pairs well with the type generation above (same schema).
-- **OAuth2 / OIDC** — clients + provider service (`docs/api/05-oauth2-oidc.md`).
-  Remember: strip `-encrypted` fields on PUT; use `_rev` + content snapshot.
-- **SAML** — hosted/remote entities + CoT (`docs/api/06-saml.md`).
-- **Journeys** — CLI `aic journey list`/`pull` (read-only export of tree +
-  nodes, 2026-06-13) done. Next: push/diff, a TUI browse tab, and the
-  "which journeys use script X" cross-reference (`docs/api/09-journeys.md`).
+- **OAuth2 / OIDC** — client CRUD is done (see above); remaining is the
+  **provider service** (`docs/api/05-oauth2-oidc.md`).
+- **SAML** — hosted/remote entities + CoT (`docs/api/06-saml.md`). Not started.
+- **Journeys** — CLI list/pull/push/delete/using-script + node introspection are
+  done (see above); remaining is a **TUI browse tab** and a local-vs-tenant
+  **diff** (`docs/api/09-journeys.md`).
+- **IDM record store** — local query store + SQL is done (see above); next is a
+  **TUI Query tab** (SQL editor with type-ahead + sync progress) — the
+  `idmstore` `screen`/`view` are stubbed for it.
 
 ## Parked / stretch
 
