@@ -9,7 +9,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, InputMode, Realm, Tab};
+use crate::app::{App, InputMode, Realm, View};
 use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::{EditField, EsvView};
 use crate::onboard::screen::Mode as OnboardMode;
@@ -39,8 +39,7 @@ impl Trigger {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Act {
     Quit,
-    NextTab,
-    PrevTab,
+    Functions,
     NextView,
     PrevView,
     Search,
@@ -105,11 +104,20 @@ const fn b(
     }
 }
 
-/// The Normal-mode bindings for the current state. Conditional on tab, view,
+/// The Normal-mode bindings for the current state. Conditional on active view,
 /// and selection so the footer never advertises a key that won't fire.
 pub fn normal_binds(app: &App) -> Vec<Bind> {
     use Act::*;
     let mut out: Vec<Bind> = Vec::new();
+
+    out.push(b(
+        &[Trigger::Ctrl('p')],
+        "Ctrl-P",
+        "functions",
+        true,
+        true,
+        Functions,
+    ));
 
     // First-run / no tenants: only the bootstrap shortcuts make sense.
     if app.tenants.is_empty() {
@@ -133,18 +141,18 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         return out;
     }
 
-    let scripts_tab = app.current_tab == Tab::Scripts;
-    let esv_tab = app.current_tab == Tab::Esvs;
-    let managed_tab = app.current_tab == Tab::Managed;
-    let mappings_tab = app.current_tab == Tab::Mappings;
-    let idmstore_tab = app.current_tab == Tab::IdmStore;
-    let oauth_tab = app.current_tab == Tab::Oauth;
+    let scripts_view = app.active_view == View::Scripts;
+    let esv_view_active = app.active_view == View::Esvs;
+    let managed_view = app.active_view == View::Managed;
+    let mappings_view = app.active_view == View::Mappings;
+    let idmstore_view = app.active_view == View::IdmStore;
+    let oauth_view = app.active_view == View::Oauth;
     let mappings_allowed = mappings_allowed(app);
     let esv_view = app.esv.view.clamp(mappings_allowed);
-    let secrets = esv_tab && esv_view == EsvView::Secrets;
-    let mappings = esv_tab && esv_view == EsvView::Mappings;
+    let secrets = esv_view_active && esv_view == EsvView::Secrets;
+    let mappings = esv_view_active && esv_view == EsvView::Mappings;
     let n = row_count(app);
-    let can_apply = esv_tab
+    let can_apply = esv_view_active
         && app
             .active_tenant()
             .map(|t| crate::esv::state::can_request_restart(app, &t.name))
@@ -160,28 +168,9 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             Apply,
         ));
     }
-    // Tab / Shift-Tab cycle the top-level tabs (ESVs, Scripts, …). Only worth a
-    // footer hint once there's more than one tab; help documents it regardless.
-    let multi_tab = crate::app::Tab::all().len() > 1;
-    out.push(b(
-        &[Trigger::Code(KeyCode::Tab)],
-        "Tab",
-        "next tab",
-        multi_tab,
-        true,
-        NextTab,
-    ));
-    out.push(b(
-        &[Trigger::Code(KeyCode::BackTab)],
-        "S-Tab",
-        "prev tab",
-        false,
-        true,
-        PrevTab,
-    ));
-    // `[` / `]` switch the ESV tab's inner sub-tabs; mappings are only present
+    // `[` / `]` switch the ESV view's inner sections; mappings are only present
     // on lower-environment tenants.
-    if esv_tab {
+    if esv_view_active {
         let next_label = match (esv_view, mappings_allowed) {
             (EsvView::Variables, _) => "secrets",
             (EsvView::Secrets, true) => "mappings",
@@ -249,7 +238,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         PageUp,
     ));
 
-    if scripts_tab {
+    if scripts_view {
         if n > 0 {
             out.push(b(
                 &[Trigger::Char('p'), Trigger::Code(KeyCode::Enter)],
@@ -269,7 +258,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             true,
             PullAll,
         ));
-    } else if esv_tab {
+    } else if esv_view_active {
         if n > 0 {
             if secrets {
                 out.push(b(
@@ -344,7 +333,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             true,
             UndoHistory,
         ));
-    } else if managed_tab && n > 0 {
+    } else if managed_view && n > 0 {
         out.push(b(
             &[Trigger::Code(KeyCode::Enter)],
             "Enter",
@@ -410,7 +399,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             true,
             UndoHistory,
         ));
-    } else if mappings_tab && n > 0 {
+    } else if mappings_view && n > 0 {
         out.push(b(
             &[Trigger::Char('r')],
             "r",
@@ -427,7 +416,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             true,
             PullMappingScripts,
         ));
-    } else if oauth_tab && n > 0 {
+    } else if oauth_view && n > 0 {
         out.push(b(
             &[Trigger::Code(KeyCode::Enter)],
             "Enter",
@@ -453,7 +442,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             DetailScrollUp,
         ));
     }
-    if managed_tab || mappings_tab || idmstore_tab || oauth_tab || mappings {
+    if managed_view || mappings_view || idmstore_view || oauth_view || mappings {
         out.push(b(
             &[Trigger::Char('R')],
             "R",
@@ -477,8 +466,8 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     }
 
     // Global commands available on every populated screen. Realm toggle only
-    // applies to the ESV tab — scripts are addressed by namespace, not realm.
-    if esv_tab {
+    // applies to the ESV view — scripts are addressed by namespace, not realm.
+    if esv_view_active {
         let realm_triggers: &'static [Trigger] = if mappings {
             &[Trigger::Char('r')]
         } else {
@@ -550,7 +539,14 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         InputMode::Managed(_) => crate::managed::screen::footer_hints(app),
         InputMode::Mappings(_) => crate::mappings::screen::footer_hints(app),
         InputMode::IdmStore(_) => crate::idmstore::screen::footer_hints(app),
-        InputMode::Oauth(_) => crate::oauth::screen::footer_hints(app),
+        InputMode::Oauth(mode) => {
+            let mut out = crate::oauth::screen::footer_hints(app);
+            if mode == crate::oauth::screen::Mode::Normal {
+                out.insert(0, ("Ctrl-P", "functions"));
+            }
+            out
+        }
+        InputMode::Selector => Vec::new(),
         InputMode::Secretmap(_) => crate::secretmap::screen::footer_hints(app),
         InputMode::Secrets(SecretsMode::Create) => {
             use crate::secrets::state::CreateField;
@@ -631,11 +627,19 @@ fn push_global(out: &mut Vec<Bind>) {
 /// table-driven (below); other modes route to their screen handler — one place
 /// that maps mode → handler, instead of a match scattered in `app`.
 pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    if app.input_mode == InputMode::Oauth(crate::oauth::screen::Mode::Normal)
+        && Trigger::Ctrl('p').matches(&key)
+    {
+        crate::app::selector::open(app);
+        return Ok(());
+    }
+
     match app.input_mode {
         InputMode::Normal => dispatch_normal(app, key).await?,
         InputMode::Vault(mode) => crate::vault::screen::handle_key(app, key, mode).await?,
         InputMode::Onboard(mode) => crate::onboard::screen::handle_key(app, key, mode).await?,
         InputMode::EnvPicker => app.handle_env_picker_key(key),
+        InputMode::Selector => crate::app::selector::handle_key(app, key),
         InputMode::ProdConfirm => crate::app::prod_confirm::handle_key(app, key).await?,
         InputMode::UndoHistory => crate::undo::screen::handle_key(app, key),
         InputMode::Esv(mode) => crate::esv::screen::handle_key(app, key, mode)?,
@@ -667,23 +671,22 @@ async fn run_normal(app: &mut App, act: Act) {
     use Act::*;
     match act {
         Quit => app.should_quit = true,
-        NextTab => cycle_tab(app, 1),
-        PrevTab => cycle_tab(app, -1),
+        Functions => crate::app::selector::open(app),
         NextView => switch_esv_view(app, 1),
         PrevView => switch_esv_view(app, -1),
         Search => {
-            if app.current_tab == Tab::Esvs
+            if app.active_view == View::Esvs
                 && app.esv.view.clamp(mappings_allowed(app)) == EsvView::Mappings
             {
                 crate::secretmap::screen::start_search(app);
             } else {
-                app.input_mode = match app.current_tab {
-                    Tab::Scripts => InputMode::Scripts(crate::scripts::screen::Mode::Search),
-                    Tab::Managed => InputMode::Managed(crate::managed::screen::Mode::Search),
-                    Tab::Mappings => InputMode::Mappings(crate::mappings::screen::Mode::Search),
-                    Tab::IdmStore => InputMode::IdmStore(crate::idmstore::screen::Mode::Search),
-                    Tab::Oauth => InputMode::Oauth(crate::oauth::screen::Mode::Search),
-                    Tab::Esvs => InputMode::Esv(EsvMode::Search),
+                app.input_mode = match app.active_view {
+                    View::Scripts => InputMode::Scripts(crate::scripts::screen::Mode::Search),
+                    View::Managed => InputMode::Managed(crate::managed::screen::Mode::Search),
+                    View::Mappings => InputMode::Mappings(crate::mappings::screen::Mode::Search),
+                    View::IdmStore => InputMode::IdmStore(crate::idmstore::screen::Mode::Search),
+                    View::Oauth => InputMode::Oauth(crate::oauth::screen::Mode::Search),
+                    View::Esvs => InputMode::Esv(EsvMode::Search),
                 };
             }
         }
@@ -706,24 +709,24 @@ async fn run_normal(app: &mut App, act: Act) {
         PullMappingScripts => crate::mappings::screen::pull_scripts(app),
         Apply => crate::esv::ops::request_restart(app),
         Refresh => {
-            if app.current_tab == Tab::Managed {
+            if app.active_view == View::Managed {
                 crate::managed::screen::refresh(app, true);
-            } else if app.current_tab == Tab::Mappings {
+            } else if app.active_view == View::Mappings {
                 crate::mappings::screen::refresh(app, true);
-            } else if app.current_tab == Tab::IdmStore {
+            } else if app.active_view == View::IdmStore {
                 crate::idmstore::screen::refresh(app, true);
-            } else if app.current_tab == Tab::Oauth {
+            } else if app.active_view == View::Oauth {
                 crate::oauth::screen::refresh(app, true);
-            } else if app.current_tab == Tab::Esvs
+            } else if app.active_view == View::Esvs
                 && app.esv.view.clamp(mappings_allowed(app)) == EsvView::Mappings
             {
                 crate::secretmap::screen::refresh(app, true);
             }
         }
         Undo => {
-            if app.current_tab == Tab::Managed {
+            if app.active_view == View::Managed {
                 crate::managed::ops::request_latest_undo(app);
-            } else if app.current_tab == Tab::Esvs
+            } else if app.active_view == View::Esvs
                 && app.esv.view.clamp(mappings_allowed(app)) == EsvView::Mappings
             {
                 crate::secretmap::ops::request_latest_undo(app);
@@ -760,39 +763,13 @@ async fn run_normal(app: &mut App, act: Act) {
     }
 }
 
-/// Cycle the top-level tab by `delta`, wrapping. No-op while only one tab
-/// exists, but wired now so `Tab` behaves correctly as more tabs land.
-fn cycle_tab(app: &mut App, delta: isize) {
-    let tabs = crate::app::Tab::all();
-    let n = tabs.len();
-    if n < 2 {
-        return;
-    }
-    let cur = tabs.iter().position(|t| *t == app.current_tab).unwrap_or(0) as isize;
-    let next = (cur + delta).rem_euclid(n as isize) as usize;
-    app.current_tab = tabs[next];
-    // Lazily load the scripts list the first time the user lands on the tab —
-    // it's a few list calls, so we don't pay for it unless it's visited.
-    if app.current_tab == Tab::Scripts {
-        crate::scripts::screen::refresh(app, false);
-    } else if app.current_tab == Tab::Managed {
-        crate::managed::screen::refresh(app, false);
-    } else if app.current_tab == Tab::Mappings {
-        crate::mappings::screen::refresh(app, false);
-    } else if app.current_tab == Tab::IdmStore {
-        crate::idmstore::screen::refresh(app, false);
-    } else if app.current_tab == Tab::Oauth {
-        crate::oauth::screen::refresh(app, false);
-    }
-}
-
 fn mappings_allowed(app: &App) -> bool {
     app.active_tenant()
         .is_some_and(|tenant| tenant.allows_secret_mappings())
 }
 
 fn switch_esv_view(app: &mut App, delta: isize) {
-    if app.current_tab != Tab::Esvs {
+    if app.active_view != View::Esvs {
         return;
     }
     let allowed = mappings_allowed(app);
@@ -808,25 +785,25 @@ fn switch_esv_view(app: &mut App, delta: isize) {
 }
 
 fn row_count(app: &App) -> usize {
-    if app.current_tab == Tab::Scripts {
+    if app.active_view == View::Scripts {
         return app
             .scripts
             .matches(app.active_tenant().map(|t| t.name.as_str()))
             .len();
     }
-    if app.current_tab == Tab::Managed {
+    if app.active_view == View::Managed {
         return app
             .managed
             .matches(app.active_tenant().map(|t| t.name.as_str()))
             .len();
     }
-    if app.current_tab == Tab::Mappings {
+    if app.active_view == View::Mappings {
         return crate::mappings::screen::row_count(app);
     }
-    if app.current_tab == Tab::IdmStore {
+    if app.active_view == View::IdmStore {
         return crate::idmstore::screen::row_count(app);
     }
-    if app.current_tab == Tab::Oauth {
+    if app.active_view == View::Oauth {
         return crate::oauth::screen::row_count(app);
     }
     match app.esv.view.clamp(mappings_allowed(app)) {
@@ -839,19 +816,19 @@ fn row_count(app: &App) -> usize {
 }
 
 fn current_selection(app: &App) -> usize {
-    if app.current_tab == Tab::Scripts {
+    if app.active_view == View::Scripts {
         return app.scripts.selected;
     }
-    if app.current_tab == Tab::Managed {
+    if app.active_view == View::Managed {
         return app.managed.selected;
     }
-    if app.current_tab == Tab::Mappings {
+    if app.active_view == View::Mappings {
         return crate::mappings::screen::current_selection(app);
     }
-    if app.current_tab == Tab::IdmStore {
+    if app.active_view == View::IdmStore {
         return crate::idmstore::screen::current_selection(app);
     }
-    if app.current_tab == Tab::Oauth {
+    if app.active_view == View::Oauth {
         return crate::oauth::screen::current_selection(app);
     }
     match app.esv.view.clamp(mappings_allowed(app)) {
@@ -864,23 +841,23 @@ fn current_selection(app: &App) -> usize {
 fn set_selection(app: &mut App, idx: usize) {
     let n = row_count(app);
     let clamped = if n == 0 { 0 } else { idx.min(n - 1) };
-    if app.current_tab == Tab::Scripts {
+    if app.active_view == View::Scripts {
         app.scripts.selected = clamped;
         return;
     }
-    if app.current_tab == Tab::Managed {
+    if app.active_view == View::Managed {
         app.managed.select_object(clamped);
         return;
     }
-    if app.current_tab == Tab::Mappings {
+    if app.active_view == View::Mappings {
         crate::mappings::screen::select(app, clamped);
         return;
     }
-    if app.current_tab == Tab::IdmStore {
+    if app.active_view == View::IdmStore {
         crate::idmstore::screen::select(app, clamped);
         return;
     }
-    if app.current_tab == Tab::Oauth {
+    if app.active_view == View::Oauth {
         crate::oauth::screen::select(app, clamped);
         return;
     }
@@ -903,19 +880,19 @@ pub fn move_selection(app: &mut App, delta: isize) {
 }
 
 fn filter_active(app: &App) -> bool {
-    if app.current_tab == Tab::Scripts {
+    if app.active_view == View::Scripts {
         return !app.scripts.query.is_empty();
     }
-    if app.current_tab == Tab::Managed {
+    if app.active_view == View::Managed {
         return !app.managed.query.is_empty();
     }
-    if app.current_tab == Tab::Mappings {
+    if app.active_view == View::Mappings {
         return !app.mappings.query.is_empty();
     }
-    if app.current_tab == Tab::IdmStore {
+    if app.active_view == View::IdmStore {
         return false;
     }
-    if app.current_tab == Tab::Oauth {
+    if app.active_view == View::Oauth {
         return !app.oauth.query.is_empty();
     }
     match app.esv.view.clamp(mappings_allowed(app)) {
@@ -926,23 +903,23 @@ fn filter_active(app: &App) -> bool {
 }
 
 fn clear_filter(app: &mut App) {
-    if app.current_tab == Tab::Scripts {
+    if app.active_view == View::Scripts {
         app.scripts.reset_view();
         return;
     }
-    if app.current_tab == Tab::Managed {
+    if app.active_view == View::Managed {
         app.managed.reset_view();
         return;
     }
-    if app.current_tab == Tab::Mappings {
+    if app.active_view == View::Mappings {
         crate::mappings::screen::clear_filter(app);
         return;
     }
-    if app.current_tab == Tab::IdmStore {
+    if app.active_view == View::IdmStore {
         crate::idmstore::screen::clear_filter(app);
         return;
     }
-    if app.current_tab == Tab::Oauth {
+    if app.active_view == View::Oauth {
         crate::oauth::screen::clear_filter(app);
         return;
     }
@@ -958,14 +935,14 @@ fn clear_filter(app: &mut App) {
 }
 
 fn primary(app: &mut App) {
-    if app.current_tab == Tab::Managed {
+    if app.active_view == View::Managed {
         crate::managed::screen::start_edit_field(app);
         return;
     }
-    if app.current_tab == Tab::Mappings {
+    if app.active_view == View::Mappings {
         return;
     }
-    if app.current_tab == Tab::Oauth {
+    if app.active_view == View::Oauth {
         crate::oauth::screen::load_selected(app);
         return;
     }
@@ -977,7 +954,7 @@ fn primary(app: &mut App) {
 }
 
 fn delete(app: &mut App) {
-    if app.current_tab == Tab::Managed {
+    if app.active_view == View::Managed {
         crate::managed::screen::request_delete_field(app);
         return;
     }
@@ -989,7 +966,7 @@ fn delete(app: &mut App) {
 }
 
 fn new_item(app: &mut App) {
-    if app.current_tab == Tab::Managed {
+    if app.active_view == View::Managed {
         crate::managed::screen::start_add_field(app);
         return;
     }

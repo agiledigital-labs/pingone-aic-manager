@@ -1,8 +1,8 @@
 //! Global draw root: dispatches on `InputMode` — full-screen feature modals
-//! first, then the dashboard (header + active tab body + footer hints).
+//! first, then the dashboard (header + active view body + footer hints).
 //! One arm per feature; feature rendering lives in each vertical's `view`.
 
-use crate::app::env_picker;
+use crate::app::{env_picker, selector};
 use crate::tui::{header, keybind_help, popup_confirm, toast};
 use ratatui::{
     Frame,
@@ -34,6 +34,12 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         InputMode::EnvPicker => {
             env_picker::draw(f, app);
+            draw_keybind_help(f, app);
+            toast::draw(f, app);
+            return;
+        }
+        InputMode::Selector => {
+            selector::draw(f, app);
             draw_keybind_help(f, app);
             toast::draw(f, app);
             return;
@@ -75,8 +81,8 @@ pub fn draw(f: &mut Frame, app: &App) {
                 )
         );
     let chunks = Layout::vertical([
-        Constraint::Length(1),                              // top: tabs + chips
-        Constraint::Length(1),                              // breathing room under the tab row
+        Constraint::Length(1),                              // top: view + chips
+        Constraint::Length(1),                              // breathing room under the header
         Constraint::Min(0),                                 // body
         Constraint::Length(if show_hints { 1 } else { 0 }), // bottom: keybind hints
     ])
@@ -198,15 +204,15 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Paragraph::new(lines).alignment(Alignment::Center),
             chunks[1],
         );
-    } else if app.current_tab == crate::app::Tab::Scripts {
+    } else if app.active_view == crate::app::View::Scripts {
         crate::scripts::view::draw_body(f, app, area);
-    } else if app.current_tab == crate::app::Tab::Managed {
+    } else if app.active_view == crate::app::View::Managed {
         crate::managed::view::draw_body(f, app, area);
-    } else if app.current_tab == crate::app::Tab::Mappings {
+    } else if app.active_view == crate::app::View::Mappings {
         crate::mappings::view::draw_body(f, app, area);
-    } else if app.current_tab == crate::app::Tab::IdmStore {
+    } else if app.active_view == crate::app::View::IdmStore {
         crate::idmstore::view::draw_body(f, app, area);
-    } else if app.current_tab == crate::app::Tab::Oauth {
+    } else if app.active_view == crate::app::View::Oauth {
         crate::oauth::view::draw_body(f, app, area);
     } else {
         crate::esv::view::draw(f, app, area);

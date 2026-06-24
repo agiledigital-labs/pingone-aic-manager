@@ -105,6 +105,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
         InputMode::Vault(VaultMode::Unlock) => unlock_lines(app, &mut lines),
         InputMode::Onboard(mode) => onboard_lines(app, mode, &mut lines),
         InputMode::EnvPicker => env_picker_lines(app, &mut lines),
+        InputMode::Selector => selector_lines(&mut lines),
         InputMode::ProdConfirm => confirm_lines(
             &mut lines,
             "Production write confirmation",
@@ -175,6 +176,7 @@ fn oauth_lines(mode: OauthMode, lines: &mut Vec<Line<'static>>) {
                 ("Enter", "load selected client"),
                 ("^U/^D", "scroll detail"),
                 ("R", "refresh"),
+                ("Ctrl-P", "open function selector"),
                 ("Esc", "back"),
             ],
         ),
@@ -221,7 +223,7 @@ fn normal_lines(app: &App, lines: &mut Vec<Line<'static>>) {
             bind(lines, binding.label, binding.desc);
         }
     }
-    if app.current_tab == crate::app::Tab::Esvs {
+    if app.active_view == crate::app::View::Esvs {
         group(lines, "ESV Views");
         bind(lines, "Variables", "ESV variable values and descriptions");
         bind(
@@ -260,6 +262,15 @@ fn esv_search_lines(lines: &mut Vec<Line<'static>>) {
     bind(lines, "↑/↓", "move selection");
     bind(lines, "PgUp/PgDn", "move by page");
     bind(lines, "F1", "show keybinds");
+}
+
+fn selector_lines(lines: &mut Vec<Line<'static>>) {
+    group(lines, "Function selector");
+    bind(lines, "Type", "filter functions");
+    bind(lines, "Backspace", "delete character");
+    bind(lines, "↑/↓", "move selection");
+    bind(lines, "Enter", "open selected function");
+    bind(lines, "Esc", "cancel");
 }
 
 fn esv_edit_lines(app: &App, lines: &mut Vec<Line<'static>>) {

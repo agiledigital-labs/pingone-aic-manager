@@ -9,7 +9,7 @@ keybindings. Don't redebate these unless the maintainer explicitly revisits.
 ## Borders, separators, palette
 
 - **No borders on main panels.** Borders only on confirmation/error modals.
-- Use whitespace, position, and color for hierarchy. Two-space tab dividers.
+- Use whitespace, position, and color for hierarchy.
 - Transparent backgrounds. Selection = `bg(DarkGray)` on the row (no `>` glyph).
 - Labels in `DarkGray`. Values in `White` (or semantic color).
 - Semantic colors: red=out/error, green=in/ok, yellow=action/caution,
@@ -17,16 +17,16 @@ keybindings. Don't redebate these unless the maintainer explicitly revisits.
 
 ## Navigation
 
-- **Top tab strip (tally-style):** e.g. `ESVs  Scripts  OAuth2  SAML  Logs`.
-  Active tab bold-white; inactive DarkGray. Tab/Shift+Tab to move; number
-  keys jump.
+- The header shows the active function in bold white; there is no tab strip.
+- `Ctrl-P` opens the function selector in fuzzy-search mode. Typing filters
+  immediately; arrows navigate, Enter opens, and Esc cancels.
 
-## Within-tab layout
+## Within-view layout
 
-- **Yazi-style miller** for rich content tabs (Scripts, OAuth2, SAML): list
+- **Yazi-style miller** for rich content views (Scripts, OAuth2, SAML): list
   on the left (~30%), detail/editor on the right. Always visible. Enter
   focuses the right pane.
-- For simple list+short-detail tabs (ESVs), tally's list-top + fixed-detail-strip
+- For simple list+short-detail views (ESVs), tally's list-top + fixed-detail-strip
   pattern is fine.
 
 ## Header chrome (right-aligned)
@@ -91,7 +91,7 @@ You're writing to PROD — Are you sure?
 ```
 
 This is implemented as a single guard around the `AicClient` write methods
-so it's automatic across all tabs — not per-call boilerplate.
+so it's automatic across all views — not per-call boilerplate.
 
 ## Reference apps (on the maintainer's machine)
 
