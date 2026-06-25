@@ -925,6 +925,10 @@ fn send_onboard_error(
     }));
 }
 
+fn credential_name(username: Option<&str>, tenant_name: &str) -> String {
+    format!("aicx-{}", username.unwrap_or(tenant_name))
+}
+
 async fn run_bootstrap_from_cookie(
     onboard_id: uuid::Uuid,
     tenant_name: String,
@@ -949,6 +953,8 @@ async fn run_bootstrap_from_cookie(
             return;
         }
     };
+    let username = resolve_admin_username(&http, &base_url, &bearer).await;
+    let credential_name = credential_name(username.as_deref(), &tenant_name);
     let kid = uuid::Uuid::new_v4().to_string();
     let priv_jwk = match generate_rsa_jwk(&kid) {
         Ok(j) => j,
@@ -958,12 +964,11 @@ async fn run_bootstrap_from_cookie(
         }
     };
     let pub_jwk = crate::aic::auth::public_jwk(&priv_jwk);
-    let sa_name = format!("aic-edit-{tenant_name}");
     let sa_id = match create_service_account(
         &http,
         &base_url,
         &bearer,
-        &sa_name,
+        &credential_name,
         &format!("Created by aic-edit for {tenant_name}"),
         &pub_jwk,
     )
@@ -975,7 +980,8 @@ async fn run_bootstrap_from_cookie(
             return;
         }
     };
-    let log_key = provision_log_api_key(&http, &base_url, &bearer, &tenant_name).await;
+    let log_key =
+        provision_log_api_key(&http, &base_url, &bearer, &tenant_name, &credential_name).await;
     let _ = tx.send(AppEvent::Onboard(Event::ServiceAccountReady {
         onboard_id,
         tenant_name,
@@ -1013,7 +1019,8 @@ async fn run_bootstrap_log_only(
             return;
         }
     };
-    let key_name = format!("aic-edit-{}", intent.tenant_name);
+    let username = super::bootstrap::resolve_admin_username(&http, &intent.base_url, &bearer).await;
+    let key_name = credential_name(username.as_deref(), &intent.tenant_name);
     let log_key =
         match super::bootstrap::create_log_api_key(&http, &intent.base_url, &bearer, &key_name)
             .await
@@ -1121,6 +1128,11 @@ async fn run_bootstrap_from_userpass(
                     return;
                 }
             };
+            let resolved_username = resolve_admin_username(&http, &base_url, &bearer).await;
+            let credential_name = credential_name(
+                resolved_username.as_deref().or(Some(username.as_str())),
+                &tenant_name,
+            );
             let kid = uuid::Uuid::new_v4().to_string();
             let priv_jwk = match generate_rsa_jwk(&kid) {
                 Ok(j) => j,
@@ -1130,12 +1142,11 @@ async fn run_bootstrap_from_userpass(
                 }
             };
             let pub_jwk = crate::aic::auth::public_jwk(&priv_jwk);
-            let sa_name = format!("aic-edit-{tenant_name}");
             let sa_id = match create_service_account(
                 &http,
                 &base_url,
                 &bearer,
-                &sa_name,
+                &credential_name,
                 &format!("Created by aic-edit for {tenant_name}"),
                 &pub_jwk,
             )
@@ -1147,7 +1158,9 @@ async fn run_bootstrap_from_userpass(
                     return;
                 }
             };
-            let log_key = provision_log_api_key(&http, &base_url, &bearer, &tenant_name).await;
+            let log_key =
+                provision_log_api_key(&http, &base_url, &bearer, &tenant_name, &credential_name)
+                    .await;
             let _ = tx.send(AppEvent::Onboard(Event::ServiceAccountReady {
                 onboard_id,
                 tenant_name,
@@ -1223,9 +1236,9 @@ async fn provision_log_api_key(
     base_url: &str,
     bearer: &str,
     tenant_name: &str,
+    credential_name: &str,
 ) -> Option<LogKeyPair> {
-    let name = format!("aic-edit-{tenant_name}");
-    match super::bootstrap::create_log_api_key(http, base_url, bearer, &name).await {
+    match super::bootstrap::create_log_api_key(http, base_url, bearer, credential_name).await {
         Ok(pair) => {
             tracing::info!(
                 tenant = tenant_name,
@@ -1257,5 +1270,14 @@ mod tests {
         assert_eq!(path_for_index(3, true), Some(OnboardPath::Envrc));
         assert_eq!(path_for_index(4, true), Some(OnboardPath::LogOnly));
         assert_eq!(path_for_index(5, true), None);
+    }
+
+    #[test]
+    fn credential_name_uses_username_or_tenant_fallback() {
+        assert_eq!(
+            credential_name(Some("admin@example.com"), "development"),
+            "aicx-admin@example.com"
+        );
+        assert_eq!(credential_name(None, "development"), "aicx-development");
     }
 }

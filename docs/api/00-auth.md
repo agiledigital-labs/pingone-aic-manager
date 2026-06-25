@@ -118,6 +118,32 @@ curl -sS "$TENANT_BASE_URL/am/oauth2/access_token" \
 - Date: 2026-05-17
 - Calls: `POST /am/oauth2/access_token` (200 OK, 898s TTL).
 
+## Resolving the onboarding admin's username (verified 2026-06-25)
+
+To name onboarding-created credentials after the human who onboarded (not a
+generic alias), resolve the admin user from the `idmAdminClient` bearer that
+`session_to_bearer` already mints (scope `openid fr:idm:*`):
+
+1. `GET /am/oauth2/realms/root/userinfo` (Bearer) → `{ "sub": "<uuid>", ... }`.
+   This client returns **only `sub`/`subname`** — `profile`/`email` (and
+   `fr:am:*`) scopes are **rejected** with `invalid_scope`, so userinfo never
+   carries a readable name. The `sub` is the admin's user UUID.
+2. `GET /openidm/managed/teammember/{sub}` (Bearer) → `{ "userName":
+   "dsbalmain@agiledigital.com.au", "mail": ..., "cn": ... }`. **AIC tenant
+   admins are IDM `managed/teammember` objects**, and this read works with the
+   admin bearer's `fr:idm:*` scope — no SA, no `fr:am:*`, and it works *before*
+   any SA exists, so it can name the SA too.
+
+Both calls succeed on every onboarding path (cookie / userpass / log-only) since
+all hold the admin bearer. Use `userName` (fall back to `mail`); on any failure
+fall back to a non-identifying name — never block onboarding on it.
+
+Note: the `who-changed` reference script resolves principals via
+`GET /am/json/realms/root/users/{id}` (`Accept-API-Version:
+protocol=2.1,resource=3.0`), but that AM path needs an **`fr:am:*` SA token**
+(the admin `fr:idm:*` bearer gets **401** there) — the `teammember` route above
+is preferred because it needs nothing extra.
+
 ## Source citations
 
 - frodo-lib: `src/ops/OAuth2OidcOps.ts` (`accessTokenRfc7523AuthZGrant`),
