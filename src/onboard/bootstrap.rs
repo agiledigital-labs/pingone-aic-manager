@@ -38,6 +38,18 @@ struct TokenResp {
 }
 
 #[derive(Deserialize)]
+struct UserInfoResp {
+    sub: String,
+}
+
+#[derive(Deserialize)]
+struct TeamMemberResp {
+    #[serde(rename = "userName")]
+    user_name: Option<String>,
+    mail: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct CreateSaResp {
     #[serde(rename = "_id")]
     id: String,
@@ -146,6 +158,54 @@ pub async fn session_to_bearer(
     }
     let tok: TokenResp = resp.json().await?;
     Ok(tok.access_token)
+}
+
+/// Best-effort resolution of the human admin represented by a bootstrap bearer.
+pub async fn resolve_admin_username(
+    http: &reqwest::Client,
+    base_url: &str,
+    bearer: &str,
+) -> Option<String> {
+    let userinfo_url = format!("{base_url}/am/oauth2/realms/root/userinfo");
+    let resp = http
+        .get(&userinfo_url)
+        .header("Authorization", format!("Bearer {bearer}"))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let userinfo: UserInfoResp = resp.json().await.ok()?;
+    let sub = userinfo.sub.trim();
+    if sub.is_empty() {
+        return None;
+    }
+
+    let teammember_url = format!("{base_url}/openidm/managed/teammember/{sub}");
+    let resp = http
+        .get(&teammember_url)
+        .header("Authorization", format!("Bearer {bearer}"))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let teammember: TeamMemberResp = resp.json().await.ok()?;
+    teammember
+        .user_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            teammember
+                .mail
+                .as_deref()
+                .map(str::trim)
+                .filter(|mail| !mail.is_empty())
+        })
+        .map(str::to_owned)
 }
 
 /// Generate a 2048-bit RSA keypair as a private JWK (with kid).
