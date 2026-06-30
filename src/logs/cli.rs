@@ -10,10 +10,13 @@ use serde::Serialize;
 
 use crate::agent::AgentClient;
 use crate::cli::tenant_for;
+use crate::config::ProjectConfig;
 use crate::logs::{api, ops};
+use crate::onboard::bootstrap::{
+    create_log_api_key, credential_name, no_redirect_client, resolve_admin_username,
+    session_to_bearer,
+};
 use crate::{Error, Result};
-
-const DEFAULT_SOURCES: [&str; 2] = ["am-everything", "idm-everything"];
 
 #[derive(Subcommand, Debug)]
 pub enum LogsCommand {
@@ -72,6 +75,15 @@ pub enum LogsCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
+    /// Incrementally sync logs into the local DuckDB store.
+    Sync {
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long, value_name = "CSV", help = "Comma-separated log sources")]
+        source: Option<String>,
+        #[arg(long, help = "Override the incremental cursor with an ISO-8601 start")]
+        since: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -82,6 +94,16 @@ pub enum KeyCommand {
         tenant: Option<String>,
         #[arg(long, help = "Log API key id")]
         id: Option<String>,
+    },
+    /// Mint a new log API key for an existing tenant via an admin session.
+    Create {
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(
+            long,
+            help = "AM session cookie name (random-hex). Prompted if omitted."
+        )]
+        cookie_name: Option<String>,
     },
     /// Show whether a log API key pair is stored.
     Show {
@@ -184,6 +206,34 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             .await?;
             write_json(&result, output.as_deref())
         }
+        LogsCommand::Sync {
+            tenant,
+            source,
+            since,
+        } => {
+            let sources = parse_sync_sources(source.as_deref())?;
+            let since = since
+                .as_deref()
+                .map(|value| parse_time(value, "since"))
+                .transpose()?;
+            let reports = ops::sync_tenant(tenant, &sources, since).await?;
+            let mut total_fetched = 0;
+            let mut total_filtered = 0;
+            let mut total_inserted = 0;
+            for report in reports {
+                println!(
+                    "{}: fetched {}, filtered {}, new {}",
+                    report.source, report.fetched, report.filtered, report.inserted
+                );
+                total_fetched += report.fetched;
+                total_filtered += report.filtered;
+                total_inserted += report.inserted;
+            }
+            println!(
+                "total: fetched {total_fetched}, filtered {total_filtered}, new {total_inserted}"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -217,23 +267,56 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
                 .put_log_key(&tenant, api_key_id.clone(), api_key_secret)
                 .await?;
             println!("stored log API key {api_key_id} for tenant {tenant}");
+            verify_stored_key(&tenant).await;
+            Ok(())
+        }
+        KeyCommand::Create {
+            tenant,
+            cookie_name,
+        } => {
+            let (tenant, base_url) = configured_tenant_base_url(tenant)?;
+            crate::cli::ensure_agent_unlocked().await?;
 
-            let verification = async {
-                let context = ops::fetch_context(Some(tenant.clone())).await?;
-                api::sources(&context.client, &context.base_url, &context.key).await
+            let cookie_name = match cookie_name {
+                Some(cookie_name) => cookie_name,
+                None => prompt(
+                    Text::new("AM session cookie name").prompt(),
+                    "AM session cookie name",
+                )?,
+            };
+            let cookie_name = cookie_name.trim().to_string();
+            if cookie_name.is_empty() {
+                return Err(Error::Config(
+                    "AM session cookie name cannot be empty".into(),
+                ));
             }
-            .await;
-            match verification {
-                Ok(_) => {
-                    println!("✓ key verified");
-                }
-                Err(error) => {
-                    eprintln!("⚠ key stored but verification FAILED for tenant {tenant}: {error}");
-                    eprintln!(
-                        "  The key id/secret may be wrong, or the tenant base URL may be unreachable."
-                    );
-                }
+
+            let cookie_value = prompt(
+                Password::new("AM session cookie value")
+                    .with_display_mode(PasswordDisplayMode::Hidden)
+                    .without_confirmation()
+                    .prompt(),
+                "AM session cookie value",
+            )?;
+            if cookie_value.is_empty() {
+                return Err(Error::Config(
+                    "AM session cookie value cannot be empty".into(),
+                ));
             }
+
+            let client = no_redirect_client()?;
+            let bearer = session_to_bearer(&client, &base_url, &cookie_name, &cookie_value).await?;
+            let username = resolve_admin_username(&client, &base_url, &bearer).await;
+            let name = credential_name(username.as_deref(), &tenant);
+            let pair = create_log_api_key(&client, &base_url, &bearer, &name).await?;
+            let api_key_id = pair.api_key_id.clone();
+
+            let agent = AgentClient::connect_or_spawn().await?;
+            agent
+                .put_log_key(&tenant, api_key_id.clone(), pair.api_key_secret)
+                .await?;
+            println!("created log key {name} ({api_key_id}) for tenant {tenant}");
+            verify_stored_key(&tenant).await;
             Ok(())
         }
         KeyCommand::Show { tenant } => {
@@ -257,14 +340,53 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
     }
 }
 
+fn configured_tenant_base_url(tenant_arg: Option<String>) -> Result<(String, String)> {
+    let tenant = tenant_for(tenant_arg)?;
+    let cfg = ProjectConfig::load()?
+        .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
+    let base_url = cfg
+        .tenants
+        .iter()
+        .find(|configured| configured.name == tenant)
+        .map(|configured| configured.base_url.clone())
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "no tenant named '{tenant}' in config; onboard it first"
+            ))
+        })?;
+    Ok((tenant, base_url))
+}
+
+async fn verify_stored_key(tenant: &str) {
+    let verification = async {
+        let context = ops::fetch_context(Some(tenant.to_string())).await?;
+        api::sources(&context.client, &context.base_url, &context.key).await
+    }
+    .await;
+    match verification {
+        Ok(_) => {
+            println!("✓ key verified");
+        }
+        Err(error) => {
+            eprintln!("⚠ key stored but verification FAILED for tenant {tenant}: {error}");
+            eprintln!(
+                "  The key id/secret may be wrong, or the tenant base URL may be unreachable."
+            );
+        }
+    }
+}
+
 fn parse_sources(value: Option<&str>) -> Result<Vec<String>> {
+    parse_sources_with_default(value, &ops::DEFAULT_SOURCES)
+}
+
+fn parse_sync_sources(value: Option<&str>) -> Result<Vec<String>> {
+    parse_sources_with_default(value, &ops::DEFAULT_SYNC_SOURCES)
+}
+
+fn parse_sources_with_default(value: Option<&str>, default: &[&str]) -> Result<Vec<String>> {
     let sources: Vec<String> = value.map_or_else(
-        || {
-            DEFAULT_SOURCES
-                .iter()
-                .map(|source| source.to_string())
-                .collect()
-        },
+        || default.iter().map(|source| source.to_string()).collect(),
         |csv| {
             csv.split(',')
                 .map(str::trim)
@@ -348,9 +470,33 @@ mod tests {
     }
 
     #[test]
+    fn sync_default_sources_are_curated_for_signal() {
+        assert_eq!(
+            parse_sync_sources(None).unwrap(),
+            vec![
+                "am-authentication".to_string(),
+                "am-access".to_string(),
+                "am-activity".to_string(),
+                "idm-activity".to_string(),
+                "idm-config".to_string(),
+                "idm-access".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn source_override_trims_and_joins_cleanly() {
         let sources = parse_sources(Some("am-access, idm-core")).unwrap();
         assert_eq!(api::source_param(&sources).unwrap(), "am-access,idm-core");
+    }
+
+    #[test]
+    fn sync_source_override_accepts_core_and_everything_sources() {
+        let sources = parse_sync_sources(Some("idm-core, am-everything")).unwrap();
+        assert_eq!(
+            api::source_param(&sources).unwrap(),
+            "idm-core,am-everything"
+        );
     }
 
     #[test]

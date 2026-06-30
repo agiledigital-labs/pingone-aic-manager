@@ -172,18 +172,71 @@ userstore-upgrade
 
 Note: **`idm-recon` is NOT in the live set** (it was in an earlier guessed
 list). `am-everything` and `idm-everything` are the catch-all roll-ups and the
-right CLI defaults for transaction lookups.
+right CLI defaults for explicit transaction/range/query lookups. Sync uses the
+curated signal-first list below.
+
+## Source taxonomy — signal vs noise (verified 2026-06-30)
+
+Default local sync should keep the structured, low-to-moderate volume sources
+that support audit search and journey analysis, and skip the high-volume core
+debug streams unless the user explicitly asks for them.
+
+| Source | Sync default | Signal |
+|--------|--------------|--------|
+| `am-authentication` | Keep | Journey progress: node and tree login events. |
+| `am-access` | Keep | AM access/audit outcomes, including who-changed evidence. |
+| `am-activity` | Keep | AM identity changes and session activity. |
+| `idm-activity` | Keep | Managed-object changes with before/after, `changedFields`, `userId`. |
+| `idm-config` | Keep | IDM config changes. |
+| `idm-access` | Keep | IDM API access events. |
+| `am-core` | Discard by default | CTS reaper and internal debug/WARN stream; operational noise except WARN/ERROR lines. |
+| `idm-core` | Discard by default | Raw-string FINE debug stream; operational noise except WARN/ERROR lines. |
+
+`idm-core` is the dominant payload behind `idm-everything` in the sandbox sample
+(about 99%). Its events are raw JSON strings rather than structured payload
+objects, mostly FINE-level traces from Felix OSGi health checks
+(`org.apache.felix.hc.*`), recon-queue polling
+(`openidm.sync.impl.queue.QueueConsumerFactory`), ClusterManager, RepoJobStore,
+and Quartz internals. These records have no payload `_id`, no `eventName`, and
+no user identity, so they add storage volume without audit or product signal.
+
+`am-authentication` carries the journey-progress signal needed by the future
+journey-progress view:
+
+| Event | Fields |
+|-------|--------|
+| `AM-NODE-LOGIN-COMPLETED` | `payload.entries[].info.{treeName,nodeId,displayName,nodeType,nodeOutcome,authLevel}` |
+| `AM-TREE-LOGIN-COMPLETED` | `payload.entries[].info.treeName`, `payload.principal[]`, tree outcome/auth context |
+
+Node events and the final tree event share `transactionId`; join on that field
+to reconstruct one journey execution across its node outcomes and principal.
+
+The curated `aic logs sync` default source list is:
+
+```
+am-authentication,am-access,am-activity,idm-activity,idm-config,idm-access
+```
+
+The explicit `tx`, `range`, and `query` commands still default to
+`am-everything,idm-everything` because they are user-driven lookups. Sync does
+not default to the `-everything` rollups because that would mostly persist
+`idm-core` and `am-core` debug noise. The sync path also applies an
+`is_core_noise` post-fetch filter to every fetched page: if top-level `source`
+ends with `-core` and `payload` is a raw JSON string without `WARN` or `ERROR`,
+the event is dropped before insertion. Structured core payloads and WARN/ERROR
+raw strings are retained. This filter always runs during sync, including when a
+user explicitly syncs `--source idm-core` or `--source am-core`.
 
 ## Verified against
 
 - Tenant: `tenant.example.com` (the aic-edit sandbox)
-- Date: 2026-06-24
+- Date: 2026-06-30
 - Calls:
   - `GET /keys` (Bearer, our SA scopes) → **403 insufficient scope** (endpoint
     exists, scope-gated — see scope-gap note above).
-  - `GET /monitoring/logs/sources` (api-key pair) → **401** because the only key
-    we had on hand had been rotated/revoked. Auth model confirmed (api-key path,
-    not bearer); a live 200 against this tenant is still pending a valid key.
+  - `GET /monitoring/logs/sources` (api-key pair) → **200**; source list above.
+    A prior 2026-06-24 call with a rotated/revoked key returned **401**,
+    confirming the api-key auth failure mode.
   - Source list above + `transactionId`/`beginTime`/`endTime`/
     `_pagedResultsCookie` query shapes confirmed against working reference
     scripts (`<client-checkout>/logs/`).
@@ -193,8 +246,16 @@ right CLI defaults for transaction lookups.
     /keys?_action=create {name}` → 200 returning `{name, api_key_id,
     api_key_secret, created_at}`; `DELETE /keys/{id}` → 204. SA bearer 403s
     regardless of scope.
-- **Still deferred:** a 200 from `/monitoring/logs` on this tenant (needs a live
-  key — minting one is now unblocked via the admin flow above).
+  - Source-taxonomy sampling with a valid log API key:
+    `GET /monitoring/logs?source=idm-everything&beginTime=...&endTime=...`,
+    `source=idm-core`, `source=am-core`, `source=am-authentication`,
+    `source=am-access`, `source=am-activity`, `source=idm-activity`,
+    `source=idm-config`, and `source=idm-access`.
+  - `idm-everything` sample composition: about 99% `idm-core`; raw string
+    payloads with no `_id`, no `eventName`, and no user.
+  - `am-authentication` sample fields verified for
+    `AM-NODE-LOGIN-COMPLETED` and `AM-TREE-LOGIN-COMPLETED`, including the
+    shared `transactionId` join.
 
 ## Source citations
 
@@ -203,10 +264,6 @@ right CLI defaults for transaction lookups.
 
 ## Open questions
 
-- **Full list of source IDs.** Examples seen in docs: `am-access`, `am-activity`,
-  `am-authentication`, `am-config`, `idm-access`, `idm-activity`, `idm-config`,
-  `idm-sync`, `idm-recon`, `idm-everything`. Verify the actual set by calling
-  `/monitoring/logs/sources` once we have an API key.
 - **Compression strategy.** For the local-sync feature: per-source append-only
   parquet/zstd files keyed by hour, with a column store for fast `payload/...`
   filtering. Not yet designed — see future Step 3+ plan.
