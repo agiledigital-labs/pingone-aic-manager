@@ -26,6 +26,10 @@ pub const SA_SCOPES: &[&str] = &[
     "fr:idc:cookie-domain:*",
 ];
 
+pub fn credential_name(username: Option<&str>, tenant_name: &str) -> String {
+    format!("aicx-{}", username.unwrap_or(tenant_name))
+}
+
 #[derive(Deserialize)]
 struct ServerInfo {
     #[serde(rename = "cookieName")]
@@ -337,4 +341,18 @@ fn percent_decode(s: &str) -> String {
         i += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_name_uses_username_or_tenant_fallback() {
+        assert_eq!(
+            credential_name(Some("admin@example.com"), "development"),
+            "aicx-admin@example.com"
+        );
+        assert_eq!(credential_name(None, "development"), "aicx-development");
+    }
 }

@@ -26,6 +26,17 @@ pub enum Mode {
 }
 
 #[derive(Debug)]
+pub enum PendingConfirm {
+    Cookie,
+    UserPass,
+    LogOnly,
+    Paste {
+        tenant: Tenant,
+        jwk: serde_json::Value,
+    },
+}
+
+#[derive(Debug)]
 pub enum Event {
     /// Pattern 2: the AM authentication journey returned a callback we need
     /// extra user input to satisfy (TOTP). `body` is the JSON to POST back
@@ -142,9 +153,10 @@ pub struct State {
     /// extra prompt (TOTP).
     pub pending_callback_body: Option<serde_json::Value>,
 
-    /// Pending tenant whose name collides with an existing one. Set when
-    /// the overwrite-confirm modal is up.
-    pub pending_overwrite: Option<(Tenant, Option<serde_json::Value>, Option<LogKeyPair>)>,
+    /// Pending pre-mint overwrite confirmation. The original form stays in
+    /// place so confirming can resume the selected bootstrap without losing
+    /// user input.
+    pub pending_confirm: Option<PendingConfirm>,
 }
 
 impl State {
@@ -200,14 +212,17 @@ fn path_for_index(idx: usize, has_env_creds: bool) -> Option<OnboardPath> {
 async fn enter_choice(app: &mut App, idx: usize) -> crate::Result<()> {
     match path_for_index(idx, app.has_env_creds) {
         Some(OnboardPath::Cookie) => {
+            app.onboard.pending_confirm = None;
             app.onboard.cookie_form = Some(CookieForm::default());
             app.input_mode = InputMode::Onboard(Mode::Cookie);
         }
         Some(OnboardPath::UserPass) => {
+            app.onboard.pending_confirm = None;
             app.onboard.up_form = Some(UpForm::default());
             app.input_mode = InputMode::Onboard(Mode::UserPass);
         }
         Some(OnboardPath::Paste) => {
+            app.onboard.pending_confirm = None;
             app.onboard.paste_form = Some(PasteForm::default());
             app.input_mode = InputMode::Onboard(Mode::Paste);
         }
@@ -215,12 +230,39 @@ async fn enter_choice(app: &mut App, idx: usize) -> crate::Result<()> {
             import_env_creds(app).await?;
         }
         Some(OnboardPath::LogOnly) => {
+            app.onboard.pending_confirm = None;
             app.onboard.log_only_form = Some(LogOnlyForm::default());
             app.input_mode = InputMode::Onboard(Mode::LogOnly);
         }
         None => {}
     }
     Ok(())
+}
+
+fn tenant_name_exists(tenants: &[Tenant], name: &str) -> bool {
+    tenants.iter().any(|tenant| tenant.name == name)
+}
+
+fn queue_overwrite_confirm(app: &mut App, pending: PendingConfirm) {
+    app.onboard.pending_confirm = Some(pending);
+    app.input_mode = InputMode::Onboard(Mode::OverwriteConfirm);
+}
+
+pub(crate) fn pending_confirm_name(app: &App) -> Option<&str> {
+    match app.onboard.pending_confirm.as_ref()? {
+        PendingConfirm::Cookie => app
+            .onboard
+            .cookie_form
+            .as_ref()
+            .map(|form| form.name.trimmed()),
+        PendingConfirm::UserPass => app.onboard.up_form.as_ref().map(|form| form.name.trimmed()),
+        PendingConfirm::LogOnly => app
+            .onboard
+            .log_only_form
+            .as_ref()
+            .map(|form| form.name.trimmed()),
+        PendingConfirm::Paste { tenant, .. } => Some(tenant.name.as_str()),
+    }
 }
 
 // ---- Pattern 1: cookie ----
@@ -265,8 +307,13 @@ pub async fn handle_cookie_key(app: &mut App, key: KeyEvent) -> crate::Result<()
             if let Err(e) = form.validate() {
                 form.error = Some(e);
             } else {
+                let name = form.name.trimmed().to_string();
                 form.error = None;
-                start_cookie_bootstrap(app);
+                if tenant_name_exists(&app.tenants, &name) {
+                    queue_overwrite_confirm(app, PendingConfirm::Cookie);
+                } else {
+                    start_cookie_bootstrap(app);
+                }
             }
         }
         KeyCode::Enter => form.focused = form.focused.next(),
@@ -345,7 +392,11 @@ pub async fn handle_log_only_key(app: &mut App, key: KeyEvent) -> crate::Result<
         KeyCode::Enter if form.focused == LogOnlyField::Submit => match form.validate() {
             Ok(intent) => {
                 form.error = None;
-                start_log_only_bootstrap(app, intent);
+                if tenant_name_exists(&app.tenants, &intent.tenant_name) {
+                    queue_overwrite_confirm(app, PendingConfirm::LogOnly);
+                } else {
+                    start_log_only_bootstrap(app);
+                }
             }
             Err(error) => form.error = Some(error),
         },
@@ -359,10 +410,17 @@ pub async fn handle_log_only_key(app: &mut App, key: KeyEvent) -> crate::Result<
     Ok(())
 }
 
-fn start_log_only_bootstrap(app: &mut App, intent: LogOnlyIntent) {
+fn start_log_only_bootstrap(app: &mut App) {
     let form = match &mut app.onboard.log_only_form {
         Some(form) => form,
         None => return,
+    };
+    let intent = match form.validate() {
+        Ok(intent) => intent,
+        Err(error) => {
+            form.error = Some(error);
+            return;
+        }
     };
     form.busy = true;
     form.status = Some("Authenticating and creating log API key…".into());
@@ -442,8 +500,13 @@ pub async fn handle_up_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             if let Err(e) = form.validate() {
                 form.error = Some(e);
             } else {
+                let name = form.name.trimmed().to_string();
                 form.error = None;
-                start_up_bootstrap(app);
+                if tenant_name_exists(&app.tenants, &name) {
+                    queue_overwrite_confirm(app, PendingConfirm::UserPass);
+                } else {
+                    start_up_bootstrap(app);
+                }
             }
         }
         KeyCode::Enter => form.focused = form.focused.next(),
@@ -614,21 +677,11 @@ pub async fn handle_paste_key(app: &mut App, key: KeyEvent) -> crate::Result<()>
                 }
             };
             let tenant = form.into_tenant();
-            let prod = tenant.theme == TenantTheme::Production;
-            app.onboard.paste_form = None;
-            if prod {
-                app.prod_confirm.pending = Some(PendingProdAction::SaveTenant {
-                    tenant,
-                    jwk: Some(jwk),
-                    log_key: None,
-                });
-                app.input_mode = InputMode::ProdConfirm;
+            if tenant_name_exists(&app.tenants, &tenant.name) {
+                form.error = None;
+                queue_overwrite_confirm(app, PendingConfirm::Paste { tenant, jwk });
             } else {
-                match persist_new_tenant(app, tenant, Some(jwk), None) {
-                    Ok(()) => app.push_toast(ToastKind::Success, "Tenant added!"),
-                    Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
-                }
-                app.input_mode = InputMode::Normal;
+                persist_pasted_tenant(app, tenant, jwk);
             }
         }
         KeyCode::Enter if form.is_jwk_field() => {
@@ -644,29 +697,68 @@ pub async fn handle_paste_key(app: &mut App, key: KeyEvent) -> crate::Result<()>
     Ok(())
 }
 
+fn persist_pasted_tenant(app: &mut App, tenant: Tenant, jwk: serde_json::Value) {
+    app.onboard.paste_form = None;
+    if tenant.theme == TenantTheme::Production {
+        app.prod_confirm.pending = Some(PendingProdAction::SaveTenant {
+            tenant,
+            jwk: Some(jwk),
+            log_key: None,
+        });
+        app.input_mode = InputMode::ProdConfirm;
+        return;
+    }
+
+    match persist_tenant_overwriting(app, tenant, Some(jwk), None) {
+        Ok(()) => app.push_toast(ToastKind::Success, "Tenant saved"),
+        Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
+    }
+    app.input_mode = InputMode::Normal;
+}
+
 // ---- Overwrite / SA-created ----
 
 pub fn handle_overwrite_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
-            if let Some((tenant, jwk, log_key)) = app.onboard.pending_overwrite.take() {
-                app.input_mode = InputMode::Normal;
-                match persist_tenant_overwriting(app, tenant, jwk, log_key) {
-                    Ok(()) => app.push_toast(ToastKind::Success, "Tenant overwritten"),
-                    Err(e) => {
-                        app.push_toast(ToastKind::Error, format!("Save failed: {e}"));
+            if let Some(pending) = app.onboard.pending_confirm.take() {
+                match pending {
+                    PendingConfirm::Cookie => {
+                        app.input_mode = InputMode::Onboard(Mode::Cookie);
+                        start_cookie_bootstrap(app);
+                    }
+                    PendingConfirm::UserPass => {
+                        app.input_mode = InputMode::Onboard(Mode::UserPass);
+                        start_up_bootstrap(app);
+                    }
+                    PendingConfirm::LogOnly => {
+                        app.input_mode = InputMode::Onboard(Mode::LogOnly);
+                        start_log_only_bootstrap(app);
+                    }
+                    PendingConfirm::Paste { tenant, jwk } => {
+                        persist_pasted_tenant(app, tenant, jwk);
                     }
                 }
             }
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.onboard.pending_overwrite = None;
+            app.onboard.pending_confirm = None;
+            clear_onboard_forms(app);
             app.input_mode = InputMode::Normal;
-            app.push_toast(ToastKind::Info, "Overwrite cancelled");
+            app.push_toast(ToastKind::Info, "Onboarding cancelled");
         }
         _ => {}
     }
     Ok(())
+}
+
+fn clear_onboard_forms(app: &mut App) {
+    app.onboard.cookie_form = None;
+    app.onboard.up_form = None;
+    app.onboard.paste_form = None;
+    app.onboard.log_only_form = None;
+    app.onboard.pending_id = None;
+    app.onboard.pending_callback_body = None;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -718,9 +810,9 @@ pub fn handle_sa_created(
         return Ok(());
     }
 
-    match persist_new_tenant(app, tenant, Some(jwk), log_key) {
+    match persist_tenant_overwriting(app, tenant, Some(jwk), log_key) {
         Ok(()) => {
-            app.push_toast(ToastKind::Success, "Tenant added!");
+            app.push_toast(ToastKind::Success, "Tenant saved");
             app.input_mode = InputMode::Normal;
         }
         Err(e) => {
@@ -768,9 +860,9 @@ pub fn handle_log_only_created(
         return Ok(());
     }
 
-    match persist_new_tenant(app, tenant, None, Some(log_key)) {
+    match persist_tenant_overwriting(app, tenant, None, Some(log_key)) {
         Ok(()) => {
-            app.push_toast(ToastKind::Success, "Log-only environment added");
+            app.push_toast(ToastKind::Success, "Log-only environment saved");
             app.input_mode = InputMode::Normal;
         }
         Err(error) => {
@@ -819,7 +911,7 @@ async fn import_env_creds(app: &mut App) -> crate::Result<()> {
         scopes,
     };
 
-    match persist_new_tenant(app, tenant, Some(jwk), None) {
+    match persist_tenant_overwriting(app, tenant, Some(jwk), None) {
         Ok(()) => {
             app.push_toast(
                 ToastKind::Success,
@@ -837,26 +929,9 @@ async fn import_env_creds(app: &mut App) -> crate::Result<()> {
 
 // ---- Persist helpers (jwks + tenants config) ----
 
-/// Persist a new tenant. If a tenant with the same name already exists,
-/// switch to the duplicate-name confirmation and bail out; the caller's flow
-/// is paused until the user answers.
-pub(crate) fn persist_new_tenant(
-    app: &mut App,
-    tenant: Tenant,
-    jwk: Option<serde_json::Value>,
-    log_key: Option<LogKeyPair>,
-) -> crate::Result<()> {
-    if app.tenants.iter().any(|t| t.name == tenant.name) {
-        app.onboard.pending_overwrite = Some((tenant, jwk, log_key));
-        app.input_mode = InputMode::Onboard(Mode::OverwriteConfirm);
-        return Ok(());
-    }
-    persist_tenant_overwriting(app, tenant, jwk, log_key)
-}
-
 /// Save a tenant outright — replacing any existing entry with the same
 /// name. Caller is responsible for confirming the overwrite before calling.
-fn persist_tenant_overwriting(
+pub(crate) fn persist_tenant_overwriting(
     app: &mut App,
     tenant: Tenant,
     jwk: Option<serde_json::Value>,
@@ -923,10 +998,6 @@ fn send_onboard_error(
         onboard_id,
         message: message.into(),
     }));
-}
-
-fn credential_name(username: Option<&str>, tenant_name: &str) -> String {
-    format!("aicx-{}", username.unwrap_or(tenant_name))
 }
 
 async fn run_bootstrap_from_cookie(
@@ -1020,7 +1091,7 @@ async fn run_bootstrap_log_only(
         }
     };
     let username = super::bootstrap::resolve_admin_username(&http, &intent.base_url, &bearer).await;
-    let key_name = credential_name(username.as_deref(), &intent.tenant_name);
+    let key_name = super::bootstrap::credential_name(username.as_deref(), &intent.tenant_name);
     let log_key =
         match super::bootstrap::create_log_api_key(&http, &intent.base_url, &bearer, &key_name)
             .await
@@ -1273,11 +1344,17 @@ mod tests {
     }
 
     #[test]
-    fn credential_name_uses_username_or_tenant_fallback() {
-        assert_eq!(
-            credential_name(Some("admin@example.com"), "development"),
-            "aicx-admin@example.com"
-        );
-        assert_eq!(credential_name(None, "development"), "aicx-development");
+    fn tenant_name_exists_matches_exact_existing_name() {
+        let tenants = vec![Tenant {
+            name: "sandbox".into(),
+            base_url: "https://example.forgeblocks.com".into(),
+            theme: TenantTheme::Sandbox,
+            sa_id: Some("service-account-id".into()),
+            scopes: vec!["fr:am:*".into()],
+        }];
+
+        assert!(tenant_name_exists(&tenants, "sandbox"));
+        assert!(!tenant_name_exists(&tenants, "Sandbox"));
+        assert!(!tenant_name_exists(&tenants, "development"));
     }
 }

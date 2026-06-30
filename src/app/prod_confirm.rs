@@ -78,9 +78,10 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                         jwk,
                         log_key,
                     } => {
-                        match crate::onboard::screen::persist_new_tenant(app, tenant, jwk, log_key)
-                        {
-                            Ok(()) => app.push_toast(ToastKind::Success, "Tenant added!"),
+                        match crate::onboard::screen::persist_tenant_overwriting(
+                            app, tenant, jwk, log_key,
+                        ) {
+                            Ok(()) => app.push_toast(ToastKind::Success, "Tenant saved"),
                             Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
                         }
                     }

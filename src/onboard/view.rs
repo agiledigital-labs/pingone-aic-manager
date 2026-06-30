@@ -47,12 +47,7 @@ pub fn draw(f: &mut Frame, app: &App, mode: Mode) {
 }
 
 fn draw_overwrite_confirm(f: &mut Frame, app: &App) {
-    let name = app
-        .onboard
-        .pending_overwrite
-        .as_ref()
-        .map(|(tenant, _, _)| tenant.name.as_str())
-        .unwrap_or("?");
+    let name = super::screen::pending_confirm_name(app).unwrap_or("?");
     let body = Modal {
         title: "⚠ Tenant already exists",
         status: None,

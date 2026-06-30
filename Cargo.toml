@@ -86,3 +86,4 @@ inquire    = "0.7"
 # highlight matched chars in the list.
 nucleo-matcher = "0.3"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
+duckdb = { version = "1.4", features = ["bundled", "json", "chrono"] }

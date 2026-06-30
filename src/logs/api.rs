@@ -107,22 +107,48 @@ pub async fn fetch_range(
     sources: &[String],
     query: Option<&str>,
 ) -> Result<Vec<Value>> {
-    let source = source_param(sources)?;
     let mut result = Vec::new();
-
-    for (window_begin, window_end) in split_time_windows(begin, end)? {
-        let mut params = vec![
-            ("source".to_string(), source.clone()),
-            ("beginTime".to_string(), wire_time(window_begin)),
-            ("endTime".to_string(), wire_time(window_end)),
-        ];
-        if let Some(query) = query {
-            params.push(("_queryFilter".to_string(), query.to_string()));
-        }
-        result.extend(fetch_all(client, base_url, key, &params).await?);
+    {
+        let mut on_page = |page: Vec<Value>| -> Result<()> {
+            result.extend(page);
+            Ok(())
+        };
+        fetch_range_streamed(
+            client,
+            base_url,
+            key,
+            begin,
+            end,
+            sources,
+            query,
+            &mut on_page,
+        )
+        .await?;
     }
 
     Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn fetch_range_streamed(
+    client: &Client,
+    base_url: &str,
+    key: &LogKeyPair,
+    begin: DateTime<Utc>,
+    end: DateTime<Utc>,
+    sources: &[String],
+    query: Option<&str>,
+    on_page: &mut (dyn FnMut(Vec<Value>) -> Result<()> + Send),
+) -> Result<()> {
+    fetch_range_streamed_with_fetcher(
+        begin,
+        end,
+        sources,
+        query,
+        |params| async move { fetch_page(client, base_url, key, &params).await },
+        on_page,
+    )
+    .await
 }
 
 pub(crate) fn source_param(sources: &[String]) -> Result<String> {
@@ -159,6 +185,57 @@ where
     Fut: Future<Output = Result<LogPage>>,
 {
     let mut result = Vec::new();
+    {
+        let mut on_page = |page: Vec<Value>| -> Result<()> {
+            result.extend(page);
+            Ok(())
+        };
+        stream_pages(base_params, &mut fetch, &mut on_page).await?;
+    }
+
+    Ok(result)
+}
+
+async fn fetch_range_streamed_with_fetcher<F, Fut, OnPage>(
+    begin: DateTime<Utc>,
+    end: DateTime<Utc>,
+    sources: &[String],
+    query: Option<&str>,
+    mut fetch: F,
+    on_page: &mut OnPage,
+) -> Result<()>
+where
+    F: FnMut(QueryParams) -> Fut,
+    Fut: Future<Output = Result<LogPage>>,
+    OnPage: FnMut(Vec<Value>) -> Result<()> + ?Sized,
+{
+    let source = source_param(sources)?;
+
+    for (window_begin, window_end) in split_time_windows(begin, end)? {
+        let mut params = vec![
+            ("source".to_string(), source.clone()),
+            ("beginTime".to_string(), wire_time(window_begin)),
+            ("endTime".to_string(), wire_time(window_end)),
+        ];
+        if let Some(query) = query {
+            params.push(("_queryFilter".to_string(), query.to_string()));
+        }
+        stream_pages(&params, &mut fetch, on_page).await?;
+    }
+
+    Ok(())
+}
+
+async fn stream_pages<F, Fut, OnPage>(
+    base_params: &[(String, String)],
+    mut fetch: F,
+    on_page: &mut OnPage,
+) -> Result<()>
+where
+    F: FnMut(QueryParams) -> Fut,
+    Fut: Future<Output = Result<LogPage>>,
+    OnPage: FnMut(Vec<Value>) -> Result<()> + ?Sized,
+{
     let mut cookie = None;
     let mut seen_cookies = HashSet::new();
 
@@ -176,7 +253,7 @@ where
         }
 
         let page = fetch(params).await?;
-        result.extend(page.result);
+        on_page(page.result)?;
         match page.paged_results_cookie {
             Some(next) if !next.is_empty() => {
                 if !seen_cookies.insert(next.clone()) {
@@ -191,7 +268,7 @@ where
         }
     }
 
-    Ok(result)
+    Ok(())
 }
 
 async fn get_json<T: DeserializeOwned>(
@@ -270,6 +347,13 @@ mod tests {
 
     use super::*;
 
+    fn param_value(params: &[(String, String)], name: &str) -> Option<String> {
+        params
+            .iter()
+            .find(|(param_name, _)| param_name == name)
+            .map(|(_, value)| value.clone())
+    }
+
     #[test]
     fn fifty_hour_range_splits_into_three_windows() {
         let begin = Utc.with_ymd_and_hms(2026, 6, 20, 1, 2, 3).unwrap();
@@ -346,6 +430,87 @@ mod tests {
             params
                 .iter()
                 .any(|(name, value)| name == "_pageSize" && value == "1000")
+        }));
+    }
+
+    #[tokio::test]
+    async fn range_streamer_invokes_callback_once_per_page() {
+        let begin = Utc.with_ymd_and_hms(2026, 6, 20, 1, 2, 3).unwrap();
+        let end = begin + ChronoDuration::hours(25);
+        let sources = vec!["idm-everything".to_string()];
+        let pages = vec![
+            LogPage {
+                result: vec![json!({"page": 1})],
+                paged_results_cookie: Some("next-1".into()),
+            },
+            LogPage {
+                result: vec![json!({"page": 2})],
+                paged_results_cookie: None,
+            },
+            LogPage {
+                result: vec![json!({"page": 3})],
+                paged_results_cookie: None,
+            },
+        ];
+        let mut pages = pages.into_iter();
+        let mut observed = Vec::new();
+        let mut callback_pages = Vec::new();
+
+        {
+            let mut on_page = |page: Vec<Value>| -> Result<()> {
+                callback_pages.push(page);
+                Ok(())
+            };
+            fetch_range_streamed_with_fetcher(
+                begin,
+                end,
+                &sources,
+                Some("payload/level eq \"INFO\""),
+                |params| {
+                    observed.push(params);
+                    let page = pages.next().expect("expected another page");
+                    async move { Ok(page) }
+                },
+                &mut on_page,
+            )
+            .await
+            .unwrap();
+        }
+
+        assert!(pages.next().is_none());
+        assert_eq!(
+            callback_pages,
+            vec![
+                vec![json!({"page": 1})],
+                vec![json!({"page": 2})],
+                vec![json!({"page": 3})],
+            ]
+        );
+        assert_eq!(
+            observed
+                .iter()
+                .map(|params| param_value(params, "_pagedResultsCookie"))
+                .collect::<Vec<_>>(),
+            vec![None, Some("next-1".to_string()), None]
+        );
+        assert_eq!(
+            param_value(&observed[0], "beginTime"),
+            Some(wire_time(begin))
+        );
+        assert_eq!(
+            param_value(&observed[0], "endTime"),
+            Some(wire_time(begin + ChronoDuration::hours(24)))
+        );
+        assert_eq!(
+            param_value(&observed[2], "beginTime"),
+            Some(wire_time(begin + ChronoDuration::hours(24)))
+        );
+        assert_eq!(param_value(&observed[2], "endTime"), Some(wire_time(end)));
+        assert!(observed.iter().all(|params| {
+            param_value(params, "source") == Some("idm-everything".to_string())
+                && param_value(params, "_queryFilter")
+                    == Some("payload/level eq \"INFO\"".to_string())
+                && param_value(params, "_pageSize") == Some("1000".to_string())
         }));
     }
 }
