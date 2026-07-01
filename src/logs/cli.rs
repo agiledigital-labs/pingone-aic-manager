@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::agent::AgentClient;
 use crate::cli::tenant_for;
 use crate::config::ProjectConfig;
-use crate::logs::{api, ops};
+use crate::logs::{api, db, ops, state};
 use crate::onboard::bootstrap::{
     create_log_api_key, credential_name, no_redirect_client, resolve_admin_username,
     session_to_bearer,
@@ -74,6 +74,37 @@ pub enum LogsCommand {
         output: Option<PathBuf>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+    },
+    /// Search the local synced log store (offline; reads the DuckDB file).
+    Search {
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long, value_name = "ID", help = "Filter by transactionId")]
+        tx: Option<String>,
+        #[arg(long, value_name = "SOURCE", help = "Filter by exact source id")]
+        source: Option<String>,
+        #[arg(long, value_name = "NAME", help = "Filter by eventName")]
+        event: Option<String>,
+        #[arg(long, value_name = "ID", help = "Filter by userId")]
+        user: Option<String>,
+        #[arg(long, value_name = "LEVEL", help = "Filter by level (INFO/WARN/ERROR)")]
+        level: Option<String>,
+        #[arg(long, help = "Range start (ISO-8601)")]
+        begin: Option<String>,
+        #[arg(long, help = "Range end (ISO-8601)")]
+        end: Option<String>,
+        #[arg(long, value_name = "TEXT", help = "Substring match within the payload")]
+        contains: Option<String>,
+        #[arg(long, default_value_t = 1000, help = "Max rows to return")]
+        limit: usize,
+        #[arg(long, help = "Print only the match count, not the events")]
+        count: bool,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Write the JSON result to a file (ignored with --count)"
+        )]
+        output: Option<PathBuf>,
     },
     /// Incrementally sync logs into the local DuckDB store.
     Sync {
@@ -205,6 +236,63 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             )
             .await?;
             write_json(&result, output.as_deref())
+        }
+        LogsCommand::Search {
+            tenant,
+            tx,
+            source,
+            event,
+            user,
+            level,
+            begin,
+            end,
+            contains,
+            limit,
+            count,
+            output,
+        } => {
+            let tenant = tenant_for(tenant)?;
+            let path = state::store_path(&tenant);
+            if !path.exists() {
+                return Err(Error::Config(format!(
+                    "no local log store for tenant '{tenant}'; run `aic logs sync` first"
+                )));
+            }
+            let begin = begin
+                .as_deref()
+                .map(|value| parse_time(value, "begin"))
+                .transpose()?;
+            let end = end
+                .as_deref()
+                .map(|value| parse_time(value, "end"))
+                .transpose()?;
+            if let (Some(begin), Some(end)) = (begin, end) {
+                if end <= begin {
+                    return Err(Error::Config(
+                        "log search end must be after begin".to_string(),
+                    ));
+                }
+            }
+            let params = db::SearchParams {
+                transaction_id: tx,
+                source,
+                event_name: event,
+                user_id: user,
+                level,
+                begin,
+                end,
+                contains,
+                limit,
+            };
+            let conn = db::open(&path)?;
+            if count {
+                let n = db::count_matching(&conn, &params)?;
+                println!("{n}");
+            } else {
+                let events = db::search(&conn, &params)?;
+                write_json(&events, output.as_deref())?;
+            }
+            Ok(())
         }
         LogsCommand::Sync {
             tenant,
