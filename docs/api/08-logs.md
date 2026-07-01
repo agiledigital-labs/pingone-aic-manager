@@ -210,21 +210,39 @@ journey-progress view:
 | `AM-NODE-LOGIN-COMPLETED` | `payload.entries[].info.{treeName,nodeId,displayName,nodeType,nodeOutcome,authLevel}`; no principal                                  |
 | `AM-TREE-LOGIN-COMPLETED` | `payload.entries[].info.treeName`, `payload.result` (`SUCCESSFUL`/`FAILED`), `payload.principal[]` (username), `payload.userId` (DN) |
 
-**Join key (verified 2026-07-01, corrected).** Do **not** join on
-`transactionId` — that is a per-HTTP-request id (`Root=1-…/0`, `…-request-2/0`)
-and differs across a single journey execution. Group instead on the **journey
-tracking UUID**, obtained by stripping the trailing `-<digits>` suffix (regex
-`-\d+$`) from:
+**Join key (verified 2026-07-01, re-corrected).** Group on the **full
+`payload.trackingIds[0]`** value — used verbatim, with **no transformation**.
+Both the node events and the tree event of one execution carry the **same** full
+`trackingIds[0]` (e.g. `a3c45e03-1244-4a1e-98c8-3cde967c4de1-19612069`). That
+string is the per-execution key.
 
-- node events → `payload.trackingIds[0]`
-- the tree event → `payload._id`
+Two earlier claims here were WRONG — do not repeat them:
 
-Both yield the same 5-group UUID for one execution (verified against
-`<client-checkout>/logs/prod-logs.json`: 3/3 attempts joined, 0 `treeName` mismatches).
-This UUID equals the `TrackingId` prefix in AIC's own `Journey-Node-History`
-export. Order node events by `payload.timestamp`; the last node's outcome is the
-furthest point reached. Attempt result: tree `result=SUCCESSFUL` → COMPLETED,
-`FAILED` → FAILED, no tree event for a node group → ABANDONED. Skip
+- Do **not** join on `transactionId`: it is a per-HTTP-request id (`Root=1-…/0`,
+  `…-request-2/0`) that differs within one execution.
+- Do **not** strip the trailing `-<digits>` suffix, and do **not** key the tree
+  event off `payload._id`. The `<uuid>` prefix before the numeric suffix is an
+  **AM server/cluster instance id**, not an execution id — verified against
+  AIC's own `Journey-Node-History` export, where a single base `a3c45e03-…`
+  spans **3,226 distinct executions across 2,502 users and multiple journeys**.
+  Stripping it merges thousands of executions into one (a rolled-up "attempt"
+  with 1,000+ nodes is the symptom). The tree event's `_id` has a _different_
+  base (its own logging instance) and matches node `trackingIds[0]` only by
+  coincidence of prefix — it is **not** the join.
+
+Verified against `<client-checkout>/logs/prod-logs.json` (4,152 am-authentication events):
+grouping on full `trackingIds[0]` yields **322 executions** (median 19 nodes
+each, max 49), of which 138 have a matching tree event (tree `trackingIds[0]` ∈
+node `trackingIds[0]`; tree `_id` matches → 0) and 184 are node-only. Distinct
+users 114, journeys 8 (SSP-Login, DealerLogin, SSP-ResetPassword, …), results
+127 SUCCESSFUL / 11 FAILED.
+
+Order node events by `payload.timestamp`; the last node's outcome is the
+furthest point reached. Journey name = the tree event's `treeName`
+(authoritative; inner `InnerTreeEvaluatorNode` steps report the sub-tree's name,
+so ~16% of executions have mixed node `treeName`s — prefer the tree event's).
+Attempt result: tree `result=SUCCESSFUL` → COMPLETED, any other tree `result` →
+FAILED, no tree event for a node group → ABANDONED. Skip
 `AM-LOGIN-MODULE-COMPLETED`/`AM-LOGIN-COMPLETED` with
 `authIndex=module_instance` — those are OAuth2 client/service-account module
 logins (no `treeName`/`nodeId`), not user journeys.
@@ -248,7 +266,8 @@ user explicitly syncs `--source idm-core` or `--source am-core`.
 ## Verified against
 
 - Tenant: `tenant.example.com` (the aic-edit sandbox)
-- Date: 2026-06-30 (journey join key corrected 2026-07-01)
+- Date: 2026-06-30 (journey join key re-corrected 2026-07-01 — full
+  `trackingIds[0]`, not the stripped base or tree `_id`)
 - Calls:
   - `GET /keys` (Bearer, our SA scopes) → **403 insufficient scope** (endpoint
     exists, scope-gated — see scope-gap note above).
@@ -271,13 +290,15 @@ user explicitly syncs `--source idm-core` or `--source am-core`.
     `source=idm-config`, and `source=idm-access`.
   - `idm-everything` sample composition: about 99% `idm-core`; raw string
     payloads with no `_id`, no `eventName`, and no user.
-  - `am-authentication` sample fields verified for `AM-NODE-LOGIN-COMPLETED` and
-    `AM-TREE-LOGIN-COMPLETED` against `<client-checkout>/logs/prod-logs.json` (14,470
-    events, 3 full journey executions reconstructed): the journey tracking-UUID
-    join (node `trackingIds[0]` prefix == tree `_id` prefix) holds with 0
-    `treeName` mismatches; `transactionId` is per-request and does NOT group an
-    execution. The sandbox tenant itself has only module/service-account logins
-    (no tree/node events) in the synced window.
+  - `am-authentication` join verified against `<client-checkout>/logs/prod-logs.json`
+    (4,152 am-authentication events) AND cross-checked against AIC's own
+    `Journey-Node-History` export (146,159 rows): the per-execution key is the
+    **full `trackingIds[0]`** (322 executions, median 19 nodes, 138 with a
+    matching tree event). The stripped-base and tree-`_id` joins are WRONG (a
+    base spans 3,226 executions / 2,502 users); `transactionId` is per-request.
+    See the join-key note above. The sandbox tenant itself has only
+    module/service-account logins (no tree/node events) in the synced window, so
+    journey extraction is verified against this prod capture, not the sandbox.
 
 ## Source citations
 
