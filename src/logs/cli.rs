@@ -106,6 +106,17 @@ pub enum LogsCommand {
         )]
         output: Option<PathBuf>,
     },
+    /// Roll up am-authentication into the journey model and prune old raw events.
+    Compact {
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 3,
+            help = "Keep raw log_events younger than N months"
+        )]
+        retain_months: i64,
+    },
     /// Incrementally sync logs into the local DuckDB store.
     Sync {
         #[arg(long, help = "Tenant to target")]
@@ -292,6 +303,17 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
                 let events = db::search(&conn, &params)?;
                 write_json(&events, output.as_deref())?;
             }
+            Ok(())
+        }
+        LogsCommand::Compact {
+            tenant,
+            retain_months,
+        } => {
+            let report = ops::compact_tenant(tenant, retain_months).await?;
+            println!(
+                "rolled up {} attempts across {} journeys; pruned {} raw events",
+                report.attempts_upserted, report.journeys, report.events_pruned
+            );
             Ok(())
         }
         LogsCommand::Sync {

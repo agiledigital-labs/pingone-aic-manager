@@ -3,8 +3,9 @@
 use std::path::Path;
 
 use chrono::{DateTime, Timelike, Utc};
+pub use duckdb::Connection;
 use duckdb::types::ToSql;
-use duckdb::{Connection, OptionalExt, params, params_from_iter};
+use duckdb::{OptionalExt, params, params_from_iter};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -61,6 +62,40 @@ pub fn init(conn: &Connection) -> Result<()> {
              source TEXT PRIMARY KEY,
              last_end_time TIMESTAMP,
              updated_at TIMESTAMP
+         );
+         CREATE SEQUENCE IF NOT EXISTS journey_id_seq START 1;
+         CREATE SEQUENCE IF NOT EXISTS node_id_seq START 1;
+         CREATE SEQUENCE IF NOT EXISTS outcome_id_seq START 1;
+         CREATE TABLE IF NOT EXISTS journey (
+             id INTEGER PRIMARY KEY DEFAULT nextval('journey_id_seq'),
+             name TEXT UNIQUE
+         );
+         CREATE TABLE IF NOT EXISTS node (
+             id INTEGER PRIMARY KEY DEFAULT nextval('node_id_seq'),
+             journey_id INTEGER,
+             node_uuid TEXT,
+             node_type TEXT,
+             display_name TEXT,
+             UNIQUE (journey_id, node_uuid)
+         );
+         CREATE TABLE IF NOT EXISTS outcome (
+             id INTEGER PRIMARY KEY DEFAULT nextval('outcome_id_seq'),
+             name TEXT UNIQUE
+         );
+         CREATE TABLE IF NOT EXISTS journey_attempt (
+             tracking_id      TEXT PRIMARY KEY,
+             journey_id       INTEGER,
+             user_id          TEXT,
+             result           TEXT,
+             furthest_node_id INTEGER,
+             node_count       INTEGER,
+             started_at       TIMESTAMP,
+             ended_at         TIMESTAMP,
+             path             STRUCT(node_id INTEGER, outcome_id INTEGER)[]
+         );
+         CREATE TABLE IF NOT EXISTS compact_state (
+             id INTEGER PRIMARY KEY,
+             last_compacted TIMESTAMP
          );",
     )?;
     Ok(())
@@ -161,6 +196,260 @@ pub fn set_sync_state(conn: &Connection, source: &str, last_end_time: DateTime<U
 pub fn count_events(conn: &Connection) -> Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM log_events", [], |row| row.get(0))
         .map_err(DbError::from)
+}
+
+/// One rolled-up journey execution, keyed by its journey tracking UUID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JourneyAttempt {
+    pub tracking_id: String,
+    pub journey_id: i32,
+    pub user_id: Option<String>,
+    pub result: String,
+    pub furthest_node_id: Option<i32>,
+    pub node_count: i32,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    /// Ordered `(node_id, outcome_id)` steps.
+    pub path: Vec<(i32, i32)>,
+}
+
+/// Gets or creates the `journey` row for `name`, returning its surrogate id.
+pub fn intern_journey(conn: &Connection, name: &str) -> Result<i32> {
+    conn.query_row(
+        "INSERT INTO journey (name) VALUES (?)
+         ON CONFLICT (name) DO UPDATE SET name = excluded.name
+         RETURNING id",
+        params![name],
+        |row| row.get(0),
+    )
+    .map_err(DbError::from)
+}
+
+/// Gets or creates the `node` row, refreshing its descriptive columns on repeat
+/// sight, and returns its surrogate id.
+pub fn intern_node(
+    conn: &Connection,
+    journey_id: i32,
+    node_uuid: &str,
+    node_type: Option<&str>,
+    display_name: Option<&str>,
+) -> Result<i32> {
+    conn.query_row(
+        "INSERT INTO node (journey_id, node_uuid, node_type, display_name)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (journey_id, node_uuid) DO UPDATE SET
+             node_type = excluded.node_type,
+             display_name = excluded.display_name
+         RETURNING id",
+        params![journey_id, node_uuid, node_type, display_name],
+        |row| row.get(0),
+    )
+    .map_err(DbError::from)
+}
+
+/// Gets or creates the `outcome` row for `name`, returning its surrogate id.
+pub fn intern_outcome(conn: &Connection, name: &str) -> Result<i32> {
+    conn.query_row(
+        "INSERT INTO outcome (name) VALUES (?)
+         ON CONFLICT (name) DO UPDATE SET name = excluded.name
+         RETURNING id",
+        params![name],
+        |row| row.get(0),
+    )
+    .map_err(DbError::from)
+}
+
+/// Inserts or refreshes a journey attempt; idempotent across overlapping compact
+/// windows via `ON CONFLICT (tracking_id)`.
+pub fn upsert_attempt(conn: &Connection, attempt: &JourneyAttempt) -> Result<()> {
+    let path = path_literal(&attempt.path);
+    let sql = format!(
+        "INSERT INTO journey_attempt (
+             tracking_id, journey_id, user_id, result, furthest_node_id,
+             node_count, started_at, ended_at, path
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, {path})
+         ON CONFLICT (tracking_id) DO UPDATE SET
+             journey_id = excluded.journey_id,
+             user_id = excluded.user_id,
+             result = excluded.result,
+             furthest_node_id = excluded.furthest_node_id,
+             node_count = excluded.node_count,
+             started_at = excluded.started_at,
+             ended_at = excluded.ended_at,
+             path = excluded.path"
+    );
+    conn.execute(
+        &sql,
+        params![
+            attempt.tracking_id,
+            attempt.journey_id,
+            attempt.user_id,
+            attempt.result,
+            attempt.furthest_node_id,
+            attempt.node_count,
+            attempt.started_at,
+            attempt.ended_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Upserts many attempts in one set-based statement. Mirrors `insert_events`:
+/// each attempt is appended to a staging temp table (with `path` carried as a
+/// JSON string), then a single `INSERT … ON CONFLICT` folds them into
+/// `journey_attempt`. This avoids the per-statement DuckDB planning cost that
+/// makes a `upsert_attempt`-per-attempt loop crawl on real captures.
+pub fn upsert_attempts(conn: &Connection, attempts: &[JourneyAttempt]) -> Result<()> {
+    if attempts.is_empty() {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS staging_attempts (
+             tracking_id      VARCHAR,
+             journey_id       INTEGER,
+             user_id          VARCHAR,
+             result           VARCHAR,
+             furthest_node_id INTEGER,
+             node_count       INTEGER,
+             started_at       TIMESTAMP,
+             ended_at         TIMESTAMP,
+             path             VARCHAR
+         );
+         DELETE FROM staging_attempts;",
+    )?;
+
+    {
+        let mut appender = conn.appender("staging_attempts")?;
+        for attempt in attempts {
+            appender.append_row(params![
+                attempt.tracking_id,
+                attempt.journey_id,
+                attempt.user_id,
+                attempt.result,
+                attempt.furthest_node_id,
+                attempt.node_count,
+                attempt.started_at,
+                attempt.ended_at,
+                path_json(&attempt.path),
+            ])?;
+        }
+        appender.flush()?;
+    }
+
+    conn.execute(
+        "INSERT INTO journey_attempt (
+             tracking_id, journey_id, user_id, result, furthest_node_id,
+             node_count, started_at, ended_at, path
+         )
+         SELECT tracking_id, journey_id, user_id, result, furthest_node_id,
+                node_count, started_at, ended_at,
+                CAST(CAST(path AS JSON) AS STRUCT(node_id INTEGER, outcome_id INTEGER)[])
+         FROM (
+             SELECT *, row_number() OVER (PARTITION BY tracking_id ORDER BY ended_at DESC) AS rn
+             FROM staging_attempts
+         ) AS deduped
+         WHERE rn = 1
+         ON CONFLICT (tracking_id) DO UPDATE SET
+             journey_id = excluded.journey_id,
+             user_id = excluded.user_id,
+             result = excluded.result,
+             furthest_node_id = excluded.furthest_node_id,
+             node_count = excluded.node_count,
+             started_at = excluded.started_at,
+             ended_at = excluded.ended_at,
+             path = excluded.path",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Serializes a path as a JSON array of `{node_id, outcome_id}` objects for
+/// staging; the set-based upsert casts it back to the STRUCT-array column.
+fn path_json(path: &[(i32, i32)]) -> String {
+    let items: Vec<String> = path
+        .iter()
+        .map(|(node_id, outcome_id)| {
+            format!("{{\"node_id\":{node_id},\"outcome_id\":{outcome_id}}}")
+        })
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+/// Builds the `STRUCT(node_id, outcome_id)[]` list literal for a path. The ids
+/// are DB-internal integers, so inlining them is injection-safe.
+fn path_literal(path: &[(i32, i32)]) -> String {
+    if path.is_empty() {
+        return "CAST([] AS STRUCT(node_id INTEGER, outcome_id INTEGER)[])".to_string();
+    }
+    let items: Vec<String> = path
+        .iter()
+        .map(|(node_id, outcome_id)| {
+            format!("{{'node_id': {node_id}, 'outcome_id': {outcome_id}}}")
+        })
+        .collect();
+    format!("[{}]", items.join(", "))
+}
+
+/// Reads back an attempt's `path` list as ordered `(node_id, outcome_id)` pairs.
+#[cfg(test)]
+pub fn attempt_path(conn: &Connection, tracking_id: &str) -> Result<Vec<(i32, i32)>> {
+    let json: String = conn.query_row(
+        "SELECT to_json(path) FROM journey_attempt WHERE tracking_id = ?",
+        params![tracking_id],
+        |row| row.get(0),
+    )?;
+    let parsed: Vec<serde_json::Map<String, Value>> = serde_json::from_str(&json)?;
+    let mut steps = Vec::with_capacity(parsed.len());
+    for step in parsed {
+        let node_id = step.get("node_id").and_then(Value::as_i64).unwrap_or(0) as i32;
+        let outcome_id = step.get("outcome_id").and_then(Value::as_i64).unwrap_or(0) as i32;
+        steps.push((node_id, outcome_id));
+    }
+    Ok(steps)
+}
+
+/// Loads the `am-authentication` payloads at or after `since`, ordered by time,
+/// parsed as JSON — the input to the journey rollup.
+pub fn load_auth_payloads(conn: &Connection, since: DateTime<Utc>) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT payload FROM log_events
+         WHERE source = 'am-authentication' AND ts >= ?
+         ORDER BY ts",
+    )?;
+    let rows = stmt.query_map(params![since], |row| row.get::<_, String>(0))?;
+    let mut payloads = Vec::new();
+    for row in rows {
+        payloads.push(serde_json::from_str::<Value>(&row?)?);
+    }
+    Ok(payloads)
+}
+
+pub fn get_compact_state(conn: &Connection) -> Result<Option<DateTime<Utc>>> {
+    conn.query_row(
+        "SELECT last_compacted FROM compact_state WHERE id = 0",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(DbError::from)
+}
+
+pub fn set_compact_state(conn: &Connection, last_compacted: DateTime<Utc>) -> Result<()> {
+    conn.execute(
+        "INSERT INTO compact_state (id, last_compacted)
+         VALUES (0, ?)
+         ON CONFLICT (id) DO UPDATE SET last_compacted = excluded.last_compacted",
+        params![last_compacted],
+    )?;
+    Ok(())
+}
+
+/// Deletes raw `log_events` older than `cutoff`, returning the deleted count.
+pub fn prune_events_before(conn: &Connection, cutoff: DateTime<Utc>) -> Result<usize> {
+    let deleted = conn.execute("DELETE FROM log_events WHERE ts < ?", params![cutoff])?;
+    Ok(deleted)
 }
 
 /// Filters for an offline query against the local log store.
@@ -611,6 +900,110 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(count_matching(&conn, &filtered)?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn intern_is_get_or_create() -> Result<()> {
+        let conn = memory_store()?;
+        let a = intern_journey(&conn, "Test-Login")?;
+        let b = intern_journey(&conn, "Test-Login")?;
+        let c = intern_journey(&conn, "Other-Login")?;
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        let n1 = intern_node(
+            &conn,
+            a,
+            "node-uuid",
+            Some("ScriptedDecisionNode"),
+            Some("First"),
+        )?;
+        let n2 = intern_node(
+            &conn,
+            a,
+            "node-uuid",
+            Some("ScriptedDecisionNode"),
+            Some("Renamed"),
+        )?;
+        assert_eq!(n1, n2);
+        let display: String = conn.query_row(
+            "SELECT display_name FROM node WHERE id = ?",
+            params![n1],
+            |row| row.get(0),
+        )?;
+        assert_eq!(display, "Renamed");
+
+        assert_eq!(intern_outcome(&conn, "ok")?, intern_outcome(&conn, "ok")?);
+        assert_ne!(
+            intern_outcome(&conn, "ok")?,
+            intern_outcome(&conn, "false")?
+        );
+        Ok(())
+    }
+
+    fn sample_attempt(path: Vec<(i32, i32)>) -> JourneyAttempt {
+        let started = Utc.with_ymd_and_hms(2026, 3, 4, 4, 48, 0).unwrap();
+        let ended = Utc.with_ymd_and_hms(2026, 3, 4, 4, 48, 4).unwrap();
+        JourneyAttempt {
+            tracking_id: "track-1".into(),
+            journey_id: 1,
+            user_id: Some("alice".into()),
+            result: "COMPLETED".into(),
+            furthest_node_id: path.last().map(|(node, _)| *node),
+            node_count: path.len() as i32,
+            started_at: started,
+            ended_at: ended,
+            path,
+        }
+    }
+
+    #[test]
+    fn upsert_attempt_round_trips_the_path_list() -> Result<()> {
+        let conn = memory_store()?;
+        upsert_attempt(&conn, &sample_attempt(vec![(10, 1), (11, 2)]))?;
+        assert_eq!(attempt_path(&conn, "track-1")?, vec![(10, 1), (11, 2)]);
+
+        // An empty path also round-trips.
+        let mut empty = sample_attempt(vec![]);
+        empty.tracking_id = "track-empty".into();
+        empty.furthest_node_id = None;
+        upsert_attempt(&conn, &empty)?;
+        assert_eq!(attempt_path(&conn, "track-empty")?, vec![]);
+        Ok(())
+    }
+
+    #[test]
+    fn upsert_attempt_is_idempotent() -> Result<()> {
+        let conn = memory_store()?;
+        upsert_attempt(&conn, &sample_attempt(vec![(10, 1)]))?;
+        upsert_attempt(&conn, &sample_attempt(vec![(10, 1), (11, 2)]))?;
+
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM journey_attempt", [], |row| row.get(0))?;
+        assert_eq!(count, 1);
+        assert_eq!(attempt_path(&conn, "track-1")?, vec![(10, 1), (11, 2)]);
+        Ok(())
+    }
+
+    #[test]
+    fn compact_state_round_trips() -> Result<()> {
+        let conn = memory_store()?;
+        let ts = Utc.with_ymd_and_hms(2026, 6, 24, 13, 0, 0).unwrap();
+        assert_eq!(get_compact_state(&conn)?, None);
+        set_compact_state(&conn, ts)?;
+        assert_eq!(get_compact_state(&conn)?, Some(ts));
+        Ok(())
+    }
+
+    #[test]
+    fn prune_deletes_only_older_rows() -> Result<()> {
+        let mut conn = memory_store()?;
+        insert_events(&mut conn, &events())?;
+        // events() are at 12:34:56 and 12:35:00 on 2026-06-24.
+        let cutoff = Utc.with_ymd_and_hms(2026, 6, 24, 12, 35, 0).unwrap();
+        assert_eq!(prune_events_before(&conn, cutoff)?, 1);
+        assert_eq!(count_events(&conn)?, 1);
         Ok(())
     }
 }

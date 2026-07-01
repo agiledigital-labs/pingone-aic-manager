@@ -425,6 +425,23 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   onboarding + the log-only env flow; SA-only tenants paste. (4) Couldn't get a
   200 from `/monitoring/logs` — the only key on hand (`<client-checkout>/logs/gt`) had
   been rotated (401). Auth model (api-key headers, not bearer) reconfirmed.
+- **2026-07-01 (later)** — **Journey join key RE-corrected — the same-day fix
+  below was also wrong.** Stripping the trailing `-<digits>` and keying the tree
+  event off `_id` (the fix in the prior bullet) MERGES thousands of executions:
+  cross-checked against AIC's own `Journey-Node-History` export (146,159 rows),
+  a single base UUID `a3c45e03-…` spans **3,226 distinct executions / 2,502
+  users / multiple journeys** — the `<uuid>` prefix is an AM server/cluster
+  instance id, not an execution. The symptom in `aic logs compact` was a
+  rolled-up attempt with `node_count` 1,136 (a real login is ~20 nodes).
+  **Correct key: the full `payload.trackingIds[0]`, verbatim, no stripping**;
+  node AND tree events of one execution share it (tree `trackingIds[0]` ∈ node
+  `trackingIds[0]` → 138/138; tree `_id` match → 0). Re-verified on
+  `prod-logs.json`: 322 executions, median 19 nodes (max 49), 114 users, 8
+  journeys, 127 SUCCESSFUL / 11 FAILED. Lesson: "3 attempts, 0 mismatches"
+  looked like confirmation but was 3 giant merged blobs — validate the
+  _cardinality and shape_ (nodes/execution, distinct users) against an
+  independent source, not just internal self-consistency. `08-logs.md` join-key
+  note rewritten.
 - **2026-07-01** — **Journey-progress join key corrected (`08-logs.md`).** My
   own 2026-06-30 taxonomy claim "node and tree events share `transactionId`;
   join on that" is **wrong**. Verified against `<client-checkout>/logs/prod-logs.json`
