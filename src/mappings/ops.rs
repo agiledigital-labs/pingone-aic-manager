@@ -118,7 +118,10 @@ pub fn run_recon(app: &mut App) {
     }
 
     if app.active_tenant().is_some_and(|tenant| tenant.is_prod()) {
-        app.prod_confirm.pending = Some(PendingProdAction::MappingRecon { tenant, mapping });
+        app.prod_confirm.pending = Some(PendingProdAction::Mappings(ProdAction::Recon {
+            tenant,
+            mapping,
+        }));
         app.input_mode = InputMode::ProdConfirm;
         return;
     }
@@ -204,6 +207,29 @@ fn selected_mapping(app: &App) -> Option<(String, String)> {
     let tenant = app.active_tenant()?.name.clone();
     let mapping = app.mappings.selected_mapping(&tenant)?.name.clone();
     Some((tenant, mapping))
+}
+
+#[derive(Debug)]
+pub enum ProdAction {
+    Recon { tenant: String, mapping: String },
+}
+
+pub fn execute_prod_action(app: &mut App, action: ProdAction) {
+    match action {
+        ProdAction::Recon { tenant, mapping } => execute_recon(app, tenant, mapping, true),
+    }
+}
+
+pub fn resume_mode(_app: &App, _action: &ProdAction) -> InputMode {
+    InputMode::Normal
+}
+
+pub fn describe_prod_action(action: &ProdAction) -> Option<String> {
+    match action {
+        ProdAction::Recon { mapping, .. } => Some(format!(
+            "run reconciliation on {mapping} - creates/updates/deletes target objects"
+        )),
+    }
 }
 
 async fn pull_mapping_scripts(tenant: &str, mapping: &str) -> crate::Result<String> {

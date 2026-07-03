@@ -11,6 +11,11 @@ use crate::app::event::{AppEvent, ToastKind};
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
+#[derive(Debug)]
+pub enum ProdAction {
+    Update(ObjectReplacePlan),
+    Undo(crate::undo::UndoId),
+}
 use crate::managed::screen::Event;
 use crate::managed::state::{
     AddFieldState, AddRelationshipState, DeleteFieldState, EditFieldFocus, FieldAttr,
@@ -448,7 +453,7 @@ pub fn request_latest_undo(app: &mut App) {
     };
 
     if tenant.theme == TenantTheme::Production {
-        app.prod_confirm.pending = Some(PendingProdAction::ManagedUndo(undo_id));
+        app.prod_confirm.pending = Some(PendingProdAction::Managed(ProdAction::Undo(undo_id)));
         app.input_mode = InputMode::ProdConfirm;
     } else {
         execute_undo(app, undo_id, false);
@@ -1084,7 +1089,7 @@ fn submit_plan(app: &mut App, plan: ObjectReplacePlan) {
         .active_tenant()
         .is_some_and(|tenant| tenant.theme == TenantTheme::Production);
     if is_prod {
-        app.prod_confirm.pending = Some(PendingProdAction::ManagedUpdate(plan));
+        app.prod_confirm.pending = Some(PendingProdAction::Managed(ProdAction::Update(plan)));
         app.input_mode = InputMode::ProdConfirm;
         return;
     }
@@ -1138,6 +1143,23 @@ pub fn handle_enter_in_edit(app: &mut App) {
             }
         }
     }
+}
+
+pub fn execute_prod_action(app: &mut App, action: ProdAction) {
+    match action {
+        ProdAction::Update(plan) => execute_update_plan(app, plan, true),
+        ProdAction::Undo(undo_id) => execute_undo(app, undo_id, true),
+    }
+}
+
+pub fn resume_mode(app: &App, _action: &ProdAction) -> InputMode {
+    crate::managed::screen::resume_mode_after_prod_cancel(app)
+        .map(InputMode::Managed)
+        .unwrap_or(InputMode::Normal)
+}
+
+pub fn describe_prod_action(_action: &ProdAction) -> Option<String> {
+    None
 }
 
 #[cfg(test)]

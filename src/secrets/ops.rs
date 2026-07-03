@@ -108,7 +108,9 @@ pub(crate) fn commit_create(app: &mut App) {
         .active_tenant()
         .is_some_and(|t| t.theme == TenantTheme::Production);
     if is_prod {
-        app.prod_confirm.pending = Some(PendingProdAction::SecretsCreate(plan));
+        app.prod_confirm.pending = Some(PendingProdAction::Secrets(
+            crate::secrets::screen::ProdAction::Create(plan),
+        ));
         app.input_mode = InputMode::ProdConfirm;
     } else {
         execute_create(app, plan, false);
@@ -145,7 +147,9 @@ pub(crate) fn commit_add_version(app: &mut App) {
         .active_tenant()
         .is_some_and(|t| t.theme == TenantTheme::Production);
     if is_prod {
-        app.prod_confirm.pending = Some(PendingProdAction::SecretsAddVersion(plan));
+        app.prod_confirm.pending = Some(PendingProdAction::Secrets(
+            crate::secrets::screen::ProdAction::AddVersion(plan),
+        ));
         app.input_mode = InputMode::ProdConfirm;
     } else {
         execute_add_version(app, plan, false);
@@ -175,7 +179,9 @@ pub(crate) fn commit_description(app: &mut App) {
         .active_tenant()
         .is_some_and(|t| t.theme == TenantTheme::Production);
     if is_prod {
-        app.prod_confirm.pending = Some(PendingProdAction::SecretSetDescription(plan));
+        app.prod_confirm.pending = Some(PendingProdAction::Secrets(
+            crate::secrets::screen::ProdAction::SetDescription(plan),
+        ));
         app.input_mode = InputMode::ProdConfirm;
     } else {
         execute_set_description(app, plan, false);

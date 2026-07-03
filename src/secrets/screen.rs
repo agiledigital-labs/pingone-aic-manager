@@ -8,6 +8,54 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::event::ToastKind;
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
+#[derive(Debug)]
+pub enum ProdAction {
+    Create(crate::secrets::state::CreatePlan),
+    AddVersion(crate::secrets::state::VersionAddPlan),
+    Delete(crate::secrets::state::DeletePlan),
+    SetDescription(crate::secrets::state::SetDescriptionPlan),
+    VersionStatus {
+        tenant: String,
+        id: String,
+        version: String,
+        status: String,
+    },
+    VersionDestroy {
+        tenant: String,
+        id: String,
+        version: String,
+    },
+}
+pub fn execute_prod_action(app: &mut App, action: ProdAction) {
+    match action {
+        ProdAction::Create(plan) => crate::secrets::ops::execute_create(app, plan, true),
+        ProdAction::AddVersion(plan) => crate::secrets::ops::execute_add_version(app, plan, true),
+        ProdAction::Delete(plan) => crate::secrets::ops::execute_delete(app, plan, true),
+        ProdAction::SetDescription(plan) => {
+            crate::secrets::ops::execute_set_description(app, plan, true)
+        }
+        ProdAction::VersionStatus {
+            tenant,
+            id,
+            version,
+            status,
+        } => crate::secrets::ops::execute_version_status(app, tenant, id, version, status, true),
+        ProdAction::VersionDestroy {
+            tenant,
+            id,
+            version,
+        } => crate::secrets::ops::execute_version_destroy(app, tenant, id, version, true),
+    }
+}
+
+pub fn resume_mode(_app: &App, _action: &ProdAction) -> InputMode {
+    InputMode::Normal
+}
+
+pub fn describe_prod_action(_action: &ProdAction) -> Option<String> {
+    None
+}
+
 use crate::config::tenant::TenantTheme;
 use crate::esv::state::{LoadState, id_of};
 use crate::secrets::ops;
@@ -338,12 +386,12 @@ fn toggle_version_status(app: &mut App, tenant: &str, id: &str, v: &serde_json::
         .active_tenant()
         .is_some_and(|t| t.theme == TenantTheme::Production);
     if is_prod {
-        app.prod_confirm.pending = Some(PendingProdAction::SecretVersionStatus {
+        app.prod_confirm.pending = Some(PendingProdAction::Secrets(ProdAction::VersionStatus {
             tenant,
             id,
             version,
             status: new_status.to_string(),
-        });
+        }));
         app.input_mode = InputMode::ProdConfirm;
     } else {
         ops::execute_version_status(app, tenant, id, version, new_status.to_string(), false);
@@ -376,11 +424,12 @@ fn handle_version_destroy_confirm_key(app: &mut App, key: KeyEvent) -> crate::Re
                 .active_tenant()
                 .is_some_and(|t| t.theme == TenantTheme::Production);
             if is_prod {
-                app.prod_confirm.pending = Some(PendingProdAction::SecretVersionDestroy {
-                    tenant,
-                    id,
-                    version,
-                });
+                app.prod_confirm.pending =
+                    Some(PendingProdAction::Secrets(ProdAction::VersionDestroy {
+                        tenant,
+                        id,
+                        version,
+                    }));
                 app.input_mode = InputMode::ProdConfirm;
             } else {
                 ops::execute_version_destroy(app, tenant, id, version, false);
@@ -420,7 +469,8 @@ fn handle_delete_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<()> 
                 .active_tenant()
                 .is_some_and(|t| t.theme == TenantTheme::Production);
             if is_prod {
-                app.prod_confirm.pending = Some(PendingProdAction::SecretDelete(plan));
+                app.prod_confirm.pending =
+                    Some(PendingProdAction::Secrets(ProdAction::Delete(plan)));
                 app.input_mode = InputMode::ProdConfirm;
             } else {
                 ops::execute_delete(app, plan, false);

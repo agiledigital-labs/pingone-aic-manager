@@ -182,7 +182,9 @@ pub(crate) fn trigger_restart(app: &mut App) {
     };
     let tenant_name = tenant.name.clone();
     if tenant.theme == TenantTheme::Production {
-        app.prod_confirm.pending = Some(PendingProdAction::EsvRestart { tenant_name });
+        app.prod_confirm.pending = Some(PendingProdAction::Esv(
+            crate::esv::screen::ProdAction::Restart { tenant_name },
+        ));
         app.input_mode = InputMode::ProdConfirm;
         return;
     }
@@ -700,7 +702,9 @@ pub fn request_latest_undo(app: &mut App) {
     };
 
     if tenant.theme == TenantTheme::Production {
-        app.prod_confirm.pending = Some(PendingProdAction::EsvUndo(summary.id));
+        app.prod_confirm.pending = Some(PendingProdAction::Esv(
+            crate::esv::screen::ProdAction::Undo(summary.id),
+        ));
         app.input_mode = InputMode::ProdConfirm;
     } else {
         execute_undo(app, summary.id, false);

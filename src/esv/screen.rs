@@ -10,6 +10,35 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::event::ToastKind;
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
+#[derive(Debug)]
+pub enum ProdAction {
+    Save(crate::esv::state::SavePlan),
+    Delete(crate::esv::state::DeletePlan),
+    Undo(crate::undo::UndoId),
+    Restart { tenant_name: String },
+}
+pub fn execute_prod_action(app: &mut App, action: ProdAction) {
+    match action {
+        ProdAction::Save(plan) => crate::esv::ops::execute_save_plan(app, plan, true),
+        ProdAction::Delete(plan) => crate::esv::ops::execute_delete_plan(app, plan, true),
+        ProdAction::Undo(undo_id) => crate::esv::ops::execute_undo(app, undo_id, true),
+        ProdAction::Restart { tenant_name } => {
+            crate::esv::ops::trigger_restart_confirmed(app, tenant_name, true)
+        }
+    }
+}
+
+pub fn resume_mode(app: &App, action: &ProdAction) -> InputMode {
+    match action {
+        ProdAction::Save(_) if app.esv.editing.is_some() => InputMode::Esv(Mode::Edit),
+        _ => InputMode::Normal,
+    }
+}
+
+pub fn describe_prod_action(_action: &ProdAction) -> Option<String> {
+    None
+}
+
 use crate::config::tenant::TenantTheme;
 use crate::esv::ops;
 use crate::esv::state::{
@@ -95,7 +124,7 @@ pub fn handle_delete_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<
                 .active_tenant()
                 .is_some_and(|t| t.theme == TenantTheme::Production);
             if is_prod {
-                app.prod_confirm.pending = Some(PendingProdAction::EsvDelete(plan));
+                app.prod_confirm.pending = Some(PendingProdAction::Esv(ProdAction::Delete(plan)));
                 app.input_mode = InputMode::ProdConfirm;
             } else {
                 ops::execute_delete_plan(app, plan, false);
@@ -396,7 +425,7 @@ fn commit_save(app: &mut App) {
         .active_tenant()
         .is_some_and(|t| t.theme == TenantTheme::Production);
     if is_prod {
-        app.prod_confirm.pending = Some(PendingProdAction::EsvSave(plan));
+        app.prod_confirm.pending = Some(PendingProdAction::Esv(ProdAction::Save(plan)));
         app.input_mode = InputMode::ProdConfirm;
         return;
     }
