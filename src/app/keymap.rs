@@ -680,14 +680,7 @@ async fn run_normal(app: &mut App, act: Act) {
             {
                 crate::secretmap::screen::start_search(app);
             } else {
-                app.input_mode = match app.active_view {
-                    View::Scripts => InputMode::Scripts(crate::scripts::screen::Mode::Search),
-                    View::Managed => InputMode::Managed(crate::managed::screen::Mode::Search),
-                    View::Mappings => InputMode::Mappings(crate::mappings::screen::Mode::Search),
-                    View::IdmStore => InputMode::IdmStore(crate::idmstore::screen::Mode::Search),
-                    View::Oauth => InputMode::Oauth(crate::oauth::screen::Mode::Search),
-                    View::Esvs => InputMode::Esv(EsvMode::Search),
-                };
+                app.input_mode = search_mode(app.active_view);
             }
         }
         ClearFilter => clear_filter(app),
@@ -709,19 +702,7 @@ async fn run_normal(app: &mut App, act: Act) {
         PullMappingScripts => crate::mappings::screen::pull_scripts(app),
         Apply => crate::esv::ops::request_restart(app),
         Refresh => {
-            if app.active_view == View::Managed {
-                crate::managed::screen::refresh(app, true);
-            } else if app.active_view == View::Mappings {
-                crate::mappings::screen::refresh(app, true);
-            } else if app.active_view == View::IdmStore {
-                crate::idmstore::screen::refresh(app, true);
-            } else if app.active_view == View::Oauth {
-                crate::oauth::screen::refresh(app, true);
-            } else if app.active_view == View::Esvs
-                && app.esv.view.clamp(mappings_allowed(app)) == EsvView::Mappings
-            {
-                crate::secretmap::screen::refresh(app, true);
-            }
+            crate::app::refresh_view(app, app.active_view, true);
         }
         Undo => {
             if app.active_view == View::Managed {
@@ -785,86 +766,48 @@ fn switch_esv_view(app: &mut App, delta: isize) {
 }
 
 fn row_count(app: &App) -> usize {
-    if app.active_view == View::Scripts {
-        return app
-            .scripts
-            .matches(app.active_tenant().map(|t| t.name.as_str()))
-            .len();
-    }
-    if app.active_view == View::Managed {
-        return app
-            .managed
-            .matches(app.active_tenant().map(|t| t.name.as_str()))
-            .len();
-    }
-    if app.active_view == View::Mappings {
-        return crate::mappings::screen::row_count(app);
-    }
-    if app.active_view == View::IdmStore {
-        return crate::idmstore::screen::row_count(app);
-    }
-    if app.active_view == View::Oauth {
-        return crate::oauth::screen::row_count(app);
-    }
-    match app.esv.view.clamp(mappings_allowed(app)) {
-        EsvView::Variables => app.esv_matches().len(),
-        EsvView::Secrets => {
-            crate::secrets::state::rows(app, app.active_tenant().map(|t| t.name.as_str())).len()
-        }
-        EsvView::Mappings => crate::secretmap::screen::row_count(app),
+    match app.active_view {
+        View::Scripts => crate::scripts::screen::row_count(app),
+        View::Managed => crate::managed::screen::row_count(app),
+        View::Mappings => crate::mappings::screen::row_count(app),
+        View::IdmStore => crate::idmstore::screen::row_count(app),
+        View::Oauth => crate::oauth::screen::row_count(app),
+        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+            EsvView::Variables => crate::esv::screen::row_count(app),
+            EsvView::Secrets => crate::secrets::screen::row_count(app),
+            EsvView::Mappings => crate::secretmap::screen::row_count(app),
+        },
     }
 }
 
 fn current_selection(app: &App) -> usize {
-    if app.active_view == View::Scripts {
-        return app.scripts.selected;
-    }
-    if app.active_view == View::Managed {
-        return app.managed.selected;
-    }
-    if app.active_view == View::Mappings {
-        return crate::mappings::screen::current_selection(app);
-    }
-    if app.active_view == View::IdmStore {
-        return crate::idmstore::screen::current_selection(app);
-    }
-    if app.active_view == View::Oauth {
-        return crate::oauth::screen::current_selection(app);
-    }
-    match app.esv.view.clamp(mappings_allowed(app)) {
-        EsvView::Variables => app.esv.list.selected,
-        EsvView::Secrets => app.secret.list.selected,
-        EsvView::Mappings => crate::secretmap::screen::current_selection(app),
+    match app.active_view {
+        View::Scripts => crate::scripts::screen::current_selection(app),
+        View::Managed => crate::managed::screen::current_selection(app),
+        View::Mappings => crate::mappings::screen::current_selection(app),
+        View::IdmStore => crate::idmstore::screen::current_selection(app),
+        View::Oauth => crate::oauth::screen::current_selection(app),
+        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+            EsvView::Variables => crate::esv::screen::current_selection(app),
+            EsvView::Secrets => crate::secrets::screen::current_selection(app),
+            EsvView::Mappings => crate::secretmap::screen::current_selection(app),
+        },
     }
 }
 
 fn set_selection(app: &mut App, idx: usize) {
-    let n = row_count(app);
-    let clamped = if n == 0 { 0 } else { idx.min(n - 1) };
-    if app.active_view == View::Scripts {
-        app.scripts.selected = clamped;
-        return;
-    }
-    if app.active_view == View::Managed {
-        app.managed.select_object(clamped);
-        return;
-    }
-    if app.active_view == View::Mappings {
-        crate::mappings::screen::select(app, clamped);
-        return;
-    }
-    if app.active_view == View::IdmStore {
-        crate::idmstore::screen::select(app, clamped);
-        return;
-    }
-    if app.active_view == View::Oauth {
-        crate::oauth::screen::select(app, clamped);
-        return;
-    }
-    match app.esv.view.clamp(mappings_allowed(app)) {
-        EsvView::Variables => app.esv.list.selected = clamped,
-        EsvView::Secrets => app.secret.list.selected = clamped,
-        EsvView::Mappings => crate::secretmap::screen::select(app, clamped),
+    let clamped = idx.min(row_count(app).saturating_sub(1));
+    match app.active_view {
+        View::Scripts => crate::scripts::screen::set_selection(app, clamped),
+        View::Managed => crate::managed::screen::set_selection(app, clamped),
+        View::Mappings => crate::mappings::screen::select(app, clamped),
+        View::IdmStore => crate::idmstore::screen::select(app, clamped),
+        View::Oauth => crate::oauth::screen::select(app, clamped),
+        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+            EsvView::Variables => crate::esv::screen::set_selection(app, clamped),
+            EsvView::Secrets => crate::secrets::screen::set_selection(app, clamped),
+            EsvView::Mappings => crate::secretmap::screen::select(app, clamped),
+        },
     }
 }
 
@@ -880,99 +823,87 @@ pub fn move_selection(app: &mut App, delta: isize) {
 }
 
 fn filter_active(app: &App) -> bool {
-    if app.active_view == View::Scripts {
-        return !app.scripts.query.is_empty();
-    }
-    if app.active_view == View::Managed {
-        return !app.managed.query.is_empty();
-    }
-    if app.active_view == View::Mappings {
-        return !app.mappings.query.is_empty();
-    }
-    if app.active_view == View::IdmStore {
-        return false;
-    }
-    if app.active_view == View::Oauth {
-        return !app.oauth.query.is_empty();
-    }
-    match app.esv.view.clamp(mappings_allowed(app)) {
-        EsvView::Variables => !app.esv.list.query.is_empty(),
-        EsvView::Secrets => !app.secret.list.query.is_empty(),
-        EsvView::Mappings => !app.secretmap.query.is_empty(),
+    match app.active_view {
+        View::Scripts => crate::scripts::screen::filter_active(app),
+        View::Managed => crate::managed::screen::filter_active(app),
+        View::Mappings => crate::mappings::screen::filter_active(app),
+        View::IdmStore => crate::idmstore::screen::filter_active(app),
+        View::Oauth => crate::oauth::screen::filter_active(app),
+        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+            EsvView::Variables => crate::esv::screen::filter_active(app),
+            EsvView::Secrets => crate::secrets::screen::filter_active(app),
+            EsvView::Mappings => crate::secretmap::screen::filter_active(app),
+        },
     }
 }
 
 fn clear_filter(app: &mut App) {
-    if app.active_view == View::Scripts {
-        app.scripts.reset_view();
-        return;
-    }
-    if app.active_view == View::Managed {
-        app.managed.reset_view();
-        return;
-    }
-    if app.active_view == View::Mappings {
-        crate::mappings::screen::clear_filter(app);
-        return;
-    }
-    if app.active_view == View::IdmStore {
-        crate::idmstore::screen::clear_filter(app);
-        return;
-    }
-    if app.active_view == View::Oauth {
-        crate::oauth::screen::clear_filter(app);
-        return;
-    }
-    match app.esv.view.clamp(mappings_allowed(app)) {
-        EsvView::Variables => app.esv.reset_view(),
-        EsvView::Secrets => {
-            app.secret.list.query.clear();
-            app.secret.list.selected = 0;
-            app.secret.list.scroll = 0;
-        }
-        EsvView::Mappings => crate::secretmap::screen::clear_filter(app),
+    match app.active_view {
+        View::Scripts => crate::scripts::screen::clear_filter(app),
+        View::Managed => crate::managed::screen::clear_filter(app),
+        View::Mappings => crate::mappings::screen::clear_filter(app),
+        View::IdmStore => crate::idmstore::screen::clear_filter(app),
+        View::Oauth => crate::oauth::screen::clear_filter(app),
+        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+            EsvView::Variables => crate::esv::screen::clear_filter(app),
+            EsvView::Secrets => crate::secrets::screen::clear_filter(app),
+            EsvView::Mappings => crate::secretmap::screen::clear_filter(app),
+        },
     }
 }
 
 fn primary(app: &mut App) {
-    if app.active_view == View::Managed {
-        crate::managed::screen::start_edit_field(app);
-        return;
-    }
-    if app.active_view == View::Mappings {
-        return;
-    }
-    if app.active_view == View::Oauth {
-        crate::oauth::screen::load_selected(app);
-        return;
-    }
-    match app.esv.view.clamp(mappings_allowed(app)) {
-        EsvView::Variables => crate::esv::screen::start_edit(app),
-        EsvView::Secrets => crate::secrets::screen::open_versions(app),
-        EsvView::Mappings => crate::secretmap::screen::start_alias_picker(app),
+    match app.active_view {
+        View::Scripts => crate::scripts::screen::primary(app),
+        View::Managed => crate::managed::screen::primary(app),
+        View::Mappings => crate::mappings::screen::primary(app),
+        View::IdmStore => crate::idmstore::screen::primary(app),
+        View::Oauth => crate::oauth::screen::primary(app),
+        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+            EsvView::Variables => crate::esv::screen::primary(app),
+            EsvView::Secrets => crate::secrets::screen::primary(app),
+            EsvView::Mappings => crate::secretmap::screen::primary(app),
+        },
     }
 }
 
 fn delete(app: &mut App) {
-    if app.active_view == View::Managed {
-        crate::managed::screen::request_delete_field(app);
-        return;
-    }
-    match app.esv.view.clamp(mappings_allowed(app)) {
-        EsvView::Variables => crate::esv::ops::request_delete(app),
-        EsvView::Secrets => crate::secrets::screen::request_delete(app),
-        EsvView::Mappings => crate::secretmap::screen::start_remove(app),
+    match app.active_view {
+        View::Scripts => crate::scripts::screen::delete(app),
+        View::Managed => crate::managed::screen::delete(app),
+        View::Mappings => crate::mappings::screen::delete(app),
+        View::IdmStore => crate::idmstore::screen::delete(app),
+        View::Oauth => crate::oauth::screen::delete(app),
+        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+            EsvView::Variables => crate::esv::screen::delete(app),
+            EsvView::Secrets => crate::secrets::screen::delete(app),
+            EsvView::Mappings => crate::secretmap::screen::delete(app),
+        },
     }
 }
 
 fn new_item(app: &mut App) {
-    if app.active_view == View::Managed {
-        crate::managed::screen::start_add_field(app);
-        return;
+    match app.active_view {
+        View::Scripts => crate::scripts::screen::new_item(app),
+        View::Managed => crate::managed::screen::new_item(app),
+        View::Mappings => crate::mappings::screen::new_item(app),
+        View::IdmStore => crate::idmstore::screen::new_item(app),
+        View::Oauth => crate::oauth::screen::new_item(app),
+        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+            EsvView::Variables => crate::esv::screen::new_item(app),
+            EsvView::Secrets => crate::secrets::screen::new_item(app),
+            EsvView::Mappings => crate::secretmap::screen::new_item(app),
+        },
     }
-    match app.esv.view.clamp(mappings_allowed(app)) {
-        EsvView::Variables => crate::esv::screen::start_create(app),
-        EsvView::Secrets => crate::secrets::screen::start_create(app),
-        EsvView::Mappings => crate::secretmap::screen::start_add(app),
+}
+
+fn search_mode(view: View) -> InputMode {
+    match view {
+        View::Scripts => InputMode::Scripts(crate::scripts::screen::Mode::Search),
+        View::Managed => InputMode::Managed(crate::managed::screen::Mode::Search),
+        View::Mappings => InputMode::Mappings(crate::mappings::screen::Mode::Search),
+        View::IdmStore => InputMode::IdmStore(crate::idmstore::screen::Mode::Search),
+        View::Oauth => InputMode::Oauth(crate::oauth::screen::Mode::Search),
+        View::Esvs => InputMode::Esv(EsvMode::Search),
     }
 }

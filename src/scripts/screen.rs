@@ -244,6 +244,34 @@ pub fn refresh(app: &mut App, force: bool) {
     });
 }
 
+pub fn row_count(app: &App) -> usize {
+    app.scripts
+        .matches(app.active_tenant().map(|t| t.name.as_str()))
+        .len()
+}
+
+pub fn current_selection(app: &App) -> usize {
+    app.scripts.selected
+}
+
+pub fn set_selection(app: &mut App, idx: usize) {
+    app.scripts.selected = idx;
+}
+
+pub fn filter_active(app: &App) -> bool {
+    !app.scripts.query.is_empty()
+}
+
+pub fn clear_filter(app: &mut App) {
+    app.scripts.reset_view();
+}
+
+pub fn primary(_app: &mut App) {}
+
+pub fn delete(_app: &mut App) {}
+
+pub fn new_item(_app: &mut App) {}
+
 /// Apply a completed background refresh. A failure keeps the
 /// previously-cached list (just logs); a first-load failure shows the error.
 fn apply_refresh(

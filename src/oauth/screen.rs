@@ -156,6 +156,18 @@ pub fn clear_filter(app: &mut App) {
     load_selected(app);
 }
 
+pub fn filter_active(app: &App) -> bool {
+    !app.oauth.query.is_empty()
+}
+
+pub fn primary(app: &mut App) {
+    load_selected(app);
+}
+
+pub fn delete(_app: &mut App) {}
+
+pub fn new_item(_app: &mut App) {}
+
 fn handle_normal_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.input_mode = InputMode::Normal,

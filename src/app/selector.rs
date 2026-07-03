@@ -110,7 +110,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             };
             app.active_view = view;
             app.input_mode = InputMode::Normal;
-            refresh(view, app);
+            crate::app::refresh_view(app, view, false);
         }
         KeyCode::Backspace if app.selector.query.pop().is_some() => {
             rerank(app);
@@ -129,17 +129,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 fn rerank(app: &mut App) {
     app.selector.filtered = rank_views(&app.selector.query);
     app.selector.highlighted = 0;
-}
-
-fn refresh(view: View, app: &mut App) {
-    match view {
-        View::Esvs => {}
-        View::Scripts => crate::scripts::screen::refresh(app, false),
-        View::Managed => crate::managed::screen::refresh(app, false),
-        View::Mappings => crate::mappings::screen::refresh(app, false),
-        View::IdmStore => crate::idmstore::screen::refresh(app, false),
-        View::Oauth => crate::oauth::screen::refresh(app, false),
-    }
 }
 
 fn rank_views(query: &str) -> Vec<View> {

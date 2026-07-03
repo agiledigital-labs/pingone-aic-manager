@@ -201,6 +201,40 @@ pub fn refresh(app: &mut App, force: bool) {
     });
 }
 
+pub fn row_count(app: &App) -> usize {
+    app.managed
+        .matches(app.active_tenant().map(|t| t.name.as_str()))
+        .len()
+}
+
+pub fn current_selection(app: &App) -> usize {
+    app.managed.selected
+}
+
+pub fn set_selection(app: &mut App, idx: usize) {
+    app.managed.select_object(idx);
+}
+
+pub fn filter_active(app: &App) -> bool {
+    !app.managed.query.is_empty()
+}
+
+pub fn clear_filter(app: &mut App) {
+    app.managed.reset_view();
+}
+
+pub fn primary(app: &mut App) {
+    start_edit_field(app);
+}
+
+pub fn delete(app: &mut App) {
+    request_delete_field(app);
+}
+
+pub fn new_item(app: &mut App) {
+    start_add_field(app);
+}
+
 fn handle_search_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {

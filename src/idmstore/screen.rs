@@ -47,6 +47,16 @@ pub fn clear_filter(app: &mut App) {
     app.idmstore.reset_view();
 }
 
+pub fn filter_active(_app: &App) -> bool {
+    false
+}
+
+pub fn primary(_app: &mut App) {}
+
+pub fn delete(_app: &mut App) {}
+
+pub fn new_item(_app: &mut App) {}
+
 fn handle_search_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc | KeyCode::Enter => app.input_mode = InputMode::Normal,

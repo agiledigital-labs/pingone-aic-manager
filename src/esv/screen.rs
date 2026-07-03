@@ -292,6 +292,38 @@ pub fn start_create(app: &mut App) {
     app.input_mode = InputMode::Esv(Mode::Edit);
 }
 
+pub fn row_count(app: &App) -> usize {
+    app.esv_matches().len()
+}
+
+pub fn current_selection(app: &App) -> usize {
+    app.esv.list.selected
+}
+
+pub fn set_selection(app: &mut App, idx: usize) {
+    app.esv.list.selected = idx;
+}
+
+pub fn filter_active(app: &App) -> bool {
+    !app.esv.list.query.is_empty()
+}
+
+pub fn clear_filter(app: &mut App) {
+    app.esv.reset_view();
+}
+
+pub fn primary(app: &mut App) {
+    start_edit(app);
+}
+
+pub fn delete(app: &mut App) {
+    ops::request_delete(app);
+}
+
+pub fn new_item(app: &mut App) {
+    start_create(app);
+}
+
 /// Discard the in-flight edit and return to preview mode.
 pub fn cancel_edit(app: &mut App) {
     app.esv.editing = None;
