@@ -259,6 +259,14 @@ negation with `!`, for example `_queryFilter=!(/description eq "lkj")`.
 It rejects the word form `not (/description eq "lkj")` with HTTP 400
 `"A value could not be parsed as a valid query filter"`.
 
+**Query-filter operators (verified 2026-07-03).** Managed-object queries reject
+`ne`: `_queryFilter=/_id ne "asdf"` returns HTTP 400 with
+`"unrecognized or unsupported filter operator 'ne'"`. They also reject `in`:
+`_queryFilter=/_id in ["asdf"]` returns HTTP 400
+`"A value could not be parsed as a valid query filter"`. Array values are not a
+fallback form either: `_queryFilter=/_id eq ["asdf"]` returns the same parse
+error. Do not offer `ne` or `in` in script-template query validation.
+
 ## Quirks
 
 - **PUT is "replace entire schema"** — there's no partial patch. Read,
@@ -291,9 +299,11 @@ It rejects the word form `not (/description eq "lkj")` with HTTP 400
   on the sidecar but **not** via parent traversal — `_meta/...` filter → 0, sort
   → 500; `alpha_rolemeta` 404 / non-user objects have no sidecar; cursor paging
   works and is the required bulk-read path; `EXACT` count policy). 2026-07-03
-  (query-filter negation: `!` accepted, word `not` rejected). 2026-06-14
-  (managed-config write behaviour, custom object/property/relationship/hook
-  round-trips, no reverse-property validation); 2026-06-13
+  (query-filter negation: `!` accepted, word `not` rejected; query-filter
+  operators: `ne` rejected as unsupported, `in` and array values rejected as
+  parse errors). 2026-06-14 (managed-config write behaviour, custom
+  object/property/relationship/hook round-trips, no reverse-property
+  validation); 2026-06-13
   (hook inventory, hook bindings probe, schema PUT round-trip + application
   lag); 2026-06-09 (create-if-absent test); 2026-05-17 (schema read).
 - Calls: `GET /openidm/config/managed` (200); `PUT /openidm/config/managed`
@@ -304,7 +314,10 @@ It rejects the word form `not (/description eq "lkj")` with HTTP 400
   bare `PUT` update (200, fires onUpdate); `DELETE` (200);
   `GET …?_queryFilter=true&_fields=_id` (200);
   `GET …?_queryFilter=!(/description eq "lkj")&_pageSize=1` (200);
-  `GET …?_queryFilter=not (/description eq "lkj")&_pageSize=1` (400).
+  `GET …?_queryFilter=not (/description eq "lkj")&_pageSize=1` (400);
+  `GET …?_queryFilter=/_id ne "asdf"&_pageSize=1` (400);
+  `GET …?_queryFilter=/_id in ["asdf"]&_pageSize=1` (400);
+  `GET …?_queryFilter=/_id eq ["asdf"]&_pageSize=1` (400).
 
 ## Source citations
 

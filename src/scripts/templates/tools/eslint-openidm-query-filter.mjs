@@ -6,18 +6,8 @@
 
 import { readFileSync } from "node:fs";
 
-const QUERY_OPERATOR_NAMES = [
-  "eq",
-  "ne",
-  "co",
-  "sw",
-  "lt",
-  "le",
-  "gt",
-  "ge",
-  "pr",
-  "in",
-];
+const QUERY_OPERATOR_NAMES = ["eq", "co", "sw", "lt", "le", "gt", "ge", "pr"];
+const QUERY_OPERATOR_LIST = QUERY_OPERATOR_NAMES.join(", ");
 const QUERY_OPERATORS = new Set(QUERY_OPERATOR_NAMES);
 const QUERY_KEYWORDS = new Set(["and", "or", "not", "true", "false", "null"]);
 
@@ -428,7 +418,7 @@ class QueryFilterParser {
           end: operator.end,
         });
         this.advance();
-        this.parseValue(operator);
+        this.recoverValue();
       }
       return;
     }
@@ -455,8 +445,12 @@ class QueryFilterParser {
       return;
     }
 
-    if (this.matchPunct("[")) {
-      this.parseArrayValue();
+    if (this.isPunct(value, "[")) {
+      this.syntax(
+        value,
+        "Array values are not valid in AIC managed _queryFilter expressions."
+      );
+      this.consumeArray();
       return;
     }
 
@@ -471,44 +465,34 @@ class QueryFilterParser {
     this.advance();
   }
 
-  parseArrayValue() {
-    const open = this.previous();
-    let expectValue = true;
+  recoverValue() {
+    const value = this.peek();
+    if (!value || this.isPunct(value, ")")) return;
+    if (this.isPunct(value, "[")) {
+      this.consumeArray();
+      return;
+    }
+    this.advance();
+  }
+
+  consumeArray() {
+    const open = this.peek();
+    if (!this.matchPunct("[")) return;
+    let depth = 1;
     while (!this.atEnd()) {
+      if (this.matchPunct("[")) {
+        depth++;
+        continue;
+      }
       if (this.matchPunct("]")) {
-        if (expectValue && this.previous() !== open) {
-          this.syntaxPrevious("Expected _queryFilter array value before ']'.");
-        }
+        depth--;
+        if (depth === 0) return;
+        continue;
+      }
+      if (depth === 1 && this.isPunct(this.peek(), ")")) {
         return;
       }
-
-      if (!expectValue) {
-        const comma = this.peek();
-        if (!this.matchPunct(",")) {
-          this.syntax(comma, "Expected ',' between _queryFilter array values.");
-          this.advance();
-        }
-        expectValue = true;
-        continue;
-      }
-
-      const value = this.peek();
-      if (value && (value.type === "string" || value.type === "word")) {
-        this.advance();
-        expectValue = false;
-        continue;
-      }
-
-      if (value) {
-        this.syntax(
-          value,
-          "Expected _queryFilter array value before '{{token}}'.",
-          { token: tokenText(value) }
-        );
-        this.advance();
-        expectValue = false;
-        continue;
-      }
+      this.advance();
     }
 
     this.syntax(open, "Expected ']' to close _queryFilter array.");
@@ -663,9 +647,10 @@ export function openidmQueryFilterRule(managedFields) {
                 node: queryFilterNode,
                 loc,
                 message:
-                  "Unknown _queryFilter operator '{{operator}}'. Expected one of: eq, ne, co, sw, lt, le, gt, ge, pr, in.",
+                  "Unknown _queryFilter operator '{{operator}}'. Expected one of: {{operators}}.",
                 data: {
                   operator: issue.operator,
+                  operators: QUERY_OPERATOR_LIST,
                 },
               });
               continue;
