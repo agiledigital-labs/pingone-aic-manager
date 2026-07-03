@@ -549,14 +549,14 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         InputMode::Selector => Vec::new(),
         InputMode::Secretmap(_) => crate::secretmap::screen::footer_hints(app),
         InputMode::Secrets(SecretsMode::Create) => {
-            use crate::secrets::state::CreateField;
             let mut out = vec![("Tab", "next field")];
-            if let Some(form) = app.secret.create.as_ref() {
-                match form.focused {
-                    CreateField::Encoding | CreateField::Placeholders | CreateField::Json => {
-                        out.push(("←/→", "change"))
-                    }
-                    CreateField::Value | CreateField::Save => out.push(("Enter", "create")),
+            if let Some(focused) = crate::secrets::screen::create_focus(app) {
+                match focused {
+                    crate::secrets::state::CreateField::Encoding
+                    | crate::secrets::state::CreateField::Placeholders
+                    | crate::secrets::state::CreateField::Json => out.push(("←/→", "change")),
+                    crate::secrets::state::CreateField::Value
+                    | crate::secrets::state::CreateField::Save => out.push(("Enter", "create")),
                     _ => out.push(("Enter", "next")),
                 }
             }
@@ -564,14 +564,13 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out
         }
         InputMode::Secrets(SecretsMode::Versions) => {
-            use crate::secrets::state::DetailFocus;
-            match app.secret.detail_focus {
-                DetailFocus::Description => vec![
+            match crate::secrets::screen::detail_focus(app) {
+                crate::secrets::state::DetailFocus::Description => vec![
                     ("Tab", "versions"),
                     ("Enter", "save description"),
                     ("Esc", "close"),
                 ],
-                DetailFocus::Versions => vec![
+                crate::secrets::state::DetailFocus::Versions => vec![
                     ("Tab", "edit description"),
                     ("↑/↓", "navigate"),
                     ("e/d", "enable/disable"),
@@ -583,7 +582,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         InputMode::Esv(EsvMode::Edit) => {
             let mut out = vec![("Tab", "navigate")];
-            let focused = app.esv.editing.as_ref().map(|edit| edit.focused);
+            let focused = crate::esv::screen::edit_focused(app);
             match focused {
                 Some(EditField::Id | EditField::Description | EditField::Type) => {
                     out.push(("Enter", "next"));
@@ -627,13 +626,6 @@ fn push_global(out: &mut Vec<Bind>) {
 /// table-driven (below); other modes route to their screen handler — one place
 /// that maps mode → handler, instead of a match scattered in `app`.
 pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    if app.input_mode == InputMode::Oauth(crate::oauth::screen::Mode::Normal)
-        && Trigger::Ctrl('p').matches(&key)
-    {
-        crate::app::selector::open(app);
-        return Ok(());
-    }
-
     match app.input_mode {
         InputMode::Normal => dispatch_normal(app, key).await?,
         InputMode::Vault(mode) => crate::vault::screen::handle_key(app, key, mode).await?,
@@ -676,7 +668,7 @@ async fn run_normal(app: &mut App, act: Act) {
         PrevView => switch_esv_view(app, -1),
         Search => {
             if app.active_view == View::Esvs
-                && app.esv.view.clamp(mappings_allowed(app)) == EsvView::Mappings
+                && crate::esv::screen::current_view(app) == EsvView::Mappings
             {
                 crate::secretmap::screen::start_search(app);
             } else {
@@ -708,7 +700,7 @@ async fn run_normal(app: &mut App, act: Act) {
             if app.active_view == View::Managed {
                 crate::managed::ops::request_latest_undo(app);
             } else if app.active_view == View::Esvs
-                && app.esv.view.clamp(mappings_allowed(app)) == EsvView::Mappings
+                && crate::esv::screen::current_view(app) == EsvView::Mappings
             {
                 crate::secretmap::ops::request_latest_undo(app);
             } else {
@@ -772,7 +764,7 @@ fn row_count(app: &App) -> usize {
         View::Mappings => crate::mappings::screen::row_count(app),
         View::IdmStore => crate::idmstore::screen::row_count(app),
         View::Oauth => crate::oauth::screen::row_count(app),
-        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+        View::Esvs => match crate::esv::screen::current_view(app) {
             EsvView::Variables => crate::esv::screen::row_count(app),
             EsvView::Secrets => crate::secrets::screen::row_count(app),
             EsvView::Mappings => crate::secretmap::screen::row_count(app),
@@ -787,7 +779,7 @@ fn current_selection(app: &App) -> usize {
         View::Mappings => crate::mappings::screen::current_selection(app),
         View::IdmStore => crate::idmstore::screen::current_selection(app),
         View::Oauth => crate::oauth::screen::current_selection(app),
-        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+        View::Esvs => match crate::esv::screen::current_view(app) {
             EsvView::Variables => crate::esv::screen::current_selection(app),
             EsvView::Secrets => crate::secrets::screen::current_selection(app),
             EsvView::Mappings => crate::secretmap::screen::current_selection(app),
@@ -803,7 +795,7 @@ fn set_selection(app: &mut App, idx: usize) {
         View::Mappings => crate::mappings::screen::select(app, clamped),
         View::IdmStore => crate::idmstore::screen::select(app, clamped),
         View::Oauth => crate::oauth::screen::select(app, clamped),
-        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+        View::Esvs => match crate::esv::screen::current_view(app) {
             EsvView::Variables => crate::esv::screen::set_selection(app, clamped),
             EsvView::Secrets => crate::secrets::screen::set_selection(app, clamped),
             EsvView::Mappings => crate::secretmap::screen::select(app, clamped),
@@ -829,7 +821,7 @@ fn filter_active(app: &App) -> bool {
         View::Mappings => crate::mappings::screen::filter_active(app),
         View::IdmStore => crate::idmstore::screen::filter_active(app),
         View::Oauth => crate::oauth::screen::filter_active(app),
-        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+        View::Esvs => match crate::esv::screen::current_view(app) {
             EsvView::Variables => crate::esv::screen::filter_active(app),
             EsvView::Secrets => crate::secrets::screen::filter_active(app),
             EsvView::Mappings => crate::secretmap::screen::filter_active(app),
@@ -844,7 +836,7 @@ fn clear_filter(app: &mut App) {
         View::Mappings => crate::mappings::screen::clear_filter(app),
         View::IdmStore => crate::idmstore::screen::clear_filter(app),
         View::Oauth => crate::oauth::screen::clear_filter(app),
-        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+        View::Esvs => match crate::esv::screen::current_view(app) {
             EsvView::Variables => crate::esv::screen::clear_filter(app),
             EsvView::Secrets => crate::secrets::screen::clear_filter(app),
             EsvView::Mappings => crate::secretmap::screen::clear_filter(app),
@@ -859,7 +851,7 @@ fn primary(app: &mut App) {
         View::Mappings => crate::mappings::screen::primary(app),
         View::IdmStore => crate::idmstore::screen::primary(app),
         View::Oauth => crate::oauth::screen::primary(app),
-        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+        View::Esvs => match crate::esv::screen::current_view(app) {
             EsvView::Variables => crate::esv::screen::primary(app),
             EsvView::Secrets => crate::secrets::screen::primary(app),
             EsvView::Mappings => crate::secretmap::screen::primary(app),
@@ -874,7 +866,7 @@ fn delete(app: &mut App) {
         View::Mappings => crate::mappings::screen::delete(app),
         View::IdmStore => crate::idmstore::screen::delete(app),
         View::Oauth => crate::oauth::screen::delete(app),
-        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+        View::Esvs => match crate::esv::screen::current_view(app) {
             EsvView::Variables => crate::esv::screen::delete(app),
             EsvView::Secrets => crate::secrets::screen::delete(app),
             EsvView::Mappings => crate::secretmap::screen::delete(app),
@@ -889,7 +881,7 @@ fn new_item(app: &mut App) {
         View::Mappings => crate::mappings::screen::new_item(app),
         View::IdmStore => crate::idmstore::screen::new_item(app),
         View::Oauth => crate::oauth::screen::new_item(app),
-        View::Esvs => match app.esv.view.clamp(mappings_allowed(app)) {
+        View::Esvs => match crate::esv::screen::current_view(app) {
             EsvView::Variables => crate::esv::screen::new_item(app),
             EsvView::Secrets => crate::secrets::screen::new_item(app),
             EsvView::Mappings => crate::secretmap::screen::new_item(app),

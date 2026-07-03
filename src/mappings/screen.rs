@@ -70,6 +70,34 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     }
 }
 
+pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
+    match mode {
+        Mode::Search => Some(vec![
+            ("Type", "edit search query"),
+            ("Backspace", "delete character"),
+            ("Enter", "keep filter and return to list"),
+            ("Esc", "clear filter and return to list"),
+            ("↑/↓", "move selection"),
+            ("PgUp/PgDn", "move by page"),
+            ("F1", "show keybinds"),
+        ]),
+    }
+}
+
+pub fn mappings_view_active(app: &App) -> bool {
+    app.active_view == View::Mappings
+}
+
+pub fn mappings_subview_active(app: &App) -> bool {
+    app.active_view == View::Esvs
+        && app.esv.view.clamp(is_mappings_allowed(app)) == crate::esv::state::EsvView::Mappings
+}
+
+fn is_mappings_allowed(app: &App) -> bool {
+    app.active_tenant()
+        .is_some_and(|tenant| tenant.allows_secret_mappings())
+}
+
 pub fn refresh(app: &mut App, force: bool) {
     crate::mappings::ops::refresh(app, force);
 }

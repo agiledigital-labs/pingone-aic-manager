@@ -155,6 +155,57 @@ pub fn new_item(app: &mut App) {
     start_create(app);
 }
 
+pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static str)>> {
+    match mode {
+        Mode::Create => Some(vec![
+            ("Tab/Shift-Tab", "move between fields"),
+            ("←/→ or Space", "encoding / toggles"),
+            ("Enter", "create"),
+            ("Esc", "cancel"),
+        ]),
+        Mode::Versions => Some(match app.secret.detail_focus {
+            DetailFocus::Description => vec![
+                ("Tab", "versions"),
+                ("Enter", "save description"),
+                ("Esc", "close"),
+            ],
+            DetailFocus::Versions => vec![
+                ("Tab", "edit description"),
+                ("↑/↓", "navigate"),
+                ("e/d", "enable/disable"),
+                ("x", "destroy"),
+                ("^N", "add version"),
+                ("Esc", "close"),
+            ],
+        }),
+        Mode::AddVersion => Some(vec![("Enter", "add version"), ("Esc", "cancel")]),
+        Mode::DeleteConfirm => Some(vec![
+            ("y", "delete secret + all versions"),
+            ("n/Esc", "cancel"),
+        ]),
+        Mode::VersionDestroyConfirm => Some(vec![
+            ("y", "destroy version (irreversible)"),
+            ("n/Esc", "cancel"),
+        ]),
+    }
+}
+
+pub fn create_field_active(app: &App) -> bool {
+    app.secret.create.is_some()
+}
+
+pub fn detail_focus_active(app: &App) -> bool {
+    app.secret.detail_focus == DetailFocus::Description
+}
+
+pub fn create_focus(app: &App) -> Option<CreateField> {
+    app.secret.create.as_ref().map(|form| form.focused)
+}
+
+pub fn detail_focus(app: &App) -> DetailFocus {
+    app.secret.detail_focus
+}
+
 fn handle_create_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     let Some(form) = app.secret.create.as_mut() else {
         return Ok(());

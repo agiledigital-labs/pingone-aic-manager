@@ -13,14 +13,7 @@ use ratatui::{
 };
 
 use crate::app::{App, InputMode};
-use crate::esv::screen::Mode as EsvMode;
-use crate::esv::state::EditField;
-use crate::idmstore::screen::Mode as IdmStoreMode;
-use crate::managed::screen::Mode as ManagedMode;
-use crate::mappings::screen::Mode as MappingsMode;
-use crate::oauth::screen::Mode as OauthMode;
 use crate::onboard::screen::Mode as OnboardMode;
-use crate::secretmap::screen::Mode as SecretmapMode;
 use crate::secrets::screen::Mode as SecretsMode;
 use crate::tui::modal_chrome::hint_line;
 use crate::vault::screen::Mode as VaultMode;
@@ -73,23 +66,23 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     match app.input_mode {
         InputMode::Normal => normal_lines(app, &mut lines),
-        InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) => esv_search_lines(&mut lines),
-        InputMode::Managed(mode) => managed_lines(mode, &mut lines),
-        InputMode::Mappings(mode) => mappings_lines(mode, &mut lines),
-        InputMode::IdmStore(mode) => idmstore_lines(mode, &mut lines),
-        InputMode::Oauth(mode) => oauth_lines(mode, &mut lines),
-        InputMode::Secretmap(mode) => secretmap_lines(mode, &mut lines),
-        InputMode::Esv(EsvMode::Edit) => esv_edit_lines(app, &mut lines),
-        InputMode::Esv(EsvMode::RestartConfirm) => confirm_lines(
-            &mut lines,
-            "Apply pending changes",
-            &[("y", "restart tenant runtime"), ("n/Esc", "cancel")],
-        ),
-        InputMode::Esv(EsvMode::DeleteConfirm) => confirm_lines(
-            &mut lines,
-            "Delete ESV variable",
-            &[("y", "delete variable"), ("n/Esc", "cancel")],
-        ),
+        InputMode::Esv(mode) => esv_lines(app, mode, &mut lines),
+        InputMode::Scripts(mode) => {
+            feature_lines(crate::scripts::screen::help_lines(mode), &mut lines)
+        }
+        InputMode::Managed(mode) => {
+            feature_lines(crate::managed::screen::help_lines(mode, app), &mut lines)
+        }
+        InputMode::Mappings(mode) => {
+            feature_lines(crate::mappings::screen::help_lines(mode), &mut lines)
+        }
+        InputMode::IdmStore(mode) => {
+            feature_lines(crate::idmstore::screen::help_lines(mode), &mut lines)
+        }
+        InputMode::Oauth(mode) => feature_lines(crate::oauth::screen::help_lines(mode), &mut lines),
+        InputMode::Secretmap(mode) => {
+            feature_lines(crate::secretmap::screen::help_lines(mode), &mut lines)
+        }
         InputMode::Vault(VaultMode::Settings) => auth_settings_lines(app, &mut lines),
         InputMode::Vault(VaultMode::SettingsConfirm) => confirm_lines(
             &mut lines,
@@ -153,67 +146,6 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-fn mappings_lines(mode: MappingsMode, lines: &mut Vec<Line<'static>>) {
-    match mode {
-        MappingsMode::Search => esv_search_lines(lines),
-    }
-}
-
-fn idmstore_lines(mode: IdmStoreMode, lines: &mut Vec<Line<'static>>) {
-    match mode {
-        IdmStoreMode::Search => esv_search_lines(lines),
-    }
-}
-
-fn oauth_lines(mode: OauthMode, lines: &mut Vec<Line<'static>>) {
-    match mode {
-        OauthMode::Search => esv_search_lines(lines),
-        OauthMode::Normal => text_modal_lines(
-            lines,
-            "OAuth client config",
-            &[
-                ("↑/↓", "move selection"),
-                ("Enter", "load selected client"),
-                ("^U/^D", "scroll detail"),
-                ("R", "refresh"),
-                ("Ctrl-P", "open function selector"),
-                ("Esc", "back"),
-            ],
-        ),
-    }
-}
-
-fn secretmap_lines(mode: SecretmapMode, lines: &mut Vec<Line<'static>>) {
-    match mode {
-        SecretmapMode::Search => esv_search_lines(lines),
-        SecretmapMode::PickLabel => text_modal_lines(
-            lines,
-            "Pick secret label",
-            &[
-                ("Type", "filter unmapped labels"),
-                ("↑/↓", "move selection"),
-                ("Enter", "choose label"),
-                ("Esc", "cancel"),
-            ],
-        ),
-        SecretmapMode::PickAlias => text_modal_lines(
-            lines,
-            "Pick ESV alias",
-            &[
-                ("Type", "filter ESV secrets"),
-                ("↑/↓", "move selection"),
-                ("Enter", "choose alias"),
-                ("Esc", "cancel"),
-            ],
-        ),
-        SecretmapMode::DeleteConfirm => confirm_lines(
-            lines,
-            "Remove secret mapping",
-            &[("y", "remove mapping"), ("n/Esc", "cancel")],
-        ),
-    }
-}
-
 fn normal_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     // Derived from the same keymap table that drives dispatch + footer, so the
     // help can't list a key the dispatcher won't honour (or omit one it does).
@@ -252,18 +184,6 @@ fn normal_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     bind(lines, "F1/?", "show keybinds");
 }
 
-fn esv_search_lines(lines: &mut Vec<Line<'static>>) {
-    group(lines, "Search");
-    bind(lines, "Type", "edit search query");
-    bind(lines, "Backspace", "delete character");
-    bind(lines, "Enter", "keep filter and return to list");
-    bind(lines, "Esc", "clear filter and return to list");
-    group(lines, "Results");
-    bind(lines, "↑/↓", "move selection");
-    bind(lines, "PgUp/PgDn", "move by page");
-    bind(lines, "F1", "show keybinds");
-}
-
 fn selector_lines(lines: &mut Vec<Line<'static>>) {
     group(lines, "Function selector");
     bind(lines, "Type", "filter functions");
@@ -273,91 +193,9 @@ fn selector_lines(lines: &mut Vec<Line<'static>>) {
     bind(lines, "Esc", "cancel");
 }
 
-fn esv_edit_lines(app: &App, lines: &mut Vec<Line<'static>>) {
-    group(lines, "Edit variable");
-    bind(lines, "Tab/Shift-Tab", "move between fields");
-    match app.esv.editing.as_ref().map(|edit| edit.focused) {
-        Some(EditField::Id | EditField::Description | EditField::Type) => {
-            bind(lines, "Enter", "move to next field");
-        }
-        Some(EditField::Value) => {
-            bind(lines, "Enter", "insert newline in value");
-        }
-        Some(EditField::Save) => {
-            bind(lines, "Enter", "save variable");
-        }
-        None => {}
-    }
-    bind(lines, "Esc", "cancel edit");
-    group(lines, "Selector");
-    bind(
-        lines,
-        "←/→",
-        "change type when the Type selector is focused",
-    );
-    group(lines, "Text fields");
-    bind(lines, "Arrows/Home/End", "move cursor");
-    bind(lines, "Backspace/Delete", "delete text");
-    bind(lines, "F1", "show keybinds");
-}
-
-fn managed_lines(mode: ManagedMode, lines: &mut Vec<Line<'static>>) {
-    match mode {
-        ManagedMode::Search => esv_search_lines(lines),
-        ManagedMode::EditField => text_modal_lines(
-            lines,
-            "Edit managed field",
-            &[
-                ("Tab/Shift-Tab", "move between fields"),
-                ("Enter", "advance, toggle, or save"),
-                ("Space", "toggle focused checkbox"),
-                ("Esc", "cancel"),
-            ],
-        ),
-        ManagedMode::AddField => text_modal_lines(
-            lines,
-            "Add managed field",
-            &[
-                ("Tab/Shift-Tab", "move between fields"),
-                ("←/→ or Space", "change type or toggles"),
-                ("Enter", "advance or add"),
-                ("Esc", "cancel"),
-            ],
-        ),
-        ManagedMode::AddRelationship => text_modal_lines(
-            lines,
-            "Add relationship",
-            &[
-                ("Tab/Shift-Tab", "move between fields"),
-                ("Enter", "advance, pick target, or add"),
-                ("Space", "toggle focused checkbox"),
-                ("Esc", "cancel"),
-            ],
-        ),
-        ManagedMode::PickRelationshipTarget => text_modal_lines(
-            lines,
-            "Pick target object",
-            &[
-                ("Type", "filter targets"),
-                ("↑/↓", "move selection"),
-                ("Enter", "choose target"),
-                ("Esc", "back"),
-            ],
-        ),
-        ManagedMode::AddHook => text_modal_lines(
-            lines,
-            "Register hook",
-            &[
-                ("↑/↓", "move selection"),
-                ("Enter", "register selected hook"),
-                ("Esc", "cancel"),
-            ],
-        ),
-        ManagedMode::DeleteFieldConfirm => confirm_lines(
-            lines,
-            "Delete managed field",
-            &[("y", "delete field"), ("n/Esc", "cancel")],
-        ),
+fn esv_lines(app: &App, mode: crate::esv::screen::Mode, lines: &mut Vec<Line<'static>>) {
+    if let Some(entries) = crate::esv::screen::help_lines(mode, app) {
+        feature_lines(Some(entries), lines);
     }
 }
 
@@ -430,65 +268,9 @@ fn unlock_lines(app: &App, lines: &mut Vec<Line<'static>>) {
     bind(lines, "F1", "show keybinds");
 }
 
-fn onboard_menu_lines(app: &App, lines: &mut Vec<Line<'static>>) {
-    group(lines, "Add Tenant");
-    bind(lines, "Enter", "choose selected method");
-    bind(lines, "Esc", "cancel");
-    group(lines, "Movement");
-    bind(lines, "↑/↓", "move selection");
-    let count = crate::onboard::screen::menu_option_count(app.has_env_creds);
-    if let Some(range) = number_range(count) {
-        bind(lines, range, "choose numbered method");
-    }
-    bind(lines, "F1/?", "show keybinds");
-}
-
 fn onboard_lines(app: &App, mode: OnboardMode, lines: &mut Vec<Line<'static>>) {
-    match mode {
-        OnboardMode::Menu => onboard_menu_lines(app, lines),
-        OnboardMode::Cookie | OnboardMode::Paste | OnboardMode::LogOnly => {
-            onboard_form_lines(lines)
-        }
-        OnboardMode::UserPass => onboard_userpass_lines(app, lines),
-        OnboardMode::OverwriteConfirm => confirm_lines(
-            lines,
-            "Overwrite existing tenant",
-            &[("y", "overwrite"), ("n/Esc", "cancel")],
-        ),
-    }
-}
-
-fn onboard_form_lines(lines: &mut Vec<Line<'static>>) {
-    group(lines, "Add Tenant form");
-    bind(lines, "Enter", "advance or submit");
-    bind(lines, "Esc", "go back");
-    bind(lines, "Tab/Shift-Tab", "move between fields");
-    bind(
-        lines,
-        "←/→",
-        "change theme when the Theme selector is focused",
-    );
-    group(lines, "Text fields");
-    bind(lines, "Arrows/Home/End", "move cursor");
-    bind(lines, "Backspace/Delete", "delete text");
-    bind(lines, "F1", "show keybinds");
-}
-
-fn onboard_userpass_lines(app: &App, lines: &mut Vec<Line<'static>>) {
-    if app
-        .onboard
-        .up_form
-        .as_ref()
-        .is_some_and(|form| form.pending_prompt.is_some())
-    {
-        group(lines, "Additional input");
-        bind(lines, "Type", "enter requested code");
-        bind(lines, "Backspace", "delete character");
-        bind(lines, "Enter", "submit code");
-        bind(lines, "Esc", "cancel prompt");
-        bind(lines, "F1", "show keybinds");
-    } else {
-        onboard_form_lines(lines);
+    if let Some(entries) = crate::onboard::screen::help_lines(mode, app.has_env_creds) {
+        feature_lines(Some(entries), lines);
     }
 }
 
@@ -521,6 +303,26 @@ fn confirm_lines(
     group(lines, title);
     for (key, desc) in bindings {
         bind(lines, *key, *desc);
+    }
+}
+
+fn feature_lines(
+    entries: Option<Vec<(&'static str, &'static str)>>,
+    lines: &mut Vec<Line<'static>>,
+) {
+    if let Some(entries) = entries {
+        for (key, desc) in entries.iter() {
+            bind(lines, *key, *desc);
+        }
+    }
+}
+
+fn number_range(count: usize) -> Option<String> {
+    let max = count.min(9);
+    match max {
+        0 => None,
+        1 => Some("1".to_string()),
+        _ => Some(format!("1-{max}")),
     }
 }
 
@@ -560,15 +362,6 @@ fn bind(lines: &mut Vec<Line<'static>>, key: impl Into<String>, description: imp
         ),
         Span::raw(description.into()),
     ]));
-}
-
-fn number_range(count: usize) -> Option<String> {
-    let max = count.min(9);
-    match max {
-        0 => None,
-        1 => Some("1".to_string()),
-        _ => Some(format!("1-{max}")),
-    }
 }
 
 fn centered(parent: Rect, width: u16, height: u16) -> Rect {

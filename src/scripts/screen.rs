@@ -93,6 +93,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
     }
 }
 
+pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
+    match mode {
+        Mode::Search => Some(vec![
+            ("Type", "edit search query"),
+            ("Backspace", "delete character"),
+            ("Enter", "keep filter and return to list"),
+            ("Esc", "clear filter and return to list"),
+            ("↑/↓", "move selection"),
+            ("PgUp/PgDn", "move by page"),
+            ("F1", "show keybinds"),
+        ]),
+    }
+}
+
 /// Per-tenant load state for the script candidate list.
 #[derive(Debug)]
 pub enum LoadState {

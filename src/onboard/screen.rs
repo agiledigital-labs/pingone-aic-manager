@@ -225,6 +225,52 @@ pub(crate) fn log_only_menu_number(has_env_creds: bool) -> usize {
     menu_option_count(has_env_creds)
 }
 
+fn number_range(count: usize) -> Option<String> {
+    let max = count.min(9);
+    match max {
+        0 => None,
+        1 => Some("1".to_string()),
+        _ => Some(format!("1-{max}")),
+    }
+}
+
+pub fn help_lines(mode: Mode, has_env_creds: bool) -> Option<Vec<(&'static str, &'static str)>> {
+    match mode {
+        Mode::Menu => {
+            let mut out = vec![
+                ("Enter", "choose selected method"),
+                ("Esc", "cancel"),
+                ("↑/↓", "move selection"),
+            ];
+            let count = menu_option_count(has_env_creds);
+            if let Some(range) = number_range(count) {
+                out.push((Box::leak(range.into_boxed_str()), "choose numbered method"));
+            }
+            out.push(("F1/?", "show keybinds"));
+            Some(out)
+        }
+        Mode::Cookie | Mode::Paste | Mode::LogOnly => Some(vec![
+            ("Enter", "advance or submit"),
+            ("Esc", "go back"),
+            ("Tab/Shift-Tab", "move between fields"),
+            ("←/→", "change theme when the Theme selector is focused"),
+            ("Arrows/Home/End", "move cursor"),
+            ("Backspace/Delete", "delete text"),
+            ("F1", "show keybinds"),
+        ]),
+        Mode::UserPass => Some(vec![
+            ("Enter", "advance or submit"),
+            ("Esc", "quit"),
+            ("Tab/Shift-Tab", "move between fields"),
+            ("←/→ or Space", "change authentication method"),
+            ("Type", "enter password"),
+            ("Backspace", "delete character"),
+            ("F1", "show keybinds"),
+        ]),
+        Mode::OverwriteConfirm => Some(vec![("y", "overwrite"), ("n/Esc", "cancel")]),
+    }
+}
+
 fn path_for_index(idx: usize, has_env_creds: bool) -> Option<OnboardPath> {
     match (idx, has_env_creds) {
         (0, _) => Some(OnboardPath::Cookie),
