@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 29;
+pub const TEMPLATES_VERSION: u32 = 32;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -146,6 +146,10 @@ const MANAGED: &[(&str, &str)] = &[
     (
         "tools/check-types.mjs",
         include_str!("templates/tools/check-types.mjs"),
+    ),
+    (
+        "tools/eslint-openidm-query-filter.mjs",
+        include_str!("templates/tools/eslint-openidm-query-filter.mjs"),
     ),
 ];
 
@@ -470,6 +474,7 @@ mod tests {
         assert!(tree.join("idm/types/endpoint.d.ts").exists());
         assert!(tree.join("idm/sync").is_dir());
         assert!(tree.join("tools/check-types.mjs").exists());
+        assert!(tree.join("tools/eslint-openidm-query-filter.mjs").exists());
         assert!(tree.join("am/eslint.config.js").exists());
         // User files seeded on init.
         assert!(tree.join("package.json").exists());
