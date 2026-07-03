@@ -127,7 +127,9 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
   2026-06-06 — `fixtures/const-dup-across-blocks.script.js` 401s while
   `const-uniq-across-blocks.script.js` runs).
 - Parses but silently `undefined` (worse than a parse error): `const` at top
-  level and `const` declared in a loop body.
+  level and `const` declared anywhere in a loop body, including nested
+  `if`/block bodies (`fixtures/const-in-nested-loop-block.script.js` returned
+  `value: ",,"`, verified 2026-07-03).
 - Bindings present: `require`, `openidm`, `httpClient`, `utils`, `logger`,
   `idRepository`, `nodeState`, `action`, `callbacks`, `callbacksBuilder`,
   `requestHeaders`, `requestParameters`, `requestCookies`, `realm`, `systemEnv`,

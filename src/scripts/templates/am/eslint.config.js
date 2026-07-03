@@ -119,10 +119,70 @@ const noDupConstFunctionScoped = {
   },
 };
 
+const LOOP_NODE_TYPES = new Set([
+  "ForStatement",
+  "ForInStatement",
+  "ForOfStatement",
+]);
+
+function isFunctionNode(node) {
+  return (
+    node &&
+    (node.type === "FunctionDeclaration" ||
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression")
+  );
+}
+
+function isLoopInitializer(node) {
+  const parent = node.parent;
+  return (
+    parent &&
+    ((parent.type === "ForStatement" && parent.init === node) ||
+      (parent.type === "ForInStatement" && parent.left === node) ||
+      (parent.type === "ForOfStatement" && parent.left === node))
+  );
+}
+
+function isInsideLoopBody(node) {
+  for (let current = node.parent; current; current = current.parent) {
+    if (isFunctionNode(current)) return false;
+    if (LOOP_NODE_TYPES.has(current.type)) return true;
+  }
+  return false;
+}
+
+const noConstInLoopBody = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "disallow const inside loop bodies where Rhino reads it back as undefined",
+    },
+    schema: [],
+  },
+  create(context) {
+    return {
+      VariableDeclaration(node) {
+        if (node.kind !== "const") return;
+        if (isLoopInitializer(node)) return;
+        if (!isInsideLoopBody(node)) return;
+
+        context.report({
+          node,
+          message:
+            "'const' inside a loop body parses but reads back as undefined on Rhino 1.7.14, including when nested in an if/block. Use 'var'.",
+        });
+      },
+    };
+  },
+};
+
 // Local plugin housing our runtime-verified custom rules.
 const rhinoPlugin = {
   rules: {
     "no-dup-const": noDupConstFunctionScoped,
+    "no-const-in-loop-body": noConstInLoopBody,
   },
 };
 
@@ -146,12 +206,6 @@ const decisionConstScopeBugs = [
     selector: "Program > VariableDeclaration[kind='const']",
     message:
       "Top-level 'const' parses but reads back as undefined in a scripted-decision script on Rhino 1.7.14. Use 'var' at the top level.",
-  },
-  {
-    selector:
-      ":matches(ForStatement, ForInStatement, ForOfStatement) > BlockStatement > VariableDeclaration[kind='const']",
-    message:
-      "'const' inside a loop body parses but reads back as undefined on Rhino 1.7.14. Use 'var'.",
   },
 ];
 
@@ -216,7 +270,12 @@ export default [
   {
     files: ["*/decision-node/**/*.cjs", "*/decision-node-legacy/**/*.cjs"],
     rules: {
-      "no-restricted-syntax": ["error", ...rhinoParseErrors, ...decisionConstScopeBugs],
+      "rhino/no-const-in-loop-body": "error",
+      "no-restricted-syntax": [
+        "error",
+        ...rhinoParseErrors,
+        ...decisionConstScopeBugs,
+      ],
     },
   },
   // Next-generation scripted decision: decision bindings + library require().
