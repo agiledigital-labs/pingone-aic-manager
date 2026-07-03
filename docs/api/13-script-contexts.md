@@ -1,5 +1,7 @@
 # AM script contexts endpoint (binding metadata)
 
+Implemented in: `src/scripts/templates/`
+
 Verified against the sandbox tenant 2026-06-04.
 
 The AM script editor populates its per-context IntelliSense from a **contexts**

@@ -1,5 +1,7 @@
 # 14 — AM identity attributes (the `identity` / `idRepository` binding)
 
+Implemented in: `src/scripts/templates/`
+
 ## Purpose
 AM-side scripts (OIDC claims, SAML mappers, scripted decision nodes) read
 managed-user profile data through an identity binding keyed by **AM attribute

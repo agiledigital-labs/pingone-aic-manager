@@ -1,5 +1,7 @@
 # IDM sync mappings (`config/sync`) + mapping script bindings
 
+Implemented in: `src/scripts/`
+
 ## Purpose
 
 IDM **sync mappings** reconcile a source resource (a connector

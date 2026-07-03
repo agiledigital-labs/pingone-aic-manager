@@ -1,5 +1,9 @@
 # 08 — Logs (`/monitoring/logs`)
 
+Implemented in: `src/logs/`
+
+Implemented in: `src/logs/`
+
 ## Purpose
 
 Fetch tenant audit + debug logs from AM and IDM. Stretch goal of aic-edit ("log
@@ -306,10 +310,7 @@ user explicitly syncs `--source idm-core` or `--source am-core`.
 - Ping docs:
   <https://docs.pingidentity.com/pingoneaic/latest/tenants/audit-debug-logs-pull.html>
 
-## Open questions
+## See also
 
-- **Compression strategy.** For the local-sync feature: per-source append-only
-  parquet/zstd files keyed by hour, with a column store for fast `payload/...`
-  filtering. Not yet designed — see future Step 3+ plan.
-- **Does the tail endpoint support server-sent events / chunked transfer**, or
-  is it just long-poll? frodo-lib treats it as long-poll. Confirm.
+- [`docs/logs-store.md`](../logs-store.md) — local DuckDB sync/search/compact
+  and journey rollup implementation details.

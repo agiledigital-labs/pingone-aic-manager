@@ -116,6 +116,40 @@ history and `ps`. `create` is create-only (PUT); change a value with
 
 ---
 
+## `aic logs` — fetch, sync, search, compact
+
+Logs use the tenant's separate API-key auth plane. `key create` mints a key
+pair only while an admin-user session is available; the service-account bearer
+cannot mint or read log keys.
+
+### Key management
+
+| Command | What it does |
+|---|---|
+| `aic logs key set [--tenant <name>] [--id <api_key_id>]` | Store or replace the log API key pair in the vault. Prompts for the secret. |
+| `aic logs key show [--tenant <name>]` | Show whether a log API key pair is stored, and print the key id. |
+| `aic logs key rm [--tenant <name>]` | Remove the stored log API key pair. |
+| `aic logs key create [--tenant <name>] [--cookie-name <name>]` | Mint a new key pair from an admin session, then store it. Prompts for the AM session cookie value if needed. |
+
+### Remote fetch
+
+| Command | What it does |
+|---|---|
+| `aic logs sources [--tenant <name>] [--json] [--output <path>]` | List available log source ids. `--json` prints the list as JSON; `--output` writes it to a file. |
+| `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>]` | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list. |
+| `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]` | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter. |
+| `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]` | Run a CREST filter over the logs API. Defaults to the most recent 24 hours. |
+
+### Local store
+
+| Command | What it does |
+|---|---|
+| `aic logs search [--tenant <name>] [--tx <id>] [--source <source>] [--event <name>] [--user <id>] [--level <level>] [--begin <iso>] [--end <iso>] [--contains <text>] [--limit <n>] [--count] [--output <path>]` | Query the synced DuckDB store offline. `--count` prints only the match count; `--output` writes JSON results. |
+| `aic logs sync [--tenant <name>] [--source <csv>] [--since <iso>]` | Incrementally sync log sources into the local DuckDB store. Defaults to the curated source list when `--source` is omitted. |
+| `aic logs compact [--tenant <name>] [--retain-months <n>]` | Roll up journeys from `am-authentication` and prune raw events older than the retention window. Default retention is 3 months. |
+
+---
+
 ## `aic managed` — IDM managed-object schema
 
 Inspects the per-tenant IDM managed-object **schema** (not the records — for
@@ -236,7 +270,7 @@ bodies. Four script "kinds" sit behind one engine:
 ### The `<ref>` model
 
 Scripts are addressed by a **full-name** `<namespace>/<name>`, where the
-namespace is `alpha`/`bravo` (AM realm), `endpoint`, `schedule`, or `managed`
+namespace is `alpha`/`bravo` (AM realm), `endpoint`, `schedule`, `sync`, or `managed`
 (hook name is `<object>.<hook>`, e.g. `managed/alpha_user.onCreate`). So you
 never pass `--kind`/`--realm` to script commands. A bare `<name>` resolves its
 namespace from your current directory. A bare namespace (`bravo`, `endpoint`)

@@ -28,6 +28,7 @@ Working today, via the CLI and (mostly) the TUI:
 - **OAuth2 clients** — list, pull, push, delete.
 - **Journeys** (auth trees) — list, pull/push as JSON, inspect node types.
 - **Secret mappings** — re-point AM secret labels at ESV secrets.
+- **Logs** — fetch, sync, search, compact, and roll up journeys from audit/debug logs.
 - **Fast environment switching** with per-env theme colours
   (sandbox=green, development=blue, staging=yellow, production=red + ⚠) and an
   automatic **"you're writing to PROD" guard** on every mutation.

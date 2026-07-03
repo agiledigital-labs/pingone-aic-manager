@@ -1,5 +1,7 @@
 # Script Bindings & Runtime Feature Matrix
 
+Implemented in: `src/scripts/templates/`
+
 Feature matrix backing the script-linting/type-update work
 (`script-linting-uplift-plan.md`). It records, per AM/IDM script family, which
 language features and bindings are available, **and how we know** — so the

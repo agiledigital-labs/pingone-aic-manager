@@ -1,5 +1,7 @@
 # 03 — ESVs (Environment Secrets & Variables)
 
+Implemented in: `src/esv/`
+
 ## Purpose
 ESVs are the AIC-native way to inject environment-specific config (URLs,
 credentials, feature flags) into your tenant. Variables are mutable scalars;

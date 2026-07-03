@@ -1,5 +1,7 @@
 # 02 — Headers & API versioning
 
+Implemented in: `src/aic/`
+
 ## Purpose
 AIC uses CREST (Common REST) versioning via the `Accept-API-Version` header.
 Different endpoint families need different protocol/resource versions. Sending

@@ -1,5 +1,7 @@
 # 15 — Secret mappings (ESV secret → AM secret label)
 
+Implemented in: `src/secretmap/`
+
 ## Purpose
 
 AM resolves cryptographic material (OAuth2 client secrets, OIDC signing/encryption

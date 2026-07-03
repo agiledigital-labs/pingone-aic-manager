@@ -1,5 +1,7 @@
 # 07 — Secret stores (collection API NOT AVAILABLE; per-type subpaths ARE)
 
+Implemented in: — (collection API is forbidden; per-type secret mappings live in `src/secretmap/`)
+
 > **Correction (2026-06-17):** the original blanket "secret stores are entirely
 > disabled" claim was over-broad — it was tested only against the *collection*
 > calls below. The **per-store-type subpaths are open** and that is where ESV

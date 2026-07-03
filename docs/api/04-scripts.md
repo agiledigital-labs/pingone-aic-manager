@@ -1,5 +1,7 @@
 # 04 — Scripts
 
+Implemented in: `src/scripts/`
+
 ## Purpose
 Scripts are JavaScript (and rarely Groovy) snippets that run inside AM during
 authentication, token issuance, OIDC claims, SAML mapping, policy decisions,
