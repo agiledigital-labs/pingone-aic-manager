@@ -159,6 +159,80 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     }
 }
 
+pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static str)>> {
+    match mode {
+        Mode::Search => Some(vec![
+            ("Enter", "keep filter"),
+            ("Esc", "clear + exit"),
+            ("↑/↓", "move selection"),
+            ("PgUp/PgDn", "move by page"),
+            ("F1", "show keybinds"),
+        ]),
+        Mode::EditField => {
+            let mut out = vec![("Tab", "navigate")];
+            match app.managed.editing.as_ref().map(|edit| edit.focused) {
+                Some(EditFieldFocus::Save) => out.push(("Enter", "save")),
+                Some(focus) if focus.is_bool() => {
+                    out.push(("Space", "toggle"));
+                    out.push(("Enter", "toggle"));
+                }
+                Some(_) => out.push(("Enter", "next")),
+                None => {}
+            }
+            out.push(("Esc", "cancel"));
+            Some(out)
+        }
+        Mode::AddField => {
+            let mut out = vec![("Tab", "navigate")];
+            match app.managed.add_field.as_ref().map(|draft| draft.focused) {
+                Some(AddFieldFocus::Save) => out.push(("Enter", "add")),
+                Some(AddFieldFocus::Type) => out.push(("←/→", "change type")),
+                Some(focus) if focus.is_bool() => out.push(("Space", "toggle")),
+                Some(_) => out.push(("Enter", "next")),
+                None => {}
+            }
+            out.push(("Esc", "cancel"));
+            Some(out)
+        }
+        Mode::AddRelationship => {
+            let mut out = vec![("Tab", "navigate")];
+            match app
+                .managed
+                .add_relationship
+                .as_ref()
+                .map(|draft| draft.focused)
+            {
+                Some(AddRelationshipFocus::Save) => out.push(("Enter", "add")),
+                Some(AddRelationshipFocus::Target) => out.push(("Enter", "pick target")),
+                Some(focus) if focus.is_bool() => out.push(("Space", "toggle")),
+                Some(_) => out.push(("Enter", "next")),
+                None => {}
+            }
+            out.push(("Esc", "cancel"));
+            Some(out)
+        }
+        Mode::PickRelationshipTarget => Some(vec![
+            ("Enter", "choose target"),
+            ("↑/↓", "navigate"),
+            ("Esc", "back"),
+        ]),
+        Mode::AddHook => Some(vec![
+            ("Enter", "register hook"),
+            ("↑/↓", "navigate"),
+            ("Esc", "cancel"),
+        ]),
+        Mode::DeleteFieldConfirm => Some(vec![("y", "delete"), ("n/Esc", "cancel")]),
+    }
+}
+
+pub fn editing_field_active(app: &App) -> bool {
+    app.managed.editing.is_some()
+}
+
+pub fn add_field_active(app: &App) -> bool {
+    app.managed.add_field.is_some()
+}
+
 pub fn resume_mode_after_prod_cancel(app: &App) -> Option<Mode> {
     if app.managed.editing.is_some() {
         Some(Mode::EditField)

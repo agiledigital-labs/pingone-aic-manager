@@ -353,6 +353,61 @@ pub fn new_item(app: &mut App) {
     start_create(app);
 }
 
+pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static str)>> {
+    match mode {
+        Mode::Search => Some(vec![
+            ("Type", "edit search query"),
+            ("Backspace", "delete character"),
+            ("Enter", "keep filter and return to list"),
+            ("Esc", "clear filter and return to list"),
+            ("↑/↓", "move selection"),
+            ("PgUp/PgDn", "move by page"),
+            ("F1", "show keybinds"),
+        ]),
+        Mode::Edit => {
+            let mut out = vec![("Tab", "navigate")];
+            let focused = app.esv.editing.as_ref().map(|edit| edit.focused);
+            match focused {
+                Some(EditField::Id | EditField::Description | EditField::Type) => {
+                    out.push(("Enter", "next"));
+                }
+                Some(EditField::Save) => out.push(("Enter", "save")),
+                _ => {}
+            }
+            if focused == Some(EditField::Type) {
+                out.push(("←/→", "change type"));
+            }
+            out.push(("Esc", "cancel"));
+            Some(out)
+        }
+        Mode::RestartConfirm => Some(vec![("y", "restart tenant runtime"), ("n/Esc", "cancel")]),
+        Mode::DeleteConfirm => Some(vec![("y", "delete variable"), ("n/Esc", "cancel")]),
+    }
+}
+
+pub fn mappings_subview_active(app: &App) -> bool {
+    app.active_view == crate::app::View::Esvs
+        && app.esv.view.clamp(
+            app.active_tenant()
+                .is_some_and(|tenant| tenant.allows_secret_mappings()),
+        ) == EsvView::Mappings
+}
+
+pub fn edit_field_active(app: &App) -> bool {
+    app.esv.editing.is_some()
+}
+
+pub fn current_view(app: &App) -> EsvView {
+    app.esv.view.clamp(
+        app.active_tenant()
+            .is_some_and(|tenant| tenant.allows_secret_mappings()),
+    )
+}
+
+pub fn edit_focused(app: &App) -> Option<EditField> {
+    app.esv.editing.as_ref().map(|edit| edit.focused)
+}
+
 /// Discard the in-flight edit and return to preview mode.
 pub fn cancel_edit(app: &mut App) {
     app.esv.editing = None;

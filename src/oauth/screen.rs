@@ -103,6 +103,28 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     }
 }
 
+pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
+    match mode {
+        Mode::Normal => Some(vec![
+            ("↑/↓", "move selection"),
+            ("Enter", "load selected client"),
+            ("^U/^D", "scroll detail"),
+            ("R", "refresh"),
+            ("Ctrl-P", "open function selector"),
+            ("Esc", "back"),
+        ]),
+        Mode::Search => Some(vec![
+            ("Type", "edit search query"),
+            ("Backspace", "delete character"),
+            ("Enter", "keep filter and return to list"),
+            ("Esc", "clear filter and return to list"),
+            ("↑/↓", "move selection"),
+            ("PgUp/PgDn", "move by page"),
+            ("F1", "show keybinds"),
+        ]),
+    }
+}
+
 pub fn refresh(app: &mut App, force: bool) {
     if force {
         if let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) {
@@ -176,6 +198,13 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) {
         KeyCode::Up | KeyCode::Char('k') => crate::app::keymap::move_selection(app, -1),
         KeyCode::Down | KeyCode::Char('j') => crate::app::keymap::move_selection(app, 1),
         KeyCode::Enter => load_selected(app),
+        KeyCode::Char('p')
+            if key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
+            crate::app::selector::open(app);
+        }
         KeyCode::Char('R') => refresh(app, true),
         _ => {}
     }

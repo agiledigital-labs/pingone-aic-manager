@@ -197,6 +197,31 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     }
 }
 
+pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
+    match mode {
+        Mode::Search => Some(vec![
+            ("Enter", "keep filter"),
+            ("Esc", "clear + exit"),
+            ("↑/↓", "move selection"),
+            ("PgUp/PgDn", "move by page"),
+            ("F1", "show keybinds"),
+        ]),
+        Mode::PickLabel => Some(vec![
+            ("Type", "filter unmapped labels"),
+            ("↑/↓", "move selection"),
+            ("Enter", "choose label"),
+            ("Esc", "cancel"),
+        ]),
+        Mode::PickAlias => Some(vec![
+            ("Type", "filter ESV secrets"),
+            ("↑/↓", "move selection"),
+            ("Enter", "choose alias"),
+            ("Esc", "cancel"),
+        ]),
+        Mode::DeleteConfirm => Some(vec![("y", "remove"), ("n/Esc", "cancel")]),
+    }
+}
+
 pub fn is_available(app: &App) -> bool {
     app.active_tenant()
         .is_some_and(|tenant| tenant.allows_secret_mappings())

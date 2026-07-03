@@ -29,6 +29,18 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     }
 }
 
+pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
+    match mode {
+        Mode::Search => Some(vec![
+            ("Enter", "keep filter"),
+            ("Esc", "back"),
+            ("↑/↓", "move selection"),
+            ("PgUp/PgDn", "move by page"),
+            ("F1", "show keybinds"),
+        ]),
+    }
+}
+
 pub fn refresh(app: &mut App, force: bool) {
     crate::idmstore::ops::refresh(app, force);
 }
