@@ -61,8 +61,8 @@ Practical consequence for this work:
 Applies to every script family. **All rows runtime-verified 2026-06-03** (the
 duplicate-`const`-per-function row added 2026-06-06;
 `String.prototype.normalize` row added 2026-07-02; nested-loop-block `const`
-probe added 2026-07-03) via the next-gen scripted decision probe
-(`scripts/rhino-script-tester/fixtures/`, results in
+and while/do-while loop-body `const` probes added 2026-07-03) via the next-gen
+scripted decision probe (`scripts/rhino-script-tester/fixtures/`, results in
 `tmp/rhino-script-tester/probe-results.json`). Probe semantics: a fixture that
 PARSES + RUNS returns a `HiddenValueCallback` (`HTTP 200`); a fixture that fails
 to PARSE returns no callback and the journey fails (`HTTP 401`, confirmed via
@@ -75,7 +75,7 @@ logs, e.g. object shorthand →
 | `const` in a function body                                                                                                       | **V**  | ✅ works, correct value                                                                                        | **allow**                                           |
 | same `const` name twice in one function (separate, non-nested blocks)                                                            | **V**  | ❌ parse error (Rhino scopes `const` to the function for redeclaration)                                        | **ban (all AM) — custom `rhino/no-dup-const` rule** |
 | `const` at top level                                                                                                             | **V**  | ⚠️ parses but value reads back `undefined` — silent data bug                                                   | **ban** (all AM)                                    |
-| `const` in a loop body, including nested blocks such as `if` inside the loop                                                     | **V**  | ⚠️ parses but value reads back `undefined` — silent data bug (`value: ",,"` for the nested-block probe)        | **ban**                                             |
+| `const` in a `for`/`for-in`/`for-of`/`while`/`do-while` loop body, including nested blocks such as `if` inside the loop          | **V**  | ⚠️ parses but value reads back `undefined` — silent data bug (`value: ",,"` for nested-block/while/do-while probes) | **ban**                                             |
 | `const` in `for` init                                                                                                            | **V**  | ❌ parse error                                                                                                 | ban                                                 |
 | `const` in `for-in`                                                                                                              | **V**  | ❌ parse error                                                                                                 | ban                                                 |
 | `const` in `for-of`                                                                                                              | **V**  | ❌ parse error                                                                                                 | ban                                                 |
@@ -93,8 +93,9 @@ logs, e.g. object shorthand →
 > `const` _inside functions_ must stay **allowed** (it works and is idiomatic).
 > The top-level/loop-body `const` bans should apply to **all** AM scripted
 > decision scripts, not just the old `src` glob, because the failure is a silent
-> `undefined` (worse than a parse error). Loop-body means any block depth inside
-> the loop body, stopping at nested function boundaries. **Add a
+> `undefined` (worse than a parse error). Loop-body means `for`/`for-in`/`for-of`/
+> `while`/`do-while` bodies at any block depth, stopping at nested function
+> boundaries. **Add a
 > default-parameters ban** — it is a parse error and the current config misses
 > it. Array destructuring was not probed separately but object destructuring
 > fails, so treat both as banned.

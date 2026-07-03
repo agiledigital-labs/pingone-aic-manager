@@ -129,7 +129,9 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
 - Parses but silently `undefined` (worse than a parse error): `const` at top
   level and `const` declared anywhere in a loop body, including nested
   `if`/block bodies (`fixtures/const-in-nested-loop-block.script.js` returned
-  `value: ",,"`, verified 2026-07-03).
+  `value: ",,"`; `fixtures/const-in-while-body.script.js` and
+  `fixtures/const-in-do-while-body.script.js` also returned `value: ",,"`,
+  verified 2026-07-03).
 - Bindings present: `require`, `openidm`, `httpClient`, `utils`, `logger`,
   `idRepository`, `nodeState`, `action`, `callbacks`, `callbacksBuilder`,
   `requestHeaders`, `requestParameters`, `requestCookies`, `realm`, `systemEnv`,
