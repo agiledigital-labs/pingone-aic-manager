@@ -176,6 +176,19 @@ new things are learned.
   `/realms/root/realms/{realm}` segment, or does the hostname imply the realm?
   Not testable in sandbox (no custom domain configured).
 
+### Q13. IDM script engine — does `openidm.query` take a `fields` argument? (2026-07-03)
+
+- Ping docs claim `openidm.query(resourceName, params, fields)` in IDM-side
+  scripts (endpoint/schedule/hooks), but we have never exercised that arity. The
+  workspace typings deliberately omit it (`idm/types/common.d.ts` `query` has no
+  `fields`; the generated managed overloads match). Verify by pushing a custom
+  endpoint script that calls
+  `openidm.query("managed/alpha_user", {_queryFilter: "true"}, ["userName"])`
+  and checking whether results are trimmed to the requested field. If verified,
+  add `fields` to the IDM `query` fallback (conditional `managed/…` pattern, see
+  nextgen-common.d.ts) and to `render_openidm_overloads` (Engine::Idm), and bump
+  `TEMPLATES_VERSION`.
+
 ---
 
 ## Contradictions discovered during research (for future-Claude awareness)

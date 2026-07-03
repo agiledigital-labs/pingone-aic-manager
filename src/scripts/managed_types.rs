@@ -23,6 +23,16 @@ interface QueryResult<T> {
   totalPagedResults: number;
   remainingPagedResults: number;
 }
+
+// Field-spec for `fields` arguments (maps to CREST `_fields`): a schema
+// property, `*` (all non-relationship fields), or a relationship path such
+// as `manager/displayName` or `_meta/lastChanged` (path + `*` syntax
+// verified live — docs/api/10-managed-objects.md).
+type ManagedField<T> =
+  | (keyof T & string)
+  | "*"
+  | `${(keyof T & string) | "_meta"}/${string}`
+  | "_meta";
 "#;
 
 /// Workspace-relative path -> file contents for every generated managed type.
@@ -97,10 +107,10 @@ fn render_openidm_overloads(
         let interface_name = pascal_case(name);
         match engine {
             Engine::Idm => out.push_str(&format!(
-                "  read(resourceName: `managed/{name}/${{string}}`, params?: Record<string, string> | null, fields?: string[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }}): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: Record<string, string> | null): {interface_name};\n  update(resourceName: `managed/{name}/${{string}}`, revision: string | null, content: Partial<{interface_name}>, params?: Record<string, string> | null): {interface_name};\n  patch(resourceName: `managed/{name}/${{string}}`, revision: string | null, patch: Patch[]): {interface_name};\n  delete(resourceName: `managed/{name}/${{string}}`, revision: string | null, params?: Record<string, string> | null): {interface_name};\n"
+                "  read(resourceName: `managed/{name}/${{string}}`, params?: Record<string, string> | null, fields?: ManagedField<{interface_name}>[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }}): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: Record<string, string> | null): {interface_name};\n  update(resourceName: `managed/{name}/${{string}}`, revision: string | null, content: Partial<{interface_name}>, params?: Record<string, string> | null): {interface_name};\n  patch(resourceName: `managed/{name}/${{string}}`, revision: string | null, patch: Patch[]): {interface_name};\n  delete(resourceName: `managed/{name}/${{string}}`, revision: string | null, params?: Record<string, string> | null): {interface_name};\n"
             )),
             Engine::Am => out.push_str(&format!(
-                "  read(resourceName: `managed/{name}/${{string}}`, params?: object, fields?: string[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }} | object, fields?: string[]): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: object, fields?: string[]): {interface_name};\n  update(resourceName: `managed/{name}/${{string}}`, rev: string | null, value: Partial<{interface_name}>, params?: object, fields?: string[]): {interface_name};\n  patch(resourceName: `managed/{name}/${{string}}`, rev: string | null, patch: Patch[], params?: object, fields?: string[]): {interface_name};\n  delete(resourceName: `managed/{name}/${{string}}`, rev: string | null, params?: object, fields?: string[]): {interface_name};\n"
+                "  read(resourceName: `managed/{name}/${{string}}`, params?: object, fields?: ManagedField<{interface_name}>[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }} | object, fields?: ManagedField<{interface_name}>[]): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: object, fields?: ManagedField<{interface_name}>[]): {interface_name};\n  update(resourceName: `managed/{name}/${{string}}`, rev: string | null, value: Partial<{interface_name}>, params?: object, fields?: ManagedField<{interface_name}>[]): {interface_name};\n  patch(resourceName: `managed/{name}/${{string}}`, rev: string | null, patch: Patch[], params?: object, fields?: ManagedField<{interface_name}>[]): {interface_name};\n  delete(resourceName: `managed/{name}/${{string}}`, rev: string | null, params?: object, fields?: ManagedField<{interface_name}>[]): {interface_name};\n"
             )),
         }
     }
@@ -388,7 +398,13 @@ mod tests {
         let am = generated_contents(&schema, "am/types/managed/openidm-overloads.d.ts");
 
         assert!(idm.contains("read(resourceName: `managed/alpha_user/${string}`"));
-        assert!(idm.contains("query(resourceName: \"managed/alpha_user\""));
+        assert!(idm.contains("fields?: ManagedField<AlphaUser>[]"));
+        assert!(idm.contains(
+            "query(resourceName: \"managed/alpha_user\", params: { _queryFilter: string }): QueryResult<AlphaUser>;"
+        ));
+        assert!(!idm.contains(
+            "query(resourceName: \"managed/alpha_user\", params: { _queryFilter: string }, fields?:"
+        ));
         assert!(idm.contains(
             "create(resourceName: \"managed/alpha_user\", newResourceId: string | null, content: Partial<AlphaUser>, params?: Record<string, string> | null): AlphaUser;"
         ));
@@ -403,18 +419,19 @@ mod tests {
         ));
         assert!(idm.contains("QueryResult<AlphaUser>"));
         assert!(am.contains("read(resourceName: `managed/alpha_user/${string}`"));
+        assert!(am.contains("fields?: ManagedField<AlphaUser>[]"));
         assert!(am.contains("query(resourceName: \"managed/alpha_user\""));
         assert!(am.contains(
-            "create(resourceName: \"managed/alpha_user\", newResourceId: string | null, content: Partial<AlphaUser>, params?: object, fields?: string[]): AlphaUser;"
+            "create(resourceName: \"managed/alpha_user\", newResourceId: string | null, content: Partial<AlphaUser>, params?: object, fields?: ManagedField<AlphaUser>[]): AlphaUser;"
         ));
         assert!(am.contains(
-            "update(resourceName: `managed/alpha_user/${string}`, rev: string | null, value: Partial<AlphaUser>, params?: object, fields?: string[]): AlphaUser;"
+            "update(resourceName: `managed/alpha_user/${string}`, rev: string | null, value: Partial<AlphaUser>, params?: object, fields?: ManagedField<AlphaUser>[]): AlphaUser;"
         ));
         assert!(am.contains(
-            "patch(resourceName: `managed/alpha_user/${string}`, rev: string | null, patch: Patch[], params?: object, fields?: string[]): AlphaUser;"
+            "patch(resourceName: `managed/alpha_user/${string}`, rev: string | null, patch: Patch[], params?: object, fields?: ManagedField<AlphaUser>[]): AlphaUser;"
         ));
         assert!(am.contains(
-            "delete(resourceName: `managed/alpha_user/${string}`, rev: string | null, params?: object, fields?: string[]): AlphaUser;"
+            "delete(resourceName: `managed/alpha_user/${string}`, rev: string | null, params?: object, fields?: ManagedField<AlphaUser>[]): AlphaUser;"
         ));
         assert!(am.contains("QueryResult<AlphaUser>"));
         assert!(!idm.contains("action("));
@@ -438,6 +455,7 @@ mod tests {
         assert_eq!(files[0].0, PathBuf::from("idm/types/managed/_shared.d.ts"));
         assert!(files[0].1.contains("interface RelationshipRef"));
         assert!(files[0].1.contains("interface QueryResult<T>"));
+        assert!(files[0].1.contains("type ManagedField<T>"));
         assert!(files.iter().any(|(path, _)|
             path == &PathBuf::from("idm/types/managed/openidm-overloads.d.ts")));
         assert!(
@@ -445,10 +463,9 @@ mod tests {
                 .iter()
                 .any(|(path, _)| path == &PathBuf::from("am/types/managed/openidm-overloads.d.ts"))
         );
-        assert!(
-            generated_contents(&schema, "am/types/managed/_shared.d.ts")
-                .contains("interface QueryResult<T>")
-        );
+        let am_shared = generated_contents(&schema, "am/types/managed/_shared.d.ts");
+        assert!(am_shared.contains("interface QueryResult<T>"));
+        assert!(am_shared.contains("type ManagedField<T>"));
         assert!(
             files
                 .iter()
@@ -458,5 +475,6 @@ mod tests {
         let shared_only = generate(&json!({})).unwrap();
         assert_eq!(shared_only.len(), 4);
         assert!(shared_only[0].1.contains("interface RelationshipRef"));
+        assert!(shared_only[0].1.contains("type ManagedField<T>"));
     }
 }
