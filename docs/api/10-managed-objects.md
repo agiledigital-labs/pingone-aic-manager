@@ -254,6 +254,11 @@ objects may return `totalPagedResults: -1` with policy `NONE` even when
 policy `ESTIMATE`. Treat counts as optional progress hints only. Cursor walks
 end on an absent/empty cookie, including an empty first page.
 
+**Query-filter negation (verified 2026-07-03).** AIC accepts symbolic CREST
+negation with `!`, for example `_queryFilter=!(/description eq "lkj")`.
+It rejects the word form `not (/description eq "lkj")` with HTTP 400
+`"A value could not be parsed as a valid query filter"`.
+
 ## Quirks
 
 - **PUT is "replace entire schema"** — there's no partial patch. Read,
@@ -285,7 +290,8 @@ end on an absent/empty cookie, including an empty first page.
   `_meta`→`<type>meta` sidecar with `lastChanged/createDate`, queryable/sortable
   on the sidecar but **not** via parent traversal — `_meta/...` filter → 0, sort
   → 500; `alpha_rolemeta` 404 / non-user objects have no sidecar; cursor paging
-  works and is the required bulk-read path; `EXACT` count policy). 2026-06-14
+  works and is the required bulk-read path; `EXACT` count policy). 2026-07-03
+  (query-filter negation: `!` accepted, word `not` rejected). 2026-06-14
   (managed-config write behaviour, custom object/property/relationship/hook
   round-trips, no reverse-property validation); 2026-06-13
   (hook inventory, hook bindings probe, schema PUT round-trip + application
@@ -296,7 +302,9 @@ end on an absent/empty cookie, including an empty first page.
   `validate: true` + dangling `reversePropertyName` (200, stored);
   `PUT /openidm/managed/alpha_lock/{id}` + `If-None-Match: *` (201/412);
   bare `PUT` update (200, fires onUpdate); `DELETE` (200);
-  `GET …?_queryFilter=true&_fields=_id` (200).
+  `GET …?_queryFilter=true&_fields=_id` (200);
+  `GET …?_queryFilter=!(/description eq "lkj")&_pageSize=1` (200);
+  `GET …?_queryFilter=not (/description eq "lkj")&_pageSize=1` (400).
 
 ## Source citations
 

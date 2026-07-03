@@ -97,6 +97,16 @@ new things are learned.
   progress hint.
 - **Documented in:** `10-managed-objects.md`.
 
+### Managed query-filter negation spelling (resolved 2026-07-03)
+
+- **Status:** Resolved.
+- **Answer:** Managed-object `_queryFilter` accepts symbolic negation with `!`,
+  for example `!(/description eq "lkj")`. The word form
+  `not (/description eq "lkj")` is rejected with HTTP 400.
+- **Implication:** Static query-filter validation should accept `!` but must not
+  treat `not` as an alias.
+- **Documented in:** `10-managed-objects.md`.
+
 ### Journey `_rev` and write semantics (resolved 2026-06-14)
 
 - **Status:** Resolved.
