@@ -108,6 +108,10 @@ declare const utils: Utils;
 // Resource names are plain strings (e.g. "managed/alpha_user",
 // "managed/alpha_user/<id>", "internal/role/<id>"). Overloads mirror the binding
 // metadata: trailing params (`params`, `fields`) are optional.
+//
+// `fields` on `managed/…` paths is typed by the generated
+// `types/managed/openidm-overloads.d.ts`; the fallback deliberately rejects it
+// so typoed managed fields fail instead of matching a generic overload.
 
 type Patch =
   | {
@@ -130,30 +134,43 @@ type QueryResponse = {
 };
 
 interface OpenIdm {
-  read(resourceName: string, params?: object, fields?: string[]): any;
-  create(
-    resourceName: string,
+  read<R extends string>(
+    resourceName: R,
+    params?: object,
+    fields?: R extends `managed/${string}` ? never : string[]
+  ): any;
+  create<R extends string>(
+    resourceName: R,
     newResourceId: string | null,
     content: object,
     params?: object,
-    fields?: string[]
+    fields?: R extends `managed/${string}` ? never : string[]
   ): any;
-  update(
-    id: string,
+  update<R extends string>(
+    id: R,
     rev: string | null,
     value: object,
     params?: object,
-    fields?: string[]
+    fields?: R extends `managed/${string}` ? never : string[]
   ): any;
-  patch(
-    resourceName: string,
+  patch<R extends string>(
+    resourceName: R,
     rev: string | null,
     patch: Patch[],
     params?: object,
-    fields?: string[]
+    fields?: R extends `managed/${string}` ? never : string[]
   ): any;
-  delete(resourceName: string, rev: string | null, params?: object, fields?: string[]): any;
-  query(resourceName: string, params: { _queryFilter: string } | object, fields?: string[]): QueryResponse;
+  delete<R extends string>(
+    resourceName: R,
+    rev: string | null,
+    params?: object,
+    fields?: R extends `managed/${string}` ? never : string[]
+  ): any;
+  query<R extends string>(
+    resourceName: R,
+    params: { _queryFilter: string } | object,
+    fields?: R extends `managed/${string}` ? never : string[]
+  ): QueryResponse;
   action(
     resource: string,
     actionName: string,

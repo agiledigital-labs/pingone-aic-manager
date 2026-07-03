@@ -56,10 +56,10 @@ declare const identityServer: {
 };
 
 interface OpenIdm {
-  read(
-    path: string,
+  read<R extends string>(
+    path: R,
     params?: Record<string, string> | null,
-    fields?: string[]
+    fields?: R extends `managed/${string}` ? never : string[]
   ): any;
   query(path: string, params: { _queryFilter: string }): any;
   create(
