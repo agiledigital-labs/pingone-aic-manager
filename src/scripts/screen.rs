@@ -23,6 +23,39 @@ use crate::scripts::sync::{self, Candidate, LocalState, PushOutcome, Selector};
 use crate::scripts::{self as script, Kind};
 use crate::tui::widgets::LineEditor;
 
+#[derive(Debug)]
+pub enum ProdAction {
+    Push {
+        tenant: String,
+        kind: Kind,
+        realm: String,
+        name: String,
+        full: String,
+    },
+}
+
+pub fn execute_prod_action(app: &mut App, action: ProdAction) {
+    match action {
+        ProdAction::Push {
+            tenant,
+            kind,
+            realm,
+            name,
+            full,
+        } => execute_push(app, tenant, kind, realm, name, full, true),
+    }
+}
+
+pub fn resume_mode(_app: &App, _action: &ProdAction) -> InputMode {
+    InputMode::Normal
+}
+
+pub fn describe_prod_action(action: &ProdAction) -> Option<String> {
+    match action {
+        ProdAction::Push { full, .. } => Some(format!("push script {full}")),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Search,
@@ -454,13 +487,13 @@ pub fn push_selected(app: &mut App) {
         .active_tenant()
         .is_some_and(|t| t.theme == TenantTheme::Production);
     if is_prod {
-        app.prod_confirm.pending = Some(PendingProdAction::ScriptPush {
+        app.prod_confirm.pending = Some(PendingProdAction::Scripts(ProdAction::Push {
             tenant,
             kind: c.kind,
             realm,
             name: c.name.clone(),
             full,
-        });
+        }));
         app.input_mode = InputMode::ProdConfirm;
         return;
     }

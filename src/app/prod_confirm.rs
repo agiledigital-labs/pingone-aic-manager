@@ -7,52 +7,15 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::event::ToastKind;
 use crate::app::{App, InputMode};
-use crate::config::tenant::Tenant;
-use crate::logs::LogKeyPair;
-
 #[derive(Debug)]
 pub enum PendingProdAction {
-    SaveTenant {
-        tenant: Tenant,
-        jwk: Option<serde_json::Value>,
-        log_key: Option<LogKeyPair>,
-    },
-    EsvSave(crate::esv::state::SavePlan),
-    EsvDelete(crate::esv::state::DeletePlan),
-    EsvUndo(crate::undo::UndoId),
-    EsvRestart {
-        tenant_name: String,
-    },
-    SecretsCreate(crate::secrets::state::CreatePlan),
-    SecretsAddVersion(crate::secrets::state::VersionAddPlan),
-    SecretDelete(crate::secrets::state::DeletePlan),
-    SecretSetDescription(crate::secrets::state::SetDescriptionPlan),
-    SecretVersionStatus {
-        tenant: String,
-        id: String,
-        version: String,
-        status: String,
-    },
-    SecretVersionDestroy {
-        tenant: String,
-        id: String,
-        version: String,
-    },
-    ManagedUpdate(crate::managed::ops::ObjectReplacePlan),
-    ManagedUndo(crate::undo::UndoId),
-    SecretMappingReplace(crate::secretmap::ops::AliasReplacePlan),
-    SecretMappingDelete(crate::secretmap::ops::MappingDeletePlan),
-    ScriptPush {
-        tenant: String,
-        kind: crate::scripts::Kind,
-        realm: String,
-        name: String,
-        full: String,
-    },
-    MappingRecon {
-        tenant: String,
-        mapping: String,
-    },
+    Esv(crate::esv::screen::ProdAction),
+    Secrets(crate::secrets::screen::ProdAction),
+    Managed(crate::managed::ops::ProdAction),
+    Secretmap(crate::secretmap::ops::ProdAction),
+    Scripts(crate::scripts::screen::ProdAction),
+    Mappings(crate::mappings::ops::ProdAction),
+    Onboard(crate::onboard::screen::ProdAction),
 }
 
 #[derive(Debug, Default)]
@@ -73,86 +36,26 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             app.input_mode = InputMode::Normal;
             if let Some(action) = action {
                 match action {
-                    PendingProdAction::SaveTenant {
-                        tenant,
-                        jwk,
-                        log_key,
-                    } => {
-                        match crate::onboard::screen::persist_tenant_overwriting(
-                            app, tenant, jwk, log_key,
-                        ) {
-                            Ok(()) => app.push_toast(ToastKind::Success, "Tenant saved"),
-                            Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
-                        }
+                    PendingProdAction::Onboard(action) => {
+                        crate::onboard::screen::execute_prod_action(app, action)
                     }
-                    PendingProdAction::EsvSave(plan) => {
-                        crate::esv::ops::execute_save_plan(app, plan, true);
+                    PendingProdAction::Esv(action) => {
+                        crate::esv::screen::execute_prod_action(app, action)
                     }
-                    PendingProdAction::EsvDelete(plan) => {
-                        crate::esv::ops::execute_delete_plan(app, plan, true);
+                    PendingProdAction::Secrets(action) => {
+                        crate::secrets::screen::execute_prod_action(app, action)
                     }
-                    PendingProdAction::EsvUndo(undo_id) => {
-                        crate::esv::ops::execute_undo(app, undo_id, true);
+                    PendingProdAction::Managed(action) => {
+                        crate::managed::ops::execute_prod_action(app, action)
                     }
-                    PendingProdAction::EsvRestart { tenant_name } => {
-                        crate::esv::ops::trigger_restart_confirmed(app, tenant_name, true);
+                    PendingProdAction::Secretmap(action) => {
+                        crate::secretmap::ops::execute_prod_action(app, action)
                     }
-                    PendingProdAction::SecretsCreate(plan) => {
-                        crate::secrets::ops::execute_create(app, plan, true);
+                    PendingProdAction::Scripts(action) => {
+                        crate::scripts::screen::execute_prod_action(app, action)
                     }
-                    PendingProdAction::SecretsAddVersion(plan) => {
-                        crate::secrets::ops::execute_add_version(app, plan, true);
-                    }
-                    PendingProdAction::SecretDelete(plan) => {
-                        crate::secrets::ops::execute_delete(app, plan, true);
-                    }
-                    PendingProdAction::SecretSetDescription(plan) => {
-                        crate::secrets::ops::execute_set_description(app, plan, true);
-                    }
-                    PendingProdAction::SecretVersionStatus {
-                        tenant,
-                        id,
-                        version,
-                        status,
-                    } => {
-                        crate::secrets::ops::execute_version_status(
-                            app, tenant, id, version, status, true,
-                        );
-                    }
-                    PendingProdAction::SecretVersionDestroy {
-                        tenant,
-                        id,
-                        version,
-                    } => {
-                        crate::secrets::ops::execute_version_destroy(
-                            app, tenant, id, version, true,
-                        );
-                    }
-                    PendingProdAction::ManagedUpdate(plan) => {
-                        crate::managed::ops::execute_update_plan(app, plan, true);
-                    }
-                    PendingProdAction::ManagedUndo(undo_id) => {
-                        crate::managed::ops::execute_undo(app, undo_id, true);
-                    }
-                    PendingProdAction::SecretMappingReplace(plan) => {
-                        crate::secretmap::ops::execute_write_plan(app, plan, true);
-                    }
-                    PendingProdAction::SecretMappingDelete(plan) => {
-                        crate::secretmap::ops::execute_remove_plan(app, plan, true);
-                    }
-                    PendingProdAction::ScriptPush {
-                        tenant,
-                        kind,
-                        realm,
-                        name,
-                        full,
-                    } => {
-                        crate::scripts::screen::execute_push(
-                            app, tenant, kind, realm, name, full, true,
-                        );
-                    }
-                    PendingProdAction::MappingRecon { tenant, mapping } => {
-                        crate::mappings::ops::execute_recon(app, tenant, mapping, true);
+                    PendingProdAction::Mappings(action) => {
+                        crate::mappings::ops::execute_prod_action(app, action)
                     }
                 }
             }
@@ -160,13 +63,26 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
             let action = app.prod_confirm.pending.take();
             app.input_mode = match action {
-                Some(PendingProdAction::EsvSave(_)) if app.esv.editing.is_some() => {
-                    InputMode::Esv(crate::esv::screen::Mode::Edit)
+                Some(PendingProdAction::Esv(action)) => {
+                    crate::esv::screen::resume_mode(app, &action)
                 }
-                Some(PendingProdAction::ManagedUpdate(_)) => {
-                    crate::managed::screen::resume_mode_after_prod_cancel(app)
-                        .map(InputMode::Managed)
-                        .unwrap_or(InputMode::Normal)
+                Some(PendingProdAction::Managed(action)) => {
+                    crate::managed::ops::resume_mode(app, &action)
+                }
+                Some(PendingProdAction::Secrets(action)) => {
+                    crate::secrets::screen::resume_mode(app, &action)
+                }
+                Some(PendingProdAction::Secretmap(action)) => {
+                    crate::secretmap::ops::resume_mode(app, &action)
+                }
+                Some(PendingProdAction::Scripts(action)) => {
+                    crate::scripts::screen::resume_mode(app, &action)
+                }
+                Some(PendingProdAction::Mappings(action)) => {
+                    crate::mappings::ops::resume_mode(app, &action)
+                }
+                Some(PendingProdAction::Onboard(action)) => {
+                    crate::onboard::screen::resume_mode(app, &action)
                 }
                 _ => InputMode::Normal,
             };
@@ -223,10 +139,8 @@ pub fn draw(f: &mut ratatui::Frame, app: &App) {
 
 fn pending_description(action: &PendingProdAction) -> Option<String> {
     match action {
-        PendingProdAction::ScriptPush { full, .. } => Some(format!("push script {full}")),
-        PendingProdAction::MappingRecon { mapping, .. } => Some(format!(
-            "run reconciliation on {mapping} - creates/updates/deletes target objects"
-        )),
+        PendingProdAction::Scripts(action) => crate::scripts::screen::describe_prod_action(action),
+        PendingProdAction::Mappings(action) => crate::mappings::ops::describe_prod_action(action),
         _ => None,
     }
 }

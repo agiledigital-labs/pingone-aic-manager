@@ -12,6 +12,27 @@ use crate::secretmap::state::{LoadState, REALM, State, mapping_snapshot};
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
 #[derive(Debug)]
+pub enum ProdAction {
+    Replace(AliasReplacePlan),
+    Delete(MappingDeletePlan),
+}
+
+pub fn execute_prod_action(app: &mut App, action: ProdAction) {
+    match action {
+        ProdAction::Replace(plan) => execute_write_plan(app, plan, true),
+        ProdAction::Delete(plan) => execute_remove_plan(app, plan, true),
+    }
+}
+
+pub fn resume_mode(_app: &App, _action: &ProdAction) -> InputMode {
+    InputMode::Normal
+}
+
+pub fn describe_prod_action(_action: &ProdAction) -> Option<String> {
+    None
+}
+
+#[derive(Debug)]
 pub struct AliasReplacePlan {
     pub tenant: String,
     pub realm: String,
@@ -201,7 +222,7 @@ pub fn submit_alias_replace(app: &mut App, plan: AliasReplacePlan) {
         return;
     }
     if app.active_tenant().is_some_and(|tenant| tenant.is_prod()) {
-        app.prod_confirm.pending = Some(PendingProdAction::SecretMappingReplace(plan));
+        app.prod_confirm.pending = Some(PendingProdAction::Secretmap(ProdAction::Replace(plan)));
         app.input_mode = InputMode::ProdConfirm;
         return;
     }
@@ -264,7 +285,7 @@ pub fn submit_remove(app: &mut App, plan: MappingDeletePlan) {
         return;
     }
     if app.active_tenant().is_some_and(|tenant| tenant.is_prod()) {
-        app.prod_confirm.pending = Some(PendingProdAction::SecretMappingDelete(plan));
+        app.prod_confirm.pending = Some(PendingProdAction::Secretmap(ProdAction::Delete(plan)));
         app.input_mode = InputMode::ProdConfirm;
         return;
     }

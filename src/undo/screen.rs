@@ -63,9 +63,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             }
             if is_prod {
                 app.prod_confirm.pending = Some(if managed {
-                    PendingProdAction::ManagedUndo(summary.id)
+                    PendingProdAction::Managed(crate::managed::ops::ProdAction::Undo(summary.id))
                 } else {
-                    PendingProdAction::EsvUndo(summary.id)
+                    PendingProdAction::Esv(crate::esv::screen::ProdAction::Undo(summary.id))
                 });
                 app.input_mode = InputMode::ProdConfirm;
             } else if managed {

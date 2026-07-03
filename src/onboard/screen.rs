@@ -38,6 +38,32 @@ pub enum PendingConfirm {
 }
 
 #[derive(Debug)]
+pub enum ProdAction {
+    SaveTenant {
+        tenant: Tenant,
+        jwk: Option<serde_json::Value>,
+        log_key: Option<LogKeyPair>,
+    },
+}
+
+pub fn execute_prod_action(app: &mut App, action: ProdAction) {
+    match action {
+        ProdAction::SaveTenant {
+            tenant,
+            jwk,
+            log_key,
+        } => match persist_tenant_overwriting(app, tenant, jwk, log_key) {
+            Ok(()) => app.push_toast(ToastKind::Success, "Tenant saved"),
+            Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
+        },
+    }
+}
+
+pub fn resume_mode(_app: &App, _action: &ProdAction) -> InputMode {
+    InputMode::Normal
+}
+
+#[derive(Debug)]
 pub enum Event {
     /// Pattern 2: the AM authentication journey returned a callback we need
     /// extra user input to satisfy (TOTP). `body` is the JSON to POST back
@@ -701,11 +727,11 @@ pub async fn handle_paste_key(app: &mut App, key: KeyEvent) -> crate::Result<()>
 fn persist_pasted_tenant(app: &mut App, tenant: Tenant, jwk: serde_json::Value) {
     app.onboard.paste_form = None;
     if tenant.theme == TenantTheme::Production {
-        app.prod_confirm.pending = Some(PendingProdAction::SaveTenant {
+        app.prod_confirm.pending = Some(PendingProdAction::Onboard(ProdAction::SaveTenant {
             tenant,
             jwk: Some(jwk),
             log_key: None,
-        });
+        }));
         app.input_mode = InputMode::ProdConfirm;
         return;
     }
@@ -802,11 +828,11 @@ pub fn handle_sa_created(
     app.onboard.pending_callback_body = None;
 
     if tenant.theme == TenantTheme::Production {
-        app.prod_confirm.pending = Some(PendingProdAction::SaveTenant {
+        app.prod_confirm.pending = Some(PendingProdAction::Onboard(ProdAction::SaveTenant {
             tenant,
             jwk: Some(jwk),
             log_key,
-        });
+        }));
         app.input_mode = InputMode::ProdConfirm;
         return Ok(());
     }
@@ -852,11 +878,11 @@ pub fn handle_log_only_created(
     };
 
     if tenant.theme == TenantTheme::Production {
-        app.prod_confirm.pending = Some(PendingProdAction::SaveTenant {
+        app.prod_confirm.pending = Some(PendingProdAction::Onboard(ProdAction::SaveTenant {
             tenant,
             jwk: None,
             log_key: Some(log_key),
-        });
+        }));
         app.input_mode = InputMode::ProdConfirm;
         return Ok(());
     }
