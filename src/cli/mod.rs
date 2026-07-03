@@ -385,7 +385,15 @@ async fn stop() -> Result<()> {
         println!("no agent running");
         return Ok(());
     }
-    let client = AgentClient::connect(&sock).await?;
+    let client = match AgentClient::connect(&sock).await {
+        Ok(c) => c,
+        Err(_) => {
+            // Socket left behind by a crashed agent — nothing to stop.
+            let _ = std::fs::remove_file(&sock);
+            println!("no agent running (removed stale socket)");
+            return Ok(());
+        }
+    };
     match client.send(&Request::Shutdown).await? {
         Response::Ok => {
             println!("agent stopping");
@@ -398,8 +406,10 @@ async fn stop() -> Result<()> {
 
 async fn status() -> Result<()> {
     let sock = agent::socket_path();
-    if !sock.exists() {
-        println!("agent: not running");
+    // The socket file can linger after a crash — only a successful connect
+    // proves an agent is listening.
+    if !sock.exists() || AgentClient::connect(&sock).await.is_err() {
+        println!("agent: not running (start it with `aic login`)");
         if let Some(cur) = config::read_current_context()? {
             println!("context: {cur}");
         }
