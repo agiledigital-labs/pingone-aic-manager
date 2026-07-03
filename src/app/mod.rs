@@ -370,34 +370,17 @@ impl App {
         self.idmstore.reset_view();
         self.oauth.reset_view();
         self.secretmap.reset_view();
-        let mappings_allowed = self
+        let _mappings_allowed = self
             .tenants
             .get(idx)
             .is_some_and(|tenant| tenant.allows_secret_mappings());
-        self.esv.view = self.esv.view.clamp(mappings_allowed);
+        self.esv.view = self.esv.view.clamp(_mappings_allowed);
         if let Some(t) = self.tenants.get(idx) {
             if let Err(e) = config::write_current_context(&t.name) {
                 tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
             }
         }
-        if self.active_view == View::Managed {
-            crate::managed::screen::refresh(self, false);
-        }
-        if self.active_view == View::Mappings {
-            crate::mappings::screen::refresh(self, false);
-        }
-        if self.active_view == View::IdmStore {
-            crate::idmstore::screen::refresh(self, false);
-        }
-        if self.active_view == View::Oauth {
-            crate::oauth::screen::refresh(self, false);
-        }
-        if self.active_view == View::Esvs
-            && self.esv.view == crate::esv::state::EsvView::Mappings
-            && mappings_allowed
-        {
-            crate::secretmap::screen::refresh(self, true);
-        }
+        refresh_view(self, self.active_view, false);
     }
 
     /// Convenience wrapper around `esv::state::State::matches` that
@@ -628,6 +611,17 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+pub fn refresh_view(app: &mut App, view: View, force: bool) {
+    match view {
+        View::Esvs => crate::esv::ops::refresh(app, force),
+        View::Scripts => crate::scripts::screen::refresh(app, force),
+        View::Managed => crate::managed::screen::refresh(app, force),
+        View::Mappings => crate::mappings::screen::refresh(app, force),
+        View::IdmStore => crate::idmstore::screen::refresh(app, force),
+        View::Oauth => crate::oauth::screen::refresh(app, force),
     }
 }
 

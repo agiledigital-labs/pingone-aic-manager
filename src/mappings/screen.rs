@@ -108,6 +108,18 @@ pub fn clear_filter(app: &mut App) {
     app.mappings.reset_view();
 }
 
+pub fn filter_active(app: &App) -> bool {
+    !app.mappings.query.is_empty()
+}
+
+pub fn primary(app: &mut App) {
+    crate::mappings::ops::run_recon(app);
+}
+
+pub fn delete(_app: &mut App) {}
+
+pub fn new_item(_app: &mut App) {}
+
 fn handle_search_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {

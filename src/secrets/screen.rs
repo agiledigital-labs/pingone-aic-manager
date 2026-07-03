@@ -75,6 +75,38 @@ pub fn start_create(app: &mut App) {
     app.input_mode = InputMode::Secrets(Mode::Create);
 }
 
+pub fn row_count(app: &App) -> usize {
+    crate::secrets::state::rows(app, app.active_tenant().map(|t| t.name.as_str())).len()
+}
+
+pub fn current_selection(app: &App) -> usize {
+    app.secret.list.selected
+}
+
+pub fn set_selection(app: &mut App, idx: usize) {
+    app.secret.list.selected = idx;
+}
+
+pub fn filter_active(app: &App) -> bool {
+    !app.secret.list.query.is_empty()
+}
+
+pub fn clear_filter(app: &mut App) {
+    app.secret.reset_view();
+}
+
+pub fn primary(app: &mut App) {
+    open_versions(app);
+}
+
+pub fn delete(app: &mut App) {
+    request_delete(app);
+}
+
+pub fn new_item(app: &mut App) {
+    start_create(app);
+}
+
 fn handle_create_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     let Some(form) = app.secret.create.as_mut() else {
         return Ok(());

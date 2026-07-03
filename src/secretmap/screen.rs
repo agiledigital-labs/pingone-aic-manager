@@ -243,6 +243,22 @@ pub fn clear_filter(app: &mut App) {
     app.secretmap.reset_view();
 }
 
+pub fn filter_active(app: &App) -> bool {
+    !app.secretmap.query.is_empty()
+}
+
+pub fn primary(app: &mut App) {
+    start_alias_picker(app);
+}
+
+pub fn delete(app: &mut App) {
+    start_remove(app);
+}
+
+pub fn new_item(app: &mut App) {
+    start_add(app);
+}
+
 pub fn scroll_detail(app: &mut App, delta: isize) {
     if delta.is_negative() {
         app.secretmap.detail_scroll = app
