@@ -635,6 +635,14 @@ mod tests {
         Ok(conn)
     }
 
+    #[test]
+    fn tenant_names_are_safe_for_store_paths() {
+        assert_eq!(
+            store_path("https://alpha/example").file_name().unwrap(),
+            "https___alpha_example.duckdb"
+        );
+    }
+
     fn events() -> Vec<Value> {
         vec![
             json!({
