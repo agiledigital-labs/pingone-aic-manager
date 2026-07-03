@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 28;
+pub const TEMPLATES_VERSION: u32 = 29;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -159,7 +159,9 @@ const OBSOLETE: &[&str] = &[
     "am/oidc.d.ts",
     "idm/idmCommon.d.ts",
     "idm/managed/tsconfig.json",
+    "idm/types/managed/openidm-overloads.d.ts",
     "idm/types/sync-mapping.d.ts",
+    "am/types/managed/openidm-overloads.d.ts",
 ];
 
 /// User files: seeded once on init, never overwritten (even by update).
@@ -484,10 +486,24 @@ mod tests {
         let stale = tree.join("am/src.d.ts");
         std::fs::write(&stale, "// old managed file\n").unwrap();
         assert!(stale.exists());
+        let stale_idm = tree.join("idm/types/managed/openidm-overloads.d.ts");
+        std::fs::create_dir_all(stale_idm.parent().unwrap()).unwrap();
+        std::fs::write(&stale_idm, "// old overload file\n").unwrap();
+        assert!(stale_idm.exists());
 
         let report = scaffold_at(&tree, true).unwrap();
         assert!(!stale.exists(), "obsolete file should be deleted on update");
         assert!(report.removed.iter().any(|p| p.ends_with("am/src.d.ts")));
+        assert!(
+            !stale_idm.exists(),
+            "obsolete managed overload file should be deleted on update"
+        );
+        assert!(
+            report
+                .removed
+                .iter()
+                .any(|p| p.ends_with("idm/types/managed/openidm-overloads.d.ts"))
+        );
 
         std::fs::remove_dir_all(&tree).ok();
     }

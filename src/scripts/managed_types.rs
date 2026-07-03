@@ -14,25 +14,6 @@ interface RelationshipRef {
   _refResourceId?: string;
   _refProperties?: { _id?: string; _rev?: string } & Record<string, any>;
 }
-
-interface QueryResult<T> {
-  result: T[];
-  resultCount: number;
-  pagedResultsCookie: string | null;
-  totalPagedResultsPolicy: string;
-  totalPagedResults: number;
-  remainingPagedResults: number;
-}
-
-// Field-spec for `fields` arguments (maps to CREST `_fields`): a schema
-// property, `*` (all non-relationship fields), or a relationship path such
-// as `manager/displayName` or `_meta/lastChanged` (path + `*` syntax
-// verified live — docs/api/10-managed-objects.md).
-type ManagedField<T> =
-  | (keyof T & string)
-  | "*"
-  | `${(keyof T & string) | "_meta"}/${string}`
-  | "_meta";
 "#;
 
 /// Workspace-relative path -> file contents for every generated managed type.
@@ -69,8 +50,8 @@ pub fn generate(schema: &Value) -> Result<Vec<(PathBuf, String)>> {
         ));
     }
     files.push((
-        PathBuf::from("idm/types/managed/openidm-overloads.d.ts"),
-        render_openidm_overloads(&valid_objects, Engine::Idm),
+        PathBuf::from("idm/types/managed/openidm-map.d.ts"),
+        render_managed_objects_map(&valid_objects),
     ));
 
     files.push((
@@ -85,34 +66,20 @@ pub fn generate(schema: &Value) -> Result<Vec<(PathBuf, String)>> {
         ));
     }
     files.push((
-        PathBuf::from("am/types/managed/openidm-overloads.d.ts"),
-        render_openidm_overloads(&valid_objects, Engine::Am),
+        PathBuf::from("am/types/managed/openidm-map.d.ts"),
+        render_managed_objects_map(&valid_objects),
     ));
 
     Ok(files)
 }
 
-#[derive(Clone, Copy)]
-enum Engine {
-    Idm,
-    Am,
-}
-
-fn render_openidm_overloads(
-    objects: &[(&str, &Value, &Map<String, Value>)],
-    engine: Engine,
-) -> String {
-    let mut out = String::from("interface OpenIdm {\n");
+fn render_managed_objects_map(objects: &[(&str, &Value, &Map<String, Value>)]) -> String {
+    let mut out = String::from(
+        "// Collection path \u{2192} object interface. Merges into the empty\n// `interface ManagedObjects {}` declared by the engine's common types; the\n// conditional openidm signatures there key on it.\ninterface ManagedObjects {\n",
+    );
     for &(name, _, _) in objects {
         let interface_name = pascal_case(name);
-        match engine {
-            Engine::Idm => out.push_str(&format!(
-                "  read(resourceName: `managed/{name}/${{string}}`, params?: Record<string, string> | null, fields?: ManagedField<{interface_name}>[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }}): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: Record<string, string> | null): {interface_name};\n  update(resourceName: `managed/{name}/${{string}}`, revision: string | null, content: Partial<{interface_name}>, params?: Record<string, string> | null): {interface_name};\n  patch(resourceName: `managed/{name}/${{string}}`, revision: string | null, patch: Patch[]): {interface_name};\n  delete(resourceName: `managed/{name}/${{string}}`, revision: string | null, params?: Record<string, string> | null): {interface_name};\n"
-            )),
-            Engine::Am => out.push_str(&format!(
-                "  read(resourceName: `managed/{name}/${{string}}`, params?: object, fields?: ManagedField<{interface_name}>[]): {interface_name} | null;\n  query(resourceName: \"managed/{name}\", params: {{ _queryFilter: string }} | object, fields?: ManagedField<{interface_name}>[]): QueryResult<{interface_name}>;\n  create(resourceName: \"managed/{name}\", newResourceId: string | null, content: Partial<{interface_name}>, params?: object, fields?: ManagedField<{interface_name}>[]): {interface_name};\n  update(resourceName: `managed/{name}/${{string}}`, rev: string | null, value: Partial<{interface_name}>, params?: object, fields?: ManagedField<{interface_name}>[]): {interface_name};\n  patch(resourceName: `managed/{name}/${{string}}`, rev: string | null, patch: Patch[], params?: object, fields?: ManagedField<{interface_name}>[]): {interface_name};\n  delete(resourceName: `managed/{name}/${{string}}`, rev: string | null, params?: object, fields?: ManagedField<{interface_name}>[]): {interface_name};\n"
-            )),
-        }
+        out.push_str(&format!("  \"managed/{name}\": {interface_name};\n"));
     }
     out.push_str("}\n");
     out
@@ -387,57 +354,25 @@ mod tests {
     }
 
     #[test]
-    fn emits_engine_specific_openidm_overloads() {
+    fn emits_managed_objects_map_per_engine() {
         let schema = json!({
             "objects": [
                 {"name": "zeta", "schema": {"properties": {}}},
                 {"name": "alpha_user", "schema": {"properties": {}}}
             ]
         });
-        let idm = generated_contents(&schema, "idm/types/managed/openidm-overloads.d.ts");
-        let am = generated_contents(&schema, "am/types/managed/openidm-overloads.d.ts");
+        let idm = generated_contents(&schema, "idm/types/managed/openidm-map.d.ts");
+        let am = generated_contents(&schema, "am/types/managed/openidm-map.d.ts");
 
-        assert!(idm.contains("read(resourceName: `managed/alpha_user/${string}`"));
-        assert!(idm.contains("fields?: ManagedField<AlphaUser>[]"));
-        assert!(idm.contains(
-            "query(resourceName: \"managed/alpha_user\", params: { _queryFilter: string }): QueryResult<AlphaUser>;"
-        ));
-        assert!(!idm.contains(
-            "query(resourceName: \"managed/alpha_user\", params: { _queryFilter: string }, fields?:"
-        ));
-        assert!(idm.contains(
-            "create(resourceName: \"managed/alpha_user\", newResourceId: string | null, content: Partial<AlphaUser>, params?: Record<string, string> | null): AlphaUser;"
-        ));
-        assert!(idm.contains(
-            "update(resourceName: `managed/alpha_user/${string}`, revision: string | null, content: Partial<AlphaUser>, params?: Record<string, string> | null): AlphaUser;"
-        ));
-        assert!(idm.contains(
-            "patch(resourceName: `managed/alpha_user/${string}`, revision: string | null, patch: Patch[]): AlphaUser;"
-        ));
-        assert!(idm.contains(
-            "delete(resourceName: `managed/alpha_user/${string}`, revision: string | null, params?: Record<string, string> | null): AlphaUser;"
-        ));
-        assert!(idm.contains("QueryResult<AlphaUser>"));
-        assert!(am.contains("read(resourceName: `managed/alpha_user/${string}`"));
-        assert!(am.contains("fields?: ManagedField<AlphaUser>[]"));
-        assert!(am.contains("query(resourceName: \"managed/alpha_user\""));
-        assert!(am.contains(
-            "create(resourceName: \"managed/alpha_user\", newResourceId: string | null, content: Partial<AlphaUser>, params?: object, fields?: ManagedField<AlphaUser>[]): AlphaUser;"
-        ));
-        assert!(am.contains(
-            "update(resourceName: `managed/alpha_user/${string}`, rev: string | null, value: Partial<AlphaUser>, params?: object, fields?: ManagedField<AlphaUser>[]): AlphaUser;"
-        ));
-        assert!(am.contains(
-            "patch(resourceName: `managed/alpha_user/${string}`, rev: string | null, patch: Patch[], params?: object, fields?: ManagedField<AlphaUser>[]): AlphaUser;"
-        ));
-        assert!(am.contains(
-            "delete(resourceName: `managed/alpha_user/${string}`, rev: string | null, params?: object, fields?: ManagedField<AlphaUser>[]): AlphaUser;"
-        ));
-        assert!(am.contains("QueryResult<AlphaUser>"));
-        assert!(!idm.contains("action("));
-        assert!(!am.contains("action("));
-        assert!(idm.find("managed/alpha_user").unwrap() < idm.find("managed/zeta").unwrap());
-        assert!(am.find("managed/alpha_user").unwrap() < am.find("managed/zeta").unwrap());
+        assert!(idm.contains("interface ManagedObjects {"));
+        assert!(idm.contains("\"managed/alpha_user\": AlphaUser;"));
+        assert!(idm.contains("\"managed/zeta\": Zeta;"));
+        assert!(
+            idm.find("\"managed/alpha_user\"").unwrap() < idm.find("\"managed/zeta\"").unwrap()
+        );
+        assert_eq!(idm, am);
+        assert!(idm.contains("Collection path → object interface."));
+        assert!(idm.contains("conditional openidm signatures there key on it."));
     }
 
     #[test]
@@ -454,18 +389,21 @@ mod tests {
         assert_eq!(files.len(), 7);
         assert_eq!(files[0].0, PathBuf::from("idm/types/managed/_shared.d.ts"));
         assert!(files[0].1.contains("interface RelationshipRef"));
-        assert!(files[0].1.contains("interface QueryResult<T>"));
-        assert!(files[0].1.contains("type ManagedField<T>"));
-        assert!(files.iter().any(|(path, _)|
-            path == &PathBuf::from("idm/types/managed/openidm-overloads.d.ts")));
+        assert!(!files[0].1.contains("interface QueryResult<T>"));
+        assert!(!files[0].1.contains("type ManagedField<T>"));
         assert!(
             files
                 .iter()
-                .any(|(path, _)| path == &PathBuf::from("am/types/managed/openidm-overloads.d.ts"))
+                .any(|(path, _)| path == &PathBuf::from("idm/types/managed/openidm-map.d.ts"))
+        );
+        assert!(
+            files
+                .iter()
+                .any(|(path, _)| path == &PathBuf::from("am/types/managed/openidm-map.d.ts"))
         );
         let am_shared = generated_contents(&schema, "am/types/managed/_shared.d.ts");
-        assert!(am_shared.contains("interface QueryResult<T>"));
-        assert!(am_shared.contains("type ManagedField<T>"));
+        assert!(!am_shared.contains("interface QueryResult<T>"));
+        assert!(!am_shared.contains("type ManagedField<T>"));
         assert!(
             files
                 .iter()
@@ -475,6 +413,20 @@ mod tests {
         let shared_only = generate(&json!({})).unwrap();
         assert_eq!(shared_only.len(), 4);
         assert!(shared_only[0].1.contains("interface RelationshipRef"));
-        assert!(shared_only[0].1.contains("type ManagedField<T>"));
+        assert!(!shared_only[0].1.contains("type ManagedField<T>"));
+        assert!(
+            shared_only
+                .iter()
+                .any(|(path, _)| path == &PathBuf::from("idm/types/managed/openidm-map.d.ts"))
+        );
+        assert!(
+            shared_only
+                .iter()
+                .any(|(path, _)| path == &PathBuf::from("am/types/managed/openidm-map.d.ts"))
+        );
+        assert_eq!(
+            generated_contents(&json!({}), "idm/types/managed/openidm-map.d.ts"),
+            "// Collection path \u{2192} object interface. Merges into the empty\n// `interface ManagedObjects {}` declared by the engine's common types; the\n// conditional openidm signatures there key on it.\ninterface ManagedObjects {\n}\n"
+        );
     }
 }

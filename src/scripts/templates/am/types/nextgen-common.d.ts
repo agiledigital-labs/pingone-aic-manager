@@ -106,12 +106,11 @@ declare const utils: Utils;
 // ---- openidm (CRUDPAQ) ---------------------------------------------------
 //
 // Resource names are plain strings (e.g. "managed/alpha_user",
-// "managed/alpha_user/<id>", "internal/role/<id>"). Overloads mirror the binding
-// metadata: trailing params (`params`, `fields`) are optional.
-//
-// `fields` on `managed/…` paths is typed by the generated
-// `types/managed/openidm-overloads.d.ts`; the fallback deliberately rejects it
-// so typoed managed fields fail instead of matching a generic overload.
+// "managed/alpha_user/<id>", "internal/role/<id>"). The generated
+// `types/managed/openidm-map.d.ts` merges the tenant's managed objects into
+// the empty `interface ManagedObjects {}` below. Single generic signatures +
+// conditionals keep field typos pinned to the offending element with spelling
+// suggestions, while preserving the loose fallback for non-managed resources.
 
 type Patch =
   | {
@@ -133,44 +132,95 @@ type QueryResponse = {
   remainingPagedResults: number;
 };
 
+// The generated `types/managed/openidm-map.d.ts` fills this with
+// collection-path → interface mappings for the tenant's managed objects.
+interface ManagedObjects {}
+
+type ManagedName = keyof ManagedObjects & string;
+
+// Field spec for `fields` args: schema property, `*`, or relationship paths
+// such as `manager/displayName` and `_meta/lastChanged` (path + `*` syntax
+// verified live — docs/api/10-managed-objects.md).
+type ManagedField<T> =
+  | (keyof T & string)
+  | "*"
+  | `${(keyof T & string) | "_meta"}/${string}`
+  | "_meta";
+
+interface QueryResult<T> {
+  result: T[];
+  resultCount: number;
+  pagedResultsCookie: string | null;
+  totalPagedResultsPolicy: string;
+  totalPagedResults: number;
+  remainingPagedResults: number;
+}
+
+// Collection path ("managed/<obj>") → object interface, else never.
+type ManagedCollectionOf<R extends string> = R extends keyof ManagedObjects
+  ? ManagedObjects[R]
+  : never;
+
+// Record path ("managed/<obj>/<id>") → object interface, else never.
+type ManagedRecordOf<R extends string> =
+  R extends `managed/${infer N}/${string}`
+    ? `managed/${N}` extends keyof ManagedObjects
+      ? ManagedObjects[`managed/${N}`]
+      : never
+    : never;
+
+// fields: typed for known managed paths, rejected for unknown managed paths
+// (nothing to check against — pull the schema again), free-form otherwise.
+type FieldsArg<T, R extends string> = [T] extends [never]
+  ? R extends `managed/${string}`
+    ? never
+    : string[]
+  : ManagedField<T>[];
+
+type ContentArg<T> = [T] extends [never] ? object : Partial<T>;
+
+type RecordResult<T> = [T] extends [never] ? any : T;
+
 interface OpenIdm {
-  read<R extends string>(
+  read<R extends `${ManagedName}/${string}` | (string & {})>(
     resourceName: R,
     params?: object,
-    fields?: R extends `managed/${string}` ? never : string[]
-  ): any;
-  create<R extends string>(
+    fields?: FieldsArg<ManagedRecordOf<R>, R>
+  ): [ManagedRecordOf<R>] extends [never] ? any : ManagedRecordOf<R> | null;
+  create<R extends ManagedName | (string & {})>(
     resourceName: R,
     newResourceId: string | null,
-    content: object,
+    content: ContentArg<ManagedCollectionOf<R>>,
     params?: object,
-    fields?: R extends `managed/${string}` ? never : string[]
-  ): any;
-  update<R extends string>(
+    fields?: FieldsArg<ManagedCollectionOf<R>, R>
+  ): RecordResult<ManagedCollectionOf<R>>;
+  update<R extends `${ManagedName}/${string}` | (string & {})>(
     id: R,
     rev: string | null,
-    value: object,
+    value: ContentArg<ManagedRecordOf<R>>,
     params?: object,
-    fields?: R extends `managed/${string}` ? never : string[]
-  ): any;
-  patch<R extends string>(
+    fields?: FieldsArg<ManagedRecordOf<R>, R>
+  ): RecordResult<ManagedRecordOf<R>>;
+  patch<R extends `${ManagedName}/${string}` | (string & {})>(
     resourceName: R,
     rev: string | null,
     patch: Patch[],
     params?: object,
-    fields?: R extends `managed/${string}` ? never : string[]
-  ): any;
-  delete<R extends string>(
+    fields?: FieldsArg<ManagedRecordOf<R>, R>
+  ): RecordResult<ManagedRecordOf<R>>;
+  delete<R extends `${ManagedName}/${string}` | (string & {})>(
     resourceName: R,
     rev: string | null,
     params?: object,
-    fields?: R extends `managed/${string}` ? never : string[]
-  ): any;
-  query<R extends string>(
+    fields?: FieldsArg<ManagedRecordOf<R>, R>
+  ): RecordResult<ManagedRecordOf<R>>;
+  query<R extends ManagedName | (string & {})>(
     resourceName: R,
     params: { _queryFilter: string } | object,
-    fields?: R extends `managed/${string}` ? never : string[]
-  ): QueryResponse;
+    fields?: FieldsArg<ManagedCollectionOf<R>, R>
+  ): [ManagedCollectionOf<R>] extends [never]
+    ? QueryResponse
+    : QueryResult<ManagedCollectionOf<R>>;
   action(
     resource: string,
     actionName: string,
