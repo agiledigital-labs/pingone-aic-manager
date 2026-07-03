@@ -132,8 +132,9 @@ need the archaeology.)
 
 ## Parked / stretch
 
-- **Log sync + search** — offline history past AIC's 30-day retention
-  (`docs/api/08-logs.md`; separate API-key auth).
+- **Logs TUI tab** — fetch/sync/search/compact and journey rollup are
+  implemented on `logs-feature` (`docs/api/08-logs.md`, `docs/logs-store.md`);
+  remaining work is a TUI browse/search tab.
 - **Browser-handoff onboarding** for SSO-only admins — blocked by AIC
   platform limitations; see `docs/api/99-quirks-and-open-questions.md`
   Q11/Q12 for the dead ends already explored.

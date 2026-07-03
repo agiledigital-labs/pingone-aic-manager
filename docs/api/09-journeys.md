@@ -1,5 +1,7 @@
 # 09 — Journeys (authentication trees)
 
+Implemented in: `src/journey/`
+
 ## Purpose
 Journeys ("authentication trees") are AM's flow definitions: a graph of nodes
 that handle login, registration, MFA, password reset, etc. Not in the initial

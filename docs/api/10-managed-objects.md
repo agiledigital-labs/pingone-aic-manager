@@ -1,5 +1,7 @@
 # 10 — IDM managed objects
 
+Implemented in: `src/managed/`
+
 ## Purpose
 "Managed objects" are IDM's domain entities: users, applications, roles,
 assignments, etc. The schema is editable per-tenant (you can add fields,

@@ -1,5 +1,7 @@
 # 01 — Realms & URL path conventions
 
+Implemented in: —
+
 ## Purpose
 AIC tenants always expose two realms: `alpha` (customer identities) and `bravo`
 (workforce identities). Some APIs are realm-scoped, others are tenant-global.

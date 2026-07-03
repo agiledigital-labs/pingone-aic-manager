@@ -1,5 +1,7 @@
 # 06 — SAML 2.0
 
+Implemented in: —
+
 ## Purpose
 Manage SAML 2.0 hosted (this tenant is the IdP/SP) and remote (another party is
 the IdP/SP) entity providers, plus the circles of trust that bind them. Feature

@@ -121,17 +121,31 @@ new things are learned.
   `_rev` as opaque metadata and ignore it in content comparisons.
 - **Documented in:** `05-oauth2-oidc.md`.
 
+### Journey join key (resolved 2026-07-01)
+
+- **Status:** Resolved.
+- **Answer:** Group journey progress on the full `payload.trackingIds[0]` value,
+  verbatim, with no stripping or transformation.
+- **Documented in:** `08-logs.md`.
+
+### Log key minting requires admin-user bearer (resolved 2026-06-24)
+
+- **Status:** Resolved.
+- **Answer:** `GET /keys` and `POST /keys?_action=create` require an admin-user
+  bearer; the service-account bearer 403s regardless of scopes.
+- **Documented in:** `08-logs.md`.
+
 ---
 
 ## Open
 
 ### Q5. Log API keys not present in `.envrc`
 
-- The sandbox has no `LOG_API_KEY_ID` / `LOG_API_KEY_SECRET`. Live verification
-  of `/monitoring/logs/*` is deferred.
-- **Action:** Either generate a pair in the admin console and add to `.envrc`,
-  or programmatically mint one via `POST /keys?_action=create` (which uses the
-  SA bearer — already works).
+- **Status:** Resolved.
+- **Answer:** The sandbox has no `LOG_API_KEY_ID` / `LOG_API_KEY_SECRET`, and
+  `POST /keys?_action=create` is not service-account-accessible. Log-key minting
+  requires an admin-user bearer; the SA bearer gets 403 regardless of scopes.
+- **Documented in:** `08-logs.md`.
 
 ### Q6. PUT on resources without `_rev`
 
@@ -345,6 +359,18 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   `AicClient::check_response`: an empty success body now maps to JSON `null`
   instead of erroring, so any empty-`200` write action is handled. Corrected the
   `03-esvs.md` table row.
+- **2026-05-31** — IDM custom endpoints verified for the script-sync feature
+  (full CRUD on throwaway `endpoint/aicedit-verify`): `PUT` create → 201, `PUT`
+  replace → 200, `DELETE` → 200 (echoes object), `GET` after → 404. Key facts:
+  **no `_rev`** (so content-based conflict detection, same as AM scripts),
+  `source` is **plain text** (not base64, unlike AM scripts), **no
+  `Accept-API-Version`** header required for `/openidm` config, list
+  (`/openidm/config?_queryFilter=true`) is unfiltered (filter `endpoint/` ids
+  client-side), no `name` field (name = `_id` suffix). New doc
+  `11-idm-endpoints.md`. Also: added an optional per-call `Accept-API-Version`
+  override to the agent `ApiCall` protocol so AM scripts can send
+  `protocol=2.0,resource=1.0` while everything else keeps the `resource=1.0`
+  default.
 - **2026-06-01** — AM scripts list paging: `_queryFilter=true` returns **all**
   results when `_pageSize` is omitted (alpha 107, bravo 283 in one response).
   With `_pageSize` set, the response caps at that size but `pagedResultsCookie`
@@ -425,8 +451,28 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   onboarding + the log-only env flow; SA-only tenants paste. (4) Couldn't get a
   200 from `/monitoring/logs` — the only key on hand (`<client-checkout>/logs/gt`) had
   been rotated (401). Auth model (api-key headers, not bearer) reconfirmed.
+- **2026-07-01** — \*\*[SUPERSEDED 2026-07-01 (same day) — see the next entry
+  - `08-logs.md`; the "corrected" key in this bullet is ALSO WRONG]\*\*
+    **Journey-progress join key corrected (`08-logs.md`).** My own 2026-06-30
+    taxonomy claim "node and tree events share `transactionId`; join on that" is
+    **wrong**. Verified against `<client-checkout>/logs/prod-logs.json` (14,470 events;
+    3,538 `AM-NODE-LOGIN-COMPLETED`, 138 `AM-TREE-LOGIN-COMPLETED`):
+    `transactionId` is a **per-HTTP-request** id (`Root=1-…/0`, `…-request-2/0`)
+    that differs within one journey execution. The correct grouping key is the
+    **journey tracking UUID** = strip trailing `-<digits>` (`-\d+$`) from node
+    `payload.trackingIds[0]` and from tree `payload._id`; both yield the same
+    5-group UUID (3/3 attempts joined, 0 `treeName` mismatches), and it equals
+    the `TrackingId` prefix in AIC's `Journey-Node-History` export. Tree event
+    carries `result` (`SUCCESSFUL`→COMPLETED / `FAILED`→FAILED; node group with
+    no tree event → ABANDONED), `principal[0]` (username) and `userId` (DN);
+    node events carry no principal. Module/service-account logins
+    (`AM-LOGIN-MODULE-COMPLETED`/`AM-LOGIN-COMPLETED`,
+    `authIndex=module_instance`, no `treeName`) are OAuth2 client auth, not
+    journeys — skip them. The aic-edit sandbox has only these module logins in
+    the synced window, so journey rollup was verified against the client-a prod
+    capture, not the sandbox.
 - **2026-07-01 (later)** — **Journey join key RE-corrected — the same-day fix
-  below was also wrong.** Stripping the trailing `-<digits>` and keying the tree
+  above was also wrong.** Stripping the trailing `-<digits>` and keying the tree
   event off `_id` (the fix in the prior bullet) MERGES thousands of executions:
   cross-checked against AIC's own `Journey-Node-History` export (146,159 rows),
   a single base UUID `a3c45e03-…` spans **3,226 distinct executions / 2,502
@@ -442,34 +488,3 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   _cardinality and shape_ (nodes/execution, distinct users) against an
   independent source, not just internal self-consistency. `08-logs.md` join-key
   note rewritten.
-- **2026-07-01** — **Journey-progress join key corrected (`08-logs.md`).** My
-  own 2026-06-30 taxonomy claim "node and tree events share `transactionId`;
-  join on that" is **wrong**. Verified against `<client-checkout>/logs/prod-logs.json`
-  (14,470 events; 3,538 `AM-NODE-LOGIN-COMPLETED`, 138
-  `AM-TREE-LOGIN-COMPLETED`): `transactionId` is a **per-HTTP-request** id
-  (`Root=1-…/0`, `…-request-2/0`) that differs within one journey execution. The
-  correct grouping key is the **journey tracking UUID** = strip trailing
-  `-<digits>` (`-\d+$`) from node `payload.trackingIds[0]` and from tree
-  `payload._id`; both yield the same 5-group UUID (3/3 attempts joined, 0
-  `treeName` mismatches), and it equals the `TrackingId` prefix in AIC's
-  `Journey-Node-History` export. Tree event carries `result`
-  (`SUCCESSFUL`→COMPLETED / `FAILED`→FAILED; node group with no tree event →
-  ABANDONED), `principal[0]` (username) and `userId` (DN); node events carry no
-  principal. Module/service-account logins
-  (`AM-LOGIN-MODULE-COMPLETED`/`AM-LOGIN-COMPLETED`,
-  `authIndex=module_instance`, no `treeName`) are OAuth2 client auth, not
-  journeys — skip them. The aic-edit sandbox has only these module logins in the
-  synced window, so journey rollup was verified against the client-a prod capture,
-  not the sandbox.
-- **2026-05-31** — IDM custom endpoints verified for the script-sync feature
-  (full CRUD on throwaway `endpoint/aicedit-verify`): `PUT` create → 201, `PUT`
-  replace → 200, `DELETE` → 200 (echoes object), `GET` after → 404. Key facts:
-  **no `_rev`** (so content-based conflict detection, same as AM scripts),
-  `source` is **plain text** (not base64, unlike AM scripts), **no
-  `Accept-API-Version`** header required for `/openidm` config, list
-  (`/openidm/config?_queryFilter=true`) is unfiltered (filter `endpoint/` ids
-  client-side), no `name` field (name = `_id` suffix). New doc
-  `11-idm-endpoints.md`. Also: added an optional per-call `Accept-API-Version`
-  override to the agent `ApiCall` protocol so AM scripts can send
-  `protocol=2.0,resource=1.0` while everything else keeps the `resource=1.0`
-  default.

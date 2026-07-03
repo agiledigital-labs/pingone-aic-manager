@@ -16,7 +16,7 @@ hits a tenant.** Don't guess paths or headers.
 | [05-oauth2-oidc.md](05-oauth2-oidc.md) | OAuth2 clients (agents), OIDC provider service |
 | [06-saml.md](06-saml.md) | Hosted/remote entities, CoT, metadata XML |
 | [07-secret-stores.md](07-secret-stores.md) | Store *collection* API not available — but per-type subpaths (mappings) are; see 15 |
-| [08-logs.md](08-logs.md) | `/monitoring/logs`, separate API-key auth |
+| [08-logs.md](08-logs.md) | `/monitoring/logs`, admin-token-only key minting, source taxonomy, journey join key; local store in [../logs-store.md](../logs-store.md) |
 | [09-journeys.md](09-journeys.md) | Auth trees, nodes, custom nodes |
 | [10-managed-objects.md](10-managed-objects.md) | IDM managed config, hooks |
 | [11-idm-endpoints.md](11-idm-endpoints.md) | IDM custom endpoints + scheduled jobs (`config/endpoint/*`, `config/schedule/*`), plaintext `source`, no `_rev` |

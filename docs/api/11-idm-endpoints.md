@@ -1,5 +1,7 @@
 # 11 — IDM custom endpoints
 
+Implemented in: `src/scripts/`
+
 ## Purpose
 IDM custom endpoints are scripted (or table/jdbc) REST endpoints registered as
 IDM config objects under `endpoint/<name>`. Their JavaScript lives in a plain

@@ -1,5 +1,7 @@
 # 05 — OAuth2 / OIDC
 
+Implemented in: `src/oauth/`
+
 ## Purpose
 Manage OAuth2 clients (also called "agents" in AM-speak) and the realm-wide
 OAuth2/OIDC provider service. Feature 3 of aic-edit ("manage OIDC and SAML
