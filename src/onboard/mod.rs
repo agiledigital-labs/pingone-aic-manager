@@ -1,11 +1,25 @@
 //! Tenant onboarding: verified bootstrap patterns plus direct sandbox import
 //! from the development environment.
 //!
-//! The feature is split by responsibility:
-//! - [`bootstrap`] drives delegated OAuth2, RSA key generation, and service-account creation.
-//! - [`cookie`], [`userpass`], [`paste`], and [`log_only`] own their forms.
-//! - [`screen`] owns state, nested input modes/events, persistence, and key handling.
+//! Layout — one file per flow, each owning its whole lifecycle:
+//! - [`cookie`], [`userpass`], [`paste`], and [`log_only`] each own their form
+//!   struct, key handler, bootstrap task(s), and completion handler. To edit a
+//!   flow, edit only its file.
+//! - [`screen`] is menu + dispatch: the nested `Mode`/`Event`/`PendingConfirm`/
+//!   `ProdAction` enums, `apply_event`, the `handle_key` dispatch (one arm per
+//!   flow), the menu key handler, the overwrite-confirm handler, the cross-flow
+//!   auth-progress/error handlers, and the tiny envrc import.
+//! - [`common`] holds cross-flow glue: the ordered `MENU` slice that drives
+//!   selection + numbering (no tuple-index math), tenant persistence, the
+//!   shared service-account completion handler, and small form/confirm helpers.
+//! - [`bootstrap`] drives delegated OAuth2, RSA key generation, service-account
+//!   creation, and the session→bearer→mint log-key plumbing. That mint flow is
+//!   also called by `aic logs key create`, so keep it provider-agnostic here.
 //! - [`view`] renders the menu, forms, and duplicate-name confirmation.
+//!
+//! To add a flow: new file (form + keys + bootstrap + completion), one entry in
+//! `common::MENU`, and one arm each in the `Mode`, `Event`, `PendingConfirm`,
+//! and `handle_key`/`apply_event` dispatch in `screen`.
 //!
 //! Onboarding persists tenant metadata through [`crate::config`] and private
 //! JWKs through [`crate::app::App`], uses the shared production-write guard,
@@ -21,6 +35,7 @@
 //! are used instead.
 
 pub mod bootstrap;
+pub mod common;
 pub mod cookie;
 pub mod log_only;
 pub mod paste;

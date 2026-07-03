@@ -70,27 +70,19 @@ fn draw_overwrite_confirm(f: &mut Frame, app: &App) {
 }
 
 fn draw_menu(f: &mut Frame, app: &App) {
-    let n_options = super::screen::menu_option_count(app.has_env_creds);
+    let rows = super::common::menu_rows(app.has_env_creds);
     let body = Modal {
         title: "Add Tenant",
         status: None,
         hints: &[("Enter", "choose"), ("Esc", "cancel")],
-        body_height: n_options as u16,
+        body_height: rows.len() as u16,
     }
     .draw(f, f.area());
 
-    let mut options = vec![
-        ListItem::new("  1  Paste browser session cookie  (full SSO/MFA/passkey)"),
-        ListItem::new("  2  Username + password           (TOTP supported)"),
-        ListItem::new("  3  Paste service-account JWK     (already have one)"),
-    ];
-    if app.has_env_creds {
-        options.push(ListItem::new("  4  Import sandbox from environment"));
-    }
-    let log_only_number = super::screen::log_only_menu_number(app.has_env_creds);
-    options.push(ListItem::new(format!(
-        "  {log_only_number}  Log-only environment          (logs API key, no service account)"
-    )));
+    let options: Vec<ListItem> = rows
+        .into_iter()
+        .map(|(_, label)| ListItem::new(label))
+        .collect();
 
     let list = List::new(options)
         .highlight_style(
