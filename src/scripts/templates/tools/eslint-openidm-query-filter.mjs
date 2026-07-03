@@ -64,7 +64,8 @@ function staticStringRange(sourceCode, node) {
   return null;
 }
 
-function cookedToRawIndexMap(raw) {
+// Exported for repo-side parser tests; user workspaces consume the rule API.
+export function cookedToRawIndexMap(raw) {
   const map = [];
   let cooked = 0;
   let rawIndex = 0;
@@ -72,36 +73,73 @@ function cookedToRawIndexMap(raw) {
   map[cooked] = 0;
   while (rawIndex < raw.length) {
     const start = rawIndex;
+    let cookedLength = 1;
     if (raw[rawIndex] === "\\" && rawIndex + 1 < raw.length) {
-      rawIndex += escapedRawLength(raw, rawIndex);
+      const escape = escapedRawShape(raw, rawIndex);
+      rawIndex += escape.rawLength;
+      cookedLength = escape.cookedLength;
     } else {
       rawIndex++;
     }
-    cooked++;
+    if (cookedLength === 0) {
+      map[cooked] = rawIndex;
+      continue;
+    }
+    map[cooked] = start;
+    for (let i = 1; i < cookedLength; i++) {
+      map[cooked + i] = start;
+    }
+    cooked += cookedLength;
     map[cooked] = rawIndex;
-    map[cooked - 1] = start;
   }
 
   return map;
 }
 
-function escapedRawLength(raw, start) {
+function escapedRawShape(raw, start) {
   const next = raw[start + 1];
+  if (isLineContinuation(raw, start)) {
+    return {
+      rawLength: next === "\r" && raw[start + 2] === "\n" ? 3 : 2,
+      cookedLength: 0,
+    };
+  }
   if (next === "u" && raw[start + 2] === "{") {
     const close = raw.indexOf("}", start + 3);
-    return close === -1 ? 2 : close - start + 1;
+    if (close === -1) return { rawLength: 2, cookedLength: 1 };
+    const codePoint = Number.parseInt(raw.slice(start + 3, close), 16);
+    return {
+      rawLength: close - start + 1,
+      cookedLength: codePoint > 0xffff ? 2 : 1,
+    };
   }
-  if (next === "u") return Math.min(6, raw.length - start);
-  if (next === "x") return Math.min(4, raw.length - start);
+  if (next === "u") {
+    return { rawLength: Math.min(6, raw.length - start), cookedLength: 1 };
+  }
+  if (next === "x") {
+    return { rawLength: Math.min(4, raw.length - start), cookedLength: 1 };
+  }
   if (/[0-7]/.test(next)) {
     let length = 2;
     while (length < 4 && /[0-7]/.test(raw[start + length])) {
       length++;
     }
-    return Math.min(length, raw.length - start);
+    return {
+      rawLength: Math.min(length, raw.length - start),
+      cookedLength: 1,
+    };
   }
-  if (next === "\r" && raw[start + 2] === "\n") return 3;
-  return 2;
+  return { rawLength: 2, cookedLength: 1 };
+}
+
+function isLineContinuation(raw, start) {
+  const next = raw[start + 1];
+  return (
+    next === "\n" ||
+    next === "\u2028" ||
+    next === "\u2029" ||
+    next === "\r"
+  );
 }
 
 function isOpenidmQuery(node) {
@@ -187,22 +225,6 @@ function isFieldWord(token) {
   const lower = token.value.toLowerCase();
   if (QUERY_OPERATORS.has(lower) || QUERY_KEYWORDS.has(lower)) return false;
   return !/^-?\d+(?:\.\d+)?$/.test(token.value);
-}
-
-export function extractQueryFilterFields(filter) {
-  const { tokens } = tokenizeQueryFilter(filter);
-  const fields = [];
-
-  for (let i = 0; i < tokens.length - 1; i++) {
-    const token = tokens[i];
-    const next = tokens[i + 1];
-    if (!isFieldWord(token) || next.type !== "word") continue;
-    if (QUERY_OPERATORS.has(next.value.toLowerCase())) {
-      fields.push(token.value);
-    }
-  }
-
-  return fields;
 }
 
 function suggestionFor(root, knownFields) {
@@ -351,6 +373,8 @@ class QueryFilterParser {
   }
 
   parsePrimary() {
+    if (this.matchKeyword("true") || this.matchKeyword("false")) return;
+
     if (this.matchPunct("(")) {
       const open = this.previous();
       if (this.matchPunct(")")) {
@@ -589,10 +613,12 @@ function rangeFromIssue(stringRange, issue) {
   ];
 }
 
-function rawOffsetForIndex(stringRange, relativeIndex) {
+// Exported with cookedToRawIndexMap for repo-side source-mapping tests.
+export function rawOffsetForIndex(stringRange, relativeIndex) {
   const map = stringRange.indexMap;
   if (!map) return relativeIndex;
-  if (relativeIndex <= 0) return 0;
+  if (relativeIndex < 0) return 0;
+  if (relativeIndex === 0) return map[0] || 0;
   if (relativeIndex >= map.length) return stringRange.end - stringRange.start;
   return map[relativeIndex];
 }
