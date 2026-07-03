@@ -2,8 +2,19 @@
 //! The session is exchanged for an admin-user bearer that can create the log
 //! API key; no service account or RSA keypair is created.
 
-use crate::config::tenant::TenantTheme;
+use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::app::event::{AppEvent, ToastKind};
+use crate::app::prod_confirm::PendingProdAction;
+use crate::app::{App, InputMode};
+use crate::config::tenant::{Tenant, TenantTheme};
+use crate::logs::LogKeyPair;
 use crate::tui::widgets::text_field::{TextField, fields};
+
+use super::common::{
+    persist_tenant_overwriting, queue_overwrite_confirm, send_onboard_error, tenant_name_exists,
+};
+use super::screen::{Event, Mode, PendingConfirm, ProdAction};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogOnlyField {
@@ -125,6 +136,181 @@ impl LogOnlyForm {
             cookie_value: self.cookie_value.trimmed().to_string(),
         })
     }
+}
+
+// ---- Key handling ----
+
+pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    let form = match &mut app.onboard.log_only_form {
+        Some(form) => form,
+        None => return Ok(()),
+    };
+    if form.busy {
+        if key.code == KeyCode::Esc {
+            form.busy = false;
+            app.onboard.log_only_form = None;
+            app.onboard.pending_id = None;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
+        }
+        return Ok(());
+    }
+
+    let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+        && form.focused == LogOnlyField::Domain;
+    if leaving_domain {
+        let cleaned = super::normalise_domain(&form.domain.value);
+        form.domain.set(cleaned);
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            app.onboard.log_only_form = None;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
+        }
+        KeyCode::Tab => form.focused = form.focused.next(),
+        KeyCode::BackTab => form.focused = form.focused.prev(),
+        KeyCode::Left if form.focused == LogOnlyField::Theme => form.cycle_theme_backward(),
+        KeyCode::Right if form.focused == LogOnlyField::Theme => form.cycle_theme_forward(),
+        KeyCode::Enter if form.focused == LogOnlyField::Submit => match form.validate() {
+            Ok(intent) => {
+                form.error = None;
+                if tenant_name_exists(&app.tenants, &intent.tenant_name) {
+                    queue_overwrite_confirm(app, PendingConfirm::LogOnly);
+                } else {
+                    start_bootstrap(app);
+                }
+            }
+            Err(error) => form.error = Some(error),
+        },
+        KeyCode::Enter => form.focused = form.focused.next(),
+        _ => {
+            if let Some(field) = form.focused_field_mut() {
+                field.handle_key(&key);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Kick off the log-only bootstrap. Public so the overwrite-confirm handler
+/// can resume it after the user confirms replacing a tenant.
+pub(crate) fn start_bootstrap(app: &mut App) {
+    let form = match &mut app.onboard.log_only_form {
+        Some(form) => form,
+        None => return,
+    };
+    let intent = match form.validate() {
+        Ok(intent) => intent,
+        Err(error) => {
+            form.error = Some(error);
+            return;
+        }
+    };
+    form.busy = true;
+    form.status = Some("Authenticating and creating log API key…".into());
+
+    let tx = app.events.tx.clone();
+    let onboard_id = uuid::Uuid::new_v4();
+    app.onboard.pending_id = Some(onboard_id);
+    tokio::spawn(async move {
+        run_bootstrap(onboard_id, intent, tx).await;
+    });
+}
+
+// ---- Completion ----
+
+pub fn handle_created(
+    app: &mut App,
+    onboard_id: uuid::Uuid,
+    tenant_name: String,
+    base_url: String,
+    theme: TenantTheme,
+    log_key: LogKeyPair,
+) -> crate::Result<()> {
+    if app.onboard.pending_id != Some(onboard_id) {
+        tracing::debug!(
+            event_id = %onboard_id,
+            pending = ?app.onboard.pending_id,
+            "dropping stale log-only completion"
+        );
+        return Ok(());
+    }
+    app.onboard.pending_id = None;
+    app.onboard.log_only_form = None;
+
+    let tenant = Tenant {
+        name: tenant_name,
+        base_url,
+        theme,
+        sa_id: None,
+        scopes: Vec::new(),
+    };
+
+    if tenant.theme == TenantTheme::Production {
+        app.prod_confirm.pending = Some(PendingProdAction::Onboard(ProdAction::SaveTenant {
+            tenant,
+            jwk: None,
+            log_key: Some(log_key),
+        }));
+        app.input_mode = InputMode::ProdConfirm;
+        return Ok(());
+    }
+
+    match persist_tenant_overwriting(app, tenant, None, Some(log_key)) {
+        Ok(()) => {
+            app.push_toast(ToastKind::Success, "Log-only environment saved");
+            app.input_mode = InputMode::Normal;
+        }
+        Err(error) => {
+            app.push_toast(ToastKind::Error, format!("Save failed: {error}"));
+            app.input_mode = InputMode::Normal;
+        }
+    }
+    Ok(())
+}
+
+// ---- Background bootstrap ----
+
+async fn run_bootstrap(
+    onboard_id: uuid::Uuid,
+    intent: LogOnlyIntent,
+    tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+) {
+    let http = match super::bootstrap::no_redirect_client() {
+        Ok(client) => client,
+        Err(error) => {
+            send_onboard_error(&tx, onboard_id, format!("HTTP client init: {error}"));
+            return;
+        }
+    };
+    let log_key = match super::bootstrap::mint_log_key_via_session(
+        &http,
+        &intent.base_url,
+        Some(&intent.cookie_name),
+        &intent.cookie_value,
+        &intent.tenant_name,
+        None,
+    )
+    .await
+    {
+        Ok(minted) => minted.key,
+        Err(error) => {
+            send_onboard_error(&tx, onboard_id, format!("log API key create: {error}"));
+            return;
+        }
+    };
+    tracing::info!(
+        tenant = intent.tenant_name,
+        api_key_id = %log_key.api_key_id,
+        "log-only API key provisioned during onboarding"
+    );
+    let _ = tx.send(AppEvent::Onboard(Event::LogOnlyReady {
+        onboard_id,
+        tenant_name: intent.tenant_name,
+        base_url: intent.base_url,
+        theme: intent.theme,
+        log_key,
+    }));
 }
 
 #[cfg(test)]

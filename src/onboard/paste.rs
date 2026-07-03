@@ -2,8 +2,16 @@
 //! The user already minted an SA elsewhere (via the AIC console or another tool)
 //! and just wants aic-edit to use it.
 
+use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::app::event::ToastKind;
+use crate::app::prod_confirm::PendingProdAction;
+use crate::app::{App, InputMode};
 use crate::config::tenant::{Tenant, TenantTheme};
 use crate::tui::widgets::text_field::{TextField, fields};
+
+use super::common::{persist_tenant_overwriting, queue_overwrite_confirm, tenant_name_exists};
+use super::screen::{Mode, PendingConfirm, ProdAction};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasteField {
@@ -131,4 +139,79 @@ impl PasteForm {
             scopes,
         }
     }
+}
+
+// ---- Key handling ----
+
+pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    let form = match &mut app.onboard.paste_form {
+        Some(f) => f,
+        None => return Ok(()),
+    };
+
+    let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+        && form.focused == PasteField::Domain;
+    if leaving_domain {
+        let cleaned = super::normalise_domain(&form.domain.value);
+        form.domain.set(cleaned);
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            app.onboard.paste_form = None;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
+        }
+        KeyCode::Tab => form.focused = form.focused.next(),
+        KeyCode::BackTab => form.focused = form.focused.prev(),
+        KeyCode::Left if form.focused == PasteField::Theme => form.cycle_theme_backward(),
+        KeyCode::Right if form.focused == PasteField::Theme => form.cycle_theme_forward(),
+        KeyCode::Enter if form.focused == PasteField::Submit => {
+            let jwk = match form.validate() {
+                Ok(v) => v,
+                Err(e) => {
+                    form.error = Some(e);
+                    return Ok(());
+                }
+            };
+            let tenant = form.into_tenant();
+            if tenant_name_exists(&app.tenants, &tenant.name) {
+                form.error = None;
+                queue_overwrite_confirm(app, PendingConfirm::Paste { tenant, jwk });
+            } else {
+                persist(app, tenant, jwk);
+            }
+        }
+        KeyCode::Enter if form.is_jwk_field() => {
+            form.jwk_input.push_newline();
+        }
+        KeyCode::Enter => form.focused = form.focused.next(),
+        _ => {
+            if let Some(f) = form.focused_field_mut() {
+                f.handle_key(&key);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Persist a pasted service-account tenant, routing production themes through
+/// the shared prod-write guard. Public so the overwrite-confirm handler can
+/// resume it after the user confirms replacing a tenant.
+pub(crate) fn persist(app: &mut App, tenant: Tenant, jwk: serde_json::Value) {
+    app.onboard.paste_form = None;
+    if tenant.theme == TenantTheme::Production {
+        app.prod_confirm.pending = Some(PendingProdAction::Onboard(ProdAction::SaveTenant {
+            tenant,
+            jwk: Some(jwk),
+            log_key: None,
+        }));
+        app.input_mode = InputMode::ProdConfirm;
+        return;
+    }
+
+    match persist_tenant_overwriting(app, tenant, Some(jwk), None) {
+        Ok(()) => app.push_toast(ToastKind::Success, "Tenant saved"),
+        Err(e) => app.push_toast(ToastKind::Error, format!("Save failed: {e}")),
+    }
+    app.input_mode = InputMode::Normal;
 }

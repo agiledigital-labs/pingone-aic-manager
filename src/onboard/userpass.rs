@@ -8,8 +8,15 @@
 //! Passkey / push (PollingWaitCallback) is intentionally unsupported — those
 //! flows need a real browser. Pattern 1 is the answer in that case.
 
+use crossterm::event::{KeyCode, KeyEvent};
+
+use crate::app::event::AppEvent;
+use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
 use crate::tui::widgets::text_field::{TextField, fields};
+
+use super::common::{queue_overwrite_confirm, send_onboard_error, tenant_name_exists};
+use super::screen::{Event, Mode, PendingConfirm};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpField {
@@ -331,4 +338,361 @@ pub fn walk_with_extra(
     }
 
     CallbackOutcome::Ready(body)
+}
+
+// ---- Key handling ----
+
+pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    let form = match &mut app.onboard.up_form {
+        Some(f) => f,
+        None => return Ok(()),
+    };
+
+    // OTP / extra prompt is in flight — only the prompt input listens.
+    if form.pending_prompt.is_some() {
+        match key.code {
+            KeyCode::Esc => {
+                form.pending_prompt = None;
+                form.prompt_input.clear();
+                form.busy = false;
+                form.status = None;
+                app.onboard.pending_callback_body = None;
+            }
+            KeyCode::Enter if !form.prompt_input.is_empty() => {
+                let extra = form.prompt_input.clone();
+                form.prompt_input.clear();
+                form.pending_prompt = None;
+                form.status = Some("Continuing authentication…".into());
+                continue_with_extra(app, extra);
+            }
+            KeyCode::Backspace => {
+                form.prompt_input.pop();
+            }
+            KeyCode::Char(c) => {
+                form.prompt_input.push(c);
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    if form.busy {
+        if key.code == KeyCode::Esc {
+            form.busy = false;
+            form.status = None;
+            app.onboard.up_form = None;
+            app.onboard.pending_id = None;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
+        }
+        return Ok(());
+    }
+
+    let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+        && form.focused == UpField::Domain;
+    if leaving_domain {
+        let cleaned = super::normalise_domain(&form.domain.value);
+        form.domain.set(cleaned);
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            app.onboard.up_form = None;
+            app.input_mode = InputMode::Onboard(Mode::Menu);
+        }
+        KeyCode::Tab => form.focused = form.focused.next(),
+        KeyCode::BackTab => form.focused = form.focused.prev(),
+        KeyCode::Left if form.focused == UpField::Theme => form.cycle_theme_backward(),
+        KeyCode::Right if form.focused == UpField::Theme => form.cycle_theme_forward(),
+        KeyCode::Enter if form.focused == UpField::Submit => {
+            if let Err(e) = form.validate() {
+                form.error = Some(e);
+            } else {
+                let name = form.name.trimmed().to_string();
+                form.error = None;
+                if tenant_name_exists(&app.tenants, &name) {
+                    queue_overwrite_confirm(app, PendingConfirm::UserPass);
+                } else {
+                    start_bootstrap(app);
+                }
+            }
+        }
+        KeyCode::Enter => form.focused = form.focused.next(),
+        _ => {
+            if let Some(f) = form.focused_field_mut() {
+                f.handle_key(&key);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Kick off the username/password bootstrap. Public so the overwrite-confirm
+/// handler can resume it after the user confirms replacing a tenant.
+pub(crate) fn start_bootstrap(app: &mut App) {
+    let form = match &mut app.onboard.up_form {
+        Some(f) => f,
+        None => return,
+    };
+    form.busy = true;
+    form.status = Some("Starting authentication journey…".into());
+    let name = form.name.trimmed().to_string();
+    let base_url = form.normalised_base_url();
+    let theme = form.theme;
+    let username = form.username.trimmed().to_string();
+    let password = form.password.value.clone();
+    let realm_path = form.realm_path();
+    let tx = app.events.tx.clone();
+    let scopes: Vec<String> = super::bootstrap::SA_SCOPES
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let onboard_id = uuid::Uuid::new_v4();
+    app.onboard.pending_id = Some(onboard_id);
+
+    tokio::spawn(async move {
+        run_bootstrap(
+            onboard_id, name, base_url, theme, realm_path, username, password, None, None, scopes,
+            tx,
+        )
+        .await;
+    });
+}
+
+fn continue_with_extra(app: &mut App, extra: String) {
+    let body = match app.onboard.pending_callback_body.take() {
+        Some(b) => b,
+        None => return,
+    };
+    let form = match &mut app.onboard.up_form {
+        Some(f) => f,
+        None => return,
+    };
+    let name = form.name.trimmed().to_string();
+    let base_url = form.normalised_base_url();
+    let theme = form.theme;
+    let username = form.username.trimmed().to_string();
+    let password = form.password.value.clone();
+    let realm_path = form.realm_path();
+    let scopes: Vec<String> = super::bootstrap::SA_SCOPES
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let tx = app.events.tx.clone();
+    // Re-use the existing onboard id — this is a continuation of the same
+    // user-initiated bootstrap. If the user cancelled and the id is gone,
+    // there's nothing to continue.
+    let Some(onboard_id) = app.onboard.pending_id else {
+        return;
+    };
+    tokio::spawn(async move {
+        run_bootstrap(
+            onboard_id,
+            name,
+            base_url,
+            theme,
+            realm_path,
+            username,
+            password,
+            Some(body),
+            Some(extra),
+            scopes,
+            tx,
+        )
+        .await;
+    });
+}
+
+// ---- Background bootstrap ----
+
+#[allow(clippy::too_many_arguments)]
+async fn run_bootstrap(
+    onboard_id: uuid::Uuid,
+    tenant_name: String,
+    base_url: String,
+    theme: TenantTheme,
+    realm_path: String,
+    username: String,
+    password: String,
+    resume_body: Option<serde_json::Value>,
+    extra: Option<String>,
+    _scopes: Vec<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+) {
+    use super::bootstrap::*;
+    let http = match no_redirect_client() {
+        Ok(c) => c,
+        Err(e) => {
+            send_onboard_error(&tx, onboard_id, format!("HTTP client init: {e}"));
+            return;
+        }
+    };
+    let auth_url = format!("{base_url}/am/json{realm_path}/authenticate");
+
+    let mut body = match resume_body {
+        Some(b) => b,
+        None => {
+            // AIC's load balancer (ALB) rejects POSTs with no
+            // `Content-Length` header → HTTP 411. `curl -X POST` adds
+            // `Content-Length: 0` automatically; reqwest+hyper does not,
+            // even with `.body("")`. Send `{}` instead — AM ignores body
+            // content on the first round, and we get a deterministic
+            // `Content-Length: 2`.
+            let resp = match http
+                .post(&auth_url)
+                .header("Accept-API-Version", "resource=2.0, protocol=1.0")
+                .header("Content-Type", "application/json")
+                .body("{}")
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    send_onboard_error(&tx, onboard_id, format!("authenticate: {e}"));
+                    return;
+                }
+            };
+            if !resp.status().is_success() {
+                send_onboard_error(
+                    &tx,
+                    onboard_id,
+                    format!("authenticate: HTTP {}", resp.status()),
+                );
+                return;
+            }
+            match resp.json::<serde_json::Value>().await {
+                Ok(v) => v,
+                Err(e) => {
+                    send_onboard_error(&tx, onboard_id, format!("authenticate body: {e}"));
+                    return;
+                }
+            }
+        }
+    };
+
+    let mut current_extra = extra;
+    for _round in 0..6 {
+        if let Some(token_id) = body.get("tokenId").and_then(|v| v.as_str()) {
+            let token_id = token_id.to_string();
+            let cookie_name = match discover_cookie_name(&http, &base_url).await {
+                Ok(n) => n,
+                Err(e) => {
+                    send_onboard_error(&tx, onboard_id, format!("serverinfo: {e}"));
+                    return;
+                }
+            };
+            let bearer = match session_to_bearer(&http, &base_url, &cookie_name, &token_id).await {
+                Ok(bearer) => bearer,
+                Err(e) => {
+                    send_onboard_error(&tx, onboard_id, format!("authorize/token: {e}"));
+                    return;
+                }
+            };
+            let minted = match mint_log_key_from_bearer(
+                &http,
+                &base_url,
+                &tenant_name,
+                &bearer,
+                Some(username.as_str()),
+            )
+            .await
+            {
+                Ok(minted) => minted,
+                Err(e) => {
+                    send_onboard_error(&tx, onboard_id, format!("log API key create: {e}"));
+                    return;
+                }
+            };
+            let kid = uuid::Uuid::new_v4().to_string();
+            let priv_jwk = match generate_rsa_jwk(&kid) {
+                Ok(j) => j,
+                Err(e) => {
+                    send_onboard_error(&tx, onboard_id, format!("RSA keygen: {e}"));
+                    return;
+                }
+            };
+            let pub_jwk = crate::aic::auth::public_jwk(&priv_jwk);
+            let sa_id = match create_service_account(
+                &http,
+                &base_url,
+                &bearer,
+                &minted.credential_name,
+                &format!("Created by aic-edit for {tenant_name}"),
+                &pub_jwk,
+            )
+            .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    send_onboard_error(&tx, onboard_id, format!("SA create: {e}"));
+                    return;
+                }
+            };
+            let log_key = Some(minted.key);
+            let _ = tx.send(AppEvent::Onboard(Event::ServiceAccountReady {
+                onboard_id,
+                tenant_name,
+                base_url,
+                theme,
+                sa_id,
+                jwk: priv_jwk,
+                log_key,
+            }));
+            return;
+        }
+
+        let outcome = walk_with_extra(&body, &username, &password, current_extra.as_deref());
+        current_extra = None;
+        match outcome {
+            CallbackOutcome::Ready(filled) => {
+                let resp = match http
+                    .post(&auth_url)
+                    .header("Accept-API-Version", "resource=2.0, protocol=1.0")
+                    .header("Content-Type", "application/json")
+                    .json(&filled)
+                    .send()
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        send_onboard_error(&tx, onboard_id, format!("authenticate POST: {e}"));
+                        return;
+                    }
+                };
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let txt = resp.text().await.unwrap_or_default();
+                    send_onboard_error(
+                        &tx,
+                        onboard_id,
+                        format!("authentication failed ({status}): {txt}"),
+                    );
+                    return;
+                }
+                body = match resp.json::<serde_json::Value>().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        send_onboard_error(&tx, onboard_id, format!("authenticate body: {e}"));
+                        return;
+                    }
+                };
+            }
+            CallbackOutcome::PromptRequired {
+                prompt,
+                body: pending,
+            } => {
+                let _ = tx.send(AppEvent::Onboard(Event::AuthProgress {
+                    onboard_id,
+                    body: pending,
+                    prompt,
+                }));
+                return;
+            }
+            CallbackOutcome::Unsupported(msg) => {
+                send_onboard_error(&tx, onboard_id, msg);
+                return;
+            }
+        }
+    }
+
+    send_onboard_error(&tx, onboard_id, "too many authentication rounds — aborting");
 }
