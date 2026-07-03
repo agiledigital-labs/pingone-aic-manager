@@ -63,8 +63,8 @@ The ESLint config flags the constructs that are runtime-verified to break
 - object shorthand `{ a }`, object/array destructuring, default parameters —
   **parse errors**.
 - `const` in a `for`/`for-in`/`for-of` initializer — **parse error**; `const` at
-  the top level or anywhere in a loop body (including nested `if`/block bodies)
-  parses but reads back `undefined`.
+  the top level or in any loop body (`for`/`for-in`/`for-of`/`while`/`do-while`,
+  including nested blocks) parses but reads back `undefined`.
 - the same `const` name declared twice in one function — **parse error**, even
   across separate, non-nested blocks (Rhino scopes `const` to the whole function
   for redeclaration). Use distinct names, or `var`.

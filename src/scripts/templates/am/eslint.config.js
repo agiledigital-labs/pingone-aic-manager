@@ -123,6 +123,8 @@ const LOOP_NODE_TYPES = new Set([
   "ForStatement",
   "ForInStatement",
   "ForOfStatement",
+  "WhileStatement",
+  "DoWhileStatement",
 ]);
 
 function isFunctionNode(node) {
@@ -171,7 +173,7 @@ const noConstInLoopBody = {
         context.report({
           node,
           message:
-            "'const' inside a loop body parses but reads back as undefined on Rhino 1.7.14, including when nested in an if/block. Use 'var'.",
+            "'const' inside a for/for-in/for-of/while/do-while loop body parses but reads back as undefined on Rhino 1.7.14, including when nested in an if/block. Use 'var'.",
         });
       },
     };
