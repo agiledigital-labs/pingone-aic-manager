@@ -373,9 +373,11 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             }
 
             let agent = AgentClient::connect_or_spawn().await?;
-            agent
-                .put_log_key(&tenant, api_key_id.clone(), api_key_secret)
-                .await?;
+            let pair = crate::logs::LogKeyPair {
+                api_key_id: api_key_id.clone(),
+                api_key_secret,
+            };
+            crate::logs::put_log_key(agent, &tenant, &pair).await?;
             println!("stored log API key {api_key_id} for tenant {tenant}");
             verify_stored_key(&tenant).await;
             Ok(())
@@ -422,9 +424,7 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             let api_key_id = pair.api_key_id.clone();
 
             let agent = AgentClient::connect_or_spawn().await?;
-            agent
-                .put_log_key(&tenant, api_key_id.clone(), pair.api_key_secret)
-                .await?;
+            crate::logs::put_log_key(agent, &tenant, &pair).await?;
             println!("created log key {name} ({api_key_id}) for tenant {tenant}");
             verify_stored_key(&tenant).await;
             Ok(())
@@ -433,7 +433,7 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             let tenant = tenant_for(tenant)?;
             crate::cli::ensure_agent_unlocked().await?;
             let agent = AgentClient::connect_or_spawn().await?;
-            let pair = agent.get_log_key(&tenant).await?;
+            let pair = crate::logs::get_log_key(agent, &tenant).await?;
             println!("tenant: {tenant}");
             println!("api_key_id: {}", pair.api_key_id);
             println!("secret: set (hidden)");
@@ -443,7 +443,7 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             let tenant = tenant_for(tenant)?;
             crate::cli::ensure_agent_unlocked().await?;
             let agent = AgentClient::connect_or_spawn().await?;
-            agent.remove_log_key(&tenant).await?;
+            crate::logs::remove_log_key(agent, &tenant).await?;
             println!("removed log API key for tenant {tenant}");
             Ok(())
         }

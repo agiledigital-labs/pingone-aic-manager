@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::agent::AgentClient;
 use crate::cli::{tenant_config_for, tenant_for};
-use crate::config::LogKeyPair;
+use crate::logs::LogKeyPair;
 use crate::logs::db::JourneyAttempt;
 use crate::logs::{api, db, state};
 use crate::{Error, Result};
@@ -36,7 +36,7 @@ pub struct FetchContext {
 pub async fn fetch_context(tenant: Option<String>) -> Result<FetchContext> {
     let tenant = tenant_config_for(tenant)?;
     let agent = AgentClient::connect_or_spawn().await?;
-    let key = agent.get_log_key(&tenant.name).await?;
+    let key = crate::logs::get_log_key(agent, &tenant.name).await?;
     let client = Client::builder().build()?;
     Ok(FetchContext {
         tenant: tenant.name,

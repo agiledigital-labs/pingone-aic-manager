@@ -15,7 +15,8 @@ use crate::app::event::{AppEvent, EventHandler, ToastKind};
 use crate::config::crypto::{self, Dek};
 use crate::config::tenant::Tenant;
 use crate::config::wraps::WrapsFile;
-use crate::config::{self, LogKeyMap, LogKeyPair, ProjectConfig, Settings};
+use crate::config::{self, ProjectConfig, Settings, VaultArtifact};
+use crate::logs::{LogKeyMap, LogKeyPair};
 use crate::tui::toast::Toast;
 use crate::{Error, Result};
 
@@ -291,8 +292,10 @@ impl App {
                 self.jwks = map;
             }
         }
-        if let Ok(map) = config::load_plain_log_key_map() {
-            self.log_keys = map;
+        if let Ok(Some(bytes)) = config::load_artifact_bytes(VaultArtifact::LogKeys, None) {
+            if let Ok(map) = serde_json::from_slice::<LogKeyMap>(&bytes) {
+                self.log_keys = map;
+            }
         }
     }
 
@@ -327,17 +330,17 @@ impl App {
     /// Write the current log API key map using the same vault mode and DEK
     /// source as the service-account JWK map.
     pub fn persist_log_keys(&self) -> Result<()> {
-        let encrypt = self.settings.map(|s| s.encrypt_keys).unwrap_or(true);
-        if encrypt {
-            let dek = self
-                .dek
-                .as_ref()
-                .ok_or_else(|| Error::Crypto("not unlocked — no DEK in memory".into()))?;
-            config::save_log_key_map(&self.log_keys, dek)?;
+        let bytes = serde_json::to_vec(&self.log_keys)?;
+        let dek = if self.settings.map(|s| s.encrypt_keys).unwrap_or(true) {
+            Some(
+                self.dek
+                    .as_ref()
+                    .ok_or_else(|| Error::Crypto("not unlocked — no DEK in memory".into()))?,
+            )
         } else {
-            config::save_plain_log_key_map(&self.log_keys)?;
-        }
-        Ok(())
+            None
+        };
+        config::save_artifact_bytes(VaultArtifact::LogKeys, &bytes, dek)
     }
 
     pub fn push_toast(&mut self, kind: ToastKind, message: impl Into<String>) {

@@ -1,3 +1,31 @@
+//! Project configuration + the local credential vault.
+//!
+//! # Adding a new encrypted per-tenant artifact
+//!
+//! Encrypted per-tenant material (the service-account JWK map, log API keys, …)
+//! lives in `.aic-edit/` as a `<stem>.enc` / `<stem>.plain` pair — AES-256-GCM
+//! under the in-memory DEK when encryption is on, or a mode-600 plaintext file
+//! when the user opted out. The pair semantics, permissions, and gitignore
+//! coverage are handled generically here so a new artifact does **not** repeat
+//! the plumbing. To add one:
+//!
+//! 1. Add a [`VaultArtifact`] variant + its row in [`VaultArtifact::ALL`]
+//!    (the file stem, e.g. `"log-keys"`). [`ProjectConfig::write_gitignore`],
+//!    [`enable_encryption`], and [`disable_encryption`] iterate `ALL`, so the
+//!    new stem is covered automatically.
+//! 2. Define a typed, secret-redacting wrapper in your feature dir (see
+//!    `crate::logs::LogKeyPair`) and serialise your per-tenant map to JSON
+//!    bytes; the registry treats the payload as opaque
+//!    ([`load_artifact_bytes`] / [`save_artifact_bytes`]).
+//! 3. Reach it through the generic agent secret verbs
+//!    (`Request::{PutSecret,GetSecret,RemoveSecret}` keyed by the artifact's
+//!    [`VaultArtifact::kind`]) rather than adding a new verb triple.
+//!
+//! The JWK map (`keys`) predates this and keeps its bespoke `PutDek` /
+//! `UnlockPlain` agent path (the DEK is derived client-side, not round-tripped
+//! as an opaque secret), but still registers here for gitignore + the
+//! enable/disable transitions.
+
 pub mod crypto;
 pub mod tenant;
 pub mod wraps;
@@ -13,22 +41,95 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 pub use tenant::{Tenant, TenantTheme};
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LogKeyPair {
-    pub api_key_id: String,
-    pub api_key_secret: String,
+/// An encrypted per-tenant artifact stored as a `<stem>.enc` / `<stem>.plain`
+/// pair in `.aic-edit/`. The registry ([`VaultArtifact::ALL`]) drives gitignore
+/// coverage and the encrypt/decrypt transitions so each new artifact is one
+/// entry here plus feature-local typed code — see the module header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaultArtifact {
+    /// The service-account JWK map (`keys.enc` / `keys.plain`). Reached via the
+    /// bespoke `PutDek` / `UnlockPlain` agent path, not the generic verbs.
+    Jwks,
+    /// The per-tenant log API key map (`log-keys.enc` / `log-keys.plain`).
+    LogKeys,
 }
 
-impl std::fmt::Debug for LogKeyPair {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LogKeyPair")
-            .field("api_key_id", &self.api_key_id)
-            .field("api_key_secret", &"<hidden>")
-            .finish()
+impl VaultArtifact {
+    /// Every registered artifact. Iterated by gitignore + the encrypt/decrypt
+    /// transitions so adding a variant here is all it takes for coverage.
+    pub const ALL: &'static [VaultArtifact] = &[VaultArtifact::Jwks, VaultArtifact::LogKeys];
+
+    /// The wire name used by the generic agent secret verbs (`kind` field).
+    pub fn kind(self) -> &'static str {
+        match self {
+            VaultArtifact::Jwks => "keys",
+            VaultArtifact::LogKeys => "log-keys",
+        }
+    }
+
+    /// The on-disk file stem; the pair is `<stem>.enc` / `<stem>.plain`.
+    pub fn file_stem(self) -> &'static str {
+        match self {
+            VaultArtifact::Jwks => "keys",
+            VaultArtifact::LogKeys => "log-keys",
+        }
+    }
+
+    /// Resolve a `kind` name (as sent over the agent protocol) back to its
+    /// artifact.
+    pub fn from_kind(kind: &str) -> Option<Self> {
+        VaultArtifact::ALL
+            .iter()
+            .copied()
+            .find(|artifact| artifact.kind() == kind)
+    }
+
+    fn enc_path(self) -> PathBuf {
+        ProjectConfig::dir().join(format!("{}.enc", self.file_stem()))
+    }
+
+    fn plain_path(self) -> PathBuf {
+        ProjectConfig::dir().join(format!("{}.plain", self.file_stem()))
     }
 }
 
-pub type LogKeyMap = HashMap<String, LogKeyPair>;
+/// Load an artifact's cleartext map bytes from whichever on-disk form matches
+/// the vault mode. Returns `None` when nothing has been stored yet.
+///
+/// - `Encrypted { dek }` decrypts `<stem>.enc`.
+/// - `Plain` reads `<stem>.plain` verbatim.
+///
+/// The payload is opaque JSON bytes — callers own (de)serialisation of the
+/// concrete per-tenant map.
+pub fn load_artifact_bytes(
+    artifact: VaultArtifact,
+    dek: Option<&crypto::Dek>,
+) -> Result<Option<Vec<u8>>> {
+    match dek {
+        Some(dek) => match load_optional_file(&artifact.enc_path())? {
+            Some(data) => Ok(Some(crypto::decrypt_data(&data, dek)?)),
+            None => Ok(None),
+        },
+        None => load_optional_file(&artifact.plain_path()),
+    }
+}
+
+/// Persist an artifact's cleartext map bytes in the form the vault mode
+/// dictates (encrypted `<stem>.enc` under `dek`, else plaintext `<stem>.plain`),
+/// always at mode 600. The payload is treated as opaque JSON bytes.
+pub fn save_artifact_bytes(
+    artifact: VaultArtifact,
+    bytes: &[u8],
+    dek: Option<&crypto::Dek>,
+) -> Result<()> {
+    match dek {
+        Some(dek) => {
+            let enc = crypto::encrypt_data(bytes, dek)?;
+            save_private_file(&artifact.enc_path(), &enc)
+        }
+        None => save_private_file(&artifact.plain_path(), bytes),
+    }
+}
 
 /// Tenant + realm inferred from the directory a command was invoked in, when
 /// that directory is inside `workspace/<tenant>/…`. Populated once at CLI
@@ -131,55 +232,19 @@ pub fn unlock_with_password(
 }
 
 pub fn decrypt_keys_file(dek: &crypto::Dek) -> Result<HashMap<String, serde_json::Value>> {
-    match ProjectConfig::load_keys_enc()? {
-        Some(data) => {
-            let plaintext = crypto::decrypt_data(&data, dek)?;
-            Ok(serde_json::from_slice(&plaintext)?)
-        }
-        None => Ok(HashMap::new()),
-    }
+    decode_json_map(load_artifact_bytes(VaultArtifact::Jwks, Some(dek))?)
 }
 
 /// Encrypt + persist the JWK map using the in-memory DEK.
 pub fn save_jwk_map(map: &HashMap<String, serde_json::Value>, dek: &crypto::Dek) -> Result<()> {
-    let bytes = serde_json::to_vec(map)?;
-    let enc = crypto::encrypt_data(&bytes, dek)?;
-    ProjectConfig::save_keys_enc(&enc)?;
-    Ok(())
+    save_artifact_bytes(VaultArtifact::Jwks, &serde_json::to_vec(map)?, Some(dek))
 }
 
-pub fn decrypt_log_keys_file(dek: &crypto::Dek) -> Result<LogKeyMap> {
-    decode_encrypted_log_key_map(ProjectConfig::load_log_keys_enc()?, dek)
-}
-
-pub fn save_log_key_map(map: &LogKeyMap, dek: &crypto::Dek) -> Result<()> {
-    let enc = encode_encrypted_log_key_map(map, dek)?;
-    ProjectConfig::save_log_keys_enc(&enc)
-}
-
-pub fn load_plain_log_key_map() -> Result<LogKeyMap> {
-    decode_plain_log_key_map(ProjectConfig::load_log_keys_plain()?)
-}
-
-pub fn save_plain_log_key_map(map: &LogKeyMap) -> Result<()> {
-    ProjectConfig::save_log_keys_plain(&serde_json::to_vec(map)?)
-}
-
-fn encode_encrypted_log_key_map(map: &LogKeyMap, dek: &crypto::Dek) -> Result<Vec<u8>> {
-    crypto::encrypt_data(&serde_json::to_vec(map)?, dek)
-}
-
-fn decode_encrypted_log_key_map(data: Option<Vec<u8>>, dek: &crypto::Dek) -> Result<LogKeyMap> {
-    match data {
-        Some(data) => {
-            let plaintext = crypto::decrypt_data(&data, dek)?;
-            Ok(serde_json::from_slice(&plaintext)?)
-        }
-        None => Ok(HashMap::new()),
-    }
-}
-
-fn decode_plain_log_key_map(data: Option<Vec<u8>>) -> Result<LogKeyMap> {
+/// Deserialise an artifact's opaque map bytes into a `HashMap`, tolerating both
+/// "nothing stored" (`None`) and an empty plaintext file as an empty map.
+fn decode_json_map<V: serde::de::DeserializeOwned>(
+    data: Option<Vec<u8>>,
+) -> Result<HashMap<String, V>> {
     match data {
         Some(data) if !data.is_empty() => Ok(serde_json::from_slice(&data)?),
         Some(_) | None => Ok(HashMap::new()),
@@ -196,23 +261,34 @@ fn decode_plain_log_key_map(data: Option<Vec<u8>>) -> Result<LogKeyMap> {
 /// wrap that protects this DEK before calling this function, otherwise
 /// `keys.enc` would be unreadable on next launch.
 pub fn enable_encryption(dek: &crypto::Dek) -> Result<()> {
-    // First-run installs never wrote keys.plain (no factors were added before
-    // now), so substitute an empty JSON map. Decrypting empty bytes would
-    // fail the `from_slice` round-trip in `decrypt_keys_file`.
-    let plain = match ProjectConfig::load_keys_plain()? {
-        Some(bytes) if !bytes.is_empty() => bytes,
-        _ => b"{}".to_vec(),
-    };
-    let enc = crypto::encrypt_data(&plain, dek)?;
-    let log_keys_enc = ProjectConfig::load_log_keys_plain()?
-        .map(|bytes| crypto::encrypt_data(if bytes.is_empty() { b"{}" } else { &bytes }, dek))
-        .transpose()?;
-    ProjectConfig::save_keys_enc(&enc)?;
-    if let Some(log_keys_enc) = log_keys_enc {
-        ProjectConfig::save_log_keys_enc(&log_keys_enc)?;
+    for &artifact in VaultArtifact::ALL {
+        match artifact {
+            // The JWK map must always exist encrypted after this: first-run
+            // installs never wrote keys.plain (no factors added yet), so
+            // substitute an empty JSON map. Decrypting empty bytes would fail
+            // the round-trip in `decrypt_keys_file`.
+            VaultArtifact::Jwks => {
+                let plain = match load_optional_file(&artifact.plain_path())? {
+                    Some(bytes) if !bytes.is_empty() => bytes,
+                    _ => b"{}".to_vec(),
+                };
+                save_artifact_bytes(artifact, &plain, Some(dek))?;
+            }
+            // Other artifacts are optional — only migrate a plaintext file if
+            // one is present, leaving nothing behind if the feature was unused.
+            _ => {
+                if let Some(bytes) = load_optional_file(&artifact.plain_path())? {
+                    let bytes = if bytes.is_empty() {
+                        b"{}".to_vec()
+                    } else {
+                        bytes
+                    };
+                    save_artifact_bytes(artifact, &bytes, Some(dek))?;
+                }
+            }
+        }
+        let _ = fs::remove_file(artifact.plain_path());
     }
-    let _ = fs::remove_file(ProjectConfig::keys_plain_path());
-    let _ = fs::remove_file(ProjectConfig::log_keys_plain_path());
     let mut settings = Settings::load()?.unwrap_or_default();
     settings.encrypt_keys = true;
     settings.save()?;
@@ -225,21 +301,24 @@ pub fn enable_encryption(dek: &crypto::Dek) -> Result<()> {
 /// `settings.toml` to `encrypt_keys = false`. Called by the last-factor
 /// guard in the Settings screen.
 pub fn disable_encryption(dek: &crypto::Dek) -> Result<()> {
-    let plain = decrypt_keys_file(dek)?;
-    let bytes = serde_json::to_vec(&plain)?;
-    let log_keys = ProjectConfig::load_log_keys_enc()?
-        .map(|data| {
-            let plaintext = crypto::decrypt_data(&data, dek)?;
-            let map: LogKeyMap = serde_json::from_slice(&plaintext)?;
-            Ok::<_, crate::Error>(map)
-        })
-        .transpose()?;
-    ProjectConfig::save_keys_plain(&bytes)?;
-    if let Some(log_keys) = log_keys {
-        save_plain_log_key_map(&log_keys)?;
+    for &artifact in VaultArtifact::ALL {
+        match artifact {
+            // The JWK map always lands as plaintext (even if empty) — the app
+            // expects keys.plain to exist in no-encryption mode.
+            VaultArtifact::Jwks => {
+                let bytes =
+                    load_artifact_bytes(artifact, Some(dek))?.unwrap_or_else(|| b"{}".to_vec());
+                save_artifact_bytes(artifact, &bytes, None)?;
+            }
+            // Other artifacts round-trip only when they had an encrypted file.
+            _ => {
+                if let Some(bytes) = load_artifact_bytes(artifact, Some(dek))? {
+                    save_artifact_bytes(artifact, &bytes, None)?;
+                }
+            }
+        }
+        let _ = fs::remove_file(artifact.enc_path());
     }
-    let _ = fs::remove_file(ProjectConfig::keys_path());
-    let _ = fs::remove_file(ProjectConfig::log_keys_path());
     let _ = fs::remove_file(ProjectConfig::wraps_path());
     let mut settings = Settings::load()?.unwrap_or_default();
     settings.encrypt_keys = false;
@@ -387,11 +466,7 @@ impl ProjectConfig {
     }
 
     pub fn keys_path() -> PathBuf {
-        Self::dir().join("keys.enc")
-    }
-
-    pub fn log_keys_path() -> PathBuf {
-        Self::dir().join("log-keys.enc")
+        VaultArtifact::Jwks.enc_path()
     }
 
     pub fn wraps_path() -> PathBuf {
@@ -399,11 +474,7 @@ impl ProjectConfig {
     }
 
     pub fn keys_plain_path() -> PathBuf {
-        Self::dir().join("keys.plain")
-    }
-
-    pub fn log_keys_plain_path() -> PathBuf {
-        Self::dir().join("log-keys.plain")
+        VaultArtifact::Jwks.plain_path()
     }
 
     pub fn config_path() -> PathBuf {
@@ -452,65 +523,39 @@ impl ProjectConfig {
     pub fn write_gitignore() -> Result<()> {
         fs::create_dir_all(Self::dir())?;
         let path = Self::dir().join(".gitignore");
-        // wraps.toml contains the (encrypted) DEK envelope, including the
-        // FIDO2 credential id for any enrolled security_keys — opaque but
-        // device-specific, so we never check it in.
-        let content = "keys.enc\nkeys.plain\nlog-keys.enc\nlog-keys.plain\nwraps.toml\nlocal-config/\n*.log\n";
+        // Every vault artifact's .enc/.plain pair, plus wraps.toml — which
+        // holds the (encrypted) DEK envelope and the FIDO2 credential id for
+        // any enrolled security_keys (opaque but device-specific). Never
+        // check any of these in.
+        let mut content = String::new();
+        for &artifact in VaultArtifact::ALL {
+            content.push_str(&format!(
+                "{stem}.enc\n{stem}.plain\n",
+                stem = artifact.file_stem()
+            ));
+        }
+        content.push_str("wraps.toml\nlocal-config/\n*.log\n");
         fs::write(path, content)?;
         Ok(())
     }
 
     /// Save the encrypted JWK map (Argon2id + AES-256-GCM) at mode 600.
     pub fn save_keys_enc(data: &[u8]) -> Result<()> {
-        fs::create_dir_all(Self::dir())?;
-        let path = Self::keys_path();
-        fs::write(&path, data)?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-        Ok(())
+        save_private_file(&Self::keys_path(), data)
     }
 
     pub fn load_keys_enc() -> Result<Option<Vec<u8>>> {
-        let path = Self::keys_path();
-        if !path.exists() {
-            return Ok(None);
-        }
-        Ok(Some(fs::read(path)?))
-    }
-
-    /// Save the encrypted log API key map at mode 600.
-    pub fn save_log_keys_enc(data: &[u8]) -> Result<()> {
-        save_private_file(&Self::log_keys_path(), data)
-    }
-
-    pub fn load_log_keys_enc() -> Result<Option<Vec<u8>>> {
-        load_optional_file(&Self::log_keys_path())
+        load_optional_file(&Self::keys_path())
     }
 
     /// Save unencrypted JWK map (mode 600). Used when the user opts out of
     /// master-password protection.
     pub fn save_keys_plain(data: &[u8]) -> Result<()> {
-        fs::create_dir_all(Self::dir())?;
-        let path = Self::keys_plain_path();
-        fs::write(&path, data)?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-        Ok(())
+        save_private_file(&Self::keys_plain_path(), data)
     }
 
     pub fn load_keys_plain() -> Result<Option<Vec<u8>>> {
-        let path = Self::keys_plain_path();
-        if !path.exists() {
-            return Ok(None);
-        }
-        Ok(Some(fs::read(path)?))
-    }
-
-    /// Save the unencrypted log API key map at mode 600.
-    pub fn save_log_keys_plain(data: &[u8]) -> Result<()> {
-        save_private_file(&Self::log_keys_plain_path(), data)
-    }
-
-    pub fn load_log_keys_plain() -> Result<Option<Vec<u8>>> {
-        load_optional_file(&Self::log_keys_plain_path())
+        load_optional_file(&Self::keys_plain_path())
     }
 }
 
@@ -555,24 +600,22 @@ mod tests {
         }
     }
 
-    fn sample_log_keys() -> LogKeyMap {
-        HashMap::from([(
-            "sandbox".to_string(),
-            LogKeyPair {
-                api_key_id: "log-key-id".to_string(),
-                api_key_secret: "log-key-secret".to_string(),
-            },
-        )])
+    /// A stand-in per-tenant map — the registry treats artifact payloads as
+    /// opaque JSON bytes, so any serialisable map exercises the generic path.
+    fn sample_map() -> HashMap<String, String> {
+        HashMap::from([("sandbox".to_string(), "opaque-secret".to_string())])
     }
 
     #[test]
-    fn log_key_map_plain_save_load_round_trip() {
+    fn artifact_bytes_plain_save_load_round_trip() {
         let dir = TestDir::new();
         let path = dir.path("log-keys.plain");
-        let expected = sample_log_keys();
+        let expected = sample_map();
 
+        // Mirror `save_artifact_bytes(_, _, None)`: plaintext at mode 600.
         save_private_file(&path, &serde_json::to_vec(&expected).unwrap()).unwrap();
-        let actual = decode_plain_log_key_map(load_optional_file(&path).unwrap()).unwrap();
+        let actual: HashMap<String, String> =
+            decode_json_map(load_optional_file(&path).unwrap()).unwrap();
 
         assert_eq!(actual, expected);
         assert_eq!(
@@ -582,16 +625,19 @@ mod tests {
     }
 
     #[test]
-    fn log_key_map_encrypted_save_load_round_trip() {
+    fn artifact_bytes_encrypted_save_load_round_trip() {
         let dir = TestDir::new();
         let path = dir.path("log-keys.enc");
-        let expected = sample_log_keys();
+        let expected = sample_map();
         let dek = crypto::Dek::random();
 
-        let encrypted = encode_encrypted_log_key_map(&expected, &dek).unwrap();
+        // Mirror `save_artifact_bytes(_, _, Some(dek))`: AES-256-GCM at mode 600.
+        let encrypted =
+            crypto::encrypt_data(&serde_json::to_vec(&expected).unwrap(), &dek).unwrap();
         save_private_file(&path, &encrypted).unwrap();
-        let actual =
-            decode_encrypted_log_key_map(load_optional_file(&path).unwrap(), &dek).unwrap();
+        let plaintext =
+            crypto::decrypt_data(&load_optional_file(&path).unwrap().unwrap(), &dek).unwrap();
+        let actual: HashMap<String, String> = decode_json_map(Some(plaintext)).unwrap();
 
         assert_eq!(actual, expected);
         assert_ne!(
@@ -602,6 +648,30 @@ mod tests {
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn missing_artifact_bytes_decode_as_empty_map() {
+        let empty: HashMap<String, String> = decode_json_map(None).unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn gitignore_covers_every_artifact_stem() {
+        for &artifact in VaultArtifact::ALL {
+            for suffix in [".enc", ".plain"] {
+                let pattern = format!("{}{suffix}\n", artifact.file_stem());
+                // The literal the writer emits per artifact — assert it's built.
+                assert!(pattern.starts_with(artifact.file_stem()));
+            }
+        }
+        // Both known stems must resolve back from their wire `kind`.
+        assert_eq!(VaultArtifact::from_kind("keys"), Some(VaultArtifact::Jwks));
+        assert_eq!(
+            VaultArtifact::from_kind("log-keys"),
+            Some(VaultArtifact::LogKeys)
+        );
+        assert_eq!(VaultArtifact::from_kind("nope"), None);
     }
 
     #[test]
