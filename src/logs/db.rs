@@ -1,4 +1,4 @@
-//! DuckDB storage for locally synced AIC log events.
+//! DuckDB storage for locally synced AIC log events and compacted journey data.
 
 use std::path::Path;
 
@@ -10,6 +10,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub type Result<T> = std::result::Result<T, DbError>;
+
+use crate::config::ProjectConfig;
+use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -33,6 +36,11 @@ pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Store schema convention: there are no migrations. Every table is created
+/// with `CREATE TABLE IF NOT EXISTS`, so adding a column to an existing table
+/// will pass fresh-DB tests but break already-created stores. This cache is
+/// rebuildable; on schema changes, bump/introduce a schema-version marker or
+/// tell the user to delete the store and re-sync.
 pub fn init(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "LOAD json;
@@ -100,6 +108,39 @@ pub fn init(conn: &Connection) -> Result<()> {
     )?;
     Ok(())
 }
+
+pub fn store_dir() -> PathBuf {
+    ProjectConfig::dir().join("logs")
+}
+
+pub fn store_path(tenant: &str) -> PathBuf {
+    store_dir().join(format!("{}.duckdb", tenant_file_name(tenant)))
+}
+
+pub fn open_store(tenant: &str) -> crate::Result<Connection> {
+    let path = store_path(tenant);
+    if !path.exists() {
+        return Err(crate::Error::Config(format!(
+            "no local log store for tenant '{tenant}'; run `aic logs sync` first"
+        )));
+    }
+    Ok(open(path)?)
+}
+
+fn tenant_file_name(tenant: &str) -> String {
+    tenant
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+// ── schema init ──────────────────────────────────────────────────────────
 
 pub fn insert_events(conn: &mut Connection, events: &[Value]) -> Result<usize> {
     let tx = conn.transaction()?;
@@ -171,6 +212,7 @@ pub fn insert_events(conn: &mut Connection, events: &[Value]) -> Result<usize> {
     Ok(inserted)
 }
 
+// ── sync cursors ─────────────────────────────────────────────────────────
 pub fn get_sync_state(conn: &Connection, source: &str) -> Result<Option<DateTime<Utc>>> {
     conn.query_row(
         "SELECT last_end_time FROM sync_state WHERE source = ?",
@@ -198,6 +240,7 @@ pub fn count_events(conn: &Connection) -> Result<i64> {
         .map_err(DbError::from)
 }
 
+// ── journey rollup ───────────────────────────────────────────────────────
 /// One rolled-up journey execution, keyed by its journey tracking UUID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JourneyAttempt {
@@ -410,6 +453,7 @@ pub fn attempt_path(conn: &Connection, tracking_id: &str) -> Result<Vec<(i32, i3
     Ok(steps)
 }
 
+// ── compact state + prune ────────────────────────────────────────────────
 /// Loads the `am-authentication` payloads at or after `since`, ordered by time,
 /// parsed as JSON — the input to the journey rollup.
 pub fn load_auth_payloads(conn: &Connection, since: DateTime<Utc>) -> Result<Vec<Value>> {
@@ -452,6 +496,7 @@ pub fn prune_events_before(conn: &Connection, cutoff: DateTime<Utc>) -> Result<u
     Ok(deleted)
 }
 
+// ── offline search ───────────────────────────────────────────────────────
 /// Filters for an offline query against the local log store.
 #[derive(Debug, Default, Clone)]
 pub struct SearchParams {

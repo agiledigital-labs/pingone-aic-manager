@@ -327,7 +327,7 @@ pub fn pull_selected(app: &mut App) {
         None => return,
     };
     let full = script::full_name(c.kind, c.realm.as_deref(), &c.name);
-    if !ensure_workspace_ready(app, &tenant) {
+    if !crate::scripts::workspace::ensure_workspace_ready(app, &tenant) {
         return;
     }
     if !begin_op(app, &tenant, &full) {
@@ -365,7 +365,7 @@ pub fn pull_all(app: &mut App) {
         return;
     }
     let full = "all".to_string();
-    if !ensure_workspace_ready(app, &tenant) {
+    if !crate::scripts::workspace::ensure_workspace_ready(app, &tenant) {
         return;
     }
     if !begin_op(app, &tenant, &full) {
@@ -501,44 +501,15 @@ fn refresh_named(app: &mut App, tenant: &str) {
         refresh(app, true);
     } else {
         // Drop the cache so the next visit re-fetches.
-        app.scripts.data.remove(tenant);
+        invalidate_tenant(app, tenant);
     }
 }
 
-/// Make sure the workspace exists before a pull writes into it — auto-init on
-/// first use, matching the CLI. Returns false (and toasts) if a pre-redesign
-/// per-realm workspace is in the way or init fails.
-fn ensure_workspace_ready(app: &mut App, tenant: &str) -> bool {
-    if let Some(dir) = script::workspace::legacy_layout(tenant) {
-        app.push_toast(
-            ToastKind::Error,
-            format!(
-                "old per-realm workspace at {} — migrate via the CLI first",
-                dir.display()
-            ),
-        );
-        return false;
-    }
-    match script::workspace::applied_version(tenant) {
-        Ok(0) => match script::workspace::init(tenant) {
-            Ok(r) => {
-                app.push_toast(
-                    ToastKind::Info,
-                    format!("initialised workspace at {}", r.tree.display()),
-                );
-                true
-            }
-            Err(e) => {
-                app.push_toast(ToastKind::Error, format!("workspace init failed: {e}"));
-                false
-            }
-        },
-        Ok(_) => true,
-        Err(e) => {
-            app.push_toast(ToastKind::Error, format!("workspace check failed: {e}"));
-            false
-        }
-    }
+/// Drop the cached script list for `tenant`.
+/// Called by other verticals after they mutate script-backed workspace state
+/// so the Scripts tab re-fetches next time it is shown.
+pub fn invalidate_tenant(app: &mut App, tenant: &str) {
+    app.scripts.data.remove(tenant);
 }
 
 /// Mark an op in flight; returns false (and toasts) if one is already running

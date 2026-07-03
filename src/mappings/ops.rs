@@ -1,13 +1,16 @@
 //! Background actions for the Mappings tab.
 
 use std::time::Duration;
+use std::time::Instant;
 
 use crate::app::event::{AppEvent, ToastKind};
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
+use crate::mappings::api::MappingSummary;
 use crate::mappings::screen::Event;
+use crate::mappings::state::LoadState;
 use crate::scripts::sync::{self, Selector};
-use crate::scripts::{self as script, Kind, RemoteRef};
+use crate::scripts::{Kind, RemoteRef};
 
 const RECON_POLL_DELAY: Duration = Duration::from_secs(2);
 const RECON_MAX_POLLS: usize = 150;
@@ -28,7 +31,7 @@ pub fn pull_scripts(app: &mut App) {
         );
         return;
     }
-    if !ensure_workspace_ready(app, &tenant) {
+    if !crate::scripts::workspace::ensure_workspace_ready(app, &tenant) {
         return;
     }
     app.mappings.in_flight_pull.insert(key);
@@ -44,6 +47,66 @@ pub fn pull_scripts(app: &mut App) {
             result,
         }));
     });
+}
+
+pub fn refresh(app: &mut App, force: bool) {
+    let Some(name) = app.active_tenant().map(|tenant| tenant.name.clone()) else {
+        return;
+    };
+    if !app.is_unlocked()
+        || app.mappings.refreshing.contains(&name)
+        || (!force && app.mappings.data.contains_key(&name))
+    {
+        return;
+    }
+
+    app.mappings.data.insert(name.clone(), LoadState::Loading);
+    app.mappings.refreshing.insert(name.clone());
+    app.mappings.last_poll = Instant::now();
+
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result = crate::mappings::api::list_mappings(&name)
+            .await
+            .map_err(|error| error.to_string());
+        let _ = tx.send(AppEvent::Mappings(Event::Listed {
+            tenant: name,
+            result,
+        }));
+    });
+}
+
+pub fn apply_refresh(
+    app: &mut App,
+    tenant: String,
+    result: std::result::Result<Vec<MappingSummary>, String>,
+) {
+    match result {
+        Ok(mappings) => {
+            app.mappings
+                .data
+                .insert(tenant.clone(), LoadState::Loaded(mappings));
+        }
+        Err(error) => {
+            app.mappings
+                .data
+                .insert(tenant.clone(), LoadState::Failed(error.clone()));
+            if app
+                .active_tenant()
+                .is_some_and(|active| active.name == tenant)
+            {
+                app.push_toast(ToastKind::Error, format!("Mappings list failed: {error}"));
+            }
+        }
+    }
+
+    if app
+        .active_tenant()
+        .is_some_and(|active| active.name == tenant)
+    {
+        let count = crate::mappings::screen::row_count(app);
+        app.mappings.clamp_selection(count);
+    }
 }
 
 pub fn run_recon(app: &mut App) {
@@ -165,39 +228,6 @@ fn script_names_for_mapping(refs: Vec<RemoteRef>, mapping: &str) -> Vec<String> 
         .filter(|remote| remote.name.starts_with(&prefix))
         .map(|remote| remote.name)
         .collect()
-}
-
-fn ensure_workspace_ready(app: &mut App, tenant: &str) -> bool {
-    if let Some(dir) = script::workspace::legacy_layout(tenant) {
-        app.push_toast(
-            ToastKind::Error,
-            format!(
-                "old per-realm workspace at {} -- migrate via the CLI first",
-                dir.display()
-            ),
-        );
-        return false;
-    }
-    match script::workspace::applied_version(tenant) {
-        Ok(0) => match script::workspace::init(tenant) {
-            Ok(result) => {
-                app.push_toast(
-                    ToastKind::Info,
-                    format!("initialised workspace at {}", result.tree.display()),
-                );
-                true
-            }
-            Err(error) => {
-                app.push_toast(ToastKind::Error, format!("workspace init failed: {error}"));
-                false
-            }
-        },
-        Ok(_) => true,
-        Err(error) => {
-            app.push_toast(ToastKind::Error, format!("workspace check failed: {error}"));
-            false
-        }
-    }
 }
 
 #[cfg(test)]

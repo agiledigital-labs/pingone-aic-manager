@@ -4,23 +4,11 @@
 use serde_json::{Value, json};
 use url::form_urlencoded::Serializer;
 
+use crate::scripts::sync_mapping::{WHOLE_MAPPING_SLOTS, is_inline_script};
 use crate::{Error, Result};
 
 const SYNC_PATH: &str = "/openidm/config/sync";
 const RECON_PATH: &str = "/openidm/recon";
-
-const WHOLE_MAPPING_SLOTS: &[&str] = &[
-    "onCreate",
-    "onUpdate",
-    "onDelete",
-    "onLink",
-    "onUnlink",
-    "onSync",
-    "validSource",
-    "validTarget",
-    "correlationScript",
-    "result",
-];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappingSummary {
@@ -130,15 +118,6 @@ fn inline_script_count(mapping: &Value) -> Result<usize> {
         }
     }
     Ok(count)
-}
-
-fn is_inline_script(value: &Value) -> bool {
-    value.is_object()
-        && value.get("source").is_some_and(Value::is_string)
-        && value
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|kind| kind.contains("javascript"))
 }
 
 fn parse_recon_status(value: &Value) -> Result<ReconStatus> {

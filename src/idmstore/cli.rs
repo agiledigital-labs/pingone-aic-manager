@@ -45,6 +45,7 @@ pub enum IdmCommand {
     },
 }
 
+// ── clap parsing + dispatch ──────────────────────────────────────────────
 pub async fn run(cmd: IdmCommand) -> Result<()> {
     match cmd {
         IdmCommand::Sync {
@@ -118,6 +119,7 @@ async fn resolve_sync_objects(
     }
 }
 
+// ── interactive picker ───────────────────────────────────────────────────
 async fn pick_sync_objects(tenant: &str) -> Result<Option<Vec<String>>> {
     let doc = crate::managed::api::get_managed(tenant).await?;
     let mut candidates = ops::syncable_object_names(&doc)?;
@@ -160,6 +162,7 @@ fn prompt_sync_objects(candidates: Vec<String>) -> Result<Option<Vec<String>>> {
     }
 }
 
+// ── read-only SQL runner + table renderer + schema introspection ─────────
 fn open_existing_store(tenant: &str) -> Result<Connection> {
     let path = state::store_path(tenant);
     if !path.exists() {

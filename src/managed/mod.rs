@@ -17,6 +17,9 @@
 //! script). See `crate::scripts::managed_hooks` for the shared-document
 //! read-modify-write semantics.
 //!
+//! The `idmstore` vertical reads managed schema via `crate::managed::api`
+//! and `crate::managed::state::is_relationship_property`.
+//!
 //! API ground truth: `docs/api/10-managed-objects.md` (hook bindings:
 //! `docs/api/bindings/managed-hooks-idm.json`). Quirks that shape this
 //! module: PUT replaces the entire document; schema config read-back is
