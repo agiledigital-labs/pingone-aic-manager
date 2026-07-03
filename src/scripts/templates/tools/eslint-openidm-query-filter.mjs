@@ -6,7 +6,7 @@
 
 import { readFileSync } from "node:fs";
 
-const QUERY_OPERATORS = new Set([
+const QUERY_OPERATOR_NAMES = [
   "eq",
   "ne",
   "co",
@@ -17,7 +17,8 @@ const QUERY_OPERATORS = new Set([
   "ge",
   "pr",
   "in",
-]);
+];
+const QUERY_OPERATORS = new Set(QUERY_OPERATOR_NAMES);
 const QUERY_KEYWORDS = new Set(["and", "or", "not", "true", "false", "null"]);
 
 export function loadManagedQueryFields(url) {
@@ -34,13 +35,15 @@ export function loadManagedQueryFields(url) {
 function propertyName(node) {
   if (!node) return null;
   if (node.type === "Identifier") return node.name;
-  if (node.type === "Literal" && typeof node.value === "string") return node.value;
+  if (node.type === "Literal" && typeof node.value === "string")
+    return node.value;
   return null;
 }
 
 function staticString(node) {
   if (!node) return null;
-  if (node.type === "Literal" && typeof node.value === "string") return node.value;
+  if (node.type === "Literal" && typeof node.value === "string")
+    return node.value;
   if (node.type === "TemplateLiteral" && node.expressions.length === 0) {
     return node.quasis.map((quasi) => quasi.value.cooked).join("");
   }
@@ -51,21 +54,64 @@ function staticStringRange(sourceCode, node) {
   const value = staticString(node);
   if (value === null || !node.range) return null;
   if (node.type === "Literal") {
+    const raw = sourceCode.getText(node).slice(1, -1);
     return {
-      value: sourceCode.getText(node).slice(1, -1),
+      value,
       start: node.range[0] + 1,
       end: node.range[1] - 1,
+      indexMap: cookedToRawIndexMap(raw),
     };
   }
   if (node.type === "TemplateLiteral" && node.expressions.length === 0) {
     const quasi = node.quasis[0];
     return {
-      value: sourceCode.getText(node).slice(1, -1),
+      value,
       start: quasi.range[0] + 1,
       end: quasi.range[1] - 1,
+      indexMap: cookedToRawIndexMap(quasi.value.raw),
     };
   }
   return null;
+}
+
+function cookedToRawIndexMap(raw) {
+  const map = [];
+  let cooked = 0;
+  let rawIndex = 0;
+
+  map[cooked] = 0;
+  while (rawIndex < raw.length) {
+    const start = rawIndex;
+    if (raw[rawIndex] === "\\" && rawIndex + 1 < raw.length) {
+      rawIndex += escapedRawLength(raw, rawIndex);
+    } else {
+      rawIndex++;
+    }
+    cooked++;
+    map[cooked] = rawIndex;
+    map[cooked - 1] = start;
+  }
+
+  return map;
+}
+
+function escapedRawLength(raw, start) {
+  const next = raw[start + 1];
+  if (next === "u" && raw[start + 2] === "{") {
+    const close = raw.indexOf("}", start + 3);
+    return close === -1 ? 2 : close - start + 1;
+  }
+  if (next === "u") return Math.min(6, raw.length - start);
+  if (next === "x") return Math.min(4, raw.length - start);
+  if (/[0-7]/.test(next)) {
+    let length = 2;
+    while (length < 4 && /[0-7]/.test(raw[start + length])) {
+      length++;
+    }
+    return Math.min(length, raw.length - start);
+  }
+  if (next === "\r" && raw[start + 2] === "\n") return 3;
+  return 2;
 }
 
 function isOpenidmQuery(node) {
@@ -89,6 +135,7 @@ function queryFilterProperty(paramsNode) {
 
 function tokenizeQueryFilter(filter) {
   const tokens = [];
+  const issues = [];
   let i = 0;
 
   while (i < filter.length) {
@@ -100,6 +147,7 @@ function tokenizeQueryFilter(filter) {
     if (ch === '"' || ch === "'") {
       const quote = ch;
       const start = i;
+      let closed = false;
       i++;
       while (i < filter.length) {
         if (filter[i] === "\\") {
@@ -108,14 +156,23 @@ function tokenizeQueryFilter(filter) {
         }
         if (filter[i] === quote) {
           i++;
+          closed = true;
           break;
         }
         i++;
       }
+      if (!closed) {
+        issues.push({
+          kind: "syntax",
+          start,
+          end: i,
+          message: "Unterminated quoted value in _queryFilter.",
+        });
+      }
       tokens.push({ type: "string", start, end: i });
       continue;
     }
-    if ("()[],".includes(ch)) {
+    if ("!()[],".includes(ch)) {
       tokens.push({ type: "punct", value: ch, start: i, end: i + 1 });
       i++;
       continue;
@@ -125,14 +182,14 @@ function tokenizeQueryFilter(filter) {
     while (
       i < filter.length &&
       !/\s/.test(filter[i]) &&
-      !'"\'()[],'.includes(filter[i])
+      !"\"'!()[],".includes(filter[i])
     ) {
       i++;
     }
     tokens.push({ type: "word", value: filter.slice(start, i), start, end: i });
   }
 
-  return tokens;
+  return { tokens, issues };
 }
 
 function isFieldWord(token) {
@@ -143,7 +200,7 @@ function isFieldWord(token) {
 }
 
 export function extractQueryFilterFields(filter) {
-  const tokens = tokenizeQueryFilter(filter);
+  const { tokens } = tokenizeQueryFilter(filter);
   const fields = [];
 
   for (let i = 0; i < tokens.length - 1; i++) {
@@ -210,52 +267,350 @@ function levenshtein(left, right) {
 
 export function validateQueryFilterFields(filter, knownFields) {
   const known = new Set(knownFields);
-  const issues = [];
-  const tokens = tokenizeQueryFilter(filter);
-
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (!isFieldWord(token)) continue;
-
-    const next = tokens[i + 1];
-    if (!next || next.type !== "word") continue;
-
-    const nextLower = next.value.toLowerCase();
-    if (!QUERY_OPERATORS.has(nextLower)) {
-      if (!QUERY_KEYWORDS.has(nextLower)) {
-        issues.push({
-          kind: "operator",
-          operator: next.value,
-          start: next.start,
-          end: next.end,
-        });
-      }
-      continue;
-    }
-
-    const root = queryFieldRoot(token.value);
-    if (!known.has(root)) {
-      const rootEnd = queryFieldRootEnd(token.value);
-      issues.push({
-        kind: "field",
-        field: token.value,
-        root,
-        start: token.start,
-        end: token.start + rootEnd,
-        suggestion: suggestionFor(root, knownFields),
-      });
-    }
-  }
+  const parser = new QueryFilterParser(filter, known, knownFields);
+  const issues = parser.parse();
 
   return issues;
 }
 
+class QueryFilterParser {
+  constructor(filter, known, knownFields) {
+    const { tokens, issues } = tokenizeQueryFilter(filter);
+    this.tokens = tokens;
+    this.issues = issues;
+    this.known = known;
+    this.knownFields = knownFields;
+    this.pos = 0;
+    this.filterLength = filter.length;
+  }
+
+  parse() {
+    if (this.tokens.length === 0) return this.issues;
+
+    this.parseExpression();
+    while (!this.atEnd()) {
+      const token = this.peek();
+      if (this.isPunct(token, ")")) {
+        this.syntax(token, "Unexpected ')' in _queryFilter.");
+        this.advance();
+        continue;
+      }
+      this.syntax(token, "Unexpected _queryFilter token '{{token}}'.", {
+        token: tokenText(token),
+      });
+      this.advance();
+    }
+
+    return this.issues;
+  }
+
+  parseExpression() {
+    this.parseOr();
+  }
+
+  parseOr() {
+    this.parseAnd();
+    while (this.matchKeyword("or")) {
+      if (this.atEnd() || this.isPunct(this.peek(), ")")) {
+        this.syntaxPrevious("Expected _queryFilter expression after 'OR'.");
+        return;
+      }
+      this.parseAnd();
+    }
+  }
+
+  parseAnd() {
+    this.parseNot();
+    while (this.matchKeyword("and")) {
+      if (this.atEnd() || this.isPunct(this.peek(), ")")) {
+        this.syntaxPrevious("Expected _queryFilter expression after 'AND'.");
+        return;
+      }
+      this.parseNot();
+    }
+  }
+
+  parseNot() {
+    if (this.matchKeyword("not")) {
+      const operator = this.previous();
+      this.syntax(
+        operator,
+        "Unsupported _queryFilter negation '{{operator}}'. Use '!'.",
+        { operator: operator.value }
+      );
+      if (!this.atEnd() && !this.isPunct(this.peek(), ")")) {
+        this.parseNot();
+      }
+      return;
+    }
+
+    if (this.matchPunct("!")) {
+      const operator = this.previous();
+      if (this.atEnd() || this.isPunct(this.peek(), ")")) {
+        this.syntax(
+          operator,
+          "Expected _queryFilter expression after '{{operator}}'.",
+          { operator: tokenText(operator) }
+        );
+        return;
+      }
+      this.parseNot();
+      return;
+    }
+    this.parsePrimary();
+  }
+
+  parsePrimary() {
+    if (this.matchPunct("(")) {
+      const open = this.previous();
+      if (this.matchPunct(")")) {
+        this.syntax(open, "Empty _queryFilter group.");
+        return;
+      }
+
+      this.parseExpression();
+      if (!this.matchPunct(")")) {
+        const token = this.peek() || open;
+        this.syntax(token, "Expected ')' to close _queryFilter group.");
+      }
+      return;
+    }
+
+    if (this.isPunct(this.peek(), ")")) return;
+    this.parseComparison();
+  }
+
+  parseComparison() {
+    const field = this.peek();
+    if (!isFieldWord(field)) {
+      if (field) {
+        this.syntax(field, "Expected _queryFilter field before '{{token}}'.", {
+          token: tokenText(field),
+        });
+        this.advance();
+      }
+      return;
+    }
+
+    this.advance();
+    this.validateField(field);
+
+    const operator = this.peek();
+    if (!operator) {
+      this.syntax(field, "Expected _queryFilter operator after '{{field}}'.", {
+        field: field.value,
+      });
+      return;
+    }
+
+    if (operator.type !== "word") {
+      this.syntax(
+        operator,
+        "Expected _queryFilter operator before '{{token}}'.",
+        { token: tokenText(operator) }
+      );
+      return;
+    }
+
+    const operatorName = operator.value.toLowerCase();
+    if (!QUERY_OPERATORS.has(operatorName)) {
+      if (QUERY_KEYWORDS.has(operatorName)) {
+        this.syntax(
+          operator,
+          "Expected _queryFilter operator before '{{token}}'.",
+          { token: tokenText(operator) }
+        );
+      } else {
+        this.issues.push({
+          kind: "operator",
+          operator: operator.value,
+          start: operator.start,
+          end: operator.end,
+        });
+        this.advance();
+        this.parseValue(operator);
+      }
+      return;
+    }
+
+    this.advance();
+    if (operatorName !== "pr") {
+      this.parseValue(operator);
+    }
+  }
+
+  parseValue(operator) {
+    const value = this.peek();
+    if (
+      !value ||
+      this.isPunct(value, ")") ||
+      this.isKeyword(value, "and") ||
+      this.isKeyword(value, "or")
+    ) {
+      this.syntax(
+        operator,
+        "Expected _queryFilter value after '{{operator}}'.",
+        { operator: operator.value }
+      );
+      return;
+    }
+
+    if (this.matchPunct("[")) {
+      this.parseArrayValue();
+      return;
+    }
+
+    if (value.type === "string" || value.type === "word") {
+      this.advance();
+      return;
+    }
+
+    this.syntax(value, "Expected _queryFilter value before '{{token}}'.", {
+      token: tokenText(value),
+    });
+    this.advance();
+  }
+
+  parseArrayValue() {
+    const open = this.previous();
+    let expectValue = true;
+    while (!this.atEnd()) {
+      if (this.matchPunct("]")) {
+        if (expectValue && this.previous() !== open) {
+          this.syntaxPrevious("Expected _queryFilter array value before ']'.");
+        }
+        return;
+      }
+
+      if (!expectValue) {
+        const comma = this.peek();
+        if (!this.matchPunct(",")) {
+          this.syntax(comma, "Expected ',' between _queryFilter array values.");
+          this.advance();
+        }
+        expectValue = true;
+        continue;
+      }
+
+      const value = this.peek();
+      if (value && (value.type === "string" || value.type === "word")) {
+        this.advance();
+        expectValue = false;
+        continue;
+      }
+
+      if (value) {
+        this.syntax(
+          value,
+          "Expected _queryFilter array value before '{{token}}'.",
+          { token: tokenText(value) }
+        );
+        this.advance();
+        expectValue = false;
+        continue;
+      }
+    }
+
+    this.syntax(open, "Expected ']' to close _queryFilter array.");
+  }
+
+  validateField(field) {
+    const root = queryFieldRoot(field.value);
+    if (this.known.has(root)) return;
+
+    const rootEnd = queryFieldRootEnd(field.value);
+    this.issues.push({
+      kind: "field",
+      field: field.value,
+      root,
+      start: field.start,
+      end: field.start + rootEnd,
+      suggestion: suggestionFor(root, this.knownFields),
+    });
+  }
+
+  peek() {
+    return this.tokens[this.pos] || null;
+  }
+
+  previous() {
+    return this.tokens[this.pos - 1] || null;
+  }
+
+  advance() {
+    if (!this.atEnd()) this.pos++;
+    return this.previous();
+  }
+
+  atEnd() {
+    return this.pos >= this.tokens.length;
+  }
+
+  matchPunct(value) {
+    if (!this.isPunct(this.peek(), value)) return false;
+    this.advance();
+    return true;
+  }
+
+  matchKeyword(value) {
+    if (!this.isKeyword(this.peek(), value)) return false;
+    this.advance();
+    return true;
+  }
+
+  isPunct(token, value) {
+    return Boolean(token && token.type === "punct" && token.value === value);
+  }
+
+  isKeyword(token, value) {
+    return Boolean(
+      token && token.type === "word" && token.value.toLowerCase() === value
+    );
+  }
+
+  syntax(token, message, data = {}) {
+    const start = token ? token.start : this.filterLength;
+    const end = token ? token.end : this.filterLength;
+    this.issues.push({
+      kind: "syntax",
+      start,
+      end: Math.max(end, start + 1),
+      message,
+      data,
+    });
+  }
+
+  syntaxPrevious(message, data = {}) {
+    this.syntax(this.previous(), message, data);
+  }
+}
+
+function tokenText(token) {
+  if (!token) return "end of query";
+  if (token.type === "punct") return token.value;
+  if (token.type === "string") return "quoted value";
+  return token.value;
+}
+
 function locFromIndex(sourceCode, stringRange, relativeIndex) {
-  return sourceCode.getLocFromIndex(stringRange.start + relativeIndex);
+  return sourceCode.getLocFromIndex(
+    stringRange.start + rawOffsetForIndex(stringRange, relativeIndex)
+  );
 }
 
 function rangeFromIssue(stringRange, issue) {
-  return [stringRange.start + issue.start, stringRange.start + issue.end];
+  return [
+    stringRange.start + rawOffsetForIndex(stringRange, issue.start),
+    stringRange.start + rawOffsetForIndex(stringRange, issue.end),
+  ];
+}
+
+function rawOffsetForIndex(stringRange, relativeIndex) {
+  const map = stringRange.indexMap;
+  if (!map) return relativeIndex;
+  if (relativeIndex <= 0) return 0;
+  if (relativeIndex >= map.length) return stringRange.end - stringRange.start;
+  return map[relativeIndex];
 }
 
 function replacementForField(field, suggestion) {
@@ -293,7 +648,10 @@ export function openidmQueryFilterRule(managedFields) {
           if (!queryFilter) return;
 
           const knownFields = managedFields[resource];
-          const issues = validateQueryFilterFields(queryFilter.value, knownFields);
+          const issues = validateQueryFilterFields(
+            queryFilter.value,
+            knownFields
+          );
           for (const issue of issues) {
             const range = rangeFromIssue(queryFilter, issue);
             const loc = {
@@ -309,6 +667,15 @@ export function openidmQueryFilterRule(managedFields) {
                 data: {
                   operator: issue.operator,
                 },
+              });
+              continue;
+            }
+            if (issue.kind === "syntax") {
+              context.report({
+                node: queryFilterNode,
+                loc,
+                message: issue.message,
+                data: issue.data || {},
               });
               continue;
             }
