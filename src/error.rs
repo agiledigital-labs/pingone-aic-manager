@@ -23,8 +23,8 @@ pub enum Error {
     #[error("Auth error: {0}")]
     Auth(String),
 
-    #[error("no log API key stored for tenant {tenant} — run `aic logs key set`")]
-    LogKeyMissing { tenant: String },
+    #[error("no {kind} stored for tenant {tenant}")]
+    SecretMissing { kind: String, tenant: String },
 
     #[error("AIC API error: {status} {body}")]
     Api { status: u16, body: String },

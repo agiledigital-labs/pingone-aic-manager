@@ -35,16 +35,18 @@ pub enum Request {
     /// Return a valid bearer token for the named tenant, minting one if the
     /// cached token is missing or within 60s of expiry.
     GetToken { tenant: String },
-    /// Store or replace the log API key pair for a tenant.
-    PutLogKey {
+    /// Store or replace an encrypted vault artifact's per-tenant secret. `kind`
+    /// names the artifact ([`crate::config::VaultArtifact::kind`], e.g.
+    /// `"log-keys"`); `value` is the opaque JSON payload the feature serialised.
+    PutSecret {
+        kind: String,
         tenant: String,
-        api_key_id: String,
-        api_key_secret: String,
+        value: serde_json::Value,
     },
-    /// Return the stored log API key pair for a tenant.
-    GetLogKey { tenant: String },
-    /// Remove the stored log API key pair for a tenant.
-    RemoveLogKey { tenant: String },
+    /// Return the stored secret for `(kind, tenant)`.
+    GetSecret { kind: String, tenant: String },
+    /// Remove the stored secret for `(kind, tenant)`.
+    RemoveSecret { kind: String, tenant: String },
     /// Proxy a tenant-scoped AIC HTTP call. The daemon owns the bearer
     /// token cache + connection pool, so the TUI and CLI both go through
     /// here for every read and write — keeps token/HTTP machinery in one
@@ -68,7 +70,7 @@ pub enum Request {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     Ok,
     Pong {
@@ -80,11 +82,15 @@ pub enum Response {
         access_token: String,
         expires_at: i64,
     },
-    LogKey {
-        api_key_id: String,
-        api_key_secret: String,
+    /// Reply to `GetSecret` — the opaque JSON payload for `(kind, tenant)`.
+    Secret {
+        value: serde_json::Value,
     },
-    LogKeyMissing {
+    /// Reply to `GetSecret` when no secret is stored for `(kind, tenant)`.
+    /// Distinct from `Error` so the caller can map it to
+    /// [`crate::Error::SecretMissing`] and attach its own remediation text.
+    SecretMissing {
+        kind: String,
         tenant: String,
     },
     /// Reply to `GetDek` when a DEK is cached. Base64 of 32 raw bytes.

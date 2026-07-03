@@ -15,8 +15,18 @@ use base64::engine::general_purpose::STANDARD as B64;
 use crate::agent::{AgentClient, Request as AgentRequest, Response as AgentResponse};
 use crate::config::crypto::Dek;
 use crate::config::wraps::WrapsFile;
-use crate::config::{self, LogKeyMap};
+use crate::config::{self, VaultArtifact};
+use crate::logs::LogKeyMap;
 use crate::{Error, Result};
+
+/// Decrypt the per-tenant log API key map with the just-derived DEK. Kept here
+/// so both unlock paths hydrate `UnlockOk` the same way.
+pub(crate) fn decrypt_log_keys(dek: &Dek) -> Result<LogKeyMap> {
+    match config::load_artifact_bytes(VaultArtifact::LogKeys, Some(dek))? {
+        Some(bytes) if !bytes.is_empty() => Ok(serde_json::from_slice(&bytes)?),
+        _ => Ok(LogKeyMap::new()),
+    }
+}
 
 /// Successful unlock payload. The TUI also passes this through an event
 /// channel, hence `pub` and `Clone`-free fields (the contents move).
@@ -32,7 +42,7 @@ pub async fn unlock_password(password: String) -> Result<UnlockOk> {
     let (dek, jwks) = tokio::task::spawn_blocking(move || config::unlock_with_password(&password))
         .await
         .map_err(|e| Error::Crypto(format!("unlock task: {e}")))??;
-    let log_keys = config::decrypt_log_keys_file(&dek)?;
+    let log_keys = decrypt_log_keys(&dek)?;
     Ok(UnlockOk {
         dek,
         jwks,
@@ -55,7 +65,7 @@ pub async fn unlock_security_key(wraps_file: WrapsFile, pin: String) -> Result<U
     })
     .await
     .map_err(|e| Error::Crypto(format!("unlock task: {e}")))??;
-    let log_keys = config::decrypt_log_keys_file(&dek)?;
+    let log_keys = decrypt_log_keys(&dek)?;
     Ok(UnlockOk {
         dek,
         jwks,

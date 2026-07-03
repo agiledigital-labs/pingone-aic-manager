@@ -13,7 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 
 use crate::aic::AicClient;
-use crate::config::{self, LogKeyMap, LogKeyPair, ProjectConfig, crypto::Dek};
+use crate::config::{self, ProjectConfig, VaultArtifact, crypto::Dek};
 use crate::{Error, Result};
 
 use super::protocol::{CachedTokenInfo, Request, Response, StatusInfo};
@@ -313,35 +313,34 @@ async fn handle(
                 message: e.to_string(),
             },
         },
-        Request::PutLogKey {
+        Request::PutSecret {
+            kind,
             tenant,
-            api_key_id,
-            api_key_secret,
-        } => match do_put_log_key(&tenant, api_key_id, api_key_secret, state).await {
+            value,
+        } => match do_put_secret(&kind, &tenant, value, state).await {
             Ok(true) => Response::Ok,
             Ok(false) => Response::Locked,
             Err(e) => Response::Error {
                 message: e.to_string(),
             },
         },
-        Request::GetLogKey { tenant } => match do_get_log_key(&tenant, state).await {
-            Ok(Some(pair)) => Response::LogKey {
-                api_key_id: pair.api_key_id,
-                api_key_secret: pair.api_key_secret,
-            },
+        Request::GetSecret { kind, tenant } => match do_get_secret(&kind, &tenant, state).await {
+            Ok(Some(value)) => Response::Secret { value },
             Ok(None) => Response::Locked,
-            Err(Error::LogKeyMissing { tenant }) => Response::LogKeyMissing { tenant },
+            Err(Error::SecretMissing { kind, tenant }) => Response::SecretMissing { kind, tenant },
             Err(e) => Response::Error {
                 message: e.to_string(),
             },
         },
-        Request::RemoveLogKey { tenant } => match do_remove_log_key(&tenant, state).await {
-            Ok(true) => Response::Ok,
-            Ok(false) => Response::Locked,
-            Err(e) => Response::Error {
-                message: e.to_string(),
-            },
-        },
+        Request::RemoveSecret { kind, tenant } => {
+            match do_remove_secret(&kind, &tenant, state).await {
+                Ok(true) => Response::Ok,
+                Ok(false) => Response::Locked,
+                Err(e) => Response::Error {
+                    message: e.to_string(),
+                },
+            }
+        }
         Request::ApiCall {
             tenant,
             method,
@@ -486,67 +485,91 @@ async fn do_get_token(
     Ok(Some((token, expires_at)))
 }
 
-async fn do_put_log_key(
+/// Resolve a wire `kind` to its [`VaultArtifact`], erroring on an unknown name.
+fn artifact_for(kind: &str) -> Result<VaultArtifact> {
+    VaultArtifact::from_kind(kind)
+        .ok_or_else(|| Error::Config(format!("unknown secret kind: {kind}")))
+}
+
+async fn do_put_secret(
+    kind: &str,
     tenant: &str,
-    api_key_id: String,
-    api_key_secret: String,
+    value: serde_json::Value,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<bool> {
+    let artifact = artifact_for(kind)?;
     let s = state.write().await;
-    let Some(mut map) = load_log_key_map(&s.vault)? else {
+    let Some(mut map) = load_secret_map(artifact, &s.vault)? else {
         return Ok(false);
     };
-    map.insert(
-        tenant.to_string(),
-        LogKeyPair {
-            api_key_id,
-            api_key_secret,
-        },
-    );
-    save_log_key_map(&s.vault, &map)?;
+    map.insert(tenant.to_string(), value);
+    save_secret_map(artifact, &s.vault, &map)?;
     Ok(true)
 }
 
-async fn do_get_log_key(
+async fn do_get_secret(
+    kind: &str,
     tenant: &str,
     state: Arc<RwLock<AgentState>>,
-) -> Result<Option<LogKeyPair>> {
+) -> Result<Option<serde_json::Value>> {
+    let artifact = artifact_for(kind)?;
     let s = state.read().await;
-    let Some(map) = load_log_key_map(&s.vault)? else {
+    let Some(map) = load_secret_map(artifact, &s.vault)? else {
         return Ok(None);
     };
     map.get(tenant)
         .cloned()
         .map(Some)
-        .ok_or_else(|| Error::LogKeyMissing {
+        .ok_or_else(|| Error::SecretMissing {
+            kind: kind.to_string(),
             tenant: tenant.to_string(),
         })
 }
 
-async fn do_remove_log_key(tenant: &str, state: Arc<RwLock<AgentState>>) -> Result<bool> {
+async fn do_remove_secret(
+    kind: &str,
+    tenant: &str,
+    state: Arc<RwLock<AgentState>>,
+) -> Result<bool> {
+    let artifact = artifact_for(kind)?;
     let s = state.write().await;
-    let Some(mut map) = load_log_key_map(&s.vault)? else {
+    let Some(mut map) = load_secret_map(artifact, &s.vault)? else {
         return Ok(false);
     };
     map.remove(tenant);
-    save_log_key_map(&s.vault, &map)?;
+    save_secret_map(artifact, &s.vault, &map)?;
     Ok(true)
 }
 
-fn load_log_key_map(vault: &Vault) -> Result<Option<LogKeyMap>> {
-    match vault {
-        Vault::Locked => Ok(None),
-        Vault::Encrypted { dek } => config::decrypt_log_keys_file(dek).map(Some),
-        Vault::Plain { .. } => config::load_plain_log_key_map().map(Some),
-    }
+/// The decrypted per-tenant secret map for `artifact`, or `None` when the
+/// vault is locked. Values are opaque JSON — the daemon never inspects them.
+fn load_secret_map(
+    artifact: VaultArtifact,
+    vault: &Vault,
+) -> Result<Option<HashMap<String, serde_json::Value>>> {
+    let dek = match vault {
+        Vault::Locked => return Ok(None),
+        Vault::Encrypted { dek } => Some(dek),
+        Vault::Plain { .. } => None,
+    };
+    let map = match config::load_artifact_bytes(artifact, dek)? {
+        Some(bytes) if !bytes.is_empty() => serde_json::from_slice(&bytes)?,
+        _ => HashMap::new(),
+    };
+    Ok(Some(map))
 }
 
-fn save_log_key_map(vault: &Vault, map: &LogKeyMap) -> Result<()> {
-    match vault {
-        Vault::Locked => Err(Error::Auth("agent is locked".into())),
-        Vault::Encrypted { dek } => config::save_log_key_map(map, dek),
-        Vault::Plain { .. } => config::save_plain_log_key_map(map),
-    }
+fn save_secret_map(
+    artifact: VaultArtifact,
+    vault: &Vault,
+    map: &HashMap<String, serde_json::Value>,
+) -> Result<()> {
+    let dek = match vault {
+        Vault::Locked => return Err(Error::Auth("agent is locked".into())),
+        Vault::Encrypted { dek } => Some(dek),
+        Vault::Plain { .. } => None,
+    };
+    config::save_artifact_bytes(artifact, &serde_json::to_vec(map)?, dek)
 }
 
 /// Proxy a tenant-scoped HTTP call to AIC. Returns `Ok(None)` when the

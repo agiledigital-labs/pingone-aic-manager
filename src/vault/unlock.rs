@@ -131,7 +131,7 @@ pub async fn try_agent_unlock(app: &mut App) {
             return;
         }
     };
-    let log_keys = match crate::config::decrypt_log_keys_file(&dek) {
+    let log_keys = match auth::decrypt_log_keys(&dek) {
         Ok(keys) => keys,
         Err(e) => {
             tracing::warn!("agent DEK failed to decrypt log-keys.enc: {e}");
@@ -215,7 +215,7 @@ fn spawn_security_key_poll(app: &mut App, pin: String) {
             let result = crate::config::unlock_with_security_key(&wraps, pin_opt);
             match result {
                 Ok((dek, jwks)) => {
-                    let log_keys = match crate::config::decrypt_log_keys_file(&dek) {
+                    let log_keys = match auth::decrypt_log_keys(&dek) {
                         Ok(keys) => keys,
                         Err(e) => {
                             let _ = tx.send(AppEvent::Vault(Event::UnlockFinished(Err(format!(

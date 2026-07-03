@@ -6,8 +6,9 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::event::{AppEvent, ToastKind};
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
+use crate::config::ProjectConfig;
 use crate::config::tenant::{Tenant, TenantTheme};
-use crate::config::{LogKeyPair, ProjectConfig};
+use crate::logs::LogKeyPair;
 
 use super::OnboardPath;
 use super::cookie::{CookieField, CookieForm};

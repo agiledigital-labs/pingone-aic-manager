@@ -279,7 +279,7 @@ pub async fn create_log_api_key(
     base_url: &str,
     bearer: &str,
     name: &str,
-) -> Result<crate::config::LogKeyPair> {
+) -> Result<crate::logs::LogKeyPair> {
     let url = format!("{base_url}/keys?_action=create");
     let resp = http
         .post(&url)
@@ -295,7 +295,7 @@ pub async fn create_log_api_key(
         });
     }
     let created: CreateLogApiKeyResp = resp.json().await?;
-    Ok(crate::config::LogKeyPair {
+    Ok(crate::logs::LogKeyPair {
         api_key_id: created.api_key_id,
         api_key_secret: created.api_key_secret,
     })

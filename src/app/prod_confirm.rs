@@ -7,8 +7,8 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::event::ToastKind;
 use crate::app::{App, InputMode};
-use crate::config::LogKeyPair;
 use crate::config::tenant::Tenant;
+use crate::logs::LogKeyPair;
 
 #[derive(Debug)]
 pub enum PendingProdAction {

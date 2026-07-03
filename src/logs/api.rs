@@ -17,7 +17,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::config::LogKeyPair;
+use crate::logs::LogKeyPair;
 use crate::{Error, Result};
 
 pub const PAGE_SIZE: usize = 1000;
