@@ -31,7 +31,7 @@ use std::path::PathBuf;
 const ID_PREFIX: &str = "sync/";
 const SYNC_PATH: &str = "/openidm/config/sync";
 
-const WHOLE_MAPPING_SLOTS: &[&str] = &[
+pub const WHOLE_MAPPING_SLOTS: &[&str] = &[
     "onCreate",
     "onUpdate",
     "onDelete",
@@ -142,7 +142,7 @@ fn name_from_id(id: &str) -> &str {
 /// An editable sync-mapping script: an object-valued property with a string
 /// `source` and a `type` mentioning javascript. File-backed scripts (`file`
 /// instead of `source`) fail this test by design.
-fn is_inline_script(v: &Value) -> bool {
+pub fn is_inline_script(v: &Value) -> bool {
     v.is_object()
         && v.get("source").is_some_and(Value::is_string)
         && v.get("type")

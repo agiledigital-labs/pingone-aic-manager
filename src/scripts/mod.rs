@@ -14,6 +14,10 @@
 //! `workspace`/templates. API ground truth: `docs/api/04-scripts.md`,
 //! `docs/api/11-idm-endpoints.md`, `docs/api/12-script-bindings-matrix.md`,
 //! `docs/api/13-script-contexts.md`, and `docs/api/16-sync-mappings.md`.
+//!
+//! Mappings reuse the sync-mapping engine via `Kind::IdmSyncMapping`, and the
+//! Mappings tab invalidates the per-tenant scripts cache after pull/reconcile
+//! changes workspace state that the Scripts tab displays.
 
 pub mod am;
 pub mod cli;

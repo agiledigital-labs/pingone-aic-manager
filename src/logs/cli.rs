@@ -11,11 +11,9 @@ use serde::Serialize;
 use crate::agent::AgentClient;
 use crate::cli::tenant_for;
 use crate::config::ProjectConfig;
-use crate::logs::{api, db, ops, state};
-use crate::onboard::bootstrap::{
-    create_log_api_key, credential_name, no_redirect_client, resolve_admin_username,
-    session_to_bearer,
-};
+use crate::logs::db::store_path;
+use crate::logs::{api, db, journey, ops};
+use crate::onboard::bootstrap::{mint_log_key_via_session, no_redirect_client};
 use crate::{Error, Result};
 
 #[derive(Subcommand, Debug)]
@@ -263,7 +261,7 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             output,
         } => {
             let tenant = tenant_for(tenant)?;
-            let path = state::store_path(&tenant);
+            let path = store_path(&tenant);
             if !path.exists() {
                 return Err(Error::Config(format!(
                     "no local log store for tenant '{tenant}'; run `aic logs sync` first"
@@ -309,7 +307,7 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             tenant,
             retain_months,
         } => {
-            let report = ops::compact_tenant(tenant, retain_months).await?;
+            let report = journey::compact_tenant(tenant, retain_months).await?;
             println!(
                 "rolled up {} attempts across {} journeys; pruned {} raw events",
                 report.attempts_upserted, report.journeys, report.events_pruned
@@ -417,10 +415,17 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             }
 
             let client = no_redirect_client()?;
-            let bearer = session_to_bearer(&client, &base_url, &cookie_name, &cookie_value).await?;
-            let username = resolve_admin_username(&client, &base_url, &bearer).await;
-            let name = credential_name(username.as_deref(), &tenant);
-            let pair = create_log_api_key(&client, &base_url, &bearer, &name).await?;
+            let minted = mint_log_key_via_session(
+                &client,
+                &base_url,
+                Some(&cookie_name),
+                &cookie_value,
+                &tenant,
+                None,
+            )
+            .await?;
+            let name = minted.credential_name;
+            let pair = minted.key;
             let api_key_id = pair.api_key_id.clone();
 
             let agent = AgentClient::connect_or_spawn().await?;

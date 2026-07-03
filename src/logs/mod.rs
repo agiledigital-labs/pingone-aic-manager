@@ -1,13 +1,23 @@
-//! AIC audit/debug log fetch and API-key management vertical.
+//! AIC audit/debug log fetch, local sync, and API-key management vertical.
 //!
-//! Log authentication and endpoint shapes are documented in
-//! `docs/api/08-logs.md`; CLI routing enters through [`cli`].
+//! File map:
+//! - [`api`] = log-API transport. It deliberately bypasses the agent
+//!   `ApiCall` path because the logs API uses separate `x-api-key` /
+//!   `x-api-secret` auth and rate limits from the bearer-authenticated API
+//!   families.
+//! - [`cli`] = `aic logs` command parsing and dispatch.
+//! - [`db`] = per-tenant DuckDB cache for raw events, sync cursors, compact
+//!   state, journey rollup tables, and offline search.
+//! - [`ops`] = sync engine and noise filter.
+//! - [`journey`] = `aic logs compact` rollup logic.
 //!
-//! The per-tenant log API keys are an encrypted vault artifact
-//! ([`crate::config::VaultArtifact::LogKeys`]): [`LogKeyPair`] is the typed
-//! wrapper, persisted as an opaque JSON map through the generic config registry
-//! and reached over the agent via `Request::{PutSecret,GetSecret,RemoveSecret}`
-//! keyed by that artifact's `kind`.
+//! Cross-feature seams:
+//! - Log keys live in the encrypted vault artifact
+//!   [`crate::config::VaultArtifact::LogKeys`], persisted as a JSON map and
+//!   reached over the agent via `Request::{PutSecret,GetSecret,RemoveSecret}`.
+//! - Onboard bootstrap mints log API keys from an admin session via
+//!   [`crate::onboard::bootstrap::mint_log_key_via_session`].
+//! - Log-key persistence uses the shared config registry.
 
 use std::collections::HashMap;
 
@@ -20,8 +30,8 @@ use crate::{Error, Result};
 pub mod api;
 pub mod cli;
 pub mod db;
+pub mod journey;
 pub mod ops;
-pub mod state;
 
 /// The vault-artifact `kind` these keys live under.
 fn kind() -> &'static str {

@@ -8,6 +8,8 @@
 //! workspaces via `aic script workspace update`.
 
 use crate::Result;
+use crate::app::App;
+use crate::app::event::ToastKind;
 use crate::config::ProjectConfig;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -205,6 +207,42 @@ pub fn applied_version(tenant: &str) -> Result<u32> {
     }
     let state: WorkspaceState = toml::from_str(&std::fs::read_to_string(&path)?)?;
     Ok(state.templates_version)
+}
+
+/// Shared first-use workspace guard for scripts-adjacent verticals.
+/// Callers use it before any operation that writes into the local workspace;
+/// it refuses legacy per-realm layouts and auto-initializes a fresh tree.
+pub fn ensure_workspace_ready(app: &mut App, tenant: &str) -> bool {
+    if let Some(dir) = legacy_layout(tenant) {
+        app.push_toast(
+            ToastKind::Error,
+            format!(
+                "old per-realm workspace at {} -- migrate via the CLI first",
+                dir.display()
+            ),
+        );
+        return false;
+    }
+    match applied_version(tenant) {
+        Ok(0) => match init(tenant) {
+            Ok(result) => {
+                app.push_toast(
+                    ToastKind::Info,
+                    format!("initialised workspace at {}", result.tree.display()),
+                );
+                true
+            }
+            Err(error) => {
+                app.push_toast(ToastKind::Error, format!("workspace init failed: {error}"));
+                false
+            }
+        },
+        Ok(_) => true,
+        Err(error) => {
+            app.push_toast(ToastKind::Error, format!("workspace check failed: {error}"));
+            false
+        }
+    }
 }
 
 fn record_version(tenant: &str) -> Result<()> {

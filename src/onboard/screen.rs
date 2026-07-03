@@ -1018,15 +1018,6 @@ async fn run_bootstrap_from_cookie(
             return;
         }
     };
-    let bearer = match session_to_bearer(&http, &base_url, &cookie_name, &session_value).await {
-        Ok(b) => b,
-        Err(e) => {
-            send_onboard_error(&tx, onboard_id, format!("authorize/token: {e}"));
-            return;
-        }
-    };
-    let username = resolve_admin_username(&http, &base_url, &bearer).await;
-    let credential_name = credential_name(username.as_deref(), &tenant_name);
     let kid = uuid::Uuid::new_v4().to_string();
     let priv_jwk = match generate_rsa_jwk(&kid) {
         Ok(j) => j,
@@ -1036,11 +1027,33 @@ async fn run_bootstrap_from_cookie(
         }
     };
     let pub_jwk = crate::aic::auth::public_jwk(&priv_jwk);
+    let bearer = match session_to_bearer(&http, &base_url, &cookie_name, &session_value).await {
+        Ok(b) => b,
+        Err(e) => {
+            send_onboard_error(&tx, onboard_id, format!("authorize/token: {e}"));
+            return;
+        }
+    };
+    let minted = match super::bootstrap::mint_log_key_from_bearer(
+        &http,
+        &base_url,
+        &tenant_name,
+        &bearer,
+        None,
+    )
+    .await
+    {
+        Ok(minted) => minted,
+        Err(e) => {
+            send_onboard_error(&tx, onboard_id, format!("log API key create: {e}"));
+            return;
+        }
+    };
     let sa_id = match create_service_account(
         &http,
         &base_url,
         &bearer,
-        &credential_name,
+        &minted.credential_name,
         &format!("Created by aic-edit for {tenant_name}"),
         &pub_jwk,
     )
@@ -1052,8 +1065,7 @@ async fn run_bootstrap_from_cookie(
             return;
         }
     };
-    let log_key =
-        provision_log_api_key(&http, &base_url, &bearer, &tenant_name, &credential_name).await;
+    let log_key = Some(minted.key);
     let _ = tx.send(AppEvent::Onboard(Event::ServiceAccountReady {
         onboard_id,
         tenant_name,
@@ -1077,32 +1089,22 @@ async fn run_bootstrap_log_only(
             return;
         }
     };
-    let bearer = match super::bootstrap::session_to_bearer(
+    let log_key = match super::bootstrap::mint_log_key_via_session(
         &http,
         &intent.base_url,
-        &intent.cookie_name,
+        Some(&intent.cookie_name),
         &intent.cookie_value,
+        &intent.tenant_name,
+        None,
     )
     .await
     {
-        Ok(bearer) => bearer,
+        Ok(minted) => minted.key,
         Err(error) => {
-            send_onboard_error(&tx, onboard_id, format!("authorize/token: {error}"));
+            send_onboard_error(&tx, onboard_id, format!("log API key create: {error}"));
             return;
         }
     };
-    let username = super::bootstrap::resolve_admin_username(&http, &intent.base_url, &bearer).await;
-    let key_name = super::bootstrap::credential_name(username.as_deref(), &intent.tenant_name);
-    let log_key =
-        match super::bootstrap::create_log_api_key(&http, &intent.base_url, &bearer, &key_name)
-            .await
-        {
-            Ok(log_key) => log_key,
-            Err(error) => {
-                send_onboard_error(&tx, onboard_id, format!("log API key create: {error}"));
-                return;
-            }
-        };
     tracing::info!(
         tenant = intent.tenant_name,
         api_key_id = %log_key.api_key_id,
@@ -1194,17 +1196,27 @@ async fn run_bootstrap_from_userpass(
                 }
             };
             let bearer = match session_to_bearer(&http, &base_url, &cookie_name, &token_id).await {
-                Ok(b) => b,
+                Ok(bearer) => bearer,
                 Err(e) => {
                     send_onboard_error(&tx, onboard_id, format!("authorize/token: {e}"));
                     return;
                 }
             };
-            let resolved_username = resolve_admin_username(&http, &base_url, &bearer).await;
-            let credential_name = credential_name(
-                resolved_username.as_deref().or(Some(username.as_str())),
+            let minted = match super::bootstrap::mint_log_key_from_bearer(
+                &http,
+                &base_url,
                 &tenant_name,
-            );
+                &bearer,
+                Some(username.as_str()),
+            )
+            .await
+            {
+                Ok(minted) => minted,
+                Err(e) => {
+                    send_onboard_error(&tx, onboard_id, format!("log API key create: {e}"));
+                    return;
+                }
+            };
             let kid = uuid::Uuid::new_v4().to_string();
             let priv_jwk = match generate_rsa_jwk(&kid) {
                 Ok(j) => j,
@@ -1218,7 +1230,7 @@ async fn run_bootstrap_from_userpass(
                 &http,
                 &base_url,
                 &bearer,
-                &credential_name,
+                &minted.credential_name,
                 &format!("Created by aic-edit for {tenant_name}"),
                 &pub_jwk,
             )
@@ -1230,9 +1242,7 @@ async fn run_bootstrap_from_userpass(
                     return;
                 }
             };
-            let log_key =
-                provision_log_api_key(&http, &base_url, &bearer, &tenant_name, &credential_name)
-                    .await;
+            let log_key = Some(minted.key);
             let _ = tx.send(AppEvent::Onboard(Event::ServiceAccountReady {
                 onboard_id,
                 tenant_name,
@@ -1301,33 +1311,6 @@ async fn run_bootstrap_from_userpass(
     }
 
     send_onboard_error(&tx, onboard_id, "too many authentication rounds — aborting");
-}
-
-async fn provision_log_api_key(
-    http: &reqwest::Client,
-    base_url: &str,
-    bearer: &str,
-    tenant_name: &str,
-    credential_name: &str,
-) -> Option<LogKeyPair> {
-    match super::bootstrap::create_log_api_key(http, base_url, bearer, credential_name).await {
-        Ok(pair) => {
-            tracing::info!(
-                tenant = tenant_name,
-                api_key_id = %pair.api_key_id,
-                "log API key provisioned during onboarding"
-            );
-            Some(pair)
-        }
-        Err(error) => {
-            tracing::warn!(
-                tenant = tenant_name,
-                error = %error,
-                "log API key provisioning failed; onboarding will continue"
-            );
-            None
-        }
-    }
 }
 
 #[cfg(test)]

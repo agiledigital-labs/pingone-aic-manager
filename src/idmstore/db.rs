@@ -1,4 +1,8 @@
 //! SQLite storage for shredded IDM managed-object records.
+//!
+//! File map: this module owns connection setup, schema derivation, sync-state
+//! watermark CRUD, record helpers, upsert/shredding logic, and SQL quoting /
+//! column inference utilities.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -28,6 +32,7 @@ impl From<DbError> for crate::Error {
     }
 }
 
+// ── connection / pragmas / errors ────────────────────────────────────────
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncState {
     pub object: String,
@@ -53,6 +58,7 @@ impl ColumnType {
     }
 }
 
+// ── IDM schema → DDL derivation ──────────────────────────────────────────
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnSpec {
     pub name: String,
@@ -79,6 +85,18 @@ impl ColumnSpec {
         Self::new(name, ColumnType::Integer)
     }
 }
+
+// ── sync-state watermark CRUD ────────────────────────────────────────────
+// (functions below)
+
+// ── record helpers (id/meta/delete/count) ───────────────────────────────
+// (functions below)
+
+// ── upsert + child-row shredding ────────────────────────────────────────
+// (functions below)
+
+// ── column inference / SQL quoting utils ────────────────────────────────
+// (functions below)
 
 #[derive(Debug, Clone)]
 pub struct ObjectStore {

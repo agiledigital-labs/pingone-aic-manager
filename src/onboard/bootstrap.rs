@@ -3,7 +3,8 @@
 //! create a service account, and return the resulting (tenant, private JWK).
 //!
 //! Both Pattern 1 (paste cookie) and Pattern 2 (in-app u/p) end up here once
-//! they have a session cookie value.
+//! they have a session cookie value. The same session→bearer→resolve username→
+//! credential name→log-key mint flow is also reused by the logs vertical.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
@@ -28,6 +29,12 @@ pub const SA_SCOPES: &[&str] = &[
 
 pub fn credential_name(username: Option<&str>, tenant_name: &str) -> String {
     format!("aicx-{}", username.unwrap_or(tenant_name))
+}
+
+/// Result of minting a log API key from an admin session.
+pub struct MintedLogKey {
+    pub credential_name: String,
+    pub key: crate::logs::LogKeyPair,
 }
 
 #[derive(Deserialize)]
@@ -299,6 +306,43 @@ pub async fn create_log_api_key(
         api_key_id: created.api_key_id,
         api_key_secret: created.api_key_secret,
     })
+}
+
+/// Shared log-key mint flow used by logs CLI and onboarding.
+pub async fn mint_log_key_from_bearer(
+    http: &reqwest::Client,
+    base_url: &str,
+    tenant_name: &str,
+    bearer: &str,
+    username_hint: Option<&str>,
+) -> Result<MintedLogKey> {
+    let username = resolve_admin_username(http, base_url, bearer).await;
+    let credential_name = credential_name(username.as_deref().or(username_hint), tenant_name);
+    let key = create_log_api_key(http, base_url, bearer, &credential_name).await?;
+    Ok(MintedLogKey {
+        credential_name,
+        key,
+    })
+}
+
+/// Shared log-key mint flow used by logs CLI and onboarding when only a
+/// session cookie is available. `cookie_name` may be supplied by the caller or
+/// discovered from serverinfo; `username_hint` is used only when admin-user
+/// resolution fails.
+pub async fn mint_log_key_via_session(
+    http: &reqwest::Client,
+    base_url: &str,
+    cookie_name: Option<&str>,
+    session_value: &str,
+    tenant_name: &str,
+    username_hint: Option<&str>,
+) -> Result<MintedLogKey> {
+    let cookie_name = match cookie_name {
+        Some(cookie_name) => cookie_name.to_string(),
+        None => discover_cookie_name(http, base_url).await?,
+    };
+    let bearer = session_to_bearer(http, base_url, &cookie_name, session_value).await?;
+    mint_log_key_from_bearer(http, base_url, tenant_name, &bearer, username_hint).await
 }
 
 /// Build a reqwest client that does NOT follow redirects (so authorize 302 is observable).

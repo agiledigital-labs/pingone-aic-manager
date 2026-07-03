@@ -1,14 +1,12 @@
 //! Mappings view interaction: lazy list refresh, incremental search, and
 //! selection.
 
-use std::time::Instant;
-
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::event::{AppEvent, ToastKind};
+use crate::app::event::ToastKind;
 use crate::app::{App, InputMode, View};
 use crate::mappings::api::{self, MappingSummary};
-use crate::mappings::state::{LoadState, ReconView};
+use crate::mappings::state::ReconView;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -37,7 +35,7 @@ pub fn apply_event(app: &mut App, event: Event) {
     match event {
         Event::Listed { tenant, result } => {
             app.mappings.refreshing.remove(&tenant);
-            apply_refresh(app, tenant, result);
+            crate::mappings::ops::apply_refresh(app, tenant, result);
         }
         Event::ReconStatus {
             tenant,
@@ -73,30 +71,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
 }
 
 pub fn refresh(app: &mut App, force: bool) {
-    let Some(name) = app.active_tenant().map(|tenant| tenant.name.clone()) else {
-        return;
-    };
-    if !app.is_unlocked()
-        || app.mappings.refreshing.contains(&name)
-        || (!force && app.mappings.data.contains_key(&name))
-    {
-        return;
-    }
-
-    app.mappings.data.insert(name.clone(), LoadState::Loading);
-    app.mappings.refreshing.insert(name.clone());
-    app.mappings.last_poll = Instant::now();
-
-    let tx = app.events.tx.clone();
-    tokio::spawn(async move {
-        let result = crate::mappings::api::list_mappings(&name)
-            .await
-            .map_err(|error| error.to_string());
-        let _ = tx.send(AppEvent::Mappings(Event::Listed {
-            tenant: name,
-            result,
-        }));
-    });
+    crate::mappings::ops::refresh(app, force);
 }
 
 pub fn apply_refresh(
@@ -104,32 +79,7 @@ pub fn apply_refresh(
     tenant: String,
     result: std::result::Result<Vec<MappingSummary>, String>,
 ) {
-    match result {
-        Ok(mappings) => {
-            app.mappings
-                .data
-                .insert(tenant.clone(), LoadState::Loaded(mappings));
-        }
-        Err(error) => {
-            app.mappings
-                .data
-                .insert(tenant.clone(), LoadState::Failed(error.clone()));
-            if app
-                .active_tenant()
-                .is_some_and(|active| active.name == tenant)
-            {
-                app.push_toast(ToastKind::Error, format!("Mappings list failed: {error}"));
-            }
-        }
-    }
-
-    if app
-        .active_tenant()
-        .is_some_and(|active| active.name == tenant)
-    {
-        let count = row_count(app);
-        app.mappings.clamp_selection(count);
-    }
+    crate::mappings::ops::apply_refresh(app, tenant, result);
 }
 
 pub fn run_recon(app: &mut App) {
@@ -223,7 +173,7 @@ fn apply_pull_result(
     app.mappings.in_flight_pull.remove(&key);
     match result {
         Ok(message) => {
-            app.scripts.data.remove(&tenant);
+            crate::scripts::screen::invalidate_tenant(app, &tenant);
             let kind = if message.contains("no inline scripts") {
                 ToastKind::Info
             } else {
