@@ -1,18 +1,23 @@
 //! `aic esv` parser and ESV-variable command implementation.
 
 use clap::Subcommand;
+use serde_json::Value;
 
 use crate::Result;
-use crate::cli::{print_json, prod_hint, tenant_for};
+use crate::cli::{
+    clip, json_bool_cell, json_str_cell, print_json, print_table, prod_hint, tenant_for,
+};
 use crate::secrets::cli::SecretCommand;
 
 #[derive(Subcommand, Debug)]
 pub enum EsvCommand {
-    /// List ESV variables. Outputs the `result` array as JSON.
+    /// List ESV variables.
     List {
         /// Override the current context for this call.
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        #[arg(long, help = "Print variables as JSON")]
+        json: bool,
     },
     /// Get a single variable as JSON.
     Get {
@@ -62,9 +67,15 @@ pub enum EsvCommand {
 pub async fn run(cmd: EsvCommand) -> Result<()> {
     use crate::esv::api;
     match cmd {
-        EsvCommand::List { tenant } => {
+        EsvCommand::List { tenant, json } => {
             let t = tenant_for(tenant)?;
-            print_json(&api::list_variables(&t).await?)
+            let variables = api::list_variables(&t).await?;
+            if json {
+                print_json(&variables)
+            } else {
+                print_variables(&variables);
+                Ok(())
+            }
         }
         EsvCommand::Get { id, tenant } => {
             let t = tenant_for(tenant)?;
@@ -107,4 +118,23 @@ pub async fn run(cmd: EsvCommand) -> Result<()> {
         }
         EsvCommand::Secret { command } => crate::secrets::cli::run(command).await,
     }
+}
+
+fn print_variables(variables: &[Value]) {
+    let rows = variables
+        .iter()
+        .map(|variable| {
+            vec![
+                json_str_cell(variable, "_id"),
+                json_str_cell(variable, "expressionType"),
+                json_bool_cell(variable, "loaded"),
+                json_str_cell(variable, "lastChangeDate"),
+                clip(&json_str_cell(variable, "description"), 72),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(
+        &["ID", "TYPE", "LOADED", "LAST_CHANGE", "DESCRIPTION"],
+        &rows,
+    );
 }

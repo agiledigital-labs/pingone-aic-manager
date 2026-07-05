@@ -15,6 +15,7 @@
 //! keygen; we haven't tried to script them. Run the TUI once per tenant.
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use serde::Serialize;
 
 use crate::agent::{self, AgentClient, Request, Response};
 use crate::config::crypto::Dek;
@@ -117,7 +118,10 @@ pub enum Command {
 #[derive(Subcommand, Debug)]
 pub enum CtxCommand {
     /// List tenants defined in `.aic-edit/config.toml`.
-    List,
+    List {
+        #[arg(long, help = "Print tenants as JSON")]
+        json: bool,
+    },
     /// Print the current context.
     Current,
     /// Switch to a different tenant.
@@ -468,14 +472,37 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
         .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
     let current = config::read_current_context()?;
     match cmd {
-        CtxCommand::List => {
-            for t in &cfg.tenants {
-                let marker = if Some(&t.name) == current.as_ref() {
-                    "* "
-                } else {
-                    "  "
-                };
-                println!("{marker}{}  ({}, {})", t.name, t.theme.label(), t.base_url);
+        CtxCommand::List { json } => {
+            if json {
+                let rows = cfg
+                    .tenants
+                    .iter()
+                    .map(|tenant| CtxTenantOutput {
+                        current: Some(&tenant.name) == current.as_ref(),
+                        name: tenant.name.clone(),
+                        theme: tenant.theme.label().to_string(),
+                        base_url: tenant.base_url.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                print_json(&rows)?;
+            } else {
+                let rows = cfg
+                    .tenants
+                    .iter()
+                    .map(|tenant| {
+                        vec![
+                            if Some(&tenant.name) == current.as_ref() {
+                                "*".to_string()
+                            } else {
+                                "".to_string()
+                            },
+                            tenant.name.clone(),
+                            tenant.theme.label().to_string(),
+                            tenant.base_url.clone(),
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+                print_table(&["CURRENT", "NAME", "THEME", "BASE_URL"], &rows);
             }
         }
         CtxCommand::Current => match current {
@@ -567,6 +594,94 @@ pub(crate) fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    println!("{}", render_table(headers, rows));
+}
+
+fn render_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let mut widths = headers
+        .iter()
+        .map(|header| header.chars().count())
+        .collect::<Vec<_>>();
+    for row in rows {
+        for (idx, width) in widths.iter_mut().enumerate() {
+            let cell_width = row.get(idx).map(|cell| cell.chars().count()).unwrap_or(0);
+            *width = (*width).max(cell_width);
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str(&render_table_line(
+        &headers
+            .iter()
+            .map(|header| header.to_string())
+            .collect::<Vec<_>>(),
+        &widths,
+    ));
+    for row in rows {
+        out.push('\n');
+        out.push_str(&render_table_line(row, &widths));
+    }
+    out
+}
+
+fn render_table_line(cells: &[String], widths: &[usize]) -> String {
+    let mut out = String::new();
+    for idx in 0..widths.len() {
+        if idx > 0 {
+            out.push_str("  ");
+        }
+        let cell = cells.get(idx).map(String::as_str).unwrap_or("");
+        if idx + 1 == widths.len() {
+            out.push_str(cell);
+        } else {
+            out.push_str(&format!("{cell:<width$}", width = widths[idx]));
+        }
+    }
+    out
+}
+
+/// String field of a JSON object as a table cell: newlines collapsed to
+/// spaces, missing/non-string rendered as `-`.
+pub(crate) fn json_str_cell(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("-")
+        .replace('\n', " ")
+}
+
+/// Bool field of a JSON object as a table cell; missing/non-bool renders `-`.
+pub(crate) fn json_bool_cell(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string())
+}
+
+/// Collapse newlines and truncate to `max` display chars with an ellipsis.
+pub(crate) fn clip(value: &str, max: usize) -> String {
+    let value = value.replace('\n', " ");
+    if value.chars().count() <= max {
+        return value;
+    }
+    let mut out = value
+        .chars()
+        .take(max.saturating_sub(3))
+        .collect::<String>();
+    out.push_str("...");
+    out
+}
+
+#[derive(Serialize)]
+struct CtxTenantOutput {
+    current: bool,
+    name: String,
+    theme: String,
+    base_url: String,
+}
+
 /// Resolve a tenant name from a CLI flag, falling back to the on-disk
 /// current context, then the config's default tenant. Errors if none is set.
 fn resolve_tenant(arg: Option<String>, cfg: &ProjectConfig) -> Result<String> {
@@ -598,4 +713,45 @@ fn redact(token: &str) -> String {
         return "*".repeat(n);
     }
     format!("{}…{}  ({} chars)", &token[..8], &token[n - 4..], n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(cells: &[&str]) -> Vec<String> {
+        cells.iter().map(|c| c.to_string()).collect()
+    }
+
+    #[test]
+    fn columns_pad_to_the_widest_cell_and_the_last_is_not_padded() {
+        let out = render_table(
+            &["ID", "LOADED"],
+            &[row(&["esv-a", "true"]), row(&["esv-longer", "false"])],
+        );
+        assert_eq!(
+            out,
+            "ID          LOADED\n\
+             esv-a       true\n\
+             esv-longer  false"
+        );
+    }
+
+    #[test]
+    fn short_rows_render_missing_trailing_cells_as_blank() {
+        let out = render_table(&["A", "B"], &[row(&["only-a"])]);
+        assert_eq!(out, "A       B\nonly-a  ");
+    }
+
+    #[test]
+    fn header_only_when_there_are_no_rows() {
+        assert_eq!(render_table(&["ID", "NAME"], &[]), "ID  NAME");
+    }
+
+    #[test]
+    fn clip_collapses_newlines_and_truncates_with_ellipsis() {
+        assert_eq!(clip("one\ntwo", 20), "one two");
+        assert_eq!(clip("abcdefghij", 8), "abcde...");
+        assert_eq!(clip("abcdefghij", 10), "abcdefghij");
+    }
 }

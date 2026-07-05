@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf, is_separator};
 use clap::Subcommand;
 use serde_json::Value;
 
-use crate::cli::tenant_for;
+use crate::cli::{print_json, print_table, tenant_for};
 use crate::config::ProjectConfig;
 use crate::oauth::api;
 use crate::{Error, Result};
@@ -19,6 +19,8 @@ pub enum OauthCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        #[arg(long, help = "Print client ids as JSON")]
+        json: bool,
     },
     /// Pull an OAuth2 client into the workspace as JSON.
     Pull {
@@ -226,12 +228,22 @@ fn api_not_found(error: &Error) -> bool {
 
 pub async fn run(cmd: OauthCommand) -> Result<()> {
     match cmd {
-        OauthCommand::List { realm, tenant } => {
+        OauthCommand::List {
+            realm,
+            tenant,
+            json,
+        } => {
             let tenant = tenant_for(tenant)?;
             let realm = oauth_realm(realm)?;
             let clients = api::list_clients(&tenant, &realm).await?;
-            for id in &clients {
-                println!("{id}");
+            if json {
+                print_json(&clients)?;
+            } else {
+                let rows = clients
+                    .iter()
+                    .map(|id| vec![id.clone()])
+                    .collect::<Vec<_>>();
+                print_table(&["CLIENT_ID"], &rows);
             }
             eprintln!("{} oauth clients", clients.len());
             Ok(())

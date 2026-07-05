@@ -33,9 +33,9 @@ aic <command> <subcommand> --help
   typed confirmation on *any* tenant unless `--yes` is given.
 - **`--force`** skips a safety check specific to the command (e.g. overwriting a
   drifted remote, deleting a journey/client). It's called out per command below.
-- **JSON output.** Read commands generally print raw JSON (the tenant's
-  `result` shape) so you can pipe to `jq`. Some commands take `--json` for a
-  machine-readable form of an otherwise human-formatted listing.
+- **Output format.** List commands default to kubectl-style tables. Pass
+  `--json` on list commands for machine-readable output. Single-resource reads
+  and export-style commands still print JSON by default.
 
 ---
 
@@ -59,7 +59,7 @@ the locked/unlocked model and why `logout` ≠ `stop`.
 
 | Command | What it does |
 |---|---|
-| `aic ctx list` | List tenants defined in `.aic-edit/config.toml`. |
+| `aic ctx list [--json]` | List tenants defined in `.aic-edit/config.toml`. |
 | `aic ctx current` | Print the active context. |
 | `aic ctx use <tenant>` | Switch the active context. |
 | `aic whoami [--tenant <name>]` | Mint and print token info for a context. |
@@ -75,7 +75,7 @@ and only take effect after a runtime restart (`aic esv apply`).
 ### Variables
 
 ```bash
-aic esv list                                    # all variables (JSON result array)
+aic esv list [--json]                           # all variables (table by default)
 aic esv get esv-my-var                           # one variable as JSON
 aic esv set esv-my-var --value hello --type string [--description "…"] [--yes]
 aic esv delete esv-my-var [--yes]
@@ -92,10 +92,10 @@ aic esv apply [--yes]                            # restart the runtime to apply 
 Secret *values* are never readable back; commands return metadata only.
 
 ```bash
-aic esv secret list                              # metadata for all secrets
+aic esv secret list [--json]                     # metadata for all secrets
 aic esv secret get esv-my-secret                 # one secret's metadata
 aic esv secret create esv-my-secret              # create (prompts, no echo)
-aic esv secret versions esv-my-secret            # versions, newest first
+aic esv secret versions esv-my-secret [--json]   # versions, newest first
 aic esv secret add-version esv-my-secret         # add + activate a new version
 aic esv secret enable  esv-my-secret 2
 aic esv secret disable esv-my-secret 2           # latest version can't be disabled
@@ -157,7 +157,7 @@ record data use `aic idm`). Object hooks (`onCreate`/`onUpdate`/…) sync as
 workspace scripts via `aic script` (`managed/<object>.<hook>`).
 
 ```bash
-aic managed list                                 # object types with property + hook counts
+aic managed list [--json]                        # object types with property + hook counts
 aic managed get alpha_user                        # one object's full definition as JSON
 ```
 
@@ -173,7 +173,7 @@ scalar fields), with child tables `obj_<type>__<field>` for arrays and
 relationships.
 
 ```bash
-aic idm objects                                  # list syncable object names (live, from the tenant)
+aic idm objects [--json]                         # list syncable object names (live, from the tenant)
 aic idm sync                                     # interactive multiselect → sync chosen objects
 aic idm sync alpha_user bravo_user                # sync named objects
 aic idm sync --all                               # sync every syncable object, non-interactively
@@ -210,12 +210,12 @@ Realm-scoped. Journeys pull/push as JSON exports (tree + all its nodes) under
 the workspace.
 
 ```bash
-aic journey list [--realm alpha]                       # journey names
+aic journey list [--realm alpha] [--json]              # journey names
 aic journey pull <name> [--realm alpha]                # tree + nodes → workspace JSON
 aic journey push <name> [--realm alpha] [--force]      # push an export back
 aic journey delete <name> --force [--realm alpha]      # delete (requires --force)
-aic journey using-script <script-uuid> [--realm alpha] # journeys referencing a script
-aic journey nodes [--realm alpha]                      # available node types
+aic journey using-script <script-uuid> [--realm alpha] [--json] # journeys referencing a script
+aic journey nodes [--realm alpha] [--json]             # available node types
 aic journey node-schema <nodeType> [--realm alpha]     # a node type's schema (JSON)
 aic journey node-template <nodeType> [--realm alpha]   # a starter node config (JSON)
 ```
@@ -227,7 +227,7 @@ aic journey node-template <nodeType> [--realm alpha]   # a starter node config (
 Realm-scoped. Clients pull/push as JSON under the workspace.
 
 ```bash
-aic oauth list [--realm alpha]                    # client ids
+aic oauth list [--realm alpha] [--json]           # client ids
 aic oauth pull <id> [--realm alpha]               # one client → workspace JSON
 aic oauth push <id> [--realm alpha] [--force]     # push a workspace client JSON back
 aic oauth delete <id> --force [--realm alpha]     # delete (requires --force)
@@ -244,7 +244,7 @@ Realm-scoped. Re-point AM secret *labels* (purposes) at existing ESV secrets.
 
 ```bash
 aic secretmap list [--realm alpha] [--json]            # configured mappings
-aic secretmap list-labels [--realm alpha]              # valid AM secret labels (alias: labels)
+aic secretmap list-labels [--realm alpha] [--json]     # valid AM secret labels (alias: labels)
 aic secretmap get <secret-label> [--realm alpha]       # one raw mapping
 aic secretmap set <secret-label> <esv-secret-id> [--realm alpha] [--force]
 aic secretmap remove <secret-label> [--realm alpha]    # alias: delete
@@ -281,7 +281,7 @@ means "all of it"; `all` means everything.
 ```bash
 aic script workspace init                       # scaffold the tenant tree (both realms + idm)
 aic script workspace update                     # refresh bundled types/config to the latest
-aic script list [<ref>]                         # list scripts (each row tagged with its `ref`)
+aic script list [<ref>] [--json]                # list scripts (each row tagged with its `ref`)
 aic script pull [<ref>] [--force]               # pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--yes]       # push local edits; no ref → fuzzy picker
 aic script sync [<ref>] [--resolve local|remote] # reconcile: push local-only, pull remote-only

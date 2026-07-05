@@ -6,7 +6,7 @@ use clap::Subcommand;
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
 
-use crate::cli::tenant_for;
+use crate::cli::{print_json, print_table, tenant_for};
 use crate::idmstore::state::{ObjectStatus, SyncReport};
 use crate::idmstore::{db, ops, state};
 use crate::{Error, Result};
@@ -32,6 +32,8 @@ pub enum IdmCommand {
     Objects {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        #[arg(long, help = "Print object names as JSON")]
+        json: bool,
     },
     /// List local query-store tables and columns.
     Tables {
@@ -67,11 +69,18 @@ pub async fn run(cmd: IdmCommand) -> Result<()> {
             println!("{}", run_query(&conn, &sql)?);
             Ok(())
         }
-        IdmCommand::Objects { tenant } => {
+        IdmCommand::Objects { tenant, json } => {
             let tenant = tenant_for(tenant)?;
             let doc = crate::managed::api::get_managed(&tenant).await?;
-            for name in ops::syncable_object_names(&doc)? {
-                println!("{name}");
+            let names = ops::syncable_object_names(&doc)?;
+            if json {
+                print_json(&names)?;
+            } else {
+                let rows = names
+                    .iter()
+                    .map(|name| vec![name.clone()])
+                    .collect::<Vec<_>>();
+                print_table(&["OBJECT"], &rows);
             }
             Ok(())
         }

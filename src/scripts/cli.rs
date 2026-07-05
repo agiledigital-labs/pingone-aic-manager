@@ -2,7 +2,7 @@
 
 use clap::Subcommand;
 
-use crate::cli::{print_json, prod_hint, tenant_for};
+use crate::cli::{print_json, print_table, prod_hint, tenant_for};
 use crate::config::{self, ProjectConfig};
 use crate::scripts::{self as script, Namespace};
 use crate::{Error, Result};
@@ -21,6 +21,8 @@ pub enum ScriptCommand {
         reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        #[arg(long, help = "Print scripts as JSON")]
+        json: bool,
     },
     /// Pull script(s) into the workspace.
     ///
@@ -166,9 +168,14 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 Ok(())
             }
         },
-        ScriptCommand::List { reference, tenant } => {
+        ScriptCommand::List {
+            reference,
+            tenant,
+            json,
+        } => {
             let t = tenant_for(tenant)?;
             let mut out = Vec::new();
+            let mut rows = Vec::new();
             for job in parse_ref(reference)? {
                 for sref in job.ns.kind.list(&t, job.ns.realm_arg()).await? {
                     // A specific-name ref filters the listing to that script.
@@ -177,10 +184,19 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                             continue;
                         }
                     }
+                    rows.push(listed_row(&sref, &job.ns));
                     out.push(listed(&sref, &job.ns));
                 }
             }
-            print_json(&out)
+            if json {
+                print_json(&out)
+            } else {
+                print_table(
+                    &["REF", "KIND", "CONTEXT", "ENGINE", "DEFAULT", "ID"],
+                    &rows,
+                );
+                Ok(())
+            }
         }
         ScriptCommand::Pull {
             reference,
@@ -608,6 +624,17 @@ fn listed(r: &script::RemoteRef, ns: &Namespace) -> serde_json::Value {
         );
     }
     v
+}
+
+fn listed_row(r: &script::RemoteRef, ns: &Namespace) -> Vec<String> {
+    vec![
+        script::full_name(r.kind, ns.realm.as_deref(), &r.name),
+        r.kind.as_str().to_string(),
+        r.context.as_deref().unwrap_or("-").to_string(),
+        r.evaluator_version.as_deref().unwrap_or("-").to_string(),
+        r.is_default.to_string(),
+        r.id.clone(),
+    ]
 }
 
 fn full_of(c: &script::sync::Candidate) -> String {

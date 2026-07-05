@@ -1,8 +1,11 @@
 //! `aic esv secret` parser and command implementation.
 
 use clap::Subcommand;
+use serde_json::Value;
 
-use crate::cli::{print_json, prod_hint, tenant_for};
+use crate::cli::{
+    clip, json_bool_cell, json_str_cell, print_json, print_table, prod_hint, tenant_for,
+};
 use crate::{Error, Result};
 
 #[derive(Subcommand, Debug)]
@@ -11,6 +14,8 @@ pub enum SecretCommand {
     List {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        #[arg(long, help = "Print secrets as JSON")]
+        json: bool,
     },
     /// Get a single secret's metadata as JSON.
     Get {
@@ -66,6 +71,8 @@ pub enum SecretCommand {
         id: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        #[arg(long, help = "Print versions as JSON")]
+        json: bool,
     },
     /// Add a new version (becomes the active version). Value is encoded with
     /// the secret's existing encoding. Value source as for `create` (prefer
@@ -126,9 +133,15 @@ pub enum SecretCommand {
 pub async fn run(cmd: SecretCommand) -> Result<()> {
     use crate::esv::api as esv;
     match cmd {
-        SecretCommand::List { tenant } => {
+        SecretCommand::List { tenant, json } => {
             let t = tenant_for(tenant)?;
-            print_json(&esv::list_secrets(&t).await?)
+            let secrets = esv::list_secrets(&t).await?;
+            if json {
+                print_json(&secrets)
+            } else {
+                print_secrets(&secrets);
+                Ok(())
+            }
         }
         SecretCommand::Get { id, tenant } => {
             let t = tenant_for(tenant)?;
@@ -176,9 +189,15 @@ pub async fn run(cmd: SecretCommand) -> Result<()> {
             println!("secret {id} description updated");
             Ok(())
         }
-        SecretCommand::Versions { id, tenant } => {
+        SecretCommand::Versions { id, tenant, json } => {
             let t = tenant_for(tenant)?;
-            print_json(&esv::list_secret_versions(&t, &id).await?)
+            let versions = esv::list_secret_versions(&t, &id).await?;
+            if json {
+                print_json(&versions)
+            } else {
+                print_versions(&versions);
+                Ok(())
+            }
         }
         SecretCommand::AddVersion {
             id,
@@ -328,4 +347,48 @@ fn json_scalar(v: &serde_json::Value) -> String {
     } else {
         v.to_string()
     }
+}
+
+fn print_secrets(secrets: &[Value]) {
+    let rows = secrets
+        .iter()
+        .map(|secret| {
+            vec![
+                json_str_cell(secret, "_id"),
+                json_str_cell(secret, "activeVersion"),
+                json_str_cell(secret, "loadedVersion"),
+                json_bool_cell(secret, "loaded"),
+                json_str_cell(secret, "encoding"),
+                json_bool_cell(secret, "useInPlaceholders"),
+                clip(&json_str_cell(secret, "description"), 72),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(
+        &[
+            "ID",
+            "ACTIVE",
+            "LOADED_VERSION",
+            "LOADED",
+            "ENCODING",
+            "PLACEHOLDERS",
+            "DESCRIPTION",
+        ],
+        &rows,
+    );
+}
+
+fn print_versions(versions: &[Value]) {
+    let rows = versions
+        .iter()
+        .map(|version| {
+            vec![
+                json_str_cell(version, "version"),
+                json_str_cell(version, "status"),
+                json_bool_cell(version, "loaded"),
+                json_str_cell(version, "createDate"),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(&["VERSION", "STATUS", "LOADED", "CREATED"], &rows);
 }
