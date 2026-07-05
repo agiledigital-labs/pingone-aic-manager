@@ -9,7 +9,7 @@ use inquire::{Password, PasswordDisplayMode, Text, error::InquireError};
 use serde::Serialize;
 
 use crate::agent::AgentClient;
-use crate::cli::tenant_for;
+use crate::cli::{print_table, tenant_for};
 use crate::config::ProjectConfig;
 use crate::logs::db::store_path;
 use crate::logs::{api, db, journey, ops};
@@ -172,9 +172,11 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             } else if json {
                 write_json(&sources, None)
             } else {
-                for source in sources {
-                    println!("{source}");
-                }
+                let rows = sources
+                    .into_iter()
+                    .map(|source| vec![source])
+                    .collect::<Vec<_>>();
+                print_table(&["SOURCE"], &rows);
                 Ok(())
             }
         }

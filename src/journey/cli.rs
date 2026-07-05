@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf, is_separator};
 use clap::Subcommand;
 use serde_json::Value;
 
-use crate::cli::tenant_for;
+use crate::cli::{print_json, print_table, tenant_for};
 use crate::config::ProjectConfig;
 use crate::journey::api;
 use crate::{Error, Result};
@@ -20,6 +20,8 @@ pub enum JourneyCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        #[arg(long, help = "Print journey names as JSON")]
+        json: bool,
     },
     /// Pull a journey (tree + all its nodes) into the workspace as JSON.
     Pull {
@@ -59,6 +61,8 @@ pub enum JourneyCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        #[arg(long, help = "Print matching journey names as JSON")]
+        json: bool,
     },
     /// List available journey node types.
     Nodes {
@@ -135,22 +139,18 @@ fn node_type_matches_tag(node_type: &api::NodeType, tag: &str) -> bool {
 }
 
 fn print_node_types(node_types: &[api::NodeType]) {
-    let width = node_types
+    let rows = node_types
         .iter()
-        .map(|node_type| node_type.id.len())
-        .max()
-        .unwrap_or(2);
-
-    for node_type in node_types {
-        let tags = node_type.tags.join(",");
-        println!(
-            "{:<width$}  {}  {}",
-            node_type.id,
-            node_type.name,
-            tags,
-            width = width
-        );
-    }
+        .map(|node_type| {
+            vec![
+                node_type.id.clone(),
+                node_type.name.clone(),
+                node_type.tags.join(","),
+                node_type.collection.to_string(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(&["TYPE", "NAME", "TAGS", "COLLECTION"], &rows);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -396,11 +396,22 @@ fn node_config_references_script(node_type: &str, config: &Value, script_id: &st
 
 pub async fn run(cmd: JourneyCommand) -> Result<()> {
     match cmd {
-        JourneyCommand::List { realm, tenant } => {
+        JourneyCommand::List {
+            realm,
+            tenant,
+            json,
+        } => {
             let tenant = tenant_for(tenant)?;
             let realm = journey_realm(realm)?;
-            for name in api::list_trees(&tenant, &realm).await? {
-                println!("{name}");
+            let names = api::list_trees(&tenant, &realm).await?;
+            if json {
+                print_json(&names)?;
+            } else {
+                let rows = names
+                    .iter()
+                    .map(|name| vec![name.clone()])
+                    .collect::<Vec<_>>();
+                print_table(&["JOURNEY"], &rows);
             }
             Ok(())
         }
@@ -493,10 +504,11 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             script_id,
             realm,
             tenant,
+            json,
         } => {
             let tenant = tenant_for(tenant)?;
             let realm = journey_realm(realm)?;
-            let mut matches = 0;
+            let mut matches = Vec::new();
             for name in api::list_trees(&tenant, &realm).await? {
                 let tree = match api::read_tree(&tenant, &realm, &name).await {
                     Ok(tree) => tree,
@@ -522,11 +534,19 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     }
                 }
                 if found {
-                    println!("{name}");
-                    matches += 1;
+                    matches.push(name);
                 }
             }
-            eprintln!("{matches} journeys reference script {script_id}");
+            if json {
+                print_json(&matches)?;
+            } else {
+                let rows = matches
+                    .iter()
+                    .map(|name| vec![name.clone()])
+                    .collect::<Vec<_>>();
+                print_table(&["JOURNEY"], &rows);
+            }
+            eprintln!("{} journeys reference script {script_id}", matches.len());
             Ok(())
         }
         JourneyCommand::Nodes {
@@ -543,7 +563,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             }
             let count = node_types.len();
             if json {
-                println!("{}", serde_json::to_string_pretty(&node_types)?);
+                print_json(&node_types)?;
             } else {
                 print_node_types(&node_types);
             }

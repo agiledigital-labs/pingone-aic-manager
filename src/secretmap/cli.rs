@@ -4,7 +4,7 @@ use clap::Subcommand;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::cli::{print_json, tenant_config_for};
+use crate::cli::{clip, print_json, print_table, tenant_config_for};
 use crate::config::Tenant;
 use crate::secretmap::{api, labels};
 use crate::{Error, Result};
@@ -114,34 +114,32 @@ fn label_output(secret_id: &str) -> LabelOutput {
     }
 }
 
-fn dim(text: &str) -> String {
-    format!("\x1b[2m{text}\x1b[0m")
-}
-
 fn print_mappings(mappings: &[api::Mapping]) {
-    let width = mappings
+    let rows = mappings
         .iter()
-        .map(|mapping| mapping.secret_id.len())
-        .max()
-        .unwrap_or(2);
-
-    for mapping in mappings {
-        println!(
-            "{:<width$}  →  {}",
-            mapping.secret_id,
-            mapping.alias.as_deref().unwrap_or("(unset)"),
-            width = width
-        );
-        println!("  {}", dim(&labels::describe(&mapping.secret_id)));
-    }
+        .map(|mapping| {
+            vec![
+                mapping.secret_id.clone(),
+                mapping.alias.as_deref().unwrap_or("(unset)").to_string(),
+                clip(&labels::describe(&mapping.secret_id), 72),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(&["SECRET_LABEL", "ESV_SECRET", "DESCRIPTION"], &rows);
 }
 
 fn print_labels(secret_ids: &[String]) {
-    let width = secret_ids.iter().map(String::len).max().unwrap_or(2);
-    for secret_id in secret_ids {
-        println!("{:<width$}", secret_id, width = width);
-        println!("  {}", dim(&labels::describe(secret_id)));
-    }
+    let rows = secret_ids
+        .iter()
+        .map(|secret_id| {
+            vec![
+                secret_id.clone(),
+                labels::category(secret_id).to_string(),
+                clip(&labels::describe(secret_id), 72),
+            ]
+        })
+        .collect::<Vec<_>>();
+    print_table(&["SECRET_LABEL", "CATEGORY", "DESCRIPTION"], &rows);
 }
 
 fn api_not_found(error: &Error) -> bool {
