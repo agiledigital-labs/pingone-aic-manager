@@ -181,3 +181,9 @@ Findings (2026-06-04), vs next-gen:
   bindings provide direct access.
 - legacy `logger`: classic Debug — `error`/`message`/`warning` + `*Enabled`;
   `trace`/`debug`/`info`/`warn` are absent (those are next-gen slf4j).
+
+`fixtures-legacy/legacy-idrepository-methods.script.js` enumerates the legacy
+`idRepository` method surface (verified 2026-07-06):
+
+- legacy `idRepository`: `getIdentity`, `getAttribute`, `setAttribute`, and
+  `addAttribute` are functions.

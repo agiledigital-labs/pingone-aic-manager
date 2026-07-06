@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 37;
+pub const TEMPLATES_VERSION: u32 = 38;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -480,6 +480,25 @@ mod tests {
         assert!(tree.join("package.json").exists());
 
         std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn decision_node_identity_type_has_documented_methods() {
+        let identity = include_str!("templates/am/types/decision-node-base.d.ts");
+        for signature in [
+            "getAttributeValues(attributeName: string): JavaArray<string>;",
+            "getName(): string;",
+            "getUniversalId(): string;",
+            "setAttribute(attributeName: string, attributeValues: string[]): void;",
+            "addAttribute(attributeName: string, attributeValue: string): void;",
+            "store(): void;",
+            "exists(): boolean;",
+        ] {
+            assert!(
+                identity.contains(signature),
+                "missing ScriptedIdentity method: {signature}"
+            );
+        }
     }
 
     #[test]
