@@ -276,29 +276,14 @@ pub fn fuzzy_alias_matches(ids: &[String], query: &str) -> Vec<AliasMatch> {
         return matches;
     }
 
-    use nucleo_matcher::{
-        Config, Matcher, Utf32Str,
-        pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-    };
-
-    let mut matcher = Matcher::new(Config::DEFAULT);
-    let pattern = Pattern::new(
-        query,
-        CaseMatching::Ignore,
-        Normalization::Smart,
-        AtomKind::Fuzzy,
-    );
-    let mut buf = Vec::new();
-    let mut positions = Vec::new();
+    let mut matcher = crate::tui::fuzzy::FuzzyMatcher::new(query);
     let mut matches = Vec::new();
     for id in ids {
-        positions.clear();
-        let haystack = Utf32Str::new(id, &mut buf);
-        if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
+        if let Some((score, positions)) = matcher.match_indices(id) {
             matches.push(AliasMatch {
                 id: id.clone(),
                 score,
-                positions: positions.clone(),
+                positions,
             });
         }
     }
@@ -336,32 +321,17 @@ pub fn fuzzy_label_matches(ids: &[String], query: &str) -> Vec<LabelMatch> {
         return matches;
     }
 
-    use nucleo_matcher::{
-        Config, Matcher, Utf32Str,
-        pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-    };
-
-    let mut matcher = Matcher::new(Config::DEFAULT);
-    let pattern = Pattern::new(
-        query,
-        CaseMatching::Ignore,
-        Normalization::Smart,
-        AtomKind::Fuzzy,
-    );
-    let mut buf = Vec::new();
-    let mut positions = Vec::new();
+    let mut matcher = crate::tui::fuzzy::FuzzyMatcher::new(query);
     let mut matches = Vec::new();
     for id in ids {
-        positions.clear();
         let description = labels::describe(id);
         let haystack_text = format!("{id} {description}");
-        let haystack = Utf32Str::new(&haystack_text, &mut buf);
-        if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
+        if let Some((score, positions)) = matcher.match_indices(&haystack_text) {
             matches.push(LabelMatch {
                 id: id.clone(),
                 description,
                 score,
-                positions: positions.clone(),
+                positions,
             });
         }
     }
@@ -370,35 +340,20 @@ pub fn fuzzy_label_matches(ids: &[String], query: &str) -> Vec<LabelMatch> {
 }
 
 fn fuzzy_mapping_matches(mappings: &[api::Mapping], query: &str) -> Vec<MappingMatch> {
-    use nucleo_matcher::{
-        Config, Matcher, Utf32Str,
-        pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-    };
-
-    let mut matcher = Matcher::new(Config::DEFAULT);
-    let pattern = Pattern::new(
-        query,
-        CaseMatching::Ignore,
-        Normalization::Smart,
-        AtomKind::Fuzzy,
-    );
-    let mut buf = Vec::new();
-    let mut positions = Vec::new();
+    let mut matcher = crate::tui::fuzzy::FuzzyMatcher::new(query);
     let mut matches = Vec::new();
     for (idx, mapping) in mappings.iter().enumerate() {
-        positions.clear();
         let haystack_text = match mapping.alias.as_deref() {
             Some(alias) => format!("{} {}", mapping.secret_id, alias),
             None => mapping.secret_id.clone(),
         };
-        let haystack = Utf32Str::new(&haystack_text, &mut buf);
-        if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
+        if let Some((score, positions)) = matcher.match_indices(&haystack_text) {
             matches.push(MappingMatch {
                 idx,
                 secret_id: mapping.secret_id.clone(),
                 alias: mapping.alias.clone(),
                 score,
-                positions: positions.clone(),
+                positions,
             });
         }
     }

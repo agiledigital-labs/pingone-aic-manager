@@ -25,11 +25,16 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
 
     let doc = match app.managed.data.get(&tenant) {
         None | Some(LoadState::Loading) => {
-            status_line(f, area, "  Loading managed objects…", Color::DarkGray);
+            crate::tui::list_chrome::draw_status_line(
+                f,
+                area,
+                "  Loading managed objects…",
+                Color::DarkGray,
+            );
             return;
         }
         Some(LoadState::Failed(error)) => {
-            status_line(
+            crate::tui::list_chrome::draw_status_line(
                 f,
                 area,
                 &format!("  Managed objects failed: {error}"),
@@ -41,12 +46,17 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     };
     let summaries = match crate::managed::api::summarize(doc) {
         Ok(summaries) if summaries.is_empty() => {
-            status_line(f, area, "  No managed objects found.", Color::DarkGray);
+            crate::tui::list_chrome::draw_status_line(
+                f,
+                area,
+                "  No managed objects found.",
+                Color::DarkGray,
+            );
             return;
         }
         Ok(summaries) => summaries,
         Err(error) => {
-            status_line(
+            crate::tui::list_chrome::draw_status_line(
                 f,
                 area,
                 &format!("  Managed schema failed: {error}"),
@@ -61,16 +71,6 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
     draw_list(f, app, summaries.len(), &matches, columns[0]);
     draw_detail(f, app, doc, &summaries, &matches, columns[1]);
-}
-
-fn status_line(f: &mut Frame, area: Rect, text: &str, color: Color) {
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            text.to_string(),
-            Style::default().fg(color),
-        ))),
-        area,
-    );
 }
 
 fn draw_list(f: &mut Frame, app: &App, total: usize, matches: &[ManagedMatch], area: Rect) {
@@ -207,7 +207,7 @@ fn draw_detail(
 
     let selected = app.managed.selected.min(matches.len().saturating_sub(1));
     let Some(item) = matches.get(selected) else {
-        status_line(f, inner, "no match", Color::DarkGray);
+        crate::tui::list_chrome::draw_status_line(f, inner, "no match", Color::DarkGray);
         return;
     };
     let Some(summary) = summaries.get(item.idx) else {

@@ -7,6 +7,7 @@
 //!
 //! Visual + interaction rules: `docs/DESIGN.md`. Don't redebate them.
 
+pub mod fuzzy;
 pub mod header;
 pub mod keybind_help;
 pub mod list_chrome;

@@ -110,26 +110,11 @@ impl State {
             return matches;
         }
 
-        use nucleo_matcher::{
-            Config, Matcher, Utf32Str,
-            pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-        };
-
-        let mut matcher = Matcher::new(Config::DEFAULT);
-        let pattern = Pattern::new(
-            self.query.value(),
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-        );
-        let mut buf = Vec::new();
-        let mut positions = Vec::new();
+        let mut matcher = crate::tui::fuzzy::FuzzyMatcher::new(self.query.value());
         let mut matches = Vec::new();
         for (idx, mapping) in mappings.iter().enumerate() {
-            positions.clear();
-            let haystack = Utf32Str::new(&mapping.name, &mut buf);
-            if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
-                matches.push(match_from_summary(idx, mapping, score, positions.clone()));
+            if let Some((score, positions)) = matcher.match_indices(&mapping.name) {
+                matches.push(match_from_summary(idx, mapping, score, positions));
             }
         }
         matches.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.name.cmp(&b.name)));

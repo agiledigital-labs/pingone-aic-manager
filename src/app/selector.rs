@@ -1,8 +1,4 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use nucleo_matcher::{
-    Config, Matcher, Utf32Str,
-    pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
@@ -136,22 +132,12 @@ fn rank_views(query: &str) -> Vec<View> {
         return View::all().to_vec();
     }
 
-    let mut matcher = Matcher::new(Config::DEFAULT);
-    let pattern = Pattern::new(
-        query,
-        CaseMatching::Ignore,
-        Normalization::Smart,
-        AtomKind::Fuzzy,
-    );
-    let mut buf = Vec::new();
-    let mut positions = Vec::new();
+    let mut matcher = crate::tui::fuzzy::FuzzyMatcher::new(query);
     let mut ranked = Vec::new();
 
     for view in View::all() {
-        positions.clear();
         let label = view.label();
-        let haystack = Utf32Str::new(label, &mut buf);
-        if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
+        if let Some((score, _positions)) = matcher.match_indices(label) {
             ranked.push((*view, score));
         }
     }
