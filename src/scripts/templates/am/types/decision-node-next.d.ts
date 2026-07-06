@@ -16,6 +16,8 @@
 // resolves by managed-object UUID (fr-idm-uuid), NOT userName (verified).
 interface Identity {
   getAttributeValues(attributeName: AmUserAttribute): JavaArray<string>;
+  setAttribute(attributeName: AmUserAttribute, attributeValues: string[]): void;
+  addAttribute(attributeName: AmUserAttribute, attributeValue: string): void;
 }
 
 // Localized-message helper (shape not enumerated in the editor metadata).

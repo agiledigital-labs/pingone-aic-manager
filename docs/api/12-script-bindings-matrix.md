@@ -115,7 +115,7 @@ workspace routing slug from `src/aic/script/am.rs::slug_for`.
 | `sharedState`/`transientState`           | yes                 | **deprecated/removed**               | **D/I** | Replaced by `nodeState.putShared/putTransient` in next-gen. Still in 34/4 `src/` (legacy).                                                           |
 | `action`                                 | via `Action` class  | binding                              | **D/I** | Next-gen: `action.goTo(...)` chainable `ActionWrapper`. Legacy: static `Action.goTo()` (`ActionBuilder`). Used in 106 `src/`.                        |
 | `callbacks` / `callbacksBuilder`         | `callbacks`         | `callbacksBuilder`                   | **D/I** | Legacy reads `callbacks`; next-gen builds via `callbacksBuilder.*`. Both names appear (~142 each).                                                   |
-| `idRepository`                           | direct attr methods | `getIdentity()` → `ScriptedIdentity` | **D/I** | Next-gen: `getIdentity().getAttributeValues()/store()`. Legacy: `getAttribute(user,attr)`. Used in 40 `src/`.                                        |
+| `idRepository`                           | direct attr methods + `getIdentity()` → `ScriptedIdentity` | `getIdentity()` → `ScriptedIdentity` | **D/V/I** | `getIdentity()` exists on both engines. Legacy also has direct `getAttribute(user,attr)`. Used in 40 `src/`.                                        |
 | `requestHeaders`/`requestParameters`     | yes                 | yes                                  | **D/I** | `Map<String,String[]>`-ish `.get()`.                                                                                                                 |
 | `requestCookies`                         | no                  | yes                                  | **D**   | Next-gen only (migrate doc).                                                                                                                         |
 | `existingSession` / `resumedFromSuspend` | yes                 | yes                                  | **D**   |                                                                                                                                                      |
@@ -201,6 +201,9 @@ Consequences (applied to the type layering):
   `messageEnabled`, `warningEnabled` — the classic `Debug` object.
   `trace`/`debug`/`info`/`warn` are **absent** (those are the next-gen slf4j
   shape). Now runtime-confirmed, not just doc-claimed.
+- **`idRepository`** (legacy; verified 2026-07-06 with
+  `fixtures-legacy/legacy-idrepository-methods.script.js`): `getIdentity`,
+  `getAttribute`, `setAttribute`, and `addAttribute` are all functions.
 
 Type model: the slf4j `logger` lives in `nextgen-common.d.ts`; the classic
 `Debug` `logger` in `legacy-common.d.ts` (included by the legacy decision leaf

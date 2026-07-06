@@ -17,6 +17,10 @@ Verified against the sandbox 2026-06-13 with
 `fixtures/identity-attr-mapping.script.js` + `fixtures/identity-resolve-diag.script.js`
 (a next-gen scripted decision node, `evaluatorVersion: 2.0`).
 
+Legacy scripted decision `idRepository` method presence verified 2026-07-06
+with `fixtures-legacy/legacy-idrepository-methods.script.js`
+(`evaluatorVersion: 1.0`).
+
 ## Runtime facts (verified)
 
 - **Resolution key is the managed-object UUID, not `userName`.** In a scripted
@@ -35,6 +39,10 @@ Verified against the sandbox 2026-06-13 with
 - **Rhino sandbox:** `Set.iterator()` is blocked
   (`java.util.ArrayList$Itr … prohibited`); use `.toArray()[0]` to read a value
   in a probe.
+- **Legacy decision nodes also expose `idRepository.getIdentity`.** The legacy
+  engine reports `getIdentity`, `getAttribute`, `setAttribute`, and
+  `addAttribute` as functions. The direct methods remain legacy-specific; the
+  `ScriptedIdentity` object returned by `getIdentity` is shared.
 
 ## IDM-property → AM-attribute mapping
 
@@ -80,8 +88,37 @@ trusted only where marked ✓live (CLAUDE.md §2).
 | `kbaInfo` | `fr-idm-kbaInfo` | doc |
 | `preferences` | `fr-idm-preferences` | doc |
 | `profileImage` | `labeledURI` | doc |
+| `adminOfOrg` | `fr-idm-managed-organization-admin` | doc |
+| `ownerOfOrg` | `fr-idm-managed-organization-owner` | doc |
+| `memberOfOrg` | `fr-idm-managed-organization-member` | doc |
+| `memberOfOrgIDs` | `fr-idm-managed-user-memberoforgid` | doc |
+| `taskPrincipals` | `fr-idm-managed-user-task-principals` | doc |
+| `_notifications` | `fr-idm-managed-user-notifications` | doc |
 | `_rev` | `etag` | doc |
 | `_meta` | `fr-idm-managed-user-meta` | doc |
+
+General-purpose extension attributes from the Ping reference:
+
+| IDM property | AM attribute | Status |
+|---|---|---|
+| `frIndexedString1` … `frIndexedString20` | `fr-attr-istr1` … `fr-attr-istr20` | doc |
+| `frUnindexedString1` … `frUnindexedString5` | `fr-attr-str1` … `fr-attr-str5` | doc |
+| `frIndexedMultivalued1` … `frIndexedMultivalued5` | `fr-attr-imulti1` … `fr-attr-imulti5` | doc |
+| `frUnindexedMultivalued1` … `frUnindexedMultivalued5` | `fr-attr-multi1` … `fr-attr-multi5` | doc |
+| `frIndexedDate1` … `frIndexedDate5` | `fr-attr-idate1` … `fr-attr-idate5` | doc |
+| `frUnindexedDate1` … `frUnindexedDate5` | `fr-attr-date1` … `fr-attr-date5` | doc |
+| `frIndexedInteger1` … `frIndexedInteger5` | `fr-attr-iint1` … `fr-attr-iint5` | doc |
+| `frUnindexedInteger1` … `frUnindexedInteger5` | `fr-attr-int1` … `fr-attr-int5` | doc |
+
+Multivalue 2FA profile attributes from the Ping reference:
+
+| IDM property | AM attribute | Status |
+|---|---|---|
+| `deviceProfiles` | `deviceProfiles` | doc |
+| `devicePrintProfiles` | `devicePrintProfiles` | doc |
+| `webauthnDeviceProfiles` | `webauthnDeviceProfiles` | doc |
+| `oathDeviceProfiles` | `oathDeviceProfiles` | doc |
+| `pushDeviceProfiles` | `pushDeviceProfiles` | doc |
 
 ### `fr-idm-custom-attrs`
 A single object-valued AM attribute holding **all** custom (tenant-added)
