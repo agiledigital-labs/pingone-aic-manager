@@ -67,6 +67,18 @@ pub fn draw_search_row(
     );
 }
 
+/// Shared one-line status text for list-style feature bodies while they are
+/// loading, empty, or failed.
+pub fn draw_status_line(f: &mut Frame, area: Rect, text: &str, color: Color) {
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            text.to_string(),
+            Style::default().fg(color),
+        ))),
+        area,
+    );
+}
+
 /// Pick the new top-of-window so `selected` stays visible. We can't compute
 /// this purely from app state because the height comes from the rendered
 /// rect; do it here, leave the list's `scroll` as a hint only.

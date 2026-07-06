@@ -571,20 +571,8 @@ impl State {
             indexed.sort_by(|a, b| a.id.cmp(&b.id));
             return indexed;
         }
-        use nucleo_matcher::{
-            Config, Matcher, Utf32Str,
-            pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-        };
-        let mut matcher = Matcher::new(Config::DEFAULT);
-        let pattern = Pattern::new(
-            self.list.query.value(),
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-        );
+        let mut matcher = crate::tui::fuzzy::FuzzyMatcher::new(self.list.query.value());
         let mut out: Vec<Match> = Vec::new();
-        let mut buf = Vec::new();
-        let mut positions: Vec<u32> = Vec::new();
         let live_ids: HashSet<String> = items.iter().map(|v| id_of(v).to_string()).collect();
         let mut rows: Vec<(Option<usize>, String, bool, bool)> = items
             .iter()
@@ -623,9 +611,7 @@ impl State {
                 haystack_text.push_str(" !deleted");
             }
             let id_chars = id.chars().count();
-            let haystack = Utf32Str::new(&haystack_text, &mut buf);
-            positions.clear();
-            if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
+            if let Some((score, positions)) = matcher.match_indices(&haystack_text) {
                 let display_positions: Vec<u32> = positions
                     .iter()
                     .copied()

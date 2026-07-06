@@ -23,12 +23,17 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
     match app.secretmap.data.get(&tenant) {
         None | Some(LoadState::Loading) => {
-            status_line(f, area, "  Loading secret mappings...", Color::DarkGray);
+            crate::tui::list_chrome::draw_status_line(
+                f,
+                area,
+                "  Loading secret mappings...",
+                Color::DarkGray,
+            );
             draw_active_modal(f, app, area);
             return;
         }
         Some(LoadState::Failed(error)) => {
-            status_line(
+            crate::tui::list_chrome::draw_status_line(
                 f,
                 area,
                 &format!("  Secret mappings failed: {error}"),
@@ -38,7 +43,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             return;
         }
         Some(LoadState::Loaded(mappings)) if mappings.is_empty() => {
-            status_line(f, area, "  No secret mappings found.", Color::DarkGray);
+            crate::tui::list_chrome::draw_status_line(
+                f,
+                area,
+                "  No secret mappings found.",
+                Color::DarkGray,
+            );
             draw_active_modal(f, app, area);
             return;
         }
@@ -60,16 +70,6 @@ fn draw_active_modal(f: &mut Frame, app: &App, area: Rect) {
         InputMode::Secretmap(Mode::PickAlias) => draw_alias_picker(f, app, area),
         _ => {}
     }
-}
-
-fn status_line(f: &mut Frame, area: Rect, text: &str, color: Color) {
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            text.to_string(),
-            Style::default().fg(color),
-        ))),
-        area,
-    );
 }
 
 fn draw_list(f: &mut Frame, app: &App, tenant: &str, matches: &[MappingMatch], area: Rect) {
@@ -200,7 +200,7 @@ fn draw_detail(f: &mut Frame, app: &App, matches: &[MappingMatch], area: Rect) {
 
     let selected = app.secretmap.selected.min(matches.len().saturating_sub(1));
     let Some(item) = matches.get(selected) else {
-        status_line(f, inner, "no match", Color::DarkGray);
+        crate::tui::list_chrome::draw_status_line(f, inner, "no match", Color::DarkGray);
         return;
     };
 
@@ -309,9 +309,19 @@ fn draw_alias_picker(f: &mut Frame, app: &App, area: Rect) {
         .active_tenant()
         .is_some_and(|tenant| app.secretmap.esv_secret_loading.contains(&tenant.name))
     {
-        status_line(f, rows[2], "  Loading ESV secrets...", Color::DarkGray);
+        crate::tui::list_chrome::draw_status_line(
+            f,
+            rows[2],
+            "  Loading ESV secrets...",
+            Color::DarkGray,
+        );
     } else if matches.is_empty() {
-        status_line(f, rows[2], "  No matching ESV secrets.", Color::DarkGray);
+        crate::tui::list_chrome::draw_status_line(
+            f,
+            rows[2],
+            "  No matching ESV secrets.",
+            Color::DarkGray,
+        );
     } else {
         draw_alias_matches(f, edit.selected, &matches, rows[2]);
     }
@@ -398,14 +408,14 @@ fn draw_label_picker(f: &mut Frame, app: &App, area: Rect) {
         )
     });
     if loading_labels || loading_mappings {
-        status_line(
+        crate::tui::list_chrome::draw_status_line(
             f,
             rows[2],
             "  Loading unmapped secret labels...",
             Color::DarkGray,
         );
     } else if matches.is_empty() {
-        status_line(
+        crate::tui::list_chrome::draw_status_line(
             f,
             rows[2],
             "  No matching unmapped secret labels.",

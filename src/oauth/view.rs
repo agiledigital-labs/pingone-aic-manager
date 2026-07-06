@@ -36,11 +36,16 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
 
     match app.oauth.data.get(&tenant) {
         None | Some(LoadState::Loading) => {
-            status_line(f, area, "  Loading OAuth clients...", Color::DarkGray);
+            crate::tui::list_chrome::draw_status_line(
+                f,
+                area,
+                "  Loading OAuth clients...",
+                Color::DarkGray,
+            );
             return;
         }
         Some(LoadState::Failed(error)) => {
-            status_line(
+            crate::tui::list_chrome::draw_status_line(
                 f,
                 area,
                 &format!("  OAuth client list failed: {error}"),
@@ -49,7 +54,12 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
             return;
         }
         Some(LoadState::Loaded(clients)) if clients.is_empty() => {
-            status_line(f, area, "  No OAuth clients found.", Color::DarkGray);
+            crate::tui::list_chrome::draw_status_line(
+                f,
+                area,
+                "  No OAuth clients found.",
+                Color::DarkGray,
+            );
             return;
         }
         Some(LoadState::Loaded(_)) => {}
@@ -60,16 +70,6 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
     draw_list(f, app, &tenant, &matches, columns[0]);
     draw_detail(f, app, &tenant, &matches, columns[1]);
-}
-
-fn status_line(f: &mut Frame, area: Rect, text: &str, color: Color) {
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            text.to_string(),
-            Style::default().fg(color),
-        ))),
-        area,
-    );
 }
 
 fn draw_list(f: &mut Frame, app: &App, tenant: &str, matches: &[ClientMatch], area: Rect) {
@@ -154,7 +154,7 @@ fn draw_detail(f: &mut Frame, app: &App, tenant: &str, matches: &[ClientMatch], 
 
     let selected = app.oauth.selected.min(matches.len().saturating_sub(1));
     let Some(item) = matches.get(selected) else {
-        status_line(f, inner, "no match", Color::DarkGray);
+        crate::tui::list_chrome::draw_status_line(f, inner, "no match", Color::DarkGray);
         return;
     };
     let detail_key = State::detail_key(tenant, &item.id);

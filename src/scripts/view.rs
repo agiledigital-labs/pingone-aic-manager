@@ -24,15 +24,30 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
 
     match app.scripts.data.get(&tenant_name) {
         None | Some(LoadState::Loading) => {
-            status_line(f, area, "  Loading scripts…", Color::DarkGray);
+            crate::tui::list_chrome::draw_status_line(
+                f,
+                area,
+                "  Loading scripts…",
+                Color::DarkGray,
+            );
             return;
         }
         Some(LoadState::Failed(e)) => {
-            status_line(f, area, &format!("  Script list failed: {e}"), Color::Red);
+            crate::tui::list_chrome::draw_status_line(
+                f,
+                area,
+                &format!("  Script list failed: {e}"),
+                Color::Red,
+            );
             return;
         }
         Some(LoadState::Loaded(items)) if items.is_empty() => {
-            status_line(f, area, "  No scripts found.", Color::DarkGray);
+            crate::tui::list_chrome::draw_status_line(
+                f,
+                area,
+                "  No scripts found.",
+                Color::DarkGray,
+            );
             return;
         }
         Some(LoadState::Loaded(_)) => {}
@@ -43,16 +58,6 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
     draw_list(f, app, &tenant_name, &matches, columns[0]);
     draw_preview(f, app, &tenant_name, &matches, columns[1]);
-}
-
-fn status_line(f: &mut Frame, area: Rect, text: &str, color: Color) {
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            text.to_string(),
-            Style::default().fg(color),
-        ))),
-        area,
-    );
 }
 
 fn draw_list(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area: Rect) {
@@ -162,7 +167,7 @@ fn draw_preview(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area:
 
     let selected = app.scripts.selected.min(matches.len().saturating_sub(1));
     let Some(m) = matches.get(selected) else {
-        status_line(f, inner, "no match", Color::DarkGray);
+        crate::tui::list_chrome::draw_status_line(f, inner, "no match", Color::DarkGray);
         return;
     };
     let Some(LoadState::Loaded(items)) = app.scripts.data.get(tenant) else {

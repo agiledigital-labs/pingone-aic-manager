@@ -776,25 +776,10 @@ impl State {
             return matches;
         }
 
-        use nucleo_matcher::{
-            Config, Matcher, Utf32Str,
-            pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-        };
-
-        let mut matcher = Matcher::new(Config::DEFAULT);
-        let pattern = Pattern::new(
-            self.query.value(),
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-        );
-        let mut buf = Vec::new();
-        let mut positions = Vec::new();
+        let mut matcher = crate::tui::fuzzy::FuzzyMatcher::new(self.query.value());
         let mut matches = Vec::new();
         for (idx, summary) in summaries.iter().enumerate() {
-            positions.clear();
-            let haystack = Utf32Str::new(&summary.name, &mut buf);
-            if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
+            if let Some((score, positions)) = matcher.match_indices(&summary.name) {
                 matches.push(ManagedMatch {
                     idx,
                     name: summary.name.clone(),
@@ -802,7 +787,7 @@ impl State {
                     hooks_inline: summary.hooks_inline.len(),
                     hooks_file: summary.hooks_file.len(),
                     score,
-                    positions: positions.clone(),
+                    positions,
                 });
             }
         }

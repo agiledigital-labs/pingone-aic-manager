@@ -209,20 +209,8 @@ impl State {
             return out;
         }
 
-        use nucleo_matcher::{
-            Config, Matcher, Utf32Str,
-            pattern::{AtomKind, CaseMatching, Normalization, Pattern},
-        };
-        let mut matcher = Matcher::new(Config::DEFAULT);
-        let pattern = Pattern::new(
-            self.query.value(),
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            AtomKind::Fuzzy,
-        );
+        let mut matcher = crate::tui::fuzzy::FuzzyMatcher::new(self.query.value());
         let mut out: Vec<Match> = Vec::new();
-        let mut buf = Vec::new();
-        let mut positions: Vec<u32> = Vec::new();
         for (i, c) in items.iter().enumerate() {
             let full = Self::full_of(c);
             // Synthetic tags so `/!` and `/-` filter by local state, like the
@@ -234,9 +222,7 @@ impl State {
                 LocalState::Clean => {}
             }
             let full_chars = full.chars().count();
-            let haystack = Utf32Str::new(&haystack_text, &mut buf);
-            positions.clear();
-            if let Some(score) = pattern.indices(haystack, &mut matcher, &mut positions) {
+            if let Some((score, positions)) = matcher.match_indices(&haystack_text) {
                 let display_positions: Vec<u32> = positions
                     .iter()
                     .copied()
