@@ -14,7 +14,7 @@ pub enum Request {
     /// `Request::Unlock { password }` that did the Argon2 work inside the
     /// daemon; it was removed to keep one canonical unlock path.
     PutDek { dek_b64: String },
-    /// Load `.aic-edit/keys.plain` into the agent. Used when the user
+    /// Load `.aic/keys.plain` into the agent. Used when the user
     /// opted out of encryption (`settings.encrypt_keys = false`); there's
     /// no DEK, the file is already plaintext, and the agent just holds
     /// the JWK map in memory. CLI/TUI call this in place of `PutDek` when

@@ -25,9 +25,9 @@ const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 ///
 /// Two unlocked flavours mirror the two on-disk layouts:
 ///
-/// - `Encrypted { dek }` — `.aic-edit/keys.enc` exists; the DEK was handed
+/// - `Encrypted { dek }` — `.aic/keys.enc` exists; the DEK was handed
 ///   to us via `PutDek`. `build_client` decrypts the file on demand.
-/// - `Plain { jwks }` — user picked "no encryption"; `.aic-edit/keys.plain`
+/// - `Plain { jwks }` — user picked "no encryption"; `.aic/keys.plain`
 ///   is a plaintext map and we hold its contents directly. There's no DEK
 ///   to fish out, so `GetDek` answers `Locked` even though API calls work.
 enum Vault {
@@ -400,7 +400,7 @@ async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()>
 /// encryption first" message in that case.
 async fn do_unlock_plain(state: Arc<RwLock<AgentState>>) -> Result<()> {
     let bytes = ProjectConfig::load_keys_plain()?
-        .ok_or_else(|| Error::Config("no .aic-edit/keys.plain on disk".into()))?;
+        .ok_or_else(|| Error::Config("no .aic/keys.plain on disk".into()))?;
     let jwks: HashMap<String, serde_json::Value> = serde_json::from_slice(&bytes)?;
     set_vault(state, Vault::Plain { jwks }).await;
     Ok(())
@@ -673,7 +673,7 @@ async fn build_client(tenant: &str, state: Arc<RwLock<AgentState>>) -> Result<Ar
         }
     };
     let cfg = ProjectConfig::load()?
-        .ok_or_else(|| Error::Config("no .aic-edit/config.toml in current dir".into()))?;
+        .ok_or_else(|| Error::Config("no .aic/config.toml in current dir".into()))?;
     let tcfg = cfg
         .tenants
         .iter()

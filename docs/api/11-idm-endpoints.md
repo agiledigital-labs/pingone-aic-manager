@@ -5,7 +5,7 @@ Implemented in: `src/scripts/`
 ## Purpose
 IDM custom endpoints are scripted (or table/jdbc) REST endpoints registered as
 IDM config objects under `endpoint/<name>`. Their JavaScript lives in a plain
-`source` string. `aic-edit`'s script-sync feature treats them as a second
+`source` string. `pingone-aic-manager`'s script-sync feature treats them as a second
 "script kind" alongside AM scripts (see `04-scripts.md`), sharing the same
 content-based conflict-detection core.
 
@@ -216,7 +216,7 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
 ## Scheduled jobs (`schedule/<name>`)
 
 IDM scheduled jobs are config objects at `/openidm/config/schedule/<name>` —
-same CRUD, no realm, no `_rev`. `aic-edit` syncs them as a second IDM script
+same CRUD, no realm, no `_rev`. `pingone-aic-manager` syncs them as a second IDM script
 kind (`--kind schedule`). They differ from endpoints in **where the script
 lives** and **which ones have one**:
 

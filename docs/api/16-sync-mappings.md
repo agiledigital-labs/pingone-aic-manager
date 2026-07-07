@@ -9,7 +9,7 @@ IDM **sync mappings** reconcile a source resource (a connector
 target managed/connector object. Each mapping can embed JavaScript in several
 slots: whole-mapping **behaviour scripts** (`onCreate`, `onUpdate`, …), a
 **correlation** script, **valid-source/target** filters, a recon **result**
-script, and per-attribute **transform**/**condition** scripts. `aic-edit` syncs
+script, and per-attribute **transform**/**condition** scripts. `pingone-aic-manager` syncs
 those embedded scripts to the local workspace (one file per slot) with full
 TypeScript typing of the runtime bindings.
 

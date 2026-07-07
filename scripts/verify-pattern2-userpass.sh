@@ -181,7 +181,7 @@ step "5. generate RSA-2048 keypair + public JWKS"
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 openssl genrsa -out "$TMPDIR/sa.pem" 2048 2>/dev/null
-KID="aic-edit-verify-$(date +%s)"
+KID="pingone-aic-manager-verify-$(date +%s)"
 PUB_JWKS=$($PY - "$TMPDIR/sa.pem" "$KID" <<'PYEOF'
 import json, base64, sys
 from cryptography.hazmat.primitives import serialization
@@ -197,7 +197,7 @@ step "6. create throwaway service account"
 CREATE_BODY=$($PY - "$PUB_JWKS" <<'PYEOF'
 import json, sys
 print(json.dumps({
-  "name": "aic-edit-verify-DELETEME",
+  "name": "pingone-aic-manager-verify-DELETEME",
   "description": "temporary SA — delete on failure",
   "scopes": ["fr:idm:*","fr:am:*","fr:idc:esv:*","fr:idc:cookie-domain:*"],
   "accountStatus": "Active",

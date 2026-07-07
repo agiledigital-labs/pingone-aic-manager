@@ -5,7 +5,7 @@ Implemented in: —
 ## Purpose
 Manage SAML 2.0 hosted (this tenant is the IdP/SP) and remote (another party is
 the IdP/SP) entity providers, plus the circles of trust that bind them. Feature
-3 of aic-edit ("manage OIDC and SAML config") is partly built on this API.
+3 of pingone-aic-manager ("manage OIDC and SAML config") is partly built on this API.
 
 ## Authentication
 Service-account bearer. Scope: `fr:am:*`.

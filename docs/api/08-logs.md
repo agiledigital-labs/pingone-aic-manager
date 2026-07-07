@@ -6,7 +6,7 @@ Implemented in: `src/logs/`
 
 ## Purpose
 
-Fetch tenant audit + debug logs from AM and IDM. Stretch goal of aic-edit ("log
+Fetch tenant audit + debug logs from AM and IDM. Stretch goal of pingone-aic-manager ("log
 sync with compression + search") is built on this.
 
 ## Authentication
@@ -45,7 +45,7 @@ requires an admin-_user_ token** (the cookie / AppAuth session our
 cookie/userpass onboarding already mints via `session_to_bearer()`), not a
 service-account token. The frodo-lib "SA mints log keys" claim is stale.
 
-Implications for aic-edit:
+Implications for pingone-aic-manager:
 
 - **Mint-on-demand is only possible while we hold an admin session** — i.e. at
   cookie/userpass onboarding time, or by re-authing as admin. An existing tenant
@@ -70,7 +70,7 @@ NOT a service-account token. Mint one via the same `idmAdminClient` PKCE flow
 onboarding already uses (`session_to_bearer`, scope `openid fr:idm:*` — no extra
 scope needed). With that token, `GET`/`POST create`/`DELETE` all succeed
 (200/200/204). An SA bearer 403s on `/keys` no matter the scope (see auth
-section). So aic-edit can auto-mint keys only while it holds an admin session
+section). So pingone-aic-manager can auto-mint keys only while it holds an admin session
 (onboarding); otherwise paste console-created keys.
 
 ## Query params (`/monitoring/logs`)
@@ -113,7 +113,7 @@ section). So aic-edit can auto-mint keys only while it holds an admin session
 
 ```json
 {
-  "name": "aic-edit-dev",
+  "name": "pingone-aic-manager-dev",
   "api_key_id": "<uuid>",
   "api_key_secret": "<once-only secret — save immediately>",
   "created_at": "2026-05-17T..."
@@ -269,7 +269,7 @@ user explicitly syncs `--source idm-core` or `--source am-core`.
 
 ## Verified against
 
-- Tenant: `tenant.example.com` (the aic-edit sandbox)
+- Tenant: `tenant.example.com` (the pingone-aic-manager sandbox)
 - Date: 2026-06-30 (journey join key re-corrected 2026-07-01 — full
   `trackingIds[0]`, not the stripped base or tree `_id`)
 - Calls:

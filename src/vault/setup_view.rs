@@ -129,7 +129,7 @@ fn draw_none_body(f: &mut Frame, area: Rect) {
     let text = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "Credentials will be stored at .aic-edit/keys.plain (mode 600).",
+            "Credentials will be stored at .aic/keys.plain (mode 600).",
             Style::default().fg(Color::Gray),
         )),
         Line::from(Span::styled(

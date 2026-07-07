@@ -226,7 +226,7 @@ endpoints + shapes against the live tenant before writing code.
 - **Original finding:** `idmAdminClient` rejects `http://localhost:*/callback`
   loopback redirect URIs, so we tried provisioning a dedicated `AicEdit` OAuth2
   client in the alpha realm. That worked for alpha-realm identities, but
-  platform admins (the users who actually need to bootstrap aic-edit) live in
+  platform admins (the users who actually need to bootstrap pingone-aic-manager) live in
   the **root realm** in AIC, and AIC explicitly blocks root-realm OAuth2 client
   management API
   (`403 "This operation is not available in PingOne Advanced Identity Cloud"`).
@@ -248,17 +248,17 @@ bootstrap, the SA's JWK takes over; the bootstrap credentials are discarded.
 
 **Pattern 1 — Paste session cookie.** User logs into the AIC admin console in
 their normal browser (full SSO/MFA/passkey/SAML stack). They copy the AM session
-cookie value from DevTools → Application → Cookies. aic-edit drives the OAuth
+cookie value from DevTools → Application → Cookies. pingone-aic-manager drives the OAuth
 flow server-side using the cookie.
 
-**Pattern 2 — Username/password in-app.** aic-edit walks AM's authentication
+**Pattern 2 — Username/password in-app.** pingone-aic-manager walks AM's authentication
 journey via `POST /am/json/realms/root/authenticate`, handling each callback
 round (NameCallback, PasswordCallback, ConfirmationCallback, etc.). Works for
 username+password and TOTP. Does NOT work for passkey/push/CAPTCHA — those
 require a real browser.
 
 **Pattern 3 — Paste SA details.** User already has a service account JWK and
-client_id. aic-edit stores them directly. (Same path as
+client_id. pingone-aic-manager stores them directly. (Same path as
 `scripts/verify-endpoint.sh`.)
 
 #### Pattern 1 wire details
@@ -446,7 +446,7 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   only `{"aliases":[…]}` fails with
   `400 "Invalid config: Secret value is missing"` every time. That 400 is NOT
   eventual consistency/value-staging (an earlier mis-diagnosis) — adding
-  `secretId` to the body fixes it for any label/alias pairing.** aic-edit
+  `secretId` to the body fixes it for any label/alias pairing.** pingone-aic-manager
   validates the alias is an existing ESV secret before writing (the API itself
   accepts any string, creating dangling mappings).
 - **2026-06-24** — **Logs API (`08-logs.md`) partial live pass.** (1) Real
@@ -491,7 +491,7 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
     node events carry no principal. Module/service-account logins
     (`AM-LOGIN-MODULE-COMPLETED`/`AM-LOGIN-COMPLETED`,
     `authIndex=module_instance`, no `treeName`) are OAuth2 client auth, not
-    journeys — skip them. The aic-edit sandbox has only these module logins in
+    journeys — skip them. The pingone-aic-manager sandbox has only these module logins in
     the synced window, so journey rollup was verified against the client-a prod
     capture, not the sandbox.
 - **2026-07-01 (later)** — **Journey join key RE-corrected — the same-day fix

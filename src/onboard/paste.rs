@@ -1,6 +1,6 @@
 //! Pattern 3 — paste an existing service-account JWK + UUID directly.
 //! The user already minted an SA elsewhere (via the AIC console or another tool)
-//! and just wants aic-edit to use it.
+//! and just wants pingone-aic-manager to use it.
 
 use crossterm::event::{KeyCode, KeyEvent};
 

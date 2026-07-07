@@ -18,7 +18,7 @@ aic <command> <subcommand> --help
 ## Conventions that apply everywhere
 
 - **Project-rooted.** `aic` walks up from your current directory to find the
-  project root (the directory containing `.aic-edit/`), so any command works
+  project root (the directory containing `.aic/`), so any command works
   from any subdirectory.
 - **`--tenant <name>`** overrides the active context for a single call. With no
   flag, commands use the current context (`aic ctx current`); the default
@@ -48,18 +48,21 @@ the locked/unlocked model and why `logout` ≠ `stop`.
 | Command | What it does |
 |---|---|
 | `aic agent` | Run the agent in the foreground (Ctrl-C to stop; logs to stderr). Normally auto-spawned — you rarely run this directly. |
-| `aic agent --detach` | Spawn a detached agent (logs to `.aic-edit/agent.log`) and exit. |
+| `aic agent --detach` | Spawn a detached agent (logs to `.aic/agent.log`) and exit. |
 | `aic agent --idle-timeout <seconds>` | Override the auto-lock timeout (default 3600s, or `settings.toml`). |
-| `aic login` | Unlock the agent (no-echo master-password prompt). |
-| `aic logout` | **Lock** the agent — wipe keys + tokens from memory, leave it running. |
-| `aic stop` | **Stop** the agent process entirely. |
-| `aic status` | Show whether the agent is running/unlocked, the active tenant, and token expiry. |
+| `aic session login` | Unlock the agent (no-echo master-password prompt). |
+| `aic session logout` | **Lock** the agent — wipe keys + tokens from memory, leave it running. |
+| `aic session stop` | **Stop** the agent process entirely. |
+| `aic session status` | Show whether the agent is running/unlocked, the active tenant, and token expiry. |
+
+The older top-level `aic login`, `aic logout`, `aic stop`, and `aic status`
+forms still work as compatibility aliases, but are hidden from help.
 
 ### Context
 
 | Command | What it does |
 |---|---|
-| `aic ctx list [--json]` | List tenants defined in `.aic-edit/config.toml`. |
+| `aic ctx list [--json]` | List tenants defined in `.aic/config.toml`. |
 | `aic ctx current` | Print the active context. |
 | `aic ctx use <tenant>` | Switch the active context. |
 | `aic whoami [--tenant <name>]` | Mint and print token info for a context. |
@@ -166,7 +169,7 @@ aic managed get alpha_user                        # one object's full definition
 ## `aic idm` — local record store & query
 
 Syncs IDM managed-object **records** into a local SQLite store
-(`.aic-edit/idmstore/<tenant>.sqlite`, gitignored) so you can query them with
+(`.aic/idmstore/<tenant>.sqlite`, gitignored) so you can query them with
 SQL — including joins into nested arrays. Each object becomes a base table
 `obj_<type>` (full record JSON in `data`, plus generated columns for top-level
 scalar fields), with child tables `obj_<type>__<field>` for arrays and

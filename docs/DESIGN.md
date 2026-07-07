@@ -1,6 +1,6 @@
-# aic-edit — TUI design rules
+# pingone-aic-manager — TUI design rules
 
-These are the agreed visual + interaction rules for `aic-edit`. Apply them
+These are the agreed visual + interaction rules for `pingone-aic-manager`. Apply them
 whenever building or reviewing UI code. They were arrived at by reviewing two
 existing Ratatui apps the maintainer wrote (`tally`, `kbsr`) and a short
 design conversation that pinned down env chrome, issue surfacing, and

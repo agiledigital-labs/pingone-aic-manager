@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn secret_entries_are_memory_only_for_disk_log() {
-        let path = std::env::temp_dir().join(format!("aic-edit-undo-{}.log", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("aic-undo-{}.log", uuid::Uuid::new_v4()));
         let mut log = DiskLog::load(path.clone()).unwrap();
         let mut secret = entry("secret");
         secret.sensitivity = Sensitivity::SecretValue;

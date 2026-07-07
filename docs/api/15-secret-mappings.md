@@ -14,11 +14,11 @@ such label to an **ESV secret alias** (the ESV secret `_id`, e.g.
 This is the surface to use when you want to know *which ESV secret backs which AM
 purpose*, or to re-point a purpose at a different ESV secret.
 
-## Availability in aic-edit
+## Availability in pingone-aic-manager
 
-aic-edit exposes secret mappings only on Sandbox and Development tenants. They
+pingone-aic-manager exposes secret mappings only on Sandbox and Development tenants. They
 are static content that should be edited in lower environments and promoted up
-to Staging/Production, not changed per environment. This is an aic-edit product
+to Staging/Production, not changed per environment. This is an pingone-aic-manager product
 decision, not an API limitation; the API itself works on any tenant.
 
 > **This contradicts the old blanket claim in [07-secret-stores.md](07-secret-stores.md).**
@@ -199,7 +199,7 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "$AV" -H "Content-Type: appl
   `esv-pega-client-secret`, etc., and reproduced from the console HAR which always
   includes `secretId`). There is no propagation/staging delay; never advise a
   retry for this error. See "Write body".
-- **aic-edit validates the alias against `/environment/secrets` before writing**
+- **pingone-aic-manager validates the alias against `/environment/secrets` before writing**
   — by product choice (the API accepts any string, including a non-existent name,
   creating a dangling mapping — the footgun the user asked us to prevent). All 33
   existing sandbox mapping aliases are real ESV secrets, and every real ESV secret

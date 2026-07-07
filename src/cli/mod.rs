@@ -44,7 +44,7 @@ pub enum Command {
     /// to stderr. The TUI auto-spawns a detached copy via `--detach`.
     Agent {
         /// Spawn a detached child that runs the daemon loop, and exit. Stdio
-        /// gets redirected to .aic-edit/agent.log; setsid() puts the child in
+        /// gets redirected to .aic/agent.log; setsid() puts the child in
         /// its own session so a terminal HUP doesn't kill it.
         #[arg(long)]
         detach: bool,
@@ -131,7 +131,7 @@ pub enum Command {
 
 #[derive(Subcommand, Debug)]
 pub enum CtxCommand {
-    /// List tenants defined in `.aic-edit/config.toml`.
+    /// List tenants defined in `.aic/config.toml`.
     List {
         #[arg(long, help = "Print tenants as JSON")]
         json: bool,
@@ -189,7 +189,7 @@ async fn session(command: SessionCommand) -> Result<()> {
     }
 }
 
-/// Locate the project root (the dir containing `.aic-edit/`) by walking up
+/// Locate the project root (the dir containing `.aic/`) by walking up
 /// from the current directory, record any tenant/realm implied by a
 /// `workspace/<tenant>/<realm>/` working directory, then chdir to the root so
 /// every project-relative path (config, keystore, agent socket) resolves the
@@ -306,7 +306,7 @@ pub(crate) async fn ensure_agent_unlocked() -> Result<()> {
 
     if ProjectConfig::load()?.is_none() {
         return Err(Error::Config(
-            "no .aic-edit/config.toml here — onboard a tenant in the TUI first".into(),
+            "no .aic/config.toml here — onboard a tenant in the TUI first".into(),
         ));
     }
 
@@ -322,7 +322,7 @@ pub(crate) async fn ensure_agent_unlocked() -> Result<()> {
     if plain_mode {
         if ProjectConfig::load_keys_plain()?.is_none() {
             return Err(Error::Config(
-                "no .aic-edit/keys.plain — onboard a tenant in the TUI first".into(),
+                "no .aic/keys.plain — onboard a tenant in the TUI first".into(),
             ));
         }
         auth::unlock_plain_agent().await?;
@@ -332,11 +332,11 @@ pub(crate) async fn ensure_agent_unlocked() -> Result<()> {
 
     if ProjectConfig::load_keys_enc()?.is_none() {
         return Err(Error::Config(
-            "no .aic-edit/keys.enc — set up an auth factor in the TUI first".into(),
+            "no .aic/keys.enc — set up an auth factor in the TUI first".into(),
         ));
     }
     let wraps_file = WrapsFile::load()?.ok_or_else(|| {
-        Error::Config("no .aic-edit/wraps.toml — set up an auth factor in the TUI first".into())
+        Error::Config("no .aic/wraps.toml — set up an auth factor in the TUI first".into())
     })?;
 
     let dek = match pick_method(&wraps_file)? {
@@ -505,8 +505,8 @@ fn read_pid_or_zero() -> u32 {
 }
 
 async fn ctx(cmd: CtxCommand) -> Result<()> {
-    let cfg = ProjectConfig::load()?
-        .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
+    let cfg =
+        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let current = config::read_current_context()?;
     match cmd {
         CtxCommand::List { json } => {
@@ -566,8 +566,8 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
 }
 
 async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
-    let cfg = ProjectConfig::load()?
-        .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
+    let cfg =
+        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let tenant = resolve_tenant(tenant_arg, &cfg)?;
 
     let client = AgentClient::connect_or_spawn().await?;
@@ -600,15 +600,15 @@ async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
 /// Resolve the tenant for a resource command (flag → current context →
 /// default), loading the project config.
 pub(crate) fn tenant_for(tenant_arg: Option<String>) -> Result<String> {
-    let cfg = ProjectConfig::load()?
-        .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
+    let cfg =
+        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     resolve_tenant(tenant_arg, &cfg)
 }
 
 /// Resolve the tenant for a resource command and return the configured record.
 pub(crate) fn tenant_config_for(tenant_arg: Option<String>) -> Result<crate::config::Tenant> {
-    let cfg = ProjectConfig::load()?
-        .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
+    let cfg =
+        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let name = resolve_tenant(tenant_arg, &cfg)?;
     cfg.tenants
         .into_iter()

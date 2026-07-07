@@ -112,7 +112,7 @@ pub async fn session_to_bearer(
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256")
-        .append_pair("state", "aic-edit")
+        .append_pair("state", "pingone-aic-manager")
         .finish();
     let auth_url = format!("{base_url}/am/oauth2/realms/root/authorize?{query}");
     let resp = http_no_redirect

@@ -54,7 +54,7 @@ pub enum OnboardPath {
 }
 
 /// Strip scheme + path + trailing slash from a user-supplied domain field.
-/// Other tools (e.g. frodo) expect a URL with `/am` on the end; aic-edit always
+/// Other tools (e.g. frodo) expect a URL with `/am` on the end; pingone-aic-manager always
 /// asks for just the hostname so the user doesn't have to guess.
 pub fn normalise_domain(input: &str) -> String {
     let s = input.trim();

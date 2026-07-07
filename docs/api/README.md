@@ -1,7 +1,7 @@
 # AIC API Documentation (local)
 
 This directory is the canonical reference for the PingOne Advanced Identity Cloud
-APIs that `aic-edit` calls. **Read the relevant file before writing any code that
+APIs that `pingone-aic-manager` calls. **Read the relevant file before writing any code that
 hits a tenant.** Don't guess paths or headers.
 
 ## Files
@@ -36,7 +36,7 @@ Every capability file follows this structure:
 # {Capability area}
 
 ## Purpose
-1–2 sentences: what this API family does, when aic-edit uses it.
+1–2 sentences: what this API family does, when pingone-aic-manager uses it.
 
 ## Authentication
 Which auth (service-account bearer / log API key) and which scopes.

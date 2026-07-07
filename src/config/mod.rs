@@ -3,7 +3,7 @@
 //! # Adding a new encrypted per-tenant artifact
 //!
 //! Encrypted per-tenant material (the service-account JWK map, log API keys, …)
-//! lives in `.aic-edit/` as a `<stem>.enc` / `<stem>.plain` pair — AES-256-GCM
+//! lives in `.aic/` as a `<stem>.enc` / `<stem>.plain` pair — AES-256-GCM
 //! under the in-memory DEK when encryption is on, or a mode-600 plaintext file
 //! when the user opted out. The pair semantics, permissions, and gitignore
 //! coverage are handled generically here so a new artifact does **not** repeat
@@ -42,7 +42,7 @@ use crate::Result;
 pub use tenant::{Tenant, TenantTheme};
 
 /// An encrypted per-tenant artifact stored as a `<stem>.enc` / `<stem>.plain`
-/// pair in `.aic-edit/`. The registry ([`VaultArtifact::ALL`]) drives gitignore
+/// pair in `.aic/`. The registry ([`VaultArtifact::ALL`]) drives gitignore
 /// coverage and the encrypt/decrypt transitions so each new artifact is one
 /// entry here plus feature-local typed code — see the module header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,12 +155,12 @@ pub fn set_workspace_context(ctx: WorkspaceContext) {
     let _ = WORKSPACE_CONTEXT.set(ctx);
 }
 
-/// Walk up from `start` to the first ancestor containing a `.aic-edit/`
+/// Walk up from `start` to the first ancestor containing a `.aic/`
 /// directory — the project root. Lets commands run from any subdirectory.
 pub fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut cur = start.canonicalize().ok()?;
     loop {
-        if cur.join(".aic-edit").is_dir() {
+        if cur.join(".aic").is_dir() {
             return Some(cur);
         }
         if !cur.pop() {
@@ -427,7 +427,7 @@ pub struct ProjectConfig {
 /// First-run user choice: encrypt tenant credentials at rest with a master
 /// password (Argon2id + AES-256-GCM in `keys.enc`) or store them as a plain,
 /// gitignored, mode-600 file (`keys.plain`). Recorded once in
-/// `.aic-edit/settings.toml` so the choice persists across launches.
+/// `.aic/settings.toml` so the choice persists across launches.
 ///
 /// `agent_idle_timeout_secs` is read by the daemon at startup to decide how
 /// long the cached DEK lives in memory. Omit (or set to `None`) for the
@@ -462,7 +462,7 @@ impl Settings {
 
 impl ProjectConfig {
     pub fn dir() -> PathBuf {
-        PathBuf::from(".aic-edit")
+        PathBuf::from(".aic")
     }
 
     pub fn keys_path() -> PathBuf {
@@ -481,7 +481,7 @@ impl ProjectConfig {
         Self::dir().join("config.toml")
     }
 
-    /// Root of the script-sync workspace (sibling of `.aic-edit/`). Trees are
+    /// Root of the script-sync workspace (sibling of `.aic/`). Trees are
     /// namespaced per tenant + realm so multiple tenants never share a tree.
     pub fn workspace_dir() -> PathBuf {
         PathBuf::from("workspace")
@@ -583,8 +583,10 @@ mod tests {
 
     impl TestDir {
         fn new() -> Self {
-            let path =
-                std::env::temp_dir().join(format!("aic-edit-log-keys-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!(
+                "pingone-aic-manager-log-keys-{}",
+                uuid::Uuid::new_v4()
+            ));
             fs::create_dir_all(&path).unwrap();
             Self(path)
         }

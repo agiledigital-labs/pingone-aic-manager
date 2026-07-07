@@ -7,7 +7,7 @@ ESVs are the AIC-native way to inject environment-specific config (URLs,
 credentials, feature flags) into your tenant. Variables are mutable scalars;
 secrets are versioned, encrypted-at-rest values. After changing any ESV that
 the runtime has already loaded, you must trigger a tenant restart for the new
-value to take effect. Feature 1 of aic-edit ("edit and apply ESVs") is built
+value to take effect. Feature 1 of pingone-aic-manager ("edit and apply ESVs") is built
 entirely on this API.
 
 ## Authentication
@@ -195,7 +195,7 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
   body, `GET` then 404'd, and the count dropped back to `variables:1` with the
   id absent from `?_onlyPending=true`. So deleting a not-yet-applied create
   simply removes its pending entry.
-- **Decision: aic-edit treats deletes as immediate (no apply gate).** Ping's
+- **Decision: pingone-aic-manager treats deletes as immediate (no apply gate).** Ping's
   pending/count endpoints structurally cannot report a delete (the row is gone),
   and Ping's own tooling never prompts a restart after a delete, so we match it:
   delete tombstones are *not* counted toward `pending_count` / the `^S` restart
@@ -211,7 +211,7 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
   of an existing variable is not permitted"}`. **However**, a `DELETE` followed
   by an immediate `PUT` with the new type works, with no restart required
   between the two — verified on the sandbox 2026-05-26 (string → int round-trip
-  via `esv-aicedit-typetest`, response 200 both times). aic-edit takes this
+  via `esv-aicedit-typetest`, response 200 both times). pingone-aic-manager takes this
   path automatically when a save changes the type.
 
 ## Verified against

@@ -1,4 +1,4 @@
-# Build environment for aic-edit.
+# Build environment for pingone-aic-manager.
 #
 # The yubikey USB-HID dependency chain (ctap-hid-fido2 → hidapi-rs) needs
 # `libudev` discoverable via pkg-config at build time. Stock NixOS doesn't
@@ -31,6 +31,6 @@ pkgs.mkShell {
   RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
 
   shellHook = ''
-    echo "aic-edit dev shell ready — pkg-config can see: $(pkg-config --list-all | grep -i udev | head -1 | cut -d' ' -f1)"
+    echo "pingone-aic-manager dev shell ready — pkg-config can see: $(pkg-config --list-all | grep -i udev | head -1 | cut -d' ' -f1)"
   '';
 }

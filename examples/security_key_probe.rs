@@ -1,5 +1,5 @@
 //! `security_key_probe` — a single-purpose CLI for poking the FIDO2 hmac-secret
-//! flow without dragging the rest of aic-edit along.
+//! flow without dragging the rest of pingone-aic-manager along.
 //!
 //! Build:
 //!     nix-shell --run "cargo build --example security_key_probe"
@@ -24,7 +24,7 @@ use ctap_hid_fido2::{
     get_fidokey_devices, util, verifier,
 };
 
-const RP_ID: &str = "aic-edit-probe";
+const RP_ID: &str = "pingone-aic-manager-probe";
 
 fn main() {
     let mut args = std::env::args().skip(1);

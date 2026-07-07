@@ -2,7 +2,7 @@
 
 Implemented in: `src/logs/`
 
-This file documents aic-edit's **local** log store design: what `aic logs sync`,
+This file documents pingone-aic-manager's **local** log store design: what `aic logs sync`,
 `aic logs search`, and `aic logs compact` do on disk. The verified **remote**
 API behaviour (endpoints, params, paging, rate limits, key-mint auth model,
 source taxonomy, event payload shapes, journey join key) lives in
@@ -15,7 +15,7 @@ compacted journey model that survives raw-event pruning.
 
 ## Store location & engine
 
-- One **DuckDB** file per tenant: `.aic-edit/logs/<tenant>.duckdb` (gitignored).
+- One **DuckDB** file per tenant: `.aic/logs/<tenant>.duckdb` (gitignored).
   Characters outside `[A-Za-z0-9._-]` in the tenant name are replaced with `_`
   (`src/logs/state.rs`).
 - The engine is the **bundled DuckDB crate, version 1.4.5** (see `Cargo.lock`;

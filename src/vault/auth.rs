@@ -89,7 +89,7 @@ pub async fn put_dek_to_agent(dek: &Dek) -> Result<()> {
     }
 }
 
-/// Tell the agent to load `.aic-edit/keys.plain` — the no-encryption unlock
+/// Tell the agent to load `.aic/keys.plain` — the no-encryption unlock
 /// path. Surfaces a clear error when the file is missing (e.g. the user is
 /// in encrypted mode but called this anyway) so the caller can show
 /// something actionable.
