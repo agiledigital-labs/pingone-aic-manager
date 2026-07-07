@@ -1,6 +1,6 @@
 //! Pattern 2 — in-app username/password against AM's authentication journey.
 //!
-//! aic-edit POSTs `/am/json/{realm}/authenticate` to start the realm's default
+//! pingone-aic-manager POSTs `/am/json/{realm}/authenticate` to start the realm's default
 //! journey, walks the resulting callbacks, prompts the user for any extra steps
 //! (TOTP via NameCallback with prompt "Enter verification code"), and ends with
 //! a `tokenId` — at which point we reuse the bootstrap helpers like Pattern 1.
@@ -616,7 +616,7 @@ async fn run_bootstrap(
                 &base_url,
                 &bearer,
                 &minted.credential_name,
-                &format!("Created by aic-edit for {tenant_name}"),
+                &format!("Created by pingone-aic-manager for {tenant_name}"),
                 &pub_jwk,
             )
             .await

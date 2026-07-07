@@ -1,6 +1,6 @@
 //! In-process agent that holds decrypted service-account JWKs in memory and
 //! hands out short-lived bearer tokens. Talked to over a Unix socket in
-//! `.aic-edit/agent.sock`.
+//! `.aic/agent.sock`.
 //!
 //! Why an agent: tokens have a ~898s TTL and minting them requires the
 //! decrypted private JWK. Holding the JWKs in a long-lived process lets the

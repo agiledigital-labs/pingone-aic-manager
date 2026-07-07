@@ -33,10 +33,10 @@ use ctap_hid_fido2::{
     verifier,
 };
 
-/// Stable RP ID used for every aic-edit credential. The security key scopes its
+/// Stable RP ID used for every aic credential. The security key scopes its
 /// HMAC outputs by (credential_id, rp_id, salt), so this just needs to be
 /// constant across enrol + use.
-pub const RP_ID: &str = "aic-edit";
+pub const RP_ID: &str = "aic";
 
 pub const HMAC_SALT_LEN: usize = 32;
 pub const HMAC_OUT_LEN: usize = 32;
@@ -85,7 +85,7 @@ fn require_hmac_secret(device: &FidoKeyHid) -> Result<()> {
             } else {
                 Err(Error::Crypto(
                     "this security key doesn't support the hmac-secret extension. \
-                     aic-edit needs a FIDO2/CTAP2 key with hmac-secret (e.g. \
+                     pingone-aic-manager needs a FIDO2/CTAP2 key with hmac-secret (e.g. \
                      Yubikey 5, SoloKey, or Nitrokey 3)."
                         .into(),
                 ))
@@ -95,7 +95,7 @@ fn require_hmac_secret(device: &FidoKeyHid) -> Result<()> {
             let raw = e.to_string();
             if raw.contains("CTAP1_ERR_INVALID_COMMAND") || raw.contains("0x01") {
                 Err(Error::Crypto(
-                    "this security key only speaks U2F (CTAP1). aic-edit needs a \
+                    "this security key only speaks U2F (CTAP1). pingone-aic-manager needs a \
                      FIDO2/CTAP2 key with the hmac-secret extension (e.g. Yubikey 5, \
                      SoloKey, or Nitrokey 3)."
                         .into(),

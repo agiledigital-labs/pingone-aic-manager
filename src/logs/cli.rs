@@ -459,8 +459,8 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
 
 fn configured_tenant_base_url(tenant_arg: Option<String>) -> Result<(String, String)> {
     let tenant = tenant_for(tenant_arg)?;
-    let cfg = ProjectConfig::load()?
-        .ok_or_else(|| Error::Config("no .aic-edit/config.toml here".into()))?;
+    let cfg =
+        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let base_url = cfg
         .tenants
         .iter()

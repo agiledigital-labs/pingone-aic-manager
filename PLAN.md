@@ -1,4 +1,4 @@
-# aic-edit — Roadmap
+# pingone-aic-manager — Roadmap
 
 Updated 2026-06-24. History lives in git — this file only tracks what's
 done, what's in flight, and what's next. (Earlier revisions of this file

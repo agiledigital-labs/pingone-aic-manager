@@ -1,7 +1,7 @@
 # AIC scripts workspace
 
 This directory is a local workspace for PingOne Advanced Identity Cloud (AIC)
-scripts, synced by [`aic-edit`](https://github.com/agiledigital-labs/aic-edit).
+scripts, synced by [`pingone-aic-manager`](https://github.com/agiledigital-labs/pingone-aic-manager).
 It holds the editable source of one **tenant**'s AM scripts and IDM endpoints,
 with TypeScript definitions so your editor gives full IntelliSense on the
 script bindings. AM scripts are **realm-scoped** (`am/<realm>/…`); IDM endpoints
@@ -55,7 +55,7 @@ newer template versions, so don't add your own files under `types/`.
 
 AM scripts run on **Mozilla Rhino 1.7.14**, which only partially supports ES2015.
 The ESLint config flags the constructs that are runtime-verified to break
-(see `docs/api/12-script-bindings-matrix.md` in the aic-edit repo and
+(see `docs/api/12-script-bindings-matrix.md` in the pingone-aic-manager repo and
 `scripts/rhino-script-tester/`):
 
 - `let` anywhere — **parse error** (`missing ; before statement`). Use `var`,

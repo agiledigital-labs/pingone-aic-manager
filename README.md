@@ -1,6 +1,6 @@
-# aic-edit
+# pingone-aic-manager
 
-A Rust + Ratatui **TUI** *and* a `kubectl`-style **CLI** (`aic`) for managing
+A Rust + Ratatui **TUI** _and_ a `kubectl`-style **CLI** (`aic`) for managing
 PingOne Advanced Identity Cloud (AIC, formerly ForgeRock Identity Cloud) tenant
 configuration. One binary, two surfaces: run it with no arguments for the
 interactive TUI, or with a subcommand for scripting. Both share an
@@ -28,18 +28,47 @@ Working today, via the CLI and (mostly) the TUI:
 - **OAuth2 clients** — list, pull, push, delete.
 - **Journeys** (auth trees) — list, pull/push as JSON, inspect node types.
 - **Secret mappings** — re-point AM secret labels at ESV secrets.
-- **Logs** — fetch, sync, search, compact, and roll up journeys from audit/debug logs.
-- **Fast environment switching** with per-env theme colours
-  (sandbox=green, development=blue, staging=yellow, production=red + ⚠) and an
-  automatic **"you're writing to PROD" guard** on every mutation.
+- **Logs** — fetch, sync, search, compact, and roll up journeys from audit/debug
+  logs.
+- **Fast environment switching** with per-env theme colours (sandbox=green,
+  development=blue, staging=yellow, production=red + ⚠) and an automatic
+  **"you're writing to PROD" guard** on every mutation.
 
-Planned / stretch: SAML 2.0, and log sync with compression + search for
-offline history beyond AIC's 30-day retention.
+Planned / stretch: SAML 2.0, and log sync with compression + search for offline
+history beyond AIC's 30-day retention.
 
 **Why not [Frodo CLI](https://github.com/rockcarver/frodo-cli)?** Frodo is
 excellent but command-line only, not interactive — and it runs its auth-callback
 chain in-terminal, so it can't support WebAuthn / passkey 2FA, a hard
 requirement for the maintainer.
+
+## Install
+
+**Ubuntu / WSL (recommended).** Download the latest prebuilt binary and drop it
+in `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/agiledigital-labs/pingone-aic-manager/main/install.sh | bash
+```
+
+Re-run the same command any time to **update** to the newest release. Useful
+knobs:
+
+```bash
+# pin a version, install elsewhere, or force a source build
+AIC_VERSION=0.1.0 curl -fsSL .../install.sh | bash
+AIC_INSTALL_DIR=/usr/local/bin curl -fsSL .../install.sh | bash
+curl -fsSL .../install.sh | bash -s -- --from-source
+```
+
+**From crates.io** (compiles locally; needs a Rust toolchain):
+
+```bash
+cargo install pingone-aic-manager   # installs the `aic` binary
+```
+
+Either way the command is **`aic`**. Prefer building from a checkout? See
+[Build & run](#4-build--run) below.
 
 ## Quick start
 
@@ -149,55 +178,56 @@ in another terminal, since they all share one agent.
 **Locked vs. unlocked.** The agent is always one of two states:
 
 - **Unlocked** — your key is decrypted in memory and it can mint tokens.
-- **Locked** — it's running, but holds *nothing sensitive*: no keys, no tokens.
+- **Locked** — it's running, but holds _nothing sensitive_: no keys, no tokens.
   Every request gets "locked" back until you log in again.
 
 When you first launch, the agent starts locked and the TUI shows the **Unlock**
-screen (or the CLI's `aic login` prompts you). If your key is stored unencrypted
-(you chose "no master password" during setup), the agent unlocks itself and
-you're never prompted.
+screen (or the CLI's `aic session login` prompts you). If your key is stored
+unencrypted (you chose "no master password" during setup), the agent unlocks
+itself and you're never prompted.
 
-| Command | What it does |
-| --- | --- |
-| `aic login` | Unlock the agent (prompts for your master password). |
-| `aic logout` | **Lock** the agent — wipe keys + tokens from memory, leave it running. |
-| `aic stop` | **Stop** the agent — shut the process down entirely. |
-| `aic status` | Show running/unlocked state, active tenant, and token expiry. |
+| Command              | What it does                                                           |
+| -------------------- | ---------------------------------------------------------------------- |
+| `aic session login`  | Unlock the agent (prompts for your master password).                   |
+| `aic session logout` | **Lock** the agent — wipe keys + tokens from memory, leave it running. |
+| `aic session stop`   | **Stop** the agent — shut the process down entirely.                   |
+| `aic session status` | Show running/unlocked state, active tenant, and token expiry.          |
 
 **Why `logout` doesn't kill the process.** This trips people up: `logout`
-*locks* the agent, it doesn't stop it. Locking already removes everything
+_locks_ the agent, it doesn't stop it. Locking already removes everything
 sensitive from memory, so for security it's equivalent to killing it — but it
-keeps the process (and its shared connection) alive, so the next `aic login`
-re-unlocks instantly instead of paying to spawn a fresh process. Use `logout`
-when stepping away; use `stop` when you want the agent gone.
+keeps the process (and its shared connection) alive, so the next
+`aic session login` re-unlocks instantly instead of paying to spawn a fresh
+process. Use `logout` when stepping away; use `stop` when you want the agent
+gone.
 
 **Auto-lock.** If left idle, the agent locks itself after **1 hour** by default
-(same effect as `logout`). Override in `.aic-edit/settings.toml` or with
+(same effect as `logout`). Override in `.aic/settings.toml` or with
 `aic agent --idle-timeout <seconds>`.
 
-**Where it lives.** A Unix socket at `.aic-edit/agent.sock`, restricted to your
-user (mode 0600). It's per-project: each checkout with its own `.aic-edit/` gets
-its own agent.
+**Where it lives.** A Unix socket at `.aic/agent.sock`, restricted to your user
+(mode 0600). It's per-project: each checkout with its own `.aic/` gets its own
+agent.
 
 ## Repo tour
 
-| Path | What's in it |
-| --- | --- |
-| [`docs/CLI.md`](docs/CLI.md) | **Full CLI reference** — every command, flag, and example. |
-| [`PLAN.md`](PLAN.md) | Living roadmap: done / in progress / next. |
-| [`docs/api/`](docs/api/) | Verified AIC API reference. **Read before writing code that hits a tenant.** Each file has a "Verified against" date. |
-| [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md) | Workflow rules for AI-assisted edits (docs-first, verify-before-update, credential hygiene; routing map in §9). Kept identical. |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | TUI design rules (palette, layout, keybindings). |
-| [`scripts/verify-endpoint.sh`](scripts/verify-endpoint.sh) | Mints a token from `.envrc` and curls any AIC path — the verify-before-document loop. |
-| `src/aic/`, `src/agent/` | HTTP core + the background daemon — the only path TUI/CLI use for tenant HTTP. |
-| `src/esv/`, `src/scripts/`, `src/managed/`, `src/idmstore/`, `src/oauth/`, `src/journey/`, … | One directory per feature (api/state/ops/screen/view/cli seams). Routing map: CLAUDE.md §9. |
-| `src/app/`, `src/tui/` | App shell (event loop, dispatch, prod guard, the `Ctrl-P` selector) and shared TUI chrome. |
-| `src/cli/mod.rs` | CLI root: clap parser + session commands. Feature subcommands live in each vertical's `cli.rs`. |
+| Path                                                                                         | What's in it                                                                                                                    |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| [`docs/CLI.md`](docs/CLI.md)                                                                 | **Full CLI reference** — every command, flag, and example.                                                                      |
+| [`PLAN.md`](PLAN.md)                                                                         | Living roadmap: done / in progress / next.                                                                                      |
+| [`docs/api/`](docs/api/)                                                                     | Verified AIC API reference. **Read before writing code that hits a tenant.** Each file has a "Verified against" date.           |
+| [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md)                                          | Workflow rules for AI-assisted edits (docs-first, verify-before-update, credential hygiene; routing map in §9). Kept identical. |
+| [`docs/DESIGN.md`](docs/DESIGN.md)                                                           | TUI design rules (palette, layout, keybindings).                                                                                |
+| [`scripts/verify-endpoint.sh`](scripts/verify-endpoint.sh)                                   | Mints a token from `.envrc` and curls any AIC path — the verify-before-document loop.                                           |
+| `src/aic/`, `src/agent/`                                                                     | HTTP core + the background daemon — the only path TUI/CLI use for tenant HTTP.                                                  |
+| `src/esv/`, `src/scripts/`, `src/managed/`, `src/idmstore/`, `src/oauth/`, `src/journey/`, … | One directory per feature (api/state/ops/screen/view/cli seams). Routing map: CLAUDE.md §9.                                     |
+| `src/app/`, `src/tui/`                                                                       | App shell (event loop, dispatch, prod guard, the `Ctrl-P` selector) and shared TUI chrome.                                      |
+| `src/cli/mod.rs`                                                                             | CLI root: clap parser + session commands. Feature subcommands live in each vertical's `cli.rs`.                                 |
 
 ## Working on this codebase
 
-Read [`CLAUDE.md`](CLAUDE.md) (AI assistants: it's also mirrored as `AGENTS.md`).
-The three rules that matter most:
+Read [`CLAUDE.md`](CLAUDE.md) (AI assistants: it's also mirrored as
+`AGENTS.md`). The three rules that matter most:
 
 1. **Always read `docs/api/` before writing AIC API code.** Don't guess paths,
    headers, or API versions — the bootstrapping research had real errors caught
@@ -210,5 +240,7 @@ The three rules that matter most:
 
 ## License
 
-To be decided. The repo is currently public for collaboration; treat as
-all-rights-reserved until a license file is added.
+Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at
+your option. Unless you explicitly state otherwise, any contribution
+intentionally submitted for inclusion in this project shall be dual licensed as
+above, without any additional terms or conditions.

@@ -185,7 +185,7 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
         let mut lines = vec![
             Line::from(Span::styled(
-                "Welcome to aic-edit",
+                "Welcome to pingone-aic-manager",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),

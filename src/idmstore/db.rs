@@ -1247,7 +1247,7 @@ mod tests {
 
     #[test]
     fn file_store_connections_apply_pragmas_and_write_disjoint_tables() -> Result<()> {
-        let dir = std::env::temp_dir().join(format!("aic-edit-idmstore-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("aic-idmstore-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).expect("create temp IDM store dir");
         let path = dir.join("store.sqlite");
 

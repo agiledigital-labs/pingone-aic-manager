@@ -35,7 +35,9 @@ __pycache__/
 # Claude Code local settings (per-developer allowlists, etc.)
 .claude/settings.local.json
 
-# Runtime project-local state (created by aic-edit at runtime)
+# Runtime project-local state (created by pingone-aic-manager at runtime)
+.aic/
+# Legacy runtime dir (pre-rename); keep ignored so old workspaces never get committed
 .aic-edit/
 
 # Managed-object backups (raw schema dumps for experimentation safety)

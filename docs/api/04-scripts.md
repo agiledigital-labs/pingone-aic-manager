@@ -5,7 +5,7 @@ Implemented in: `src/scripts/`
 ## Purpose
 Scripts are JavaScript (and rarely Groovy) snippets that run inside AM during
 authentication, token issuance, OIDC claims, SAML mapping, policy decisions,
-etc. Feature 2 of aic-edit ("sync scripts to a local directory + watch +
+etc. Feature 2 of pingone-aic-manager ("sync scripts to a local directory + watch +
 upload with content-based conflict detection") is built on this API.
 
 ## Authentication

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>aic-edit Undo Design v2 — Implementation Plan</title>
+  <title>pingone-aic-manager Undo Design v2 — Implementation Plan</title>
   <style>
     /*
      * Claude editorial palette:
@@ -299,7 +299,7 @@
 <body>
   <main>
     <header>
-      <div class="eyebrow">aic-edit TUI design note · v2 implementation plan</div>
+      <div class="eyebrow">pingone-aic-manager TUI design note · v2 implementation plan</div>
       <h1>Undo Design v2</h1>
       <p class="lede">
         v1 (<a href="undo-design.html">undo-design.html</a>) settled the principles —
@@ -327,7 +327,7 @@
         <h2>Scope of v2 (the first cut)</h2>
         <p>
           Ship ESV variable undo end-to-end: record on save/delete/create, persist to
-          <code>.aic-edit/undo.log</code>, expose <code>^Z</code> in the TUI plus an undo
+          <code>.aic/undo.log</code>, expose <code>^Z</code> in the TUI plus an undo
           history panel. Defer secret variables, scripts, OAuth, SAML, journeys, and CLI
           undo to follow-up cuts — but lock in the data shape and trait surface now so
           those slot in without schema migration.
@@ -337,7 +337,7 @@
           <li><code>UndoLog</code> trait + in-memory impl + disk-backed impl (NDJSON,
             sensitive payloads sealed with the project DEK).</li>
           <li><strong>Per (tenant, realm) log files</strong> under
-            <code>.aic-edit/undo/&lt;tenant&gt;/</code> so switching tenant or
+            <code>.aic/undo/&lt;tenant&gt;/</code> so switching tenant or
             realm shows the right history without filtering noise.</li>
           <li>ESV variable operations: <code>Update</code>, <code>Delete</code>,
             <code>Create</code> (all three are reversible).</li>
@@ -594,13 +594,13 @@ pub struct UndoSummary {
       <article class="panel">
         <h2>On-disk layout</h2>
         <p>
-          Directory <code>.aic-edit/undo/</code>, mode <code>0700</code>, gitignored.
+          Directory <code>.aic/undo/</code>, mode <code>0700</code>, gitignored.
           One NDJSON file per (tenant, realm). The directory keeps the active set
           small (the history panel never reads other tenants' logs) and the file
           names are stable so a <code>git diff</code> on a checked-in summary would
           be deterministic if we ever wanted that.
         </p>
-<pre><code>.aic-edit/undo/
+<pre><code>.aic/undo/
 ├── sandbox/
 │   ├── _tenant.log     # ESVs, secrets, IDM config
 │   ├── alpha.log       # scripts, oauth2, journeys in the alpha realm
@@ -974,7 +974,7 @@ tokio::spawn(async move { … });
           <li>An <code>aic undo apply &lt;id&gt;</code> would need write access to the
             same file; deferred until we've shaken out the TUI flow first.</li>
           <li>Concurrent TUI + CLI undo apply would race. When CLI joins, we'll add a
-            simple lockfile (<code>.aic-edit/undo.lock</code>).</li>
+            simple lockfile (<code>.aic/undo.lock</code>).</li>
         </ul>
       </article>
 
@@ -1111,7 +1111,7 @@ tokio::spawn(async move { … });
           <li>
             <strong>Disk persistence.</strong> <code>DiskLog</code>
             wrapping the in-memory impl with append-only NDJSON. One file
-            per (tenant, realm) under <code>.aic-edit/undo/</code>.
+            per (tenant, realm) under <code>.aic/undo/</code>.
             Sealed-payload envelope for <code>SensitiveValue</code>
             entries. Atomic compaction. Load on <code>App::new</code>
             (lazy-load per scope on first access).

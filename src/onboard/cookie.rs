@@ -258,7 +258,7 @@ async fn run_bootstrap(
         &base_url,
         &bearer,
         &minted.credential_name,
-        &format!("Created by aic-edit for {tenant_name}"),
+        &format!("Created by pingone-aic-manager for {tenant_name}"),
         &pub_jwk,
     )
     .await

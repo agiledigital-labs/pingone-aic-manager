@@ -1,6 +1,6 @@
-# aic-edit — instructions for Claude
+# pingone-aic-manager — instructions for Claude
 
-`aic-edit` is a Rust + Ratatui TUI for managing PingOne Advanced Identity Cloud
+`pingone-aic-manager` is a Rust + Ratatui TUI for managing PingOne Advanced Identity Cloud
 (AIC, formerly ForgeRock Identity Cloud) tenant configuration: ESVs, scripts,
 OAuth2/OIDC, SAML, with fast environment switching and (stretch) log
 sync+search. The dev sandbox is in `.envrc`.

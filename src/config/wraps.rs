@@ -1,4 +1,4 @@
-//! `.aic-edit/wraps.toml` — the file that records how the data-encryption key
+//! `.aic/wraps.toml` — the file that records how the data-encryption key
 //! (DEK) is wrapped for each enrolled unlock method. The TOML schema is
 //! human-readable on purpose; the cryptographic material is base64 strings.
 //!
@@ -16,7 +16,7 @@
 //! method = "security_key"
 //! label = "Security key 5C NFC"        # optional, user-supplied
 //! credential_id = "<base64>"           # FIDO2 credential id
-//! rp_id = "aic-edit"
+//! rp_id = "aic"
 //! nonce = "<base64 — 12 bytes>"
 //! ciphertext = "<base64 — wrapped DEK + tag>"
 //! ```

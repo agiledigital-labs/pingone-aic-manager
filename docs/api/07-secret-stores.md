@@ -45,7 +45,7 @@ Specifically:
   symmetric).
 - **For per-environment URLs / credentials**: use ESV variables.
 
-## Impact on aic-edit feature #4
+## Impact on pingone-aic-manager feature #4
 
 The user's original feature list included "manage secret stores". Since this
 isn't exposed in AIC, the implementation should be:

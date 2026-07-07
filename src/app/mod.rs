@@ -626,7 +626,7 @@ pub fn refresh_view(app: &mut App, view: View, force: bool) {
 }
 
 /// Pick which tenant should be active on startup. Order:
-///   1. `.aic-edit/current-context` (set by `aic ctx use ...` or by the env
+///   1. `.aic/current-context` (set by `aic ctx use ...` or by the env
 ///      picker on the previous TUI session)
 ///   2. `config.default_tenant`
 ///   3. index 0 (first-run, or stale current-context pointing at a removed

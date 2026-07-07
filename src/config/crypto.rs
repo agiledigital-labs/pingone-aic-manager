@@ -1,8 +1,8 @@
-//! Envelope encryption used by aic-edit at rest.
+//! Envelope encryption used by pingone-aic-manager at rest.
 //!
 //! ## Why two layers
 //!
-//! aic-edit needs more than one way to unlock the on-disk credentials — a
+//! pingone-aic-manager needs more than one way to unlock the on-disk credentials — a
 //! master password and (optionally) one or more SecurityKeys, possibly more
 //! methods later. Encrypting the JWK map directly with the password would
 //! mean re-encrypting the whole blob whenever a key is added, removed, or

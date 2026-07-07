@@ -1,12 +1,17 @@
 [package]
-name = "aic-edit"
+name = "pingone-aic-manager"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Ratatui TUI for managing PingOne Advanced Identity Cloud configuration"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/agiledigital-labs/pingone-aic-manager"
+readme = "README.md"
+keywords = ["pingone", "identity", "forgerock", "tui", "cli"]
+categories = ["command-line-utilities"]
 
-# Short binary name — `aic` instead of `aic-edit`. The library crate keeps the
-# longer name (referenced as `aic_edit::…` in src/main.rs).
+# Short binary name — `aic` instead of `pingone-aic-manager`. The library crate
+# keeps the longer name (referenced as `pingone_aic_manager::…` in src/main.rs).
 [[bin]]
 name = "aic"
 path = "src/main.rs"
