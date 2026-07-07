@@ -70,6 +70,11 @@ cargo install pingone-aic-manager   # installs the `aic` binary
 Either way the command is **`aic`**. Prefer building from a checkout? See
 [Build & run](#4-build--run) below.
 
+> **Runtime dependency.** Security-key unlock uses `libudev` (via `hidapi`).
+> It's present on stock Ubuntu/WSL; if a build or launch complains about it,
+> install `libudev1` (runtime) or `libudev-dev` (to build from source):
+> `sudo apt-get install -y libudev1`.
+
 ## Quick start
 
 ### 1. Get an AIC tenant + service account
