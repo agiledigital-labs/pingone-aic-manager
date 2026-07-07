@@ -252,12 +252,22 @@ aic secretmap remove <secret-label> [--realm alpha]    # alias: delete
 
 ---
 
-## `aic script` — typed script workspace sync
+## `aic workspace` — typed script workspace scaffold
 
-Two-way sync of AIC scripts to a local **typed workspace** at
+Scaffold and refresh the local **typed workspace** at
 `./workspace/<tenant>/` (one tree per tenant) with `.d.ts` definitions +
 ESLint/TypeScript config, so your editor gets full IntelliSense on script
-bodies. Four script "kinds" sit behind one engine:
+bodies.
+
+```bash
+aic workspace init                            # scaffold the tenant tree (both realms + idm)
+aic workspace update                          # refresh bundled types/config to the latest
+```
+
+## `aic script` — typed script workspace sync
+
+Two-way sync of AIC scripts to the workspace. Four script "kinds" sit behind
+one engine:
 
 - **AM scripts** — realm-scoped, under `am/<realm>/<type>/` (e.g.
   `decision-node`, `lib`, `oidc-claims`; Groovy scripts aren't synced).
@@ -279,8 +289,6 @@ means "all of it"; `all` means everything.
 ### Commands
 
 ```bash
-aic script workspace init                       # scaffold the tenant tree (both realms + idm)
-aic script workspace update                     # refresh bundled types/config to the latest
 aic script list [<ref>] [--json]                # list scripts (each row tagged with its `ref`)
 aic script pull [<ref>] [--force]               # pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--yes]       # push local edits; no ref → fuzzy picker
@@ -306,7 +314,7 @@ aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
   `--local-vs-snapshot` shows your edits since the last pull,
   `--snapshot-vs-remote` shows tenant drift since you pulled.
 
-> After upgrading the binary, restart the agent (`aic stop` then `aic login`)
+> After upgrading the binary, restart the agent (`aic session stop` then `aic session login`)
 > so it loads new `Accept-API-Version` headers used by AM-script support.
 
 ---

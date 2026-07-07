@@ -167,7 +167,7 @@ Same move for the CLI: `Command::Esv(esv::cli::Cmd)` delegating to
 ### Gaps in CLAUDE.md (tripwires that live only in module docs or memory)
 
 - **Agent restart gotcha**: code changes under `src/agent/` only take effect
-  after `aic stop` + relaunch — `logout`/lock keeps the old binary resident.
+  after `aic session stop` + relaunch — `logout`/lock keeps the old binary resident.
   (Currently documented only in `agent/mod.rs`; an agent iterating on the
   daemon will "fix" the same bug twice.)
 - **`TEMPLATES_VERSION` bump rule**: any edit under
@@ -228,7 +228,7 @@ to match reality.
 **Operational notes for whoever executes:**
 - Behaviour-preserving throughout; no feature work mixed in.
 - Delete compat shims at the move, never re-export old paths.
-- After touching `src/agent/`, test against a *restarted* agent (`aic stop`).
+- After touching `src/agent/`, test against a *restarted* agent (`aic session stop`).
 - Commit per phase at minimum, per vertical ideally.
 
 ## 5. Out of scope / explicitly not proposed

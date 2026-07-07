@@ -140,8 +140,8 @@ rule or a doc row.
 - **Don't poll `/environment/startup?_action=restart` aggressively** — rate
   limits are tighter than the read endpoints.
 - **Don't expect `src/agent/` code changes to take effect while an agent is
-  running.** `aic logout` only _locks_ the daemon — the old binary stays
-  resident. Run `aic stop`, then relaunch, before testing agent changes.
+  running.** `aic session logout` only _locks_ the daemon — the old binary stays
+  resident. Run `aic session stop`, then relaunch, before testing agent changes.
 - **Don't edit `src/scripts/templates/` without bumping `TEMPLATES_VERSION`** in
   `src/scripts/workspace.rs` — otherwise scaffolded workspaces never receive the
   update.

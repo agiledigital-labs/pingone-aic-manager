@@ -135,7 +135,7 @@ async fn call(
     match resp {
         Response::Json { value } => Ok(value),
         Response::Locked => Err(Error::Auth(
-            "agent is locked — run `aic login` (CLI) or unlock the TUI".into(),
+            "agent is locked — run `aic session login` (CLI) or unlock the TUI".into(),
         )),
         Response::ProdConfirmRequired => Err(Error::ProdConfirmRequired),
         Response::ApiError { status, body } => Err(Error::Api { status, body }),

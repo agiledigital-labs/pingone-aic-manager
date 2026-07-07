@@ -154,7 +154,7 @@ impl AgentClient {
 }
 
 fn agent_locked_error() -> Error {
-    Error::Auth("agent locked; run `aic login`".into())
+    Error::Auth("agent locked; run `aic session login`".into())
 }
 
 fn current_exe() -> Result<PathBuf> {
