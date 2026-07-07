@@ -5,7 +5,7 @@
 //! endpoints under `idm/endpoint/` (tenant-global, no realm). Type definitions
 //! are shared at the `am/` level. Templates are embedded at compile time; a
 //! [`TEMPLATES_VERSION`] lets us ship updated types/config to existing
-//! workspaces via `aic script workspace update`.
+//! workspaces via `aic workspace update`.
 
 use crate::Result;
 use crate::app::App;
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 38;
+pub const TEMPLATES_VERSION: u32 = 39;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];

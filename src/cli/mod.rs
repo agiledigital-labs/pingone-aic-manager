@@ -1,8 +1,8 @@
 //! `aic` CLI subcommands.
 //!
 //! Two layers:
-//!   * agent lifecycle + auth (`agent`, `login`, `logout`, `stop`, `status`,
-//!     `ctx`, `whoami`) — talks directly to the daemon over its socket.
+//!   * agent lifecycle + auth (`agent`, `session`, `ctx`, `whoami`) — talks
+//!     directly to the daemon over its socket.
 //!   * resource commands (`esv list/get/set/delete/apply`, `esv secret …`,
 //!     future `script`, `oauth2`, ...) — go through feature API modules,
 //!     which are shared with the TUI. Mutations take `--yes` to confirm a
@@ -54,13 +54,22 @@ pub enum Command {
         idle_timeout: Option<u64>,
     },
     /// Unlock the keystore in the agent. Prompts for the master password.
+    #[command(hide = true)]
     Login,
     /// Clear the agent's in-memory JWKs + tokens (but leave the agent running).
+    #[command(hide = true)]
     Logout,
     /// Stop the agent process.
+    #[command(hide = true)]
     Stop,
     /// Show agent state, current context, and cached-token expirations.
+    #[command(hide = true)]
     Status,
+    /// Manage the unlocked CLI session and agent lifecycle.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
     /// Manage the active tenant context for this project.
     Ctx {
         #[command(subcommand)]
@@ -108,6 +117,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::secretmap::cli::SecretmapCommand,
     },
+    /// Scaffold / refresh the local script workspace tree.
+    Workspace {
+        #[command(subcommand)]
+        command: crate::scripts::cli::WorkspaceCommand,
+    },
     /// Script workspace sync (AM scripts + IDM endpoints).
     Script {
         #[command(subcommand)]
@@ -128,6 +142,18 @@ pub enum CtxCommand {
     Use { tenant: String },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum SessionCommand {
+    /// Unlock the keystore in the agent. Prompts for the master password.
+    Login,
+    /// Clear the agent's in-memory JWKs + tokens (but leave the agent running).
+    Logout,
+    /// Stop the agent process.
+    Stop,
+    /// Show agent state, current context, and cached-token expirations.
+    Status,
+}
+
 pub async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Agent {
@@ -138,6 +164,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Logout) => logout().await,
         Some(Command::Stop) => stop().await,
         Some(Command::Status) => status().await,
+        Some(Command::Session { command }) => session(command).await,
         Some(Command::Ctx { command }) => ctx(command).await,
         Some(Command::Whoami { tenant, token }) => whoami(tenant, token).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
@@ -147,8 +174,18 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
         Some(Command::Secretmap { command }) => crate::secretmap::cli::run(command).await,
+        Some(Command::Workspace { command }) => crate::scripts::cli::run_workspace(command).await,
         Some(Command::Script { command }) => crate::scripts::cli::run(command).await,
         None => unreachable!("dispatch handled at top level"),
+    }
+}
+
+async fn session(command: SessionCommand) -> Result<()> {
+    match command {
+        SessionCommand::Login => login().await,
+        SessionCommand::Logout => logout().await,
+        SessionCommand::Stop => stop().await,
+        SessionCommand::Status => status().await,
     }
 }
 
@@ -413,7 +450,7 @@ async fn status() -> Result<()> {
     // The socket file can linger after a crash — only a successful connect
     // proves an agent is listening.
     if !sock.exists() || AgentClient::connect(&sock).await.is_err() {
-        println!("agent: not running (start it with `aic login`)");
+        println!("agent: not running (start it with `aic session login`)");
         if let Some(cur) = config::read_current_context()? {
             println!("context: {cur}");
         }
@@ -554,7 +591,7 @@ async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
             }
             Ok(())
         }
-        Response::Locked => Err(Error::Auth("agent locked; run `aic login`".into())),
+        Response::Locked => Err(Error::Auth("agent locked; run `aic session login`".into())),
         Response::Error { message } => Err(Error::Auth(message)),
         other => Err(Error::Config(format!("unexpected reply: {other:?}"))),
     }
@@ -753,5 +790,43 @@ mod tests {
         assert_eq!(clip("one\ntwo", 20), "one two");
         assert_eq!(clip("abcdefghij", 8), "abcde...");
         assert_eq!(clip("abcdefghij", 10), "abcdefghij");
+    }
+
+    #[test]
+    fn workspace_is_a_root_command() {
+        let cli = Cli::try_parse_from(["aic", "workspace", "init"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Workspace {
+                command: crate::scripts::cli::WorkspaceCommand::Init { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn script_workspace_is_no_longer_nested() {
+        let result = Cli::try_parse_from(["aic", "script", "workspace", "init"]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn session_groups_agent_lifecycle_commands() {
+        let cli = Cli::try_parse_from(["aic", "session", "status"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Session {
+                command: SessionCommand::Status
+            })
+        ));
+    }
+
+    #[test]
+    fn legacy_login_alias_still_parses() {
+        let cli = Cli::try_parse_from(["aic", "login"]).unwrap();
+
+        assert!(matches!(cli.command, Some(Command::Login)));
     }
 }

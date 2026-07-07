@@ -9,11 +9,6 @@ use crate::{Error, Result};
 
 #[derive(Subcommand, Debug)]
 pub enum ScriptCommand {
-    /// Scaffold / refresh the local workspace tree (types, tsconfig, eslint).
-    Workspace {
-        #[command(subcommand)]
-        command: WorkspaceCommand,
-    },
     /// List scripts on the tenant. Optional <ref> narrows the listing:
     /// a namespace (`bravo`, `endpoint`) or one script (`bravo/Foo`).
     List {
@@ -134,40 +129,6 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
     use crate::scripts::{sync, workspace};
 
     match cmd {
-        ScriptCommand::Workspace { command } => match command {
-            WorkspaceCommand::Init { tenant } => {
-                let t = tenant_for(tenant)?;
-                guard_legacy_workspace(&t)?;
-                let r = workspace::init(&t)?;
-                let managed_types = generate_managed_types(&t).await;
-                let sync_types = generate_sync_mapping_types(&t).await;
-                println!(
-                    "workspace ready at {} ({} files written, {} managed type files, {} sync type files, templates v{})",
-                    r.tree.display(),
-                    r.written.len(),
-                    managed_types,
-                    sync_types,
-                    workspace::TEMPLATES_VERSION
-                );
-                Ok(())
-            }
-            WorkspaceCommand::Update { tenant } => {
-                let t = tenant_for(tenant)?;
-                guard_legacy_workspace(&t)?;
-                let r = workspace::update(&t)?;
-                let managed_types = generate_managed_types(&t).await;
-                let sync_types = generate_sync_mapping_types(&t).await;
-                println!(
-                    "templates refreshed to v{} ({} files written, {} managed type files, {} sync type files) at {}",
-                    workspace::TEMPLATES_VERSION,
-                    r.written.len(),
-                    managed_types,
-                    sync_types,
-                    r.tree.display()
-                );
-                Ok(())
-            }
-        },
         ScriptCommand::List {
             reference,
             tenant,
@@ -444,6 +405,45 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             };
             let pair = sync::diff(&t, ns.realm_arg(), ns.kind, &name, mode).await?;
             show_diff(&full, ll, &pair.left, rl, &pair.right)?;
+            Ok(())
+        }
+    }
+}
+
+pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
+    use crate::scripts::workspace;
+
+    match command {
+        WorkspaceCommand::Init { tenant } => {
+            let t = tenant_for(tenant)?;
+            guard_legacy_workspace(&t)?;
+            let r = workspace::init(&t)?;
+            let managed_types = generate_managed_types(&t).await;
+            let sync_types = generate_sync_mapping_types(&t).await;
+            println!(
+                "workspace ready at {} ({} files written, {} managed type files, {} sync type files, templates v{})",
+                r.tree.display(),
+                r.written.len(),
+                managed_types,
+                sync_types,
+                workspace::TEMPLATES_VERSION
+            );
+            Ok(())
+        }
+        WorkspaceCommand::Update { tenant } => {
+            let t = tenant_for(tenant)?;
+            guard_legacy_workspace(&t)?;
+            let r = workspace::update(&t)?;
+            let managed_types = generate_managed_types(&t).await;
+            let sync_types = generate_sync_mapping_types(&t).await;
+            println!(
+                "templates refreshed to v{} ({} files written, {} managed type files, {} sync type files) at {}",
+                workspace::TEMPLATES_VERSION,
+                r.written.len(),
+                managed_types,
+                sync_types,
+                r.tree.display()
+            );
             Ok(())
         }
     }
@@ -1001,7 +1001,7 @@ fn guard_legacy_workspace(tenant: &str) -> Result<()> {
         return Err(Error::Config(format!(
             "old per-realm workspace at {} — the layout is now per-tenant (am/<realm>/…). \
              Rescue any unpushed edits from the old <realm>/ dirs, delete them, then re-run \
-             (`aic script workspace init` + pull rebuilds the new tree).",
+             (`aic workspace init` + pull rebuilds the new tree).",
             old.display()
         )));
     }
@@ -1015,7 +1015,7 @@ fn workspace_update_hint(tenant: &str) -> Result<()> {
     let applied = workspace::applied_version(tenant)?;
     if applied != 0 && applied < workspace::TEMPLATES_VERSION {
         println!(
-            "note: workspace templates v{applied} → v{} available — run `aic script workspace update`",
+            "note: workspace templates v{applied} → v{} available — run `aic workspace update`",
             workspace::TEMPLATES_VERSION
         );
     }

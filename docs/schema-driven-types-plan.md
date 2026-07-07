@@ -140,7 +140,7 @@ templates only).
 - If a hook folder's per-object type file is missing (user pulled a hook
   before running `workspace update` with the new generator, or the object was
   added after the last update), tsc reports "cannot find name 'object'" for
-  that folder only. Acceptable; `aic script workspace update` regenerates.
+  that folder only. Acceptable; `aic workspace update` regenerates.
   Print the existing `workspace_update_hint` after a managed-hook pull.
 - Generated files are overwrite-safe (tool-owned, never hand-edited).
 
@@ -148,7 +148,7 @@ templates only).
 
 1. `cargo check && cargo test && cargo fmt --check` clean; new generator unit
    tests pass.
-2. Live smoke (agent unlocked): `aic script workspace update` writes
+2. Live smoke (agent unlocked): `aic workspace update` writes
    `idm/types/managed/alpha_user.d.ts` etc.; `aic script pull
    managed/alpha_user.onCreate` writes the per-object leaf tsconfig; opening
    the `.cjs`, `object.` resolves the real fields (verify by running the

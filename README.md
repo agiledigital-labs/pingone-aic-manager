@@ -16,8 +16,8 @@ once and every tenant call goes through one path.
 
 Working today, via the CLI and (mostly) the TUI:
 
-- **ESVs** — list, edit, and apply environment variables and secrets
-  (full versioned-secret lifecycle).
+- **ESVs** — list, edit, and apply environment variables and secrets (full
+  versioned-secret lifecycle).
 - **Scripts** — two-way sync to a local **typed workspace** (`.d.ts` +
   ESLint/TypeScript) with a file watcher and **content-based** conflict
   detection. Covers AM scripts, IDM endpoints, scheduled jobs, and
@@ -53,7 +53,8 @@ fr:am:* fr:idm:* fr:idc:esv:* fr:idc:cookie-domain:*
 ```
 
 Create one in the admin console: **Tenant Settings → Service Accounts → New
-Service Account**. Save the JWK private key when prompted — it's shown only once.
+Service Account**. Save the JWK private key when prompted — it's shown only
+once.
 
 ### 2. Create `.envrc` (gitignored)
 
@@ -90,7 +91,7 @@ Requires Rust 1.85+ (Rust 2024 edition).
 cargo build
 cargo run                 # launch the TUI
 cargo run -- --help       # CLI subcommands
-cargo run -- login        # unlock the agent for this session
+cargo run -- session login # unlock the agent for this session
 cargo run -- esv list     # …then start issuing commands
 ```
 
@@ -102,7 +103,7 @@ your PATH).
 The CLI mirrors and extends the TUI. A taste across feature areas:
 
 ```bash
-aic status                       # is the agent running/unlocked? which tenant?
+aic session status               # is the agent running/unlocked? which tenant?
 aic ctx use development          # switch the active tenant context
 
 aic esv list                     # environment variables
