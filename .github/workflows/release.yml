@@ -77,7 +77,9 @@ jobs:
         run: |
           set -euo pipefail
           ver="${GITHUB_REF_NAME#v}"
-          if curl -sf "https://crates.io/api/v1/crates/pingone-aic-manager/${ver}" >/dev/null; then
+          # crates.io requires a User-Agent; without it the API returns non-200.
+          if curl -sf -H "User-Agent: pingone-aic-manager-release" \
+               "https://crates.io/api/v1/crates/pingone-aic-manager/${ver}" >/dev/null; then
             echo "crates.io already has pingone-aic-manager ${ver} — skipping publish."
           else
             cargo publish --locked
