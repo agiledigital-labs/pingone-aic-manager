@@ -11,8 +11,11 @@ use serde::Serialize;
 use crate::agent::AgentClient;
 use crate::cli::{print_table, tenant_for};
 use crate::config::ProjectConfig;
+#[cfg(feature = "logs-store")]
 use crate::logs::db::store_path;
-use crate::logs::{api, db, journey, ops};
+use crate::logs::{api, ops};
+#[cfg(feature = "logs-store")]
+use crate::logs::{db, journey};
 use crate::onboard::bootstrap::{mint_log_key_via_session, no_redirect_client};
 use crate::{Error, Result};
 
@@ -73,6 +76,7 @@ pub enum LogsCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
+    #[cfg(feature = "logs-store")]
     /// Search the local synced log store (offline; reads the DuckDB file).
     Search {
         #[arg(long, help = "Tenant to target")]
@@ -104,6 +108,7 @@ pub enum LogsCommand {
         )]
         output: Option<PathBuf>,
     },
+    #[cfg(feature = "logs-store")]
     /// Roll up am-authentication into the journey model and prune old raw events.
     Compact {
         #[arg(long, help = "Tenant to target")]
@@ -115,6 +120,7 @@ pub enum LogsCommand {
         )]
         retain_months: i64,
     },
+    #[cfg(feature = "logs-store")]
     /// Incrementally sync logs into the local DuckDB store.
     Sync {
         #[arg(long, help = "Tenant to target")]
@@ -248,6 +254,7 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             .await?;
             write_json(&result, output.as_deref())
         }
+        #[cfg(feature = "logs-store")]
         LogsCommand::Search {
             tenant,
             tx,
@@ -305,6 +312,7 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             }
             Ok(())
         }
+        #[cfg(feature = "logs-store")]
         LogsCommand::Compact {
             tenant,
             retain_months,
@@ -316,6 +324,7 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             );
             Ok(())
         }
+        #[cfg(feature = "logs-store")]
         LogsCommand::Sync {
             tenant,
             source,
@@ -497,6 +506,7 @@ fn parse_sources(value: Option<&str>) -> Result<Vec<String>> {
     parse_sources_with_default(value, &ops::DEFAULT_SOURCES)
 }
 
+#[cfg(feature = "logs-store")]
 fn parse_sync_sources(value: Option<&str>) -> Result<Vec<String>> {
     parse_sources_with_default(value, &ops::DEFAULT_SYNC_SOURCES)
 }
@@ -586,6 +596,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "logs-store")]
     #[test]
     fn sync_default_sources_are_curated_for_signal() {
         assert_eq!(
@@ -607,6 +618,7 @@ mod tests {
         assert_eq!(api::source_param(&sources).unwrap(), "am-access,idm-core");
     }
 
+    #[cfg(feature = "logs-store")]
     #[test]
     fn sync_source_override_accepts_core_and_everything_sources() {
         let sources = parse_sync_sources(Some("idm-core, am-everything")).unwrap();

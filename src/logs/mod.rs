@@ -6,8 +6,8 @@
 //!   `x-api-secret` auth and rate limits from the bearer-authenticated API
 //!   families.
 //! - [`cli`] = `aic logs` command parsing and dispatch.
-//! - [`db`] = per-tenant DuckDB cache for raw events, sync cursors, compact
-//!   state, journey rollup tables, and offline search.
+//! - [`db`] = optional per-tenant DuckDB cache for raw events, sync cursors,
+//!   compact state, journey rollup tables, and offline search.
 //! - [`ops`] = sync engine and noise filter.
 //! - [`journey`] = `aic logs compact` rollup logic.
 //!
@@ -29,7 +29,9 @@ use crate::{Error, Result};
 
 pub mod api;
 pub mod cli;
+#[cfg(feature = "logs-store")]
 pub mod db;
+#[cfg(feature = "logs-store")]
 pub mod journey;
 pub mod ops;
 

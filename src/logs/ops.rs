@@ -1,7 +1,9 @@
 //! Shared CLI orchestration for log fetches and incremental sync.
 
+#[cfg(feature = "logs-store")]
 use std::fs;
 
+#[cfg(feature = "logs-store")]
 use chrono::{DateTime, Duration, Utc};
 use reqwest::Client;
 
@@ -9,9 +11,13 @@ use crate::Result;
 use crate::agent::AgentClient;
 use crate::cli::tenant_config_for;
 use crate::logs::LogKeyPair;
-use crate::logs::{api, db};
+#[cfg(feature = "logs-store")]
+use crate::logs::api;
+#[cfg(feature = "logs-store")]
+use crate::logs::db;
 
 pub(crate) const DEFAULT_SOURCES: [&str; 2] = ["am-everything", "idm-everything"];
+#[cfg(feature = "logs-store")]
 pub(crate) const DEFAULT_SYNC_SOURCES: [&str; 6] = [
     "am-authentication",
     "am-access",
@@ -20,7 +26,9 @@ pub(crate) const DEFAULT_SYNC_SOURCES: [&str; 6] = [
     "idm-config",
     "idm-access",
 ];
+#[cfg(feature = "logs-store")]
 pub(crate) const SYNC_OVERLAP: Duration = Duration::minutes(5);
+#[cfg(feature = "logs-store")]
 const RETENTION: Duration = Duration::days(30);
 
 pub struct FetchContext {
@@ -43,6 +51,7 @@ pub async fn fetch_context(tenant: Option<String>) -> Result<FetchContext> {
     })
 }
 
+#[cfg(feature = "logs-store")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceSyncReport {
     pub source: String,
@@ -51,6 +60,7 @@ pub struct SourceSyncReport {
     pub inserted: usize,
 }
 
+#[cfg(feature = "logs-store")]
 pub async fn sync_tenant(
     tenant: Option<String>,
     sources: &[String],
@@ -113,6 +123,7 @@ pub async fn sync_tenant(
     Ok(reports)
 }
 
+#[cfg(feature = "logs-store")]
 pub(crate) fn is_core_noise(event: &serde_json::Value) -> bool {
     let Some(source) = event.get("source").and_then(serde_json::Value::as_str) else {
         return false;
@@ -127,7 +138,7 @@ pub(crate) fn is_core_noise(event: &serde_json::Value) -> bool {
     !(payload.contains("WARN") || payload.contains("ERROR"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "logs-store"))]
 mod tests {
     use serde_json::json;
 
