@@ -9,6 +9,17 @@ repository = "https://github.com/agiledigital-labs/pingone-aic-manager"
 readme = "README.md"
 keywords = ["pingone", "identity", "forgerock", "tui", "cli"]
 categories = ["command-line-utilities"]
+# Keep the published crate lean — ship only what building/using it needs.
+# Leading slashes anchor to the package root so `/scripts` does NOT match the
+# in-tree `src/scripts/templates/*` that `include_str!` depends on.
+exclude = [
+    "/docs",
+    "/.github",
+    "/scripts",
+    "/install.sh",
+    "/PLAN.md",
+    "/shell.nix",
+]
 
 # Short binary name — `aic` instead of `pingone-aic-manager`. The library crate
 # keeps the longer name (referenced as `pingone_aic_manager::…` in src/main.rs).
