@@ -37,8 +37,16 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      - name: Clippy
+      - name: Clippy (default)
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Test
+      - name: Test (default)
         run: cargo test
+
+      # The DuckDB local log-store is behind the opt-in `logs-store` feature;
+      # exercise it too so the gated code can't rot.
+      - name: Clippy (logs-store)
+        run: cargo clippy --all-targets --features logs-store -- -D warnings
+
+      - name: Test (logs-store)
+        run: cargo test --features logs-store
