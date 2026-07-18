@@ -118,8 +118,14 @@ is attributable) or one grouped runtime check. Result semantics:
 Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
 
 - Works: `var`, `const` in a function, arrow functions, template literals, and
-  ES2015 `Array`/`String`/`Object` methods (`includes`, `find`, `from`,
+  ES2015 `Array`/`String`/`Object` methods (`includes`, `find`, `from`, `fill`,
   `startsWith`, `endsWith`, `repeat`, `assign`, `keys`).
+- LIBRARY array helpers (2026-07-17): `new Array(n).fill(false)` and
+  `Array.from({ length: n }, () => false)` both work inside a `require()`d
+  LIBRARY script (`fixtures/lib-array-fill-probe.lib.js` +
+  `lib-array-fill-consumer.script.js`, uploaded as `rhino-lib-array-fill-probe`,
+  id `…7404`; both returned `false,false,false`). Consumed by `algorithm.js`'s
+  Jaro-Winkler matched-flag init.
 - Parse errors: `let` (any scope), object shorthand, object destructuring,
   default parameters, `const` in `for`/`for-in`/`for-of` initializers, and the
   same `const` name re-declared in one function across separate non-nested
@@ -132,6 +138,20 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
   `value: ",,"`; `fixtures/const-in-while-body.script.js` and
   `fixtures/const-in-do-while-body.script.js` also returned `value: ",,"`,
   verified 2026-07-03).
+- Loop-body `const` INSIDE a function (2026-07-13): still broken, different
+  signature — the initializer runs only on the first iteration and later
+  iterations silently keep that value
+  (`fixtures/const-in-loop-in-function.script.js` and the LIBRARY pair
+  `lib-const-loop-probe.lib.js` + `lib-const-loop-consumer.script.js` both
+  returned `"0,0,0"` where correct is `"0,2,4"`). An enclosing function does
+  NOT rescue loop-body `const`.
+- LIBRARY top-level `const` (2026-07-13): WORKS correctly, unlike decision-node
+  top level (`fixtures/lib-const-probe.lib.js` + `lib-const-consumer.script.js`
+  round-tripped `fromConst: "lib-const-ok"`). A library's top level behaves as
+  function-like scope. Library probes upload the `.lib.js` body as a `LIBRARY`
+  script named after the file (e.g. `rhino-lib-const-probe`,
+  `rhino-lib-const-loop-probe`, ids `…7402`/`…7403`) — `run-probes.sh` only
+  handles the `.script.js` consumer.
 - Bindings present: `require`, `openidm`, `httpClient`, `utils`, `logger`,
   `idRepository`, `nodeState`, `action`, `callbacks`, `callbacksBuilder`,
   `requestHeaders`, `requestParameters`, `requestCookies`, `realm`, `systemEnv`,
