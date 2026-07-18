@@ -360,6 +360,16 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
 
 ## Changelog
 
+- **2026-07-15** — IDM schedule console visibility verified: a schedule with
+  `persisted:false` can exist and run through the API while being hidden from
+  the AIC console. Changing only `persisted:true` made it visible with
+  `enabled:false` unchanged. Manual-only schedules that should be visible use
+  `persisted:true, enabled:false`.
+- **2026-07-15** — IDM manual schedule trigger header behaviour verified:
+  `POST /openidm/scheduler/job/<name>?_action=trigger` returns 501 `Not
+  Implemented` when sent `Accept-API-Version: resource=1.0`, but the identical
+  headerless call returns 200 `{"success":true}`. Updated
+  `11-idm-endpoints.md`; scheduler-trigger curl examples must omit the header.
 - **2026-05-17** — Initial verification pass; Q1-Q4 + secret stores resolved.
 - **2026-05-18** — Step 2 implemented (TUI skeleton, crypto, onboarding). Q11
   (PKCE redirect URI) resolved; `AicEdit` OAuth2 client provisioned.
@@ -511,3 +521,17 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   _cardinality and shape_ (nodes/execution, distinct users) against an
   independent source, not just internal self-consistency. `08-logs.md` join-key
   note rewritten.
+- **2026-07-15** — IDM schedule scripts support root-level `const` and `let`,
+  `new Set()` (`size`/`has`), and template literals. Verified in a disabled,
+  manually triggered throwaway schedule that wrote the expected interpolated
+  value with `openidm.create`; the schedule and record were removed afterward.
+  **Exception:** a `const` declared inside a loop body parsed but silently
+  terminated the loop after its first iteration (created sum 0, expected 3).
+  The same `for (let ...)` loop without a body `const` completed correctly.
+  Schedule scripts must use `let` for bindings declared in repeated loop
+  bodies; root-level immutable bindings may remain `const`.
+- **2026-07-15** — Managed-object naming convention corrected: `alpha_` and
+  `bravo_` identify realm-owned data; they are not a blanket prefix for every
+  custom object. Tenant-global service/configuration data should use a
+  descriptive non-realm prefix, such as `idr_name_variants`. The earlier
+  convention in `10-managed-objects.md` was too broad.

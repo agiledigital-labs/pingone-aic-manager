@@ -3,25 +3,27 @@
 Implemented in: `src/managed/`
 
 ## Purpose
+
 "Managed objects" are IDM's domain entities: users, applications, roles,
-assignments, etc. The schema is editable per-tenant (you can add fields,
-events, scripts). Documented because journeys reference `managed/alpha_user`
-and similar, and because we may need to expose schema/hook editing later.
+assignments, etc. The schema is editable per-tenant (you can add fields, events,
+scripts). Documented because journeys reference `managed/alpha_user` and
+similar, and because we may need to expose schema/hook editing later.
 
 ## Authentication
+
 Service-account bearer. Scope: `fr:idm:*`.
 
 ## Endpoints (tenant-global; **not** realm-scoped under `/realms/...`)
 
-| Op | Method | Path | Notes |
-|----|--------|------|-------|
-| Read schema (all) | `GET` | `/openidm/config/managed` | Returns `{ _id: "managed", objects: [...] }`. |
-| Replace schema | `PUT` | `/openidm/config/managed` | Whole-document replace of `{ _id: "managed", objects: [...] }`. Mutate via read-modify-write; 200 on success. |
-| Read repo mapping | `GET` | `/openidm/config/repo.ds` | Maps managed properties to DJ attributes. |
-| Read object instance | `GET` | `/openidm/managed/{type}/{id}` | Per-record. `{type}` e.g. `alpha_user`. |
-| List records | `GET` | `/openidm/managed/{type}?_queryFilter=true` | CREST. |
-| Create (client-set `_id`) | `PUT` | `/openidm/managed/{type}/{id}` + `If-None-Match: *` | Atomic create-if-absent. 201 on create (returns instance `_rev`); **412 "Entry Already Exists"** if the id is taken. |
-| Delete instance | `DELETE` | `/openidm/managed/{type}/{id}` | 200 on delete. |
+| Op                        | Method   | Path                                                | Notes                                                                                                                |
+| ------------------------- | -------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Read schema (all)         | `GET`    | `/openidm/config/managed`                           | Returns `{ _id: "managed", objects: [...] }`.                                                                        |
+| Replace schema            | `PUT`    | `/openidm/config/managed`                           | Whole-document replace of `{ _id: "managed", objects: [...] }`. Mutate via read-modify-write; 200 on success.        |
+| Read repo mapping         | `GET`    | `/openidm/config/repo.ds`                           | Maps managed properties to DJ attributes.                                                                            |
+| Read object instance      | `GET`    | `/openidm/managed/{type}/{id}`                      | Per-record. `{type}` e.g. `alpha_user`.                                                                              |
+| List records              | `GET`    | `/openidm/managed/{type}?_queryFilter=true`         | CREST.                                                                                                               |
+| Create (client-set `_id`) | `PUT`    | `/openidm/managed/{type}/{id}` + `If-None-Match: *` | Atomic create-if-absent. 201 on create (returns instance `_rev`); **412 "Entry Already Exists"** if the id is taken. |
+| Delete instance           | `DELETE` | `/openidm/managed/{type}/{id}`                      | 200 on delete.                                                                                                       |
 
 ## Create-if-absent observations
 
@@ -39,22 +41,23 @@ single-node sandbox. Production cluster testing later disproved the `PUT` +
 Reproduce the sandbox test with `scripts/experiment-lock-uniqueness.sh`.
 
 Note: managed-object **instances** DO carry `_rev` (unlike scripts/ESVs and
-unlike the `managed` *schema* config, which is `_rev`-less). The 412 here is
+unlike the `managed` _schema_ config, which is `_rev`-less). The 412 here is
 driven by `If-None-Match: *`, independent of `_rev`.
 
 ### Three create paths — only two are "create-only" (verified 2026-06-10)
 
-| Path | Exists already → | Notes |
-|------|------------------|-------|
-| `PUT /managed/{t}/{id}` (no header) | **200, silent UPDATE** | CREST maps bare PUT to create-or-**update** (upsert). |
-| `PUT /managed/{t}/{id}` + `If-None-Match: *` | 412 | Create-only *iff the precondition is honored* — see caveat. |
-| `POST /managed/{t}?_action=create` (`_id` in body) | 412 "Entry Already Exists" | CREST `CreateRequest`; **no** update fallback. |
-| `openidm.create(container, id, content)` (script) | throws `PreconditionFailedException` "Entry Already Exists" | Same `CreateRequest`. `id=null` → server-assigned UUID. **Never** updates. |
+| Path                                                        | Exists already →                                            | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PUT /managed/{t}/{id}` (no header)                         | **200, silent UPDATE**                                      | CREST maps bare PUT to create-or-**update** (upsert).                                                                                                                                                                                                                                                                                                                                                                                            |
+| `PUT /managed/{t}/{id}` + `If-None-Match: *`                | 412                                                         | Create-only _iff the precondition is honored_ — see caveat.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `POST /managed/{t}?_action=create` (`_id` in body)          | 412 "Entry Already Exists"                                  | CREST `CreateRequest`; **no** update fallback.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `openidm.create(container, id, content)` (script)           | throws `PreconditionFailedException` "Entry Already Exists" | Same `CreateRequest`. `id=null` → server-assigned UUID. **Never** updates.                                                                                                                                                                                                                                                                                                                                                                       |
+| `openidm.read("managed/{t}/{id}")` (script), record missing | **returns `null`** (does NOT throw)                         | Verified live 2026-07-17 (next-gen decision + LIBRARY). Also `null` for a missing managed-object **type** (`managed/zzz_no_such_type/x`). Only a genuine read error (500/403/transport) throws. So a `try/catch` around `openidm.read` catches only real failures, not normal misses — guard the miss with `if (!rec) …` and reserve `logger.warn` for the `catch`. Probe: `scripts/rhino-script-tester/fixtures/lib-openidm-miss-probe.lib.js`. |
 
 **Caveat — `If-None-Match: *` is NOT a safe distributed lock in production.**
 Observed in a clustered prod tenant: 20 concurrent `PUT … If-None-Match: *` of
-one `_id` returned **1×201, 4×200, 15×412** — the four 200s were *silent
-updates*, i.e. the precondition was not enforced for those requests (LB/proxy
+one `_id` returned **1×201, 4×200, 15×412** — the four 200s were _silent
+updates_, i.e. the precondition was not enforced for those requests (LB/proxy
 dropping the conditional header, or differing CREST routing). Four extra callers
 got a 2xx "success" and would each have believed they held the lock. The
 single-node sandbox cannot reproduce this (always 1×201 / N−1×412).
@@ -84,16 +87,22 @@ way but is not a hard multi-master mutex.
 Exact duplicate-create error, as caught in an IDM script (verified 2026-06-10):
 a Rhino-wrapped Java exception — `e.name === "JavaException"`,
 `e.javaException.getClass().getName() === "org.forgerock.json.resource.PreconditionFailedException"`,
-`e.message` starts `org.forgerock.json.resource.PreconditionFailedException: Entry Already Exists: The entry 'uid=<id>,ou=alpha_lock,ou=managed,dc=openidm,dc=example,dc=com' …`,
+`e.message` starts
+`org.forgerock.json.resource.PreconditionFailedException: Entry Already Exists: The entry 'uid=<id>,ou=alpha_lock,ou=managed,dc=openidm,dc=example,dc=com' …`,
 and **`e.code` is undefined** (there is no numeric code property — match on the
 class or the message, not a code). `getClass()` reflection is available in IDM
 scripts (unlike AM next-gen), so the class is the most precise discriminator.
 
 ## Naming convention
 
-Object types are realm-prefixed: `alpha_user`, `alpha_role`, `alpha_application`,
-`bravo_user`, etc. The `alpha_` / `bravo_` prefix is the realm scoping
-mechanism on the IDM side (whereas AM uses URL path segments).
+Managed-object types that hold realm-owned data are realm-prefixed:
+`alpha_user`, `alpha_role`, `alpha_application`, `bravo_user`, etc. The `alpha_`
+/ `bravo_` prefix is the realm-scoping mechanism for that data on the IDM side
+(whereas AM uses URL path segments).
+
+Tenant-global service or configuration data should not borrow a realm prefix.
+Use a descriptive non-realm prefix that identifies the owning service instead,
+for example `idr_name_variants` for the tenant-wide IDR name-variant table.
 
 ## Object shape (schema, abbreviated, from sandbox)
 
@@ -108,14 +117,35 @@ mechanism on the IDM side (whereas AM uses URL path segments).
         "$schema": "http://forgerock.org/json-schema#",
         "description": "Application Object",
         "icon": "fa-folder",
-        "order": ["_id","name","description","url","icon","mappingNames","owners","roles","members","authoritative","connectorId", /* … */],
-        "properties": { /* per-field type, constraints, viewable, searchable, etc. */ },
-        "required": [/* … */]
+        "order": [
+          "_id",
+          "name",
+          "description",
+          "url",
+          "icon",
+          "mappingNames",
+          "owners",
+          "roles",
+          "members",
+          "authoritative",
+          "connectorId" /* … */
+        ],
+        "properties": {
+          /* per-field type, constraints, viewable, searchable, etc. */
+        },
+        "required": [
+          /* … */
+        ]
       },
       "onCreate": { "type": "text/javascript", "source": "…" },
-      "onUpdate": { "type": "text/javascript", "file": "scripts/managed/onUpdate-user.js" },
-      "onDelete": { /* … */ }
-    },
+      "onUpdate": {
+        "type": "text/javascript",
+        "file": "scripts/managed/onUpdate-user.js"
+      },
+      "onDelete": {
+        /* … */
+      }
+    }
     /* alpha_user, alpha_role, alpha_assignment, bravo_user, ... */
   ]
 }
@@ -124,76 +154,77 @@ mechanism on the IDM side (whereas AM uses URL path segments).
 ## Schema config writes (verified 2026-06-14)
 
 `PUT /openidm/config/managed` is a whole-document replace. Mutations are
-read-modify-write edits of `{ "_id": "managed", "objects": [...] }`; all
-sandbox PUTs on throwaway `test_*` objects returned 200. The API stores
-`objects[]` entries verbatim — no field injection, normalisation, or
-reordering was observed.
+read-modify-write edits of `{ "_id": "managed", "objects": [...] }`; all sandbox
+PUTs on throwaway `test_*` objects returned 200. The API stores `objects[]`
+entries verbatim — no field injection, normalisation, or reordering was
+observed.
 
-Config read-back is effectively immediate: after PUT returned 200, a fresh
-GET reflected the change on the first poll (~164 ms later). This is strong
+Config read-back is effectively immediate: after PUT returned 200, a fresh GET
+reflected the change on the first poll (~164 ms later). This is strong
 consistency for the stored config. The `managed_hooks` sync path still polls
 when needed because it waits for hook source to go live in the running IDM
 runtime, which is separate from config read-back.
 
-| Shape | Accepted / observed |
-|---|---|
-| Minimal custom object | `{ "name": "...", "schema": { "type": "object", "title": "...", "properties": {}, "required": [], "order": [] } }`. Objects carry no `_id`/`$id`; the document's `_id: "managed"` is the only id. |
-| Standard object marker | Ping-shipped standard objects (`alpha_`/`bravo_` × `user`, `role`, `organization`, `assignment`, `application`) have both top-level `type` and `meta` keys. Custom objects (`mock_*`, `alpha_lock`, `test_*`) have neither. |
-| Scalar property | `{ "title": "...", "description": "...", "type": "string", "searchable": true, "viewable": true, "userEditable": true }` round-trips. |
-| Single relationship | `{ "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] }`. `reversePropertyName`, `validate`, and explicit `_ref`/`_refProperties` are optional at config-write time. |
-| Array of relationships | `{ "type": "array", "items": { "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] } }`. |
-| Lifecycle hook | Top-level sibling of `schema`, e.g. `"onCreate": { "type": "text/javascript", "source": "..." }`. Round-trips verbatim and is immediately discoverable/pullable via `aic script list managed` / `aic script pull managed/<object>.<hook>`. |
+| Shape                  | Accepted / observed                                                                                                                                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Minimal custom object  | `{ "name": "...", "schema": { "type": "object", "title": "...", "properties": {}, "required": [], "order": [] } }`. Objects carry no `_id`/`$id`; the document's `_id: "managed"` is the only id.                                          |
+| Standard object marker | Ping-shipped standard objects (`alpha_`/`bravo_` × `user`, `role`, `organization`, `assignment`, `application`) have both top-level `type` and `meta` keys. Custom objects (`mock_*`, `alpha_lock`, `test_*`) have neither.                |
+| Scalar property        | `{ "title": "...", "description": "...", "type": "string", "searchable": true, "viewable": true, "userEditable": true }` round-trips.                                                                                                      |
+| Single relationship    | `{ "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] }`. `reversePropertyName`, `validate`, and explicit `_ref`/`_refProperties` are optional at config-write time.                                           |
+| Array of relationships | `{ "type": "array", "items": { "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] } }`.                                                                                                                        |
+| Lifecycle hook         | Top-level sibling of `schema`, e.g. `"onCreate": { "type": "text/javascript", "source": "..." }`. Round-trips verbatim and is immediately discoverable/pullable via `aic script list managed` / `aic script pull managed/<object>.<hook>`. |
 
 No cross-object reverse-property validation runs on config write. A PUT with
 `validate: true` and a `reversePropertyName` that did not exist on the target
 object returned 200 and stored the property. Treat `validate` and
-`reverseRelationship` as runtime relationship-integrity flags, not schema
-write gates. One-way relationships are accepted; fully bidirectional pairs
-also round-trip.
+`reverseRelationship` as runtime relationship-integrity flags, not schema write
+gates. One-way relationships are accepted; fully bidirectional pairs also
+round-trip.
 
 There is no server-side rename or delete primitive for schema config: both are
-whole-document RMW edits. `schema.order` is independent of
-`schema.properties`, and `schema.required` is independent too; the API does
-not auto-prune either list when a property is removed or renamed.
+whole-document RMW edits. `schema.order` is independent of `schema.properties`,
+and `schema.required` is independent too; the API does not auto-prune either
+list when a property is removed or renamed.
 
 ## Hook scripts (verified 2026-06-13)
 
 Hook keys **observed in use** on the sandbox schema: `onCreate`, `onUpdate`,
-`onDelete`, `postCreate`, `postUpdate`, `postDelete`. Two storage forms
-coexist on the same tenant:
+`onDelete`, `postCreate`, `postUpdate`, `postDelete`. Two storage forms coexist
+on the same tenant:
 
 - **Inline** — `{ "type": "text/javascript", "source": "…" }`. Round-trips
   through `PUT /openidm/config/managed`; this is the form tenant tooling can
   edit.
-- **File-backed** — `{ "type": "text/javascript", "file": "roles/onDelete-roles.js" }`
-  (stock Ping hooks). The config API provides no way to read or write the
-  referenced file, so tooling must treat file-backed hooks as **read-only
-  markers** — never convert them to inline or drop them on push.
+- **File-backed** —
+  `{ "type": "text/javascript", "file": "roles/onDelete-roles.js" }` (stock Ping
+  hooks). The config API provides no way to read or write the referenced file,
+  so tooling must treat file-backed hooks as **read-only markers** — never
+  convert them to inline or drop them on push.
 
 Sync tooling should detect hooks **by value shape** (any object property with
-`type` + `source`/`file`), not by a hardcoded key list — which event keys
-beyond the six observed are accepted/fired remains an open question.
+`type` + `source`/`file`), not by a hardcoded key list — which event keys beyond
+the six observed are accepted/fired remains an open question.
 
 ### Hook runtime bindings (live probe, 2026-06-13)
 
-Probed by installing temporary `onCreate`/`onUpdate` hooks on the scratch
-type `alpha_lock`, dumping bindings into the created record, then restoring
-the schema byte-identical and deleting the probe records. Full sanitized
-results: [`bindings/managed-hooks-idm.json`](bindings/managed-hooks-idm.json).
+Probed by installing temporary `onCreate`/`onUpdate` hooks on the scratch type
+`alpha_lock`, dumping bindings into the created record, then restoring the
+schema byte-identical and deleting the probe records. Full sanitized results:
+[`bindings/managed-hooks-idm.json`](bindings/managed-hooks-idm.json).
 
-| Binding | onCreate | onUpdate | Notes |
-|---|---|---|---|
-| `object` | draft record, **mutable** | new state, mutable | writes persist |
-| `oldObject` | `null` | previous record state | |
-| `newObject` | `=== object` | `=== object` | alias, verified |
-| `request` | CreateRequest (`method:"create"`, `content`, `newResourceId`, …) | `method:"update"` | |
-| `context` | full context chain (http headers ⚠ incl. Authorization, security, oauth2) | same | treat as sensitive |
-| `resourceName` | `ResourcePath` (`managed/<type>/<id>`) | same | only Java-classed binding |
-| `openidm`, `logger`, `identityServer`, `require` | present | present | same surface as endpoint scripts |
+| Binding                                          | onCreate                                                                   | onUpdate              | Notes                            |
+| ------------------------------------------------ | -------------------------------------------------------------------------- | --------------------- | -------------------------------- |
+| `object`                                         | draft record, **mutable**                                                  | new state, mutable    | writes persist                   |
+| `oldObject`                                      | `null`                                                                     | previous record state |                                  |
+| `newObject`                                      | `=== object`                                                               | `=== object`          | alias, verified                  |
+| `request`                                        | CreateRequest (`method:"create"`, `content`, `newResourceId`, …)           | `method:"update"`     |                                  |
+| `context`                                        | full context chain (http headers ⚠ incl. Authorization, security, oauth2) | same                  | treat as sensitive               |
+| `resourceName`                                   | `ResourcePath` (`managed/<type>/<id>`)                                     | same                  | only Java-classed binding        |
+| `openidm`, `logger`, `identityServer`, `require` | present                                                                    | present               | same surface as endpoint scripts |
 
 **Fatal gotcha:** `for (var k in this)` at hook top level throws — the
-triggering request gets **HTTP 500** and the write rolls back. Any uncaught
-hook exception surfaces the same way. Probe with `typeof <name>`, never by
+triggering request gets **HTTP 500** and the write rolls back. Any uncaught hook
+exception surfaces the same way. Probe with `typeof <name>`, never by
 enumerating scope.
 
 ## Examples
@@ -208,13 +239,14 @@ $SCRIPTS/verify-endpoint.sh "/openidm/managed/alpha_user?_queryFilter=true&_page
 
 ## Record querying + change detection (drives the `idmstore` sync feature)
 
-Verified 2026-06-20/06-21 against sandbox `alpha_user`/`bravo_user`/`alpha_role`.
+Verified 2026-06-20/06-21 against sandbox
+`alpha_user`/`bravo_user`/`alpha_role`.
 
-**Records carry no timestamp.** A managed-object instance returns only `_id`
-and `_rev` plus its declared properties — there is **no** `lastModified`/
-`created` field on the record. `_rev` is a per-object change counter (suffix
-e.g. `…-34`), **not** a global "changed-since" cursor; do not use it to detect
-which records changed across a collection.
+**Records carry no timestamp.** A managed-object instance returns only `_id` and
+`_rev` plus its declared properties — there is **no** `lastModified`/ `created`
+field on the record. `_rev` is a per-object change counter (suffix e.g. `…-34`),
+**not** a global "changed-since" cursor; do not use it to detect which records
+changed across a collection.
 
 **The change signal lives in a `_meta` relationship — user objects only.**
 `alpha_user`/`bravo_user` each have a `_meta` relationship to a sidecar managed
@@ -235,13 +267,14 @@ no per-record timestamp, so they have no incremental signal — re-pull them in
 full (or use the `idm-activity` audit log, which needs a Log API key, see
 `08-logs.md`).
 
-**You cannot filter/sort the parent object by the related sidecar.** Relationship
-traversal in the query is unsupported: `_queryFilter=_meta/lastChanged/date gt …`
-returns `resultCount: 0`, and `_sortKeys=-_meta/lastChanged` → **HTTP 500**
-(`ByteString.toBase64String() … normalized is null`). So: query the *sidecar*
-for changed ids, and keep a local `meta_id ↔ record _id` map (built when records
-are pulled with `_fields=…,_meta/_id`). Detect creates/deletes with a cheap
-`_fields=_id` id-list diff against the local store.
+**You cannot filter/sort the parent object by the related sidecar.**
+Relationship traversal in the query is unsupported:
+`_queryFilter=_meta/lastChanged/date gt …` returns `resultCount: 0`, and
+`_sortKeys=-_meta/lastChanged` → **HTTP 500**
+(`ByteString.toBase64String() … normalized is null`). So: query the _sidecar_
+for changed ids, and keep a local `meta_id ↔ record _id` map (built when
+records are pulled with `_fields=…,_meta/_id`). Detect creates/deletes with a
+cheap `_fields=_id` id-list diff against the local store.
 
 **Paging (verified 2026-06-21).** Unlike AM scripts, managed lists return a
 **usable `pagedResultsCookie`** — pass it back as `_pagedResultsCookie` to walk
@@ -255,8 +288,8 @@ policy `ESTIMATE`. Treat counts as optional progress hints only. Cursor walks
 end on an absent/empty cookie, including an empty first page.
 
 **Query-filter negation (verified 2026-07-03).** AIC accepts symbolic CREST
-negation with `!`, for example `_queryFilter=!(/description eq "lkj")`.
-It rejects the word form `not (/description eq "lkj")` with HTTP 400
+negation with `!`, for example `_queryFilter=!(/description eq "lkj")`. It
+rejects the word form `not (/description eq "lkj")` with HTTP 400
 `"A value could not be parsed as a valid query filter"`.
 
 **Query-filter operators (verified 2026-07-03).** Managed-object queries reject
@@ -269,25 +302,24 @@ error. Do not offer `ne` or `in` in script-template query validation.
 
 ## Quirks
 
-- **PUT is "replace entire schema"** — there's no partial patch. Read,
-  modify the relevant `objects[]` entry, write back. Object entries store
-  verbatim; no server field injection, normalisation, or reordering was
-  observed.
+- **PUT is "replace entire schema"** — there's no partial patch. Read, modify
+  the relevant `objects[]` entry, write back. Object entries store verbatim; no
+  server field injection, normalisation, or reordering was observed.
 - **`_rev`-less at the top level** — concurrency control is at the per-record
   level for instance data, not schema. Two concurrent schema edits will
   last-write-wins.
-- **Inline vs file scripts.** Tooling should normalize to file form for
-  storage; the API accepts either.
-- **`repo.ds`** is the source of truth for which managed properties are
-  indexed in DJ. Adding a searchable property requires updating both
-  `managed` and `repo.ds`.
+- **Inline vs file scripts.** Tooling should normalize to file form for storage;
+  the API accepts either.
+- **`repo.ds`** is the source of truth for which managed properties are indexed
+  in DJ. Adding a searchable property requires updating both `managed` and
+  `repo.ds`.
 - **Config read-back is immediate; hook runtime activation can lag.** A fresh
-  `GET /openidm/config/managed` reflected a 200'd PUT on the first poll
-  (~164 ms, 2026-06-14). Separately, the running hook registry can catch up a
-  beat later (observed 2026-06-13: a record created right after a 200'd
-  schema PUT still fired the *previous* hook source; ~5s later the new source
-  was live). Push tooling can re-read config to confirm storage, but should
-  not fire-and-verify hooks immediately after a push.
+  `GET /openidm/config/managed` reflected a 200'd PUT on the first poll (~164
+  ms, 2026-06-14). Separately, the running hook registry can catch up a beat
+  later (observed 2026-06-13: a record created right after a 200'd schema PUT
+  still fired the _previous_ hook source; ~5s later the new source was live).
+  Push tooling can re-read config to confirm storage, but should not
+  fire-and-verify hooks immediately after a push.
 - **`schema.order` / `schema.required` are manual.** The config API does not
   auto-prune them when properties are removed or renamed.
 
@@ -303,15 +335,15 @@ error. Do not offer `ne` or `in` in script-template query validation.
   operators: `ne` rejected as unsupported, `in` and array values rejected as
   parse errors). 2026-06-14 (managed-config write behaviour, custom
   object/property/relationship/hook round-trips, no reverse-property
-  validation); 2026-06-13
-  (hook inventory, hook bindings probe, schema PUT round-trip + application
-  lag); 2026-06-09 (create-if-absent test); 2026-05-17 (schema read).
+  validation); 2026-06-13 (hook inventory, hook bindings probe, schema PUT
+  round-trip + application lag); 2026-06-09 (create-if-absent test); 2026-05-17
+  (schema read).
 - Calls: `GET /openidm/config/managed` (200); `PUT /openidm/config/managed`
   (200, full-document replace; object entries stored verbatim; fresh GET
   reflected changes on first poll, ~164 ms); relationship PUT with
   `validate: true` + dangling `reversePropertyName` (200, stored);
-  `PUT /openidm/managed/alpha_lock/{id}` + `If-None-Match: *` (201/412);
-  bare `PUT` update (200, fires onUpdate); `DELETE` (200);
+  `PUT /openidm/managed/alpha_lock/{id}` + `If-None-Match: *` (201/412); bare
+  `PUT` update (200, fires onUpdate); `DELETE` (200);
   `GET …?_queryFilter=true&_fields=_id` (200);
   `GET …?_queryFilter=!(/description eq "lkj")&_pageSize=1` (200);
   `GET …?_queryFilter=not (/description eq "lkj")&_pageSize=1` (400);
@@ -327,11 +359,11 @@ error. Do not offer `ne` or `in` in script-template query validation.
 
 ## Open questions
 
-- Which hook event keys beyond the six observed in use (`onCreate`,
-  `onUpdate`, `onDelete`, `postCreate`, `postUpdate`, `postDelete`) are
-  accepted **and fired** by AIC (`onValidate`, `onRead`, `onRetrieve`,
-  `onStore`, `onSync`, …). Partially resolved 2026-06-13: tooling
-  sidesteps this by detecting hooks by value shape rather than key list;
-  verify firing per-key before documenting any of the others as supported.
-- Hook bindings for `onDelete`/`post*` hooks are assumed to match the
-  verified `onCreate`/`onUpdate` surface; not yet probed.
+- Which hook event keys beyond the six observed in use (`onCreate`, `onUpdate`,
+  `onDelete`, `postCreate`, `postUpdate`, `postDelete`) are accepted **and
+  fired** by AIC (`onValidate`, `onRead`, `onRetrieve`, `onStore`, `onSync`, …).
+  Partially resolved 2026-06-13: tooling sidesteps this by detecting hooks by
+  value shape rather than key list; verify firing per-key before documenting any
+  of the others as supported.
+- Hook bindings for `onDelete`/`post*` hooks are assumed to match the verified
+  `onCreate`/`onUpdate` surface; not yet probed.
