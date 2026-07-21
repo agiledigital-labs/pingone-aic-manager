@@ -116,6 +116,19 @@ root), `additionalParameters` (a map of any non-`_` query params), `fields` (the
   contexts exist (`oauth2`, `transactionId`, `session`, `current`, `parent`, …)
   and vary by call. (Note `context.http.headers` includes the bearer
   `Authorization` — never log the full context.)
+- **`context.http` is present only when an HTTP request sits at the ROOT of the
+  chain — it is optional even inside a custom endpoint** (verified 2026-07-21).
+  A direct REST call has it. An endpoint reached internally from _another_
+  endpoint (`openidm.read`/`openidm.action`) whose origin was HTTP _still_ has
+  it — the HTTP context is inherited down the chain and points at the
+  originating caller, not the inner hop. But an endpoint reached from a
+  **non-HTTP origin — a scheduled job, recon/liveSync, boot/startup, or any
+  internal trigger — has `context.http === undefined`.** Live-verified with a
+  disabled throwaway `schedule/aicedit-bindsched` that called
+  `openidm.action("endpoint/aicedit-bindprobe", …)` from the scheduler thread:
+  both the schedule script and the endpoint saw no `context.http` (result
+  stashed in an `alpha_lock` record, then cleaned up). Always guard
+  `context.http` before dereferencing it.
 
 ### Response shape
 
@@ -245,13 +258,12 @@ script lives** and **which ones have one**:
   `persisted:true, enabled:false` for a visible, manual-only schedule.
 - **A schedule can be fired on demand, independent of its cron or `enabled`
   flag**, via `POST /openidm/scheduler/job/<name>?_action=trigger` (verified
-  2026-07-14; header behaviour rechecked 2026-07-15 — `<name>` is the id
-  segment after `schedule/`, not the full `_id`). **Omit
-  `Accept-API-Version`**: sending `resource=1.0` to this scheduler action
-  returns 501 `Not Implemented`, while the otherwise identical headerless call
-  returns 200 `{"success":true}`. The script itself runs
-  asynchronously in the scheduler's own job thread, decoupled from the HTTP
-  response, so a long-running load script (tested: 500 sequential
+  2026-07-14; header behaviour rechecked 2026-07-15 — `<name>` is the id segment
+  after `schedule/`, not the full `_id`). **Omit `Accept-API-Version`**: sending
+  `resource=1.0` to this scheduler action returns 501 `Not Implemented`, while
+  the otherwise identical headerless call returns 200 `{"success":true}`. The
+  script itself runs asynchronously in the scheduler's own job thread, decoupled
+  from the HTTP response, so a long-running load script (tested: 500 sequential
   `openidm.create` calls in ~7s, extrapolates to ~11k in a few minutes) is not
   bounded by any request timeout. `enabled: false` with a cron string that will
   never fire on its own (e.g. a far-future date) is a safe way to deploy a
@@ -307,7 +319,11 @@ Object shape (real example, `schedule/UpdateReviewList`):
   libraries — `lib/lodash` 3.10.1, `lib/handlebars` 4.7.7, `lib/validator`
   13.7.0; 110+ other names 404; custom/own-module requires all fail; throwaway
   `endpoint/aicedit-libprobe{,2,3}`, `aicedit-mylib`, `aicedit-func` created,
-  probed, and deleted)
+  probed, and deleted); 2026-07-21 (`context.http` is inherited down internal
+  endpoint→endpoint calls but ABSENT when the chain root is a scheduled job.
+  Throwaway `endpoint/aicedit-bindprobe`, `endpoint/aicedit-bindcaller`,
+  `schedule/aicedit-bindsched` created, probed via HTTP + internal +
+  scheduler-triggered paths, and deleted)
 - Endpoints: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
   `endpoint/` ids), `GET /openidm/config/endpoint/test` (200; keys
   `_id, description, source, type`, no `_rev`, plaintext `source`),
@@ -328,14 +344,14 @@ Object shape (real example, `schedule/UpdateReviewList`):
   records existing (polled via `_pageSize=0` count). Throwaway schedule,
   records, and `managed` schema entry all removed after.
 - Console visibility (2026-07-15): `schedule/load-alpha-name-variant` with
-  `enabled:false, persisted:false` was present and manually runnable through
-  the API but absent from the AIC console. A full-object PUT changing only
+  `enabled:false, persisted:false` was present and manually runnable through the
+  API but absent from the AIC console. A full-object PUT changing only
   `persisted:true` made it visible while it remained disabled and manually
   triggerable.
 - Schedule JavaScript syntax (2026-07-15): disabled throwaway
   `schedule/aicedit-idm-modern-syntax-probe` was manually triggered and
-  successfully exercised root-level `const`/`let`, `Set`, template literals,
-  and `openidm.create`. Its temporary managed-object record and schedule were
+  successfully exercised root-level `const`/`let`, `Set`, template literals, and
+  `openidm.create`. Its temporary managed-object record and schedule were
   deleted after verification. A follow-up loop probe showed that a `const`
   declared in the loop body silently stops the loop after its first iteration
   (sum 0 instead of 3), while `for (let ...)` with no body `const` iterates
