@@ -29,15 +29,27 @@ type Patch =
       field: string;
     };
 
-// The CREST call chain, shared by endpoint + schedule scripts. The originating
-// HTTP request is at `context.http` for endpoint calls (verified 2026-06-04);
-// scheduled runs have no HTTP request, so `http` may be absent there. Other
-// contexts (security, oauth2, transactionId, …) vary, hence the index signature.
+// The CREST call chain, shared by endpoint + schedule scripts. `context.http`
+// is present iff an HTTP request sits at the ROOT of the context chain — so it
+// is OPTIONAL even inside a custom endpoint (verified 2026-07-21):
+//   • Direct REST call to the endpoint → present.
+//   • Endpoint reached internally from ANOTHER endpoint (openidm.read/action)
+//     whose origin was HTTP → still present; it's inherited and points at the
+//     originating HTTP caller, not the inner hop.
+//   • Endpoint reached from a non-HTTP origin — a scheduled job, recon/liveSync,
+//     boot/startup, or any internal trigger → ABSENT. (Live-verified: a schedule
+//     calling `openidm.action("endpoint/…")` saw `context.http === undefined`
+//     in both the schedule script and the endpoint.)
+// Always guard `context.http` before use. Other contexts (security, oauth2,
+// transactionId, …) vary, hence the index signature.
 interface IdmContext {
   http?: {
     method: string;
     path: string;
     headers: Record<string, string>;
+    // Raw HTTP-layer query-param map: ALL query params, incl. `_`-prefixed
+    // ones. (Contrast `request.additionalParameters`, the CREST-layer map of
+    // NON-`_` params only.) Verified 2026-07-21.
     parameters: Record<string, string>;
   };
   security?: {
