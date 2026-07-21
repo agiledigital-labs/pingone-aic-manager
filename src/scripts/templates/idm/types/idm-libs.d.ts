@@ -8,10 +8,17 @@
 //   require('lib/handlebars')-> Handlebars   4.7.7
 //   require('lib/validator') -> validator.js 13.7.0
 //
-// The matching @types are pinned to these exact versions in package.json, so the
-// autocomplete here reflects the real runtime API. In particular lodash is v3:
-// v4-only helpers (`_.fromPairs`, `_.toString`, the lazy-eval `_.chunk` changes,
-// etc.) do NOT exist on the server and will (correctly) fail to type-check.
+// The autocomplete here reflects the real runtime API. lodash and validator
+// types come from `@types/lodash`/`@types/validator`, pinned in package.json to
+// those exact runtime versions — the runtime packages themselves are NOT
+// installed (they are never executed locally, only type-checked, and their old
+// versions carry npm-audit CVEs). In particular lodash is v3: v4-only helpers
+// (`_.fromPairs`, `_.toString`, the lazy-eval `_.chunk` changes, etc.) do NOT
+// exist on the server and will (correctly) fail to type-check.
+//
+// Handlebars ships its own types, so `handlebars` IS installed (for the .d.ts
+// only) — pinned to 4.7.9, an API-identical security patch of the runtime's
+// 4.7.7. The 4.7.x type surface matches the server.
 //
 // Handlebars caveat (Ping scripting guide): using Handlebars in server-side JS
 // requires wrapping calls in the Rhino Synchronizer, e.g.

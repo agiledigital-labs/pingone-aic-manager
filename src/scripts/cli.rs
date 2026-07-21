@@ -171,6 +171,10 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             if workspace::applied_version(&t)? == 0 {
                 let r = workspace::init(&t)?;
                 println!("initialised workspace at {}", r.tree.display());
+                println!(
+                    "next: cd {} && npm install   (installs the lint/type-check toolchain)",
+                    r.tree.display()
+                );
             }
             // No ref → fuzzy-pick one script; otherwise expand the ref to jobs.
             let jobs = match reference {
@@ -427,6 +431,10 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
                 managed_types,
                 sync_types,
                 workspace::TEMPLATES_VERSION
+            );
+            println!(
+                "next: cd {} && npm install   (installs the lint/type-check toolchain)",
+                r.tree.display()
             );
             Ok(())
         }
