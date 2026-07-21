@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 39;
+pub const TEMPLATES_VERSION: u32 = 40;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -234,7 +234,10 @@ pub fn ensure_workspace_ready(app: &mut App, tenant: &str) -> bool {
             Ok(result) => {
                 app.push_toast(
                     ToastKind::Info,
-                    format!("initialised workspace at {}", result.tree.display()),
+                    format!(
+                        "initialised workspace at {} — run `npm install` there for lint/type-check",
+                        result.tree.display()
+                    ),
                 );
                 true
             }
