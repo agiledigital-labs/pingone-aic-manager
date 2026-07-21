@@ -192,7 +192,7 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "No tenants configured. Press Ctrl-N to add your first tenant.",
+                "No tenants configured. Press Ctrl-T to add your first tenant.",
                 Style::default().fg(Color::Gray),
             )),
         ];
