@@ -43,3 +43,6 @@ __pycache__/
 # Managed-object backups (raw schema dumps for experimentation safety)
 /.managed-backup/
 .ai/
+
+# Personal todos
+TODO.md
