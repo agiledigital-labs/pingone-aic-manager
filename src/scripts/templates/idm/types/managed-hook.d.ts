@@ -14,7 +14,8 @@
 
 /** A single patch operation (for method:"patch" requests). */
 interface ManagedHookPatchOperation {
-  operation: "add" | "remove" | "replace" | "increment" | "move" | "copy" | "transform";
+  operation:
+    "add" | "remove" | "replace" | "increment" | "move" | "copy" | "transform";
   field: string;
   value?: any;
   from?: string;

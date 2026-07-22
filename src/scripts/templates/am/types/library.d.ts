@@ -12,7 +12,9 @@
 // library scope, so redeclare the argument types that library factories need.
 interface NodeState {
   get(key: "objectAttributes"): Record<string, any> | null | undefined;
-  get(key: StringLike): Record<string, any> | JavaString | boolean | null | undefined;
+  get(
+    key: StringLike
+  ): Record<string, any> | JavaString | boolean | null | undefined;
   getObject(key: StringLike): object | null | undefined;
   /** True if the key is set in any state. */
   isDefined(key: StringLike): boolean;

@@ -59,7 +59,11 @@ interface CallbacksBuilder {
   /** Prompt for a password; `echoOn` shows typed chars (`PasswordCallback`). */
   passwordCallback(prompt: StringLike, echoOn: boolean): void;
   /** Username with policy validation. */
-  validatedUsernameCallback(prompt: StringLike, policies: object, validateOnly: boolean): void;
+  validatedUsernameCallback(
+    prompt: StringLike,
+    policies: object,
+    validateOnly: boolean
+  ): void;
   validatedUsernameCallback(
     prompt: StringLike,
     policies: object,
@@ -99,8 +103,16 @@ interface CallbacksBuilder {
    * `optionType` selects a standard button set; `defaultOption` is the index.
    * @param messageType 0 Information · 1 Warning · 2 Error
    */
-  confirmationCallback(messageType: number, options: string[], defaultOption: number): void;
-  confirmationCallback(messageType: number, optionType: number, defaultOption: number): void;
+  confirmationCallback(
+    messageType: number,
+    options: string[],
+    defaultOption: number
+  ): void;
+  confirmationCallback(
+    messageType: number,
+    optionType: number,
+    defaultOption: number
+  ): void;
   confirmationCallback(
     prompt: StringLike,
     messageType: number,
@@ -123,7 +135,11 @@ interface CallbacksBuilder {
   /** Spinner/poll; `waitTime` is milliseconds as a string. */
   pollingWaitCallback(waitTime: StringLike, message: StringLike): void;
   /** Browser redirect, optionally POSTing `redirectData`. */
-  redirectCallback(redirectUrl: StringLike, redirectData: object, method: StringLike): void;
+  redirectCallback(
+    redirectUrl: StringLike,
+    redirectData: object,
+    method: StringLike
+  ): void;
   redirectCallback(
     redirectUrl: StringLike,
     redirectData: object,
@@ -156,7 +172,11 @@ interface CallbacksBuilder {
     createDate: StringLike
   ): void;
   /** Collect a device profile (metadata and/or geolocation). */
-  deviceProfileCallback(metadata: boolean, location: boolean, message: StringLike): void;
+  deviceProfileCallback(
+    metadata: boolean,
+    location: boolean,
+    message: StringLike
+  ): void;
   /** Knowledge-based-auth question setup. */
   kbaCreateCallback(
     prompt: StringLike,
@@ -200,7 +220,11 @@ interface CallbacksBuilder {
     message: StringLike,
     isRequired: boolean
   ): void;
-  consentMappingCallback(config: object, message: StringLike, isRequired: boolean): void;
+  consentMappingCallback(
+    config: object,
+    message: StringLike,
+    isRequired: boolean
+  ): void;
   /** HTTP (negotiate/SPNEGO) callback. */
   httpCallback(
     authRHeader: StringLike,
@@ -216,7 +240,11 @@ interface CallbacksBuilder {
   /** X.509 client-certificate callback. */
   x509CertificateCallback(prompt: StringLike): void;
   x509CertificateCallback(prompt: StringLike, certificate: object): void;
-  x509CertificateCallback(prompt: StringLike, certificate: object, requestSignature: boolean): void;
+  x509CertificateCallback(
+    prompt: StringLike,
+    certificate: object,
+    requestSignature: boolean
+  ): void;
   /** String attribute input; `policies` is an IDM policy object. */
   stringAttributeInputCallback(
     name: StringLike,
