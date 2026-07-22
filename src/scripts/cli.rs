@@ -820,8 +820,8 @@ fn collect_cjs(
 }
 
 /// Watch the tenant workspace and push each saved `.cjs` (debounced). Pushes a
-/// file only if it's a tracked (synced) script; on remote drift it warns and
-/// skips. Runs until Ctrl-C.
+/// file only if it's a tracked (synced) script; remote drift is resolved with
+/// the same choices as `sync`. Runs until Ctrl-C.
 async fn watch(tenant: &str, yes: bool) -> Result<()> {
     use notify::{RecursiveMode, Watcher};
     use script::sync::{LocalState, PushOutcome};
@@ -872,19 +872,127 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                 Ok(_) => {}
             }
             let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
-            match prod_hint(
-                script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes).await,
-            ) {
-                Ok(PushOutcome::Pushed) => println!("→ pushed {full}"),
+            let push = script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes);
+            tokio::pin!(push);
+            let result = tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    println!("\nstopped watching.");
+                    return Ok(());
+                }
+                result = &mut push => prod_hint(result),
+            };
+            match result {
+                Ok(PushOutcome::Pushed) => println!("{}", watch_green(&format!("→ pushed {full}"))),
                 Ok(PushOutcome::Unchanged | PushOutcome::AlreadyInSync) => {}
                 Ok(PushOutcome::Conflict(_)) => {
-                    eprintln!("! {full}: remote changed — skipped (run `aic script sync {full}`)")
+                    eprintln!(
+                        "{}",
+                        watch_red(&format!("! {full}: remote changed — choose a resolution"))
+                    );
+                    match prompt_conflict(&full, true)? {
+                        ConflictChoice::Local => {
+                            let push = script::sync::push(
+                                tenant,
+                                ns.realm_arg(),
+                                ns.kind,
+                                &name,
+                                true,
+                                yes,
+                            );
+                            tokio::pin!(push);
+                            let result = tokio::select! {
+                                _ = tokio::signal::ctrl_c() => {
+                                    println!("\nstopped watching.");
+                                    return Ok(());
+                                }
+                                result = &mut push => prod_hint(result),
+                            };
+                            match result {
+                                Ok(PushOutcome::Pushed) => println!(
+                                    "{}",
+                                    watch_green(&format!("→ pushed {full} (resolved: local)"))
+                                ),
+                                Ok(_) => {}
+                                Err(e) if is_fatal_watch_error(&e) => {
+                                    eprintln!("! watch stopped: {e}");
+                                    return Err(e);
+                                }
+                                Err(e) => eprintln!("! {full}: {e}"),
+                            }
+                        }
+                        ConflictChoice::Remote => {
+                            let selector = script::sync::Selector::Name(name.clone());
+                            let pull = script::sync::pull(
+                                tenant,
+                                ns.realm_arg(),
+                                ns.kind,
+                                &selector,
+                                false,
+                            );
+                            tokio::pin!(pull);
+                            let result = tokio::select! {
+                                _ = tokio::signal::ctrl_c() => {
+                                    println!("\nstopped watching.");
+                                    return Ok(());
+                                }
+                                result = &mut pull => result,
+                            };
+                            match result {
+                                Ok(_) => {
+                                    println!("← pulled {full} (resolved: remote; local backed up)")
+                                }
+                                Err(e) if is_fatal_watch_error(&e) => {
+                                    eprintln!("! watch stopped: {e}");
+                                    return Err(e);
+                                }
+                                Err(e) => eprintln!("! {full}: {e}"),
+                            }
+                        }
+                        ConflictChoice::Skip => eprintln!(
+                            "{}",
+                            watch_red(&format!("! {full}: remote changed — skipped"))
+                        ),
+                    }
+                }
+                Err(e) if is_fatal_watch_error(&e) => {
+                    eprintln!("! watch stopped: {e}");
+                    return Err(e);
                 }
                 Err(e) => eprintln!("! {full}: {e}"),
             }
         }
     }
     Ok(())
+}
+
+fn is_fatal_watch_error(error: &Error) -> bool {
+    match error {
+        Error::Config(message) => message.contains("no JWK on file"),
+        Error::Auth(_) | Error::Api { status: 401, .. } => true,
+        _ => false,
+    }
+}
+
+fn watch_green(line: &str) -> String {
+    use crossterm::style::Stylize;
+    use std::io::IsTerminal;
+
+    if std::io::stdout().is_terminal() {
+        line.green().to_string()
+    } else {
+        line.to_string()
+    }
+}
+
+fn watch_red(line: &str) -> String {
+    use crossterm::style::Stylize;
+    use std::io::IsTerminal;
+
+    if std::io::stderr().is_terminal() {
+        line.red().to_string()
+    } else {
+        line.to_string()
+    }
 }
 
 /// Does a candidate belong to namespace `ns`? (Realm matters only for AM.)
@@ -1133,6 +1241,30 @@ fn print_conflict(name: &str, tw: &crate::scripts::sync::ThreeWay) {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn fatal_watch_errors_stop_the_loop() {
+        assert!(is_fatal_watch_error(&Error::Config(
+            "no JWK on file for tenant sandbox".into()
+        )));
+        assert!(is_fatal_watch_error(&Error::Auth("session expired".into())));
+        assert!(is_fatal_watch_error(&Error::Api {
+            status: 401,
+            body: "unauthorized".into(),
+        }));
+    }
+
+    #[test]
+    fn nonfatal_watch_errors_keep_the_loop_running() {
+        assert!(!is_fatal_watch_error(&Error::Config(
+            "script transform failed".into()
+        )));
+        assert!(!is_fatal_watch_error(&Error::Api {
+            status: 409,
+            body: "conflict".into(),
+        }));
+        assert!(!is_fatal_watch_error(&Error::ProdConfirmRequired));
+    }
 
     #[test]
     fn diff_temp_files_are_private_and_exclusive() {
