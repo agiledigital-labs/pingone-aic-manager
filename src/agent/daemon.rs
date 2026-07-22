@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -23,20 +23,17 @@ const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 
 /// Credential vault state the daemon holds in memory.
 ///
-/// Two unlocked flavours mirror the two on-disk layouts:
-///
-/// - `Encrypted { dek }` — `.aic/keys.enc` exists; the DEK was handed
-///   to us via `PutDek`. `build_client` decrypts the file on demand.
-/// - `Plain { jwks }` — user picked "no encryption"; `.aic/keys.plain`
-///   is a plaintext map and we hold its contents directly. There's no DEK
-///   to fish out, so `GetDek` answers `Locked` even though API calls work.
+/// The JWK map is cached beside the unlock material. Its backing file's mtime
+/// gates reloads, so foreground re-onboarding invalidates clients without
+/// making steady-state requests decrypt or parse the file again.
 enum Vault {
     Locked,
     Encrypted {
         dek: Dek,
+        cache: Option<(HashMap<String, serde_json::Value>, SystemTime)>,
     },
     Plain {
-        jwks: HashMap<String, serde_json::Value>,
+        cache: Option<(HashMap<String, serde_json::Value>, SystemTime)>,
     },
 }
 
@@ -292,7 +289,7 @@ async fn handle(
         Request::GetDek => {
             let s = state.read().await;
             match &s.vault {
-                Vault::Encrypted { dek } => Response::Dek {
+                Vault::Encrypted { dek, .. } => Response::Dek {
                     dek_b64: B64.encode(dek.as_bytes()),
                 },
                 Vault::Plain { .. } | Vault::Locked => Response::Locked,
@@ -388,6 +385,7 @@ async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()>
         state,
         Vault::Encrypted {
             dek: Dek::from_bytes(arr),
+            cache: None,
         },
     )
     .await;
@@ -401,8 +399,12 @@ async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()>
 async fn do_unlock_plain(state: Arc<RwLock<AgentState>>) -> Result<()> {
     let bytes = ProjectConfig::load_keys_plain()?
         .ok_or_else(|| Error::Config("no .aic/keys.plain on disk".into()))?;
-    let jwks: HashMap<String, serde_json::Value> = serde_json::from_slice(&bytes)?;
-    set_vault(state, Vault::Plain { jwks }).await;
+    let map = serde_json::from_slice(&bytes)?;
+    let cache = std::fs::metadata(ProjectConfig::keys_plain_path())
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .map(|modified| (map, modified));
+    set_vault(state, Vault::Plain { cache }).await;
     Ok(())
 }
 
@@ -461,6 +463,13 @@ async fn do_get_token(
     tenant: &str,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<Option<(String, i64)>> {
+    if !state.read().await.is_unlocked() {
+        return Ok(None);
+    }
+    // This must precede the client fast path: a foreground re-onboarding can
+    // replace the JWK while this daemon is still holding its old AicClient.
+    refresh_jwk_cache(state.clone()).await?;
+
     // Fast path: AicClient was built on a previous request.
     {
         let s = state.read().await;
@@ -476,9 +485,8 @@ async fn do_get_token(
         }
     }
 
-    // Slow path: derive the JWK from the current vault (decrypt keys.enc
-    // with the cached DEK, or look up in the cached plain map) and cache
-    // the AicClient for the next request.
+    // Slow path: derive the JWK from the refreshed vault cache and retain the
+    // AicClient for its token-cache + HTTP-connection-pool benefit.
     let client = build_client(tenant, state.clone()).await?;
     let token = client.bearer().await?;
     let expires_at = client.token_cache.lock().unwrap().expires_at();
@@ -549,7 +557,7 @@ fn load_secret_map(
 ) -> Result<Option<HashMap<String, serde_json::Value>>> {
     let dek = match vault {
         Vault::Locked => return Ok(None),
-        Vault::Encrypted { dek } => Some(dek),
+        Vault::Encrypted { dek, .. } => Some(dek),
         Vault::Plain { .. } => None,
     };
     let map = match config::load_artifact_bytes(artifact, dek)? {
@@ -566,7 +574,7 @@ fn save_secret_map(
 ) -> Result<()> {
     let dek = match vault {
         Vault::Locked => return Err(Error::Auth("agent is locked".into())),
-        Vault::Encrypted { dek } => Some(dek),
+        Vault::Encrypted { dek, .. } => Some(dek),
         Vault::Plain { .. } => None,
     };
     config::save_artifact_bytes(artifact, &serde_json::to_vec(map)?, dek)
@@ -584,6 +592,13 @@ async fn do_api_call(
     api_version: Option<String>,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<Option<serde_json::Value>> {
+    if !state.read().await.is_unlocked() {
+        return Ok(None);
+    }
+    // Keep API calls consistent with GetToken: no cached client may outlive a
+    // changed keys file.
+    refresh_jwk_cache(state.clone()).await?;
+
     // Each `state.read()` is scoped to a let-binding so the read guard
     // drops before we try anything that might need a write lock. tokio's
     // RwLock is write-preferring, so a write blocked by our own read guard
@@ -651,25 +666,83 @@ async fn do_api_call(
     Ok(Some(value))
 }
 
+/// Refresh the JWK cache if its backing file changed since the last load.
+///
+/// A metadata failure keeps an existing cache usable (for transient filesystem
+/// failures); without a cache we reload so the existing file-read error remains
+/// the caller-visible result.
+async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
+    let (path, cached_mtime, dek) = {
+        let s = state.read().await;
+        match &s.vault {
+            Vault::Locked => return Err(Error::Auth("agent is locked".into())),
+            Vault::Encrypted { dek, cache } => (
+                ProjectConfig::keys_path(),
+                cache.as_ref().map(|(_, mtime)| *mtime),
+                Some(dek.clone()),
+            ),
+            Vault::Plain { cache } => (
+                ProjectConfig::keys_plain_path(),
+                cache.as_ref().map(|(_, mtime)| *mtime),
+                None,
+            ),
+        }
+    };
+    let modified = std::fs::metadata(path).and_then(|metadata| metadata.modified());
+    let modified = match modified {
+        Ok(modified) if Some(modified) == cached_mtime => return Ok(()),
+        Ok(modified) => modified,
+        Err(_) if cached_mtime.is_some() => return Ok(()),
+        // Reload to preserve the old missing/corrupt-file error semantics.
+        // A later successful stat replaces the sentinel with the real
+        // timestamp.
+        Err(_) => SystemTime::UNIX_EPOCH,
+    };
+
+    let map = match dek {
+        Some(dek) => config::decrypt_keys_file(&dek)?,
+        None => match ProjectConfig::load_keys_plain()? {
+            Some(bytes) => serde_json::from_slice(&bytes)?,
+            None => HashMap::new(),
+        },
+    };
+    let mut s = state.write().await;
+    match &mut s.vault {
+        Vault::Locked => return Ok(()),
+        Vault::Encrypted { cache, .. } | Vault::Plain { cache }
+            if cache.as_ref().is_some_and(|(_, mtime)| *mtime == modified) =>
+        {
+            return Ok(());
+        }
+        Vault::Encrypted { cache, .. } | Vault::Plain { cache } => {
+            *cache = Some((map, modified));
+        }
+    }
+    s.clients.clear();
+    Ok(())
+}
+
+/// Refresh from disk before building a client. Direct callers use this entry
+/// point; request handlers that need a fast path call `refresh_jwk_cache`
+/// themselves before consulting `state.clients`.
 async fn build_client(tenant: &str, state: Arc<RwLock<AgentState>>) -> Result<Arc<AicClient>> {
+    refresh_jwk_cache(state.clone()).await?;
+    build_client_from_cache(tenant, state).await
+}
+
+async fn build_client_from_cache(
+    tenant: &str,
+    state: Arc<RwLock<AgentState>>,
+) -> Result<Arc<AicClient>> {
     let jwk = {
         let s = state.read().await;
         match &s.vault {
             Vault::Locked => return Err(Error::Auth("agent is locked".into())),
-            Vault::Plain { jwks } => jwks
-                .get(tenant)
+            Vault::Encrypted { cache, .. } | Vault::Plain { cache } => cache
+                .as_ref()
+                .and_then(|(map, _)| map.get(tenant))
                 .cloned()
                 .ok_or_else(|| Error::Config(format!("no JWK on file for tenant: {tenant}")))?,
-            Vault::Encrypted { dek } => {
-                let dek = dek.clone();
-                // Drop the read guard before touching the filesystem so a
-                // concurrent reader isn't blocked behind disk I/O.
-                drop(s);
-                let jwks = config::decrypt_keys_file(&dek)?;
-                jwks.get(tenant)
-                    .cloned()
-                    .ok_or_else(|| Error::Config(format!("no JWK on file for tenant: {tenant}")))?
-            }
         }
     };
     let cfg = ProjectConfig::load()?
@@ -697,4 +770,174 @@ pub fn describe_paths() -> String {
         pid_path().display(),
         log_path().display(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::tenant::{Tenant, TenantTheme};
+    static CWD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct CurrentDir {
+        original: std::path::PathBuf,
+    }
+
+    impl Drop for CurrentDir {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.original).unwrap();
+        }
+    }
+
+    fn tenant(name: &str) -> Tenant {
+        Tenant {
+            name: name.into(),
+            base_url: "https://example.invalid".into(),
+            theme: TenantTheme::Sandbox,
+            sa_id: Some("service-account".into()),
+            scopes: Vec::new(),
+        }
+    }
+
+    struct TestProject {
+        directory: std::path::PathBuf,
+    }
+
+    fn test_project() -> (TestProject, CurrentDir) {
+        let project = TestProject {
+            directory: std::env::temp_dir()
+                .join(format!("aic-daemon-test-{}", uuid::Uuid::new_v4())),
+        };
+        std::fs::create_dir(&project.directory).unwrap();
+        let restore = CurrentDir {
+            original: std::env::current_dir().unwrap(),
+        };
+        std::env::set_current_dir(&project.directory).unwrap();
+        (project, restore)
+    }
+
+    fn save_config(names: &[&str]) {
+        ProjectConfig {
+            project: "test".into(),
+            default_tenant: "sandbox".into(),
+            tenants: names.iter().map(|name| tenant(name)).collect(),
+        }
+        .save()
+        .unwrap();
+    }
+
+    fn set_mtime(path: &std::path::Path, modified: SystemTime) {
+        std::fs::File::open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    }
+
+    fn state(directory: &std::path::Path) -> Arc<RwLock<AgentState>> {
+        Arc::new(RwLock::new(AgentState::new(
+            directory.display().to_string(),
+            Duration::from_secs(60),
+        )))
+    }
+
+    #[tokio::test]
+    async fn encrypted_vault_refreshes_reonboarded_jwk_and_invalidates_clients() {
+        // Regression: foreground re-onboarding rewrites keys.enc while the
+        // daemon still has an AicClient bound to the previous JWK map.
+        let _cwd = CWD_LOCK.lock().await;
+        let (project, restore) = test_project();
+        save_config(&["sandbox"]);
+        let dek = Dek::random();
+        let old_map = HashMap::from([("sandbox".into(), serde_json::json!({"old": "jwk"}))]);
+        config::save_jwk_map(&old_map, &dek).unwrap();
+        let first_mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        set_mtime(&ProjectConfig::keys_path(), first_mtime);
+
+        let state = state(&project.directory);
+        set_vault(
+            state.clone(),
+            Vault::Encrypted {
+                dek: dek.clone(),
+                cache: None,
+            },
+        )
+        .await;
+        build_client("sandbox", state.clone()).await.unwrap();
+        assert!(state.read().await.clients.contains_key("sandbox"));
+
+        save_config(&["sandbox", "reonboarded"]);
+        let new_map = HashMap::from([
+            ("sandbox".into(), serde_json::json!({"old": "jwk"})),
+            ("reonboarded".into(), serde_json::json!({"new": "jwk"})),
+        ]);
+        config::save_jwk_map(&new_map, &dek).unwrap();
+        set_mtime(
+            &ProjectConfig::keys_path(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(20),
+        );
+
+        build_client("reonboarded", state.clone()).await.unwrap();
+        let state_guard = state.read().await;
+        assert!(!state_guard.clients.contains_key("sandbox"));
+        assert!(state_guard.clients.contains_key("reonboarded"));
+
+        drop(state_guard);
+        drop(restore);
+        std::fs::remove_dir_all(project.directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn unchanged_mtime_reuses_cached_map_and_clients() {
+        let _cwd = CWD_LOCK.lock().await;
+        let (project, restore) = test_project();
+        save_config(&["sandbox"]);
+        ProjectConfig::save_keys_plain(br#"{"sandbox":{"cached":"jwk"}}"#).unwrap();
+        set_mtime(
+            &ProjectConfig::keys_plain_path(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(10),
+        );
+
+        let state = state(&project.directory);
+        set_vault(state.clone(), Vault::Plain { cache: None }).await;
+
+        let first = build_client("sandbox", state.clone()).await.unwrap();
+        refresh_jwk_cache(state.clone()).await.unwrap();
+        let state_guard = state.read().await;
+        assert!(Arc::ptr_eq(
+            &first,
+            state_guard.clients.get("sandbox").unwrap()
+        ));
+
+        drop(state_guard);
+        drop(restore);
+        std::fs::remove_dir_all(project.directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn plain_vault_refreshes_a_reonboarded_jwk_on_mtime_change() {
+        let _cwd = CWD_LOCK.lock().await;
+        let (project, restore) = test_project();
+        save_config(&["sandbox"]);
+        ProjectConfig::save_keys_plain(br#"{"sandbox":{"old":"jwk"}}"#).unwrap();
+        set_mtime(
+            &ProjectConfig::keys_plain_path(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(10),
+        );
+
+        let state = state(&project.directory);
+        set_vault(state.clone(), Vault::Plain { cache: None }).await;
+        build_client("sandbox", state.clone()).await.unwrap();
+
+        save_config(&["sandbox", "reonboarded"]);
+        ProjectConfig::save_keys_plain(br#"{"sandbox":{"old":"jwk"},"reonboarded":{"new":"jwk"}}"#)
+            .unwrap();
+        set_mtime(
+            &ProjectConfig::keys_plain_path(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(20),
+        );
+
+        assert!(build_client("reonboarded", state).await.is_ok());
+
+        drop(restore);
+        std::fs::remove_dir_all(project.directory).unwrap();
+    }
 }
