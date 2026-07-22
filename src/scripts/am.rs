@@ -614,4 +614,18 @@ mod tests {
         assert!(!other.contains("managed/*.d.ts"));
         assert!(!other.contains("paths"));
     }
+
+    #[test]
+    fn library_template_exposes_factory_types_without_decision_globals() {
+        // Libraries receive these values as `.load(...)` arguments, never as
+        // ambient scripted-decision bindings.
+        let library = include_str!("templates/am/types/library.d.ts");
+        assert!(library.contains("interface NodeState"));
+        assert!(library.contains("type RequestHeaders = RequestMap;"));
+        assert!(library.contains("type RequestParameters = RequestMap;"));
+        assert!(!library.contains("_nodeStateGet"));
+        assert!(!library.contains("declare const nodeState"));
+        assert!(!library.contains("declare const requestHeaders"));
+        assert!(!library.contains("declare const requestParameters"));
+    }
 }

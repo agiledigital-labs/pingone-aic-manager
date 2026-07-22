@@ -190,6 +190,9 @@ Consequences (applied to the type layering):
 - `nodeState` is present on **both** engines (legacy returns `JsonValue`-style
   values needing `.asString()`; next-gen returns coerced JS — a shape
   difference, not a presence one).
+- **2026-07-22:** `library.d.ts` redeclares `NodeState`, `RequestHeaders`, and
+  `RequestParameters` as types for library `.load(...)` factory parameters;
+  their scripted-decision globals remain outside library scope.
 
 ### Method surfaces verified 2026-06-04 (legacy engine)
 
@@ -240,8 +243,32 @@ IDM scripts are tenant-global (no realm). The IDM **endpoint**
 | --------- | -------- | -------- | ------ | --------------------------------------------------------------------------------------------------------- |
 | `openidm` | yes      | yes      | **I**  | CRUDPAQ + `update`. From `idmCommon.d.ts`.                                                                |
 | `logger`  | yes      | yes      | **I**  | slf4j-style.                                                                                              |
+| `identityServer` | yes | yes | **D/V** | `getProperty(name, defaultValue?, substitute?)`; a missing ESV/property returns `null` when no default is supplied, or the supplied default. Endpoint behavior verified 2026-07-22 below. |
 | `request` | yes      | no       | **V**  | Discriminated union per CREST method (read/create/update/patch/delete/action/query). `docs/api/11`.       |
 | `context` | yes      | no       | **V**  | `context.http` = {method,path,headers,parameters}; `context.security` = {authenticationId,authorization}. |
+
+### IDM `identityServer.getProperty` missing ESV behavior (verified 2026-07-22)
+
+`identityServer.getProperty("esv.some.variable")` **does not throw** when the
+ESV/property does not exist. It returns JavaScript `null`. Supplying the optional
+second argument returns that string instead:
+
+```javascript
+var absent = identityServer.getProperty("esv.aicedit.definitely.nonexistent.20260722");
+// absent === null
+
+var fallback = identityServer.getProperty(
+  "esv.aicedit.definitely.nonexistent.20260722",
+  "aicedit-fallback-value"
+);
+// fallback === "aicedit-fallback-value"
+```
+
+Live probe: a temporary scripted IDM endpoint invoked both calls, returning
+`{type:"object", value:null}` for the first (Rhino reports `typeof null` as
+`"object"`) and `{type:"string", value:"aicedit-fallback-value"}` for the
+second. It was deleted after verification. Use a default for optional ESVs;
+otherwise explicitly guard for `null`.
 
 ### IDM endpoint engine — syntax (verified 2026-06-04)
 

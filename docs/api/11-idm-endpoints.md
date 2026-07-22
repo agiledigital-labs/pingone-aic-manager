@@ -211,6 +211,12 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
 - **No `_rev`** — content-based conflict detection only.
 - **No `Accept-API-Version`** — `/openidm` config does not require (or want) the
   AM versioning header.
+- **Missing ESV/property lookup is non-throwing.** In an IDM script,
+  `identityServer.getProperty("esv.some.variable")` returns `null` when the
+  ESV/property does not exist. Its optional second argument is the fallback:
+  `identityServer.getProperty("esv.some.variable", "default")` returns
+  `"default"`. Live-verified 2026-07-22 with a temporary scripted endpoint;
+  use a fallback for optional ESVs or explicitly guard against `null`.
 - **List is unfiltered** — `/openidm/config?_queryFilter=true` returns _every_
   config object (85 in the sandbox); filter client-side for `endpoint/` ids.
 - **`PUT` is create-or-replace** — 201 on first write, 200 on replace.
@@ -356,6 +362,12 @@ Object shape (real example, `schedule/UpdateReviewList`):
   declared in the loop body silently stops the loop after its first iteration
   (sum 0 instead of 3), while `for (let ...)` with no body `const` iterates
   correctly.
+- `identityServer.getProperty` missing ESV behavior (2026-07-22): temporary
+  `endpoint/aicedit-missing-esv-probe` called
+  `getProperty("esv.aicedit.definitely.nonexistent.20260722")`, which returned
+  `null` without throwing; the same call with fallback
+  `"aicedit-fallback-value"` returned that string. Endpoint deleted after the
+  probe.
 
 ## Source citations
 
