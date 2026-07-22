@@ -6,8 +6,8 @@
   "scripts": {
     "lint": "(cd am && eslint .) && (cd idm && eslint .)",
     "lint:fix": "(cd am && eslint . --fix) && (cd idm && eslint . --fix)",
-    "format": "prettier --write am/**/*.{js,cjs,ts} idm/**/*.{js,cjs,ts}",
-    "format:check": "prettier --check am/**/*.{js,cjs,ts} idm/**/*.{js,cjs,ts}",
+    "format": "prettier --write --no-error-on-unmatched-pattern am/**/*.{js,cjs,ts} idm/**/*.{js,cjs,ts}",
+    "format:check": "prettier --check --no-error-on-unmatched-pattern am/**/*.{js,cjs,ts} idm/**/*.{js,cjs,ts}",
     "test": "jest",
     "type-check": "node tools/check-types.mjs",
     "build": "node tools/check-types.mjs"

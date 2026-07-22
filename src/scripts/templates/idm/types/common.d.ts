@@ -61,7 +61,11 @@ interface IdmContext {
 declare const context: IdmContext;
 
 declare const identityServer: {
-  getProperty(name: string, defaultValue?: string, substitute?: boolean): string | null;
+  getProperty(
+    name: string,
+    defaultValue?: string,
+    substitute?: boolean
+  ): string | null;
   getInstallLocation(): string;
   getProjectLocation(): string;
   getWorkingLocation(): string;

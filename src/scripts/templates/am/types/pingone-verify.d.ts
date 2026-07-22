@@ -20,7 +20,11 @@ interface Action {
   withIdentifiedUser(username: StringLike): object;
   withIdentifiedAgent(agentName: StringLike): object;
   goTo(outcome: StringLike): object;
-  suspend(callbackTextFormat: StringLike, additionalLogic: object, maximumSuspendDuration: number): object;
+  suspend(
+    callbackTextFormat: StringLike,
+    additionalLogic: object,
+    maximumSuspendDuration: number
+  ): object;
   suspend(callbackTextFormat: StringLike): object;
   suspend(callbackTextFormat: StringLike, additionalLogic: object): object;
   withHeader(header: StringLike): object;

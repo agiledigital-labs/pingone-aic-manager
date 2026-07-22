@@ -47,32 +47,60 @@ interface ClientIdentity {
   setX509(x509: StringLike): object;
   setTlsClientAuthX509Cert(x509Cert: StringLike): object;
   setTlsClientAuthSubjectDn(subjectDn: StringLike): object;
-  setTlsCertificateBoundAccessTokens(useCertificateBoundAccessTokens: boolean): object;
+  setTlsCertificateBoundAccessTokens(
+    useCertificateBoundAccessTokens: boolean
+  ): object;
   setTokenEndpointAuthMethod(tokenEndpointAuthMethod: StringLike): object;
-  setIdTokenEncryptedResponseEnc(idTokenEncryptedResponseEnc: StringLike): object;
+  setIdTokenEncryptedResponseEnc(
+    idTokenEncryptedResponseEnc: StringLike
+  ): object;
   setUserinfoSignedResponseAlg(userinfoSignedResponseAlg: StringLike): object;
-  setUserinfoEncryptedResponseAlg(userinfoEncryptedResponseAlg: StringLike): object;
-  setUserinfoEncryptedResponseEnc(userinfoEncryptedResponseEnc: StringLike): object;
+  setUserinfoEncryptedResponseAlg(
+    userinfoEncryptedResponseAlg: StringLike
+  ): object;
+  setUserinfoEncryptedResponseEnc(
+    userinfoEncryptedResponseEnc: StringLike
+  ): object;
   setUserInfoResponseFormat(userInfoResponseFormat: StringLike): object;
   setAuthorizationResponseSigningAlg(signedResponseAlg: StringLike): object;
   setTosUri(uris: any[]): object;
   setRegistrationAccessToken(accessToken: StringLike): object;
   setDefaultScopes(defaultScopes: any[]): object;
   setClientDescription(displayDescription: any[]): object;
-  setTokenEndpointAuthSigningAlg(tokenEndpointAuthSigningAlgorithm: StringLike): object;
-  setAuthorizationEncryptedResponseAlg(encryptedResponseAlg: StringLike): object;
-  setAuthorizationEncryptedResponseEnc(encryptedResponseMethod: StringLike): object;
-  setIdTokenSignedResponseAlg(idTokenSignedResponseAlgorithm: StringLike): object;
-  setIdTokenEncryptedResponseAlg(idTokenEncryptedResponseAlgorithm: StringLike): object;
+  setTokenEndpointAuthSigningAlg(
+    tokenEndpointAuthSigningAlgorithm: StringLike
+  ): object;
+  setAuthorizationEncryptedResponseAlg(
+    encryptedResponseAlg: StringLike
+  ): object;
+  setAuthorizationEncryptedResponseEnc(
+    encryptedResponseMethod: StringLike
+  ): object;
+  setIdTokenSignedResponseAlg(
+    idTokenSignedResponseAlgorithm: StringLike
+  ): object;
+  setIdTokenEncryptedResponseAlg(
+    idTokenEncryptedResponseAlgorithm: StringLike
+  ): object;
   setRedirectURIs(redirectURIs: any[]): object;
   setPostLogoutRedirectUris(postLogoutRedirectionURIs: any[]): object;
   setRequestObjectSigningAlg(requestObjectSigningAlg: StringLike): object;
   setRequestObjectEncryptionAlg(requestObjectEncryptedAlg: StringLike): object;
-  setRequestObjectEncryptionEnc(requestParameterEncryptedEnc: StringLike): object;
-  setTokenIntroResponseFormatSelector(tokenIntrospectionResponseFormat: StringLike): object;
-  setIntrospectionSignedResponseAlg(tokenIntrospectionSignedResponseAlg: StringLike): object;
-  setIntrospectionEncryptedResponseAlg(tokenIntrospectionEncryptedResponseAlg: StringLike): object;
-  setIntrospectionEncryptedResponseEnc(tokenIntrospectionEncryptedResponseEnc: StringLike): object;
+  setRequestObjectEncryptionEnc(
+    requestParameterEncryptedEnc: StringLike
+  ): object;
+  setTokenIntroResponseFormatSelector(
+    tokenIntrospectionResponseFormat: StringLike
+  ): object;
+  setIntrospectionSignedResponseAlg(
+    tokenIntrospectionSignedResponseAlg: StringLike
+  ): object;
+  setIntrospectionEncryptedResponseAlg(
+    tokenIntrospectionEncryptedResponseAlg: StringLike
+  ): object;
+  setIntrospectionEncryptedResponseEnc(
+    tokenIntrospectionEncryptedResponseEnc: StringLike
+  ): object;
   setSoftwareId(softwareIdentity: StringLike): object;
   isAIAgent(): boolean;
 }

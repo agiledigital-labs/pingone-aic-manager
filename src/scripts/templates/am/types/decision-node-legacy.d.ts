@@ -20,8 +20,16 @@ declare const transientState: MutableState;
 
 interface IdRepository {
   getAttribute(username: StringLike, attrName: StringLike): any;
-  setAttribute(username: StringLike, attrName: StringLike, attrValues: string[]): void;
-  addAttribute(username: StringLike, attrName: StringLike, attrValue: string): void;
+  setAttribute(
+    username: StringLike,
+    attrName: StringLike,
+    attrValues: string[]
+  ): void;
+  addAttribute(
+    username: StringLike,
+    attrName: StringLike,
+    attrValue: string
+  ): void;
 }
 
 interface JavaClass {}

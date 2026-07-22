@@ -14,7 +14,8 @@ interface IdmRequestBase {
 
 /** A single patch operation (request.patchOperations is an array of these). */
 interface PatchOperation {
-  operation: "add" | "remove" | "replace" | "increment" | "move" | "copy" | "transform";
+  operation:
+    "add" | "remove" | "replace" | "increment" | "move" | "copy" | "transform";
   field: string;
   value?: any;
   from?: string;
@@ -22,8 +23,16 @@ interface PatchOperation {
 
 type IdmRequest =
   | (IdmRequestBase & { method: "read" })
-  | (IdmRequestBase & { method: "create"; newResourceId: string | null; content: any })
-  | (IdmRequestBase & { method: "update"; revision: string | null; content: any })
+  | (IdmRequestBase & {
+      method: "create";
+      newResourceId: string | null;
+      content: any;
+    })
+  | (IdmRequestBase & {
+      method: "update";
+      revision: string | null;
+      content: any;
+    })
   | (IdmRequestBase & {
       method: "patch";
       revision: string | null;
