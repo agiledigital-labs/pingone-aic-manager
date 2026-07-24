@@ -192,7 +192,8 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
   Relative requires only resolve **inside** a bundled module (one `lib/` file
   requiring another). There is no SaaS-exposed path to add a `lib/` module in
   Identity Cloud (no filesystem access). To share code, inline it or call a
-  shared endpoint over `openidm.action`/`httpClient`.
+  shared endpoint over `openidm.action`/`httpClient`. For a complete AM + IDM
+  design, see [Sharing code between AM and IDM](../sharing-code-between-am-and-idm.md).
 - **Scope:** `require`/`lib` resolution is a property of the IDM Rhino engine,
   so it is available to **every IDM script type**, not just custom endpoints —
   scripted endpoints, `invokeService:"script"` schedules, managed-object hooks
@@ -329,7 +330,9 @@ Object shape (real example, `schedule/UpdateReviewList`):
   endpoint→endpoint calls but ABSENT when the chain root is a scheduled job.
   Throwaway `endpoint/aicedit-bindprobe`, `endpoint/aicedit-bindcaller`,
   `schedule/aicedit-bindsched` created, probed via HTTP + internal +
-  scheduler-triggered paths, and deleted)
+  scheduler-triggered paths, and deleted); 2026-07-24 (AM library →
+  `openidm.action` → IDM endpoint invocation, plus action response envelopes
+  carrying object, number, string, and `null` results)
 - Endpoints: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
   `endpoint/` ids), `GET /openidm/config/endpoint/test` (200; keys
   `_id, description, source, type`, no `_rev`, plaintext `source`),
