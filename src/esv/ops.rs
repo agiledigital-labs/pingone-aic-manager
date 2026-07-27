@@ -802,7 +802,10 @@ async fn apply_undo_entry(
         .op
         .clone()
         .ok_or_else(|| UndoFailure::Failed("undo entry has no operation".into()))?;
-    if matches!(op, UndoOp::ManagedObjectReplace { .. }) {
+    if matches!(
+        op,
+        UndoOp::ManagedObjectReplace { .. } | UndoOp::ManagedConfigReplace { .. }
+    ) {
         return Err(UndoFailure::Failed(
             "managed-object undo must be applied from the Managed tab or undo history".into(),
         ));
@@ -877,6 +880,7 @@ async fn apply_undo_entry(
             })
         }
         UndoOp::ManagedObjectReplace { .. } => unreachable!("handled before conflict check"),
+        UndoOp::ManagedConfigReplace { .. } => unreachable!("handled before conflict check"),
         UndoOp::SecretMappingReplace { .. } => unreachable!("handled before conflict check"),
     }
 }

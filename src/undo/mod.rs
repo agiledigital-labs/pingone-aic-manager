@@ -132,6 +132,12 @@ pub enum UndoOp {
         object_name: String,
         body: serde_json::Value,
     },
+    /// Undo of a managed-config identity rename, restoring the complete prior
+    /// document so relationship targets are restored atomically too.
+    ManagedConfigReplace {
+        tenant: String,
+        body: serde_json::Value,
+    },
     /// Undo of an AM secret-label mapping edit. The executor lives in
     /// `secretmap::ops` because restoring a prior alias needs the same
     /// mapping-family conflict check as the write path.
@@ -152,6 +158,7 @@ impl UndoOp {
             | UndoOp::SecretDelete { tenant, .. }
             | UndoOp::SecretSetDescription { tenant, .. }
             | UndoOp::ManagedObjectReplace { tenant, .. }
+            | UndoOp::ManagedConfigReplace { tenant, .. }
             | UndoOp::SecretMappingReplace { tenant, .. } => tenant,
         }
     }
@@ -164,6 +171,7 @@ impl UndoOp {
             | UndoOp::SecretDelete { id, .. }
             | UndoOp::SecretSetDescription { id, .. } => Some(id),
             UndoOp::ManagedObjectReplace { object_name, .. } => Some(object_name),
+            UndoOp::ManagedConfigReplace { .. } => None,
             UndoOp::SecretMappingReplace { secret_id, .. } => Some(secret_id),
         }
     }

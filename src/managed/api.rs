@@ -4,6 +4,40 @@
 use crate::{Error, Result};
 use serde_json::Value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordCount {
+    Exact(usize),
+    AtLeast(usize),
+}
+
+impl std::fmt::Display for RecordCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exact(n) => write!(f, "{n}"),
+            Self::AtLeast(n) => write!(f, "{n}+"),
+        }
+    }
+}
+
+/// Gets a bounded record count for a rename warning without exhausting pages.
+pub async fn count_records(tenant: &str, object_name: &str) -> Result<RecordCount> {
+    let path =
+        format!("/openidm/managed/{object_name}?_queryFilter=true&_fields=_id&_pageSize=100");
+    let body = crate::aic::api::get(tenant, &path).await?;
+    let count = body
+        .get("result")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    if body
+        .get("pagedResultsCookie")
+        .is_some_and(|value| !value.is_null())
+    {
+        Ok(RecordCount::AtLeast(count))
+    } else {
+        Ok(RecordCount::Exact(count))
+    }
+}
+
 /// `GET /openidm/config/managed` → the full schema document
 /// (`{ _id: "managed", objects: [...] }`). No `_rev`.
 pub async fn get_managed(tenant: &str) -> Result<Value> {

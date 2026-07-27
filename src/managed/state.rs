@@ -91,6 +91,33 @@ pub fn is_standard_object(object_def: &Value) -> bool {
     object_class(object_def) == ObjectClass::Standard
 }
 
+/// Ping-provided objects cannot be renamed.  Some shipped objects omit `meta`,
+/// so this intentionally differs from `is_standard_object`.
+pub fn is_ping_shipped_object(object_def: &Value) -> bool {
+    object_def.get("type").is_some()
+}
+
+/// Validates the identity used as an IDM managed-object path component.
+pub fn validate_object_name(name: &str, existing: &[String], old: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Managed object name is required".into());
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err("Managed object name is required".into());
+    };
+    if !first.is_ascii_alphabetic() || !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return Err("Managed object name must start with a letter and contain only letters, numbers, or underscores".into());
+    }
+    if name == old {
+        return Err("New managed object name must be different".into());
+    }
+    if existing.iter().any(|candidate| candidate == name) {
+        return Err(format!("Managed object '{name}' already exists"));
+    }
+    Ok(())
+}
+
 pub fn is_custom_object(object_def: &Value) -> bool {
     object_class(object_def) == ObjectClass::Custom
 }
@@ -679,6 +706,35 @@ impl RenameFieldState {
     }
 }
 
+#[derive(Debug)]
+pub struct RenameObjectState {
+    pub tenant_name: String,
+    pub old_name: String,
+    pub original_doc: Value,
+    pub key: TextField,
+    pub error: Option<String>,
+}
+
+impl RenameObjectState {
+    pub fn new(tenant_name: String, old_name: String, original_doc: Value) -> Self {
+        Self {
+            tenant_name,
+            key: TextField::single_line("Name").with_initial(old_name.clone()),
+            old_name,
+            original_doc,
+            error: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RenameObjectConfirmState {
+    pub draft: RenameObjectState,
+    pub repoints: usize,
+    pub record_count: Option<crate::managed::api::RecordCount>,
+    pub count_error: Option<String>,
+}
+
 pub const HOOK_EVENTS: [&str; 6] = [
     "onCreate",
     "onUpdate",
@@ -775,6 +831,8 @@ pub struct State {
     pub add_hook: Option<AddHookState>,
     pub pending_delete: Option<DeleteFieldState>,
     pub renaming: Option<RenameFieldState>,
+    pub renaming_object: Option<RenameObjectState>,
+    pub rename_object_confirm: Option<RenameObjectConfirmState>,
     pub in_flight_writes: HashSet<(String, String)>,
     pub failed_writes: HashSet<(String, String)>,
 }
@@ -819,6 +877,8 @@ impl State {
         self.add_hook = None;
         self.pending_delete = None;
         self.renaming = None;
+        self.renaming_object = None;
+        self.rename_object_confirm = None;
     }
 
     pub fn matches(&self, tenant: Option<&str>) -> Vec<ManagedMatch> {
@@ -997,5 +1057,22 @@ mod tests {
         );
         assert_eq!(normalize_new_property_key(&custom, "foo").unwrap(), "foo");
         assert!(normalize_new_property_key(&standard, "custom_").is_err());
+    }
+
+    #[test]
+    fn object_name_validation_rejects_invalid_collision_and_noop() {
+        let names = vec!["alpha".to_string(), "beta".to_string()];
+        assert!(validate_object_name("", &names, "alpha").is_err());
+        assert!(validate_object_name("1bad", &names, "alpha").is_err());
+        assert!(validate_object_name("bad-name", &names, "alpha").is_err());
+        assert!(validate_object_name("beta", &names, "alpha").is_err());
+        assert!(validate_object_name("alpha", &names, "alpha").is_err());
+        assert!(validate_object_name("gamma_2", &names, "alpha").is_ok());
+    }
+
+    #[test]
+    fn ping_shipped_guard_uses_type_without_meta() {
+        assert!(is_ping_shipped_object(&json!({"type": "managed"})));
+        assert!(!is_ping_shipped_object(&json!({"name": "test_object"})));
     }
 }

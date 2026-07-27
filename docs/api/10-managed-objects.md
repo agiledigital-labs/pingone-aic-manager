@@ -165,14 +165,14 @@ consistency for the stored config. The `managed_hooks` sync path still polls
 when needed because it waits for hook source to go live in the running IDM
 runtime, which is separate from config read-back.
 
-| Shape                  | Accepted / observed                                                                                                                                                                                                                        |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Minimal custom object  | `{ "name": "...", "schema": { "type": "object", "title": "...", "properties": {}, "required": [], "order": [] } }`. Objects carry no `_id`/`$id`; the document's `_id: "managed"` is the only id.                                          |
-| Standard object marker | Ping-shipped standard objects (`alpha_`/`bravo_` × `user`, `role`, `organization`, `assignment`, `application`) have both top-level `type` and `meta` keys. Custom objects (`mock_*`, `alpha_lock`, `test_*`) have neither.                |
-| Scalar property        | `{ "title": "...", "description": "...", "type": "string", "searchable": true, "viewable": true, "userEditable": true }` round-trips.                                                                                                      |
-| Single relationship    | `{ "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] }`. `reversePropertyName`, `validate`, and explicit `_ref`/`_refProperties` are optional at config-write time.                                           |
-| Array of relationships | `{ "type": "array", "items": { "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] } }`.                                                                                                                        |
-| Lifecycle hook         | Top-level sibling of `schema`, e.g. `"onCreate": { "type": "text/javascript", "source": "..." }`. Round-trips verbatim and is immediately discoverable/pullable via `aic script list managed` / `aic script pull managed/<object>.<hook>`. |
+| Shape                  | Accepted / observed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Minimal custom object  | `{ "name": "...", "schema": { "type": "object", "title": "...", "properties": {}, "required": [], "order": [] } }`. Objects carry no `_id`/`$id`; the document's `_id: "managed"` is the only id.                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Standard object marker | Ping-shipped standard objects carry a top-level `type` key; custom objects (`mock_*`, `alpha_lock`, `test_*`, `idr_*`) have neither `type` nor `meta`. **Correction (verified 2026-07-27): only the `*_user` objects also carry `meta`** — `role`/`organization`/`assignment`/`application` have `type` but **no** `meta`. So the reliable "is Ping-shipped" discriminator is the **presence of top-level `type` alone**, NOT `type` + `meta` together. (Note: `crate::managed::state::object_class` currently keys on both markers, so it misclassifies role/org/assignment/application as `Custom`.) |
+| Scalar property        | `{ "title": "...", "description": "...", "type": "string", "searchable": true, "viewable": true, "userEditable": true }` round-trips.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Single relationship    | `{ "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] }`. `reversePropertyName`, `validate`, and explicit `_ref`/`_refProperties` are optional at config-write time.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Array of relationships | `{ "type": "array", "items": { "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] } }`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Lifecycle hook         | Top-level sibling of `schema`, e.g. `"onCreate": { "type": "text/javascript", "source": "..." }`. Round-trips verbatim and is immediately discoverable/pullable via `aic script list managed` / `aic script pull managed/<object>.<hook>`.                                                                                                                                                                                                                                                                                                                                                             |
 
 No cross-object reverse-property validation runs on config write. A PUT with
 `validate: true` and a `reversePropertyName` that did not exist on the target
@@ -185,6 +185,36 @@ There is no server-side rename or delete primitive for schema config: both are
 whole-document RMW edits. `schema.order` is independent of `schema.properties`,
 and `schema.required` is independent too; the API does not auto-prune either
 list when a property is removed or renamed.
+
+### Object-type rename orphans records (verified 2026-07-27)
+
+Renaming a custom object type by changing its `objects[].name` (X → Y) and
+`PUT`ing the whole `config/managed` doc returns 200, but **the record backend is
+keyed by the object name, and records are NOT migrated**. Observed on
+`test_from` (3 records), sandbox:
+
+1. Immediately after the PUT, `GET /openidm/managed/X` still returns the records
+   (runtime activation lags a few seconds behind config read-back).
+2. After activation (~seconds): `GET /openidm/managed/Y` serves an **empty**
+   collection (`resultCount: 0`, no 404), and `GET /openidm/managed/X` →
+   **404**. The original records are **orphaned** in the old backend —
+   inaccessible via the managed API under either name.
+3. The orphaning is **soft, not destructive**: renaming Y → X back (restore the
+   original config) makes all original records reappear (same `_id`s) once the
+   runtime re-activates. Records are never deleted by a config rename; they
+   simply detach from the API surface while no configured type owns their
+   backend name.
+
+`config/repo.ds` contains **no** references to custom object names (checked
+2026-07-27), so a custom-object rename does not require a `repo.ds` edit — but
+the new name serves an empty collection and any searchable-property indexing
+would need the usual `repo.ds` work.
+
+Practical consequence for tooling: an object rename must repoint every inbound
+relationship (`resourceCollection[].path == "managed/X"` → `"managed/Y"`, across
+all objects) itself — no server-side cascade — and must warn that existing
+records will be orphaned (recoverable only by renaming back). `config/sync`
+mappings referencing `managed/X` are likewise not rewritten server-side.
 
 ## Hook scripts (verified 2026-06-13)
 
