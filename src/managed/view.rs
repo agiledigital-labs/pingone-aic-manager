@@ -15,8 +15,8 @@ use crate::app::{App, InputMode};
 use crate::managed::api::ObjectSummary;
 use crate::managed::screen::Mode;
 use crate::managed::state::{
-    AddFieldFocus, AddKind, AddRelationshipFocus, EditFieldFocus, FieldAttr, LoadState,
-    ManagedMatch, NewObjectFocus,
+    AddFieldFocus, AddKind, EditFieldFocus, FieldAttr, LoadState, ManagedMatch, NewObjectFocus,
+    RelationshipFocus,
 };
 
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
@@ -242,11 +242,11 @@ fn draw_detail(
             draw_add_field_form(f, app, inner);
             return;
         }
-        InputMode::Managed(Mode::AddRelationship | Mode::PickRelationshipTarget)
-            if app.managed.add_relationship.is_some() =>
+        InputMode::Managed(Mode::Relationship | Mode::RelationshipTarget)
+            if app.managed.relationship_form.is_some() =>
         {
-            draw_add_relationship_form(f, app, inner);
-            if app.input_mode == InputMode::Managed(Mode::PickRelationshipTarget) {
+            draw_relationship_form(f, app, inner);
+            if app.input_mode == InputMode::Managed(Mode::RelationshipTarget) {
                 draw_relationship_target_picker(f, app, inner);
             }
             return;
@@ -750,8 +750,8 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
     draw_save_button(f, rows[14], draft.focused == AddFieldFocus::Save);
 }
 
-fn draw_add_relationship_form(f: &mut Frame, app: &App, area: Rect) {
-    let Some(draft) = app.managed.add_relationship.as_ref() else {
+fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
+    let Some(draft) = app.managed.relationship_form.as_ref() else {
         return;
     };
     let error_h = if draft.error.is_some() { 2 } else { 0 };
@@ -762,62 +762,138 @@ fn draw_add_relationship_form(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
         Constraint::Length(2),
         Constraint::Length(1),
-        Constraint::Min(4),
+        Constraint::Min(3),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
-        Constraint::Length(2),
+        Constraint::Length(
+            if draft.reverse != crate::managed::state::ReverseCardinality::None {
+                1
+            } else {
+                0
+            },
+        ),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Length(error_h),
         Constraint::Length(2),
     ])
     .split(area);
 
-    form_title(f, rows[0], &draft.object_name, "add relationship");
+    form_title(
+        f,
+        rows[0],
+        &draft.source_object,
+        if draft.previous.is_some() {
+            "edit relationship"
+        } else {
+            "add relationship"
+        },
+    );
     draft
         .key
-        .draw(f, rows[2], draft.focused == AddRelationshipFocus::Key);
+        .draw(f, rows[2], draft.focused == RelationshipFocus::Key);
     draft
         .title
-        .draw(f, rows[4], draft.focused == AddRelationshipFocus::Title);
-    draft.description.draw(
-        f,
-        rows[6],
-        draft.focused == AddRelationshipFocus::Description,
-    );
+        .draw(f, rows[4], draft.focused == RelationshipFocus::Title);
+    draft
+        .description
+        .draw(f, rows[6], draft.focused == RelationshipFocus::Description);
     draw_target_row(
         f,
         rows[8],
         draft.target_name.as_deref().unwrap_or("(choose target)"),
-        draft.focused == AddRelationshipFocus::Target,
+        draft.focused == RelationshipFocus::Target,
     );
-    draw_bool_row(
+    draw_selector_row(
         f,
         rows[9],
-        "Collection",
-        draft.collection,
-        draft.focused == AddRelationshipFocus::Collection,
+        "Forward",
+        draft.forward.label(),
+        draft.focused == RelationshipFocus::Forward,
+    );
+    draw_selector_row(
+        f,
+        rows[10],
+        "Reverse",
+        draft.reverse.label(),
+        draft.focused == RelationshipFocus::Reverse,
+    );
+    if draft.reverse != crate::managed::state::ReverseCardinality::None {
+        draft
+            .reverse_key
+            .draw(f, rows[11], draft.focused == RelationshipFocus::ReverseKey);
+    }
+    draw_bool_row(
+        f,
+        rows[12],
+        "Searchable",
+        draft.searchable,
+        draft.focused == RelationshipFocus::Searchable,
         true,
     );
     draw_bool_row(
         f,
-        rows[10],
-        "Validate",
-        draft.validate,
-        draft.focused == AddRelationshipFocus::Validate,
+        rows[13],
+        "Viewable",
+        draft.viewable,
+        draft.focused == RelationshipFocus::Viewable,
         true,
     );
-    draft.reverse_property_name.draw(
+    draw_bool_row(
         f,
-        rows[11],
-        draft.focused == AddRelationshipFocus::ReversePropertyName,
+        rows[14],
+        "User editable",
+        draft.user_editable,
+        draft.focused == RelationshipFocus::UserEditable,
+        true,
     );
-    draw_form_error(f, rows[12], draft.error.as_deref());
-    draw_save_button(f, rows[13], draft.focused == AddRelationshipFocus::Save);
+    draw_bool_row(
+        f,
+        rows[15],
+        "Required",
+        draft.required,
+        draft.focused == RelationshipFocus::Required,
+        true,
+    );
+    draw_bool_row(
+        f,
+        rows[16],
+        "Validate",
+        draft.validate,
+        draft.focused == RelationshipFocus::Validate,
+        true,
+    );
+    let names = draft
+        .ref_properties
+        .iter()
+        .map(|property| property.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    f.render_widget(
+        Paragraph::new(format!(
+            "_refProperties: _id{}  (Ctrl-A to add — coming soon)",
+            if names.is_empty() {
+                String::new()
+            } else {
+                format!(", {names}")
+            }
+        ))
+        .style(Style::default().fg(Color::DarkGray)),
+        rows[17],
+    );
+    draw_form_error(f, rows[19], draft.error.as_deref());
+    draw_save_button(f, rows[20], draft.focused == RelationshipFocus::Save);
 }
 
 fn draw_relationship_target_picker(f: &mut Frame, app: &App, area: Rect) {
-    let Some(draft) = app.managed.add_relationship.as_ref() else {
+    let Some(draft) = app.managed.relationship_form.as_ref() else {
         return;
     };
     let width = area.width.min(52);

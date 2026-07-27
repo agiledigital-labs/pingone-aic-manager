@@ -652,98 +652,182 @@ impl AddFieldState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddRelationshipFocus {
+pub enum RelationshipFocus {
     Key,
     Title,
     Description,
     Target,
-    Collection,
+    Forward,
+    Reverse,
+    ReverseKey,
+    Searchable,
+    Viewable,
+    UserEditable,
+    Required,
     Validate,
-    ReversePropertyName,
     Save,
 }
 
-impl AddRelationshipFocus {
-    const ORDER: [AddRelationshipFocus; 8] = [
-        AddRelationshipFocus::Key,
-        AddRelationshipFocus::Title,
-        AddRelationshipFocus::Description,
-        AddRelationshipFocus::Target,
-        AddRelationshipFocus::Collection,
-        AddRelationshipFocus::Validate,
-        AddRelationshipFocus::ReversePropertyName,
-        AddRelationshipFocus::Save,
-    ];
-
-    pub fn next(self) -> Self {
-        let i = Self::ORDER
-            .iter()
-            .position(|field| *field == self)
-            .unwrap_or(0);
-        Self::ORDER[(i + 1) % Self::ORDER.len()]
+impl RelationshipFocus {
+    fn order(reverse: ReverseCardinality) -> Vec<Self> {
+        let mut order = vec![
+            Self::Key,
+            Self::Title,
+            Self::Description,
+            Self::Target,
+            Self::Forward,
+            Self::Reverse,
+        ];
+        if reverse != ReverseCardinality::None {
+            order.push(Self::ReverseKey);
+        }
+        order.extend([
+            Self::Searchable,
+            Self::Viewable,
+            Self::UserEditable,
+            Self::Required,
+            Self::Validate,
+            Self::Save,
+        ]);
+        order
     }
-
-    pub fn prev(self) -> Self {
-        let i = Self::ORDER
-            .iter()
-            .position(|field| *field == self)
-            .unwrap_or(0);
-        Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
+    pub fn next(self, reverse: ReverseCardinality) -> Self {
+        let order = Self::order(reverse);
+        let index = order.iter().position(|focus| *focus == self).unwrap_or(0);
+        order[(index + 1) % order.len()]
     }
-
+    pub fn prev(self, reverse: ReverseCardinality) -> Self {
+        let order = Self::order(reverse);
+        let index = order.iter().position(|focus| *focus == self).unwrap_or(0);
+        order[(index + order.len() - 1) % order.len()]
+    }
     pub fn is_bool(self) -> bool {
         matches!(
             self,
-            AddRelationshipFocus::Collection | AddRelationshipFocus::Validate
+            Self::Searchable
+                | Self::Viewable
+                | Self::UserEditable
+                | Self::Required
+                | Self::Validate
         )
     }
 }
 
 #[derive(Debug)]
-pub struct AddRelationshipState {
+pub struct RelationshipFormState {
     pub tenant_name: String,
-    pub object_name: String,
-    pub original_object: Value,
+    pub source_object: String,
+    pub original_doc: Value,
+    pub previous: Option<PreviousRelationship>,
     pub key: TextField,
     pub title: TextField,
     pub description: TextField,
-    pub collection: bool,
-    pub validate: bool,
-    pub reverse_property_name: TextField,
     pub target_name: Option<String>,
     pub target_query: LineEditor,
     pub target_selected: usize,
-    pub focused: AddRelationshipFocus,
+    pub forward: Cardinality,
+    pub reverse: ReverseCardinality,
+    pub reverse_key: TextField,
+    pub searchable: bool,
+    pub viewable: bool,
+    pub user_editable: bool,
+    pub required: bool,
+    pub validate: bool,
+    pub ref_properties: Vec<RefProperty>,
+    pub focused: RelationshipFocus,
     pub error: Option<String>,
 }
 
-impl AddRelationshipState {
-    pub fn new(tenant_name: String, object_name: String, object_def: Value) -> Self {
-        let key = property_key_field(&object_def);
+impl RelationshipFormState {
+    pub fn new_create(tenant_name: String, source_object: String, original_doc: Value) -> Self {
         Self {
             tenant_name,
-            object_name,
-            original_object: object_def,
-            key,
+            source_object,
+            original_doc,
+            previous: None,
+            key: TextField::single_line("Key"),
             title: TextField::single_line("Title"),
             description: TextField::textarea("Description"),
-            collection: false,
-            validate: true,
-            reverse_property_name: TextField::single_line("Reverse property"),
             target_name: None,
             target_query: LineEditor::new(),
             target_selected: 0,
-            focused: AddRelationshipFocus::Key,
+            forward: Cardinality::One,
+            reverse: ReverseCardinality::None,
+            reverse_key: TextField::single_line("Reverse key"),
+            searchable: false,
+            viewable: true,
+            user_editable: true,
+            required: false,
+            validate: true,
+            ref_properties: Vec::new(),
+            focused: RelationshipFocus::Key,
             error: None,
         }
     }
-
-    pub fn toggle_focused_bool(&mut self) {
-        match self.focused {
-            AddRelationshipFocus::Collection => self.collection = !self.collection,
-            AddRelationshipFocus::Validate => self.validate = !self.validate,
-            _ => {}
-        }
+    pub fn edit(
+        tenant_name: String,
+        source_object: String,
+        original_doc: Value,
+        key: String,
+        property: Value,
+    ) -> Option<Self> {
+        let parsed = crate::managed::ops::parse_relationship(&property)?;
+        let reverse = match &parsed.reverse_key {
+            None => ReverseCardinality::None,
+            Some(reverse_key) => crate::managed::api::object_named(&original_doc, &parsed.target)
+                .ok()
+                .and_then(properties)
+                .and_then(|props| props.get(reverse_key))
+                .map(|property| {
+                    if property.get("type").and_then(Value::as_str) == Some("array") {
+                        ReverseCardinality::Many
+                    } else {
+                        ReverseCardinality::One
+                    }
+                })
+                .unwrap_or(ReverseCardinality::One),
+        };
+        let required = crate::managed::api::object_named(&original_doc, &source_object)
+            .ok()
+            .is_some_and(|object| required_fields(object).contains(&key));
+        Some(Self {
+            tenant_name,
+            source_object,
+            original_doc,
+            previous: Some(PreviousRelationship {
+                old_key: key.clone(),
+                old_target: parsed.target.clone(),
+                old_reverse_key: parsed.reverse_key.clone(),
+            }),
+            key: TextField::single_line("Key").with_initial(key),
+            title: TextField::single_line("Title").with_initial(
+                property
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            ),
+            description: TextField::textarea("Description").with_initial(
+                property
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            ),
+            target_name: Some(parsed.target),
+            target_query: LineEditor::new(),
+            target_selected: 0,
+            forward: parsed.forward,
+            reverse,
+            reverse_key: TextField::single_line("Reverse key")
+                .with_initial(parsed.reverse_key.unwrap_or_default()),
+            searchable: parsed.searchable,
+            viewable: parsed.viewable,
+            user_editable: parsed.user_editable,
+            required,
+            validate: parsed.validate,
+            ref_properties: crate::managed::ops::parse_ref_properties(&property),
+            focused: RelationshipFocus::Key,
+            error: None,
+        })
     }
 }
 
@@ -1027,7 +1111,7 @@ pub struct State {
     pub property_selected: usize,
     pub editing: Option<FieldEditState>,
     pub add_field: Option<AddFieldState>,
-    pub add_relationship: Option<AddRelationshipState>,
+    pub relationship_form: Option<RelationshipFormState>,
     pub add_choose: Option<AddChooseState>,
     pub add_hook: Option<AddHookState>,
     pub pending_delete: Option<DeleteFieldState>,
@@ -1074,7 +1158,7 @@ impl State {
     pub fn clear_active_drafts(&mut self) {
         self.editing = None;
         self.add_field = None;
-        self.add_relationship = None;
+        self.relationship_form = None;
         self.add_choose = None;
         self.add_hook = None;
         self.pending_delete = None;
@@ -1277,5 +1361,28 @@ mod tests {
     fn ping_shipped_guard_uses_type_without_meta() {
         assert!(is_ping_shipped_object(&json!({"type": "managed"})));
         assert!(!is_ping_shipped_object(&json!({"name": "test_object"})));
+    }
+
+    #[test]
+    fn relationship_form_edit_seeds_dangling_reverse() {
+        let property = json!({"type": "array", "searchable": true, "viewable": false, "userEditable": false, "items": {"type": "relationship", "validate": true, "reverseRelationship": true, "reversePropertyName": "owners", "resourceCollection": [{"path": "managed/b"}], "properties": {"_refProperties": {"properties": {"_id": {"type": "string"}}}}}});
+        let doc = json!({"objects": [{"name": "a", "schema": {"properties": {"owner": property.clone()}, "required": ["owner"]}}, {"name": "b", "schema": {"properties": {}}}]});
+        let form = RelationshipFormState::edit(
+            "sandbox".into(),
+            "a".into(),
+            doc,
+            "owner".into(),
+            property,
+        )
+        .unwrap();
+        assert_eq!(form.forward, Cardinality::Many);
+        assert_eq!(form.reverse, ReverseCardinality::One);
+        assert_eq!(form.target_name.as_deref(), Some("b"));
+        assert!(form.searchable);
+        assert!(form.required);
+        assert_eq!(
+            form.previous.unwrap().old_reverse_key.as_deref(),
+            Some("owners")
+        );
     }
 }
