@@ -36,6 +36,7 @@
 
 pub mod client;
 pub mod daemon;
+pub mod duration;
 pub mod protocol;
 
 use std::path::PathBuf;

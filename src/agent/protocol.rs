@@ -32,6 +32,8 @@ pub enum Request {
     /// Report unlock state, project dir, tenant list, cached-token expirations,
     /// and time remaining before idle-lock.
     Status,
+    /// Replace the daemon idle-lock timeout in seconds.
+    SetIdleTimeout { secs: u64 },
     /// Return a valid bearer token for the named tenant, minting one if the
     /// cached token is missing or within 60s of expiry.
     GetToken { tenant: String },
