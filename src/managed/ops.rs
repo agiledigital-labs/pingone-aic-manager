@@ -20,8 +20,10 @@ pub enum ProdAction {
 }
 use crate::managed::screen::Event;
 use crate::managed::state::{
-    AddFieldState, AddRelationshipState, DeleteFieldState, EditFieldFocus, FieldAttr,
-    FieldEditState, LoadState, RenameFieldState, RenameObjectState, ScalarFieldType, State,
+    AddFieldState, AddRelationshipState, Cardinality, DeleteFieldState, EditFieldFocus, FieldAttr,
+    FieldEditState, LoadState, ParsedRelationship, PreviousRelationship, RefProperty,
+    RelationshipSpec, RenameFieldState, RenameObjectState, ReverseCardinality, ScalarFieldType,
+    State,
 };
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
@@ -164,6 +166,287 @@ fn rewrite_relationship_paths(
             }
         }
     }
+}
+
+// ── Relationship document transforms ─────────────────────────────────────
+
+fn build_relationship_node(
+    target: &str,
+    reverse_key: Option<&str>,
+    validate: bool,
+    ref_properties: &[RefProperty],
+) -> Value {
+    let mut ref_properties_map = serde_json::Map::new();
+    ref_properties_map.insert("_id".into(), json!({"type": "string"}));
+    for property in ref_properties {
+        ref_properties_map.insert(
+            property.name.clone(),
+            json!({
+                "type": property.kind.label(),
+                "label": property.label,
+                "propName": property.name,
+            }),
+        );
+    }
+
+    let mut node = serde_json::Map::new();
+    node.insert("type".into(), Value::String("relationship".into()));
+    node.insert("validate".into(), Value::Bool(validate));
+    node.insert(
+        "reverseRelationship".into(),
+        Value::Bool(reverse_key.is_some()),
+    );
+    if let Some(reverse_key) = reverse_key {
+        node.insert(
+            "reversePropertyName".into(),
+            Value::String(reverse_key.into()),
+        );
+    }
+    node.insert(
+        "resourceCollection".into(),
+        json!([{"path": format!("managed/{target}"), "label": target}]),
+    );
+    node.insert(
+        "properties".into(),
+        json!({
+            "_ref": {"type": "string"},
+            "_refProperties": {"type": "object", "properties": ref_properties_map},
+        }),
+    );
+    Value::Object(node)
+}
+
+fn wrap_with_attrs(
+    mut node: Value,
+    cardinality: Cardinality,
+    title: &str,
+    description: &str,
+    searchable: bool,
+    viewable: bool,
+    user_editable: bool,
+) -> Value {
+    let mut attrs = serde_json::Map::new();
+    if !title.is_empty() {
+        attrs.insert("title".into(), Value::String(title.into()));
+    }
+    if !description.is_empty() {
+        attrs.insert("description".into(), Value::String(description.into()));
+    }
+    attrs.insert("searchable".into(), Value::Bool(searchable));
+    attrs.insert("viewable".into(), Value::Bool(viewable));
+    attrs.insert("userEditable".into(), Value::Bool(user_editable));
+    attrs.insert("returnByDefault".into(), Value::Bool(false));
+
+    match cardinality {
+        Cardinality::One => {
+            let map = node
+                .as_object_mut()
+                .expect("relationship node builder always returns an object");
+            map.extend(attrs);
+            node
+        }
+        Cardinality::Many => {
+            let mut property = serde_json::Map::new();
+            property.insert("type".into(), Value::String("array".into()));
+            property.extend(attrs);
+            property.insert("items".into(), node);
+            Value::Object(property)
+        }
+    }
+}
+
+fn wrap_relationship_property(node: Value, forward: Cardinality, spec: &RelationshipSpec) -> Value {
+    wrap_with_attrs(
+        node,
+        forward,
+        &spec.title,
+        &spec.description,
+        spec.searchable,
+        spec.viewable,
+        spec.user_editable,
+    )
+}
+
+fn source_property(spec: &RelationshipSpec) -> Value {
+    let reverse_key =
+        (spec.reverse != ReverseCardinality::None).then_some(spec.reverse_key.as_str());
+    wrap_relationship_property(
+        build_relationship_node(
+            &spec.target_object,
+            reverse_key,
+            spec.validate,
+            &spec.ref_properties,
+        ),
+        spec.forward,
+        spec,
+    )
+}
+
+fn reverse_property(spec: &RelationshipSpec) -> Option<Value> {
+    let cardinality = match spec.reverse {
+        ReverseCardinality::None => return None,
+        ReverseCardinality::One => Cardinality::One,
+        ReverseCardinality::Many => Cardinality::Many,
+    };
+    Some(wrap_with_attrs(
+        build_relationship_node(&spec.source_object, Some(&spec.key), false, &[]),
+        cardinality,
+        &spec.reverse_key,
+        "",
+        false,
+        true,
+        true,
+    ))
+}
+
+/// Applies relationship intent to a complete managed config document.
+///
+/// The old pair is removed before collision checks and insertion, which keeps
+/// key renames, target repoints, dropped reverses, and self-references coherent.
+pub fn apply_relationship_spec(
+    doc: &Value,
+    spec: &RelationshipSpec,
+    previous: Option<&PreviousRelationship>,
+) -> Result<Value, String> {
+    crate::managed::api::object_named(doc, &spec.source_object)
+        .map_err(|error| error.to_string())?;
+    crate::managed::api::object_named(doc, &spec.target_object)
+        .map_err(|error| error.to_string())?;
+    crate::managed::state::validate_property_key(&spec.key)?;
+    if spec.reverse != ReverseCardinality::None {
+        if spec.reverse_key.is_empty() {
+            return Err(
+                "Reverse property key is required when a reverse relationship is selected".into(),
+            );
+        }
+        crate::managed::state::validate_property_key(&spec.reverse_key)?;
+        if spec.source_object == spec.target_object && spec.key == spec.reverse_key {
+            return Err(
+                "A self-referential relationship needs different forward and reverse property keys"
+                    .into(),
+            );
+        }
+    }
+
+    let mut updated = doc.clone();
+    if let Some(previous) = previous {
+        remove_relationship_property(&mut updated, &spec.source_object, &previous.old_key, true)?;
+        if let Some(reverse_key) = &previous.old_reverse_key {
+            remove_relationship_property(&mut updated, &previous.old_target, reverse_key, false)?;
+        }
+    }
+
+    ensure_doc_property_available(&updated, &spec.source_object, &spec.key)?;
+    if spec.reverse != ReverseCardinality::None {
+        ensure_doc_property_available(&updated, &spec.target_object, &spec.reverse_key)?;
+    }
+
+    let source = crate::managed::api::object_named_mut(&mut updated, &spec.source_object)
+        .map_err(|error| error.to_string())?;
+    properties_mut(source)?.insert(spec.key.clone(), source_property(spec));
+    append_order_key(source, &spec.key)?;
+    set_required(source, &spec.key, spec.required)?;
+
+    if let Some(property) = reverse_property(spec) {
+        let target = crate::managed::api::object_named_mut(&mut updated, &spec.target_object)
+            .map_err(|error| error.to_string())?;
+        properties_mut(target)?.insert(spec.reverse_key.clone(), property);
+        append_order_key(target, &spec.reverse_key)?;
+    }
+    Ok(updated)
+}
+
+fn remove_relationship_property(
+    doc: &mut Value,
+    object_name: &str,
+    key: &str,
+    remove_required: bool,
+) -> Result<(), String> {
+    let object = crate::managed::api::object_named_mut(doc, object_name)
+        .map_err(|error| error.to_string())?;
+    if let Some(properties) = object
+        .pointer_mut("/schema/properties")
+        .and_then(Value::as_object_mut)
+    {
+        properties.remove(key);
+    }
+    remove_order_key(object, key)?;
+    if remove_required {
+        set_required(object, key, false)?;
+    }
+    Ok(())
+}
+
+fn ensure_doc_property_available(doc: &Value, object_name: &str, key: &str) -> Result<(), String> {
+    let object =
+        crate::managed::api::object_named(doc, object_name).map_err(|error| error.to_string())?;
+    if crate::managed::state::properties(object)
+        .is_some_and(|properties| properties.contains_key(key))
+    {
+        return Err(format!("field '{key}' already exists"));
+    }
+    Ok(())
+}
+
+/// Parses a managed schema relationship property into its editable data.
+pub fn parse_relationship(property: &Value) -> Option<ParsedRelationship> {
+    if !crate::managed::state::is_relationship_property(property) {
+        return None;
+    }
+    let forward = if property.get("type").and_then(Value::as_str) == Some("array") {
+        Cardinality::Many
+    } else {
+        Cardinality::One
+    };
+    let node = match forward {
+        Cardinality::One => property,
+        Cardinality::Many => property.get("items")?,
+    };
+    let target = node
+        .pointer("/resourceCollection/0/path")
+        .and_then(Value::as_str)?
+        .strip_prefix("managed/")?
+        .to_string();
+    let reverse_key = (node.get("reverseRelationship").and_then(Value::as_bool) == Some(true))
+        .then(|| {
+            node.get("reversePropertyName")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .flatten();
+    let ref_property_names = node
+        .pointer("/properties/_refProperties/properties")
+        .and_then(Value::as_object)
+        .map(|properties| {
+            properties
+                .keys()
+                .filter(|key| key.as_str() != "_id")
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(ParsedRelationship {
+        forward,
+        target,
+        reverse_key,
+        searchable: property
+            .get("searchable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        viewable: property
+            .get("viewable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        user_editable: property
+            .get("userEditable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        validate: node
+            .get("validate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        ref_property_names,
+    })
 }
 
 pub fn start_record_count(app: &mut App, draft: RenameObjectState) {
@@ -2193,5 +2476,214 @@ mod tests {
     fn create_object_rejects_name_collision() {
         let doc = json!({"objects": [{"name": "test_object"}]});
         assert!(create_object_in_doc(&doc, "test_object", "", "").is_err());
+    }
+
+    fn relationship_doc(names: &[&str]) -> Value {
+        json!({"objects": names
+            .iter()
+            .map(|name| json!({"name": name, "schema": {"properties": {}, "order": [], "required": []}}))
+            .collect::<Vec<_>>()
+        })
+    }
+
+    fn relationship_spec(forward: Cardinality, reverse: ReverseCardinality) -> RelationshipSpec {
+        RelationshipSpec {
+            source_object: "a".into(),
+            key: "owner".into(),
+            title: "Owner".into(),
+            description: "Owning object".into(),
+            target_object: "b".into(),
+            forward,
+            reverse,
+            reverse_key: "owned".into(),
+            searchable: true,
+            viewable: false,
+            user_editable: false,
+            required: true,
+            validate: true,
+            ref_properties: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn relationship_create_supports_all_cardinality_combinations() {
+        for forward in [Cardinality::One, Cardinality::Many] {
+            for reverse in [
+                ReverseCardinality::None,
+                ReverseCardinality::One,
+                ReverseCardinality::Many,
+            ] {
+                let spec = relationship_spec(forward, reverse);
+                let updated =
+                    apply_relationship_spec(&relationship_doc(&["a", "b"]), &spec, None).unwrap();
+                let source = &updated["objects"][0]["schema"]["properties"]["owner"];
+                let source_node = if forward == Cardinality::Many {
+                    &source["items"]
+                } else {
+                    source
+                };
+                assert_eq!(
+                    source["type"],
+                    json!(if forward == Cardinality::Many {
+                        "array"
+                    } else {
+                        "relationship"
+                    })
+                );
+                assert_eq!(
+                    source_node["reverseRelationship"],
+                    json!(reverse != ReverseCardinality::None)
+                );
+                assert_eq!(
+                    source_node.get("reversePropertyName").is_some(),
+                    reverse != ReverseCardinality::None
+                );
+                assert_eq!(updated["objects"][0]["schema"]["order"], json!(["owner"]));
+                assert_eq!(
+                    updated["objects"][0]["schema"]["required"],
+                    json!(["owner"])
+                );
+
+                let reverse_property = &updated["objects"][1]["schema"]["properties"]["owned"];
+                if reverse == ReverseCardinality::None {
+                    assert!(reverse_property.is_null());
+                    assert_eq!(updated["objects"][1]["schema"]["order"], json!([]));
+                } else {
+                    assert_eq!(
+                        reverse_property["type"],
+                        json!(if reverse == ReverseCardinality::Many {
+                            "array"
+                        } else {
+                            "relationship"
+                        })
+                    );
+                    let reverse_node = if reverse == ReverseCardinality::Many {
+                        &reverse_property["items"]
+                    } else {
+                        reverse_property
+                    };
+                    assert_eq!(reverse_node["reversePropertyName"], json!("owner"));
+                    assert_eq!(updated["objects"][1]["schema"]["order"], json!(["owned"]));
+                    assert_eq!(updated["objects"][1]["schema"]["required"], json!([]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn relationship_self_reference_keeps_both_ends_on_one_object() {
+        let mut spec = relationship_spec(Cardinality::One, ReverseCardinality::Many);
+        spec.source_object = "a".into();
+        spec.target_object = "a".into();
+        let updated = apply_relationship_spec(&relationship_doc(&["a"]), &spec, None).unwrap();
+        let properties = &updated["objects"][0]["schema"]["properties"];
+        assert_eq!(properties["owner"]["reversePropertyName"], json!("owned"));
+        assert_eq!(
+            properties["owned"]["items"]["reversePropertyName"],
+            json!("owner")
+        );
+
+        spec.reverse_key = "owner".into();
+        assert!(apply_relationship_spec(&relationship_doc(&["a"]), &spec, None).is_err());
+    }
+
+    #[test]
+    fn relationship_places_attributes_and_custom_ref_properties_on_the_right_nodes() {
+        let mut spec = relationship_spec(Cardinality::Many, ReverseCardinality::One);
+        spec.ref_properties.push(RefProperty {
+            name: "grantType".into(),
+            label: "Grant".into(),
+            kind: crate::managed::state::RefPropType::String,
+        });
+        let updated = apply_relationship_spec(&relationship_doc(&["a", "b"]), &spec, None).unwrap();
+        let source = &updated["objects"][0]["schema"]["properties"]["owner"];
+        assert_eq!(source["searchable"], json!(true));
+        assert_eq!(source["viewable"], json!(false));
+        assert_eq!(source["userEditable"], json!(false));
+        assert_eq!(source["returnByDefault"], json!(false));
+        assert_eq!(source["items"]["validate"], json!(true));
+        assert_eq!(
+            source["items"]["properties"]["_refProperties"]["properties"]["grantType"]["label"],
+            json!("Grant")
+        );
+        assert_eq!(
+            updated["objects"][1]["schema"]["properties"]["owned"]["properties"]["_refProperties"]
+                ["properties"],
+            json!({"_id": {"type": "string"}})
+        );
+    }
+
+    #[test]
+    fn relationship_edit_reconciles_renames_reverse_drops_and_target_repoints() {
+        let original = apply_relationship_spec(
+            &relationship_doc(&["a", "b", "c"]),
+            &relationship_spec(Cardinality::One, ReverseCardinality::One),
+            None,
+        )
+        .unwrap();
+        let previous = PreviousRelationship {
+            old_key: "owner".into(),
+            old_target: "b".into(),
+            old_reverse_key: Some("owned".into()),
+        };
+        let mut renamed = relationship_spec(Cardinality::Many, ReverseCardinality::None);
+        renamed.key = "owners".into();
+        let dropped = apply_relationship_spec(&original, &renamed, Some(&previous)).unwrap();
+        assert!(dropped["objects"][0]["schema"]["properties"]["owner"].is_null());
+        assert_eq!(
+            dropped["objects"][0]["schema"]["required"],
+            json!(["owners"])
+        );
+        assert!(dropped["objects"][1]["schema"]["properties"]["owned"].is_null());
+
+        let mut repointed = relationship_spec(Cardinality::One, ReverseCardinality::Many);
+        repointed.target_object = "c".into();
+        let repointed = apply_relationship_spec(&original, &repointed, Some(&previous)).unwrap();
+        assert!(repointed["objects"][1]["schema"]["properties"]["owned"].is_null());
+        assert!(repointed["objects"][2]["schema"]["properties"]["owned"].is_object());
+        assert_eq!(
+            repointed["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"][0]["path"],
+            json!("managed/c")
+        );
+    }
+
+    #[test]
+    fn relationship_rejects_invalid_intent_and_property_collisions() {
+        let spec = relationship_spec(Cardinality::One, ReverseCardinality::One);
+        assert!(apply_relationship_spec(&relationship_doc(&["b"]), &spec, None).is_err());
+        let mut invalid = spec.clone();
+        invalid.key = "not-valid".into();
+        assert!(apply_relationship_spec(&relationship_doc(&["a", "b"]), &invalid, None).is_err());
+        invalid = spec.clone();
+        invalid.reverse_key.clear();
+        assert!(apply_relationship_spec(&relationship_doc(&["a", "b"]), &invalid, None).is_err());
+        let colliding = json!({"objects": [
+            {"name": "a", "schema": {"properties": {"owner": {"type": "string"}}}},
+            {"name": "b", "schema": {"properties": {}}}
+        ]});
+        assert!(apply_relationship_spec(&colliding, &spec, None).is_err());
+    }
+
+    #[test]
+    fn parse_relationship_round_trips_source_property() {
+        let mut spec = relationship_spec(Cardinality::Many, ReverseCardinality::One);
+        spec.ref_properties.push(RefProperty {
+            name: "grantType".into(),
+            label: "Grant".into(),
+            kind: crate::managed::state::RefPropType::String,
+        });
+        assert_eq!(
+            parse_relationship(&source_property(&spec)),
+            Some(ParsedRelationship {
+                forward: Cardinality::Many,
+                target: "b".into(),
+                reverse_key: Some("owned".into()),
+                searchable: true,
+                viewable: false,
+                user_editable: false,
+                validate: true,
+                ref_property_names: vec!["grantType".into()],
+            })
+        );
     }
 }
