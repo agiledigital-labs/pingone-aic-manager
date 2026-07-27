@@ -15,6 +15,7 @@ use crate::config::tenant::TenantTheme;
 pub enum ProdAction {
     Update(Box<ObjectReplacePlan>),
     RenameObject(Box<RenameObjectRequest>),
+    CreateObject(Box<CreateObjectRequest>),
     Undo(crate::undo::UndoId),
 }
 use crate::managed::screen::Event;
@@ -54,6 +55,47 @@ pub struct RenameObjectRequest {
     pub(crate) old_name: String,
     pub(crate) new_name: String,
     pub(crate) previous_doc: Value,
+}
+
+#[derive(Debug)]
+pub struct CreateObjectRequest {
+    pub(crate) tenant_name: String,
+    pub(crate) name: String,
+    pub(crate) title: String,
+    pub(crate) description: String,
+    pub(crate) previous_doc: Value,
+}
+
+/// Appends a minimal custom managed object to a whole managed config document.
+pub fn create_object_in_doc(
+    doc: &Value,
+    name: &str,
+    title: &str,
+    description: &str,
+) -> Result<Value, String> {
+    let mut created = doc.clone();
+    let objects =
+        crate::managed::api::objects_mut(&mut created).map_err(|error| error.to_string())?;
+    if objects
+        .iter()
+        .any(|object| object.get("name").and_then(Value::as_str) == Some(name))
+    {
+        return Err(format!("Managed object '{name}' already exists"));
+    }
+    let mut schema = serde_json::Map::new();
+    schema.insert("type".into(), Value::String("object".into()));
+    schema.insert(
+        "title".into(),
+        Value::String(if title.is_empty() { name } else { title }.into()),
+    );
+    if !description.is_empty() {
+        schema.insert("description".into(), Value::String(description.into()));
+    }
+    schema.insert("properties".into(), Value::Object(serde_json::Map::new()));
+    schema.insert("required".into(), Value::Array(Vec::new()));
+    schema.insert("order".into(), Value::Array(Vec::new()));
+    objects.push(json!({"name": name, "schema": schema}));
+    Ok(created)
 }
 
 /// Renames an object identity and every schema relationship path that targets it.
@@ -183,6 +225,118 @@ pub fn execute_rename_object(app: &mut App, request: RenameObjectRequest, confir
             result,
         }));
     });
+}
+
+pub fn execute_create_object(app: &mut App, request: CreateObjectRequest, confirmed_prod: bool) {
+    let undo_id = match app.undo.record(UndoEntry::pending(
+        request.tenant_name.clone(),
+        "managed",
+        format!("Remove managed object {}", request.name),
+        Sensitivity::TenantConfig,
+        Capability::Undoable,
+        Some(UndoOp::ManagedConfigReplace {
+            tenant: request.tenant_name.clone(),
+            body: request.previous_doc.clone(),
+        }),
+        ConflictCheck::ContentEqualsAfter {
+            body: create_object_in_doc(
+                &request.previous_doc,
+                &request.name,
+                &request.title,
+                &request.description,
+            )
+            .unwrap_or(Value::Null),
+        },
+    )) {
+        Ok(id) => id,
+        Err(error) => {
+            app.push_toast(
+                ToastKind::Error,
+                format!("Create cancelled: failed to record undo: {error}"),
+            );
+            return;
+        }
+    };
+    app.managed.clear_active_drafts();
+    app.input_mode = InputMode::Normal;
+    let tenant = request.tenant_name.clone();
+    let name = request.name.clone();
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result = create_object_request(&request, confirmed_prod)
+            .await
+            .map_err(|error| error.to_string());
+        let _ = tx.send(AppEvent::Managed(Event::CreateResult {
+            tenant,
+            name,
+            undo_id,
+            result,
+        }));
+    });
+}
+
+async fn create_object_request(
+    request: &CreateObjectRequest,
+    confirmed_prod: bool,
+) -> crate::Result<Value> {
+    let live = crate::managed::api::get_managed(&request.tenant_name).await?;
+    if crate::managed::api::object_named(&live, &request.name).is_ok() {
+        return Err(crate::Error::Config(format!(
+            "managed object '{}' already exists (created since you opened the form)",
+            request.name
+        )));
+    }
+    let new_doc = create_object_in_doc(&live, &request.name, &request.title, &request.description)
+        .map_err(crate::Error::Config)?;
+    crate::managed::api::replace_managed(&request.tenant_name, new_doc, confirmed_prod).await?;
+    let confirmed = crate::managed::api::get_managed(&request.tenant_name).await?;
+    if crate::managed::api::object_named(&confirmed, &request.name).is_err() {
+        return Err(crate::Error::Config(
+            "managed object create write returned but read-back did not match".into(),
+        ));
+    }
+    Ok(confirmed)
+}
+
+pub fn apply_create_result(
+    app: &mut App,
+    tenant: String,
+    name: String,
+    undo_id: UndoId,
+    result: Result<Value, String>,
+) {
+    match result {
+        Ok(doc) => {
+            app.managed
+                .data
+                .insert(tenant.clone(), LoadState::Loaded(doc));
+            if app
+                .active_tenant()
+                .is_some_and(|active| active.name == tenant)
+            {
+                if let Some(index) = app
+                    .managed
+                    .matches(Some(&tenant))
+                    .iter()
+                    .position(|item| item.name == name)
+                {
+                    app.managed.selected = index;
+                    app.managed.property_selected = 0;
+                }
+            }
+            app.push_toast(
+                ToastKind::Success,
+                format!("Created managed object {name}. Press ^Z to undo."),
+            );
+        }
+        Err(error) => {
+            let _ = app.undo.mark_applied(undo_id, EntryStatus::Expired);
+            app.push_toast(
+                ToastKind::Error,
+                format!("Managed create failed: {name}: {error}"),
+            );
+        }
+    }
 }
 
 async fn rename_object_request(
@@ -1249,8 +1403,9 @@ fn ensure_property_available(
     field_key: &str,
     current_key: Option<&str>,
 ) -> Result<(), String> {
-    let properties = crate::managed::state::properties(object)
-        .ok_or_else(|| "managed object has no schema.properties map".to_string())?;
+    let Some(properties) = crate::managed::state::properties(object) else {
+        return Ok(());
+    };
     if properties.contains_key(field_key) && current_key != Some(field_key) {
         return Err(format!("field '{field_key}' already exists"));
     }
@@ -1258,16 +1413,21 @@ fn ensure_property_available(
 }
 
 fn properties_mut(object: &mut Value) -> Result<&mut serde_json::Map<String, Value>, String> {
-    object
-        .pointer_mut("/schema/properties")
-        .and_then(Value::as_object_mut)
+    let schema = schema_mut(object)?;
+    schema
+        .entry("properties".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
         .ok_or_else(|| "managed object has no schema.properties map".to_string())
 }
 
 fn schema_mut(object: &mut Value) -> Result<&mut serde_json::Map<String, Value>, String> {
-    object
-        .get_mut("schema")
-        .and_then(Value::as_object_mut)
+    let map = object
+        .as_object_mut()
+        .ok_or_else(|| "managed object is not an object".to_string())?;
+    map.entry("schema".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
         .ok_or_else(|| "managed object has no schema object".to_string())
 }
 
@@ -1345,10 +1505,7 @@ fn dedupe_string_array(values: &mut Vec<Value>) {
 }
 
 fn set_required(object: &mut Value, field_key: &str, required: bool) -> Result<(), String> {
-    let schema = object
-        .get_mut("schema")
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| "managed object has no schema object".to_string())?;
+    let schema = schema_mut(object)?;
     let required_value = schema
         .entry("required".to_string())
         .or_insert_with(|| Value::Array(Vec::new()));
@@ -1482,6 +1639,7 @@ pub fn execute_prod_action(app: &mut App, action: ProdAction) {
     match action {
         ProdAction::Update(plan) => execute_update_plan(app, *plan, true),
         ProdAction::RenameObject(request) => execute_rename_object(app, *request, true),
+        ProdAction::CreateObject(request) => execute_create_object(app, *request, true),
         ProdAction::Undo(undo_id) => execute_undo(app, undo_id, true),
     }
 }
@@ -1647,6 +1805,29 @@ mod tests {
             applied.object["schema"]["required"],
             json!(["custom_loyaltyId"])
         );
+    }
+
+    #[test]
+    fn add_field_materializes_missing_schema() {
+        let object = json!({"name": "test_empty"});
+        let mut draft = AddFieldState::new("sandbox".into(), "test_empty".into(), object);
+        draft.key.set("first");
+
+        let applied = apply_add_field(&draft).unwrap();
+        assert!(applied.object["schema"].is_object());
+        assert!(applied.object["schema"]["properties"]["first"].is_object());
+        assert_eq!(applied.object["schema"]["order"], json!(["first"]));
+    }
+
+    #[test]
+    fn add_field_materializes_missing_properties() {
+        let object = json!({"name": "test_empty", "schema": {}});
+        let mut draft = AddFieldState::new("sandbox".into(), "test_empty".into(), object);
+        draft.key.set("first");
+
+        let applied = apply_add_field(&draft).unwrap();
+        assert!(applied.object["schema"]["properties"]["first"].is_object());
+        assert_eq!(applied.object["schema"]["order"], json!(["first"]));
     }
 
     #[test]
@@ -1978,5 +2159,39 @@ mod tests {
         let doc = json!({"objects": [{"name": "A"}, {"name": "B"}]});
         assert!(rename_object_in_doc(&doc, "A", "B").is_err());
         assert!(rename_object_in_doc(&doc, "missing", "C").is_err());
+    }
+
+    #[test]
+    fn create_object_appends_minimal_shape() {
+        let doc = json!({"objects": []});
+        let created = create_object_in_doc(&doc, "test_object", "Test object", "").unwrap();
+        let object = &created["objects"][0];
+        assert_eq!(object["name"], json!("test_object"));
+        assert_eq!(object["schema"]["type"], json!("object"));
+        assert_eq!(object["schema"]["title"], json!("Test object"));
+        assert_eq!(object["schema"]["properties"], json!({}));
+        assert_eq!(object["schema"]["required"], json!([]));
+        assert_eq!(object["schema"]["order"], json!([]));
+        assert!(object["schema"].get("description").is_none());
+    }
+
+    #[test]
+    fn create_object_includes_description_and_falls_back_to_name_for_title() {
+        let doc = json!({"objects": []});
+        let created = create_object_in_doc(&doc, "test_object", "", "Description").unwrap();
+        assert_eq!(
+            created["objects"][0]["schema"]["title"],
+            json!("test_object")
+        );
+        assert_eq!(
+            created["objects"][0]["schema"]["description"],
+            json!("Description")
+        );
+    }
+
+    #[test]
+    fn create_object_rejects_name_collision() {
+        let doc = json!({"objects": [{"name": "test_object"}]});
+        assert!(create_object_in_doc(&doc, "test_object", "", "").is_err());
     }
 }

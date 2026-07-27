@@ -11,7 +11,7 @@ use crate::managed::ops;
 use crate::managed::state::{
     AddChooseState, AddFieldFocus, AddFieldState, AddHookState, AddKind, AddRelationshipFocus,
     AddRelationshipState, DeleteFieldState, EditFieldFocus, FieldEditState, LoadState,
-    RenameFieldState, RenameObjectConfirmState, RenameObjectState,
+    NewObjectFocus, NewObjectState, RenameFieldState, RenameObjectConfirmState, RenameObjectState,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -27,6 +27,7 @@ pub enum Mode {
     RenameField,
     RenameObject,
     RenameObjectConfirm,
+    NewObject,
 }
 
 #[derive(Debug)]
@@ -55,6 +56,12 @@ pub enum Event {
         tenant: String,
         old_name: String,
         new_name: String,
+        undo_id: crate::undo::UndoId,
+        result: std::result::Result<Value, String>,
+    },
+    CreateResult {
+        tenant: String,
+        name: String,
         undo_id: crate::undo::UndoId,
         result: std::result::Result<Value, String>,
     },
@@ -125,6 +132,12 @@ pub fn apply_event(app: &mut App, event: Event) {
             undo_id,
             result,
         } => ops::apply_rename_result(app, tenant, old_name, new_name, undo_id, result),
+        Event::CreateResult {
+            tenant,
+            name,
+            undo_id,
+            result,
+        } => ops::apply_create_result(app, tenant, name, undo_id, result),
     }
 }
 
@@ -141,6 +154,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
         Mode::RenameField => handle_rename_field_key(app, key),
         Mode::RenameObject => handle_rename_object_key(app, key),
         Mode::RenameObjectConfirm => handle_rename_object_confirm_key(app, key),
+        Mode::NewObject => handle_new_object_key(app, key),
     }
 }
 
@@ -212,6 +226,11 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         Mode::RenameField => vec![("Enter", "rename"), ("Esc", "cancel")],
         Mode::RenameObject => vec![("Enter", "continue"), ("Esc", "cancel")],
         Mode::RenameObjectConfirm => vec![("y", "rename"), ("n/Esc", "cancel")],
+        Mode::NewObject => vec![
+            ("Tab", "navigate"),
+            ("Enter", "create/next"),
+            ("Esc", "cancel"),
+        ],
     }
 }
 
@@ -286,6 +305,11 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
         Mode::RenameField => Some(vec![("Enter", "rename"), ("Esc", "cancel")]),
         Mode::RenameObject => Some(vec![("Enter", "continue"), ("Esc", "cancel")]),
         Mode::RenameObjectConfirm => Some(vec![("y", "rename"), ("n/Esc", "cancel")]),
+        Mode::NewObject => Some(vec![
+            ("Tab", "navigate"),
+            ("Enter", "create/next"),
+            ("Esc", "cancel"),
+        ]),
     }
 }
 
@@ -316,6 +340,8 @@ pub fn resume_mode_after_prod_cancel(app: &App) -> Option<Mode> {
         Some(Mode::RenameObject)
     } else if app.managed.rename_object_confirm.is_some() {
         Some(Mode::RenameObjectConfirm)
+    } else if app.managed.new_object.is_some() {
+        Some(Mode::NewObject)
     } else {
         None
     }
@@ -538,6 +564,18 @@ pub fn start_rename_object(app: &mut App) {
         doc.clone(),
     ));
     app.input_mode = InputMode::Managed(Mode::RenameObject);
+}
+
+/// Opens the whole-document create flow when the managed config is loaded.
+pub fn start_new_object(app: &mut App) {
+    let Some(tenant_name) = app.active_tenant().map(|tenant| tenant.name.clone()) else {
+        return;
+    };
+    let Some(LoadState::Loaded(doc)) = app.managed.data.get(&tenant_name) else {
+        return;
+    };
+    app.managed.new_object = Some(NewObjectState::new(tenant_name, doc.clone()));
+    app.input_mode = InputMode::Managed(Mode::NewObject);
 }
 
 pub fn start_add_hook(app: &mut App) {
@@ -782,6 +820,99 @@ fn handle_rename_object_confirm_key(app: &mut App, key: KeyEvent) {
             }
         }
         _ => {}
+    }
+}
+
+fn handle_new_object_key(app: &mut App, key: KeyEvent) {
+    let Some(focused) = app.managed.new_object.as_ref().map(|draft| draft.focused) else {
+        app.input_mode = InputMode::Normal;
+        return;
+    };
+    match key.code {
+        KeyCode::Esc => {
+            ops::cancel_active_draft(app);
+            return;
+        }
+        KeyCode::Tab => {
+            if let Some(draft) = app.managed.new_object.as_mut() {
+                draft.focused = draft.focused.next();
+            }
+            return;
+        }
+        KeyCode::BackTab => {
+            if let Some(draft) = app.managed.new_object.as_mut() {
+                draft.focused = draft.focused.prev();
+            }
+            return;
+        }
+        KeyCode::Enter if focused == NewObjectFocus::Save => {
+            let Some(mut draft) = app.managed.new_object.take() else {
+                return;
+            };
+            let existing = crate::managed::api::objects(&draft.original_doc)
+                .map(|objects| {
+                    objects
+                        .iter()
+                        .filter_map(|object| {
+                            object
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .map(ToString::to_string)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if let Err(error) =
+                crate::managed::state::validate_object_name(&draft.name.value, &existing, "")
+            {
+                draft.error = Some(error);
+                app.managed.new_object = Some(draft);
+                return;
+            }
+            let request = ops::CreateObjectRequest {
+                tenant_name: draft.tenant_name.clone(),
+                name: draft.name.value.clone(),
+                title: draft.title.value.clone(),
+                description: draft.description.value.clone(),
+                previous_doc: draft.original_doc.clone(),
+            };
+            if app.active_tenant().is_some_and(|tenant| {
+                tenant.theme == crate::config::tenant::TenantTheme::Production
+            }) {
+                app.managed.new_object = Some(draft);
+                app.prod_confirm.pending =
+                    Some(crate::app::prod_confirm::PendingProdAction::Managed(
+                        ops::ProdAction::CreateObject(Box::new(request)),
+                    ));
+                app.input_mode = InputMode::ProdConfirm;
+            } else {
+                ops::execute_create_object(app, request, false);
+            }
+            return;
+        }
+        KeyCode::Enter => {
+            if let Some(draft) = app.managed.new_object.as_mut() {
+                draft.focused = draft.focused.next();
+            }
+            return;
+        }
+        _ => {}
+    }
+    let Some(draft) = app.managed.new_object.as_mut() else {
+        return;
+    };
+    draft.error = None;
+    match focused {
+        NewObjectFocus::Name => {
+            draft.name.handle_key(&key);
+        }
+        NewObjectFocus::Title => {
+            draft.title.handle_key(&key);
+        }
+        NewObjectFocus::Description => {
+            draft.description.handle_key(&key);
+        }
+        NewObjectFocus::Save => {}
     }
 }
 

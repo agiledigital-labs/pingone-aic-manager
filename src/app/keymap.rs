@@ -55,6 +55,7 @@ pub enum Act {
     NewItem,
     RenameField,
     RenameObject,
+    NewObject,
     AddHook,
     Pull,
     Push,
@@ -444,6 +445,16 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             DetailScrollUp,
         ));
     }
+    if managed_view {
+        out.push(b(
+            &[Trigger::Ctrl('n')],
+            "^N",
+            "new object",
+            true,
+            true,
+            NewObject,
+        ));
+    }
     if managed_view || mappings_view || idmstore_view || oauth_view || mappings {
         out.push(b(
             &[Trigger::Ctrl('r')],
@@ -689,6 +700,7 @@ async fn run_normal(app: &mut App, act: Act) {
         NewItem => new_item(app),
         RenameField => crate::managed::screen::start_rename_field(app),
         RenameObject => crate::managed::screen::start_rename_object(app),
+        NewObject => crate::managed::screen::start_new_object(app),
         AddHook => crate::managed::screen::start_add_hook(app),
         Pull => crate::scripts::screen::pull_selected(app),
         Push => crate::scripts::screen::push_selected(app),
