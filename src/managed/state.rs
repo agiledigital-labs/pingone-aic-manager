@@ -715,6 +715,64 @@ pub struct RenameObjectState {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewObjectFocus {
+    Name,
+    Title,
+    Description,
+    Save,
+}
+
+impl NewObjectFocus {
+    const ORDER: [NewObjectFocus; 4] = [
+        NewObjectFocus::Name,
+        NewObjectFocus::Title,
+        NewObjectFocus::Description,
+        NewObjectFocus::Save,
+    ];
+
+    pub fn next(self) -> Self {
+        let index = Self::ORDER
+            .iter()
+            .position(|focus| *focus == self)
+            .unwrap_or(0);
+        Self::ORDER[(index + 1) % Self::ORDER.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let index = Self::ORDER
+            .iter()
+            .position(|focus| *focus == self)
+            .unwrap_or(0);
+        Self::ORDER[(index + Self::ORDER.len() - 1) % Self::ORDER.len()]
+    }
+}
+
+#[derive(Debug)]
+pub struct NewObjectState {
+    pub tenant_name: String,
+    pub original_doc: Value,
+    pub name: TextField,
+    pub title: TextField,
+    pub description: TextField,
+    pub focused: NewObjectFocus,
+    pub error: Option<String>,
+}
+
+impl NewObjectState {
+    pub fn new(tenant_name: String, original_doc: Value) -> Self {
+        Self {
+            tenant_name,
+            original_doc,
+            name: TextField::single_line("Name"),
+            title: TextField::single_line("Title"),
+            description: TextField::textarea("Description"),
+            focused: NewObjectFocus::Name,
+            error: None,
+        }
+    }
+}
+
 impl RenameObjectState {
     pub fn new(tenant_name: String, old_name: String, original_doc: Value) -> Self {
         Self {
@@ -833,6 +891,7 @@ pub struct State {
     pub renaming: Option<RenameFieldState>,
     pub renaming_object: Option<RenameObjectState>,
     pub rename_object_confirm: Option<RenameObjectConfirmState>,
+    pub new_object: Option<NewObjectState>,
     pub in_flight_writes: HashSet<(String, String)>,
     pub failed_writes: HashSet<(String, String)>,
 }
@@ -879,6 +938,7 @@ impl State {
         self.renaming = None;
         self.renaming_object = None;
         self.rename_object_confirm = None;
+        self.new_object = None;
     }
 
     pub fn matches(&self, tenant: Option<&str>) -> Vec<ManagedMatch> {

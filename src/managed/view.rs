@@ -16,7 +16,7 @@ use crate::managed::api::ObjectSummary;
 use crate::managed::screen::Mode;
 use crate::managed::state::{
     AddFieldFocus, AddKind, AddRelationshipFocus, EditFieldFocus, FieldAttr, LoadState,
-    ManagedMatch,
+    ManagedMatch, NewObjectFocus,
 };
 
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
@@ -47,6 +47,12 @@ pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     };
     let summaries = match crate::managed::api::summarize(doc) {
         Ok(summaries) if summaries.is_empty() => {
+            if app.input_mode == InputMode::Managed(Mode::NewObject)
+                && app.managed.new_object.is_some()
+            {
+                draw_new_object_form(f, app, area);
+                return;
+            }
             crate::tui::list_chrome::draw_status_line(
                 f,
                 area,
@@ -205,6 +211,11 @@ fn draw_detail(
         width: inner.width.saturating_sub(2),
         height: inner.height,
     };
+
+    if app.input_mode == InputMode::Managed(Mode::NewObject) && app.managed.new_object.is_some() {
+        draw_new_object_form(f, app, inner);
+        return;
+    }
 
     let selected = app.managed.selected.min(matches.len().saturating_sub(1));
     let Some(item) = matches.get(selected) else {
@@ -420,6 +431,42 @@ fn draw_rename_object_form(f: &mut Frame, app: &App, area: Rect) {
     );
     rename.key.draw(f, rows[2], true);
     draw_form_error(f, rows[3], rename.error.as_deref());
+}
+
+fn draw_new_object_form(f: &mut Frame, app: &App, area: Rect) {
+    let Some(draft) = app.managed.new_object.as_ref() else {
+        return;
+    };
+    let error_h = if draft.error.is_some() { 2 } else { 0 };
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Min(4),
+        Constraint::Length(error_h),
+        Constraint::Length(2),
+    ])
+    .split(area);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "new object",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        rows[0],
+    );
+    draft
+        .name
+        .draw(f, rows[1], draft.focused == NewObjectFocus::Name);
+    draft
+        .title
+        .draw(f, rows[2], draft.focused == NewObjectFocus::Title);
+    draft
+        .description
+        .draw(f, rows[3], draft.focused == NewObjectFocus::Description);
+    draw_form_error(f, rows[4], draft.error.as_deref());
+    draw_save_button(f, rows[5], draft.focused == NewObjectFocus::Save);
 }
 
 fn draw_rename_object_confirm(f: &mut Frame, app: &App, area: Rect) {
