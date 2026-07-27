@@ -659,6 +659,48 @@ pub fn commit_relationship(app: &mut App) {
     }
 }
 
+/// Validates and applies one custom `_refProperties` draft to a relationship form.
+pub fn commit_ref_prop(
+    form: &mut crate::managed::state::RelationshipFormState,
+    draft: &crate::managed::state::RefPropDraft,
+) -> Result<(), String> {
+    let name = draft.name.trimmed();
+    crate::managed::state::validate_property_key(name)?;
+    if name == "_id" {
+        return Err("_id is reserved".into());
+    }
+    if form
+        .ref_properties
+        .iter()
+        .enumerate()
+        .any(|(index, property)| property.name == name && Some(index) != draft.editing_index)
+    {
+        return Err(format!(
+            "A custom relationship property named {name} already exists"
+        ));
+    }
+
+    let property = RefProperty {
+        name: name.to_string(),
+        label: if draft.label.trimmed().is_empty() {
+            name.to_string()
+        } else {
+            draft.label.trimmed().to_string()
+        },
+        kind: draft.kind,
+    };
+    if let Some(index) = draft.editing_index {
+        let Some(existing) = form.ref_properties.get_mut(index) else {
+            return Err("Custom relationship property no longer exists".into());
+        };
+        *existing = property;
+    } else {
+        form.ref_properties.push(property);
+        form.ref_selected = form.ref_properties.len().saturating_sub(1);
+    }
+    Ok(())
+}
+
 pub fn execute_relationship_write(
     app: &mut App,
     request: RelationshipWriteRequest,
@@ -2634,6 +2676,68 @@ mod tests {
             updated["objects"][1]["schema"]["properties"]["owned"]["properties"]["_refProperties"]
                 ["properties"],
             json!({"_id": {"type": "string"}})
+        );
+    }
+
+    #[test]
+    fn commit_ref_prop_adds_a_serialized_custom_property() {
+        let doc = relationship_doc(&["a", "b"]);
+        let mut form = crate::managed::state::RelationshipFormState::new_create(
+            "sandbox".into(),
+            "a".into(),
+            doc.clone(),
+        );
+        let mut draft = crate::managed::state::RefPropDraft::new_add();
+        draft.name.set("grantType");
+        draft.label.set("Grant");
+
+        commit_ref_prop(&mut form, &draft).unwrap();
+
+        assert_eq!(form.ref_properties.len(), 1);
+        let mut spec = relationship_spec(Cardinality::One, ReverseCardinality::None);
+        spec.ref_properties = form.ref_properties;
+        let updated = apply_relationship_spec(&doc, &spec, None).unwrap();
+        assert_eq!(
+            updated["objects"][0]["schema"]["properties"]["owner"]["properties"]["_refProperties"]
+                ["properties"]["grantType"],
+            json!({"type": "string", "label": "Grant", "propName": "grantType"})
+        );
+        assert_eq!(
+            updated["objects"][0]["schema"]["properties"]["owner"]["properties"]["_refProperties"]
+                ["properties"]["_id"],
+            json!({"type": "string"})
+        );
+    }
+
+    #[test]
+    fn commit_ref_prop_validates_names_and_replaces_in_place() {
+        let doc = relationship_doc(&["a", "b"]);
+        let mut form = crate::managed::state::RelationshipFormState::new_create(
+            "sandbox".into(),
+            "a".into(),
+            doc,
+        );
+        let mut draft = crate::managed::state::RefPropDraft::new_add();
+        for invalid in ["", "_id", "not-valid"] {
+            draft.name.set(invalid);
+            assert!(commit_ref_prop(&mut form, &draft).is_err());
+        }
+
+        draft.name.set("note");
+        commit_ref_prop(&mut form, &draft).unwrap();
+        assert!(commit_ref_prop(&mut form, &draft).is_err());
+
+        let mut edit = crate::managed::state::RefPropDraft::edit(0, &form.ref_properties[0]);
+        edit.label.set("Note");
+        edit.kind = crate::managed::state::RefPropType::Boolean;
+        commit_ref_prop(&mut form, &edit).unwrap();
+
+        assert_eq!(form.ref_properties.len(), 1);
+        assert_eq!(form.ref_properties[0].name, "note");
+        assert_eq!(form.ref_properties[0].label, "Note");
+        assert_eq!(
+            form.ref_properties[0].kind,
+            crate::managed::state::RefPropType::Boolean
         );
     }
 

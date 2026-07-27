@@ -665,6 +665,7 @@ pub enum RelationshipFocus {
     UserEditable,
     Required,
     Validate,
+    RefProperties,
     Save,
 }
 
@@ -687,6 +688,7 @@ impl RelationshipFocus {
             Self::UserEditable,
             Self::Required,
             Self::Validate,
+            Self::RefProperties,
             Self::Save,
         ]);
         order
@@ -713,6 +715,72 @@ impl RelationshipFocus {
     }
 }
 
+/// Active input within the relationship custom-property sub-editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefPropFocus {
+    Name,
+    Label,
+    Type,
+    Save,
+}
+
+impl RefPropFocus {
+    const ORDER: [Self; 4] = [Self::Name, Self::Label, Self::Type, Self::Save];
+
+    pub fn next(self) -> Self {
+        let index = Self::ORDER
+            .iter()
+            .position(|focus| *focus == self)
+            .unwrap_or(0);
+        Self::ORDER[(index + 1) % Self::ORDER.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let index = Self::ORDER
+            .iter()
+            .position(|focus| *focus == self)
+            .unwrap_or(0);
+        Self::ORDER[(index + Self::ORDER.len() - 1) % Self::ORDER.len()]
+    }
+}
+
+/// Draft state for adding or replacing one custom relationship property.
+#[derive(Debug)]
+pub struct RefPropDraft {
+    pub name: TextField,
+    pub label: TextField,
+    pub kind: RefPropType,
+    pub editing_index: Option<usize>,
+    pub focused: RefPropFocus,
+    pub error: Option<String>,
+}
+
+impl RefPropDraft {
+    /// Starts an empty custom-property draft.
+    pub fn new_add() -> Self {
+        Self {
+            name: TextField::single_line("Name"),
+            label: TextField::single_line("Label"),
+            kind: RefPropType::String,
+            editing_index: None,
+            focused: RefPropFocus::Name,
+            error: None,
+        }
+    }
+
+    /// Seeds a draft that will replace the custom property at `index`.
+    pub fn edit(index: usize, property: &RefProperty) -> Self {
+        Self {
+            name: TextField::single_line("Name").with_initial(property.name.clone()),
+            label: TextField::single_line("Label").with_initial(property.label.clone()),
+            kind: property.kind,
+            editing_index: Some(index),
+            focused: RefPropFocus::Name,
+            error: None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct RelationshipFormState {
     pub tenant_name: String,
@@ -734,6 +802,7 @@ pub struct RelationshipFormState {
     pub required: bool,
     pub validate: bool,
     pub ref_properties: Vec<RefProperty>,
+    pub ref_selected: usize,
     pub focused: RelationshipFocus,
     pub error: Option<String>,
 }
@@ -760,6 +829,7 @@ impl RelationshipFormState {
             required: false,
             validate: true,
             ref_properties: Vec::new(),
+            ref_selected: 0,
             focused: RelationshipFocus::Key,
             error: None,
         }
@@ -825,9 +895,20 @@ impl RelationshipFormState {
             required,
             validate: parsed.validate,
             ref_properties: crate::managed::ops::parse_ref_properties(&property),
+            ref_selected: 0,
             focused: RelationshipFocus::Key,
             error: None,
         })
+    }
+
+    /// Removes the selected custom relationship property and keeps selection in range.
+    pub fn remove_selected_ref_property(&mut self) {
+        if self.ref_selected < self.ref_properties.len() {
+            self.ref_properties.remove(self.ref_selected);
+        }
+        self.ref_selected = self
+            .ref_selected
+            .min(self.ref_properties.len().saturating_sub(1));
     }
 }
 
@@ -1112,6 +1193,7 @@ pub struct State {
     pub editing: Option<FieldEditState>,
     pub add_field: Option<AddFieldState>,
     pub relationship_form: Option<RelationshipFormState>,
+    pub ref_prop_draft: Option<RefPropDraft>,
     pub add_choose: Option<AddChooseState>,
     pub add_hook: Option<AddHookState>,
     pub pending_delete: Option<DeleteFieldState>,
@@ -1159,6 +1241,7 @@ impl State {
         self.editing = None;
         self.add_field = None;
         self.relationship_form = None;
+        self.ref_prop_draft = None;
         self.add_choose = None;
         self.add_hook = None;
         self.pending_delete = None;
@@ -1384,5 +1467,30 @@ mod tests {
             form.previous.unwrap().old_reverse_key.as_deref(),
             Some("owners")
         );
+    }
+
+    #[test]
+    fn removing_selected_ref_property_clamps_selection() {
+        let mut form =
+            RelationshipFormState::new_create("sandbox".into(), "a".into(), json!({"objects": []}));
+        form.ref_properties = vec![
+            RefProperty {
+                name: "first".into(),
+                label: "First".into(),
+                kind: RefPropType::String,
+            },
+            RefProperty {
+                name: "second".into(),
+                label: "Second".into(),
+                kind: RefPropType::Number,
+            },
+        ];
+        form.ref_selected = 1;
+
+        form.remove_selected_ref_property();
+
+        assert_eq!(form.ref_properties.len(), 1);
+        assert_eq!(form.ref_properties[0].name, "first");
+        assert_eq!(form.ref_selected, 0);
     }
 }

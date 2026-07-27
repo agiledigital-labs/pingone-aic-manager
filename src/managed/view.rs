@@ -16,7 +16,7 @@ use crate::managed::api::ObjectSummary;
 use crate::managed::screen::Mode;
 use crate::managed::state::{
     AddFieldFocus, AddKind, EditFieldFocus, FieldAttr, LoadState, ManagedMatch, NewObjectFocus,
-    RelationshipFocus,
+    RefPropFocus, RelationshipFocus,
 };
 
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
@@ -242,12 +242,17 @@ fn draw_detail(
             draw_add_field_form(f, app, inner);
             return;
         }
-        InputMode::Managed(Mode::Relationship | Mode::RelationshipTarget)
+        InputMode::Managed(Mode::Relationship | Mode::RelationshipTarget | Mode::RefProp)
             if app.managed.relationship_form.is_some() =>
         {
             draw_relationship_form(f, app, inner);
             if app.input_mode == InputMode::Managed(Mode::RelationshipTarget) {
                 draw_relationship_target_picker(f, app, inner);
+            }
+            if app.input_mode == InputMode::Managed(Mode::RefProp)
+                && app.managed.ref_prop_draft.is_some()
+            {
+                draw_ref_prop_form(f, app, inner);
             }
             return;
         }
@@ -781,6 +786,9 @@ fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Length(error_h),
         Constraint::Length(2),
     ])
@@ -870,26 +878,102 @@ fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
         draft.focused == RelationshipFocus::Validate,
         true,
     );
-    let names = draft
-        .ref_properties
-        .iter()
-        .map(|property| property.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
     f.render_widget(
-        Paragraph::new(format!(
-            "_refProperties: _id{}  (Ctrl-A to add — coming soon)",
-            if names.is_empty() {
-                String::new()
-            } else {
-                format!(", {names}")
-            }
-        ))
-        .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new("Custom _refProperties").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         rows[17],
     );
-    draw_form_error(f, rows[19], draft.error.as_deref());
-    draw_save_button(f, rows[20], draft.focused == RelationshipFocus::Save);
+    let selected = draft
+        .ref_selected
+        .min(draft.ref_properties.len().saturating_sub(1));
+    let lines = if draft.ref_properties.is_empty() {
+        vec![Line::from(Span::styled(
+            "  (none)",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        draft
+            .ref_properties
+            .iter()
+            .enumerate()
+            .map(|(index, property)| {
+                simple_pick_line(
+                    &format!(
+                        "{}: {}  {}",
+                        property.name,
+                        property.kind.label(),
+                        property.label
+                    ),
+                    draft.focused == RelationshipFocus::RefProperties && index == selected,
+                )
+            })
+            .collect()
+    };
+    f.render_widget(Paragraph::new(lines), rows[18]);
+    f.render_widget(
+        Paragraph::new("Ctrl-A add · Enter edit · d delete")
+            .style(Style::default().fg(Color::DarkGray)),
+        rows[19],
+    );
+    draw_form_error(f, rows[20], draft.error.as_deref());
+    draw_save_button(f, rows[21], draft.focused == RelationshipFocus::Save);
+}
+
+fn draw_ref_prop_form(f: &mut Frame, app: &App, area: Rect) {
+    let Some(draft) = app.managed.ref_prop_draft.as_ref() else {
+        return;
+    };
+    let width = area.width.min(52);
+    let height = area.height.min(13);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, popup);
+    let title = if draft.editing_index.is_some() {
+        " edit relationship property "
+    } else {
+        " add relationship property "
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    let rows = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    draft
+        .name
+        .draw(f, rows[0], draft.focused == RefPropFocus::Name);
+    draft
+        .label
+        .draw(f, rows[1], draft.focused == RefPropFocus::Label);
+    draw_selector_row(
+        f,
+        rows[2],
+        "Type",
+        draft.kind.label(),
+        draft.focused == RefPropFocus::Type,
+    );
+    draw_form_error(f, rows[3], draft.error.as_deref());
+    draw_save_button(f, rows[4], draft.focused == RefPropFocus::Save);
 }
 
 fn draw_relationship_target_picker(f: &mut Frame, app: &App, area: Rect) {
