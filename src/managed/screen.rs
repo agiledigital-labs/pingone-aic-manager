@@ -9,9 +9,9 @@ use crate::app::event::ToastKind;
 use crate::app::{App, InputMode};
 use crate::managed::ops;
 use crate::managed::state::{
-    AddChooseState, AddFieldFocus, AddFieldState, AddHookState, AddKind, AddRelationshipFocus,
-    AddRelationshipState, DeleteFieldState, EditFieldFocus, FieldEditState, LoadState,
-    NewObjectFocus, NewObjectState, RenameFieldState, RenameObjectConfirmState, RenameObjectState,
+    AddChooseState, AddFieldFocus, AddFieldState, AddHookState, AddKind, DeleteFieldState,
+    EditFieldFocus, FieldEditState, LoadState, NewObjectFocus, NewObjectState, RelationshipFocus,
+    RelationshipFormState, RenameFieldState, RenameObjectConfirmState, RenameObjectState,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -20,8 +20,8 @@ pub enum Mode {
     EditField,
     AddChooseKind,
     AddField,
-    AddRelationship,
-    PickRelationshipTarget,
+    Relationship,
+    RelationshipTarget,
     AddHook,
     DeleteFieldConfirm,
     RenameField,
@@ -62,6 +62,13 @@ pub enum Event {
     CreateResult {
         tenant: String,
         name: String,
+        undo_id: crate::undo::UndoId,
+        result: std::result::Result<Value, String>,
+    },
+    RelationshipResult {
+        tenant: String,
+        source_object: String,
+        key: String,
         undo_id: crate::undo::UndoId,
         result: std::result::Result<Value, String>,
     },
@@ -138,6 +145,13 @@ pub fn apply_event(app: &mut App, event: Event) {
             undo_id,
             result,
         } => ops::apply_create_result(app, tenant, name, undo_id, result),
+        Event::RelationshipResult {
+            tenant,
+            source_object,
+            key,
+            undo_id,
+            result,
+        } => ops::apply_relationship_result(app, tenant, source_object, key, undo_id, result),
     }
 }
 
@@ -147,8 +161,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
         Mode::EditField => handle_edit_key(app, key),
         Mode::AddChooseKind => handle_add_choose_key(app, key),
         Mode::AddField => handle_add_field_key(app, key),
-        Mode::AddRelationship => handle_add_relationship_key(app, key),
-        Mode::PickRelationshipTarget => handle_relationship_target_key(app, key),
+        Mode::Relationship => handle_relationship_key(app, key),
+        Mode::RelationshipTarget => handle_relationship_target_key(app, key),
         Mode::AddHook => handle_add_hook_key(app, key),
         Mode::DeleteFieldConfirm => handle_delete_confirm_key(app, key),
         Mode::RenameField => handle_rename_field_key(app, key),
@@ -195,16 +209,19 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out.push(("Esc", "cancel"));
             out
         }
-        Mode::AddRelationship => {
+        Mode::Relationship => {
             let mut out = vec![("Tab", "navigate")];
             match app
                 .managed
-                .add_relationship
+                .relationship_form
                 .as_ref()
                 .map(|draft| draft.focused)
             {
-                Some(AddRelationshipFocus::Save) => out.push(("Enter", "add")),
-                Some(AddRelationshipFocus::Target) => out.push(("Enter", "pick target")),
+                Some(RelationshipFocus::Save) => out.push(("Enter", "save")),
+                Some(RelationshipFocus::Target) => out.push(("Enter", "pick target")),
+                Some(RelationshipFocus::Forward | RelationshipFocus::Reverse) => {
+                    out.push(("←/→", "change"))
+                }
                 Some(focus) if focus.is_bool() => out.push(("Space", "toggle")),
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
@@ -212,7 +229,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out.push(("Esc", "cancel"));
             out
         }
-        Mode::PickRelationshipTarget => vec![
+        Mode::RelationshipTarget => vec![
             ("Enter", "choose target"),
             ("↑/↓", "navigate"),
             ("Esc", "back"),
@@ -274,16 +291,19 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
             out.push(("Esc", "cancel"));
             Some(out)
         }
-        Mode::AddRelationship => {
+        Mode::Relationship => {
             let mut out = vec![("Tab", "navigate")];
             match app
                 .managed
-                .add_relationship
+                .relationship_form
                 .as_ref()
                 .map(|draft| draft.focused)
             {
-                Some(AddRelationshipFocus::Save) => out.push(("Enter", "add")),
-                Some(AddRelationshipFocus::Target) => out.push(("Enter", "pick target")),
+                Some(RelationshipFocus::Save) => out.push(("Enter", "save")),
+                Some(RelationshipFocus::Target) => out.push(("Enter", "pick target")),
+                Some(RelationshipFocus::Forward | RelationshipFocus::Reverse) => {
+                    out.push(("←/→", "change"))
+                }
                 Some(focus) if focus.is_bool() => out.push(("Space", "toggle")),
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
@@ -291,7 +311,7 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
             out.push(("Esc", "cancel"));
             Some(out)
         }
-        Mode::PickRelationshipTarget => Some(vec![
+        Mode::RelationshipTarget => Some(vec![
             ("Enter", "choose target"),
             ("↑/↓", "navigate"),
             ("Esc", "back"),
@@ -328,8 +348,8 @@ pub fn resume_mode_after_prod_cancel(app: &App) -> Option<Mode> {
         Some(Mode::AddChooseKind)
     } else if app.managed.add_field.is_some() {
         Some(Mode::AddField)
-    } else if app.managed.add_relationship.is_some() {
-        Some(Mode::AddRelationship)
+    } else if app.managed.relationship_form.is_some() {
+        Some(Mode::Relationship)
     } else if app.managed.add_hook.is_some() {
         Some(Mode::AddHook)
     } else if app.managed.pending_delete.is_some() {
@@ -456,13 +476,9 @@ pub fn start_edit_field(app: &mut App) {
     if write_in_flight(app, &tenant_name, &object_name) {
         return;
     }
-    if crate::managed::state::is_relationship_property(&property)
-        && crate::managed::state::field_capability(&object, &field_key).rename_key
-    {
-        app.push_toast(
-            ToastKind::Info,
-            "Relationship keys cannot be renamed; delete and recreate the relationship",
-        );
+    if crate::managed::state::is_relationship_property(&property) {
+        start_relationship_edit(app);
+        return;
     }
 
     app.managed.editing = Some(FieldEditState::from_property(
@@ -499,16 +515,42 @@ pub fn start_add_choose(app: &mut App) {
     app.input_mode = InputMode::Managed(Mode::AddChooseKind);
 }
 
-pub fn start_add_relationship(app: &mut App) {
-    let Some((tenant_name, object_name, object)) = selected_object_with_tenant(app) else {
+pub fn start_relationship_create(app: &mut App) {
+    let Some((tenant_name, object_name, _)) = selected_object_with_tenant(app) else {
         return;
     };
     if write_in_flight(app, &tenant_name, &object_name) {
         return;
     }
-    app.managed.add_relationship =
-        Some(AddRelationshipState::new(tenant_name, object_name, object));
-    app.input_mode = InputMode::Managed(Mode::AddRelationship);
+    let Some(LoadState::Loaded(doc)) = app.managed.data.get(&tenant_name) else {
+        return;
+    };
+    app.managed.relationship_form = Some(RelationshipFormState::new_create(
+        tenant_name,
+        object_name,
+        doc.clone(),
+    ));
+    app.input_mode = InputMode::Managed(Mode::Relationship);
+}
+
+pub fn start_relationship_edit(app: &mut App) {
+    let Some((tenant_name, object_name, _, key, property, _)) = selected_property(app) else {
+        return;
+    };
+    if write_in_flight(app, &tenant_name, &object_name) {
+        return;
+    }
+    let Some(LoadState::Loaded(doc)) = app.managed.data.get(&tenant_name) else {
+        return;
+    };
+    let Some(form) =
+        RelationshipFormState::edit(tenant_name, object_name, doc.clone(), key, property)
+    else {
+        app.push_toast(ToastKind::Error, "Could not parse relationship");
+        return;
+    };
+    app.managed.relationship_form = Some(form);
+    app.input_mode = InputMode::Managed(Mode::Relationship);
 }
 
 /// Opens a key-only rename draft when the selected property's capabilities allow it.
@@ -633,7 +675,7 @@ pub fn relationship_target_matches(app: &App) -> Vec<String> {
     };
     let query = app
         .managed
-        .add_relationship
+        .relationship_form
         .as_ref()
         .map(|draft| draft.target_query.value().trim().to_lowercase())
         .unwrap_or_default();
@@ -719,7 +761,7 @@ fn handle_add_choose_key(app: &mut App, key: KeyEvent) {
             let kind = app.managed.add_choose.take().map(|draft| draft.kind);
             match kind {
                 Some(AddKind::Field) => start_add_field(app),
-                Some(AddKind::Relationship) => start_add_relationship(app),
+                Some(AddKind::Relationship) => start_relationship_create(app),
                 None => app.input_mode = InputMode::Normal,
             }
         }
@@ -1079,10 +1121,10 @@ fn handle_add_field_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-fn handle_add_relationship_key(app: &mut App, key: KeyEvent) {
+fn handle_relationship_key(app: &mut App, key: KeyEvent) {
     let Some(focused) = app
         .managed
-        .add_relationship
+        .relationship_form
         .as_ref()
         .map(|draft| draft.focused)
     else {
@@ -1095,65 +1137,121 @@ fn handle_add_relationship_key(app: &mut App, key: KeyEvent) {
             return;
         }
         KeyCode::Tab => {
-            if let Some(draft) = app.managed.add_relationship.as_mut() {
-                ops::advance_add_relationship_focus(draft, true);
+            if let Some(draft) = app.managed.relationship_form.as_mut() {
+                draft.focused = draft.focused.next(draft.reverse);
             }
             return;
         }
         KeyCode::BackTab => {
-            if let Some(draft) = app.managed.add_relationship.as_mut() {
-                ops::advance_add_relationship_focus(draft, false);
+            if let Some(draft) = app.managed.relationship_form.as_mut() {
+                draft.focused = draft.focused.prev(draft.reverse);
             }
             return;
         }
-        KeyCode::Enter if focused == AddRelationshipFocus::Save => {
-            ops::commit_add_relationship(app);
+        KeyCode::Enter if focused == RelationshipFocus::Save => {
+            ops::commit_relationship(app);
             return;
         }
-        KeyCode::Enter if focused == AddRelationshipFocus::Target => {
-            app.input_mode = InputMode::Managed(Mode::PickRelationshipTarget);
+        KeyCode::Enter if focused == RelationshipFocus::Target => {
+            app.input_mode = InputMode::Managed(Mode::RelationshipTarget);
             return;
         }
         KeyCode::Enter if focused.is_bool() => {
-            if let Some(draft) = app.managed.add_relationship.as_mut() {
-                draft.toggle_focused_bool();
+            if let Some(draft) = app.managed.relationship_form.as_mut() {
+                toggle_relationship_bool(draft);
                 draft.error = None;
             }
             return;
         }
-        KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right if focused.is_bool() => {
-            if let Some(draft) = app.managed.add_relationship.as_mut() {
-                draft.toggle_focused_bool();
+        KeyCode::Char(' ') if focused.is_bool() => {
+            if let Some(draft) = app.managed.relationship_form.as_mut() {
+                toggle_relationship_bool(draft);
+                draft.error = None;
+            }
+            return;
+        }
+        KeyCode::Left | KeyCode::Right
+            if matches!(
+                focused,
+                RelationshipFocus::Forward | RelationshipFocus::Reverse
+            ) =>
+        {
+            if let Some(draft) = app.managed.relationship_form.as_mut() {
+                if focused == RelationshipFocus::Forward {
+                    draft.forward = if key.code == KeyCode::Left {
+                        draft.forward.prev()
+                    } else {
+                        draft.forward.next()
+                    };
+                } else {
+                    draft.reverse = if key.code == KeyCode::Left {
+                        draft.reverse.prev()
+                    } else {
+                        draft.reverse.next()
+                    };
+                    if draft.reverse == crate::managed::state::ReverseCardinality::None
+                        && draft.focused == RelationshipFocus::ReverseKey
+                    {
+                        draft.focused = RelationshipFocus::Searchable;
+                    }
+                }
+                draft.error = None;
+            }
+            return;
+        }
+        KeyCode::Char(' ')
+            if matches!(
+                focused,
+                RelationshipFocus::Forward | RelationshipFocus::Reverse
+            ) =>
+        {
+            if let Some(draft) = app.managed.relationship_form.as_mut() {
+                if focused == RelationshipFocus::Forward {
+                    draft.forward = draft.forward.next();
+                } else {
+                    draft.reverse = draft.reverse.next();
+                }
                 draft.error = None;
             }
             return;
         }
         KeyCode::Enter => {
-            if let Some(draft) = app.managed.add_relationship.as_mut() {
-                ops::advance_add_relationship_focus(draft, true);
+            if let Some(draft) = app.managed.relationship_form.as_mut() {
+                draft.focused = draft.focused.next(draft.reverse);
             }
             return;
         }
         _ => {}
     }
 
-    let Some(draft) = app.managed.add_relationship.as_mut() else {
+    let Some(draft) = app.managed.relationship_form.as_mut() else {
         return;
     };
     draft.error = None;
     match focused {
-        AddRelationshipFocus::Key => {
+        RelationshipFocus::Key => {
             draft.key.handle_key(&key);
         }
-        AddRelationshipFocus::Title => {
+        RelationshipFocus::Title => {
             draft.title.handle_key(&key);
         }
-        AddRelationshipFocus::Description => {
+        RelationshipFocus::Description => {
             draft.description.handle_key(&key);
         }
-        AddRelationshipFocus::ReversePropertyName => {
-            draft.reverse_property_name.handle_key(&key);
+        RelationshipFocus::ReverseKey => {
+            draft.reverse_key.handle_key(&key);
         }
+        _ => {}
+    }
+}
+
+fn toggle_relationship_bool(draft: &mut RelationshipFormState) {
+    match draft.focused {
+        RelationshipFocus::Searchable => draft.searchable = !draft.searchable,
+        RelationshipFocus::Viewable => draft.viewable = !draft.viewable,
+        RelationshipFocus::UserEditable => draft.user_editable = !draft.user_editable,
+        RelationshipFocus::Required => draft.required = !draft.required,
+        RelationshipFocus::Validate => draft.validate = !draft.validate,
         _ => {}
     }
 }
@@ -1161,24 +1259,24 @@ fn handle_add_relationship_key(app: &mut App, key: KeyEvent) {
 fn handle_relationship_target_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
-            app.input_mode = InputMode::Managed(Mode::AddRelationship);
+            app.input_mode = InputMode::Managed(Mode::Relationship);
             return;
         }
         KeyCode::Enter => {
             let matches = relationship_target_matches(app);
             let selected = app
                 .managed
-                .add_relationship
+                .relationship_form
                 .as_ref()
                 .map(|draft| draft.target_selected.min(matches.len().saturating_sub(1)))
                 .unwrap_or(0);
             if let Some(name) = matches.get(selected).cloned() {
-                if let Some(draft) = app.managed.add_relationship.as_mut() {
+                if let Some(draft) = app.managed.relationship_form.as_mut() {
                     draft.target_name = Some(name);
-                    draft.focused = AddRelationshipFocus::Target;
+                    draft.focused = RelationshipFocus::Target;
                     draft.error = None;
                 }
-                app.input_mode = InputMode::Managed(Mode::AddRelationship);
+                app.input_mode = InputMode::Managed(Mode::Relationship);
             }
             return;
         }
@@ -1203,11 +1301,11 @@ fn handle_relationship_target_key(app: &mut App, key: KeyEvent) {
 
     let before = app
         .managed
-        .add_relationship
+        .relationship_form
         .as_ref()
         .map(|draft| draft.target_query.value().to_string())
         .unwrap_or_default();
-    if let Some(draft) = app.managed.add_relationship.as_mut() {
+    if let Some(draft) = app.managed.relationship_form.as_mut() {
         if draft.target_query.handle_key(&key) && draft.target_query.value() != before {
             draft.target_selected = 0;
         }
@@ -1219,7 +1317,7 @@ fn move_relationship_target(app: &mut App, delta: isize) {
     if n == 0 {
         return;
     }
-    if let Some(draft) = app.managed.add_relationship.as_mut() {
+    if let Some(draft) = app.managed.relationship_form.as_mut() {
         let cur = draft.target_selected.min(n - 1) as isize;
         draft.target_selected = (cur + delta).clamp(0, n as isize - 1) as usize;
     }

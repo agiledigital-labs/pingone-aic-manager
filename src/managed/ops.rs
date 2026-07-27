@@ -16,14 +16,14 @@ pub enum ProdAction {
     Update(Box<ObjectReplacePlan>),
     RenameObject(Box<RenameObjectRequest>),
     CreateObject(Box<CreateObjectRequest>),
+    WriteRelationship(Box<RelationshipWriteRequest>),
     Undo(crate::undo::UndoId),
 }
 use crate::managed::screen::Event;
 use crate::managed::state::{
-    AddFieldState, AddRelationshipState, Cardinality, DeleteFieldState, EditFieldFocus, FieldAttr,
-    FieldEditState, LoadState, ParsedRelationship, PreviousRelationship, RefProperty,
-    RelationshipSpec, RenameFieldState, RenameObjectState, ReverseCardinality, ScalarFieldType,
-    State,
+    AddFieldState, Cardinality, DeleteFieldState, EditFieldFocus, FieldAttr, FieldEditState,
+    LoadState, ParsedRelationship, PreviousRelationship, RefProperty, RelationshipSpec,
+    RenameFieldState, RenameObjectState, ReverseCardinality, ScalarFieldType, State,
 };
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
@@ -65,6 +65,15 @@ pub struct CreateObjectRequest {
     pub(crate) name: String,
     pub(crate) title: String,
     pub(crate) description: String,
+    pub(crate) previous_doc: Value,
+}
+
+#[derive(Debug)]
+pub struct RelationshipWriteRequest {
+    pub(crate) tenant_name: String,
+    pub(crate) source_object: String,
+    pub(crate) spec: RelationshipSpec,
+    pub(crate) previous: Option<PreviousRelationship>,
     pub(crate) previous_doc: Value,
 }
 
@@ -449,6 +458,44 @@ pub fn parse_relationship(property: &Value) -> Option<ParsedRelationship> {
     })
 }
 
+/// Extracts custom relationship metadata definitions while preserving their labels and types.
+pub fn parse_ref_properties(property: &Value) -> Vec<RefProperty> {
+    let node = if property.get("type").and_then(Value::as_str) == Some("array") {
+        property.get("items")
+    } else {
+        Some(property)
+    };
+    node.and_then(|node| node.pointer("/properties/_refProperties/properties"))
+        .and_then(Value::as_object)
+        .map(|properties| {
+            properties
+                .iter()
+                .filter_map(|(name, definition)| {
+                    if name == "_id" {
+                        return None;
+                    }
+                    let kind = match definition.get("type").and_then(Value::as_str) {
+                        Some("number") | Some("integer") => {
+                            crate::managed::state::RefPropType::Number
+                        }
+                        Some("boolean") => crate::managed::state::RefPropType::Boolean,
+                        _ => crate::managed::state::RefPropType::String,
+                    };
+                    Some(RefProperty {
+                        name: name.clone(),
+                        label: definition
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .unwrap_or(name)
+                            .to_string(),
+                        kind,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn start_record_count(app: &mut App, draft: RenameObjectState) {
     let tenant = draft.tenant_name.clone();
     let old_name = draft.old_name.clone();
@@ -556,6 +603,194 @@ pub fn execute_create_object(app: &mut App, request: CreateObjectRequest, confir
             result,
         }));
     });
+}
+
+/// Validates and submits the active relationship form as a whole-document write.
+pub fn commit_relationship(app: &mut App) {
+    let Some(form) = app.managed.relationship_form.as_mut() else {
+        return;
+    };
+    let Some(target_object) = form.target_name.clone() else {
+        form.error = Some("Choose a target object".into());
+        return;
+    };
+    if form.reverse != ReverseCardinality::None && form.reverse_key.trimmed().is_empty() {
+        form.error =
+            Some("Reverse property key is required when a reverse relationship is selected".into());
+        return;
+    }
+    let spec = RelationshipSpec {
+        source_object: form.source_object.clone(),
+        key: form.key.trimmed().to_string(),
+        title: form.title.trimmed().to_string(),
+        description: form.description.trimmed().to_string(),
+        target_object,
+        forward: form.forward,
+        reverse: form.reverse,
+        reverse_key: form.reverse_key.trimmed().to_string(),
+        searchable: form.searchable,
+        viewable: form.viewable,
+        user_editable: form.user_editable,
+        required: form.required,
+        validate: form.validate,
+        ref_properties: form.ref_properties.clone(),
+    };
+    if let Err(error) = apply_relationship_spec(&form.original_doc, &spec, form.previous.as_ref()) {
+        form.error = Some(error);
+        return;
+    }
+    let request = RelationshipWriteRequest {
+        tenant_name: form.tenant_name.clone(),
+        source_object: form.source_object.clone(),
+        spec,
+        previous: form.previous.clone(),
+        previous_doc: form.original_doc.clone(),
+    };
+    if app
+        .active_tenant()
+        .is_some_and(|tenant| tenant.theme == TenantTheme::Production)
+    {
+        app.prod_confirm.pending = Some(PendingProdAction::Managed(ProdAction::WriteRelationship(
+            Box::new(request),
+        )));
+        app.input_mode = InputMode::ProdConfirm;
+    } else {
+        execute_relationship_write(app, request, false);
+    }
+}
+
+pub fn execute_relationship_write(
+    app: &mut App,
+    request: RelationshipWriteRequest,
+    confirmed_prod: bool,
+) {
+    let undo_id = match app.undo.record(UndoEntry::pending(
+        request.tenant_name.clone(),
+        "managed",
+        format!(
+            "Revert relationship {}.{}",
+            request.source_object, request.spec.key
+        ),
+        Sensitivity::TenantConfig,
+        Capability::Undoable,
+        Some(UndoOp::ManagedConfigReplace {
+            tenant: request.tenant_name.clone(),
+            body: request.previous_doc.clone(),
+        }),
+        ConflictCheck::ContentEqualsAfter {
+            body: apply_relationship_spec(
+                &request.previous_doc,
+                &request.spec,
+                request.previous.as_ref(),
+            )
+            .unwrap_or(Value::Null),
+        },
+    )) {
+        Ok(id) => id,
+        Err(error) => {
+            app.push_toast(
+                ToastKind::Error,
+                format!("Relationship save cancelled: failed to record undo: {error}"),
+            );
+            return;
+        }
+    };
+    app.managed
+        .in_flight_writes
+        .insert((request.tenant_name.clone(), request.source_object.clone()));
+    app.managed.clear_active_drafts();
+    app.input_mode = InputMode::Normal;
+    let tenant = request.tenant_name.clone();
+    let source_object = request.source_object.clone();
+    let key = request.spec.key.clone();
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result = relationship_write_request(&request, confirmed_prod)
+            .await
+            .map_err(|error| error.to_string());
+        let _ = tx.send(AppEvent::Managed(Event::RelationshipResult {
+            tenant,
+            source_object,
+            key,
+            undo_id,
+            result,
+        }));
+    });
+}
+
+async fn relationship_write_request(
+    request: &RelationshipWriteRequest,
+    confirmed_prod: bool,
+) -> crate::Result<Value> {
+    let live = crate::managed::api::get_managed(&request.tenant_name).await?;
+    let updated = apply_relationship_spec(&live, &request.spec, request.previous.as_ref())
+        .map_err(crate::Error::Config)?;
+    crate::managed::api::replace_managed(&request.tenant_name, updated, confirmed_prod).await?;
+    let confirmed = crate::managed::api::get_managed(&request.tenant_name).await?;
+    let source =
+        crate::managed::api::object_named(&confirmed, &request.source_object).map_err(|_| {
+            crate::Error::Config("relationship write returned but read-back did not match".into())
+        })?;
+    let forward_ok = crate::managed::state::properties(source)
+        .is_some_and(|properties| properties.contains_key(&request.spec.key));
+    let reverse_ok = request.spec.reverse == ReverseCardinality::None
+        || crate::managed::api::object_named(&confirmed, &request.spec.target_object)
+            .ok()
+            .and_then(crate::managed::state::properties)
+            .is_some_and(|properties| properties.contains_key(&request.spec.reverse_key));
+    if !forward_ok || !reverse_ok {
+        return Err(crate::Error::Config(
+            "relationship write returned but read-back did not match".into(),
+        ));
+    }
+    Ok(confirmed)
+}
+
+pub fn apply_relationship_result(
+    app: &mut App,
+    tenant: String,
+    source_object: String,
+    key: String,
+    undo_id: UndoId,
+    result: Result<Value, String>,
+) {
+    match result {
+        Ok(doc) => {
+            app.managed
+                .data
+                .insert(tenant.clone(), LoadState::Loaded(doc));
+            app.managed
+                .in_flight_writes
+                .remove(&(tenant.clone(), source_object.clone()));
+            if app
+                .active_tenant()
+                .is_some_and(|active| active.name == tenant)
+            {
+                if let Some(index) = app
+                    .managed
+                    .matches(Some(&tenant))
+                    .iter()
+                    .position(|item| item.name == source_object)
+                {
+                    app.managed.selected = index;
+                }
+            }
+            app.push_toast(
+                ToastKind::Success,
+                format!("Saved relationship {source_object}.{key}. Press ^Z to undo."),
+            );
+        }
+        Err(error) => {
+            app.managed
+                .in_flight_writes
+                .remove(&(tenant, source_object.clone()));
+            let _ = app.undo.mark_applied(undo_id, EntryStatus::Expired);
+            app.push_toast(
+                ToastKind::Error,
+                format!("Relationship save failed: {source_object}.{key}: {error}"),
+            );
+        }
+    }
 }
 
 async fn create_object_request(
@@ -752,38 +987,6 @@ pub fn build_add_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         searchable_changed: applied.searchable_changed,
         success_message: format!(
             "Added managed field {}.{}. Press ^Z to undo.",
-            draft.object_name, applied.field_key
-        ),
-    })
-}
-
-pub fn build_add_relationship_plan(app: &mut App) -> Option<ObjectReplacePlan> {
-    let draft = app.managed.add_relationship.as_mut()?;
-    if app
-        .managed
-        .in_flight_writes
-        .contains(&(draft.tenant_name.clone(), draft.object_name.clone()))
-    {
-        draft.error = Some("Write already in progress for this object".into());
-        return None;
-    }
-
-    let applied = match apply_add_relationship(draft) {
-        Ok(applied) => applied,
-        Err(message) => {
-            draft.error = Some(message);
-            return None;
-        }
-    };
-
-    Some(ObjectReplacePlan {
-        tenant_name: draft.tenant_name.clone(),
-        object_name: draft.object_name.clone(),
-        previous_object: draft.original_object.clone(),
-        new_object: applied.object,
-        searchable_changed: false,
-        success_message: format!(
-            "Added relationship {}.{}. Press ^Z to undo.",
             draft.object_name, applied.field_key
         ),
     })
@@ -1462,26 +1665,6 @@ fn apply_add_field(draft: &AddFieldState) -> Result<AddFieldApplied, String> {
     })
 }
 
-fn apply_add_relationship(draft: &AddRelationshipState) -> Result<AddFieldApplied, String> {
-    let mut object = draft.original_object.clone();
-    let field_key = crate::managed::state::normalize_new_property_key(
-        &draft.original_object,
-        &draft.key.value,
-    )?;
-    ensure_property_available(&object, &field_key, None)?;
-    let target = draft
-        .target_name
-        .as_deref()
-        .ok_or_else(|| "Choose a target object".to_string())?;
-    let property = relationship_property(draft, &field_key, target);
-    insert_new_property(&mut object, &field_key, property, false)?;
-    Ok(AddFieldApplied {
-        object,
-        field_key,
-        searchable_changed: false,
-    })
-}
-
 fn apply_add_hook(object_def: &Value, object_name: &str, event: &str) -> Result<Value, String> {
     let mut object = object_def.clone();
     let object_map = object
@@ -1559,86 +1742,6 @@ fn replace_key_in_array(object: &mut Value, pointer: &str, old_key: &str, new_ke
             *value = Value::String(new_key.to_string());
         }
     }
-}
-
-fn relationship_property(draft: &AddRelationshipState, field_key: &str, target: &str) -> Value {
-    let title = if draft.title.trimmed().is_empty() {
-        title_from_key(field_key)
-    } else {
-        draft.title.trimmed().to_string()
-    };
-    let description = draft.description.trimmed().to_string();
-    let mut relationship = json!({
-        "type": "relationship",
-        "title": title.clone(),
-        "description": description.clone(),
-        "validate": draft.validate,
-        "resourceCollection": [{"path": format!("managed/{target}")}],
-        "properties": {
-            "_ref": {
-                "description": "References a relationship from a managed object",
-                "type": "string"
-            },
-            "_refProperties": {
-                "description": "Supports metadata within the relationship",
-                "properties": {
-                    "_id": {
-                        "description": "_refProperties object ID",
-                        "type": "string"
-                    }
-                },
-                "title": format!("{field_key} _refProperties"),
-                "type": "object"
-            }
-        }
-    });
-    let reverse = draft.reverse_property_name.trimmed();
-    if !reverse.is_empty() {
-        if let Some(map) = relationship.as_object_mut() {
-            map.insert(
-                "reversePropertyName".into(),
-                Value::String(reverse.to_string()),
-            );
-            map.insert("reverseRelationship".into(), Value::Bool(true));
-        }
-    }
-
-    if draft.collection {
-        json!({
-            "type": "array",
-            "title": title,
-            "description": description,
-            "items": relationship,
-            "returnByDefault": false,
-            "searchable": false,
-            "userEditable": true,
-            "viewable": true
-        })
-    } else {
-        let mut property = relationship;
-        if let Some(map) = property.as_object_mut() {
-            map.insert("returnByDefault".into(), Value::Bool(false));
-            map.insert("searchable".into(), Value::Bool(false));
-            map.insert("userEditable".into(), Value::Bool(true));
-            map.insert("viewable".into(), Value::Bool(true));
-        }
-        property
-    }
-}
-
-fn title_from_key(key: &str) -> String {
-    key.trim_start_matches("custom_")
-        .split('_')
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn set_optional_string(map: &mut serde_json::Map<String, Value>, key: &str, value: &str) {
@@ -1823,13 +1926,6 @@ pub fn commit_add_field(app: &mut App) {
     submit_plan(app, plan);
 }
 
-pub fn commit_add_relationship(app: &mut App) {
-    let Some(plan) = build_add_relationship_plan(app) else {
-        return;
-    };
-    submit_plan(app, plan);
-}
-
 pub fn commit_add_hook(app: &mut App) {
     let Some(plan) = build_add_hook_plan(app) else {
         return;
@@ -1887,14 +1983,6 @@ pub fn advance_add_field_focus(draft: &mut AddFieldState, forward: bool) {
     };
 }
 
-pub fn advance_add_relationship_focus(draft: &mut AddRelationshipState, forward: bool) {
-    draft.focused = if forward {
-        draft.focused.next()
-    } else {
-        draft.focused.prev()
-    };
-}
-
 /// Advances the rename draft's single focusable field.
 pub fn advance_rename_field_focus(_draft: &mut RenameFieldState, _forward: bool) {}
 
@@ -1923,6 +2011,7 @@ pub fn execute_prod_action(app: &mut App, action: ProdAction) {
         ProdAction::Update(plan) => execute_update_plan(app, *plan, true),
         ProdAction::RenameObject(request) => execute_rename_object(app, *request, true),
         ProdAction::CreateObject(request) => execute_create_object(app, *request, true),
+        ProdAction::WriteRelationship(request) => execute_relationship_write(app, *request, true),
         ProdAction::Undo(undo_id) => execute_undo(app, undo_id, true),
     }
 }
@@ -2111,71 +2200,6 @@ mod tests {
         let applied = apply_add_field(&draft).unwrap();
         assert!(applied.object["schema"]["properties"]["first"].is_object());
         assert_eq!(applied.object["schema"]["order"], json!(["first"]));
-    }
-
-    #[test]
-    fn add_relationship_builds_single_relationship_shape() {
-        let object = json!({
-            "name": "alpha_lock",
-            "schema": {"properties": {}, "required": [], "order": []}
-        });
-        let mut draft = AddRelationshipState::new("sandbox".into(), "alpha_lock".into(), object);
-        draft.key.set("owner");
-        draft.title.set("Owner");
-        draft.description.set("Owning user");
-        draft.target_name = Some("alpha_user".into());
-        draft.reverse_property_name.set("locks");
-
-        let applied = apply_add_relationship(&draft).unwrap();
-        let property = &applied.object["schema"]["properties"]["owner"];
-        assert_eq!(property["type"], json!("relationship"));
-        assert_eq!(
-            property["resourceCollection"],
-            json!([{"path": "managed/alpha_user"}])
-        );
-        assert_eq!(property["title"], json!("Owner"));
-        assert_eq!(property["description"], json!("Owning user"));
-        assert_eq!(property["validate"], json!(true));
-        assert_eq!(property["reversePropertyName"], json!("locks"));
-        assert_eq!(property["reverseRelationship"], json!(true));
-        assert_eq!(property["returnByDefault"], json!(false));
-        assert_eq!(property["userEditable"], json!(true));
-        assert_eq!(property["properties"]["_ref"]["type"], json!("string"));
-        assert_eq!(
-            property["properties"]["_refProperties"]["properties"]["_id"]["type"],
-            json!("string")
-        );
-        assert_eq!(applied.object["schema"]["order"], json!(["owner"]));
-    }
-
-    #[test]
-    fn add_relationship_builds_array_relationship_shape() {
-        let object = json!({
-            "name": "alpha_lock",
-            "schema": {"properties": {}, "required": [], "order": []}
-        });
-        let mut draft = AddRelationshipState::new("sandbox".into(), "alpha_lock".into(), object);
-        draft.key.set("owners");
-        draft.target_name = Some("alpha_user".into());
-        draft.collection = true;
-        draft.validate = false;
-
-        let applied = apply_add_relationship(&draft).unwrap();
-        let property = &applied.object["schema"]["properties"]["owners"];
-        assert_eq!(property["type"], json!("array"));
-        assert_eq!(property["returnByDefault"], json!(false));
-        assert_eq!(property["userEditable"], json!(true));
-        assert_eq!(property["items"]["type"], json!("relationship"));
-        assert_eq!(
-            property["items"]["resourceCollection"],
-            json!([{"path": "managed/alpha_user"}])
-        );
-        assert_eq!(property["items"]["validate"], json!(false));
-        assert!(property["items"]["reversePropertyName"].is_null());
-        assert_eq!(
-            property["items"]["properties"]["_refProperties"]["type"],
-            json!("object")
-        );
     }
 
     #[test]
@@ -2684,6 +2708,19 @@ mod tests {
                 validate: true,
                 ref_property_names: vec!["grantType".into()],
             })
+        );
+    }
+
+    #[test]
+    fn parse_ref_properties_keeps_custom_definitions() {
+        let property = json!({"type": "relationship", "properties": {"_refProperties": {"properties": {"_id": {"type": "string"}, "note": {"type": "string", "label": "Note"}, "rank": {"type": "number"}, "enabled": {"type": "boolean"}}}}});
+        let properties = parse_ref_properties(&property);
+        assert_eq!(properties.len(), 3);
+        assert_eq!(properties[0].name, "enabled");
+        assert_eq!(properties[1].label, "Note");
+        assert_eq!(
+            properties[2].kind,
+            crate::managed::state::RefPropType::Number
         );
     }
 }
