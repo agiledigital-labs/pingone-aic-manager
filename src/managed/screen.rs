@@ -9,19 +9,22 @@ use crate::app::event::ToastKind;
 use crate::app::{App, InputMode};
 use crate::managed::ops;
 use crate::managed::state::{
-    AddFieldFocus, AddFieldState, AddHookState, AddRelationshipFocus, AddRelationshipState,
-    DeleteFieldState, EditFieldFocus, FieldEditState, LoadState,
+    AddChooseState, AddFieldFocus, AddFieldState, AddHookState, AddKind, AddRelationshipFocus,
+    AddRelationshipState, DeleteFieldState, EditFieldFocus, FieldEditState, LoadState,
+    RenameFieldState,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Search,
     EditField,
+    AddChooseKind,
     AddField,
     AddRelationship,
     PickRelationshipTarget,
     AddHook,
     DeleteFieldConfirm,
+    RenameField,
 }
 
 #[derive(Debug)]
@@ -88,11 +91,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
     match mode {
         Mode::Search => handle_search_key(app, key),
         Mode::EditField => handle_edit_key(app, key),
+        Mode::AddChooseKind => handle_add_choose_key(app, key),
         Mode::AddField => handle_add_field_key(app, key),
         Mode::AddRelationship => handle_add_relationship_key(app, key),
         Mode::PickRelationshipTarget => handle_relationship_target_key(app, key),
         Mode::AddHook => handle_add_hook_key(app, key),
         Mode::DeleteFieldConfirm => handle_delete_confirm_key(app, key),
+        Mode::RenameField => handle_rename_field_key(app, key),
     }
 }
 
@@ -116,6 +121,11 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out.push(("Esc", "cancel"));
             out
         }
+        Mode::AddChooseKind => vec![
+            ("←/→ or Tab", "choose kind"),
+            ("Enter", "continue"),
+            ("Esc", "cancel"),
+        ],
         Mode::AddField => {
             let mut out = vec![("Tab", "navigate")];
             match app.managed.add_field.as_ref().map(|draft| draft.focused) {
@@ -156,6 +166,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Esc", "cancel"),
         ],
         Mode::DeleteFieldConfirm => vec![("y", "delete"), ("n/Esc", "cancel")],
+        Mode::RenameField => vec![("Enter", "rename"), ("Esc", "cancel")],
     }
 }
 
@@ -182,6 +193,11 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
             out.push(("Esc", "cancel"));
             Some(out)
         }
+        Mode::AddChooseKind => Some(vec![
+            ("←/→ or Tab", "choose kind"),
+            ("Enter", "continue"),
+            ("Esc", "cancel"),
+        ]),
         Mode::AddField => {
             let mut out = vec![("Tab", "navigate")];
             match app.managed.add_field.as_ref().map(|draft| draft.focused) {
@@ -222,6 +238,7 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
             ("Esc", "cancel"),
         ]),
         Mode::DeleteFieldConfirm => Some(vec![("y", "delete"), ("n/Esc", "cancel")]),
+        Mode::RenameField => Some(vec![("Enter", "rename"), ("Esc", "cancel")]),
     }
 }
 
@@ -236,6 +253,8 @@ pub fn add_field_active(app: &App) -> bool {
 pub fn resume_mode_after_prod_cancel(app: &App) -> Option<Mode> {
     if app.managed.editing.is_some() {
         Some(Mode::EditField)
+    } else if app.managed.add_choose.is_some() {
+        Some(Mode::AddChooseKind)
     } else if app.managed.add_field.is_some() {
         Some(Mode::AddField)
     } else if app.managed.add_relationship.is_some() {
@@ -244,6 +263,8 @@ pub fn resume_mode_after_prod_cancel(app: &App) -> Option<Mode> {
         Some(Mode::AddHook)
     } else if app.managed.pending_delete.is_some() {
         Some(Mode::DeleteFieldConfirm)
+    } else if app.managed.renaming.is_some() {
+        Some(Mode::RenameField)
     } else {
         None
     }
@@ -306,7 +327,7 @@ pub fn delete(app: &mut App) {
 }
 
 pub fn new_item(app: &mut App) {
-    start_add_field(app);
+    start_add_choose(app);
 }
 
 fn handle_search_key(app: &mut App, key: KeyEvent) {
@@ -389,6 +410,18 @@ pub fn start_add_field(app: &mut App) {
     app.input_mode = InputMode::Managed(Mode::AddField);
 }
 
+/// Opens the managed-property kind chooser before either add form.
+pub fn start_add_choose(app: &mut App) {
+    let Some((tenant_name, object_name, _)) = selected_object_with_tenant(app) else {
+        return;
+    };
+    if write_in_flight(app, &tenant_name, &object_name) {
+        return;
+    }
+    app.managed.add_choose = Some(AddChooseState::default());
+    app.input_mode = InputMode::Managed(Mode::AddChooseKind);
+}
+
 pub fn start_add_relationship(app: &mut App) {
     let Some((tenant_name, object_name, object)) = selected_object_with_tenant(app) else {
         return;
@@ -399,6 +432,35 @@ pub fn start_add_relationship(app: &mut App) {
     app.managed.add_relationship =
         Some(AddRelationshipState::new(tenant_name, object_name, object));
     app.input_mode = InputMode::Managed(Mode::AddRelationship);
+}
+
+/// Opens a key-only rename draft when the selected property's capabilities allow it.
+pub fn start_rename_field(app: &mut App) {
+    let Some((tenant_name, object_name, object, field_key, property, _)) = selected_property(app)
+    else {
+        app.push_toast(ToastKind::Info, "Selected object has no fields");
+        return;
+    };
+    if write_in_flight(app, &tenant_name, &object_name) {
+        return;
+    }
+    let caps = crate::managed::state::field_capability_for_property(&object, &field_key, &property);
+    if !caps.rename_key {
+        let message = if crate::managed::state::is_relationship_property(&property) {
+            "Relationship keys cannot be renamed; delete and recreate the relationship"
+        } else {
+            "Standard field keys cannot be renamed"
+        };
+        app.push_toast(ToastKind::Info, message);
+        return;
+    }
+    app.managed.renaming = Some(RenameFieldState::new(
+        tenant_name,
+        object_name,
+        field_key,
+        object,
+    ));
+    app.input_mode = InputMode::Managed(Mode::RenameField);
 }
 
 pub fn start_add_hook(app: &mut App) {
@@ -528,6 +590,44 @@ fn write_in_flight(app: &mut App, tenant_name: &str, object_name: &str) -> bool 
         return true;
     }
     false
+}
+
+fn handle_add_choose_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => ops::cancel_active_draft(app),
+        KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') => {
+            if let Some(draft) = app.managed.add_choose.as_mut() {
+                draft.kind.toggle();
+            }
+        }
+        KeyCode::Enter => {
+            let kind = app.managed.add_choose.take().map(|draft| draft.kind);
+            match kind {
+                Some(AddKind::Field) => start_add_field(app),
+                Some(AddKind::Relationship) => start_add_relationship(app),
+                None => app.input_mode = InputMode::Normal,
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_rename_field_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => ops::cancel_active_draft(app),
+        KeyCode::Tab | KeyCode::BackTab => {
+            if let Some(rename) = app.managed.renaming.as_mut() {
+                ops::advance_rename_field_focus(rename, key.code == KeyCode::Tab);
+            }
+        }
+        KeyCode::Enter => ops::commit_rename_field(app),
+        _ => {
+            if let Some(rename) = app.managed.renaming.as_mut() {
+                rename.error = None;
+                rename.key.handle_key(&key);
+            }
+        }
+    }
 }
 
 fn handle_edit_key(app: &mut App, key: KeyEvent) {
