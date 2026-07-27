@@ -407,6 +407,149 @@ impl ScalarFieldType {
     }
 }
 
+/// Cardinality of a relationship property on its source object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cardinality {
+    One,
+    Many,
+}
+
+impl Cardinality {
+    pub fn next(self) -> Self {
+        match self {
+            Self::One => Self::Many,
+            Self::Many => Self::One,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        self.next()
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::One => "has one",
+            Self::Many => "has many",
+        }
+    }
+}
+
+/// Cardinality of the optional reverse property on the target object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReverseCardinality {
+    None,
+    One,
+    Many,
+}
+
+impl ReverseCardinality {
+    pub fn next(self) -> Self {
+        match self {
+            Self::None => Self::One,
+            Self::One => Self::Many,
+            Self::Many => Self::None,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::None => Self::Many,
+            Self::One => Self::None,
+            Self::Many => Self::One,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "has none",
+            Self::One => "has one",
+            Self::Many => "has many",
+        }
+    }
+}
+
+/// Scalar type for custom metadata held in a relationship's `_refProperties`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefPropType {
+    String,
+    Number,
+    Boolean,
+}
+
+impl RefPropType {
+    pub fn next(self) -> Self {
+        match self {
+            Self::String => Self::Number,
+            Self::Number => Self::Boolean,
+            Self::Boolean => Self::String,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::String => Self::Boolean,
+            Self::Number => Self::String,
+            Self::Boolean => Self::Number,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Number => "number",
+            Self::Boolean => "boolean",
+        }
+    }
+}
+
+/// Custom metadata definition for one relationship side.
+#[derive(Debug, Clone)]
+pub struct RefProperty {
+    pub name: String,
+    pub label: String,
+    pub kind: RefPropType,
+}
+
+/// Fully resolved intent for a create-or-edit relationship write.
+#[derive(Debug, Clone)]
+pub struct RelationshipSpec {
+    pub source_object: String,
+    pub key: String,
+    pub title: String,
+    pub description: String,
+    pub target_object: String,
+    pub forward: Cardinality,
+    pub reverse: ReverseCardinality,
+    pub reverse_key: String,
+    pub searchable: bool,
+    pub viewable: bool,
+    pub user_editable: bool,
+    pub required: bool,
+    pub validate: bool,
+    pub ref_properties: Vec<RefProperty>,
+}
+
+/// Relationship wiring that must be removed before an edit is inserted.
+#[derive(Debug, Clone)]
+pub struct PreviousRelationship {
+    pub old_key: String,
+    pub old_target: String,
+    pub old_reverse_key: Option<String>,
+}
+
+/// Relationship details extracted from a managed schema property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedRelationship {
+    pub forward: Cardinality,
+    pub target: String,
+    pub reverse_key: Option<String>,
+    pub searchable: bool,
+    pub viewable: bool,
+    pub user_editable: bool,
+    pub validate: bool,
+    pub ref_property_names: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddFieldFocus {
     Key,
