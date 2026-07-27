@@ -17,6 +17,7 @@
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::Serialize;
 
+use crate::agent::duration::{format_duration, parse_duration};
 use crate::agent::{self, AgentClient, Request, Response};
 use crate::config::crypto::Dek;
 use crate::config::wraps::WrapsFile;
@@ -55,7 +56,11 @@ pub enum Command {
     },
     /// Unlock the keystore in the agent. Prompts for the master password.
     #[command(hide = true)]
-    Login,
+    Login {
+        /// Idle-lock timeout (for example, 1h20m).
+        #[arg(long)]
+        timeout: Option<String>,
+    },
     /// Clear the agent's in-memory JWKs + tokens (but leave the agent running).
     #[command(hide = true)]
     Logout,
@@ -145,7 +150,11 @@ pub enum CtxCommand {
 #[derive(Subcommand, Debug)]
 pub enum SessionCommand {
     /// Unlock the keystore in the agent. Prompts for the master password.
-    Login,
+    Login {
+        /// Idle-lock timeout (for example, 1h20m).
+        #[arg(long)]
+        timeout: Option<String>,
+    },
     /// Clear the agent's in-memory JWKs + tokens (but leave the agent running).
     Logout,
     /// Stop the agent process.
@@ -160,7 +169,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             detach,
             idle_timeout,
         }) => run_agent(detach, idle_timeout).await,
-        Some(Command::Login) => login().await,
+        Some(Command::Login { timeout }) => login(timeout).await,
         Some(Command::Logout) => logout().await,
         Some(Command::Stop) => stop().await,
         Some(Command::Status) => status().await,
@@ -182,7 +191,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 
 async fn session(command: SessionCommand) -> Result<()> {
     match command {
-        SessionCommand::Login => login().await,
+        SessionCommand::Login { timeout } => login(timeout).await,
         SessionCommand::Logout => logout().await,
         SessionCommand::Stop => stop().await,
         SessionCommand::Status => status().await,
@@ -290,8 +299,17 @@ fn spawn_detached_then_exit() -> Result<()> {
     })
 }
 
-async fn login() -> Result<()> {
+async fn login(timeout: Option<String>) -> Result<()> {
     ensure_agent_unlocked().await?;
+    if let Some(timeout) = timeout {
+        let secs = parse_duration(&timeout).map_err(Error::Config)?;
+        let client = AgentClient::connect(agent::socket_path()).await?;
+        match client.send(&Request::SetIdleTimeout { secs }).await? {
+            Response::Ok => {}
+            Response::Error { message } => return Err(Error::Config(message)),
+            other => return Err(Error::Config(format!("unexpected reply: {other:?}"))),
+        }
+    }
     print_status_block().await
 }
 
@@ -474,8 +492,9 @@ async fn print_status_block() -> Result<()> {
     println!("unlocked: {}", info.unlocked);
     if info.unlocked {
         println!(
-            "idle:     {}s remaining of {}s",
-            info.idle_remaining_secs, info.idle_timeout_secs
+            "idle:     {} remaining of {}",
+            format_duration(info.idle_remaining_secs),
+            format_duration(info.idle_timeout_secs)
         );
     }
     if let Some(cur) = config::read_current_context()? {
@@ -827,6 +846,21 @@ mod tests {
     fn legacy_login_alias_still_parses() {
         let cli = Cli::try_parse_from(["aic", "login"]).unwrap();
 
-        assert!(matches!(cli.command, Some(Command::Login)));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Login { timeout: None })
+        ));
+    }
+
+    #[test]
+    fn login_timeout_parses() {
+        let cli = Cli::try_parse_from(["aic", "login", "--timeout", "1h20m"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Login {
+                timeout: Some(timeout)
+            }) if timeout == "1h20m"
+        ));
     }
 }

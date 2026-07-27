@@ -300,6 +300,10 @@ async fn handle(
             Response::Ok
         }
         Request::Status => Response::Status(do_status(state).await),
+        Request::SetIdleTimeout { secs } => {
+            state.write().await.idle_timeout = Duration::from_secs(secs);
+            Response::Ok
+        }
         Request::GetToken { tenant } => match do_get_token(&tenant, state).await {
             Ok(Some((token, expires_at))) => Response::Token {
                 access_token: token,
