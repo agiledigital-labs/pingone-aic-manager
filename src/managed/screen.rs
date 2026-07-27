@@ -1,7 +1,7 @@
 //! Managed-objects tab interaction: lazy loading, fuzzy search, selection, and
 //! in-TUI schema edits routed through the managed object-replace engine.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 
 use crate::app::event::AppEvent;
@@ -10,8 +10,9 @@ use crate::app::{App, InputMode};
 use crate::managed::ops;
 use crate::managed::state::{
     AddChooseState, AddFieldFocus, AddFieldState, AddHookState, AddKind, DeleteFieldState,
-    EditFieldFocus, FieldEditState, LoadState, NewObjectFocus, NewObjectState, RelationshipFocus,
-    RelationshipFormState, RenameFieldState, RenameObjectConfirmState, RenameObjectState,
+    EditFieldFocus, FieldEditState, LoadState, NewObjectFocus, NewObjectState, RefPropDraft,
+    RefPropFocus, RelationshipFocus, RelationshipFormState, RenameFieldState,
+    RenameObjectConfirmState, RenameObjectState,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -22,6 +23,7 @@ pub enum Mode {
     AddField,
     Relationship,
     RelationshipTarget,
+    RefProp,
     AddHook,
     DeleteFieldConfirm,
     RenameField,
@@ -163,6 +165,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
         Mode::AddField => handle_add_field_key(app, key),
         Mode::Relationship => handle_relationship_key(app, key),
         Mode::RelationshipTarget => handle_relationship_target_key(app, key),
+        Mode::RefProp => handle_ref_prop_key(app, key),
         Mode::AddHook => handle_add_hook_key(app, key),
         Mode::DeleteFieldConfirm => handle_delete_confirm_key(app, key),
         Mode::RenameField => handle_rename_field_key(app, key),
@@ -222,6 +225,9 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 Some(RelationshipFocus::Forward | RelationshipFocus::Reverse) => {
                     out.push(("←/→", "change"))
                 }
+                Some(RelationshipFocus::RefProperties) => {
+                    out.extend([("Ctrl-A", "add"), ("Enter", "edit"), ("d", "delete")]);
+                }
                 Some(focus) if focus.is_bool() => out.push(("Space", "toggle")),
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
@@ -233,6 +239,12 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Enter", "choose target"),
             ("↑/↓", "navigate"),
             ("Esc", "back"),
+        ],
+        Mode::RefProp => vec![
+            ("Tab", "navigate"),
+            ("Enter", "save/next"),
+            ("←/→", "type"),
+            ("Esc", "cancel"),
         ],
         Mode::AddHook => vec![
             ("Enter", "register hook"),
@@ -304,6 +316,9 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
                 Some(RelationshipFocus::Forward | RelationshipFocus::Reverse) => {
                     out.push(("←/→", "change"))
                 }
+                Some(RelationshipFocus::RefProperties) => {
+                    out.extend([("Ctrl-A", "add"), ("Enter", "edit"), ("d", "delete")]);
+                }
                 Some(focus) if focus.is_bool() => out.push(("Space", "toggle")),
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
@@ -315,6 +330,12 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
             ("Enter", "choose target"),
             ("↑/↓", "navigate"),
             ("Esc", "back"),
+        ]),
+        Mode::RefProp => Some(vec![
+            ("Tab", "navigate"),
+            ("Enter", "save/next"),
+            ("←/→", "type"),
+            ("Esc", "cancel"),
         ]),
         Mode::AddHook => Some(vec![
             ("Enter", "register hook"),
@@ -348,6 +369,8 @@ pub fn resume_mode_after_prod_cancel(app: &App) -> Option<Mode> {
         Some(Mode::AddChooseKind)
     } else if app.managed.add_field.is_some() {
         Some(Mode::AddField)
+    } else if app.managed.ref_prop_draft.is_some() {
+        Some(Mode::RefProp)
     } else if app.managed.relationship_form.is_some() {
         Some(Mode::Relationship)
     } else if app.managed.add_hook.is_some() {
@@ -1131,6 +1154,59 @@ fn handle_relationship_key(app: &mut App, key: KeyEvent) {
         app.input_mode = InputMode::Normal;
         return;
     };
+    if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.managed.ref_prop_draft = Some(RefPropDraft::new_add());
+        app.input_mode = InputMode::Managed(Mode::RefProp);
+        return;
+    }
+    if focused == RelationshipFocus::RefProperties {
+        match key.code {
+            KeyCode::Esc => ops::cancel_active_draft(app),
+            KeyCode::Tab => {
+                if let Some(draft) = app.managed.relationship_form.as_mut() {
+                    draft.focused = draft.focused.next(draft.reverse);
+                }
+            }
+            KeyCode::BackTab => {
+                if let Some(draft) = app.managed.relationship_form.as_mut() {
+                    draft.focused = draft.focused.prev(draft.reverse);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(draft) = app.managed.relationship_form.as_mut() {
+                    draft.ref_selected = draft.ref_selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(draft) = app.managed.relationship_form.as_mut() {
+                    draft.ref_selected =
+                        (draft.ref_selected + 1).min(draft.ref_properties.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                if let Some(draft) = app.managed.relationship_form.as_mut() {
+                    draft.remove_selected_ref_property();
+                    draft.error = None;
+                }
+            }
+            KeyCode::Enter => {
+                let ref_prop_draft = app.managed.relationship_form.as_ref().and_then(|draft| {
+                    draft
+                        .ref_properties
+                        .get(draft.ref_selected)
+                        .map(|property| RefPropDraft::edit(draft.ref_selected, property))
+                });
+                if let Some(ref_prop_draft) = ref_prop_draft {
+                    app.managed.ref_prop_draft = Some(ref_prop_draft);
+                    app.input_mode = InputMode::Managed(Mode::RefProp);
+                } else if let Some(draft) = app.managed.relationship_form.as_mut() {
+                    draft.focused = draft.focused.next(draft.reverse);
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
     match key.code {
         KeyCode::Esc => {
             ops::cancel_active_draft(app);
@@ -1242,6 +1318,91 @@ fn handle_relationship_key(app: &mut App, key: KeyEvent) {
             draft.reverse_key.handle_key(&key);
         }
         _ => {}
+    }
+}
+
+fn handle_ref_prop_key(app: &mut App, key: KeyEvent) {
+    let Some(focused) = app
+        .managed
+        .ref_prop_draft
+        .as_ref()
+        .map(|draft| draft.focused)
+    else {
+        app.input_mode = InputMode::Managed(Mode::Relationship);
+        return;
+    };
+    match key.code {
+        KeyCode::Esc => {
+            app.managed.ref_prop_draft = None;
+            app.input_mode = InputMode::Managed(Mode::Relationship);
+            return;
+        }
+        KeyCode::Tab => {
+            if let Some(draft) = app.managed.ref_prop_draft.as_mut() {
+                draft.focused = draft.focused.next();
+            }
+            return;
+        }
+        KeyCode::BackTab => {
+            if let Some(draft) = app.managed.ref_prop_draft.as_mut() {
+                draft.focused = draft.focused.prev();
+            }
+            return;
+        }
+        KeyCode::Left if focused == RefPropFocus::Type => {
+            if let Some(draft) = app.managed.ref_prop_draft.as_mut() {
+                draft.kind = draft.kind.prev();
+                draft.error = None;
+            }
+            return;
+        }
+        KeyCode::Right | KeyCode::Char(' ') if focused == RefPropFocus::Type => {
+            if let Some(draft) = app.managed.ref_prop_draft.as_mut() {
+                draft.kind = draft.kind.next();
+                draft.error = None;
+            }
+            return;
+        }
+        KeyCode::Enter if focused == RefPropFocus::Save => {
+            let Some(mut draft) = app.managed.ref_prop_draft.take() else {
+                return;
+            };
+            let result = app
+                .managed
+                .relationship_form
+                .as_mut()
+                .ok_or_else(|| "Relationship form is no longer active".to_string())
+                .and_then(|form| ops::commit_ref_prop(form, &draft));
+            match result {
+                Ok(()) => app.input_mode = InputMode::Managed(Mode::Relationship),
+                Err(error) => {
+                    draft.error = Some(error);
+                    app.managed.ref_prop_draft = Some(draft);
+                }
+            }
+            return;
+        }
+        KeyCode::Enter => {
+            if let Some(draft) = app.managed.ref_prop_draft.as_mut() {
+                draft.focused = draft.focused.next();
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    let Some(draft) = app.managed.ref_prop_draft.as_mut() else {
+        return;
+    };
+    draft.error = None;
+    match focused {
+        RefPropFocus::Name => {
+            draft.name.handle_key(&key);
+        }
+        RefPropFocus::Label => {
+            draft.label.handle_key(&key);
+        }
+        RefPropFocus::Type | RefPropFocus::Save => {}
     }
 }
 
