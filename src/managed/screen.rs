@@ -11,7 +11,7 @@ use crate::managed::ops;
 use crate::managed::state::{
     AddChooseState, AddFieldFocus, AddFieldState, AddHookState, AddKind, AddRelationshipFocus,
     AddRelationshipState, DeleteFieldState, EditFieldFocus, FieldEditState, LoadState,
-    RenameFieldState,
+    RenameFieldState, RenameObjectConfirmState, RenameObjectState,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -25,6 +25,8 @@ pub enum Mode {
     AddHook,
     DeleteFieldConfirm,
     RenameField,
+    RenameObject,
+    RenameObjectConfirm,
 }
 
 #[derive(Debug)]
@@ -44,6 +46,17 @@ pub enum Event {
         undo_id: crate::undo::UndoId,
         tenant: String,
         result: std::result::Result<ops::UndoOutcome, ops::UndoFailure>,
+    },
+    RenameRecordCount {
+        draft: RenameObjectState,
+        result: std::result::Result<crate::managed::api::RecordCount, String>,
+    },
+    RenameResult {
+        tenant: String,
+        old_name: String,
+        new_name: String,
+        undo_id: crate::undo::UndoId,
+        result: std::result::Result<Value, String>,
     },
 }
 
@@ -84,6 +97,34 @@ pub fn apply_event(app: &mut App, event: Event) {
             tenant,
             result,
         } => ops::apply_undo_result(app, undo_id, tenant, result),
+        Event::RenameRecordCount { draft, result } => {
+            if app.input_mode != InputMode::Managed(Mode::RenameObject)
+                || app.managed.renaming_object.is_some()
+            {
+                return;
+            }
+            let repoints =
+                ops::rename_object_in_doc(&draft.original_doc, &draft.old_name, &draft.key.value)
+                    .map_or(0, |(_, count)| count);
+            let (record_count, count_error) = match result {
+                Ok(count) => (Some(count), None),
+                Err(error) => (None, Some(error)),
+            };
+            app.managed.rename_object_confirm = Some(RenameObjectConfirmState {
+                draft,
+                repoints,
+                record_count,
+                count_error,
+            });
+            app.input_mode = InputMode::Managed(Mode::RenameObjectConfirm);
+        }
+        Event::RenameResult {
+            tenant,
+            old_name,
+            new_name,
+            undo_id,
+            result,
+        } => ops::apply_rename_result(app, tenant, old_name, new_name, undo_id, result),
     }
 }
 
@@ -98,6 +139,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
         Mode::AddHook => handle_add_hook_key(app, key),
         Mode::DeleteFieldConfirm => handle_delete_confirm_key(app, key),
         Mode::RenameField => handle_rename_field_key(app, key),
+        Mode::RenameObject => handle_rename_object_key(app, key),
+        Mode::RenameObjectConfirm => handle_rename_object_confirm_key(app, key),
     }
 }
 
@@ -167,6 +210,8 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         ],
         Mode::DeleteFieldConfirm => vec![("y", "delete"), ("n/Esc", "cancel")],
         Mode::RenameField => vec![("Enter", "rename"), ("Esc", "cancel")],
+        Mode::RenameObject => vec![("Enter", "continue"), ("Esc", "cancel")],
+        Mode::RenameObjectConfirm => vec![("y", "rename"), ("n/Esc", "cancel")],
     }
 }
 
@@ -239,6 +284,8 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
         ]),
         Mode::DeleteFieldConfirm => Some(vec![("y", "delete"), ("n/Esc", "cancel")]),
         Mode::RenameField => Some(vec![("Enter", "rename"), ("Esc", "cancel")]),
+        Mode::RenameObject => Some(vec![("Enter", "continue"), ("Esc", "cancel")]),
+        Mode::RenameObjectConfirm => Some(vec![("y", "rename"), ("n/Esc", "cancel")]),
     }
 }
 
@@ -265,6 +312,10 @@ pub fn resume_mode_after_prod_cancel(app: &App) -> Option<Mode> {
         Some(Mode::DeleteFieldConfirm)
     } else if app.managed.renaming.is_some() {
         Some(Mode::RenameField)
+    } else if app.managed.renaming_object.is_some() {
+        Some(Mode::RenameObject)
+    } else if app.managed.rename_object_confirm.is_some() {
+        Some(Mode::RenameObjectConfirm)
     } else {
         None
     }
@@ -463,6 +514,32 @@ pub fn start_rename_field(app: &mut App) {
     app.input_mode = InputMode::Managed(Mode::RenameField);
 }
 
+/// Starts the whole-document object rename flow for a custom object only.
+pub fn start_rename_object(app: &mut App) {
+    let Some((tenant_name, object_name, object)) = selected_object_with_tenant(app) else {
+        return;
+    };
+    if write_in_flight(app, &tenant_name, &object_name) {
+        return;
+    }
+    if crate::managed::state::is_ping_shipped_object(&object) {
+        app.push_toast(
+            ToastKind::Info,
+            "Ping-shipped objects cannot be renamed; create a custom replacement instead",
+        );
+        return;
+    }
+    let Some(LoadState::Loaded(doc)) = app.managed.data.get(&tenant_name) else {
+        return;
+    };
+    app.managed.renaming_object = Some(RenameObjectState::new(
+        tenant_name,
+        object_name,
+        doc.clone(),
+    ));
+    app.input_mode = InputMode::Managed(Mode::RenameObject);
+}
+
 pub fn start_add_hook(app: &mut App) {
     let Some((tenant_name, object_name, object)) = selected_object_with_tenant(app) else {
         return;
@@ -627,6 +704,84 @@ fn handle_rename_field_key(app: &mut App, key: KeyEvent) {
                 rename.key.handle_key(&key);
             }
         }
+    }
+}
+
+fn handle_rename_object_key(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Esc {
+        ops::cancel_active_draft(app);
+        return;
+    }
+    if key.code == KeyCode::Enter {
+        let Some(mut draft) = app.managed.renaming_object.take() else {
+            return;
+        };
+        let existing = crate::managed::api::objects(&draft.original_doc)
+            .map(|objects| {
+                objects
+                    .iter()
+                    .filter_map(|object| {
+                        object
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    })
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        if let Err(error) = crate::managed::state::validate_object_name(
+            &draft.key.value,
+            &existing,
+            &draft.old_name,
+        ) {
+            draft.error = Some(error);
+            app.managed.renaming_object = Some(draft);
+            return;
+        }
+        ops::start_record_count(app, draft);
+        return;
+    }
+    if let Some(draft) = app.managed.renaming_object.as_mut() {
+        draft.error = None;
+        draft.key.handle_key(&key);
+    }
+}
+
+fn handle_rename_object_confirm_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('n') => ops::cancel_active_draft(app),
+        KeyCode::Char('y') => {
+            if app.active_tenant().is_some_and(|tenant| {
+                tenant.theme == crate::config::tenant::TenantTheme::Production
+            }) {
+                let Some(confirm) = app.managed.rename_object_confirm.as_ref() else {
+                    return;
+                };
+                let request = ops::RenameObjectRequest {
+                    tenant_name: confirm.draft.tenant_name.clone(),
+                    old_name: confirm.draft.old_name.clone(),
+                    new_name: confirm.draft.key.value.clone(),
+                    previous_doc: confirm.draft.original_doc.clone(),
+                };
+                app.prod_confirm.pending =
+                    Some(crate::app::prod_confirm::PendingProdAction::Managed(
+                        ops::ProdAction::RenameObject(Box::new(request)),
+                    ));
+                app.input_mode = InputMode::ProdConfirm;
+            } else {
+                let Some(confirm) = app.managed.rename_object_confirm.take() else {
+                    return;
+                };
+                let request = ops::RenameObjectRequest {
+                    tenant_name: confirm.draft.tenant_name,
+                    old_name: confirm.draft.old_name,
+                    new_name: confirm.draft.key.value,
+                    previous_doc: confirm.draft.original_doc,
+                };
+                ops::execute_rename_object(app, request, false);
+            }
+        }
+        _ => {}
     }
 }
 

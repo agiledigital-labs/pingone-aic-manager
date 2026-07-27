@@ -248,6 +248,16 @@ fn draw_detail(
             draw_rename_field_form(f, app, inner);
             return;
         }
+        InputMode::Managed(Mode::RenameObject) if app.managed.renaming_object.is_some() => {
+            draw_rename_object_form(f, app, inner);
+            return;
+        }
+        InputMode::Managed(Mode::RenameObjectConfirm)
+            if app.managed.rename_object_confirm.is_some() =>
+        {
+            draw_rename_object_confirm(f, app, inner);
+            return;
+        }
         _ => {}
     }
 
@@ -390,6 +400,47 @@ fn draw_rename_field_form(f: &mut Frame, app: &App, area: Rect) {
         rename.focused == crate::managed::state::RenameFieldFocus::Key,
     );
     draw_form_error(f, rows[3], rename.error.as_deref());
+}
+
+fn draw_rename_object_form(f: &mut Frame, app: &App, area: Rect) {
+    let Some(rename) = app.managed.renaming_object.as_ref() else {
+        return;
+    };
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(2),
+    ])
+    .split(area);
+    form_title(f, rows[0], &rename.old_name, "rename object");
+    f.render_widget(
+        Paragraph::new("Renaming does not migrate records."),
+        rows[1],
+    );
+    rename.key.draw(f, rows[2], true);
+    draw_form_error(f, rows[3], rename.error.as_deref());
+}
+
+fn draw_rename_object_confirm(f: &mut Frame, app: &App, area: Rect) {
+    let Some(confirm) = app.managed.rename_object_confirm.as_ref() else {
+        return;
+    };
+    let records = confirm.record_count.map_or_else(|| "Record count unknown".to_string(), |count| format!("{count} record(s) will be ORPHANED in the old backend (recoverable by renaming back)"));
+    let lines = vec![
+        Line::from(format!(
+            "Rename {} → {}",
+            confirm.draft.old_name, confirm.draft.key.value
+        )),
+        Line::from(format!(
+            "{} relationship reference(s) will be repointed",
+            confirm.repoints
+        )),
+        Line::from(records),
+        Line::from("config/sync mappings are not rewritten"),
+        Line::from("Press y to proceed, n or Esc to cancel"),
+    ];
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
 }
 
 fn property_line(name: &str, property: &Value, required: bool, selected: bool) -> Line<'static> {

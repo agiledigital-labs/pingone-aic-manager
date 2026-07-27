@@ -14,12 +14,13 @@ use crate::config::tenant::TenantTheme;
 #[derive(Debug)]
 pub enum ProdAction {
     Update(Box<ObjectReplacePlan>),
+    RenameObject(Box<RenameObjectRequest>),
     Undo(crate::undo::UndoId),
 }
 use crate::managed::screen::Event;
 use crate::managed::state::{
     AddFieldState, AddRelationshipState, DeleteFieldState, EditFieldFocus, FieldAttr,
-    FieldEditState, LoadState, RenameFieldState, ScalarFieldType, State,
+    FieldEditState, LoadState, RenameFieldState, RenameObjectState, ScalarFieldType, State,
 };
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
@@ -43,8 +44,200 @@ pub struct UpdateOutcome {
 #[derive(Debug)]
 pub struct UndoOutcome {
     pub(crate) description: String,
-    pub(crate) object_name: String,
-    pub(crate) object: Value,
+    pub(crate) object: Option<(String, Value)>,
+    pub(crate) doc: Option<Value>,
+}
+
+#[derive(Debug)]
+pub struct RenameObjectRequest {
+    pub(crate) tenant_name: String,
+    pub(crate) old_name: String,
+    pub(crate) new_name: String,
+    pub(crate) previous_doc: Value,
+}
+
+/// Renames an object identity and every schema relationship path that targets it.
+pub fn rename_object_in_doc(doc: &Value, old: &str, new: &str) -> Result<(Value, usize), String> {
+    let mut renamed = doc.clone();
+    let objects =
+        crate::managed::api::objects_mut(&mut renamed).map_err(|error| error.to_string())?;
+    if objects
+        .iter()
+        .any(|object| object.get("name").and_then(Value::as_str) == Some(new))
+    {
+        return Err(format!("Managed object '{new}' already exists"));
+    }
+    let Some(source) = objects
+        .iter_mut()
+        .find(|object| object.get("name").and_then(Value::as_str) == Some(old))
+    else {
+        return Err(format!("No managed object named '{old}'"));
+    };
+    let Some(map) = source.as_object_mut() else {
+        return Err(format!("Managed object '{old}' is malformed"));
+    };
+    map.insert("name".into(), Value::String(new.into()));
+    let old_path = format!("managed/{old}");
+    let new_path = format!("managed/{new}");
+    let mut count = 0;
+    for object in objects {
+        let Some(properties) = object
+            .pointer_mut("/schema/properties")
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        for property in properties.values_mut() {
+            rewrite_relationship_paths(
+                property.get_mut("resourceCollection"),
+                &old_path,
+                &new_path,
+                &mut count,
+            );
+            rewrite_relationship_paths(
+                property.pointer_mut("/items/resourceCollection"),
+                &old_path,
+                &new_path,
+                &mut count,
+            );
+        }
+    }
+    Ok((renamed, count))
+}
+
+fn rewrite_relationship_paths(
+    collection: Option<&mut Value>,
+    old_path: &str,
+    new_path: &str,
+    count: &mut usize,
+) {
+    let Some(entries) = collection.and_then(Value::as_array_mut) else {
+        return;
+    };
+    for entry in entries {
+        if entry.get("path").and_then(Value::as_str) == Some(old_path) {
+            if let Some(path) = entry.get_mut("path") {
+                *path = Value::String(new_path.into());
+                *count += 1;
+            }
+        }
+    }
+}
+
+pub fn start_record_count(app: &mut App, draft: RenameObjectState) {
+    let tenant = draft.tenant_name.clone();
+    let old_name = draft.old_name.clone();
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result = crate::managed::api::count_records(&tenant, &old_name)
+            .await
+            .map_err(|error| error.to_string());
+        let _ = tx.send(AppEvent::Managed(Event::RenameRecordCount {
+            draft,
+            result,
+        }));
+    });
+}
+
+pub fn execute_rename_object(app: &mut App, request: RenameObjectRequest, confirmed_prod: bool) {
+    let undo_id = match app.undo.record(UndoEntry::pending(
+        request.tenant_name.clone(),
+        "managed",
+        format!("Revert managed object rename {}", request.new_name),
+        Sensitivity::TenantConfig,
+        Capability::Undoable,
+        Some(UndoOp::ManagedConfigReplace {
+            tenant: request.tenant_name.clone(),
+            body: request.previous_doc.clone(),
+        }),
+        ConflictCheck::ContentEqualsAfter {
+            body: rename_object_in_doc(&request.previous_doc, &request.old_name, &request.new_name)
+                .map_or(Value::Null, |(doc, _)| doc),
+        },
+    )) {
+        Ok(id) => id,
+        Err(error) => {
+            app.push_toast(
+                ToastKind::Error,
+                format!("Rename cancelled: failed to record undo: {error}"),
+            );
+            return;
+        }
+    };
+    let tenant = request.tenant_name.clone();
+    app.managed
+        .in_flight_writes
+        .insert((tenant.clone(), request.old_name.clone()));
+    app.managed.clear_active_drafts();
+    app.input_mode = InputMode::Normal;
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result = rename_object_request(&request, confirmed_prod)
+            .await
+            .map_err(|error| error.to_string());
+        let _ = tx.send(AppEvent::Managed(Event::RenameResult {
+            tenant,
+            old_name: request.old_name,
+            new_name: request.new_name,
+            undo_id,
+            result,
+        }));
+    });
+}
+
+async fn rename_object_request(
+    request: &RenameObjectRequest,
+    confirmed_prod: bool,
+) -> crate::Result<Value> {
+    let live = crate::managed::api::get_managed(&request.tenant_name).await?;
+    let live_old = crate::managed::api::object_named(&live, &request.old_name)?;
+    let snapshot_old = crate::managed::api::object_named(&request.previous_doc, &request.old_name)?;
+    if !crate::managed::api::object_content_equal(live_old, snapshot_old) {
+        return Err(crate::Error::Config(
+            "managed object changed since you opened it; refresh and retry".into(),
+        ));
+    }
+    let (new_doc, _) = rename_object_in_doc(&live, &request.old_name, &request.new_name)
+        .map_err(crate::Error::Config)?;
+    crate::managed::api::replace_managed(&request.tenant_name, new_doc, confirmed_prod).await?;
+    let confirmed = crate::managed::api::get_managed(&request.tenant_name).await?;
+    if crate::managed::api::object_named(&confirmed, &request.new_name).is_err()
+        || crate::managed::api::object_named(&confirmed, &request.old_name).is_ok()
+    {
+        return Err(crate::Error::Config(
+            "managed object rename write returned but read-back did not match".into(),
+        ));
+    }
+    Ok(confirmed)
+}
+
+pub fn apply_rename_result(
+    app: &mut App,
+    tenant: String,
+    old_name: String,
+    new_name: String,
+    undo_id: UndoId,
+    result: Result<Value, String>,
+) {
+    app.managed
+        .in_flight_writes
+        .remove(&(tenant.clone(), old_name.clone()));
+    match result {
+        Ok(doc) => {
+            app.managed.data.insert(tenant, LoadState::Loaded(doc));
+            app.push_toast(
+                ToastKind::Success,
+                format!("Renamed managed object {old_name} to {new_name}. Press ^Z to undo."),
+            );
+        }
+        Err(error) => {
+            let _ = app.undo.mark_applied(undo_id, EntryStatus::Expired);
+            app.push_toast(
+                ToastKind::Error,
+                format!("Managed rename failed: {old_name}: {error}"),
+            );
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -512,7 +705,11 @@ fn latest_pending_managed_undo(app: &App, tenant: &str) -> Option<UndoId> {
         })
         .find_map(|summary| {
             let entry = app.undo.load(summary.id).ok()?;
-            matches!(entry.op, Some(UndoOp::ManagedObjectReplace { .. })).then_some(summary.id)
+            matches!(
+                entry.op,
+                Some(UndoOp::ManagedObjectReplace { .. } | UndoOp::ManagedConfigReplace { .. })
+            )
+            .then_some(summary.id)
         })
 }
 
@@ -532,7 +729,10 @@ pub fn execute_undo(app: &mut App, undo_id: UndoId, confirmed_prod: bool) {
         app.push_toast(ToastKind::Warning, "This change cannot be undone");
         return;
     }
-    if !matches!(entry.op, Some(UndoOp::ManagedObjectReplace { .. })) {
+    if !matches!(
+        entry.op,
+        Some(UndoOp::ManagedObjectReplace { .. } | UndoOp::ManagedConfigReplace { .. })
+    ) {
         app.push_toast(ToastKind::Info, "Undo entry is not a managed-object change");
         return;
     }
@@ -557,17 +757,6 @@ async fn apply_undo_entry(
         .op
         .clone()
         .ok_or_else(|| UndoFailure::Failed("undo entry has no operation".into()))?;
-    let UndoOp::ManagedObjectReplace {
-        tenant,
-        object_name,
-        body,
-    } = op
-    else {
-        return Err(UndoFailure::Failed(
-            "undo entry is not a managed-object operation".into(),
-        ));
-    };
-
     let expected_current = match entry.conflict_check {
         ConflictCheck::ContentEqualsAfter { body }
         | ConflictCheck::ContentEqualsBefore { body } => body,
@@ -578,26 +767,69 @@ async fn apply_undo_entry(
         }
     };
 
-    let object = replace_object_with_snapshot(
-        &tenant,
-        &object_name,
-        &expected_current,
-        &body,
-        confirmed_prod,
-    )
-    .await
-    .map_err(|error| match error {
+    let outcome = match op {
+        UndoOp::ManagedObjectReplace {
+            tenant,
+            object_name,
+            body,
+        } => {
+            let object = replace_object_with_snapshot(
+                &tenant,
+                &object_name,
+                &expected_current,
+                &body,
+                confirmed_prod,
+            )
+            .await
+            .map_err(undo_failure)?;
+            UndoOutcome {
+                description: entry.description,
+                object: Some((object_name, object)),
+                doc: None,
+            }
+        }
+        UndoOp::ManagedConfigReplace { tenant, body } => {
+            let live = crate::managed::api::get_managed(&tenant)
+                .await
+                .map_err(undo_failure)?;
+            if live != expected_current {
+                return Err(UndoFailure::Conflict(
+                    "managed config changed since the rename; refresh and retry".into(),
+                ));
+            }
+            crate::managed::api::replace_managed(&tenant, body.clone(), confirmed_prod)
+                .await
+                .map_err(undo_failure)?;
+            let confirmed = crate::managed::api::get_managed(&tenant)
+                .await
+                .map_err(undo_failure)?;
+            if confirmed != body {
+                return Err(UndoFailure::Failed(
+                    "managed config undo write returned but read-back did not match".into(),
+                ));
+            }
+            UndoOutcome {
+                description: entry.description,
+                object: None,
+                doc: Some(confirmed),
+            }
+        }
+        _ => {
+            return Err(UndoFailure::Failed(
+                "undo entry is not a managed-object operation".into(),
+            ));
+        }
+    };
+    Ok(outcome)
+}
+
+fn undo_failure(error: crate::Error) -> UndoFailure {
+    match error {
         crate::Error::Config(message) if message.contains("changed since") => {
             UndoFailure::Conflict(message)
         }
         other => UndoFailure::Failed(other.to_string()),
-    })?;
-
-    Ok(UndoOutcome {
-        description: entry.description,
-        object_name,
-        object,
-    })
+    }
 }
 
 pub fn apply_undo_result(
@@ -609,8 +841,8 @@ pub fn apply_undo_result(
     match result {
         Ok(UndoOutcome {
             description,
-            object_name,
             object,
+            doc,
         }) => {
             if let Err(error) = app.undo.mark_applied(undo_id, EntryStatus::AppliedSuccess) {
                 app.push_toast(
@@ -618,10 +850,17 @@ pub fn apply_undo_result(
                     format!("Undo applied but log update failed: {error}"),
                 );
             }
-            set_cached_object(app, &tenant, &object_name, object);
-            app.managed
-                .failed_writes
-                .remove(&(tenant.clone(), object_name));
+            if let Some((object_name, object)) = object {
+                set_cached_object(app, &tenant, &object_name, object);
+                app.managed
+                    .failed_writes
+                    .remove(&(tenant.clone(), object_name));
+            }
+            if let Some(doc) = doc {
+                app.managed
+                    .data
+                    .insert(tenant.clone(), LoadState::Loaded(doc));
+            }
             app.push_toast(ToastKind::Success, format!("Undone: {description}"));
         }
         Err(UndoFailure::Conflict(message)) => {
@@ -1242,6 +1481,7 @@ pub fn handle_enter_in_edit(app: &mut App) {
 pub fn execute_prod_action(app: &mut App, action: ProdAction) {
     match action {
         ProdAction::Update(plan) => execute_update_plan(app, *plan, true),
+        ProdAction::RenameObject(request) => execute_rename_object(app, *request, true),
         ProdAction::Undo(undo_id) => execute_undo(app, undo_id, true),
     }
 }
@@ -1711,5 +1951,32 @@ mod tests {
         };
         assert!(crate::managed::api::objects(doc).unwrap().is_empty());
         assert_eq!(undo.load(undo_id).unwrap().status, EntryStatus::Expired);
+    }
+
+    #[test]
+    fn rename_object_repoints_scalar_and_array_relationships() {
+        let doc = json!({"objects": [
+            {"name": "A", "schema": {"properties": {}}},
+            {"name": "B", "schema": {"properties": {"a": {"type": "relationship", "resourceCollection": [{"path": "managed/A"}]}}}},
+            {"name": "C", "schema": {"properties": {"as": {"type": "array", "items": {"type": "relationship", "resourceCollection": [{"path": "managed/A"}]}}}}}
+        ]});
+        let (renamed, count) = rename_object_in_doc(&doc, "A", "A2").unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(renamed["objects"][0]["name"], "A2");
+        assert_eq!(
+            renamed["objects"][1]["schema"]["properties"]["a"]["resourceCollection"][0]["path"],
+            "managed/A2"
+        );
+        assert_eq!(
+            renamed["objects"][2]["schema"]["properties"]["as"]["items"]["resourceCollection"][0]["path"],
+            "managed/A2"
+        );
+    }
+
+    #[test]
+    fn rename_object_rejects_collision_and_missing_source() {
+        let doc = json!({"objects": [{"name": "A"}, {"name": "B"}]});
+        assert!(rename_object_in_doc(&doc, "A", "B").is_err());
+        assert!(rename_object_in_doc(&doc, "missing", "C").is_err());
     }
 }

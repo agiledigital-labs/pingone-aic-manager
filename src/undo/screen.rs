@@ -44,9 +44,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 .active_tenant()
                 .is_some_and(|tenant| tenant.theme == TenantTheme::Production);
             let op = app.undo.load(summary.id).ok().and_then(|entry| entry.op);
-            let managed = op
-                .as_ref()
-                .is_some_and(|op| matches!(op, UndoOp::ManagedObjectReplace { .. }));
+            let managed = op.as_ref().is_some_and(|op| {
+                matches!(
+                    op,
+                    UndoOp::ManagedObjectReplace { .. } | UndoOp::ManagedConfigReplace { .. }
+                )
+            });
             let secretmap = op
                 .as_ref()
                 .is_some_and(|op| matches!(op, UndoOp::SecretMappingReplace { .. }));
