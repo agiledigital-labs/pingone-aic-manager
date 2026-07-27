@@ -205,7 +205,13 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) {
         {
             crate::app::selector::open(app);
         }
-        KeyCode::Char('R') => refresh(app, true),
+        KeyCode::Char('r')
+            if key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
+            refresh(app, true)
+        }
         _ => {}
     }
 }

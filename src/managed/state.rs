@@ -168,7 +168,8 @@ pub fn normalize_new_property_key(object_def: &Value, raw: &str) -> Result<Strin
     Ok(key)
 }
 
-fn validate_property_key(key: &str) -> Result<(), String> {
+/// Rejects property keys that cannot be represented in a managed schema.
+pub fn validate_property_key(key: &str) -> Result<(), String> {
     let mut chars = key.chars();
     let Some(first) = chars.next() else {
         return Err("Property key is required".into());
@@ -609,6 +610,75 @@ pub struct DeleteFieldState {
     pub is_relationship: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The kind of managed property to add from the chooser.
+pub enum AddKind {
+    Field,
+    Relationship,
+}
+
+impl AddKind {
+    /// Switches between the two add flows.
+    pub fn toggle(&mut self) {
+        *self = match self {
+            Self::Field => Self::Relationship,
+            Self::Relationship => Self::Field,
+        };
+    }
+}
+
+#[derive(Debug)]
+/// Draft state for selecting the managed-property add flow.
+pub struct AddChooseState {
+    pub kind: AddKind,
+}
+
+impl Default for AddChooseState {
+    fn default() -> Self {
+        Self {
+            kind: AddKind::Field,
+        }
+    }
+}
+
+#[derive(Debug)]
+/// Draft for renaming a selected managed property key.
+pub struct RenameFieldState {
+    pub tenant_name: String,
+    pub object_name: String,
+    pub old_key: String,
+    pub original_object: Value,
+    pub key: TextField,
+    pub focused: RenameFieldFocus,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The single focusable control in the property-key rename draft.
+pub enum RenameFieldFocus {
+    Key,
+}
+
+impl RenameFieldState {
+    /// Seeds a rename draft with the selected key.
+    pub fn new(
+        tenant_name: String,
+        object_name: String,
+        old_key: String,
+        original_object: Value,
+    ) -> Self {
+        Self {
+            tenant_name,
+            object_name,
+            key: TextField::single_line("Key").with_initial(old_key.clone()),
+            old_key,
+            original_object,
+            error: None,
+            focused: RenameFieldFocus::Key,
+        }
+    }
+}
+
 pub const HOOK_EVENTS: [&str; 6] = [
     "onCreate",
     "onUpdate",
@@ -701,8 +771,10 @@ pub struct State {
     pub editing: Option<FieldEditState>,
     pub add_field: Option<AddFieldState>,
     pub add_relationship: Option<AddRelationshipState>,
+    pub add_choose: Option<AddChooseState>,
     pub add_hook: Option<AddHookState>,
     pub pending_delete: Option<DeleteFieldState>,
+    pub renaming: Option<RenameFieldState>,
     pub in_flight_writes: HashSet<(String, String)>,
     pub failed_writes: HashSet<(String, String)>,
 }
@@ -743,8 +815,10 @@ impl State {
         self.editing = None;
         self.add_field = None;
         self.add_relationship = None;
+        self.add_choose = None;
         self.add_hook = None;
         self.pending_delete = None;
+        self.renaming = None;
     }
 
     pub fn matches(&self, tenant: Option<&str>) -> Vec<ManagedMatch> {

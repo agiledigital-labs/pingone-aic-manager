@@ -15,7 +15,8 @@ use crate::app::{App, InputMode};
 use crate::managed::api::ObjectSummary;
 use crate::managed::screen::Mode;
 use crate::managed::state::{
-    AddFieldFocus, AddRelationshipFocus, EditFieldFocus, FieldAttr, LoadState, ManagedMatch,
+    AddFieldFocus, AddKind, AddRelationshipFocus, EditFieldFocus, FieldAttr, LoadState,
+    ManagedMatch,
 };
 
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
@@ -218,6 +219,10 @@ fn draw_detail(
     };
 
     match app.input_mode {
+        InputMode::Managed(Mode::AddChooseKind) if app.managed.add_choose.is_some() => {
+            draw_add_kind_chooser(f, app, inner);
+            return;
+        }
         InputMode::Managed(Mode::EditField) if app.managed.editing.is_some() => {
             draw_edit_field_form(f, app, inner);
             return;
@@ -237,6 +242,10 @@ fn draw_detail(
         }
         InputMode::Managed(Mode::AddHook) if app.managed.add_hook.is_some() => {
             draw_add_hook_picker(f, app, inner);
+            return;
+        }
+        InputMode::Managed(Mode::RenameField) if app.managed.renaming.is_some() => {
+            draw_rename_field_form(f, app, inner);
             return;
         }
         _ => {}
@@ -315,6 +324,72 @@ fn draw_detail(
     lines.extend(hook_lines);
     lines.truncate(inner.height as usize);
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_add_kind_chooser(f: &mut Frame, app: &App, area: Rect) {
+    let Some(draft) = app.managed.add_choose.as_ref() else {
+        return;
+    };
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(area);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Add managed property",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))),
+        rows[0],
+    );
+    draw_selector_row(
+        f,
+        rows[1],
+        "Kind",
+        match draft.kind {
+            AddKind::Field => "Field",
+            AddKind::Relationship => "Relationship",
+        },
+        true,
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Enter continues to the selected form",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        rows[2],
+    );
+}
+
+fn draw_rename_field_form(f: &mut Frame, app: &App, area: Rect) {
+    let Some(rename) = app.managed.renaming.as_ref() else {
+        return;
+    };
+    let error_h = if rename.error.is_some() { 2 } else { 0 };
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(error_h),
+    ])
+    .split(area);
+    form_title(f, rows[0], &rename.object_name, "rename field");
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("Current key  {}", rename.old_key),
+            Style::default().fg(Color::DarkGray),
+        ))),
+        rows[1],
+    );
+    rename.key.draw(
+        f,
+        rows[2],
+        rename.focused == crate::managed::state::RenameFieldFocus::Key,
+    );
+    draw_form_error(f, rows[3], rename.error.as_deref());
 }
 
 fn property_line(name: &str, property: &Value, required: bool, selected: bool) -> Line<'static> {

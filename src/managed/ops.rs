@@ -13,13 +13,13 @@ use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
 #[derive(Debug)]
 pub enum ProdAction {
-    Update(ObjectReplacePlan),
+    Update(Box<ObjectReplacePlan>),
     Undo(crate::undo::UndoId),
 }
 use crate::managed::screen::Event;
 use crate::managed::state::{
     AddFieldState, AddRelationshipState, DeleteFieldState, EditFieldFocus, FieldAttr,
-    FieldEditState, LoadState, ScalarFieldType, State,
+    FieldEditState, LoadState, RenameFieldState, ScalarFieldType, State,
 };
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
@@ -241,6 +241,44 @@ pub fn build_delete_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         new_object,
         searchable_changed: false,
         success_message,
+    })
+}
+
+/// Builds the undoable whole-object replacement plan for a property-key rename.
+pub fn build_rename_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
+    let rename = app.managed.renaming.as_mut()?;
+    if app
+        .managed
+        .in_flight_writes
+        .contains(&(rename.tenant_name.clone(), rename.object_name.clone()))
+    {
+        rename.error = Some("Write already in progress for this object".into());
+        return None;
+    }
+
+    let new_key = rename.key.value.clone();
+    let new_object = match apply_rename_field(rename, &new_key) {
+        Ok(object) => object,
+        Err(message) => {
+            rename.error = Some(message);
+            return None;
+        }
+    };
+    if crate::managed::api::object_content_equal(&new_object, &rename.original_object) {
+        rename.error = Some("No changes to save".into());
+        return None;
+    }
+
+    Some(ObjectReplacePlan {
+        tenant_name: rename.tenant_name.clone(),
+        object_name: rename.object_name.clone(),
+        previous_object: rename.original_object.clone(),
+        new_object,
+        searchable_changed: false,
+        success_message: format!(
+            "Renamed managed field {}.{} to {}. Press ^Z to undo.",
+            rename.object_name, rename.old_key, new_key
+        ),
     })
 }
 
@@ -804,6 +842,49 @@ fn apply_delete_field(pending: &DeleteFieldState) -> Result<Value, String> {
     Ok(object)
 }
 
+fn apply_rename_field(rename: &RenameFieldState, new_key: &str) -> Result<Value, String> {
+    if new_key.trim() != new_key {
+        return Err("Property key cannot have leading or trailing whitespace".into());
+    }
+    crate::managed::state::validate_property_key(new_key)?;
+
+    let mut object = rename.original_object.clone();
+    ensure_property_available(&object, new_key, Some(&rename.old_key))?;
+    if new_key == rename.old_key {
+        return Ok(object);
+    }
+
+    let properties = properties_mut(&mut object)?;
+    let previous = std::mem::take(properties);
+    let mut renamed = false;
+    for (key, property) in previous {
+        if key == rename.old_key {
+            properties.insert(new_key.to_string(), property);
+            renamed = true;
+        } else {
+            properties.insert(key, property);
+        }
+    }
+    if !renamed {
+        return Err(format!("field '{}' no longer exists", rename.old_key));
+    }
+
+    replace_key_in_array(&mut object, "/schema/order", &rename.old_key, new_key);
+    replace_key_in_array(&mut object, "/schema/required", &rename.old_key, new_key);
+    Ok(object)
+}
+
+fn replace_key_in_array(object: &mut Value, pointer: &str, old_key: &str, new_key: &str) {
+    let Some(values) = object.pointer_mut(pointer).and_then(Value::as_array_mut) else {
+        return;
+    };
+    for value in values {
+        if value.as_str() == Some(old_key) {
+            *value = Value::String(new_key.to_string());
+        }
+    }
+}
+
 fn relationship_property(draft: &AddRelationshipState, field_key: &str, target: &str) -> Value {
     let title = if draft.title.trimmed().is_empty() {
         title_from_key(field_key)
@@ -1084,12 +1165,22 @@ pub fn commit_delete_field(app: &mut App) {
     submit_plan(app, plan);
 }
 
+/// Submits the active property-key rename through the normal update pipeline.
+pub fn commit_rename_field(app: &mut App) {
+    let Some(plan) = build_rename_field_plan(app) else {
+        return;
+    };
+    submit_plan(app, plan);
+}
+
 fn submit_plan(app: &mut App, plan: ObjectReplacePlan) {
     let is_prod = app
         .active_tenant()
         .is_some_and(|tenant| tenant.theme == TenantTheme::Production);
     if is_prod {
-        app.prod_confirm.pending = Some(PendingProdAction::Managed(ProdAction::Update(plan)));
+        app.prod_confirm.pending = Some(PendingProdAction::Managed(ProdAction::Update(Box::new(
+            plan,
+        ))));
         app.input_mode = InputMode::ProdConfirm;
         return;
     }
@@ -1125,6 +1216,9 @@ pub fn advance_add_relationship_focus(draft: &mut AddRelationshipState, forward:
     };
 }
 
+/// Advances the rename draft's single focusable field.
+pub fn advance_rename_field_focus(_draft: &mut RenameFieldState, _forward: bool) {}
+
 pub fn handle_enter_in_edit(app: &mut App) {
     let Some(focused) = app.managed.editing.as_ref().map(|edit| edit.focused) else {
         return;
@@ -1147,7 +1241,7 @@ pub fn handle_enter_in_edit(app: &mut App) {
 
 pub fn execute_prod_action(app: &mut App, action: ProdAction) {
     match action {
-        ProdAction::Update(plan) => execute_update_plan(app, plan, true),
+        ProdAction::Update(plan) => execute_update_plan(app, *plan, true),
         ProdAction::Undo(undo_id) => execute_undo(app, undo_id, true),
     }
 }
@@ -1414,6 +1508,45 @@ mod tests {
         assert!(object["schema"]["properties"]["custom_new_code"].is_object());
         assert_eq!(object["schema"]["order"], json!(["custom_new_code"]));
         assert_eq!(object["schema"]["required"], json!(["custom_new_code"]));
+    }
+
+    #[test]
+    fn rename_field_plan_mutation_updates_order_required_and_rejects_collisions() {
+        let object = json!({
+            "name": "alpha_lock",
+            "schema": {
+                "properties": {
+                    "before": {"type": "string"},
+                    "old_key": {"type": "string"},
+                    "after": {"type": "string"}
+                },
+                "order": ["before", "old_key", "after"],
+                "required": ["old_key"]
+            }
+        });
+        let mut rename = RenameFieldState::new(
+            "sandbox".into(),
+            "alpha_lock".into(),
+            "old_key".into(),
+            object,
+        );
+        rename.key.set("new_key");
+
+        let renamed = apply_rename_field(&rename, &rename.key.value).unwrap();
+        let properties = renamed["schema"]["properties"].as_object().unwrap();
+        assert!(properties.contains_key("new_key"));
+        assert!(!properties.contains_key("old_key"));
+        // Field display order is governed by schema.order, not properties key
+        // position, so we only assert order/required are kept in sync.
+        assert_eq!(
+            renamed["schema"]["order"],
+            json!(["before", "new_key", "after"])
+        );
+        assert_eq!(renamed["schema"]["required"], json!(["new_key"]));
+
+        rename.key.set("after");
+        let error = apply_rename_field(&rename, &rename.key.value).unwrap_err();
+        assert_eq!(error, "field 'after' already exists");
     }
 
     #[test]

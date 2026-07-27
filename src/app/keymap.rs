@@ -53,7 +53,7 @@ pub enum Act {
     Primary,
     Delete,
     NewItem,
-    AddRelationship,
+    RenameField,
     AddHook,
     Pull,
     Push,
@@ -342,21 +342,14 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             true,
             Primary,
         ));
-        out.push(b(
-            &[Trigger::Char('a')],
-            "a",
-            "add field",
-            true,
-            true,
-            NewItem,
-        ));
+        out.push(b(&[Trigger::Char('a')], "a", "add", true, true, NewItem));
         out.push(b(
             &[Trigger::Char('r')],
             "r",
-            "add relationship",
+            "rename field",
             true,
             true,
-            AddRelationship,
+            RenameField,
         ));
         out.push(b(
             &[Trigger::Char('h')],
@@ -444,8 +437,8 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     }
     if managed_view || mappings_view || idmstore_view || oauth_view || mappings {
         out.push(b(
-            &[Trigger::Char('R')],
-            "R",
+            &[Trigger::Ctrl('r')],
+            "^R",
             "refresh",
             true,
             true,
@@ -685,7 +678,7 @@ async fn run_normal(app: &mut App, act: Act) {
         Primary => primary(app),
         Delete => delete(app),
         NewItem => new_item(app),
-        AddRelationship => crate::managed::screen::start_add_relationship(app),
+        RenameField => crate::managed::screen::start_rename_field(app),
         AddHook => crate::managed::screen::start_add_hook(app),
         Pull => crate::scripts::screen::pull_selected(app),
         Push => crate::scripts::screen::push_selected(app),
