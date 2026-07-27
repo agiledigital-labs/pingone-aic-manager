@@ -186,6 +186,66 @@ whole-document RMW edits. `schema.order` is independent of `schema.properties`,
 and `schema.required` is independent too; the API does not auto-prune either
 list when a property is removed or renamed.
 
+### Relationship cardinality + bidirectional writes (verified 2026-07-27)
+
+Verified live against `test_from`/`test_to` (all six forward×reverse
+combinations, created from the web console) and `test_obj2` (self-referential
+pair + custom `_refProperties`). The console model:
+
+**Forward cardinality is the property `type`.**
+
+- **has one** → the property _is_ the relationship node:
+  `{ "type": "relationship", <attrs>, "resourceCollection": [...], <reverse fields>, "properties": { "_ref", "_refProperties" } }`.
+- **has many** → an array wrapper whose `items` is the relationship node:
+  `{ "type": "array", <attrs>, "returnByDefault": false, "items": { "type": "relationship", "resourceCollection": [...], <reverse fields>, "properties": {...} } }`.
+
+**Attribute placement.** `viewable` / `searchable` / `userEditable` /
+`returnByDefault` live on the **outer** property (the array wrapper for
+has-many, the relationship node for has-one). `required` is carried in the
+object's `schema.required` (relationships _can_ be required —
+`test_from.firstName` aside, `test_obj2.asdf` is in `required`). `validate`
+lives on the **relationship node** (top-level for has-one, inside `items` for
+has-many). `title`/`description` on the outer property.
+
+**Reverse cardinality is the type of the reverse property _on the target
+object_** — there is no reverse-cardinality field on the source. The three
+reverse options:
+
+| Reverse  | Source relationship node                                  | Reverse property on target                                           |
+| -------- | --------------------------------------------------------- | -------------------------------------------------------------------- |
+| has none | `reverseRelationship: false`, no `reversePropertyName`    | **none created** (one-way)                                           |
+| has one  | `reverseRelationship: true`, `reversePropertyName: <rev>` | a `type:"relationship"` property named `<rev>`, cross-linked back    |
+| has many | `reverseRelationship: true`, `reversePropertyName: <rev>` | a `type:"array"`/`items:relationship` property named `<rev>`, linked |
+
+A bidirectional pair cross-links: the source's `reversePropertyName` is the
+reverse property's key and vice-versa, and **both** carry
+`reverseRelationship: true`. Self-referential relationships (source == target,
+e.g. `test_obj2.asdf` ↔ `test_obj2.obj2`) put both properties on the one
+object.
+
+**No server-side cascade.** Creating/editing a relationship with a reverse must
+write the reverse property on the target object itself — so an add/edit is a
+**whole-document RMW touching two objects** (or one, when self-referential),
+_not_ a single-object splice. Reconciliation on edit: if the reverse cardinality
+drops to none, or the target is repointed, the tool must remove/move the old
+reverse property (the server won't). `config/managed` PUT accepted every combo
+with 200 and stored verbatim (the console also writes cosmetic
+`id`/`notifySelf`/`label`/`query`/`notify`/`propName` fields; none are required
+— the minimal shapes in the table above round-trip).
+
+**`_refProperties` are per-side.** The baseline is
+`"_refProperties": { "type": "object", "properties": { "_id": { "type": "string" } } }`.
+Custom relationship properties (e.g. `test_obj2.asdf._refProperties.relProp`)
+are added only on the side where they were defined — the reverse side kept just
+`_id`. Console shape for a custom one:
+`{ "label": "...", "type": "string", "required": false, "propName": "<name>", "labelText": "..." }`;
+minimal `{ "type": "...", "label": "..." }` is sufficient.
+
+**Backlog:** the console does not appear to guard cardinality _reductions_ (e.g.
+has-many → has-one) against existing instance data that would violate the new
+bound; detecting that pre-write (query the relationship edges first) is a
+possible future safety check, not done here.
+
 ### Object-type rename orphans records (verified 2026-07-27)
 
 Renaming a custom object type by changing its `objects[].name` (X → Y) and
