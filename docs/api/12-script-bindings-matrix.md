@@ -129,7 +129,7 @@ workspace routing slug from `src/aic/script/am.rs::slug_for`.
 | `oauthApplication` / `samlApplication`   | no                                                         | yes                                  | **D**     | Next-gen only, journey-associated.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `auditEntryDetail`                       | yes                                                        | yes                                  | **D**     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `realm` / `systemEnv` / `scriptName`     | yes                                                        | yes                                  | **D**     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `require()` / library scripts            | **no**                                                     | **yes**                              | **D/V/I** | Only next-gen can `require` libraries. Libraries can require other libraries (17 `lib/` files do). Used in 225 `src/`. **Verified beyond scripted decision (2026-07-29):** works end-to-end from a next-gen **`OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`** script; `typeof require === "undefined"` in the legacy (`1.0`) token-mod script (`ReferenceError: "require" is not defined.`). See the token-mod section below.                                                          |
+| `require()` / library scripts            | **no**                                                     | **yes**                              | **D/V/I** | Only next-gen can `require` libraries. Libraries can require other libraries (17 `lib/` files do). Used in 225 `src/`. **Verified beyond scripted decision (2026-07-29):** works end-to-end from next-gen **token mod, validate scope, evaluate scope and may-act** (the whole reachable OAuth2 family — see the two sections below); `typeof require === "undefined"` in the legacy (`1.0`) token-mod script (`ReferenceError: "require" is not defined.`).                         |
 | `JavaImporter` / Java allowlist          | yes                                                        | **no**                               | **D/I**   | Legacy only. 26 `src/` use `JavaImporter`. Next-gen has no configurable Java access.                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ### Runtime-verified binding presence (next-gen scripted decision, 2026-06-03)
@@ -276,6 +276,88 @@ The context's binding metadata (18 bindings, `JAVASCRIPT: ["2.0"]`, full
 function, not a binding — it appears in **no** context's binding list, including
 `SCRIPTED_DECISION_NODE`, so its absence there is not evidence either way.
 
+### Library `require()` across the rest of the next-gen OAuth2 family (2026-07-29)
+
+Follow-up to the token-mod probe above. Each script `require()`d the same
+throwaway `LIBRARY` script and logged
+`AICEDIT-PROBE <ctx> require=<typeof require> value=<lib.stamp(...)>`; markers
+were read back from `GET /monitoring/logs?source=am-core`. Scripts were attached
+**one at a time** via `overrideOAuth2ClientConfig` on a throwaway
+`client_credentials` client (never realm-wide), and everything was deleted
+afterwards.
+
+| Context (`…_NEXT_GEN`)                    | `require`       | How it was observed                                                                                    |
+| ----------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------ |
+| `OAUTH2_VALIDATE_SCOPE`                   | ✅ `function`   | log marker at top level **and** inside the AM-invoked `validateAccessTokenScope()`; token issued `200` |
+| `OAUTH2_EVALUATE_SCOPE`                   | ✅ `function`   | returned map surfaced as `aicedit_es_probe: "es-from-library"` in `/oauth2/tokeninfo`                  |
+| `OAUTH2_MAY_ACT`                          | ✅ `function`   | `token.setMayAct({client_id: lib.stamp("ma")})` → `may_act.client_id: "ma-from-library"` in the JWT    |
+| `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER` | **unprobed**    | needs an authenticated resource-owner session — see below                                              |
+| `OAUTH2_SCRIPTED_JWT_ISSUER`              | **unreachable** | no configuration hook exists in AIC — see below                                                        |
+
+So `require()` is confirmed on every next-gen context that can currently be
+reached: scripted decision, library-to-library, token mod, validate scope,
+evaluate scope, may-act.
+
+**Next-gen validate-scope is a function-entry-point script.** This is a contract
+difference, not a bindings one, and it bites immediately: a top-level script
+body (the token-mod/evaluate-scope style) fails the token request with
+`500 {"error":"server_error","error_description":"Error while running validate scope script"}`,
+and the log's root cause is
+`java.lang.IllegalArgumentException: validateAccessTokenScope is not a function`
+(`RhinoScriptEngine.invokeFunction` → `ScriptedScopeValidator.runScript`). The
+script must **declare named functions** that AM invokes per operation:
+
+```javascript
+function validateAccessTokenScope() {
+  var lib = require("my-lib"); // works here — verified
+  return toArray(requestedScopes);
+}
+function validateRefreshTokenScope() { … }
+function validateAuthorizationScope() { … }
+function validateBackChannelAuthorizationScope() { … }
+function validateDeviceCodeScope() { … }
+```
+
+Only `validateAccessTokenScope` was observed being called (client-credentials
+grant); the other four names are defensive and unconfirmed. Bindings are still
+globals — the functions take no arguments. The top-level body **does** run (its
+`require` and log fired) before the function is invoked, so top-level setup is
+fine; the return value just has to come from the function.
+
+Other observations worth keeping:
+
+- Returning an extra scope from validate-scope did **not** widen the grant: with
+  `requestedScopes = [aicedit-probe]` and the script returning
+  `[aicedit-probe, vsd-from-library]` (the extra one configured on the client
+  and present in `availableScopes`), the issued token's `scope` claim was still
+  just `["aicedit-probe"]`. AM appears to intersect with what was requested for
+  this grant type.
+- `availableScopes` reflects live client config — adding a scope to the client
+  showed up in the next call's binding value.
+- evaluate-scope's returned map lands in the **`/oauth2/tokeninfo` response as a
+  top-level field**, and is **not** a claim in the client-based JWT.
+- `identity` was not exercised: a `client_credentials` grant has no resource
+  owner.
+
+**`OAUTH2_SCRIPTED_JWT_ISSUER_NEXT_GEN` has metadata but nowhere to attach it.**
+Searched every script/plugin field on the OAuth2 provider service
+(`realm-config/services/oauth-oidc`), the OAuth2 client override block, and the
+`TrustedJwtIssuer` agent template (9 fields: `allowedSubjects`, `jwkSet`,
+`jwksUri`, `jwksCacheTimeout`, `jwkStoreCacheMissCacheTime`, `issuer`,
+`consentedScopesClaim`, `resourceOwnerIdentityClaim`, `agentgroup`) — no
+scripted-JWT-issuer reference anywhere. The context is typed for completeness;
+it can't be exercised (or used) in AIC today.
+
+**`OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER_NEXT_GEN` needs an end-user
+session.** Confirmed not invoked by the two client-only paths: device-code
+initiation (`POST /oauth2/device/code` → `200`, no marker logged) and an
+unauthenticated `GET /oauth2/authorize` (`302` to `/am/UI/Login`; logs show
+`SSOException: SessionID is empty` / `The request requires a redirect`). Probing
+it requires authenticating as a resource owner in `alpha`, which means either
+known test-user credentials or creating a throwaway managed user — the latter
+touches the IDM sync queue and any `onCreate` hooks, so it wasn't done
+unprompted.
+
 ### AM script families (folder slugs)
 
 | Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay                                                                |
@@ -381,15 +463,13 @@ binding _presence_ (see the legacy section above; the tester now takes
 2. ~~`require()` of a real library from a next-gen scripted decision~~ RESOLVED
    — end-to-end library imports are verified from a next-gen scripted decision
    (2026-07-13/14 rows above) and from next-gen access-token modification
-   (2026-07-29 section above). Still unprobed: `require()` from the other
-   `…_NEXT_GEN` AM contexts (OIDC claims, scope validate/evaluate, may-act, JWT
-   issuer, authorize-endpoint data provider, DCR, SAML mappers/adapters). Those
-   contexts are **typed** as of 2026-07-29 and their workspace folders get the
-   library alias, on the family rule (same engine, metadata parity) — that's an
-   inference, not a probe. Each is probeable through
-   `overrideOAuth2ClientConfig` on a throwaway client (`validateScopeScript`,
-   `evaluateScopeScript`, `oidcMayActScript`, `accessTokenMayActScript`,
-   `authorizeEndpointDataProviderScript`).
+   (2026-07-29 section above), plus **validate scope, evaluate scope and
+   may-act** in the follow-up probe the same day. Still unprobed: OIDC claims,
+   DCR, SAML mappers/adapters (all typed, all given the library alias on the
+   family rule — inference, not probe);
+   `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER_NEXT_GEN` (needs a resource-owner
+   session); and `OAUTH2_SCRIPTED_JWT_ISSUER_NEXT_GEN` (no config hook exists in
+   AIC — unreachable, not merely unprobed).
 3. IDM **schedule** scripts: binding shapes other than the now-verified
    `openidm.create`; modern syntax is verified above. Schedules can be probed
    synchronously with the scheduler `trigger` action documented in
