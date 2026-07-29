@@ -104,10 +104,23 @@ Cross-context shape facts (worth knowing before hand-writing types):
 - `token` (may-act) is a 5-member subset of the access-token wrapper:
   `getField`, `get`/`set` `Act`/`MayAct`.
 
-Library `require()` is runtime-verified for token mod (see
-`docs/api/12-script-bindings-matrix.md`); for the other five it is inferred from
-the family rule (next-gen engine + metadata parity), **not** individually
-probed.
+Library `require()` is runtime-verified for token mod, validate scope, evaluate
+scope and may-act (see `docs/api/12-script-bindings-matrix.md`). Two caveats
+that metadata alone does not reveal:
+
+- **Having binding metadata does not mean the context is usable.**
+  `OAUTH2_SCRIPTED_JWT_ISSUER_NEXT_GEN` reports 15 bindings, but nothing in AIC
+  references a scripted-JWT-issuer script — not the OAuth2 provider service, not
+  the client override block, not the `TrustedJwtIssuer` agent. It is typed for
+  completeness only.
+- **Metadata does not tell you the invocation contract.**
+  `OAUTH2_VALIDATE_SCOPE_NEXT_GEN` scripts must declare named entry-point
+  functions (`validateAccessTokenScope`, …); a top-level body fails the token
+  request even though the same bindings are present. Details and the exact error
+  are in `docs/api/12-script-bindings-matrix.md`.
+
+`OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER_NEXT_GEN` remains unprobed — it is only
+invoked on an authenticated `/oauth2/authorize` request.
 
 Legacy-only (0 bindings; `JAVASCRIPT`+`GROOVY` `1.0`) — note these are the
 non-`NEXT_GEN` context ids, and each has a separate `…_NEXT_GEN` sibling that
