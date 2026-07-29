@@ -161,6 +161,7 @@ mod tests {
             source: source.into(),
             target: target.into(),
             inline_script_count,
+            queued_sync: None,
         }
     }
 

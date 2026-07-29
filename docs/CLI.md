@@ -166,6 +166,31 @@ aic managed get alpha_user                        # one object's full definition
 
 ---
 
+## `aic sync` — queued sync diagnostics & reconciliation
+
+`sync` diagnoses IDM's persistent asynchronous implicit-sync queue and runs
+reconciliations. Queue commands are read-only; this CLI has no queue-clear
+operation.
+
+```bash
+aic sync mappings [--tenant <name>] [--json]
+aic sync queue [--mapping <name>] [--tenant <name>] [--json]
+aic sync queue --watch 5 [--mapping <name>] [--json]  # JSON is JSONL when watching
+aic sync recon <mapping> [--id <source-id>] [--wait] [--timeout 10m] [--yes] [--json]
+aic sync recon-status [<recon-id>] [--tenant <name>] [--json]
+```
+
+`mappings` shows each mapping's queued-sync posture and configured poll ceiling.
+`queue` labels all totals as estimates: IDM silently downgrades its exact-count
+request. Its claim-state numbers are a bounded sample, not an extrapolated
+total. `--watch` requires at least two seconds and prints queue depth, signed
+drain rate, and ETA as the rate permits.
+
+`recon` writes target data and therefore requires `--yes` for a production
+tenant. `--id ... --wait` uses IDM's synchronous one-record form, which is the
+only response that includes its per-record failure reason. Completion output
+includes records/sec so it can be compared with queued-sync drain rate.
+
 ## `aic idm` — local record store & query
 
 Syncs IDM managed-object **records** into a local SQLite store
