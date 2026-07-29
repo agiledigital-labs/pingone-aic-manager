@@ -102,6 +102,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::idmstore::cli::IdmCommand,
     },
+    /// IDM sync-queue diagnostics and reconciliation control.
+    Sync {
+        #[command(subcommand)]
+        command: crate::mappings::cli::SyncCommand,
+    },
     /// Audit/debug log fetch and API-key management.
     Logs {
         #[command(subcommand)]
@@ -179,6 +184,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
         Some(Command::Idm { command }) => crate::idmstore::cli::run(command).await,
+        Some(Command::Sync { command }) => crate::mappings::cli::run(command).await,
         Some(Command::Logs { command }) => crate::logs::cli::run(command).await,
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
