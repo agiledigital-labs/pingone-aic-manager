@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 44;
+pub const TEMPLATES_VERSION: u32 = 45;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -92,6 +92,26 @@ const MANAGED: &[(&str, &str)] = &[
     (
         "am/types/oauth2-access-token-ng.d.ts",
         include_str!("templates/am/types/oauth2-access-token-ng.d.ts"),
+    ),
+    (
+        "am/types/oauth2-may-act-ng.d.ts",
+        include_str!("templates/am/types/oauth2-may-act-ng.d.ts"),
+    ),
+    (
+        "am/types/oauth2-jwt-issuer-ng.d.ts",
+        include_str!("templates/am/types/oauth2-jwt-issuer-ng.d.ts"),
+    ),
+    (
+        "am/types/oauth2-validate-scope-ng.d.ts",
+        include_str!("templates/am/types/oauth2-validate-scope-ng.d.ts"),
+    ),
+    (
+        "am/types/oauth2-evaluate-scope-ng.d.ts",
+        include_str!("templates/am/types/oauth2-evaluate-scope-ng.d.ts"),
+    ),
+    (
+        "am/types/oauth2-authz-data-ng.d.ts",
+        include_str!("templates/am/types/oauth2-authz-data-ng.d.ts"),
     ),
     (
         "am/types/pingone-verify.d.ts",

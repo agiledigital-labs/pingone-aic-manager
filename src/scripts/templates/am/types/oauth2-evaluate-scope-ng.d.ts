@@ -1,5 +1,5 @@
-// GENERATED from docs/api/bindings/oauth2-atm-next.json by
-// scripts/gen-binding-types.mjs — do not edit by hand. Context: OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN.
+// GENERATED from docs/api/bindings/oauth2-evaluate-scope-next.json by
+// scripts/gen-binding-types.mjs — do not edit by hand. Context: OAUTH2_EVALUATE_SCOPE_NEXT_GEN.
 // Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.
 // Applied metadata refinements:
 //   - `AccessToken.getField` returns `any`, not metadata's bare `object`.
@@ -105,5 +105,3 @@ interface Identity {
   getUniversalId(): StringLike;
 }
 declare const identity: Identity;
-
-declare const scopes: any[];

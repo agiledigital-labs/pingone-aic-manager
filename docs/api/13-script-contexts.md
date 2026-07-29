@@ -71,20 +71,43 @@ Next-gen (binding metadata captured under `docs/api/bindings/`):
 | `PINGONE_VERIFY_COMPLETION_DECISION_NODE` | 14       | `pingone-verify-completion-next.json` |
 | `LIBRARY`                                 | 11       | `library-next.json`                   |
 
-Added 2026-07-29:
+Added 2026-07-29 — the whole next-gen OAuth2 family. Every one returned
+`evaluatorVersions: {"JAVASCRIPT":["2.0"]}`:
 
-| Context                                     | bindings | artifact               |
-| ------------------------------------------- | -------- | ---------------------- |
-| `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` | 18       | `oauth2-atm-next.json` |
+| Context                                            | bindings | artifact                          | context-specific bindings (shared next-gen set omitted)                                                                                                             |
+| -------------------------------------------------- | -------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`        | 18       | `oauth2-atm-next.json`            | `accessToken`, `identity`, `scopes`, `requestProperties`, `clientProperties`, `emailService`                                                                        |
+| `OAUTH2_VALIDATE_SCOPE_NEXT_GEN`                   | 21       | `oauth2-validate-scope-next.json` | `scopeValidatorHelper`, `availableScopes`, `requestedScopes`, `allowedScopes`, `defaultScopes`, `identity`, `requestProperties`, `clientProperties`, `emailService` |
+| `OAUTH2_MAY_ACT_NEXT_GEN`                          | 18       | `oauth2-may-act-next.json`        | `token`, `identity`, `scopes`, `requestProperties`, `clientProperties`, `emailService`                                                                              |
+| `OAUTH2_EVALUATE_SCOPE_NEXT_GEN`                   | 17       | `oauth2-evaluate-scope-next.json` | `accessToken`, `identity`, `requestProperties`, `clientProperties`, `emailService`                                                                                  |
+| `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER_NEXT_GEN` | 16       | `oauth2-authz-data-next.json`     | `identity`, `requestProperties`, `clientProperties`, `emailService`                                                                                                 |
+| `OAUTH2_SCRIPTED_JWT_ISSUER_NEXT_GEN`              | 15       | `oauth2-jwt-issuer-next.json`     | `issuer`, `idRepository`, `emailService`                                                                                                                            |
 
-(`evaluatorVersions: {"JAVASCRIPT":["2.0"]}`; bindings: `accessToken`,
-`identity`, `scopes`, `requestProperties`, `clientProperties`, `emailService`,
-`httpClient`, `logger`, `openidm`, `secrets`, `utils`, `policy`, `jwtAssertion`,
-`jwtValidator`, `systemEnv`, `scriptName`, `realm`, `cookieName`. `accessToken`
-is the full `AccessTokenScriptWrapper` surface —
-`setField`/`setFields`/`getField`, `addExtraData`/`addExtraJsonData`,
-scope/claims/act/mayAct, plus the `remove*` family.) Library `require()` from
-this context is runtime-verified — see `docs/api/12-script-bindings-matrix.md`.
+The shared next-gen set every one of them carries: `httpClient`, `logger`,
+`openidm`, `secrets`, `utils`, `policy`, `jwtAssertion`, `jwtValidator`,
+`systemEnv`, `scriptName`, `realm`, `cookieName`.
+
+Cross-context shape facts (worth knowing before hand-writing types):
+
+- `accessToken` is **byte-identical** in token mod and evaluate-scope — the full
+  `AccessTokenScriptWrapper` surface (`setField`/`setFields`/`getField`,
+  `addExtraData`/`addExtraJsonData`, scope/claims/act/mayAct, the `remove*`
+  family; 64 members).
+- `identity` is byte-identical across the five contexts that have it (7 members,
+  `ScriptedIdentityScriptWrapper`), and matches `OIDC_CLAIMS_NEXT_GEN`.
+- `emailService` (two `send` overloads) is identical in all six and appears
+  **only** in the OAuth2 family — not in scripted decision, library, or OIDC
+  claims.
+- `idRepository` in the JWT-issuer context is a **different, smaller** shape
+  than the scripted-decision binding of the same name: `createUser` (2
+  overloads) + `getIdentity` only.
+- `token` (may-act) is a 5-member subset of the access-token wrapper:
+  `getField`, `get`/`set` `Act`/`MayAct`.
+
+Library `require()` is runtime-verified for token mod (see
+`docs/api/12-script-bindings-matrix.md`); for the other five it is inferred from
+the family rule (next-gen engine + metadata parity), **not** individually
+probed.
 
 Legacy-only (0 bindings; `JAVASCRIPT`+`GROOVY` `1.0`) — note these are the
 non-`NEXT_GEN` context ids, and each has a separate `…_NEXT_GEN` sibling that
