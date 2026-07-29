@@ -3,26 +3,28 @@
 Implemented in: `src/scripts/`
 
 ## Purpose
+
 Scripts are JavaScript (and rarely Groovy) snippets that run inside AM during
 authentication, token issuance, OIDC claims, SAML mapping, policy decisions,
-etc. Feature 2 of pingone-aic-manager ("sync scripts to a local directory + watch +
-upload with content-based conflict detection") is built on this API.
+etc. Feature 2 of pingone-aic-manager ("sync scripts to a local directory +
+watch + upload with content-based conflict detection") is built on this API.
 
 ## Authentication
+
 Service-account bearer. Scope: `fr:am:*`.
 
 ## Endpoints (realm-scoped)
 
-Replace `{realm-path}` with `/realms/root/realms/alpha` (or `bravo`).
-Always send `Accept-API-Version: protocol=2.0,resource=1.0`.
+Replace `{realm-path}` with `/realms/root/realms/alpha` (or `bravo`). Always
+send `Accept-API-Version: protocol=2.0,resource=1.0`.
 
-| Op | Method | Path | Notes |
-|----|--------|------|-------|
-| List | `GET` | `/am/json{realm-path}/scripts?_queryFilter=true` | Returns **all** results when `_pageSize` is omitted. If you set `_pageSize`, page by **`_pagedResultsOffset`** + `remainingPagedResults` — the `pagedResultsCookie` comes back `null` and is unusable (verified 2026-06-01). |
-| Filter | `GET` | `/am/json{realm-path}/scripts?_queryFilter=name+eq+"…"` | CREST filter. |
-| Read | `GET` | `/am/json{realm-path}/scripts/{id}` | `id` is a UUID. |
-| Upsert | `PUT` | `/am/json{realm-path}/scripts/{id}` | Full body. `script` MUST be base64. |
-| Delete | `DELETE` | `/am/json{realm-path}/scripts/{id}` | Permanent (default scripts cannot be deleted). |
+| Op     | Method   | Path                                                    | Notes                                                                                                                                                                                                                        |
+| ------ | -------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| List   | `GET`    | `/am/json{realm-path}/scripts?_queryFilter=true`        | Returns **all** results when `_pageSize` is omitted. If you set `_pageSize`, page by **`_pagedResultsOffset`** + `remainingPagedResults` — the `pagedResultsCookie` comes back `null` and is unusable (verified 2026-06-01). |
+| Filter | `GET`    | `/am/json{realm-path}/scripts?_queryFilter=name+eq+"…"` | CREST filter.                                                                                                                                                                                                                |
+| Read   | `GET`    | `/am/json{realm-path}/scripts/{id}`                     | `id` is a UUID.                                                                                                                                                                                                              |
+| Upsert | `PUT`    | `/am/json{realm-path}/scripts/{id}`                     | Full body. `script` MUST be base64.                                                                                                                                                                                          |
+| Delete | `DELETE` | `/am/json{realm-path}/scripts/{id}`                     | Permanent (default scripts cannot be deleted).                                                                                                                                                                               |
 
 ## Script context enumeration
 
@@ -33,8 +35,8 @@ GET /am/json/global-config/services/scripting/contexts?_queryFilter=true
 Accept-API-Version: protocol=2.0,resource=1.0
 ```
 
-Returns the full list of supported contexts. Verified live (41 distinct
-contexts in the sandbox as of 2026-05-17):
+Returns the full list of supported contexts. Verified live (41 distinct contexts
+in the sandbox as of 2026-05-17):
 
 ```
 AUTHENTICATION_CLIENT_SIDE                          OAUTH2_VALIDATE_SCOPE
@@ -71,7 +73,7 @@ Each context has its own permitted `languages` (`JAVASCRIPT`, occasionally
   "_id": "ac40a394-b3cd-400f-b2aa-b6b2e4a8be8e",
   "name": "Cache Loader Script",
   "description": "Default global script for Cache Loader",
-  "script": "LyoKICogQ29weXJpZ2h0...",   // base64 — see Quirks
+  "script": "LyoKICogQ29weXJpZ2h0...", // base64 — see Quirks
   "default": true,
   "language": "JAVASCRIPT",
   "context": "CACHE_LOADER",
@@ -84,34 +86,36 @@ Each context has its own permitted `languages` (`JAVASCRIPT`, occasionally
 ```
 
 - `default: true` ⇒ ForgeRock-shipped default. **Editable** (a content PUT
-  succeeds — verified 2026-06-03); cannot be *deleted*. (`aic` pushes defaults
+  succeeds — verified 2026-06-03); cannot be _deleted_. (`aic` pushes defaults
   like any other script — no `--force` needed.)
-- `evaluatorVersion`: `"1.0"` or `"2.0"`. Affects available bindings; v2 is
-  the current default for new scripts.
+- `evaluatorVersion`: `"1.0"` or `"2.0"`. Affects available bindings; v2 is the
+  current default for new scripts.
 - **No `_rev` field.** Optimistic locking via `If-Match` is not available for
   scripts. **Conflict detection must be content-based.**
 - **`GROOVY` scripts** (`language: "GROOVY"`) — AIC has dropped Groovy support;
   old tenants still carry many. `aic` does not sync them (filtered in the list).
 - **Product-internal scripts** are named `"ForgeRock Internal: …"`. A
-  `GET …/scripts/{id}` on one returns **403** `"This operation is not available
-  in PingOne Advanced Identity Cloud."` — they're read-protected, so un-pullable.
-  **No field in the list record marks them as internal** (verified 2026-06-03 —
-  `default`, `createdBy`/`lastModifiedBy` null, `creationDate`, `context` all
-  overlap normal scripts); the only reliable signal is the name prefix. `aic`
-  hides them from the list.
+  `GET …/scripts/{id}` on one returns **403**
+  `"This operation is not available in PingOne Advanced Identity Cloud."` —
+  they're read-protected, so un-pullable. **No field in the list record marks
+  them as internal** (verified 2026-06-03 — `default`,
+  `createdBy`/`lastModifiedBy` null, `creationDate`, `context` all overlap
+  normal scripts); the only reliable signal is the name prefix. `aic` hides them
+  from the list.
 
 ## Conflict detection rule (for two-way sync)
 
 Per user requirement: compare script content, **not** revision numbers. If a
-local edit happens against an older "remote snapshot" but the remote content
-is back to that snapshot (someone reverted), the local push should succeed.
+local edit happens against an older "remote snapshot" but the remote content is
+back to that snapshot (someone reverted), the local push should succeed.
 
 Algorithm:
+
 1. Cache the last-synced remote `script` content (base64) per script ID locally.
 2. Before pushing a local change, `GET` the remote script and base64-decode.
 3. If `remote.script_decoded == cached_last_synced_decoded`, push freely.
-4. Otherwise (remote drifted), block and prompt the user to resolve:
-   show 3-way diff of `cached_last_synced` vs `remote` vs `local`.
+4. Otherwise (remote drifted), block and prompt the user to resolve: show 3-way
+   diff of `cached_last_synced` vs `remote` vs `local`.
 5. On every successful push, update the cached snapshot.
 6. On successful pull (initial sync or refresh), update the cached snapshot.
 
@@ -157,6 +161,11 @@ curl -X PUT "$TENANT_BASE_URL/am/json/realms/root/realms/alpha/scripts/$ID" \
   silently no-op or return 403. Don't write to them.
 - **LIBRARY context** scripts have an additional `exports` array describing
   functions they expose for other scripts to require.
+- **A referenced LIBRARY script cannot be deleted** (verified 2026-07-29).
+  `DELETE …/scripts/{lib-id}` while any script `require()`s it by name returns
+  **`500`** with `"message": "The script <name> is used once"`. Delete the
+  consumers first, then the library — the same `DELETE` then returns `200`.
+  (Yes, a referential-integrity refusal reported as a 500, not a 409.)
 - **`creationDate` / `lastModifiedDate`** are epoch milliseconds, not ISO 8601
   (unlike ESVs which use ISO 8601). Be careful when serializing.
 - **Realm-scoped storage.** A script ID can exist in alpha but not bravo, or
@@ -177,14 +186,15 @@ curl -X PUT "$TENANT_BASE_URL/am/json/realms/root/realms/alpha/scripts/$ID" \
 
 - frodo-lib: `src/api/ScriptApi.ts`, `src/api/ScriptTypeApi.ts`.
 - fr-config-manager: `packages/fr-config-pull/src/scripts/scripts.js`,
-  `packages/fr-config-push/src/scripts/update-scripts.js`
-  (note: explicitly base64-encodes before PUT).
-- Ping docs: <https://docs.pingidentity.com/pingoneaic/latest/am-scripting/rest-api-scripts-read.html>
+  `packages/fr-config-push/src/scripts/update-scripts.js` (note: explicitly
+  base64-encodes before PUT).
+- Ping docs:
+  <https://docs.pingidentity.com/pingoneaic/latest/am-scripting/rest-api-scripts-read.html>
 
 ## Open questions
 
-- What does PUT actually return — full object echo or thin `{_id,_rev?}`?
-  Test on a throwaway script.
+- What does PUT actually return — full object echo or thin `{_id,_rev?}`? Test
+  on a throwaway script.
 - Does the server reject non-base64 in the `script` field, or attempt to detect
   raw JS? frodo-lib seemed to assume raw, which would suggest a tolerant server.
 - Are `LIBRARY` scripts' `exports` validated against the script body, or just

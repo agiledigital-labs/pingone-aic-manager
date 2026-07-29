@@ -129,7 +129,7 @@ workspace routing slug from `src/aic/script/am.rs::slug_for`.
 | `oauthApplication` / `samlApplication`   | no                                                         | yes                                  | **D**     | Next-gen only, journey-associated.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `auditEntryDetail`                       | yes                                                        | yes                                  | **D**     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `realm` / `systemEnv` / `scriptName`     | yes                                                        | yes                                  | **D**     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `require()` / library scripts            | **no**                                                     | **yes**                              | **D/I**   | Only next-gen can `require` libraries. Libraries can require other libraries (17 `lib/` files do). Used in 225 `src/`.                                                                                                                                                                                                                                                                                                                                                               |
+| `require()` / library scripts            | **no**                                                     | **yes**                              | **D/V/I** | Only next-gen can `require` libraries. Libraries can require other libraries (17 `lib/` files do). Used in 225 `src/`. **Verified beyond scripted decision (2026-07-29):** works end-to-end from a next-gen **`OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`** script; `typeof require === "undefined"` in the legacy (`1.0`) token-mod script (`ReferenceError: "require" is not defined.`). See the token-mod section below.                                                          |
 | `JavaImporter` / Java allowlist          | yes                                                        | **no**                               | **D/I**   | Legacy only. 26 `src/` use `JavaImporter`. Next-gen has no configurable Java access.                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ### Runtime-verified binding presence (next-gen scripted decision, 2026-06-03)
@@ -219,18 +219,75 @@ Type model: the slf4j `logger` lives in `nextgen-common.d.ts`; the classic
 and the other unmigrated AM contexts). `nodeState.isDefined`/`remove` are merged
 onto `NodeState` only on the legacy leaf (via `decision-node-legacy.d.ts`).
 
+### Library `require()` from next-gen access-token modification (verified 2026-07-29)
+
+Question: can an OAuth2 **access token modification** script use AM library
+scripts? Answer: **yes, but only the next-gen context**
+(`OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`, `evaluatorVersion 2.0`). The
+legacy context (`OAUTH2_ACCESS_TOKEN_MODIFICATION`, `1.0`) has no `require` at
+all.
+
+Probe (throwaway resources, all deleted afterwards): a `LIBRARY` script
+exporting `stamp()` plus `typeof` readings; a next-gen token-mod script that
+`require()`d it by **script name** and wrote the results with
+`accessToken.setField(...)`; a throwaway confidential client
+(`grantTypes: ["client_credentials"]`) with
+`overrideOAuth2ClientConfig.providerOverridesEnabled = true`,
+`accessTokenModificationPluginType: "SCRIPTED"`,
+`accessTokenModificationScript: <probe id>`, and `statelessTokensEnabled: true`
+so the claims are readable straight out of the JWT.
+
+Resulting access-token claims:
+
+| Claim                            | Value                       | Meaning                                                   |
+| -------------------------------- | --------------------------- | --------------------------------------------------------- |
+| `aicedit_typeof_require`         | `function`                  | `require` exists in the next-gen token-mod script         |
+| `aicedit_probe`                  | `ok-from-library`           | library function executed, return value reached the token |
+| `aicedit_lib_script_name`        | `aicedit-atm-nextgen-probe` | inside the library, `scriptName` is the **caller's** name |
+| `aicedit_lib_typeof_accessToken` | `undefined`                 | the `accessToken` binding is **not** in library scope     |
+| `aicedit_lib_typeof_openidm`     | `object`                    | `openidm` **is** in library scope                         |
+| `aicedit_lib_typeof_httpClient`  | `object`                    | `httpClient` **is** in library scope                      |
+
+Same client pointed at a legacy (`1.0`) token-mod script:
+`aicedit_typeof_require = "undefined"` and
+`require("…") → ReferenceError: "require" is not defined.` (caught, token still
+issued).
+
+Consequences:
+
+- Context-specific bindings (`accessToken`, and by the same rule `identity`,
+  `scopes`, `requestProperties`, `clientProperties`) stay **outside** library
+  scope — same behaviour already recorded for the scripted-decision globals.
+  Pass them in as arguments, or have the library return a value the caller
+  applies with `accessToken.setField(...)`.
+- The library's own next-gen common bindings (`openidm`, `httpClient`, `logger`,
+  `secrets`, `utils`, …) are available, so shared code that reads managed
+  objects or calls out over HTTP works unchanged in a token-mod call path.
+- To use a library from an existing token-mod script you must first migrate that
+  script to the `…_NEXT_GEN` context (`evaluatorVersion 2.0`) — the two contexts
+  are separate ids, so this is a rewrite of the script's bindings, not a flag
+  flip. The sandbox alpha realm's provider-level `Modify Access Token`
+  (`9c98f803-…`) and the per-client `TestAccessTokenModification` (`f65303d2-…`)
+  were both still legacy `1.0` as of this probe.
+
+The context's binding metadata (18 bindings, `JAVASCRIPT: ["2.0"]`, full
+`accessToken` method surface) is captured at
+`docs/api/bindings/oauth2-atm-next.json`. Note `require` is a language-level
+function, not a binding — it appears in **no** context's binding list, including
+`SCRIPTED_DECISION_NODE`, so its absence there is not evidence either way.
+
 ### AM script families (folder slugs)
 
-| Family                                  | Slug                   | `evaluatorVersion` | Library support | Bindings overlay              |
-| --------------------------------------- | ---------------------- | ------------------ | --------------- | ----------------------------- |
-| Scripted decision (next-gen)            | `decision-node`        | `2.0`              | yes             | decision-node-base + next-gen |
-| Scripted decision (legacy)              | `decision-node-legacy` | `1.0`              | no              | decision-node-base + legacy   |
-| Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)  | library                       |
-| OIDC claims                             | `oidc-claims`          | mixed              | next-gen only   | oidc-claims                   |
-| OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only   | per-context (future)          |
-| SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only   | per-context (future)          |
-| Social normalization/handler            | `social-*`             | mixed              | —               | per-context (future)          |
-| Config provider / device match / policy | various                | mixed              | —               | shared globals only (today)   |
+| Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay              |
+| --------------------------------------- | ---------------------- | ------------------ | --------------------------------------------- | ----------------------------- |
+| Scripted decision (next-gen)            | `decision-node`        | `2.0`              | yes                                           | decision-node-base + next-gen |
+| Scripted decision (legacy)              | `decision-node-legacy` | `1.0`              | no                                            | decision-node-base + legacy   |
+| Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)                                | library                       |
+| OIDC claims                             | `oidc-claims`          | mixed              | next-gen only                                 | oidc-claims                   |
+| OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only (token mod verified 2026-07-29) | per-context (future)          |
+| SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | per-context (future)          |
+| Social normalization/handler            | `social-*`             | mixed              | —                                             | per-context (future)          |
+| Config provider / device match / policy | various                | mixed              | —                                             | shared globals only (today)   |
 
 ## IDM binding matrix
 
@@ -239,27 +296,29 @@ IDM scripts are tenant-global (no realm). The IDM **endpoint**
 `docs/api/11`). The endpoint `request` is a discriminated union on `method`;
 `context.http` carries the HTTP request.
 
-| Binding   | Endpoint | Schedule | Status | Notes                                                                                                     |
-| --------- | -------- | -------- | ------ | --------------------------------------------------------------------------------------------------------- |
-| `openidm` | yes      | yes      | **I**  | CRUDPAQ + `update`. From `idmCommon.d.ts`.                                                                |
-| `logger`  | yes      | yes      | **I**  | slf4j-style.                                                                                              |
-| `identityServer` | yes | yes | **D/V** | `getProperty(name, defaultValue?, substitute?)`; a missing ESV/property returns `null` when no default is supplied, or the supplied default. Endpoint behavior verified 2026-07-22 below. |
-| `request` | yes      | no       | **V**  | Discriminated union per CREST method (read/create/update/patch/delete/action/query). `docs/api/11`.       |
-| `context` | yes      | no       | **V**  | `context.http` = {method,path,headers,parameters}; `context.security` = {authenticationId,authorization}. |
+| Binding          | Endpoint | Schedule | Status  | Notes                                                                                                                                                                                     |
+| ---------------- | -------- | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `openidm`        | yes      | yes      | **I**   | CRUDPAQ + `update`. From `idmCommon.d.ts`.                                                                                                                                                |
+| `logger`         | yes      | yes      | **I**   | slf4j-style.                                                                                                                                                                              |
+| `identityServer` | yes      | yes      | **D/V** | `getProperty(name, defaultValue?, substitute?)`; a missing ESV/property returns `null` when no default is supplied, or the supplied default. Endpoint behavior verified 2026-07-22 below. |
+| `request`        | yes      | no       | **V**   | Discriminated union per CREST method (read/create/update/patch/delete/action/query). `docs/api/11`.                                                                                       |
+| `context`        | yes      | no       | **V**   | `context.http` = {method,path,headers,parameters}; `context.security` = {authenticationId,authorization}.                                                                                 |
 
 ### IDM `identityServer.getProperty` missing ESV behavior (verified 2026-07-22)
 
 `identityServer.getProperty("esv.some.variable")` **does not throw** when the
-ESV/property does not exist. It returns JavaScript `null`. Supplying the optional
-second argument returns that string instead:
+ESV/property does not exist. It returns JavaScript `null`. Supplying the
+optional second argument returns that string instead:
 
 ```javascript
-var absent = identityServer.getProperty("esv.aicedit.definitely.nonexistent.20260722");
+var absent = identityServer.getProperty(
+  "esv.aicedit.definitely.nonexistent.20260722",
+);
 // absent === null
 
 var fallback = identityServer.getProperty(
   "esv.aicedit.definitely.nonexistent.20260722",
-  "aicedit-fallback-value"
+  "aicedit-fallback-value",
 );
 // fallback === "aicedit-fallback-value"
 ```
@@ -319,8 +378,12 @@ binding _presence_ (see the legacy section above; the tester now takes
    `{}` placeholder formatting; `httpClient.send(...).get()` response shape;
    `openidm` call return shapes. Presence is verified; exact shapes still lean
    on docs.
-2. `require()` of a real library from a next-gen scripted decision (presence of
-   the `require` function is verified; an end-to-end library import is not).
+2. ~~`require()` of a real library from a next-gen scripted decision~~ RESOLVED
+   — end-to-end library imports are verified from a next-gen scripted decision
+   (2026-07-13/14 rows above) and from next-gen access-token modification
+   (2026-07-29 section above). Still unprobed: `require()` from the other
+   `…_NEXT_GEN` AM contexts (OIDC claims, scope validate/evaluate, JWT issuer,
+   DCR, SAML mappers/adapters).
 3. IDM **schedule** scripts: binding shapes other than the now-verified
    `openidm.create`; modern syntax is verified above. Schedules can be probed
    synchronously with the scheduler `trigger` action documented in
