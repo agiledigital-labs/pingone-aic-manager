@@ -19,10 +19,10 @@ Accept-API-Version: protocol=2.0,resource=1.0
 - Both the short realm form (`/am/json/alpha/contexts/…`) and the canonical
   (`/am/json/realms/root/realms/alpha/contexts/…`) return `200` here — unlike
   the scripts endpoint, the short form is NOT rejected.
-- **Read by id only.** The collection cannot be listed: a bare
-  `GET …/contexts` → `400 "The resource collection cannot be read"`,
-  `?_queryFilter=true` → `501`, and `?_action=…` → `501`. So context ids must be
-  known up front (we keep the list in `src/aic/script/am.rs::base_slug`).
+- **Read by id only.** The collection cannot be listed: a bare `GET …/contexts`
+  → `400 "The resource collection cannot be read"`, `?_queryFilter=true` →
+  `501`, and `?_action=…` → `501`. So context ids must be known up front (we
+  keep the list in `src/aic/script/am.rs::base_slug`).
 
 ### Response shape
 
@@ -42,9 +42,10 @@ Accept-API-Version: protocol=2.0,resource=1.0
 }
 ```
 
-`javaScriptType` is one of `string | number | boolean | object | array |
-unknown | void`. `elements` are `method` or `field` (fields nest their own
-`elements`, e.g. `utils.crypto.subtle`).
+`javaScriptType` is one of
+`string | number | boolean | object | array | unknown | void`. `elements` are
+`method` or `field` (fields nest their own `elements`, e.g.
+`utils.crypto.subtle`).
 
 ## Key behaviour: metadata only exists for next-gen contexts
 
@@ -58,19 +59,37 @@ upgraded** — but can't help legacy-only contexts yet.
 
 Next-gen (binding metadata captured under `docs/api/bindings/`):
 
-| Context | bindings | artifact |
-| --- | --- | --- |
-| `SCRIPTED_DECISION_NODE` | 25 | `scripted-decision-next.json` |
-| `DEVICE_MATCH_NODE` | 25 | `device-match-next.json` |
-| `OIDC_CLAIMS_NEXT_GEN` | 18 | `oidc-claims-next.json` |
-| `SOCIAL_PROVIDER_HANDLER_NODE` | 17 | `social-provider-handler-next.json` |
-| `SAML2_NAMEID_MAPPER` | 16 | `saml2-nameid-mapper-next.json` |
-| `OAUTH2_DYNAMIC_CLIENT_REGISTRATION` | 15 | `oauth2-dcr-next.json` |
-| `SAML2_SP_ACCOUNT_MAPPER` | 14 | `saml2-sp-account-mapper-next.json` |
-| `PINGONE_VERIFY_COMPLETION_DECISION_NODE` | 14 | `pingone-verify-completion-next.json` |
-| `LIBRARY` | 11 | `library-next.json` |
+| Context                                   | bindings | artifact                              |
+| ----------------------------------------- | -------- | ------------------------------------- |
+| `SCRIPTED_DECISION_NODE`                  | 25       | `scripted-decision-next.json`         |
+| `DEVICE_MATCH_NODE`                       | 25       | `device-match-next.json`              |
+| `OIDC_CLAIMS_NEXT_GEN`                    | 18       | `oidc-claims-next.json`               |
+| `SOCIAL_PROVIDER_HANDLER_NODE`            | 17       | `social-provider-handler-next.json`   |
+| `SAML2_NAMEID_MAPPER`                     | 16       | `saml2-nameid-mapper-next.json`       |
+| `OAUTH2_DYNAMIC_CLIENT_REGISTRATION`      | 15       | `oauth2-dcr-next.json`                |
+| `SAML2_SP_ACCOUNT_MAPPER`                 | 14       | `saml2-sp-account-mapper-next.json`   |
+| `PINGONE_VERIFY_COMPLETION_DECISION_NODE` | 14       | `pingone-verify-completion-next.json` |
+| `LIBRARY`                                 | 11       | `library-next.json`                   |
 
-Legacy-only (0 bindings; `JAVASCRIPT`+`GROOVY` `1.0`): `OIDC_CLAIMS`,
+Added 2026-07-29:
+
+| Context                                     | bindings | artifact               |
+| ------------------------------------------- | -------- | ---------------------- |
+| `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` | 18       | `oauth2-atm-next.json` |
+
+(`evaluatorVersions: {"JAVASCRIPT":["2.0"]}`; bindings: `accessToken`,
+`identity`, `scopes`, `requestProperties`, `clientProperties`, `emailService`,
+`httpClient`, `logger`, `openidm`, `secrets`, `utils`, `policy`, `jwtAssertion`,
+`jwtValidator`, `systemEnv`, `scriptName`, `realm`, `cookieName`. `accessToken`
+is the full `AccessTokenScriptWrapper` surface —
+`setField`/`setFields`/`getField`, `addExtraData`/`addExtraJsonData`,
+scope/claims/act/mayAct, plus the `remove*` family.) Library `require()` from
+this context is runtime-verified — see `docs/api/12-script-bindings-matrix.md`.
+
+Legacy-only (0 bindings; `JAVASCRIPT`+`GROOVY` `1.0`) — note these are the
+non-`NEXT_GEN` context ids, and each has a separate `…_NEXT_GEN` sibling that
+does carry metadata (`OAUTH2_ACCESS_TOKEN_MODIFICATION` re-checked 2026-07-29:
+still 0 bindings / `1.0` only): `OIDC_CLAIMS`,
 `OAUTH2_ACCESS_TOKEN_MODIFICATION`, `OAUTH2_MAY_ACT`,
 `OAUTH2_SCRIPTED_JWT_ISSUER`, `OAUTH2_VALIDATE_SCOPE`, `OAUTH2_EVALUATE_SCOPE`,
 `OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER`, `POLICY_CONDITION`,
@@ -85,8 +104,8 @@ Bad ids (`400`): `DEVICE_PROFILE_MATCH_NODE`, `PINGONE_VERIFY_EVALUATION_NODE`.
 Intersecting the three contexts we type (`SCRIPTED_DECISION_NODE`, `LIBRARY`,
 `OIDC_CLAIMS_NEXT_GEN`) gives the bindings every next-gen script has:
 
-`cookieName`, `httpClient`, `jwtAssertion`, `jwtValidator`, `logger`,
-`openidm`, `policy`, `realm`, `scriptName`, `secrets`, `utils`.
+`cookieName`, `httpClient`, `jwtAssertion`, `jwtValidator`, `logger`, `openidm`,
+`policy`, `realm`, `scriptName`, `secrets`, `utils`.
 
 ### Listed bindings vs runtime globals
 
