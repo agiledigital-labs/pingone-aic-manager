@@ -1,12 +1,10 @@
 // GENERATED from docs/api/bindings/oauth2-atm-next.json by
 // scripts/gen-binding-types.mjs — do not edit by hand. Context: OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN.
 // Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.
-//
-// Hand-refinements on top of the generated output (keep on regeneration):
-//   - `identity.getAttributeValues` gets the typed-attribute overload first.
-//   - `accessToken.getField`/`setField` use `TokenFieldValue` instead of the
-//     metadata's bare `object` — Ping declares those as Java `Object`, and
-//     `object` rejects the ordinary `setField("claim", "a string")` call.
+// Applied metadata refinements:
+//   - `AccessToken.getField` returns `any`, not metadata's bare `object`.
+//   - `AccessToken.setField` accepts `TokenFieldValue`, not metadata's bare `object`.
+//   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
 
 // A custom access-token field: any JSON-ish scalar, array, or object. Whatever
 // you set here lands in the CTS entry, or as a JWT claim for client-based

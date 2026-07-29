@@ -376,6 +376,113 @@ export default [
       },
     },
   },
+  // Next-gen may-act: context bindings + library require().
+  {
+    files: ["*/oauth2-may-act-ng/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        token: "readonly",
+        identity: "readonly",
+        scopes: "readonly",
+        requestProperties: "readonly",
+        clientProperties: "readonly",
+        emailService: "readonly",
+        secrets: "readonly",
+        policy: "readonly",
+        jwtAssertion: "readonly",
+        jwtValidator: "readonly",
+        cookieName: "readonly",
+        require: "readonly",
+        module: "readonly",
+        exports: "writable",
+      },
+    },
+  },
+  // Next-gen scripted JWT issuer: context bindings + library require().
+  {
+    files: ["*/oauth2-jwt-issuer-ng/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        issuer: "readonly",
+        idRepository: "readonly",
+        emailService: "readonly",
+        secrets: "readonly",
+        policy: "readonly",
+        jwtAssertion: "readonly",
+        jwtValidator: "readonly",
+        cookieName: "readonly",
+        require: "readonly",
+        module: "readonly",
+        exports: "writable",
+      },
+    },
+  },
+  // Next-gen validate scope: context bindings + library require().
+  {
+    files: ["*/oauth2-validate-scope-ng/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        scopeValidatorHelper: "readonly",
+        availableScopes: "readonly",
+        requestedScopes: "readonly",
+        allowedScopes: "readonly",
+        defaultScopes: "readonly",
+        identity: "readonly",
+        requestProperties: "readonly",
+        clientProperties: "readonly",
+        emailService: "readonly",
+        secrets: "readonly",
+        policy: "readonly",
+        jwtAssertion: "readonly",
+        jwtValidator: "readonly",
+        cookieName: "readonly",
+        require: "readonly",
+        module: "readonly",
+        exports: "writable",
+      },
+    },
+  },
+  // Next-gen evaluate scope: context bindings + library require().
+  {
+    files: ["*/oauth2-evaluate-scope-ng/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        accessToken: "readonly",
+        identity: "readonly",
+        requestProperties: "readonly",
+        clientProperties: "readonly",
+        emailService: "readonly",
+        secrets: "readonly",
+        policy: "readonly",
+        jwtAssertion: "readonly",
+        jwtValidator: "readonly",
+        cookieName: "readonly",
+        require: "readonly",
+        module: "readonly",
+        exports: "writable",
+      },
+    },
+  },
+  // Next-gen authorize-endpoint data provider: context bindings + library require().
+  {
+    files: ["*/oauth2-authz-data-ng/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        identity: "readonly",
+        requestProperties: "readonly",
+        clientProperties: "readonly",
+        emailService: "readonly",
+        secrets: "readonly",
+        policy: "readonly",
+        jwtAssertion: "readonly",
+        jwtValidator: "readonly",
+        cookieName: "readonly",
+        require: "readonly",
+        module: "readonly",
+        exports: "writable",
+      },
+    },
+  },
   // Legacy token modification: no library require() (verified ReferenceError).
   {
     files: ["*/oauth2-access-token/**/*.cjs"],

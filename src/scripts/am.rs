@@ -370,6 +370,51 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             ],
             Some("../lib/*"),
         ),
+        "oauth2-may-act-ng" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "oauth2-may-act-ng.d.ts",
+            ],
+            Some("../lib/*"),
+        ),
+        "oauth2-jwt-issuer-ng" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "oauth2-jwt-issuer-ng.d.ts",
+            ],
+            Some("../lib/*"),
+        ),
+        "oauth2-validate-scope-ng" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "oauth2-validate-scope-ng.d.ts",
+            ],
+            Some("../lib/*"),
+        ),
+        "oauth2-evaluate-scope-ng" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "oauth2-evaluate-scope-ng.d.ts",
+            ],
+            Some("../lib/*"),
+        ),
+        "oauth2-authz-data-ng" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "oauth2-authz-data-ng.d.ts",
+            ],
+            Some("../lib/*"),
+        ),
         "pingone-verify" => (
             &[
                 "rhino-1.7.14.d.ts",
@@ -500,6 +545,24 @@ mod tests {
             ),
             PathBuf::from("am/alpha/oauth2-access-token-ng/MyScript.cjs")
         );
+        for (context, slug) in [
+            ("OAUTH2_MAY_ACT_NEXT_GEN", "oauth2-may-act-ng"),
+            (
+                "OAUTH2_SCRIPTED_JWT_ISSUER_NEXT_GEN",
+                "oauth2-jwt-issuer-ng",
+            ),
+            ("OAUTH2_VALIDATE_SCOPE_NEXT_GEN", "oauth2-validate-scope-ng"),
+            ("OAUTH2_EVALUATE_SCOPE_NEXT_GEN", "oauth2-evaluate-scope-ng"),
+            (
+                "OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER_NEXT_GEN",
+                "oauth2-authz-data-ng",
+            ),
+        ] {
+            assert_eq!(
+                workspace_subpath(&rref(Some(context)), "alpha"),
+                PathBuf::from(format!("am/alpha/{slug}/MyScript.cjs"))
+            );
+        }
         assert_eq!(
             workspace_subpath(&rref(Some("SAML2_IDP_ADAPTER_NEXTGEN")), "alpha"),
             PathBuf::from("am/alpha/saml-idp-adapter-ng/MyScript.cjs")
@@ -599,6 +662,11 @@ mod tests {
             ("saml-sp-account-mapper", "saml-sp-account-mapper.d.ts"),
             ("oauth2-dcr", "oauth2-dcr.d.ts"),
             ("oauth2-access-token-ng", "oauth2-access-token-ng.d.ts"),
+            ("oauth2-may-act-ng", "oauth2-may-act-ng.d.ts"),
+            ("oauth2-jwt-issuer-ng", "oauth2-jwt-issuer-ng.d.ts"),
+            ("oauth2-validate-scope-ng", "oauth2-validate-scope-ng.d.ts"),
+            ("oauth2-evaluate-scope-ng", "oauth2-evaluate-scope-ng.d.ts"),
+            ("oauth2-authz-data-ng", "oauth2-authz-data-ng.d.ts"),
             ("pingone-verify", "pingone-verify.d.ts"),
         ] {
             let cfg = leaf_tsconfig(slug);

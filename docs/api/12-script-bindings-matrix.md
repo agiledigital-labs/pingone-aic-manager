@@ -278,16 +278,16 @@ function, not a binding — it appears in **no** context's binding list, includi
 
 ### AM script families (folder slugs)
 
-| Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay                                    |
-| --------------------------------------- | ---------------------- | ------------------ | --------------------------------------------- | --------------------------------------------------- |
-| Scripted decision (next-gen)            | `decision-node`        | `2.0`              | yes                                           | decision-node-base + next-gen                       |
-| Scripted decision (legacy)              | `decision-node-legacy` | `1.0`              | no                                            | decision-node-base + legacy                         |
-| Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)                                | library                                             |
-| OIDC claims                             | `oidc-claims`          | mixed              | next-gen only                                 | oidc-claims                                         |
-| OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only (token mod verified 2026-07-29) | `oauth2-dcr`, `oauth2-access-token-ng`; rest future |
-| SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | per-context (future)                                |
-| Social normalization/handler            | `social-*`             | mixed              | —                                             | per-context (future)                                |
-| Config provider / device match / policy | various                | mixed              | —                                             | shared globals only (today)                         |
+| Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay                                                                |
+| --------------------------------------- | ---------------------- | ------------------ | --------------------------------------------- | ------------------------------------------------------------------------------- |
+| Scripted decision (next-gen)            | `decision-node`        | `2.0`              | yes                                           | decision-node-base + next-gen                                                   |
+| Scripted decision (legacy)              | `decision-node-legacy` | `1.0`              | no                                            | decision-node-base + legacy                                                     |
+| Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)                                | library                                                                         |
+| OIDC claims                             | `oidc-claims`          | mixed              | next-gen only                                 | oidc-claims                                                                     |
+| OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only (token mod verified 2026-07-29) | all next-gen OAuth2 contexts typed (2026-07-29); legacy ids shared globals only |
+| SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | per-context (future)                                                            |
+| Social normalization/handler            | `social-*`             | mixed              | —                                             | per-context (future)                                                            |
+| Config provider / device match / policy | various                | mixed              | —                                             | shared globals only (today)                                                     |
 
 ## IDM binding matrix
 
@@ -382,8 +382,14 @@ binding _presence_ (see the legacy section above; the tester now takes
    — end-to-end library imports are verified from a next-gen scripted decision
    (2026-07-13/14 rows above) and from next-gen access-token modification
    (2026-07-29 section above). Still unprobed: `require()` from the other
-   `…_NEXT_GEN` AM contexts (OIDC claims, scope validate/evaluate, JWT issuer,
-   DCR, SAML mappers/adapters).
+   `…_NEXT_GEN` AM contexts (OIDC claims, scope validate/evaluate, may-act, JWT
+   issuer, authorize-endpoint data provider, DCR, SAML mappers/adapters). Those
+   contexts are **typed** as of 2026-07-29 and their workspace folders get the
+   library alias, on the family rule (same engine, metadata parity) — that's an
+   inference, not a probe. Each is probeable through
+   `overrideOAuth2ClientConfig` on a throwaway client (`validateScopeScript`,
+   `evaluateScopeScript`, `oidcMayActScript`, `accessTokenMayActScript`,
+   `authorizeEndpointDataProviderScript`).
 3. IDM **schedule** scripts: binding shapes other than the now-verified
    `openidm.create`; modern syntax is verified above. Schedules can be probed
    synchronously with the scheduler `trigger` action documented in
