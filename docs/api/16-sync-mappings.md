@@ -225,6 +225,39 @@ events/sec** steady-state (1530 events drained in ~30 s at `pageSize=100`,
 cycle. The poll ceiling `pageSize / pollingInterval` (100/s per node here) is
 **not** usually the real limit.
 
+### Querying the queue: counts, sort, projection (verified 2026-07-29)
+
+A 7M-item queue can't be paged to answer "how deep is it?" — but it doesn't need
+to be. All of the following cost ~60 ms regardless of depth:
+
+- **Depth:** `?_queryFilter=true&_pageSize=1&_totalPagedResultsPolicy=EXACT` →
+  `totalPagedResults`. **The response always reports
+  `totalPagedResultsPolicy: "ESTIMATE"`** — `EXACT` is silently downgraded, so
+  treat the number as a backend estimate (it was exact at 10–12 items; assume
+  approximate at millions). Without the policy param, `totalPagedResults` is
+  `-1`.
+- **Counts are filter-aware for `eq` filters.** `mapping eq "<name>"`,
+  `state eq "PENDING"`, `syncAction eq "notifyCreate"`,
+  `resourceCollection eq "managed/x"` all return a count matching the filter (a
+  bogus mapping name → `totalPagedResults: 0`). So a full breakdown by mapping ×
+  `syncAction` × `state` is **one cheap GET per dimension value** — no paging.
+- **Presence filters break the count.** `nodeId pr` and `!(nodeId pr)` return
+  the correct `result` page but a **collection-wide** `totalPagedResults`
+  (verified: `nodeId pr` → `resultCount: 0`, no cookie, yet
+  `totalPagedResults: 12`). Never count claimed-vs-unclaimed this way; use
+  `resultCount` on a bounded page, or sample.
+- **`_countOnly=true` needs `Accept-API-Version: protocol=2.2`** (otherwise
+  `400 countOnly is only supported with protocolVersion 2.2 or higher`), and
+  even then it **still returns the full result page** — dangerous on a large
+  queue. Prefer `_pageSize=1` + the policy param.
+- **Sorting works and composes with the count policy:** `_sortKeys=createDate`
+  (oldest first) / `_sortKeys=-createDate` (newest) → backlog age in one GET.
+  `createDate` is an ISO-8601 nanosecond timestamp
+  (`2026-07-29T04:26:19.258450542Z`).
+- **Project fields.** `_fields=_id,createDate,mapping` is honored, and matters:
+  each item embeds full `oldObject`/`newObject` payloads. Project when listing
+  or sweeping.
+
 ### Why a real backlog processes far below the ceiling (diagnosing slow queues)
 
 Field data from the affected env (7M-item backlog draining at ~1–2 events/sec)
@@ -468,6 +501,15 @@ curl -s -X POST -H "Authorization: Bearer ${TOKEN}" \
   unchanged over 12 s); `nodeId` claim/poll model; drain ceiling ~**55
   events/sec** managed→managed. Mapping restored (queuedSync removed) and all
   throwaway records deleted afterward.
+- 2026-07-29 (queue query surface, for the diagnostic tooling): with 10–12 held
+  events, verified `_totalPagedResultsPolicy=EXACT` returns a total but is
+  always downgraded to `ESTIMATE`; counts are filter-aware for `eq`
+  (`mapping`/`state`/`syncAction`/`resourceCollection`; bogus mapping → 0) but
+  **collection-wide for `pr`** (`nodeId pr` → 0 results, total 12);
+  `_countOnly=true` → 400 without `Accept-API-Version: protocol=2.2` and still
+  returns full results with it; `_sortKeys=±createDate` works and composes with
+  the count policy; `_fields` projection honored. All probes ~60 ms. Mapping
+  restored and all throwaway records deleted afterward.
 
 ## Source citations
 
