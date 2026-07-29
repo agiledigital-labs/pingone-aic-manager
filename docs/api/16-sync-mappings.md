@@ -227,29 +227,57 @@ cycle. The poll ceiling `pageSize / pollingInterval` (100/s per node here) is
 
 ### Why a real backlog processes far below the ceiling (diagnosing slow queues)
 
-Real throughput ≈ _effective concurrency ÷ per-event latency_. For a 7M backlog
-observed at ~1–2 events/sec (≈30–55× below the sandbox ceiling), suspect, in
+Field data from the affected env (7M-item backlog draining at ~1–2 events/sec)
+plus a **full recon of the same mapping running at ~500 records/sec with a
+~1-in-500 failure rate** narrows the cause sharply. Work through it in this
 order:
 
-1. **Slow target × low concurrency.** An external connector write (LDAP/DB/SaaS)
-   of ~0.3–1 s dominates; rate ≈ `concurrency / latency`. ~1–2/s implies an
-   effective concurrency of ~1–2. Managed→managed (both sides in the same repo)
-   is fast; a connector target is the usual culprit.
-2. **Retries on a high failure rate.** A failing event occupies a worker for ≥
-   `maxRetries × retryDelay` (here ≥5 s) before `postRetryAction` drops it.
-   `postRetryAction: "logged-ignore"` means failures are expected and **silently
-   dropped** — so a large failing fraction both collapses throughput _and_ means
-   those syncs never land. **Check the logs** (`source=sync`/`recon`) for the
-   failing target op; this is the highest-value thing to rule out.
-3. **Queue-table bloat.** With millions of `PENDING` rows, the per-poll "claim
-   next unclaimed page" query (scan + order by `createDate`) gets expensive on
-   the DS backend and adds per-cycle + cross-node contention.
-4. **Cluster claiming.** Only nodes that poll+claim contribute; if effectively
-   one node is processing, you get one pool's worth of concurrency.
+1. **Is the target slow?** Compare against a recon of the same mapping. Recon
+   does the same situation calc + target write + link write, so its rate is an
+   upper bound on per-event work. Observed here: **~500/sec** — so the target
+   write is _not_ the bottleneck, and "slow connector × low concurrency" is
+   ruled out. (If recon is _also_ slow, the target/connector is the problem and
+   nothing below applies.)
+2. **Are retries burning workers?** A failing event occupies a worker for ≥
+   `maxRetries × retryDelay` (≥5 s with `maxRetries: 5`, `retryDelay: 1000`)
+   before `postRetryAction` disposes of it. Do the arithmetic before blaming it:
+   at a **0.2 % failure rate**, 7M events ⇒ ~14 k failures ⇒ ≤ ~19 h of worker
+   time even fully serialized — under 2 % of a 7-week drain, so **not** the
+   throughput cause. It is still a **correctness** finding:
+   `postRetryAction: "logged-ignore"` logs and **drops** each one, so ~14 k
+   source changes never reach the target and nothing surfaces in the queue. Only
+   a recon recovers them.
+3. **Queue depth itself (the likely cause once 1 and 2 are excluded).** Each
+   poll cycle runs a "claim the next page of unclaimed events" query — a
+   filtered scan ordered by `createDate` over the whole queue table. That cost
+   scales with **queue depth**, and it is the one factor recon doesn't share
+   (recon pages source/target directly and never touches the queue table). The
+   arithmetic fits: at `pageSize: 100`, ~1.6 events/sec means ~**60 s per claim
+   cycle** instead of the sandbox's sub-second — and 7M ÷ 1.6/sec ≈ 50 days,
+   matching the observed 6–10 week ETA. This failure mode is
+   **self-reinforcing**: the deeper the queue, the slower the claim, the deeper
+   the queue.
 
-Diagnosis on the affected env: count the queue and its oldest `createDate`;
-sample `syncAction`/`state`/distinct `nodeId`; time a single target write; and
-read the sync logs for the retry/failure reason.
+   _Decisive test:_ time a single
+   `GET /openidm/sync/queue?_queryFilter=true&_pageSize=100` on the affected
+   env. Tens of milliseconds (as in the sandbox) exonerates queue depth; tens of
+   seconds confirms it.
+
+4. **Cluster claiming.** Only nodes that poll+claim contribute; if effectively
+   one node is processing you get one pool's worth of concurrency. Check for
+   distinct `nodeId` values across in-flight items.
+
+**Consequence:** queued sync is a latency-smoothing mechanism, not a bulk one —
+even healthy it ran ~55/sec in the sandbox versus ~500/sec for recon, because
+every event pays a queue-row insert/claim/delete round trip. For a
+multi-million-item backlog, **clear the queue and reconcile** (below): recon
+reconverges 7M records in ~4 h at 500/sec, versus weeks of queue drain, and it
+also repairs the events that `logged-ignore` silently dropped.
+
+Diagnosis checklist on the affected env: queue count + oldest `createDate`
+(backlog age); `syncAction`/`state`/distinct-`nodeId` breakdown; wall-clock of
+one claim-shaped queue GET; recon rate for the same mapping; and the sync logs
+(`source=sync`) for the retry/failure reason.
 
 ### Clearing the sync queue
 
