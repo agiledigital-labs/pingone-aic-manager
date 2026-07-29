@@ -361,6 +361,15 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             ],
             Some("../lib/*"),
         ),
+        "oauth2-access-token-ng" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "nextgen-common.d.ts",
+                "oauth2-access-token-ng.d.ts",
+            ],
+            Some("../lib/*"),
+        ),
         "pingone-verify" => (
             &[
                 "rhino-1.7.14.d.ts",
@@ -485,6 +494,13 @@ mod tests {
             PathBuf::from("am/alpha/oidc-claims-ng/MyScript.cjs")
         );
         assert_eq!(
+            workspace_subpath(
+                &rref(Some("OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN")),
+                "alpha"
+            ),
+            PathBuf::from("am/alpha/oauth2-access-token-ng/MyScript.cjs")
+        );
+        assert_eq!(
             workspace_subpath(&rref(Some("SAML2_IDP_ADAPTER_NEXTGEN")), "alpha"),
             PathBuf::from("am/alpha/saml-idp-adapter-ng/MyScript.cjs")
         );
@@ -582,6 +598,7 @@ mod tests {
             ("saml-nameid-mapper", "saml-nameid-mapper.d.ts"),
             ("saml-sp-account-mapper", "saml-sp-account-mapper.d.ts"),
             ("oauth2-dcr", "oauth2-dcr.d.ts"),
+            ("oauth2-access-token-ng", "oauth2-access-token-ng.d.ts"),
             ("pingone-verify", "pingone-verify.d.ts"),
         ] {
             let cfg = leaf_tsconfig(slug);
