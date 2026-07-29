@@ -9,9 +9,9 @@ IDM **sync mappings** reconcile a source resource (a connector
 target managed/connector object. Each mapping can embed JavaScript in several
 slots: whole-mapping **behaviour scripts** (`onCreate`, `onUpdate`, …), a
 **correlation** script, **valid-source/target** filters, a recon **result**
-script, and per-attribute **transform**/**condition** scripts. `pingone-aic-manager` syncs
-those embedded scripts to the local workspace (one file per slot) with full
-TypeScript typing of the runtime bindings.
+script, and per-attribute **transform**/**condition** scripts.
+`pingone-aic-manager` syncs those embedded scripts to the local workspace (one
+file per slot) with full TypeScript typing of the runtime bindings.
 
 ## Authentication
 
@@ -20,22 +20,25 @@ the rest of the IDM features use. No log-API key needed.
 
 ## Endpoints
 
-| Op | Method | Path | Accept-API-Version | Notes |
-|----|--------|------|--------------------|-------|
-| Read all mappings | GET | `/openidm/config/sync` | *(none)* | Single document: `{ _id:"sync", mappings:[…] }`. **No `_rev`.** |
-| Write all mappings | PUT | `/openidm/config/sync` | *(none)* | **Whole-document replace** (RMW). Applies with lag — poll-verify after write, exactly like `/openidm/config/managed`. |
-| Start reconciliation | POST | `/openidm/recon?_action=recon&mapping=<name>` | *(none)* | **Async**: returns `{ "_id": "<reconId>", "state": "ACTIVE" }` immediately (HTTP 200). Add `&waitForCompletion=true` to block until done (returns the final state) — but prefer async + poll for a responsive UI. |
-| Recon one record | POST | `/openidm/recon?_action=reconById&mapping=<name>&ids=<sourceId>` | *(none)* | Reconciles a single source object. Add `&waitForCompletion=true` to get the **synchronous per-record error** in the response body — the only way to see *why* a record failed (see "Diagnosing a failed recon"). |
-| Poll a run | GET | `/openidm/recon/<reconId>` | *(none)* | Status of one run (see shape below). |
-| List recent runs | GET | `/openidm/recon` | *(none)* | `{ "_id": "recon", "reconciliations": [ … ] }` (recent/active runs, newest last). |
-| Cancel a run | POST | `/openidm/recon/<reconId>?_action=cancel` | *(none)* | Stops an `ACTIVE` run (not yet exercised here). |
-| Inspect links | GET | `/openidm/repo/link?_queryFilter=linkType+eq+"<mapping>"` | *(none)* | Source↔target link records (`firstId`→`secondId`). Deleting target rows alone leaves **stale links** → next recon mis-situates; delete links too when resetting test data. |
+| Op                   | Method | Path                                                             | Accept-API-Version | Notes                                                                                                                                                                                                             |
+| -------------------- | ------ | ---------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Read all mappings    | GET    | `/openidm/config/sync`                                           | _(none)_           | Single document: `{ _id:"sync", mappings:[…] }`. **No `_rev`.**                                                                                                                                                   |
+| Write all mappings   | PUT    | `/openidm/config/sync`                                           | _(none)_           | **Whole-document replace** (RMW). Applies with lag — poll-verify after write, exactly like `/openidm/config/managed`.                                                                                             |
+| Start reconciliation | POST   | `/openidm/recon?_action=recon&mapping=<name>`                    | _(none)_           | **Async**: returns `{ "_id": "<reconId>", "state": "ACTIVE" }` immediately (HTTP 200). Add `&waitForCompletion=true` to block until done (returns the final state) — but prefer async + poll for a responsive UI. |
+| Recon one record     | POST   | `/openidm/recon?_action=reconById&mapping=<name>&ids=<sourceId>` | _(none)_           | Reconciles a single source object. Add `&waitForCompletion=true` to get the **synchronous per-record error** in the response body — the only way to see _why_ a record failed (see "Diagnosing a failed recon").  |
+| Poll a run           | GET    | `/openidm/recon/<reconId>`                                       | _(none)_           | Status of one run (see shape below).                                                                                                                                                                              |
+| List recent runs     | GET    | `/openidm/recon`                                                 | _(none)_           | `{ "_id": "recon", "reconciliations": [ … ] }` (recent/active runs, newest last).                                                                                                                                 |
+| Cancel a run         | POST   | `/openidm/recon/<reconId>?_action=cancel`                        | _(none)_           | Stops an `ACTIVE` run (not yet exercised here).                                                                                                                                                                   |
+| Inspect links        | GET    | `/openidm/repo/link?_queryFilter=linkType+eq+"<mapping>"`        | _(none)_           | Source↔target link records (`firstId`→`secondId`). Deleting target rows alone leaves **stale links** → next recon mis-situates; delete links too when resetting test data.                                       |
+| View sync queue      | GET    | `/openidm/sync/queue?_queryFilter=true`                          | _(none)_           | Pending **queued/async implicit-sync** events. Filter `mapping eq "<name>"` / `resourceId eq "<srcId>"` / `state eq "PENDING"`. See "Queued sync" below.                                                          |
+| Read a queue item    | GET    | `/openidm/sync/queue/<id>`                                       | _(none)_           | Single event (shape below).                                                                                                                                                                                       |
+| Delete a queue item  | DELETE | `/openidm/sync/queue/<id>`                                       | _(none)_           | **200**; removes the pending event (abandons that source→target sync). The only way to clear the queue — there is **no bulk action** (`POST …?_action=*` → **501**).                                              |
 
-There is **no per-mapping endpoint** — like `managed`, the whole `sync` config is
-one document. A single-mapping edit is read-modify-write of the array:
-GET → mutate the one `mappings[i]` → PUT the whole doc → poll until applied.
-Reuse the managed-config RMW/poll helper (see `docs/api/10-managed-objects.md`).
-No `Accept-API-Version` header is required (IDM config endpoints, like
+There is **no per-mapping endpoint** — like `managed`, the whole `sync` config
+is one document. A single-mapping edit is read-modify-write of the array: GET →
+mutate the one `mappings[i]` → PUT the whole doc → poll until applied. Reuse the
+managed-config RMW/poll helper (see `docs/api/10-managed-objects.md`). No
+`Accept-API-Version` header is required (IDM config endpoints, like
 `config/endpoint/*` and `config/managed`).
 
 ## Object shapes
@@ -69,15 +72,16 @@ A mapping (abbreviated; verified 2026-06-18):
 }
 ```
 
-**Script envelope.** Every slot is `{ "type": "text/javascript", "globals": {…},
-"source": "<js>" }`. The alternative `"file": "ui/foo.js"` form (a
-platform-shipped file reference, e.g. `correlationQuery[].file`) is also valid —
-**only sync the `source` form; pass `file`-referenced scripts through untouched**
-(we don't own those files). Inline `source` round-trips verbatim through PUT —
-IDM does **not** rewrite it to a `file` reference (verified 2026-06-18).
+**Script envelope.** Every slot is
+`{ "type": "text/javascript", "globals": {…}, "source": "<js>" }`. The
+alternative `"file": "ui/foo.js"` form (a platform-shipped file reference, e.g.
+`correlationQuery[].file`) is also valid — **only sync the `source` form; pass
+`file`-referenced scripts through untouched** (we don't own those files). Inline
+`source` round-trips verbatim through PUT — IDM does **not** rewrite it to a
+`file` reference (verified 2026-06-18).
 
 **`correlationQuery` vs `correlationScript`.** A mapping has at most one of:
-`correlationQuery` (a structured/`file`-backed query builder — *not* synced) or
+`correlationQuery` (a structured/`file`-backed query builder — _not_ synced) or
 `correlationScript` (inline JS — synced). Treat them as mutually exclusive.
 
 ## Reconciliation (running a mapping)
@@ -95,51 +99,61 @@ The async form returns immediately; poll `GET /openidm/recon/<reconId>` until
 {
   "_id": "<reconId>",
   "mapping": "managedTest_from_managedTest_to",
-  "state": "ACTIVE",            // -> SUCCESS | FAILED | CANCELED (terminal)
-  "stage": "COMPLETED_FAILED",  // ACTIVE_* while running; COMPLETED_* / COMPLETED_FAILED at end
+  "state": "ACTIVE", // -> SUCCESS | FAILED | CANCELED (terminal)
+  "stage": "COMPLETED_FAILED", // ACTIVE_* while running; COMPLETED_* / COMPLETED_FAILED at end
   "stageDescription": "reconciliation failed",
   "progress": {
     "source": { "existing": { "processed": 0, "total": "0" } },
-    "target": { "existing": { "processed": 0, "total": "?" },
-                "created": 0, "unchanged": 0, "updated": 0, "deleted": 0, "retried": 0 },
-    "links":  { "existing": { "processed": 0, "total": "?" }, "created": 0 }
+    "target": {
+      "existing": { "processed": 0, "total": "?" },
+      "created": 0,
+      "unchanged": 0,
+      "updated": 0,
+      "deleted": 0,
+      "retried": 0,
+    },
+    "links": { "existing": { "processed": 0, "total": "?" }, "created": 0 },
   },
   "started": "2026-06-18T23:25:10.520Z",
-  "ended":   "2026-06-18T23:25:10.533Z",   // absent while ACTIVE
-  "duration": 13
+  "ended": "2026-06-18T23:25:10.533Z", // absent while ACTIVE
+  "duration": 13,
 }
 ```
 
-- `progress.*.total` is a **string** (`"0"`, `"?"` while unknown) — don't assume int.
+- `progress.*.total` is a **string** (`"0"`, `"?"` while unknown) — don't assume
+  int.
 - A run can `FAILED` purely because a mapping's scripts throw (the config is
   otherwise valid); surface `stageDescription` so the user sees why.
 
 ### Recon vs. implicit (live) sync — two independent trigger paths
 
-**A managed-object write on the *source* fires the mapping immediately**, without
-any recon. Verified 2026-06-19: `POST /openidm/managed/test_from` (create) made
-the corresponding `test_to` row appear before any recon ran; deleting the source
-row deleted its target row and link. So `onCreate`/`onUpdate`/`onDelete`/`onLink`/
-`onUnlink` fire on every source CRUD via **implicit sync**, and a *subsequent*
-recon then sees those rows as `CONFIRMED`/unchanged (it won't re-fire CREATE/
-DELETE for changes implicit sync already applied). Consequences:
+**A managed-object write on the _source_ fires the mapping immediately**,
+without any recon. Verified 2026-06-19: `POST /openidm/managed/test_from`
+(create) made the corresponding `test_to` row appear before any recon ran;
+deleting the source row deleted its target row and link. So
+`onCreate`/`onUpdate`/`onDelete`/`onLink`/ `onUnlink` fire on every source CRUD
+via **implicit sync**, and a _subsequent_ recon then sees those rows as
+`CONFIRMED`/unchanged (it won't re-fire CREATE/ DELETE for changes implicit sync
+already applied). Consequences:
 
 - To observe a recon-driven CREATE/UPDATE/DELETE you must create drift that
-  implicit sync did **not** already resolve (e.g. delete a *target* row, or mutate
-  a value that changes the mapped result), not just edit the source.
-- `onSync` is a post-sync hook and did **not** fire under either recon or implicit
-  update (still open below).
+  implicit sync did **not** already resolve (e.g. delete a _target_ row, or
+  mutate a value that changes the mapped result), not just edit the source.
+- `onSync` is a post-sync hook and did **not** fire under either recon or
+  implicit update (still open below).
 - A terminal recon's `durationSummary` lists exactly which slots ran, as
   `<slot>Script` keys (`validSourceScript`, `correlationScript`,
-  `propertyMappingScript`, `onCreateScript`, `onUpdateScript`, `resultScript`, …).
-  A slot absent from `durationSummary` did not execute in that run (e.g.
-  `correlationScript` is skipped entirely when the target is empty — see Quirks).
+  `propertyMappingScript`, `onCreateScript`, `onUpdateScript`, `resultScript`,
+  …). A slot absent from `durationSummary` did not execute in that run (e.g.
+  `correlationScript` is skipped entirely when the target is empty — see
+  Quirks).
 
 ### Diagnosing a failed recon
 
-The summary endpoints tell you *what* but not *why*:
+The summary endpoints tell you _what_ but not _why_:
 
-- `situationSummary` — per-situation counts (`ABSENT`, `CONFIRMED`, `SOURCE_MISSING`…).
+- `situationSummary` — per-situation counts (`ABSENT`, `CONFIRMED`,
+  `SOURCE_MISSING`…).
 - `statusSummary` — `{ SUCCESS, FAILURE }` record counts.
 - A record that errors **before situation assignment** (e.g. a throwing
   `correlationScript`) shows up as `statusSummary.FAILURE` with **no** situation
@@ -147,9 +161,9 @@ The summary endpoints tell you *what* but not *why*:
 
 To get the actual exception:
 
-1. **`audit/recon` / `audit/sync` are NOT queryable on this tenant** — they return
-   `501 "Query not supported on stdout"` (audit is routed to stdout). Don't rely on
-   them.
+1. **`audit/recon` / `audit/sync` are NOT queryable on this tenant** — they
+   return `501 "Query not supported on stdout"` (audit is routed to stdout).
+   Don't rely on them.
 2. Run **`reconById` with `waitForCompletion=true`** on the offending source id:
    `POST /openidm/recon?_action=reconById&mapping=<name>&ids=<srcId>&waitForCompletion=true`.
    It returns the synchronous error, e.g.
@@ -159,18 +173,120 @@ To get the actual exception:
 3. Bisect a suspect slot by temporarily overwriting its `source` with a trivial
    no-op (`true;` / `[];` / `""`), PUT, recon again. Restore afterward.
 
+## Queued (asynchronous) implicit sync + the sync queue (verified 2026-07-29)
+
+By default implicit sync is **synchronous** (source CRUD blocks on the target
+write — see "Recon vs. implicit sync" above). Adding a per-mapping `queuedSync`
+block makes implicit sync **asynchronous**: each source create/update/delete
+enqueues one event into a persistent **sync queue** (`/openidm/sync/queue`), and
+a background poller drains it.
+
+```jsonc
+// a mapping in config/sync, verified fields:
+"queuedSync": {
+  "enabled": true,
+  "pageSize": 100,          // events a node claims per poll
+  "pollingInterval": 1000,  // ms between polls
+  "maxQueueSize": 1000,     // in-memory executor bound
+  "maxRetries": 5,
+  "retryDelay": 1000,       // ms between retries of a failing event
+  "postRetryAction": "logged-ignore"  // after retries exhausted: log + drop the event
+}
+```
+
+**Queue item shape** (verified):
+
+```jsonc
+{
+  "_id": "c156ac15-…",
+  "_rev": "…",
+  "mapping": "managedTest_from_managedTest_to",
+  "resourceId": "093e66dd-…", // source object _id
+  "resourceCollection": "managed/test_from",
+  "syncAction": "notifyCreate", // notifyCreate | notifyUpdate | notifyDelete
+  "state": "PENDING",
+  "nodeId": null, // null = unclaimed; a node id once claimed
+  "createDate": "2026-07-29T03:31:36.175Z",
+  "oldObject": {},
+  "newObject": {},
+}
+```
+
+**Processing model** (verified by watching `nodeId` during a drain): each
+cluster node polls every `pollingInterval`, **claims** up to `pageSize`
+_unclaimed_ (`nodeId == null`) events by stamping its `nodeId`, and processes
+them through an in-memory executor bounded by `maxQueueSize` — situation calc +
+target write + link write, retried up to `maxRetries` with `retryDelay`, then
+`postRetryAction`.
+
+**Throughput ceiling (sandbox, managed→managed, single tenant):** ~**55
+events/sec** steady-state (1530 events drained in ~30 s at `pageSize=100`,
+`pollingInterval=1000`); in-flight (`nodeId`-set) count tracked ≈ `pageSize` per
+cycle. The poll ceiling `pageSize / pollingInterval` (100/s per node here) is
+**not** usually the real limit.
+
+### Why a real backlog processes far below the ceiling (diagnosing slow queues)
+
+Real throughput ≈ _effective concurrency ÷ per-event latency_. For a 7M backlog
+observed at ~1–2 events/sec (≈30–55× below the sandbox ceiling), suspect, in
+order:
+
+1. **Slow target × low concurrency.** An external connector write (LDAP/DB/SaaS)
+   of ~0.3–1 s dominates; rate ≈ `concurrency / latency`. ~1–2/s implies an
+   effective concurrency of ~1–2. Managed→managed (both sides in the same repo)
+   is fast; a connector target is the usual culprit.
+2. **Retries on a high failure rate.** A failing event occupies a worker for ≥
+   `maxRetries × retryDelay` (here ≥5 s) before `postRetryAction` drops it.
+   `postRetryAction: "logged-ignore"` means failures are expected and **silently
+   dropped** — so a large failing fraction both collapses throughput _and_ means
+   those syncs never land. **Check the logs** (`source=sync`/`recon`) for the
+   failing target op; this is the highest-value thing to rule out.
+3. **Queue-table bloat.** With millions of `PENDING` rows, the per-poll "claim
+   next unclaimed page" query (scan + order by `createDate`) gets expensive on
+   the DS backend and adds per-cycle + cross-node contention.
+4. **Cluster claiming.** Only nodes that poll+claim contribute; if effectively
+   one node is processing, you get one pool's worth of concurrency.
+
+Diagnosis on the affected env: count the queue and its oldest `createDate`;
+sample `syncAction`/`state`/distinct `nodeId`; time a single target write; and
+read the sync logs for the retry/failure reason.
+
+### Clearing the sync queue
+
+There is **no bulk/purge action** (`POST /openidm/sync/queue?_action=*` → **501
+Not Implemented**). To clear it:
+
+1. **Stop the flow first (recommended):** set the mapping's
+   `queuedSync.enabled = false` and PUT `config/sync`. Verified: this stops new
+   enqueues _and_ stops the poller — pending events then **sit unchanged**
+   (neither processed nor dropped), so the sweep below races nothing. Disabling
+   alone does **not** clear the queue.
+2. **Sweep-delete:** loop
+   `GET /openidm/sync/queue?_queryFilter=mapping eq "<name>"&_pageSize=100` →
+   `DELETE /openidm/sync/queue/<id>` for each id, until empty (verified: DELETE
+   → 200, count decrements; a 60-item and a 1530-item sweep both went to 0).
+   Parallelize the deletes.
+3. **Re-enable** `queuedSync` if async sync should resume.
+
+**CAVEAT — clearing abandons those syncs.** Each deleted event is a source
+change that never reached the target, so the target is left drifted. After
+clearing, run a **full reconciliation** of the mapping (`_action=recon`) to
+reconverge — recon recomputes situations from the _current_ source/target state
+and re-applies the policies, which is the correct way to catch up after dropping
+the queue.
+
 ## Mapping script wire-ids (proposed local layout)
 
 One workspace file per inline script, addressed by a wire-id:
 
-| Slot | Wire-id | Example |
-|------|---------|---------|
-| behaviour | `sync/<mapping>.<event>` | `sync/managedTest_from_managedTest_to.onUpdate` |
-| valid filter | `sync/<mapping>.<validSource\|validTarget>` | `…​.validSource` |
-| correlation | `sync/<mapping>.correlationScript` | |
-| result | `sync/<mapping>.result` | |
-| attribute transform | `sync/<mapping>.transform.<targetAttr>` | `…​.transform.name` |
-| attribute condition | `sync/<mapping>.condition.<targetAttr>` | `…​.condition.age` |
+| Slot                | Wire-id                                     | Example                                         |
+| ------------------- | ------------------------------------------- | ----------------------------------------------- |
+| behaviour           | `sync/<mapping>.<event>`                    | `sync/managedTest_from_managedTest_to.onUpdate` |
+| valid filter        | `sync/<mapping>.<validSource\|validTarget>` | `…​.validSource`                                |
+| correlation         | `sync/<mapping>.correlationScript`          |                                                 |
+| result              | `sync/<mapping>.result`                     |                                                 |
+| attribute transform | `sync/<mapping>.transform.<targetAttr>`     | `…​.transform.name`                             |
+| attribute condition | `sync/<mapping>.condition.<targetAttr>`     | `…​.condition.age`                              |
 
 Mirrors `managed/<obj>.<hook>` from `managed_hooks`. A target attribute name can
 contain `/` (nested); slugify for the filename, keep the JSON-pointer mapping in
@@ -178,45 +294,47 @@ the snapshot.
 
 ## Runtime binding surface (verified 2026-06-18)
 
-Captured live via a recon probe: instrumented every slot of a `managed/test_from`
-→ `managed/test_to` mapping with `typeof`/`Object.keys` capture into a throwaway
-managed object, drove recon through ABSENT→CREATE, CONFIRMED→UPDATE,
-SOURCE_MISSING→DELETE/unlink, and uncorrelated→correlation. Probe + `test_capture`
-torn down afterward; tenant restored to baseline.
+Captured live via a recon probe: instrumented every slot of a
+`managed/test_from` → `managed/test_to` mapping with `typeof`/`Object.keys`
+capture into a throwaway managed object, drove recon through ABSENT→CREATE,
+CONFIRMED→UPDATE, SOURCE_MISSING→DELETE/unlink, and uncorrelated→correlation.
+Probe + `test_capture` torn down afterward; tenant restored to baseline.
 
 **Globals present in EVERY slot:** `logger` (`debug|error|info|trace|warn`),
-`openidm` (`action|create|read|update|patch|delete|query|encrypt|decrypt|hash|
-isEncrypted|isHashed|matches|parseFilter`), `identityServer`
+`openidm`
+(`action|create|read|update|patch|delete|query|encrypt|decrypt|hash| isEncrypted|isHashed|matches|parseFilter`),
+`identityServer`
 (`getProperty|getInstallLocation|getProjectLocation|getWorkingLocation`),
 `console` (`log`), `sync` (function), `context`, `linkQualifier` (string).
 (`systemEnv`, `globals`, `request` are **undefined** in sync scripts — unlike AM
-next-gen scripts. A mapping's configured `globals` are injected as top-level vars,
-not as a `globals` object.)
+next-gen scripts. A mapping's configured `globals` are injected as top-level
+vars, not as a `globals` object.)
 
 **Per-slot extra bindings** (✓ = object of the named record type; see typing):
 
-| Slot | `source` | `target` | `oldTarget` | `oldSource` | `situation` | `mappingConfig` | other | returns |
-|------|----------|----------|-------------|-------------|-------------|-----------------|-------|---------|
-| `validSource` | source ✓ | — | — | — | — | — | | boolean |
-| `validTarget` | — | target ✓ | — | — | — | — | | boolean |
-| `correlationScript` | source ✓ | — | — | — | — | — | | record array / id list (NOT a `{_queryFilter}` object — see Quirks) |
-| `onCreate` | source ✓ | target ✓ | — | `null` | string | ✓ | | — |
-| `onUpdate` | source ✓ | target ✓ | oldTarget ✓ | `null` | string | ✓ | | — |
-| `onDelete` | `null` | target ✓ | — | oldSource ✓ | string | ✓ | | — |
-| `onLink` | source ✓ | target ✓ | — | `null` | string | ✓ | `context.pendingAction` | — |
-| `onUnlink` | source/`null` | target ✓ | — | source/`null` | string | ✓ | `context.pendingAction` | — |
-| `result` | **recon summary** | **recon summary** | — | — | — | ✓ | | — |
-| `transform` (prop) | attr value, **or whole source object when the property's `source` is `""`** | — | — | — | — | — | | mapped value |
-| `condition` (prop) | — (use `object`) | target ✓ | oldTarget ✓/`null` | — | — | — | `object` = source ✓ | boolean |
+| Slot                | `source`                                                                    | `target`          | `oldTarget`        | `oldSource`   | `situation` | `mappingConfig` | other                   | returns                                                             |
+| ------------------- | --------------------------------------------------------------------------- | ----------------- | ------------------ | ------------- | ----------- | --------------- | ----------------------- | ------------------------------------------------------------------- |
+| `validSource`       | source ✓                                                                    | —                 | —                  | —             | —           | —               |                         | boolean                                                             |
+| `validTarget`       | —                                                                           | target ✓          | —                  | —             | —           | —               |                         | boolean                                                             |
+| `correlationScript` | source ✓                                                                    | —                 | —                  | —             | —           | —               |                         | record array / id list (NOT a `{_queryFilter}` object — see Quirks) |
+| `onCreate`          | source ✓                                                                    | target ✓          | —                  | `null`        | string      | ✓               |                         | —                                                                   |
+| `onUpdate`          | source ✓                                                                    | target ✓          | oldTarget ✓        | `null`        | string      | ✓               |                         | —                                                                   |
+| `onDelete`          | `null`                                                                      | target ✓          | —                  | oldSource ✓   | string      | ✓               |                         | —                                                                   |
+| `onLink`            | source ✓                                                                    | target ✓          | —                  | `null`        | string      | ✓               | `context.pendingAction` | —                                                                   |
+| `onUnlink`          | source/`null`                                                               | target ✓          | —                  | source/`null` | string      | ✓               | `context.pendingAction` | —                                                                   |
+| `result`            | **recon summary**                                                           | **recon summary** | —                  | —             | —           | ✓               |                         | —                                                                   |
+| `transform` (prop)  | attr value, **or whole source object when the property's `source` is `""`** | —                 | —                  | —             | —           | —               |                         | mapped value                                                        |
+| `condition` (prop)  | — (use `object`)                                                            | target ✓          | oldTarget ✓/`null` | —             | —           | —               | `object` = source ✓     | boolean                                                             |
 
 Notes:
-- **`result.source` / `result.target` are recon-statistics objects**, not records:
-  keys are the situation names (`ABSENT|CONFIRMED|…`) plus
-  `name|processed|entries|startTime|endTime|duration`. Do **not** type them as the
-  source/target record.
+
+- **`result.source` / `result.target` are recon-statistics objects**, not
+  records: keys are the situation names (`ABSENT|CONFIRMED|…`) plus
+  `name|processed|entries|startTime|endTime|duration`. Do **not** type them as
+  the source/target record.
 - **`transform`**: when the property has a `source` attribute, `source` is that
-  attribute's *value* (e.g. `number`); when the property's `source` is `""`,
-  `source` is the *whole source object*. The current generated binding types it
+  attribute's _value_ (e.g. `number`); when the property's `source` is `""`,
+  `source` is the _whole source object_. The current generated binding types it
   as the source object `S` and adds a doc comment: attribute-mapped transforms
   receive the raw attribute value and should cast as needed. Per-attribute
   precision is a future refinement.
@@ -229,6 +347,7 @@ Notes:
 ## Typing (`source`/`target` → managed interfaces)
 
 Resolve the mapping's `source`/`target` strings:
+
 - `managed/<obj>` → the generated managed interface (e.g. `managed/test_from` →
   `TestFrom` from `managed_types.rs`; `managed/alpha_user` → `AlphaUser`).
 - `system/<connector>/<objectType>` → no schema available → loose
@@ -237,15 +356,15 @@ Resolve the mapping's `source`/`target` strings:
 Generate per-mapping, per-category `.d.ts` files so slots with conflicting
 globals never share one TypeScript project:
 
-| Category | Workspace folder | Binding file |
-|----------|------------------|--------------|
+| Category  | Workspace folder                | Binding file                              |
+| --------- | ------------------------------- | ----------------------------------------- |
 | behaviour | `idm/sync/<mapping>/behaviour/` | `idm/types/sync/<mapping>.behaviour.d.ts` |
-| result | `idm/sync/<mapping>/result/` | `idm/types/sync/<mapping>.result.d.ts` |
+| result    | `idm/sync/<mapping>/result/`    | `idm/types/sync/<mapping>.result.d.ts`    |
 | transform | `idm/sync/<mapping>/transform/` | `idm/types/sync/<mapping>.transform.d.ts` |
 | condition | `idm/sync/<mapping>/condition/` | `idm/types/sync/<mapping>.condition.d.ts` |
 
-Each category folder gets its own leaf `tsconfig.json`, composed with Rhino,
-IDM common bindings, generated managed interfaces, `idm/types/sync/_shared.d.ts`
+Each category folder gets its own leaf `tsconfig.json`, composed with Rhino, IDM
+common bindings, generated managed interfaces, `idm/types/sync/_shared.d.ts`
 (`ReconSummary`), and exactly one mapping/category binding file.
 
 ## Examples
@@ -279,20 +398,22 @@ curl -s -X POST -H "Authorization: Bearer ${TOKEN}" \
 - A no-match `correlationScript` that yields ABSENT can drive a CREATE that
   collides with an existing target → recon returns `409`; this is a data
   condition, not a config error.
-- **`policies` actions must be executable for recon to run (verified 2026-06-19):**
-  a mapping whose policies all use action `"ASYNC"` fails recon at setup
-  (`COMPLETED_FAILED`, 0 processed) — ASYNC needs workflow-based recon that the
-  AIC sandbox doesn't run. Use executable actions (`CREATE`/`UPDATE`/`DELETE`/
-  `IGNORE`/`REPORT`) for a recon that actually processes records.
+- **`policies` actions must be executable for recon to run (verified
+  2026-06-19):** a mapping whose policies all use action `"ASYNC"` fails recon
+  at setup (`COMPLETED_FAILED`, 0 processed) — ASYNC needs workflow-based recon
+  that the AIC sandbox doesn't run. Use executable actions
+  (`CREATE`/`UPDATE`/`DELETE`/ `IGNORE`/`REPORT`) for a recon that actually
+  processes records.
 - **`correlationScript` return form (verified 2026-06-19):** returning the
-  *query-definition object* `({_queryFilter: "name eq \"…\""})` throws during
+  _query-definition object_ `({_queryFilter: "name eq \"…\""})` throws during
   recon — `409 Conflict`, `"Unexpected Exception caught during SourceRecon:"` —
   even though the same filter runs fine over REST. Return the **candidate
-  records** instead: `openidm.query("managed/<target>", {_queryFilter: …}).result`
-  (an array), or an array of `_id` strings. This only surfaces once the target
-  has rows: with an empty target IDM short-circuits to ABSENT *without running
-  the correlation script at all*, so a broken `{_queryFilter}` form passes the
-  first (create-everything) recon and only fails on the second. Prefer the
+  records** instead:
+  `openidm.query("managed/<target>", {_queryFilter: …}).result` (an array), or
+  an array of `_id` strings. This only surfaces once the target has rows: with
+  an empty target IDM short-circuits to ABSENT _without running the correlation
+  script at all_, so a broken `{_queryFilter}` form passes the first
+  (create-everything) recon and only fails on the second. Prefer the
   `openidm.query(...).result` form in templates/examples.
 - `source`/`target` record shapes include `_id`/`_rev` once persisted.
 
@@ -307,19 +428,31 @@ curl -s -X POST -H "Authorization: Bearer ${TOKEN}" \
 - 2026-06-19: `managedTest_from_managedTest_to` populated to **all 10
   whole-mapping slots + `transform`+`condition` on both properties** (14 inline
   scripts); full recon SUCCESS through ABSENT→CREATE, CONFIRMED→UPDATE, and
-  source-delete→target-delete (the last via implicit managed-object sync, not the
-  recon engine); all 14 pull to the workspace and type-check clean
+  source-delete→target-delete (the last via implicit managed-object sync, not
+  the recon engine); all 14 pull to the workspace and type-check clean
   (`source: TestFrom`, `target: TestTo`).
+- 2026-07-29 (queued sync + sync queue): enabled `queuedSync` on
+  `managedTest_from_managedTest_to`; drove 120/60/30/1530 implicit-sync events
+  into `/openidm/sync/queue`. Verified: queue item shape; `_queryFilter` +
+  `mapping eq`/EXACT-vs-ESTIMATE counts; single `DELETE …/queue/<id>` (200) and
+  a filtered bulk sweep to 0; `POST …/queue?_action=*` → **501** (no bulk
+  action); `queuedSync.enabled=false` **strands** pending items (30 held
+  unchanged over 12 s); `nodeId` claim/poll model; drain ceiling ~**55
+  events/sec** managed→managed. Mapping restored (queuedSync removed) and all
+  throwaway records deleted afterward.
 
 ## Source citations
 
 - Slot list cross-checked against ForgeRock IDM "Synchronization reference" /
-  `mapping` object; binding names verified by live probe (above), not transcribed.
+  `mapping` object; binding names verified by live probe (above), not
+  transcribed.
 
 ## Open questions
 
 - **`onSync` bindings** — not yet runtime-probed (didn't fire under recon or
-  implicit update). Needs a dedicated trigger (e.g. `notifyChange`/targeted sync).
-- **`reconById` / single-record sync** binding deltas vs full recon — not probed.
-- **Multiple `linkQualifier`s** — only `default` exercised; per-qualifier scripts
-  not probed.
+  implicit update). Needs a dedicated trigger (e.g. `notifyChange`/targeted
+  sync).
+- **`reconById` / single-record sync** binding deltas vs full recon — not
+  probed.
+- **Multiple `linkQualifier`s** — only `default` exercised; per-qualifier
+  scripts not probed.
