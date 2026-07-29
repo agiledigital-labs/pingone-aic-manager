@@ -279,26 +279,41 @@ order:
    throughput cause. It is still a **correctness** finding:
    `postRetryAction: "logged-ignore"` logs and **drops** each one, so ~14 k
    source changes never reach the target and nothing surfaces in the queue. Only
-   a recon recovers them.
-3. **Queue depth itself (the likely cause once 1 and 2 are excluded).** Each
-   poll cycle runs a "claim the next page of unclaimed events" query — a
-   filtered scan ordered by `createDate` over the whole queue table. That cost
-   scales with **queue depth**, and it is the one factor recon doesn't share
-   (recon pages source/target directly and never touches the queue table). The
-   arithmetic fits: at `pageSize: 100`, ~1.6 events/sec means ~**60 s per claim
-   cycle** instead of the sandbox's sub-second — and 7M ÷ 1.6/sec ≈ 50 days,
-   matching the observed 6–10 week ETA. This failure mode is
-   **self-reinforcing**: the deeper the queue, the slower the claim, the deeper
-   the queue.
-
-   _Decisive test:_ time a single
-   `GET /openidm/sync/queue?_queryFilter=true&_pageSize=100` on the affected
-   env. Tens of milliseconds (as in the sandbox) exonerates queue depth; tens of
-   seconds confirms it.
-
-4. **Cluster claiming.** Only nodes that poll+claim contribute; if effectively
-   one node is processing you get one pool's worth of concurrency. Check for
-   distinct `nodeId` values across in-flight items.
+   a recon recovers them. **Caveat:** a recon failure rate does not bound the
+   _queued_ failure rate — see 7.
+3. **Queue depth slowing the claim query — MEASURED AND RULED OUT
+   (2026-07-29).** The theory was that the per-poll "claim the next page ordered
+   by `createDate`" query degrades with depth, which would be self-reinforcing
+   and is the one cost recon doesn't share. **It does not:** on the affected
+   env's 7M-item queue a 100-item claim-shaped query returns in **40 ms** —
+   indistinguishable from the sandbox at 12 items. The queue collection is
+   indexed well enough that depth is free. Do not spend time here; time the
+   query once to confirm and move on.
+4. **Stranded items — the head of the queue cannot be processed.** Verified:
+   `queuedSync.enabled=false` **strands** pending events (they sit unchanged
+   indefinitely, neither processed nor dropped). Items whose `mapping` no longer
+   exists, was renamed, or has queued sync disabled are therefore permanently
+   unprocessable, and a live trickle of new events flowing past them looks like
+   a uniformly slow drain. **Test:** sum the per-mapping counts and compare to
+   the total depth — any gap is items for mappings absent from `config/sync`;
+   and check each mapping's `queuedSync.enabled`.
+5. **Claimed-but-abandoned items.** A node claims by stamping `nodeId`. Nothing
+   is verified to _un_-claim an item whose node has since gone away, so items
+   claimed by a dead node may be invisible to every live node. **Test:** compare
+   the oldest 1000 (`_sortKeys=createDate`) against the newest 1000
+   (`-createDate`): head claimed + tail unclaimed is the signature. Also check
+   distinct `nodeId` values — if effectively one node claims, you get one pool's
+   worth of concurrency.
+6. **Draining fine but refilling.** A depth-derived rate is a _net_ rate: 50/sec
+   drained against 48/sec enqueued is indistinguishable from a stall. **Test:**
+   sample depth _and_ the oldest/newest `createDate` twice, ~60 s apart. If the
+   oldest advances quickly while depth barely moves, throughput is healthy and
+   the real question is what produces the inflow (newest `createDate` ≈ now).
+7. **Retries re-enqueueing instead of terminating.** A recon failure rate does
+   **not** bound the queued failure rate: recon recomputes situations from
+   _current_ state, while a queued event replays a stored
+   `oldObject`/`newObject`, so stale-payload failures hit the queued path only.
+   **Test:** repeated `resourceId` values within one page.
 
 **Consequence:** queued sync is a latency-smoothing mechanism, not a bulk one —
 even healthy it ran ~55/sec in the sandbox versus ~500/sec for recon, because
@@ -307,10 +322,19 @@ multi-million-item backlog, **clear the queue and reconcile** (below): recon
 reconverges 7M records in ~4 h at 500/sec, versus weeks of queue drain, and it
 also repairs the events that `logged-ignore` silently dropped.
 
-Diagnosis checklist on the affected env: queue count + oldest `createDate`
-(backlog age); `syncAction`/`state`/distinct-`nodeId` breakdown; wall-clock of
-one claim-shaped queue GET; recon rate for the same mapping; and the sync logs
-(`source=sync`) for the retry/failure reason.
+Diagnosis checklist on the affected env, in the order that actually
+discriminates (all read-only; `.ai/syncq-diag.py` automates it):
+
+1. **Two depth samples ~60 s apart, plus oldest and newest `createDate`.** This
+   is the decisive one — it separates a genuine stall from a healthy drain that
+   is being refilled, which a net rate cannot distinguish (cause 6).
+2. **Per-mapping counts summed against total depth**, plus each mapping's
+   `queuedSync.enabled` — any gap is stranded/orphaned items (cause 4).
+3. **Oldest 1000 vs newest 1000**: claimed/unclaimed split, distinct `nodeId`s,
+   repeated `resourceId`s (causes 5 and 7).
+4. **Recon rate for the same mapping** (cause 1) and one claim-shaped queue GET
+   (cause 3 — expect it to be fast and to prove nothing).
+5. **The sync logs** (`source=sync`) for the retry/failure reason.
 
 ### Clearing the sync queue
 
@@ -510,6 +534,11 @@ curl -s -X POST -H "Authorization: Bearer ${TOKEN}" \
   returns full results with it; `_sortKeys=±createDate` works and composes with
   the count policy; `_fields` projection honored. All probes ~60 ms. Mapping
   restored and all throwaway records deleted afterward.
+- 2026-07-29 (field observation, affected env — reported, not run from here): on
+  a **7M-item** queue a 100-item claim-shaped query returns in **40 ms**, and a
+  full recon of the same mapping runs at **~500 records/sec** with a
+  **~1-in-500** failure rate. Queue depth therefore does **not** slow the claim
+  query; see causes 3–7 above for what remains.
 
 ## Source citations
 
