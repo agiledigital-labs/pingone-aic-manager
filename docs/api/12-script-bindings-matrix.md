@@ -278,16 +278,16 @@ function, not a binding — it appears in **no** context's binding list, includi
 
 ### AM script families (folder slugs)
 
-| Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay              |
-| --------------------------------------- | ---------------------- | ------------------ | --------------------------------------------- | ----------------------------- |
-| Scripted decision (next-gen)            | `decision-node`        | `2.0`              | yes                                           | decision-node-base + next-gen |
-| Scripted decision (legacy)              | `decision-node-legacy` | `1.0`              | no                                            | decision-node-base + legacy   |
-| Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)                                | library                       |
-| OIDC claims                             | `oidc-claims`          | mixed              | next-gen only                                 | oidc-claims                   |
-| OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only (token mod verified 2026-07-29) | per-context (future)          |
-| SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | per-context (future)          |
-| Social normalization/handler            | `social-*`             | mixed              | —                                             | per-context (future)          |
-| Config provider / device match / policy | various                | mixed              | —                                             | shared globals only (today)   |
+| Family                                  | Slug                   | `evaluatorVersion` | Library support                               | Bindings overlay                                    |
+| --------------------------------------- | ---------------------- | ------------------ | --------------------------------------------- | --------------------------------------------------- |
+| Scripted decision (next-gen)            | `decision-node`        | `2.0`              | yes                                           | decision-node-base + next-gen                       |
+| Scripted decision (legacy)              | `decision-node-legacy` | `1.0`              | no                                            | decision-node-base + legacy                         |
+| Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)                                | library                                             |
+| OIDC claims                             | `oidc-claims`          | mixed              | next-gen only                                 | oidc-claims                                         |
+| OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only (token mod verified 2026-07-29) | `oauth2-dcr`, `oauth2-access-token-ng`; rest future |
+| SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | per-context (future)                                |
+| Social normalization/handler            | `social-*`             | mixed              | —                                             | per-context (future)                                |
+| Config provider / device match / policy | various                | mixed              | —                                             | shared globals only (today)                         |
 
 ## IDM binding matrix
 

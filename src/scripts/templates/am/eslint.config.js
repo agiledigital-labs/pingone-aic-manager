@@ -354,6 +354,45 @@ export default [
       },
     },
   },
+  // Next-gen token modification: context bindings + library require().
+  {
+    files: ["*/oauth2-access-token-ng/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        accessToken: "readonly",
+        identity: "readonly",
+        scopes: "readonly",
+        requestProperties: "readonly",
+        clientProperties: "readonly",
+        emailService: "readonly",
+        secrets: "readonly",
+        policy: "readonly",
+        jwtAssertion: "readonly",
+        jwtValidator: "readonly",
+        cookieName: "readonly",
+        require: "readonly",
+        module: "readonly",
+        exports: "writable",
+      },
+    },
+  },
+  // Legacy token modification: no library require() (verified ReferenceError).
+  {
+    files: ["*/oauth2-access-token/**/*.cjs"],
+    languageOptions: {
+      globals: {
+        accessToken: "readonly",
+        identity: "readonly",
+        session: "readonly",
+        scopes: "readonly",
+        requestProperties: "readonly",
+        clientProperties: "readonly",
+        JavaImporter: "readonly",
+        org: "readonly",
+        java: "readonly",
+      },
+    },
+  },
   // The managed types/ .d.ts files are tool-generated; don't lint them.
   { ignores: ["**/types/**"] },
 ];
