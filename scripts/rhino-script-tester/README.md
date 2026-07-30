@@ -157,6 +157,12 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
   (`fixtures/httpclient-body-coercion.script.js`, which diffs the echoed wire
   body against a local `JSON.stringify` of the same object). The echo target is
   httpbin.org with synthetic scalars only — no tenant data.
+- `for...of` (2026-07-30): the statement is a parse error on AM **in any form**,
+  not just with `const` in the head — `for (var x of [1,2,3])` fails with
+  `missing ; after for-loop initializer`, over arrays and strings alike, while
+  the index-loop control in the same fixture runs
+  (`fixtures/for-of-var.script.js`). Consistent with `Symbol` being absent:
+  there is no iteration protocol for it to drive. Use an index loop.
 - Parse errors: `let` (any scope), object shorthand, object destructuring,
   default parameters, `const` in `for`/`for-in`/`for-of` initializers, and the
   same `const` name re-declared in one function across separate non-nested
