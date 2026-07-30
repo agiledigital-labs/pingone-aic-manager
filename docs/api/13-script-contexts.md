@@ -157,6 +157,22 @@ next-gen context's binding list:
   artifact). Typed only in the legacy overlay to steer next-gen scripts toward
   the documented bindings.
 
+### `allowLists` is not the enforced sandbox boundary (verified 2026-07-30)
+
+Each artifact carries an `allowLists` array, and it does not reliably describe
+what a script in that context can construct:
+
+- `SCRIPTED_DECISION_NODE` declares 51 entries; enforcement matches them,
+  including the surprising **omission of `java.util.HashMap`** (blocked at
+  runtime) alongside the presence of `java.util.HashMap$KeyIterator`.
+- `LIBRARY`, `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` and
+  `OIDC_CLAIMS_NEXT_GEN` each declare only **three** entries — yet a `LIBRARY`
+  script constructs `java.util.HashSet` and `java.util.ArrayList` without
+  complaint. The declared list is far narrower than the real one.
+Treat the array as a hint about what is deliberately exposed, and probe before
+claiming any `java.*` class is reachable or blocked in a given context. Runtime
+results are in `docs/api/12-script-bindings-matrix.md`.
+
 So "not in the binding metadata" ≠ "absent at runtime"; the matrix
 (`docs/api/12`) records the runtime-`typeof` results, this file records the
 editor's declared surface.
