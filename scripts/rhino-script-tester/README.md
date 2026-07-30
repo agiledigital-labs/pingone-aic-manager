@@ -126,6 +126,17 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
   `lib-array-fill-consumer.script.js`, uploaded as `rhino-lib-array-fill-probe`,
   id `…7404`; both returned `false,false,false`). Consumed by `algorithm.js`'s
   Jaro-Winkler matched-flag init.
+- ES2015 global objects (2026-07-30): **all absent** — `Map`, `Set`, `WeakMap`,
+  `WeakSet`, `Symbol`, `Proxy`, `Reflect`, `Promise` are every one `undefined`,
+  and `new Map()` throws `ReferenceError: "Map" is not defined.` at runtime
+  rather than failing to parse. Same answer on legacy (run
+  `EVALUATOR_VERSION=1.0` with `fixtures-legacy/legacy-es2015-globals.script.js`)
+  and inside LIBRARY scope (`fixtures/lib-es2015-globals-probe.lib.js` +
+  `lib-es2015-globals-consumer.script.js`, uploaded as
+  `rhino-lib-es2015-globals-probe`, id `…7407`).
+  Contrast IDM, which has all of them except `Proxy`/`Reflect`. Note the
+  deliberate split: `fixtures/es2015-methods.script.js` (prototype methods — all
+  work) vs `fixtures/es2015-globals.script.js` (constructors — none work).
 - Parse errors: `let` (any scope), object shorthand, object destructuring,
   default parameters, `const` in `for`/`for-in`/`for-of` initializers, and the
   same `const` name re-declared in one function across separate non-nested

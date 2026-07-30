@@ -51,10 +51,17 @@ _binding set_ (simplified `logger`, fetch-like `httpClient`, `openidm`, `utils`,
 Practical consequence for this work:
 
 - **One** Rhino syntax layer (`rhino-1.7.14.d.ts` + the shared ESLint syntax
-  restrictions) applies to **all** AM and IDM scripts.
+  restrictions) applies to **all AM** scripts.
 - Legacy vs next-gen splits only the **bindings** overlay, not the syntax rules.
 - Naming the type file `rhino-1.7.14.d.ts` per product is correct; there is no
   separate "next-gen engine" type file needed for syntax.
+
+**Qualified since this was written (2026-06-03):** the AM-vs-AM claim holds, but
+this conclusion does **not** extend to IDM. Later probes found IDM running a
+newer engine that accepts `let`, object shorthand and destructuring
+(2026-06-04), and that has the ES2015 collection globals AM lacks entirely
+(2026-07-30). AM and IDM share the _file_ name `rhino-1.7.14.d.ts`, not the same
+language surface — the two products' syntax layers must be allowed to diverge.
 
 ## Language / syntax feature matrix (Rhino 1.7.14)
 
@@ -90,6 +97,7 @@ fixture that fails to PARSE returns no callback and the journey fails
 | template literals                                                                                                                       | **V**  | ✅ works                                                                                                                                                                                                                                                                                                               | allow                                               |
 | ES2015 methods: `Array` `includes`/`find`/`from`/`fill`, `String` `includes`/`startsWith`/`endsWith`/`repeat`, `Object` `assign`/`keys` | **V**  | ✅ all work. `Array.prototype.fill` + `Array.from({length}, () => …)` also verified in **`LIBRARY`** context (probed 2026-07-17, `fixtures/lib-array-fill-probe.lib.js` + `lib-array-fill-consumer.script.js`: `new Array(3).fill(false)` and `Array.from({length:3}, () => false)` both returned `false,false,false`) | allow                                               |
 | `String.prototype.normalize` (`NFD`/`NFC`) + combining-mark regex strip (`/[̀-ͯ]/`)                                                       | **V**  | ✅ works — decision-node AND `LIBRARY` context (probed 2026-07-02; handles stacked marks, `Nguyễn` → `Nguyen`)                                                                                                                                                                                                         | allow                                               |
+| ES2015 global objects: `Map`, `Set`, `WeakMap`, `WeakSet`, `Symbol`, `Proxy`, `Reflect`, `Promise`                                      | **V**  | ❌ **none of them exist on AM.** Every `typeof` is `"undefined"`; `new Map()` → `ReferenceError: "Map" is not defined.` Identical on legacy (1.0), next-gen (2.0), and inside `LIBRARY` scope (probed 2026-07-30). **IDM is the opposite** — see the ES2015-globals section below                                      | **ban (all AM)**                                    |
 
 > **Key takeaways for ESLint:** the existing AM bans on `let`, object shorthand,
 > object destructuring, and `const` in loops are all now runtime-justified.
@@ -105,6 +113,68 @@ fixture that fails to PARSE returns no callback and the journey fails
 > in the lint rule predates that question. **Add a default-parameters ban** — it
 > is a parse error and the current config misses it. Array destructuring was not
 > probed separately but object destructuring fails, so treat both as banned.
+
+## ES2015 global objects: absent on AM, mostly present on IDM (verified 2026-07-30)
+
+This is the one axis where AM and IDM genuinely differ in the _language_, not
+just the bindings — and it is a silent-failure class, so it gets its own table.
+`typeof X` never throws, so presence and usability were probed separately.
+
+| Global    | AM legacy (1.0) | AM next-gen (2.0) | AM `LIBRARY` scope | IDM endpoint |
+| --------- | --------------- | ----------------- | ------------------ | ------------ |
+| `Map`     | ❌ undefined    | ❌ undefined      | ❌ undefined       | ✅ function  |
+| `Set`     | ❌ undefined    | ❌ undefined      | ❌ undefined       | ✅ function  |
+| `WeakMap` | ❌ undefined    | ❌ undefined      | ❌ undefined       | ✅ function  |
+| `WeakSet` | ❌ undefined    | ❌ undefined      | ❌ undefined       | ✅ function  |
+| `Symbol`  | ❌ undefined    | ❌ undefined      | ❌ undefined       | ✅ function  |
+| `Promise` | ❌ undefined    | ❌ undefined      | ❌ undefined       | ✅ function  |
+| `Proxy`   | ❌ undefined    | ❌ undefined      | ❌ undefined       | ❌ undefined |
+| `Reflect` | ❌ undefined    | ❌ undefined      | ❌ undefined       | ❌ undefined |
+| `JSON`    | ✅ object       | ✅ object         | ✅ object          | ✅ object    |
+
+Every cell is a probe result — there are no inferred or not-applicable cells.
+
+`JSON` is the control row: it proves an all-`undefined` column is a real finding
+and not a broken probe.
+
+On AM, using one is a **runtime** failure, not a parse error — the script
+compiles, runs, and throws `ReferenceError: "Map" is not defined.` at the
+`new Map()` line. On IDM the verified surface is real, not nominal:
+`m.set/get/size`, `s.add/has/size`, manual iterator walking (`m.keys()` →
+`next()`), and `Array.from(new Set([3,1,3]))` → `3,1` all work. `Set` was
+already verified on the **IDM schedule** engine on 2026-07-15 (construct, query,
+`add`); the endpoint probe extends that to the whole collection family.
+
+**Substitutes that are verified to work:**
+
+- **All AM contexts** — a plain object for string keys (`o["a"] = 1`), and the
+  object-keyed dedupe loop (`seen[item] = true`) in `LIBRARY` scope.
+
+**Do not generalise these rows to other ES6 features.** AM's Rhino is not simply
+"ES6 off": arrow functions, template literals, `Array.from`, `String.includes`
+and `String.normalize` all work, while `let`, destructuring, object shorthand
+and every global above do not. That mix does not correspond to any single Rhino
+language-version setting, so the status of any other ES6 feature has to be
+probed, not inferred from this table.
+
+Fixtures: `fixtures/es2015-globals.script.js` (next-gen),
+`fixtures-legacy/legacy-es2015-globals.script.js` (legacy),
+`fixtures/lib-es2015-globals-probe.lib.js` +
+`lib-es2015-globals-consumer.script.js` (`LIBRARY`, uploaded as
+`rhino-lib-es2015-globals-probe`, id `…7407`). The IDM column came from a
+throwaway `endpoint/aicedit-mapset-probe`, deleted after the probe (`GET` → 404
+confirmed).
+
+> **Tooling gap (open).** The script workspace does **not** catch this yet:
+> `src/scripts/templates/am/tsconfig.json` sets
+> `"lib": ["ES2015", "ES2016.Array.Include"]`, and TypeScript's `ES2015` lib
+> declares every global in the table above — so `new Map()` in an AM script
+> type-checks clean and then fails in the tenant. ESLint has no
+> `no-restricted-globals` entry for them either. The fix is to narrow AM to
+> `["ES5", "ES2015.Core", "ES2016.Array.Include"]` (the templates' own types use
+> hand-rolled `JavaMap`/`JavaSet`, so nothing in them depends on the JS
+> collections) and to drop `ES2015.Proxy`/`ES2015.Reflect` from the IDM lib
+> list. Both changes require a `TEMPLATES_VERSION` bump.
 
 ## AM binding matrix
 
@@ -426,6 +496,13 @@ restores 200), which is how each row below was checked:
 | object shorthand, destructuring       | ✅ works         | ❌ parse error               |
 | default parameters                    | ❌ compile-fails | ❌ parse error               |
 | `const` in `for`/`for-of` initializer | ❌ compile-fails | ❌ parse error               |
+
+Added 2026-07-30: the IDM engine also has the **ES2015 global objects** AM lacks
+entirely (`Map`, `Set`, `WeakMap`, `WeakSet`, `Symbol`, `Promise` — but not
+`Proxy`/`Reflect`). Full cross-engine table and verified method surface in the
+ES2015-globals section above. Unlike the syntax rows, these are runtime presence
+checks, so a missing one fails at the point of use rather than making the
+endpoint un-routable.
 
 For IDM endpoints, ESLint bans **default parameters** and **`const` in a loop
 initializer** — NOT general `let`/`const`/shorthand/destructuring. Schedule
