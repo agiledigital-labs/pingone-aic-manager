@@ -243,6 +243,70 @@ Fixtures: `fixtures/java-collections.script.js` (next-gen decision node),
 from `fixtures-legacy/legacy-es2015-globals.script.js`. Cells marked `—` were
 not probed in that context.
 
+## `httpClient.send` body serialization (verified 2026-07-30)
+
+`httpClient` does **not** serialize a JS object body with `JSON.stringify`
+semantics. Two differences change what receivers see, and both are silent.
+Probed by sending one object to a public echo service and diffing the raw body
+it received against `JSON.stringify` of the same object computed in the same
+script (`fixtures/httpclient-body-coercion.script.js`, next-gen decision node):
+
+| Source value                        | `JSON.stringify` | On the wire via `httpClient` |
+| ----------------------------------- | ---------------- | ---------------------------- |
+| `intOne: 1`                         | `1`              | **`1.0`**                    |
+| `intZero: 0`                        | `0`              | **`0.0`**                    |
+| `negInt: -5`                        | `-5`             | **`-5.0`**                   |
+| `bigInt: 1000000`                   | `1000000`        | **`1000000.0`**              |
+| `floatVal: 1.5`                     | `1.5`            | `1.5`                        |
+| `undefField: undefined`             | _key omitted_    | **`null`**                   |
+| `nested: { u: undefined }`          | _key omitted_    | **`{"u":null}`**             |
+| `arr: [1, undefined, 3]`            | `[1,null,3]`     | `[1.0,null,3.0]`             |
+| `javaInt: new java.lang.Integer(1)` | `1`              | `1`                          |
+| `javaLong: new java.lang.Long(1)`   | `1`              | `1`                          |
+
+### 1. Every JS number becomes a double
+
+JS numbers are IEEE doubles and the serializer renders them as such, so `1` goes
+out as `1.0` at any depth (top level, nested object, array element) and at any
+magnitude. Receivers that validate a JSON integer type — strict OpenAPI
+`type: integer`, Jackson binding to `int`, many .NET models — reject it.
+
+**Workaround (verified): box it.** `new java.lang.Integer(1)` and
+`new java.lang.Long(1)` both serialize as `1`. `java.lang.Integer.valueOf(1)`
+also works and avoids the deprecated boxing constructor — prefer it. For
+contrast, `new java.lang.Double(1)` renders `1.0`, confirming the culprit is the
+Java numeric type the value lands in.
+
+Note that `java.lang.Integer` is **not** in the next-gen allow-list declared in
+`docs/api/bindings/scripted-decision-next.json` (which has `Byte`, `Short`,
+`Long`, `Float`, `Number`, `Void` but no `Integer`) yet constructs fine — a
+third data point for the allow-list caveat in `docs/api/13-script-contexts.md`.
+
+### 2. `undefined` becomes an explicit `null`
+
+`JSON.stringify` **drops** a key whose value is `undefined`; `httpClient` sends
+it as `null`. This matters when the receiver distinguishes "absent" from "null"
+— a PATCH-style API that treats `null` as "clear this field", or a validator
+that rejects `null` for an optional-but-non-nullable field. Building a body with
+`obj.maybe = someLookup()` that can return `undefined` therefore transmits an
+intentional-looking `null`. Delete the key instead:
+
+```js
+if (typeof value === "undefined") {
+  delete body.field;
+}
+```
+
+Both behaviours were observed on the next-gen engine. Not probed: the `form`
+(form-encoded) option, the legacy `httpClient`, and whether `openidm.*` write
+payloads share the serializer — do not assume they do.
+
+> **Tooling note (open).** `HttpOptions.body` is typed as plain `object` in
+> `src/scripts/templates/am/types/common.d.ts`, so nothing warns about either
+> trap. The cheap fix is a JSDoc block on `body` (that file already carries a
+> similar warning on `Authorization`), which would surface both in editor hover.
+> Needs a `TEMPLATES_VERSION` bump.
+
 ## AM binding matrix
 
 `evaluatorVersion`: `2.0` = next-gen, `1.0` = legacy. "Folder slug" is the
@@ -601,9 +665,12 @@ binding _presence_ (see the legacy section above; the tester now takes
 `EVALUATOR_VERSION`). Still open:
 
 1. Binding _shapes_ (not just presence): `logger` method names + slf4j-style
-   `{}` placeholder formatting; `httpClient.send(...).get()` response shape;
-   `openidm` call return shapes. Presence is verified; exact shapes still lean
-   on docs.
+   `{}` placeholder formatting; `openidm` call return shapes. Presence is
+   verified; exact shapes still lean on docs. **Partially resolved 2026-07-30**
+   for `httpClient.send(...).get()`: `ok`, `status`, `statusText` and `text()`
+   are runtime-verified (`fixtures/httpclient-body-coercion.script.js`), as is
+   the request-side body serializer (see the section above). `json()` and the
+   `headers` shape are still unverified.
 2. ~~`require()` of a real library from a next-gen scripted decision~~ RESOLVED
    — end-to-end library imports are verified from a next-gen scripted decision
    (2026-07-13/14 rows above) and from next-gen access-token modification

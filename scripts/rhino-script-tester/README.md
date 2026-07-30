@@ -149,6 +149,14 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
   `fixtures/lib-java-collections-probe.lib.js` +
   `lib-java-collections-consumer.script.js`, uploaded as
   `rhino-lib-java-collections-probe`, id `…7408`).
+- `httpClient.send` body serialization (2026-07-30): the object body is NOT
+  serialized with `JSON.stringify` semantics. Every JS number goes out as a
+  double (`1` → `1.0`, at any depth), and a key whose value is `undefined` is
+  sent as an explicit `null` rather than being omitted. Boxing fixes the number
+  case: `java.lang.Integer.valueOf(1)` serializes as `1`
+  (`fixtures/httpclient-body-coercion.script.js`, which diffs the echoed wire
+  body against a local `JSON.stringify` of the same object). The echo target is
+  httpbin.org with synthetic scalars only — no tenant data.
 - Parse errors: `let` (any scope), object shorthand, object destructuring,
   default parameters, `const` in `for`/`for-in`/`for-of` initializers, and the
   same `const` name re-declared in one function across separate non-nested
