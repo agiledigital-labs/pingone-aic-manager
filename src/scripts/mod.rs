@@ -36,6 +36,15 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Kind-specific options supplied when creating a standalone script.
+#[derive(Debug, Clone, Default)]
+pub struct NewScriptOpts {
+    pub context: Option<String>,
+    pub language: Option<String>,
+    pub evaluator_version: Option<String>,
+    pub description: Option<String>,
+}
+
 /// The script-like resource families we sync. The single dispatch point for
 /// all AM-vs-IDM differences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
@@ -87,6 +96,37 @@ impl Kind {
             Kind::IdmManagedHook,
             Kind::IdmSyncMapping,
         ]
+    }
+
+    /// Whether this is an independently creatable/deletable resource, rather
+    /// than a script slot embedded in a shared config document.
+    pub fn standalone(self) -> bool {
+        matches!(self, Kind::Am | Kind::IdmEndpoint | Kind::IdmSchedule)
+    }
+
+    /// Build a fresh wire config and its matching remote identity.
+    pub fn new_script(
+        self,
+        name: &str,
+        source: &[u8],
+        opts: &NewScriptOpts,
+    ) -> Result<RemoteScript> {
+        match self {
+            Kind::Am => am::new_script(name, source, opts),
+            Kind::IdmEndpoint => idm::new_script(name, source, opts),
+            Kind::IdmSchedule => schedule::new_script(name, source, opts),
+            Kind::IdmManagedHook | Kind::IdmSyncMapping => Err(embedded_kind_error(self, name)),
+        }
+    }
+
+    /// The wire id a newly-created script would use under `name`.
+    pub fn id_for_new(self, name: &str) -> String {
+        match self {
+            Kind::Am => am::id_for_new(name),
+            Kind::IdmEndpoint => idm::id_for_new(name),
+            Kind::IdmSchedule => schedule::id_for_new(name),
+            Kind::IdmManagedHook | Kind::IdmSyncMapping => name.to_string(),
+        }
     }
 
     // ----- async I/O (delegates to the per-kind module) ------------------
@@ -213,6 +253,23 @@ impl Kind {
             Kind::IdmSyncMapping => sync_mapping::extra_files(r),
         }
     }
+}
+
+/// Explain why a kind that isn't [`Kind::standalone`] has no lifecycle of its
+/// own: it is a script *slot* inside a shared config document, so creating or
+/// deleting it means changing the document that owns it.
+pub fn embedded_kind_error(kind: Kind, name: &str) -> crate::Error {
+    let (prefix, slot, document, tab) = match kind {
+        Kind::IdmManagedHook => ("managed", "hook slot", "/openidm/config/managed", "Managed"),
+        Kind::IdmSyncMapping => ("sync", "script slot", "/openidm/config/sync", "Mappings"),
+        // Standalone kinds never reach here — `standalone()` gates every caller.
+        _ => return crate::Error::Config(format!("{name} has its own lifecycle")),
+    };
+    crate::Error::Config(format!(
+        "{prefix}/{name} is a {slot} inside {document}, not a standalone script — \
+         edit it with `aic script push` (the slot must already exist), or add/remove \
+         the slot in the {tab} tab"
+    ))
 }
 
 /// A lightweight remote identity — enough to locate a script and place it in
@@ -354,6 +411,34 @@ pub fn group_token(kind: Kind) -> &'static str {
         Kind::IdmEndpoint | Kind::IdmSchedule | Kind::IdmManagedHook | Kind::IdmSyncMapping => {
             "idm"
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn standalone_only_covers_resources_with_their_own_lifecycle() {
+        assert!(Kind::Am.standalone());
+        assert!(Kind::IdmEndpoint.standalone());
+        assert!(Kind::IdmSchedule.standalone());
+        assert!(!Kind::IdmManagedHook.standalone());
+        assert!(!Kind::IdmSyncMapping.standalone());
+    }
+
+    #[test]
+    fn embedded_kind_errors_name_the_owning_config() {
+        assert!(
+            embedded_kind_error(Kind::IdmManagedHook, "user.onCreate")
+                .to_string()
+                .contains("/openidm/config/managed")
+        );
+        assert!(
+            embedded_kind_error(Kind::IdmSyncMapping, "map.onUpdate")
+                .to_string()
+                .contains("/openidm/config/sync")
+        );
     }
 }
 

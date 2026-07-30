@@ -3,7 +3,7 @@
 use clap::Subcommand;
 
 use crate::cli::{print_json, print_table, prod_hint, tenant_for};
-use crate::config::{self, ProjectConfig};
+use crate::config::{self, ProjectConfig, TenantTheme};
 use crate::scripts::{self as script, Namespace};
 use crate::{Error, Result};
 
@@ -18,6 +18,45 @@ pub enum ScriptCommand {
         tenant: Option<String>,
         #[arg(long, help = "Print scripts as JSON")]
         json: bool,
+    },
+    /// Create a new standalone script and pull its canonical server form.
+    Create {
+        #[arg(help = "<namespace>/<name>")]
+        reference: String,
+        #[arg(long, help = "AM scripting context or workspace folder slug")]
+        context: Option<String>,
+        #[arg(long, value_name = "FILE", help = "Read the source from FILE")]
+        from: Option<std::path::PathBuf>,
+        #[arg(long)]
+        language: Option<String>,
+        #[arg(long = "evaluator-version")]
+        evaluator_version: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long, help = "Confirm the write")]
+        yes: bool,
+    },
+    /// Copy a standalone script, including its complete raw config.
+    Copy {
+        source: String,
+        destination: String,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long, help = "Confirm the write")]
+        yes: bool,
+    },
+    /// Delete a standalone script, retaining its local source file.
+    Delete {
+        #[arg(help = "<namespace>/<name>")]
+        reference: String,
+        #[arg(long, help = "Required: delete the remote script")]
+        force: bool,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long, help = "Confirm the write")]
+        yes: bool,
     },
     /// Pull script(s) into the workspace.
     ///
@@ -46,7 +85,7 @@ pub enum ScriptCommand {
         /// Push past a remote-drift conflict (overwrites remote).
         #[arg(long)]
         force: bool,
-        /// Confirm a write to a production-themed tenant.
+        /// Confirm the write.
         #[arg(long)]
         yes: bool,
     },
@@ -71,7 +110,7 @@ pub enum ScriptCommand {
         resolve: Option<Resolution>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        /// Confirm writes to a production-themed tenant.
+        /// Confirm writes.
         #[arg(long)]
         yes: bool,
     },
@@ -81,7 +120,7 @@ pub enum ScriptCommand {
     Watch {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        /// Confirm writes to a production-themed tenant.
+        /// Confirm writes.
         #[arg(long)]
         yes: bool,
     },
@@ -158,6 +197,155 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 );
                 Ok(())
             }
+        }
+        ScriptCommand::Create {
+            reference,
+            context,
+            from,
+            language,
+            evaluator_version,
+            description,
+            tenant,
+            yes,
+        } => {
+            let tenant = writable_tenant_for(tenant)?;
+            guard_legacy_workspace(&tenant)?;
+            require_workspace(&tenant)?;
+            let (ns, name) = parse_one(&reference)?;
+            require_standalone(ns.kind, &name)?;
+            if ns.kind != script::Kind::Am && context.is_some() {
+                return Err(Error::Config(
+                    "--context is only valid for AM scripts".into(),
+                ));
+            }
+            let source = match from {
+                Some(path) => std::fs::read(&path).map_err(|e| {
+                    Error::Config(format!("read source file {}: {e}", path.display()))
+                })?,
+                None => format!("// {name}\n").into_bytes(),
+            };
+            let mut opts = script::NewScriptOpts {
+                context,
+                language,
+                evaluator_version,
+                description,
+            };
+            if ns.kind == script::Kind::Am {
+                let input = opts
+                    .context
+                    .as_deref()
+                    .ok_or_else(|| Error::Config("AM script create requires --context".into()))?;
+                let contexts = script::am::list_contexts(&tenant).await?;
+                let (resolved, forced_version) = script::am::resolve_context(input, &contexts)?;
+                opts.context = Some(resolved);
+                if opts.evaluator_version.is_none() {
+                    opts.evaluator_version = forced_version;
+                }
+            }
+            let new_script = ns.kind.new_script(&name, &source, &opts)?;
+            let created = prod_hint(sync::create(&tenant, ns.realm_arg(), &new_script, yes).await)?;
+            let path = ProjectConfig::workspace_tree(&tenant).join(
+                created
+                    .reference
+                    .kind
+                    .workspace_subpath(&created.reference, ns.realm_arg()),
+            );
+            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
+            if ns.kind == script::Kind::Am {
+                println!(
+                    "created {full} ({}, {}) -> {}",
+                    created.reference.context.as_deref().unwrap_or("unknown"),
+                    created
+                        .reference
+                        .evaluator_version
+                        .as_deref()
+                        .unwrap_or("2.0"),
+                    path.display()
+                );
+            } else {
+                println!("created {full} -> {}", path.display());
+            }
+            Ok(())
+        }
+        ScriptCommand::Copy {
+            source,
+            destination,
+            tenant,
+            yes,
+        } => {
+            let tenant = writable_tenant_for(tenant)?;
+            guard_legacy_workspace(&tenant)?;
+            require_workspace(&tenant)?;
+            let (source_ns, source_name) = parse_one(&source)?;
+            let (destination_ns, destination_name) = parse_one(&destination)?;
+            require_standalone(source_ns.kind, &source_name)?;
+            require_standalone(destination_ns.kind, &destination_name)?;
+            validate_copy(&source_ns, &source_name, &destination_ns, &destination_name)?;
+            let source_ref = source_ns
+                .kind
+                .list(&tenant, source_ns.realm_arg())
+                .await?
+                .into_iter()
+                .find(|r| r.name == source_name)
+                .ok_or_else(|| Error::Config(format!("no script named {source_name:?}")))?;
+            let fetched = source_ns
+                .kind
+                .fetch(&tenant, source_ns.realm_arg(), &source_ref.id)
+                .await?;
+            prod_hint(
+                sync::copy(
+                    &tenant,
+                    destination_ns.realm_arg(),
+                    &fetched,
+                    &destination_name,
+                    yes,
+                )
+                .await,
+            )?;
+            println!(
+                "copied {} -> {}",
+                script::full_name(source_ns.kind, source_ns.realm.as_deref(), &source_name),
+                script::full_name(
+                    destination_ns.kind,
+                    destination_ns.realm.as_deref(),
+                    &destination_name
+                )
+            );
+            Ok(())
+        }
+        ScriptCommand::Delete {
+            reference,
+            force,
+            tenant,
+            yes,
+        } => {
+            let tenant = writable_tenant_for(tenant)?;
+            guard_legacy_workspace(&tenant)?;
+            require_workspace(&tenant)?;
+            let (ns, name) = parse_one(&reference)?;
+            require_standalone(ns.kind, &name)?;
+            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
+            if !force {
+                eprintln!("would delete {full} from {tenant}; pass --force to delete it");
+                return Err(Error::Config("script delete requires --force".into()));
+            }
+            let reference = ns
+                .kind
+                .list(&tenant, ns.realm_arg())
+                .await?
+                .into_iter()
+                .find(|r| r.name == name)
+                .ok_or_else(|| Error::Config(format!("no script named {name:?}")))?;
+            if ns.kind == script::Kind::Am && reference.is_default {
+                return Err(Error::Config(format!(
+                    "default script {name:?} cannot be deleted"
+                )));
+            }
+            let path = ProjectConfig::workspace_tree(&tenant)
+                .join(ns.kind.workspace_subpath(&reference, ns.realm_arg()));
+            prod_hint(sync::delete(&tenant, ns.realm_arg(), ns.kind, &reference, yes).await)?;
+            println!("deleted {full}; local file kept at {}", path.display());
+            Ok(())
         }
         ScriptCommand::Pull {
             reference,
@@ -243,7 +431,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             force,
             yes,
         } => {
-            let t = tenant_for(tenant)?;
+            let t = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             if reference.as_deref() == Some("all") {
                 return push_all(&t, force, yes).await;
@@ -303,7 +491,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             tenant,
             yes,
         } => {
-            let t = tenant_for(tenant)?;
+            let t = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             let cands = select_synced(sync::push_candidates(&t)?, reference)?;
             if cands.is_empty() {
@@ -378,7 +566,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             Ok(())
         }
         ScriptCommand::Watch { tenant, yes } => {
-            let t = tenant_for(tenant)?;
+            let t = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             watch(&t, yes).await
         }
@@ -618,8 +806,71 @@ fn resolve_bare(name: &str) -> Result<(Namespace, String)> {
 
 fn unknown_ns(prefix: &str) -> Error {
     Error::Config(format!(
-        "unknown namespace {prefix:?} (use alpha | bravo | endpoint | schedule)"
+        "unknown namespace {prefix:?} (use alpha | bravo | endpoint | schedule | managed | sync)"
     ))
+}
+
+fn require_standalone(kind: script::Kind, name: &str) -> Result<()> {
+    if kind.standalone() {
+        Ok(())
+    } else {
+        Err(script::embedded_kind_error(kind, name))
+    }
+}
+
+fn validate_copy(
+    source_ns: &Namespace,
+    source_name: &str,
+    destination_ns: &Namespace,
+    destination_name: &str,
+) -> Result<()> {
+    if source_ns.kind != destination_ns.kind {
+        return Err(Error::Config(
+            "copy source and destination must have the same script kind".into(),
+        ));
+    }
+    if source_ns == destination_ns && source_name == destination_name {
+        return Err(Error::Config(
+            "copy source and destination are identical".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a tenant theme permits direct script writes.
+fn scripts_are_writable(theme: TenantTheme) -> bool {
+    theme.allows_static_content()
+}
+
+/// Resolve the tenant for a script **write**, refusing the environments where
+/// scripts are immutable.
+///
+/// Scripts are static content: AIC promotes them up from sandbox/development,
+/// and staging/production hold them read-only. Failing here — before a token is
+/// even spent — beats surfacing whatever the tenant returns. Reads (`list`,
+/// `pull`, `status`, `diff`) are deliberately unrestricted: comparing a higher
+/// environment against your workspace is exactly how you check a promotion.
+fn writable_tenant_for(tenant: Option<String>) -> Result<String> {
+    let tenant = crate::cli::tenant_config_for(tenant)?;
+    if !scripts_are_writable(tenant.theme) {
+        return Err(Error::Config(format!(
+            "scripts are immutable on '{}' tenants like '{}' — they are static content promoted up from sandbox/development, so change the script there and promote it",
+            tenant.theme.label(),
+            tenant.name
+        )));
+    }
+    Ok(tenant.name)
+}
+
+/// Lifecycle commands must be able to update a real workspace + snapshot,
+/// rather than creating a remote-only resource that later commands cannot see.
+fn require_workspace(tenant: &str) -> Result<()> {
+    if crate::scripts::workspace::applied_version(tenant)? == 0 {
+        return Err(Error::Config(format!(
+            "workspace for {tenant} is not initialised — run `aic workspace init` first"
+        )));
+    }
+    Ok(())
 }
 
 /// Render a listed script as JSON, tagged with its copy-pasteable `ref`.
@@ -1240,6 +1491,7 @@ fn print_conflict(name: &str, tw: &crate::scripts::sync::ThreeWay) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -1283,5 +1535,71 @@ mod tests {
         assert!(write_diff_file(&dir, "left", "replacement").is_err());
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_commands_parse_and_copy_validation_is_strict() {
+        let create = crate::cli::Cli::try_parse_from([
+            "aic",
+            "script",
+            "create",
+            "alpha/Foo",
+            "--context",
+            "decision-node",
+        ])
+        .unwrap();
+        assert!(matches!(
+            create.command,
+            Some(crate::cli::Command::Script {
+                command: ScriptCommand::Create { .. }
+            })
+        ));
+        let copy =
+            crate::cli::Cli::try_parse_from(["aic", "script", "copy", "alpha/Foo", "bravo/Foo"])
+                .unwrap();
+        assert!(matches!(
+            copy.command,
+            Some(crate::cli::Command::Script {
+                command: ScriptCommand::Copy { .. }
+            })
+        ));
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "aic",
+                "script",
+                "copy",
+                "alpha/Foo",
+                "bravo/Foo",
+                "--to-tenant",
+                "uat",
+            ])
+            .is_err()
+        );
+        let delete =
+            crate::cli::Cli::try_parse_from(["aic", "script", "delete", "alpha/Foo", "--force"])
+                .unwrap();
+        assert!(matches!(
+            delete.command,
+            Some(crate::cli::Command::Script {
+                command: ScriptCommand::Delete { force: true, .. }
+            })
+        ));
+        assert!(crate::cli::Cli::try_parse_from(["aic", "script", "delete", "alpha/Foo"]).is_ok());
+
+        let alpha = Namespace::parse("alpha").unwrap();
+        let bravo = Namespace::parse("bravo").unwrap();
+        let endpoint = Namespace::parse("endpoint").unwrap();
+        assert!(validate_copy(&alpha, "Foo", &bravo, "Foo").is_ok());
+        assert!(validate_copy(&alpha, "Foo", &endpoint, "Foo").is_err());
+        assert!(validate_copy(&alpha, "Foo", &alpha, "Foo").is_err());
+        assert!(require_standalone(script::Kind::IdmManagedHook, "user.onCreate").is_err());
+        assert!(require_standalone(script::Kind::IdmSyncMapping, "map.onUpdate").is_err());
+    }
+
+    #[test]
+    fn script_write_rule_matches_static_content_theme_rule() {
+        for theme in TenantTheme::all() {
+            assert_eq!(scripts_are_writable(*theme), theme.allows_static_content());
+        }
     }
 }

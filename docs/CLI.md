@@ -318,6 +318,9 @@ means "all of it"; `all` means everything.
 
 ```bash
 aic script list [<ref>] [--json]                # list scripts (each row tagged with its `ref`)
+aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--tenant TENANT] [--yes]
+aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes]
+aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--force]               # pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--yes]       # push local edits; no ref → fuzzy picker
 aic script sync [<ref>] [--resolve local|remote] # reconcile: push local-only, pull remote-only
@@ -325,6 +328,23 @@ aic script watch                                # auto-push each .cjs you save (
 aic script status [<ref>]                       # in sync / modified / remote / conflict
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 ```
+
+- `create`, `copy`, and `delete` apply only to standalone AM scripts, IDM
+  endpoints, and IDM schedules. Managed hooks and sync-mapping scripts are
+  slots in their owning configuration documents.
+- AM `create` requires `--context`; it accepts either an AM context constant
+  or the workspace folder slug (such as `decision-node` or `lib`). `copy`
+  is same-tenant only (including alpha-to-bravo cross-realm copies), retains
+  the complete source config, and both create/copy pull the server's canonical
+  form into the workspace. `create` refuses legacy (`evaluatorVersion: "1.0"`)
+  scripts.
+- `delete` requires `--force` and retains the local `.cjs` file while removing
+  its snapshot/manifest entry. All three lifecycle writes require an initialized
+  workspace.
+- Scripts are promoted static content: `push`, `sync`, `watch`, `create`,
+  `copy`, and `delete` refuse staging and production tenants before making an
+  API call. `pull`, `list`, `status`, and `diff` remain available on every
+  tenant for promotion verification.
 
 - **Fuzzy picker.** `pull`/`push` with no `<ref>` open an interactive picker
   (type to filter). Lines are marked `!` (local changes) or `-` (not pulled);

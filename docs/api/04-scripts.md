@@ -23,8 +23,61 @@ send `Accept-API-Version: protocol=2.0,resource=1.0`.
 | List   | `GET`    | `/am/json{realm-path}/scripts?_queryFilter=true`        | Returns **all** results when `_pageSize` is omitted. If you set `_pageSize`, page by **`_pagedResultsOffset`** + `remainingPagedResults` — the `pagedResultsCookie` comes back `null` and is unusable (verified 2026-06-01). |
 | Filter | `GET`    | `/am/json{realm-path}/scripts?_queryFilter=name+eq+"…"` | CREST filter.                                                                                                                                                                                                                |
 | Read   | `GET`    | `/am/json{realm-path}/scripts/{id}`                     | `id` is a UUID.                                                                                                                                                                                                              |
-| Upsert | `PUT`    | `/am/json{realm-path}/scripts/{id}`                     | Full body. `script` MUST be base64.                                                                                                                                                                                          |
-| Delete | `DELETE` | `/am/json{realm-path}/scripts/{id}`                     | Permanent (default scripts cannot be deleted).                                                                                                                                                                               |
+| Upsert | `PUT`    | `/am/json{realm-path}/scripts/{id}`                     | Full body. `script` MUST be base64. **201** when `{id}` is new, **200** on replace. See "Creating scripts" below.                                                                                                            |
+| Create | `POST`   | `/am/json{realm-path}/scripts/?_action=create`          | **201**; server assigns the UUID. Same body as `PUT`, minus `_id`. Note the trailing slash before `?`.                                                                                                                       |
+| Delete | `DELETE` | `/am/json{realm-path}/scripts/{id}`                     | **200** + echoes nothing useful; permanent. **404** if already gone. Default scripts **403** (see Quirks).                                                                                                                   |
+
+## Creating scripts
+
+Verified live 2026-07-30 (sandbox, realm `alpha`, throwaway `test_aic*` scripts,
+all deleted afterwards). Two routes, both returning **201**:
+
+- **`PUT …/scripts/{id}`** with a **client-chosen** `{id}` — this is the route
+  `aic` uses, so the local workspace can know the id before the write.
+- **`POST …/scripts/?_action=create`** with no `_id` — the server picks the
+  UUID.
+
+**Required fields.** Omitting any one of these is a `400` with a precise
+message:
+
+| Field      | Missing-field error                    |
+| ---------- | -------------------------------------- |
+| `name`     | `Script name must be specified`        |
+| `context`  | `Script type must be specified`        |
+| `language` | `Scripting language must be specified` |
+| `script`   | `A script must be specified`           |
+
+Everything else defaults: `description` → `null`, `default` → `false`,
+`evaluatorVersion` → `"2.0"`. An **empty** `script` (`""`) is accepted (201) —
+only a _missing_ one 400s.
+
+**Body `_id` must match the URL id.** Sending a body whose `_id` is a different
+script's id — the obvious way to copy a script — fails with
+`400 "Script resource id and script JSON body id do not match"`. Either strip
+`_id` from the body (the URL id is then used) or rewrite it to the new id.
+
+**Server-owned fields on a copy are ignored, not honoured.** A verbatim fetched
+body still carrying `_rev`, `createdBy`, `creationDate`, `lastModifiedBy`, and
+`lastModifiedDate` creates fine: the server stamps its own values. So copying a
+script is "fetch, rewrite `_id` + `name`, PUT" — no field stripping needed
+beyond `_id`.
+
+**`name` is unique per realm, enforced server-side.** A second script with a
+name already in the realm →
+`409 "Script with name <name> already exist in realm /alpha"`. The same name in
+the _other_ realm is fine (201) — which is what makes an alpha→bravo copy a
+plain create.
+
+**`context` is normalised on write.** `SCRIPTED_DECISION_NODE` is stored and
+returned as `AUTHENTICATION_TREE_DECISION_NODE`. Anything unrecognised →
+`400 "Script type not recognised: <value>"`. Because the stored value can differ
+from what you sent, re-read (or use the 201 echo) before deriving anything from
+`context` — `aic` re-pulls after a create so the workspace path and snapshot
+come from the server's canonical form.
+
+**`_id` need not be a UUID.** `PUT …/scripts/test_aic_named_id` created a script
+whose `_id` is that literal string (201). `aic` still mints UUIDs, to match what
+the console and frodo produce.
 
 ## Script context enumeration
 
@@ -35,8 +88,8 @@ GET /am/json/global-config/services/scripting/contexts?_queryFilter=true
 Accept-API-Version: protocol=2.0,resource=1.0
 ```
 
-Returns the full list of supported contexts. Verified live (41 distinct contexts
-in the sandbox as of 2026-05-17):
+Returns the full list of supported contexts. Verified live (40 distinct contexts
+in the sandbox as of 2026-07-30):
 
 ```
 AUTHENTICATION_CLIENT_SIDE                          OAUTH2_VALIDATE_SCOPE
@@ -63,8 +116,10 @@ OAUTH2_SCRIPTED_JWT_ISSUER_NEXT_GEN                 SOCIAL_PROVIDER_HANDLER_NODE
 
 (Note the inconsistent spelling `NEXTGEN` vs `NEXT_GEN` — see Quirks below.)
 
-Each context has its own permitted `languages` (`JAVASCRIPT`, occasionally
-`GROOVY`) and a default-script ID.
+Each `result` element is an object with `_id`, `_rev`, `isHidden`, `languages`,
+`defaultScript`, and `_type`; the context name is `_id`. `NODE_DESIGNER` is the
+one hidden entry (`isHidden: true`). All 40 advertise `JAVASCRIPT`; 15 also
+advertise `GROOVY` in `languages`.
 
 ## Object shape (real example from sandbox)
 
@@ -90,8 +145,12 @@ Each context has its own permitted `languages` (`JAVASCRIPT`, occasionally
   like any other script — no `--force` needed.)
 - `evaluatorVersion`: `"1.0"` or `"2.0"`. Affects available bindings; v2 is the
   current default for new scripts.
-- **No `_rev` field.** Optimistic locking via `If-Match` is not available for
-  scripts. **Conflict detection must be content-based.**
+- **No `_rev` field** on a `GET` or on an update `PUT` echo — so optimistic
+  locking via `If-Match` is not available and **conflict detection must be
+  content-based**. One exception, verified 2026-07-30: the **create** echo (201,
+  either route) _does_ carry a `_rev`. It is write-only noise — a subsequent
+  `GET` of the same script has no `_rev` at all — so never persist it or compare
+  against it.
 - **`GROOVY` scripts** (`language: "GROOVY"`) — AIC has dropped Groovy support;
   old tenants still carry many. `aic` does not sync them (filtered in the list).
 - **Product-internal scripts** are named `"ForgeRock Internal: …"`. A
@@ -157,8 +216,12 @@ curl -X PUT "$TENANT_BASE_URL/am/json/realms/root/realms/alpha/scripts/$ID" \
 - **Context naming inconsistency.** Some SAML contexts use `NEXTGEN` (no
   underscore), most others use `NEXT_GEN` (with underscore). Keep an exact
   string list rather than try to derive it. The verified list is above.
-- **Default scripts** (those with `default: true`) — PUT/DELETE on these may
-  silently no-op or return 403. Don't write to them.
+- **Default scripts** (those with `default: true`) — `PUT` **succeeds** (content
+  edits stick; verified 2026-06-03), but `DELETE` returns
+  **`403 "Default script <name> cannot be deleted"`** and the script is still
+  readable afterwards (verified 2026-07-30). It is a clean refusal, not a silent
+  no-op, so `aic script delete` can rely on the server — it refuses locally
+  first only to save the round trip.
 - **LIBRARY context** scripts have an additional `exports` array describing
   functions they expose for other scripts to require.
 - **A referenced LIBRARY script cannot be deleted** (verified 2026-07-29).
@@ -182,6 +245,36 @@ curl -X PUT "$TENANT_BASE_URL/am/json/realms/root/realms/alpha/scripts/$ID" \
   `GET /am/json/global-config/services/scripting/contexts?_queryFilter=true`
   (200 OK, full context list captured above).
 
+### Create / copy / delete — 2026-07-30
+
+Realm `alpha` (and one cross-realm write to `bravo`), all throwaway `test_aic*`
+scripts deleted afterwards and the realms re-listed to confirm nothing was left
+behind:
+
+- `PUT …/scripts/{fresh-uuid}` → **201** + full object echo (with `_rev`);
+  second `PUT` to the same id → **200** + echo (no `_rev`).
+- `POST …/scripts/?_action=create` (no `_id`) → **201**, server-assigned UUID.
+- Duplicate `name` in the same realm → **409**; same `name` in `bravo` →
+  **201**.
+- Each of `name` / `context` / `language` / `script` omitted in turn → **400**
+  with the field-specific message tabulated above; `script: ""` → **201**.
+- `context: "NOT_A_CONTEXT"` → **400 "Script type not recognised"**;
+  `SCRIPTED_DECISION_NODE` stored as `AUTHENTICATION_TREE_DECISION_NODE`.
+- Verbatim fetched body under a new URL id → **400** id-mismatch; same body with
+  `_id` stripped → **201**; with `_id` rewritten to the URL id → **201**, and
+  the re-read shows the server's own `createdBy`/`creationDate`, not the
+  source's.
+- `PUT …/scripts/test_aic_named_id` (non-UUID id) → **201**.
+- `DELETE` of a `default: true` script (`SAML2 IDP Adapter Script`) → **403**,
+  script still `GET`-able; `DELETE` of a nonexistent id → **404**.
+- IDM side re-confirmed: `PUT /openidm/config/endpoint/{name}` 201 → 200 on
+  replace → `DELETE` 200 → `GET` 404, and `DELETE` of an absent config → 404
+  with `"No existing configuration found for …, can not delete"`. A
+  `schedule/{name}` created with
+  `enabled:false, persisted:true, type:"cron", schedule:"0 0 0 1 1 ? 2099", invokeService:"script"`
+  → **201** and reads back verbatim (the shape
+  `aic script create schedule/<name>` writes).
+
 ## Source citations
 
 - frodo-lib: `src/api/ScriptApi.ts`, `src/api/ScriptTypeApi.ts`.
@@ -193,8 +286,6 @@ curl -X PUT "$TENANT_BASE_URL/am/json/realms/root/realms/alpha/scripts/$ID" \
 
 ## Open questions
 
-- What does PUT actually return — full object echo or thin `{_id,_rev?}`? Test
-  on a throwaway script.
 - Does the server reject non-base64 in the `script` field, or attempt to detect
   raw JS? frodo-lib seemed to assume raw, which would suggest a tolerant server.
 - Are `LIBRARY` scripts' `exports` validated against the script body, or just
