@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "lib": ["ES2015", "ES2016.Array.Include"],
+    "lib": ["ES5", "ES2015.Core", "ES2016.Array.Include"],
     "module": "commonjs",
     "target": "ES6",
     "strict": true,

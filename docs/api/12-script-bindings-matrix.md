@@ -169,16 +169,18 @@ Fixtures: `fixtures/es2015-globals.script.js` (next-gen),
 throwaway `endpoint/aicedit-mapset-probe`, deleted after the probe (`GET` → 404
 confirmed).
 
-> **Tooling gap (open).** The script workspace does **not** catch this yet:
-> `src/scripts/templates/am/tsconfig.json` sets
-> `"lib": ["ES2015", "ES2016.Array.Include"]`, and TypeScript's `ES2015` lib
-> declares every global in the table above — so `new Map()` in an AM script
-> type-checks clean and then fails in the tenant. ESLint has no
-> `no-restricted-globals` entry for them either. The fix is to narrow AM to
-> `["ES5", "ES2015.Core", "ES2016.Array.Include"]` (the templates' own types use
-> hand-rolled `JavaMap`/`JavaSet`, so nothing in them depends on the JS
-> collections) and to drop `ES2015.Proxy`/`ES2015.Reflect` from the IDM lib
-> list. Both changes require a `TEMPLATES_VERSION` bump.
+> **Enforced since `TEMPLATES_VERSION` 46.** This used to type-check clean and
+> fail in the tenant, because `src/scripts/templates/am/tsconfig.json` set
+> `"lib": ["ES2015", …]` and TypeScript's `ES2015` umbrella lib DECLARES every
+> global in the table above. AM is now narrowed to
+> `["ES5", "ES2015.Core", "ES2016.Array.Include"]` — which keeps every ES2015
+> feature AM verifiably has, since the templates' own types use hand-rolled
+> `JavaMap`/`JavaSet` rather than the JS collections — and ESLint adds a
+> `no-restricted-globals` entry naming the plain-object substitute. IDM keeps
+> the collections it really has and drops only `ES2015.Proxy`/`ES2015.Reflect`.
+> `ES2015.Iterable` is deliberately NOT in the AM list: it transitively pulls in
+> `es2015.symbol` and would re-declare the `Symbol` global we are removing.
+> Existing workspaces pick this up via `aic workspace update`.
 
 ## `java.util` collections on AM (verified 2026-07-30)
 
@@ -302,11 +304,11 @@ Both behaviours were observed on the next-gen engine. Not probed: the `form`
 (form-encoded) option, the legacy `httpClient`, and whether `openidm.*` write
 payloads share the serializer — do not assume they do.
 
-> **Tooling note (open).** `HttpOptions.body` is typed as plain `object` in
-> `src/scripts/templates/am/types/common.d.ts`, so nothing warns about either
-> trap. The cheap fix is a JSDoc block on `body` (that file already carries a
-> similar warning on `Authorization`), which would surface both in editor hover.
-> Needs a `TEMPLATES_VERSION` bump.
+> **Surfaced since `TEMPLATES_VERSION` 46.** `HttpOptions.body` stays typed as
+> plain `object` — neither trap is expressible as a type without contorting the
+> signature — but it now carries a JSDoc block documenting both, so they appear
+> on editor hover at the call site. That is the only place an author is looking
+> when they build a request body.
 
 ## AM binding matrix
 

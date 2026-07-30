@@ -42,6 +42,11 @@ interface HttpOptions {
    * (How to send Basic auth this way is not yet known — see docs/api/12.)
    */
   token?: string;
+  /**
+   * Next-gen serializes every JS number as a double (`1` becomes `1.0`) and
+   * sends `undefined` properties as `null`. Box integers with
+   * `java.lang.Integer.valueOf(1)` and use `delete body.field` to omit a key.
+   */
   body?: object;
   form?: object;
 }
