@@ -4,12 +4,36 @@
 //! script-invoking schedules carry one (taskscanner/sync jobs don't). See
 //! `docs/api/11-idm-endpoints.md`.
 
-use super::{Kind, RemoteRef, RemoteScript};
+use super::{Kind, NewScriptOpts, RemoteRef, RemoteScript};
 use crate::{Error, Result};
 use serde_json::Value;
 use std::path::PathBuf;
 
 const ID_PREFIX: &str = "schedule/";
+
+pub fn id_for_new(name: &str) -> String {
+    format!("{ID_PREFIX}{name}")
+}
+
+pub fn new_script(name: &str, source: &[u8], _opts: &NewScriptOpts) -> Result<RemoteScript> {
+    let source = String::from_utf8(source.to_vec())
+        .map_err(|e| Error::Config(format!("schedule source is not UTF-8: {e}")))?;
+    let id = id_for_new(name);
+    let raw_config = serde_json::json!({
+        "_id": id,
+        "type": "cron",
+        "enabled": false,
+        "persisted": true,
+        "misfirePolicy": "doNothing",
+        "schedule": "0 0 0 1 1 ? 2099",
+        "invokeService": "script",
+        "invokeContext": {"script": {"type": "text/javascript", "source": source}},
+    });
+    Ok(RemoteScript {
+        reference: ref_from_id(&id),
+        raw_config,
+    })
+}
 
 fn ref_from_id(id: &str) -> RemoteRef {
     let name = id.strip_prefix(ID_PREFIX).unwrap_or(id).to_string();
@@ -161,5 +185,18 @@ mod tests {
             json!("text/javascript")
         );
         assert!(raw["invokeContext"]["script"].get("globals").is_some());
+    }
+
+    #[test]
+    fn new_schedule_is_disabled_and_never_fires() {
+        let script = new_script("hello", b"logger.info('hi');", &NewScriptOpts::default()).unwrap();
+        assert_eq!(script.reference.id, "schedule/hello");
+        assert_eq!(script.raw_config["enabled"], false);
+        assert_eq!(script.raw_config["persisted"], true);
+        assert_eq!(script.raw_config["schedule"], "0 0 0 1 1 ? 2099");
+        assert_eq!(
+            script.raw_config["invokeContext"]["script"]["source"],
+            "logger.info('hi');"
+        );
     }
 }

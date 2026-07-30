@@ -3,12 +3,27 @@
 //! realm, no `Accept-API-Version`), plaintext `source` (not base64), and
 //! name-derived-from-`_id`. See `docs/api/11-idm-endpoints.md`.
 
-use super::{Kind, RemoteRef, RemoteScript};
+use super::{Kind, NewScriptOpts, RemoteRef, RemoteScript};
 use crate::{Error, Result};
 use serde_json::Value;
 use std::path::PathBuf;
 
 const ID_PREFIX: &str = "endpoint/";
+
+pub fn id_for_new(name: &str) -> String {
+    format!("{ID_PREFIX}{name}")
+}
+
+pub fn new_script(name: &str, source: &[u8], _opts: &NewScriptOpts) -> Result<RemoteScript> {
+    let source = String::from_utf8(source.to_vec())
+        .map_err(|e| Error::Config(format!("IDM endpoint source is not UTF-8: {e}")))?;
+    let id = id_for_new(name);
+    let raw_config = serde_json::json!({"_id": id, "type": "text/javascript", "source": source});
+    Ok(RemoteScript {
+        reference: ref_from_id(&id),
+        raw_config,
+    })
+}
 
 fn ref_from_id(id: &str) -> RemoteRef {
     let name = id.strip_prefix(ID_PREFIX).unwrap_or(id).to_string();
@@ -156,5 +171,14 @@ mod tests {
     fn nested_source_object_decodes() {
         let raw = json!({"source": {"source": "var x = 1;", "type": "text/javascript"}});
         assert_eq!(decode_source(&raw).unwrap(), b"var x = 1;");
+    }
+
+    #[test]
+    fn new_endpoint_uses_minimal_verified_shape() {
+        let script = new_script("hello", b"return {};", &NewScriptOpts::default()).unwrap();
+        assert_eq!(script.reference.id, "endpoint/hello");
+        assert_eq!(script.raw_config["_id"], "endpoint/hello");
+        assert_eq!(script.raw_config["type"], "text/javascript");
+        assert_eq!(script.raw_config["source"], "return {};");
     }
 }

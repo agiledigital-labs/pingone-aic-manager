@@ -172,9 +172,22 @@ impl SnapshotStore {
     fn remove(&self, kind: Kind, name: &str, realm: &str) -> Result<()> {
         let key = Self::realm_key(kind, realm);
         let mut entries = self.load_manifest()?;
+        let removed = entries
+            .iter()
+            .find(|e| e.reference.kind == kind && e.reference.name == name && e.realm == key)
+            .cloned();
         entries
             .retain(|e| !(e.reference.kind == kind && e.reference.name == name && e.realm == key));
-        self.save_manifest(&entries)
+        self.save_manifest(&entries)?;
+        if let Some(entry) = removed {
+            let path = self.config_path(&entry.reference, realm);
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
     }
 
     /// Last-synced raw config (the snapshot we forked from), if present.
@@ -454,6 +467,117 @@ pub async fn pull(
         });
     }
     Ok(outcomes)
+}
+
+/// Create a standalone script after refusing an existing name, then pull the
+/// server's canonical representation into the workspace and snapshot store.
+pub async fn create(
+    tenant: &str,
+    realm: &str,
+    script: &RemoteScript,
+    confirmed_prod: bool,
+) -> Result<RemoteScript> {
+    let kind = script.reference.kind;
+    if kind
+        .list(tenant, realm)
+        .await?
+        .iter()
+        .any(|existing| existing.name == script.reference.name)
+    {
+        return Err(Error::Config(format!(
+            "{} already exists; use `aic script push` to overwrite it",
+            script.reference.name
+        )));
+    }
+    kind.write(tenant, realm, script, confirmed_prod).await?;
+    // Pull it straight back so the workspace file, generated extras, and the
+    // snapshot are exactly what a plain `pull` would have produced — the server
+    // normalises fields we sent (AM rewrites `context`), so its copy is the
+    // canonical one.
+    pull(
+        tenant,
+        realm,
+        kind,
+        &Selector::Name(script.reference.name.clone()),
+        false,
+    )
+    .await?;
+    // Every kind honours the id we wrote to (AM: the URL uuid; IDM: the
+    // name-derived config id — both verified), so re-read it directly rather
+    // than listing the namespace again to rediscover it.
+    kind.fetch(tenant, realm, &script.reference.id).await
+}
+
+/// Rewrite only the identity fields required to copy a raw config verbatim.
+///
+/// `_id` **must** be rewritten, not just `name`: AM rejects a body whose `_id`
+/// disagrees with the URL id (`400 "Script resource id and script JSON body id
+/// do not match"`). Every other field rides along untouched, which is the point
+/// of `copy` — `context`, `evaluatorVersion`, a schedule's cron and `globals`,
+/// and any field this tool doesn't model all survive. Server-owned fields
+/// (`_rev`, `createdBy`, `creationDate`, `lastModified*`) are left in place
+/// because AIC ignores them on a write and stamps its own (verified 2026-07-30).
+///
+/// The one exception is `default`: a copy of a product-shipped script is not
+/// itself a product default, and it is unverified whether AM would honour
+/// `default: true` from a client — a script that AM considered default would be
+/// undeletable (403), so we never send it.
+pub fn copy_body(raw: &Value, id: &str, name: &str) -> Result<Value> {
+    let mut copied = raw.clone();
+    let object = copied
+        .as_object_mut()
+        .ok_or_else(|| Error::Config("script config is not an object".into()))?;
+    object.insert("_id".into(), Value::String(id.into()));
+    object.insert("name".into(), Value::String(name.into()));
+    if object.contains_key("default") {
+        object.insert("default".into(), Value::Bool(false));
+    }
+    Ok(copied)
+}
+
+/// Copy a fetched script to a new identity, retaining every other raw field.
+pub async fn copy(
+    tenant: &str,
+    realm: &str,
+    source: &RemoteScript,
+    destination_name: &str,
+    confirmed_prod: bool,
+) -> Result<RemoteScript> {
+    let kind = source.reference.kind;
+    let raw_config = copy_body(
+        &source.raw_config,
+        &kind.id_for_new(destination_name),
+        destination_name,
+    )?;
+    let script = RemoteScript {
+        reference: RemoteRef {
+            kind,
+            id: raw_config
+                .get("_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            name: destination_name.to_string(),
+            context: source.reference.context.clone(),
+            is_default: false,
+            evaluator_version: source.reference.evaluator_version.clone(),
+        },
+        raw_config,
+    };
+    create(tenant, realm, &script, confirmed_prod).await
+}
+
+/// Delete a remote standalone script and remove only its local sync metadata.
+pub async fn delete(
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    reference: &RemoteRef,
+    confirmed_prod: bool,
+) -> Result<()> {
+    kind.delete(tenant, realm, &reference.id, confirmed_prod)
+        .await?;
+    forget(tenant, realm, kind, &reference.name)
 }
 
 fn write_workspace_files(
@@ -795,6 +919,36 @@ mod tests {
     // on the cwd-relative workspace root.
 
     use serde_json::json;
+
+    #[test]
+    fn copy_body_rewrites_only_identity_fields() {
+        let raw = json!({
+            "_id": "old-id", "name": "Old", "context": "LIBRARY",
+            "evaluatorVersion": "2.0", "description": "keep", "unknown": {"x": 1}
+        });
+        let copied = copy_body(&raw, "new-id", "New").unwrap();
+        assert_eq!(copied["_id"], "new-id");
+        assert_eq!(copied["name"], "New");
+        assert_eq!(copied["context"], "LIBRARY");
+        assert_eq!(copied["evaluatorVersion"], "2.0");
+        assert_eq!(copied["description"], "keep");
+        assert_eq!(copied["unknown"], json!({"x": 1}));
+    }
+
+    #[test]
+    fn copying_a_default_script_does_not_produce_another_default() {
+        // An AM script AM considers default is undeletable (403), so a copy must
+        // never inherit the flag.
+        let copied = copy_body(&json!({"_id": "a", "name": "N", "default": true}), "b", "M");
+        assert_eq!(copied.unwrap()["default"], false);
+        // Kinds with no `default` field (IDM configs) gain nothing.
+        let idm = copy_body(
+            &json!({"_id": "endpoint/a", "source": "x"}),
+            "endpoint/b",
+            "b",
+        );
+        assert!(idm.unwrap().get("default").is_none());
+    }
 
     fn store_at(dir: &Path) -> SnapshotStore {
         SnapshotStore {

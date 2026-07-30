@@ -3,7 +3,7 @@
 //! `protocol=2.0,resource=1.0` header, base64 `script` body, and context→dir
 //! routing. See `docs/api/04-scripts.md`.
 
-use super::{Kind, RemoteRef, RemoteScript};
+use super::{Kind, NewScriptOpts, RemoteRef, RemoteScript};
 use crate::{Error, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -13,6 +13,141 @@ use std::path::PathBuf;
 /// AM scripts require the protocol-versioned header (the client default of
 /// `resource=1.0` 400s on the scripts endpoint).
 const API_VERSION: &str = "protocol=2.0,resource=1.0";
+
+/// List the live AM scripting contexts so create accepts new contexts without
+/// a client-side allow-list. Each result element is a full context object
+/// (`{_id, isHidden, languages, defaultScript, …}`) — the name is its `_id`, not
+/// the element itself. `isHidden` contexts (`NODE_DESIGNER`) are internal and
+/// aren't offered. Verified 2026-07-30: 40 contexts, one hidden.
+pub async fn list_contexts(tenant: &str) -> Result<Vec<String>> {
+    let body = crate::aic::api::get_versioned(
+        tenant,
+        "/am/json/global-config/services/scripting/contexts?_queryFilter=true",
+        API_VERSION,
+    )
+    .await?;
+    parse_contexts(&body)
+}
+
+fn parse_contexts(body: &Value) -> Result<Vec<String>> {
+    let contexts = body
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::Api {
+            status: 0,
+            body: format!("unexpected scripting contexts shape: {body}"),
+        })?
+        .iter()
+        .filter(|context| context.get("isHidden").and_then(Value::as_bool) != Some(true))
+        .filter_map(|context| context.get("_id").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if contexts.is_empty() {
+        return Err(Error::Api {
+            status: 0,
+            body: format!("no usable scripting contexts in response: {body}"),
+        });
+    }
+    Ok(contexts)
+}
+
+/// Resolve a context constant or workspace slug using the tenant's live list.
+/// Returns the AM context plus an `evaluatorVersion` the slug forces, if any.
+pub fn resolve_context(input: &str, contexts: &[String]) -> Result<(String, Option<String>)> {
+    if let Some(context) = contexts
+        .iter()
+        .find(|context| context.eq_ignore_ascii_case(input))
+    {
+        return Ok((context.clone(), None));
+    }
+    // The two scripted-decision contexts are aliases of one another (AM stores
+    // either as `AUTHENTICATION_TREE_DECISION_NODE`) and `slug_for` maps both to
+    // `decision-node`, so the generic slug match below would call it ambiguous.
+    // Resolve it here instead, pinning the next-gen engine.
+    if input.eq_ignore_ascii_case("decision-node") {
+        return contexts
+            .iter()
+            .find(|context| {
+                matches!(
+                    context.as_str(),
+                    "SCRIPTED_DECISION_NODE" | "AUTHENTICATION_TREE_DECISION_NODE"
+                )
+            })
+            .cloned()
+            .map(|context| (context, Some("2.0".into())))
+            .ok_or_else(|| unknown_context(input, contexts));
+    }
+    if input.eq_ignore_ascii_case("decision-node-legacy") {
+        return Err(Error::Config(
+            "the legacy scripted-decision engine (evaluatorVersion 1.0) is deprecated — new scripts must be next-gen; use --context decision-node".into(),
+        ));
+    }
+    let matches: Vec<_> = contexts
+        .iter()
+        .filter(|context| slug_for(Some(context), None).eq_ignore_ascii_case(input))
+        .collect();
+    match matches.as_slice() {
+        [context] => Ok(((*context).clone(), None)),
+        [] => Err(unknown_context(input, contexts)),
+        _ => Err(Error::Config(format!(
+            "context slug {input:?} is ambiguous: {}",
+            matches
+                .iter()
+                .map(|c| c.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+fn unknown_context(input: &str, contexts: &[String]) -> Error {
+    let mut slugs: Vec<_> = contexts.iter().map(|c| slug_for(Some(c), None)).collect();
+    slugs.sort();
+    slugs.dedup();
+    Error::Config(format!(
+        "unknown AM context {input:?}; available slugs: {}",
+        slugs.join(", ")
+    ))
+}
+
+pub fn id_for_new(_name: &str) -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+pub fn new_script(name: &str, source: &[u8], opts: &NewScriptOpts) -> Result<RemoteScript> {
+    let context = opts
+        .context
+        .clone()
+        .ok_or_else(|| Error::Config("AM script create requires --context".into()))?;
+    let id = id_for_new(name);
+    let language = opts.language.clone().unwrap_or_else(|| "JAVASCRIPT".into());
+    let evaluator_version = opts
+        .evaluator_version
+        .clone()
+        .unwrap_or_else(|| "2.0".into());
+    // Legacy-engine scripts get no new instances: the v1 bindings are deprecated
+    // and the workspace's type definitions target next-gen. Existing legacy
+    // scripts stay pullable, pushable, and copyable — this only blocks creation.
+    if evaluator_version == "1.0" {
+        return Err(Error::Config(
+            "refusing to create an evaluatorVersion 1.0 (legacy engine) script — it is deprecated; omit --evaluator-version to get next-gen".into(),
+        ));
+    }
+    let raw_config = serde_json::json!({
+        "_id": id,
+        "name": name,
+        "context": context,
+        "language": language,
+        "script": B64.encode(source),
+        "description": opts.description,
+        "default": false,
+        "evaluatorVersion": evaluator_version,
+    });
+    Ok(RemoteScript {
+        reference: ref_from_config(&raw_config),
+        raw_config,
+    })
+}
 
 fn realm_path(realm: &str) -> String {
     format!("/am/json/realms/root/realms/{realm}")
@@ -500,6 +635,101 @@ mod tests {
         assert_eq!(raw["script"], json!(B64.encode(body)));
         // and decodes back to the same bytes
         assert_eq!(decode_source(&raw).unwrap(), body);
+    }
+
+    #[test]
+    fn context_resolution_accepts_constants_slugs_and_reports_ambiguity() {
+        let contexts = vec![
+            "LIBRARY".into(),
+            "SCRIPTED_DECISION_NODE".into(),
+            "OTHER_CONTEXT".into(),
+        ];
+        assert_eq!(
+            resolve_context("library", &contexts).unwrap(),
+            ("LIBRARY".into(), None)
+        );
+        assert_eq!(
+            resolve_context("lib", &contexts).unwrap(),
+            ("LIBRARY".into(), None)
+        );
+        assert_eq!(
+            resolve_context("decision-node", &contexts).unwrap(),
+            ("SCRIPTED_DECISION_NODE".into(), Some("2.0".into()))
+        );
+        // Legacy-engine creation is refused outright, by slug...
+        assert!(
+            resolve_context("decision-node-legacy", &contexts)
+                .unwrap_err()
+                .to_string()
+                .contains("deprecated")
+        );
+        assert!(
+            resolve_context("missing", &contexts)
+                .unwrap_err()
+                .to_string()
+                .contains("available slugs")
+        );
+        let ambiguous = vec!["ONE_CONTEXT".into(), "one_context".into()];
+        let error = resolve_context("one-context", &ambiguous)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ONE_CONTEXT") && error.contains("one_context"));
+    }
+
+    #[test]
+    fn new_script_has_required_am_defaults_and_fresh_ids() {
+        assert!(
+            new_script("x", b"", &NewScriptOpts::default())
+                .unwrap_err()
+                .to_string()
+                .contains("--context")
+        );
+        let opts = NewScriptOpts {
+            context: Some("LIBRARY".into()),
+            ..Default::default()
+        };
+        let first = new_script("x", b"body", &opts).unwrap();
+        let second = new_script("x", b"body", &opts).unwrap();
+        assert_ne!(first.reference.id, second.reference.id);
+        assert!(uuid::Uuid::parse_str(&first.reference.id).is_ok());
+        assert_eq!(first.raw_config["language"], "JAVASCRIPT");
+        assert_eq!(first.raw_config["evaluatorVersion"], "2.0");
+        assert_eq!(first.raw_config["default"], false);
+        assert_eq!(first.raw_config["_id"], first.reference.id);
+    }
+
+    #[test]
+    fn legacy_engine_creation_is_refused_however_it_is_requested() {
+        // ...and by an explicit flag, whatever the context.
+        let legacy = NewScriptOpts {
+            context: Some("LIBRARY".into()),
+            evaluator_version: Some("1.0".into()),
+            ..Default::default()
+        };
+        assert!(
+            new_script("x", b"body", &legacy)
+                .unwrap_err()
+                .to_string()
+                .contains("legacy engine")
+        );
+    }
+
+    #[test]
+    fn contexts_are_read_from_the_id_field_and_skip_hidden_ones() {
+        // The endpoint returns context *objects*, not strings — treating an
+        // element as its own name yields an empty list, which would make every
+        // `--context` fail with "unknown AM context".
+        let body = json!({"result": [
+            {"_id": "LIBRARY", "isHidden": false, "languages": ["JAVASCRIPT"]},
+            {"_id": "NODE_DESIGNER", "isHidden": true, "languages": ["JAVASCRIPT"]},
+            {"_id": "OIDC_CLAIMS"},
+        ]});
+        assert_eq!(parse_contexts(&body).unwrap(), ["LIBRARY", "OIDC_CLAIMS"]);
+
+        // A shape we don't recognise must fail loudly rather than resolve to
+        // "no contexts exist".
+        assert!(parse_contexts(&json!({"result": ["LIBRARY"]})).is_err());
+        assert!(parse_contexts(&json!({"nope": []})).is_err());
     }
 
     #[test]
