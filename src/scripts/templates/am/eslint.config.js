@@ -34,9 +34,9 @@ const rhinoParseErrors = [
       "'const' in a for...in initializer is a parse error on Rhino 1.7.14. Use 'var'.",
   },
   {
-    selector: "ForOfStatement > VariableDeclaration[kind='const']",
+    selector: "ForOfStatement",
     message:
-      "'const' in a for...of initializer is a parse error on Rhino 1.7.14. Use 'var'.",
+      "'for...of' is a parse error on Rhino 1.7.14 ('missing ; after for-loop initializer') — the whole statement, not just its 'const' form. Use an indexed 'for' loop over arrays; 'for...in' works but yields keys, not values.",
   },
   {
     selector: "ObjectExpression > Property[shorthand=true]",
@@ -59,6 +59,42 @@ const rhinoParseErrors = [
       "Default parameter values are a parse error on Rhino 1.7.14. Assign defaults inside the function body.",
   },
 ];
+
+// ES2015 GLOBAL OBJECTS are absent from AM's Rhino at runtime — every one of
+// these is `undefined` on legacy, next-gen and inside LIBRARY scope, so use is a
+// ReferenceError at the construction site rather than a parse error (probed
+// 2026-07-30). The substitute differs per global, so each carries its own hint
+// instead of one generic message.
+const rhinoMissingGlobals = [
+  ["Map", "Use a plain object keyed by strings: `o[key] = value`."],
+  ["WeakMap", "Use a plain object keyed by strings: `o[key] = value`."],
+  [
+    "Set",
+    "Use a plain object as a seen-set: `if (!seen[item]) { seen[item] = true; }`. " +
+      "`new java.util.HashSet()` also works if you need Java collection semantics.",
+  ],
+  [
+    "WeakSet",
+    "Use a plain object as a seen-set: `if (!seen[item]) { seen[item] = true; }`.",
+  ],
+  [
+    "Symbol",
+    "There is no substitute. Its absence is also why for...of and other iteration protocols do not work.",
+  ],
+  [
+    "Promise",
+    "There is no substitute, and none is needed: AM scripts are synchronous. " +
+      "`httpClient.send(...).get()` already blocks for the response.",
+  ],
+  ["Proxy", "There is no substitute; restructure to plain property access."],
+  [
+    "Reflect",
+    "There is no substitute; use direct property access or `Object.keys`.",
+  ],
+].map(([name, hint]) => ({
+  name,
+  message: `${name} is absent from AM's Rhino at runtime (ReferenceError on use) — see docs/api/12-script-bindings-matrix.md. ${hint}`,
+}));
 
 // Rhino treats `const` as FUNCTION-scoped for redeclaration: the same name
 // declared by two `const`s in one function is a parse error
@@ -234,6 +270,7 @@ const scriptRules = {
   ],
   "require-unicode-regexp": "off",
   "no-undef": "off",
+  "no-restricted-globals": ["error", ...rhinoMissingGlobals],
   "no-restricted-syntax": ["error", ...rhinoParseErrors],
   "rhino/no-dup-const": "error",
   "openidm-query-filter/managed-fields": "error",

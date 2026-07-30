@@ -42,6 +42,21 @@ const idmSyntaxRestrictions = [
   },
 ];
 
+// Proxy and Reflect are the only ES2015 globals the IDM engine lacks — Map, Set,
+// WeakMap, WeakSet, Symbol and Promise are all present and functional (probed
+// 2026-07-30, see docs/api/12-script-bindings-matrix.md). Do not copy AM's much
+// longer list here.
+const idmMissingGlobals = [
+  ["Proxy", "There is no substitute; restructure to plain property access."],
+  [
+    "Reflect",
+    "There is no substitute; use direct property access or `Object.keys`.",
+  ],
+].map(([name, hint]) => ({
+  name,
+  message: `${name} is absent from the IDM script engine at runtime (ReferenceError on use) — see docs/api/12-script-bindings-matrix.md. ${hint}`,
+}));
+
 const scriptRules = {
   ...prettierConfig.rules,
   "no-inner-declarations": "off",
@@ -61,6 +76,7 @@ const scriptRules = {
   ],
   "require-unicode-regexp": "off",
   "no-undef": "off",
+  "no-restricted-globals": ["error", ...idmMissingGlobals],
   "no-restricted-syntax": ["error", ...idmSyntaxRestrictions],
   "openidm-query-filter/managed-fields": "error",
   "prettier/prettier": "error",

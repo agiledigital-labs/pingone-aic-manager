@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 45;
+pub const TEMPLATES_VERSION: u32 = 46;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -434,6 +434,88 @@ mod tests {
         );
         assert!(MANAGED.iter().any(|(r, _)| *r == "idm/types/endpoint.d.ts"));
         assert!(USER.iter().any(|(r, _)| *r == "package.json"));
+    }
+
+    #[test]
+    fn base_tsconfigs_pin_runtime_available_standard_libraries() {
+        // Do not widen these umbrella libs: they declare JS globals absent from
+        // the AM/IDM script engines and make runtime-impossible scripts type-check.
+        let am = MANAGED
+            .iter()
+            .find(|(rel, _)| *rel == "am/tsconfig.json")
+            .unwrap()
+            .1;
+        assert!(am.contains("\"lib\": [\"ES5\", \"ES2015.Core\", \"ES2016.Array.Include\"]"));
+        assert!(!am.contains("\"ES2015\""));
+
+        let idm = MANAGED
+            .iter()
+            .find(|(rel, _)| *rel == "idm/tsconfig.json")
+            .unwrap()
+            .1;
+        for lib in [
+            "ES5",
+            "ES2015.Core",
+            "ES2015.Collection",
+            "ES2015.Iterable",
+            "ES2015.Symbol",
+            "ES2015.Symbol.WellKnown",
+            "ES2015.Promise",
+            "ES2016.Array.Include",
+        ] {
+            assert!(
+                idm.contains(&format!("\"{lib}\"")),
+                "missing IDM lib: {lib}"
+            );
+        }
+        assert!(!idm.contains("\"ES2015\""));
+        assert!(!idm.contains("ES2015.Proxy"));
+        assert!(!idm.contains("ES2015.Reflect"));
+        assert!(!idm.contains("ES2015.Generator"));
+    }
+
+    #[test]
+    fn eslint_templates_reject_runtime_absent_syntax_and_globals() {
+        let am = MANAGED
+            .iter()
+            .find(|(rel, _)| *rel == "am/eslint.config.js")
+            .unwrap()
+            .1;
+        // The whole statement is banned, not only its `const` form: for...of is a
+        // parse error on Rhino in any form (probed 2026-07-30).
+        assert!(am.contains("selector: \"ForOfStatement\""));
+        assert!(!am.contains("ForOfStatement > VariableDeclaration"));
+        // Each global carries its own substitute hint, so assert the table entry
+        // rather than a generated `name:` key.
+        assert!(am.contains("\"no-restricted-globals\": [\"error\", ...rhinoMissingGlobals]"));
+        for global in [
+            "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Promise", "Proxy", "Reflect",
+        ] {
+            assert!(
+                am.contains(&format!("\"{global}\",")),
+                "missing AM global: {global}"
+            );
+        }
+
+        let idm = MANAGED
+            .iter()
+            .find(|(rel, _)| *rel == "idm/eslint.config.js")
+            .unwrap()
+            .1;
+        assert!(idm.contains("\"no-restricted-globals\": [\"error\", ...idmMissingGlobals]"));
+        for global in ["Proxy", "Reflect"] {
+            assert!(
+                idm.contains(&format!("\"{global}\",")),
+                "missing IDM global: {global}"
+            );
+        }
+        // IDM has these at runtime; banning them here would be wrong.
+        for present in ["Map", "Set", "Symbol", "Promise"] {
+            assert!(
+                !idm.contains(&format!("\"{present}\",")),
+                "IDM must not restrict {present}"
+            );
+        }
     }
 
     #[test]
