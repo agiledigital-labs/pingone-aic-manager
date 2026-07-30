@@ -169,6 +169,12 @@ what a script in that context can construct:
   `OIDC_CLAIMS_NEXT_GEN` each declare only **three** entries — yet a `LIBRARY`
   script constructs `java.util.HashSet` and `java.util.ArrayList` without
   complaint. The declared list is far narrower than the real one.
+- `java.lang.Integer` is absent from the decision-node list (which does carry
+  `Byte`, `Short`, `Long`, `Float`, `Number`, `Void`) yet
+  `new java.lang.Integer(1)` and `java.lang.Integer.valueOf(1)` both work — and
+  are the documented fix for `httpClient` rendering whole numbers as `1.0`
+  (`docs/api/12`). So absence from the list does not imply blocked, either.
+
 Treat the array as a hint about what is deliberately exposed, and probe before
 claiming any `java.*` class is reachable or blocked in a given context. Runtime
 results are in `docs/api/12-script-bindings-matrix.md`.
