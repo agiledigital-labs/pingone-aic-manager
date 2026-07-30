@@ -137,6 +137,18 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
   Contrast IDM, which has all of them except `Proxy`/`Reflect`. Note the
   deliberate split: `fixtures/es2015-methods.script.js` (prototype methods — all
   work) vs `fixtures/es2015-globals.script.js` (constructors — none work).
+- `java.util` collections (2026-07-30): `JavaImporter` works on next-gen too, and
+  `new java.util.HashSet()`/`ArrayList()`/`LinkedHashSet()`/`TreeSet()` all
+  construct fine — but the mutable Map classes (`HashMap`, `LinkedHashMap`,
+  `TreeMap`) are blocked by the next-gen allow-list and fail with
+  `TypeError: [JavaPackage java.util.HashMap] is not a function, it is object.`
+  `Collections.emptyMap()`/`singletonMap()` do work (immutable). Legacy CAN
+  construct `HashMap`. Identical results from LIBRARY scope, which means the
+  three-entry `allowLists` array in `docs/api/bindings/library-next.json` is not
+  the enforced boundary (`fixtures/java-collections.script.js`;
+  `fixtures/lib-java-collections-probe.lib.js` +
+  `lib-java-collections-consumer.script.js`, uploaded as
+  `rhino-lib-java-collections-probe`, id `…7408`).
 - Parse errors: `let` (any scope), object shorthand, object destructuring,
   default parameters, `const` in `for`/`for-in`/`for-of` initializers, and the
   same `const` name re-declared in one function across separate non-nested

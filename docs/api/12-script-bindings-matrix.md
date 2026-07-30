@@ -149,6 +149,9 @@ already verified on the **IDM schedule** engine on 2026-07-15 (construct, query,
 
 - **All AM contexts** — a plain object for string keys (`o["a"] = 1`), and the
   object-keyed dedupe loop (`seen[item] = true`) in `LIBRARY` scope.
+- **`java.util` collections** — available on both engines, but with a Map-shaped
+  hole on next-gen. See the next section; do not assume `java.util.X` is
+  reachable just because `JavaImporter` is.
 
 **Do not generalise these rows to other ES6 features.** AM's Rhino is not simply
 "ES6 off": arrow functions, template literals, `Array.from`, `String.includes`
@@ -175,6 +178,70 @@ confirmed).
 > hand-rolled `JavaMap`/`JavaSet`, so nothing in them depends on the JS
 > collections) and to drop `ES2015.Proxy`/`ES2015.Reflect` from the IDM lib
 > list. Both changes require a `TEMPLATES_VERSION` bump.
+
+## `java.util` collections on AM (verified 2026-07-30)
+
+The obvious answer to "no JS `Map`" is a Java collection, and `JavaImporter` is
+present on **both** engines (`typeof JavaImporter` → `"function"`, `typeof java`
+→ `"object"`, next-gen included). But next-gen enforces a Java allow-list, and
+that list has a **Map-shaped hole**:
+
+| Construction                           | AM legacy (1.0) | AM next-gen (2.0) | Next-gen `LIBRARY` |
+| -------------------------------------- | --------------- | ----------------- | ------------------ |
+| `new java.util.HashSet()`              | —               | ✅ `true:1`       | ✅ `true:1`        |
+| `new java.util.ArrayList()`            | —               | ✅ `a:1`          | ✅ `a:1`           |
+| `new java.util.LinkedHashSet()`        | —               | ✅ works          | —                  |
+| `new java.util.TreeSet()`              | —               | ✅ `a:2`          | —                  |
+| `new java.util.HashMap()`              | ✅ `1:1`        | ❌ **blocked**    | ❌ **blocked**     |
+| `new java.util.LinkedHashMap()`        | —               | ❌ blocked        | —                  |
+| `new java.util.TreeMap()`              | —               | ❌ blocked        | —                  |
+| `java.util.Collections.emptyMap()`     | —               | ✅ `0`            | —                  |
+| `java.util.Collections.singletonMap()` | —               | ✅ `1:1`          | ✅ `1:1`           |
+| `JavaImporter(java.util)` + `HashSet`  | ✅              | ✅ works          | —                  |
+| `JavaImporter(java.util)` + `HashMap`  | ✅ `1:1`        | ❌ blocked        | —                  |
+
+A blocked class does not throw a security error — the name simply never resolves
+to a constructor, so it stays a package object and you get a **`TypeError`**:
+
+```
+TypeError: [JavaPackage java.util.HashMap] is not a function, it is object.
+```
+
+Via `JavaImporter` the same block reads
+`TypeError: org.mozilla.javascript.Undefined@… is not a function, it is undefined.`
+Either way it is a runtime failure at the construction site, not a parse error.
+
+So a **mutable** Java `Map` is unavailable to next-gen AM scripts by any of the
+probed routes. `Collections.singletonMap`/`emptyMap` return usable (immutable)
+maps, and `Set`/`List` types are fine. For accumulating key→value data in a
+next-gen script, a plain JS object remains the only verified option.
+
+**The metadata's `allowLists` array is not the enforced list.** Each artifact
+under `docs/api/bindings/` carries an `allowLists` array, and it is only a
+partial guide:
+
+- `scripted-decision-next.json` lists 51 entries including `java.util.HashSet`,
+  `ArrayList`, `LinkedHashSet`, `TreeSet`, `LinkedList` and `Collections` — and
+  notably **omits `java.util.HashMap`** while including
+  `java.util.HashMap$KeyIterator` and `java.util.AbstractMap$*`. Enforcement
+  matches: the listed classes work, `HashMap` is blocked.
+- `library-next.json`, `oauth2-atm-next.json` and `oidc-claims-next.json` each
+  list only **three** entries (`java.lang.Object` plus the two
+  `org.forgerock.util.promise` types). Enforcement does **not** match: a
+  `LIBRARY` script reaches `java.util.HashSet` and `ArrayList` perfectly well.
+
+Read the per-context list as "classes this context's metadata bothered to
+declare", not as the sandbox boundary. The enforced boundary appears uniform
+across next-gen contexts and to correspond to the 51-entry decision-node list.
+This is the same metadata-is-not-behaviour trap already recorded for context
+usability and invocation contracts in `docs/api/13-script-contexts.md`.
+
+Fixtures: `fixtures/java-collections.script.js` (next-gen decision node),
+`fixtures/lib-java-collections-probe.lib.js` +
+`lib-java-collections-consumer.script.js` (`LIBRARY`, uploaded as
+`rhino-lib-java-collections-probe`, id `…7408`). The legacy `HashMap` row comes
+from `fixtures-legacy/legacy-es2015-globals.script.js`. Cells marked `—` were
+not probed in that context.
 
 ## AM binding matrix
 
