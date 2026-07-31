@@ -276,6 +276,33 @@ all objects) itself — no server-side cascade — and must warn that existing
 records will be orphaned (recoverable only by renaming back). `config/sync`
 mappings referencing `managed/X` are likewise not rewritten server-side.
 
+### Deleting an object type (verified 2026-07-31)
+
+Probed on the sandbox with `test_del_probe` (2 records) plus `test_del_src`
+holding a relationship pointing at it; both removed afterwards and the config
+re-listed to confirm nothing was left behind.
+
+- **Removing the object's entry from `objects[]` and PUTting the document is the
+  only delete route** — there is no object-level DELETE. `PUT` → **200**.
+- **Records survive, exactly as with a rename.** After ~6.5s the runtime
+  deactivates the type and `GET /openidm/managed/test_del_probe` → **404**.
+  Restoring the object entry brings the collection back with **both original
+  `_id`s intact** (activation ~3s). Deletion of a type is therefore _soft_: the
+  records detach from the API surface while no configured type owns their
+  backend name, and nothing is destroyed. This is what makes an undo of a
+  config-level delete a genuine recovery.
+- **A dangling relationship path is accepted.** PUTting a document in which
+  `test_del_src.link` still has
+  `resourceCollection[].path == "managed/test_del_probe"` after that object is
+  gone returns **200** — no validation, no cascade. The server will happily hold
+  a broken reference.
+
+Practical consequence for tooling: a delete must sweep inbound relationships
+itself (remove the property, and prune its key from `schema.order` and
+`schema.required` — neither is auto-reconciled), because nothing server-side
+will refuse or clean up the dangling path. `aic`'s `D` (delete object) does this
+and lists the properties it will remove before confirming.
+
 ## Hook scripts (verified 2026-06-13)
 
 Hook keys **observed in use** on the sandbox schema: `onCreate`, `onUpdate`,
@@ -416,7 +443,9 @@ error. Do not offer `ne` or `in` in script-template query validation.
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-06-21 (record querying + change detection: no record timestamp;
+- Date: 2026-07-31 (object-type delete: records detach and return intact on
+  config restore; dangling relationship path accepted by the config PUT).
+  2026-06-21 (record querying + change detection: no record timestamp;
   `_meta`→`<type>meta` sidecar with `lastChanged/createDate`, queryable/sortable
   on the sidecar but **not** via parent traversal — `_meta/...` filter → 0, sort
   → 500; `alpha_rolemeta` 404 / non-user objects have no sidecar; cursor paging

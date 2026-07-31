@@ -10,8 +10,8 @@ use crate::app::{App, InputMode};
 use crate::managed::ops;
 use crate::managed::state::{
     AddChooseState, AddFieldFocus, AddFieldState, AddHookState, AddKind, DeleteFieldState,
-    EditFieldFocus, FieldEditState, LoadState, NewObjectFocus, NewObjectState, RefPropDraft,
-    RefPropFocus, RelationshipFocus, RelationshipFormState, RenameFieldState,
+    DeleteObjectState, EditFieldFocus, FieldEditState, LoadState, NewObjectFocus, NewObjectState,
+    RefPropDraft, RefPropFocus, RelationshipFocus, RelationshipFormState, RenameFieldState,
     RenameObjectConfirmState, RenameObjectState,
 };
 
@@ -26,6 +26,7 @@ pub enum Mode {
     RefProp,
     AddHook,
     DeleteFieldConfirm,
+    DeleteObjectConfirm,
     RenameField,
     RenameObject,
     RenameObjectConfirm,
@@ -54,10 +55,21 @@ pub enum Event {
         draft: RenameObjectState,
         result: std::result::Result<crate::managed::api::RecordCount, String>,
     },
+    DeleteObjectRecordCount {
+        draft: DeleteObjectState,
+        result: std::result::Result<crate::managed::api::RecordCount, String>,
+    },
     RenameResult {
         tenant: String,
         old_name: String,
         new_name: String,
+        undo_id: crate::undo::UndoId,
+        result: std::result::Result<Value, String>,
+    },
+    DeleteObjectResult {
+        tenant: String,
+        object_name: String,
+        inbound_count: usize,
         undo_id: crate::undo::UndoId,
         result: std::result::Result<Value, String>,
     },
@@ -134,6 +146,15 @@ pub fn apply_event(app: &mut App, event: Event) {
             });
             app.input_mode = InputMode::Managed(Mode::RenameObjectConfirm);
         }
+        Event::DeleteObjectRecordCount { mut draft, result } => {
+            if app.input_mode != InputMode::Managed(Mode::DeleteObjectConfirm)
+                || app.managed.pending_object_delete.is_none()
+            {
+                return;
+            }
+            draft.record_count = Some(result);
+            app.managed.pending_object_delete = Some(draft);
+        }
         Event::RenameResult {
             tenant,
             old_name,
@@ -141,6 +162,20 @@ pub fn apply_event(app: &mut App, event: Event) {
             undo_id,
             result,
         } => ops::apply_rename_result(app, tenant, old_name, new_name, undo_id, result),
+        Event::DeleteObjectResult {
+            tenant,
+            object_name,
+            inbound_count,
+            undo_id,
+            result,
+        } => ops::apply_delete_object_result(
+            app,
+            tenant,
+            object_name,
+            inbound_count,
+            undo_id,
+            result,
+        ),
         Event::CreateResult {
             tenant,
             name,
@@ -168,6 +203,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
         Mode::RefProp => handle_ref_prop_key(app, key),
         Mode::AddHook => handle_add_hook_key(app, key),
         Mode::DeleteFieldConfirm => handle_delete_confirm_key(app, key),
+        Mode::DeleteObjectConfirm => handle_delete_object_confirm_key(app, key),
         Mode::RenameField => handle_rename_field_key(app, key),
         Mode::RenameObject => handle_rename_object_key(app, key),
         Mode::RenameObjectConfirm => handle_rename_object_confirm_key(app, key),
@@ -252,6 +288,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Esc", "cancel"),
         ],
         Mode::DeleteFieldConfirm => vec![("y", "delete"), ("n/Esc", "cancel")],
+        Mode::DeleteObjectConfirm => vec![("y", "delete"), ("n/Esc", "cancel")],
         Mode::RenameField => vec![("Enter", "rename"), ("Esc", "cancel")],
         Mode::RenameObject => vec![("Enter", "continue"), ("Esc", "cancel")],
         Mode::RenameObjectConfirm => vec![("y", "rename"), ("n/Esc", "cancel")],
@@ -343,6 +380,7 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
             ("Esc", "cancel"),
         ]),
         Mode::DeleteFieldConfirm => Some(vec![("y", "delete"), ("n/Esc", "cancel")]),
+        Mode::DeleteObjectConfirm => Some(vec![("y", "delete"), ("n/Esc", "cancel")]),
         Mode::RenameField => Some(vec![("Enter", "rename"), ("Esc", "cancel")]),
         Mode::RenameObject => Some(vec![("Enter", "continue"), ("Esc", "cancel")]),
         Mode::RenameObjectConfirm => Some(vec![("y", "rename"), ("n/Esc", "cancel")]),
@@ -377,6 +415,8 @@ pub fn resume_mode_after_prod_cancel(app: &App) -> Option<Mode> {
         Some(Mode::AddHook)
     } else if app.managed.pending_delete.is_some() {
         Some(Mode::DeleteFieldConfirm)
+    } else if app.managed.pending_object_delete.is_some() {
+        Some(Mode::DeleteObjectConfirm)
     } else if app.managed.renaming.is_some() {
         Some(Mode::RenameField)
     } else if app.managed.renaming_object.is_some() {
@@ -629,6 +669,33 @@ pub fn start_rename_object(app: &mut App) {
         doc.clone(),
     ));
     app.input_mode = InputMode::Managed(Mode::RenameObject);
+}
+
+/// Starts a guarded whole-document object delete for custom objects only.
+pub fn start_delete_object(app: &mut App) {
+    let Some((tenant_name, object_name, object)) = selected_object_with_tenant(app) else {
+        return;
+    };
+    if write_in_flight(app, &tenant_name, &object_name) {
+        return;
+    }
+    if crate::managed::state::is_ping_shipped_object(&object) {
+        app.push_toast(ToastKind::Info, "Ping-shipped objects cannot be deleted");
+        return;
+    }
+    let Some(LoadState::Loaded(doc)) = app.managed.data.get(&tenant_name) else {
+        return;
+    };
+    let draft = DeleteObjectState {
+        tenant_name,
+        inbound: ops::inbound_relationships(doc, &object_name),
+        object_name,
+        original_doc: doc.clone(),
+        record_count: None,
+    };
+    app.managed.pending_object_delete = Some(draft.clone());
+    app.input_mode = InputMode::Managed(Mode::DeleteObjectConfirm);
+    ops::start_object_record_count(app, draft);
 }
 
 /// Opens the whole-document create flow when the managed config is loaded.
@@ -1518,6 +1585,34 @@ fn handle_delete_confirm_key(app: &mut App, key: KeyEvent) {
             app.managed.pending_delete = None;
             app.input_mode = InputMode::Normal;
         }
+        _ => {}
+    }
+}
+
+fn handle_delete_object_confirm_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let Some(draft) = app.managed.pending_object_delete.as_ref() else {
+                return;
+            };
+            let request = ops::DeleteObjectRequest {
+                tenant_name: draft.tenant_name.clone(),
+                object_name: draft.object_name.clone(),
+                previous_doc: draft.original_doc.clone(),
+            };
+            if app.active_tenant().is_some_and(|tenant| {
+                tenant.theme == crate::config::tenant::TenantTheme::Production
+            }) {
+                app.prod_confirm.pending =
+                    Some(crate::app::prod_confirm::PendingProdAction::Managed(
+                        ops::ProdAction::DeleteObject(Box::new(request)),
+                    ));
+                app.input_mode = InputMode::ProdConfirm;
+            } else {
+                ops::execute_delete_object(app, request, false);
+            }
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => ops::cancel_active_draft(app),
         _ => {}
     }
 }

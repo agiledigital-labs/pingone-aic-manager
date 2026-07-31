@@ -1101,6 +1101,18 @@ pub struct RenameObjectConfirmState {
     pub count_error: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DeleteObjectState {
+    pub tenant_name: String,
+    pub object_name: String,
+    pub original_doc: Value,
+    /// (object, property key) pairs whose relationship targets this object and
+    /// will be stripped by the delete.
+    pub inbound: Vec<(String, String)>,
+    /// Background record count: None = still counting.
+    pub record_count: Option<Result<crate::managed::api::RecordCount, String>>,
+}
+
 pub const HOOK_EVENTS: [&str; 6] = [
     "onCreate",
     "onUpdate",
@@ -1197,6 +1209,7 @@ pub struct State {
     pub add_choose: Option<AddChooseState>,
     pub add_hook: Option<AddHookState>,
     pub pending_delete: Option<DeleteFieldState>,
+    pub pending_object_delete: Option<DeleteObjectState>,
     pub renaming: Option<RenameFieldState>,
     pub renaming_object: Option<RenameObjectState>,
     pub rename_object_confirm: Option<RenameObjectConfirmState>,
@@ -1245,6 +1258,7 @@ impl State {
         self.add_choose = None;
         self.add_hook = None;
         self.pending_delete = None;
+        self.pending_object_delete = None;
         self.renaming = None;
         self.renaming_object = None;
         self.rename_object_confirm = None;

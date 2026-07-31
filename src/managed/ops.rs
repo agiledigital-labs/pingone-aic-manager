@@ -15,15 +15,17 @@ use crate::config::tenant::TenantTheme;
 pub enum ProdAction {
     Update(Box<ObjectReplacePlan>),
     RenameObject(Box<RenameObjectRequest>),
+    DeleteObject(Box<DeleteObjectRequest>),
     CreateObject(Box<CreateObjectRequest>),
     WriteRelationship(Box<RelationshipWriteRequest>),
     Undo(crate::undo::UndoId),
 }
 use crate::managed::screen::Event;
 use crate::managed::state::{
-    AddFieldState, Cardinality, DeleteFieldState, EditFieldFocus, FieldAttr, FieldEditState,
-    LoadState, ParsedRelationship, PreviousRelationship, RefProperty, RelationshipSpec,
-    RenameFieldState, RenameObjectState, ReverseCardinality, ScalarFieldType, State,
+    AddFieldState, Cardinality, DeleteFieldState, DeleteObjectState, EditFieldFocus, FieldAttr,
+    FieldEditState, LoadState, ParsedRelationship, PreviousRelationship, RefProperty,
+    RelationshipSpec, RenameFieldState, RenameObjectState, ReverseCardinality, ScalarFieldType,
+    State,
 };
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
@@ -56,6 +58,13 @@ pub struct RenameObjectRequest {
     pub(crate) tenant_name: String,
     pub(crate) old_name: String,
     pub(crate) new_name: String,
+    pub(crate) previous_doc: Value,
+}
+
+#[derive(Debug)]
+pub struct DeleteObjectRequest {
+    pub(crate) tenant_name: String,
+    pub(crate) object_name: String,
     pub(crate) previous_doc: Value,
 }
 
@@ -175,6 +184,92 @@ fn rewrite_relationship_paths(
             }
         }
     }
+}
+
+/// Returns every remaining object property whose relationship targets `name`.
+fn relationship_properties_targeting(objects: &[Value], name: &str) -> Vec<(String, String)> {
+    let target_path = format!("managed/{name}");
+    let mut matches = Vec::new();
+    for object in objects {
+        let Some(object_name) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if object_name == name {
+            continue;
+        }
+        let Some(properties) = object
+            .pointer("/schema/properties")
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        for (key, property) in properties {
+            if relationship_targets_path(property, &target_path) {
+                matches.push((object_name.to_string(), key.clone()));
+            }
+        }
+    }
+    matches
+}
+
+fn relationship_targets_path(property: &Value, target_path: &str) -> bool {
+    [
+        property.get("resourceCollection"),
+        property.pointer("/items/resourceCollection"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_array)
+    .flatten()
+    .any(|entry| entry.get("path").and_then(Value::as_str) == Some(target_path))
+}
+
+/// Reports relationship properties that would be removed when `name` is deleted.
+pub fn inbound_relationships(doc: &Value, name: &str) -> Vec<(String, String)> {
+    crate::managed::api::objects(doc)
+        .map(|objects| relationship_properties_targeting(objects, name))
+        .unwrap_or_default()
+}
+
+/// Removes an object and every relationship property that targets it.
+///
+/// The managed-config API does not reconcile `schema.order` or `schema.required`,
+/// so this transform prunes both lists whenever it removes a property.
+pub fn delete_object_in_doc(
+    doc: &Value,
+    name: &str,
+) -> Result<(Value, Vec<(String, String)>), String> {
+    let mut deleted = doc.clone();
+    let objects =
+        crate::managed::api::objects_mut(&mut deleted).map_err(|error| error.to_string())?;
+    let Some(index) = objects
+        .iter()
+        .position(|object| object.get("name").and_then(Value::as_str) == Some(name))
+    else {
+        return Err(format!("No managed object named '{name}'"));
+    };
+    objects.remove(index);
+    let inbound = relationship_properties_targeting(objects, name);
+    for (object_name, property_key) in &inbound {
+        let Some(object) = objects
+            .iter_mut()
+            .find(|object| object.get("name").and_then(Value::as_str) == Some(object_name))
+        else {
+            continue;
+        };
+        if let Some(properties) = object
+            .pointer_mut("/schema/properties")
+            .and_then(Value::as_object_mut)
+        {
+            properties.remove(property_key);
+        }
+        for list_path in ["/schema/order", "/schema/required"] {
+            if let Some(entries) = object.pointer_mut(list_path).and_then(Value::as_array_mut) {
+                entries.retain(|entry| entry.as_str() != Some(property_key));
+            }
+        }
+    }
+    Ok((deleted, inbound))
 }
 
 // ── Relationship document transforms ─────────────────────────────────────
@@ -511,6 +606,25 @@ pub fn start_record_count(app: &mut App, draft: RenameObjectState) {
     });
 }
 
+/// Counts records in the background before confirming a managed-object delete.
+pub fn start_object_record_count(app: &mut App, draft: DeleteObjectState) {
+    let tenant = draft.tenant_name.clone();
+    let object_name = draft.object_name.clone();
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        // Keep the RecordCount as-is: collapsing AtLeast(n) to n would report
+        // "100 records" for an object holding thousands, in a confirm modal
+        // whose whole job is telling the user how much is at stake.
+        let result = crate::managed::api::count_records(&tenant, &object_name)
+            .await
+            .map_err(|error| error.to_string());
+        let _ = tx.send(AppEvent::Managed(Event::DeleteObjectRecordCount {
+            draft,
+            result,
+        }));
+    });
+}
+
 pub fn execute_rename_object(app: &mut App, request: RenameObjectRequest, confirmed_prod: bool) {
     let undo_id = match app.undo.record(UndoEntry::pending(
         request.tenant_name.clone(),
@@ -551,6 +665,54 @@ pub fn execute_rename_object(app: &mut App, request: RenameObjectRequest, confir
             tenant,
             old_name: request.old_name,
             new_name: request.new_name,
+            undo_id,
+            result,
+        }));
+    });
+}
+
+/// Deletes a custom managed object through a guarded whole-document replace.
+pub fn execute_delete_object(app: &mut App, request: DeleteObjectRequest, confirmed_prod: bool) {
+    let inbound_count = inbound_relationships(&request.previous_doc, &request.object_name).len();
+    let undo_id = match app.undo.record(UndoEntry::pending(
+        request.tenant_name.clone(),
+        "managed",
+        format!("Restore managed object {}", request.object_name),
+        Sensitivity::TenantConfig,
+        Capability::Undoable,
+        Some(UndoOp::ManagedConfigReplace {
+            tenant: request.tenant_name.clone(),
+            body: request.previous_doc.clone(),
+        }),
+        ConflictCheck::ContentEqualsAfter {
+            body: delete_object_in_doc(&request.previous_doc, &request.object_name)
+                .map_or(Value::Null, |(doc, _)| doc),
+        },
+    )) {
+        Ok(id) => id,
+        Err(error) => {
+            app.push_toast(
+                ToastKind::Error,
+                format!("Delete cancelled: failed to record undo: {error}"),
+            );
+            return;
+        }
+    };
+    let tenant = request.tenant_name.clone();
+    app.managed
+        .in_flight_writes
+        .insert((tenant.clone(), request.object_name.clone()));
+    app.managed.clear_active_drafts();
+    app.input_mode = InputMode::Normal;
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result = delete_object_request(&request, confirmed_prod)
+            .await
+            .map_err(|error| error.to_string());
+        let _ = tx.send(AppEvent::Managed(Event::DeleteObjectResult {
+            tenant,
+            object_name: request.object_name,
+            inbound_count,
             undo_id,
             result,
         }));
@@ -925,6 +1087,31 @@ async fn rename_object_request(
     Ok(confirmed)
 }
 
+async fn delete_object_request(
+    request: &DeleteObjectRequest,
+    confirmed_prod: bool,
+) -> crate::Result<Value> {
+    let live = crate::managed::api::get_managed(&request.tenant_name).await?;
+    let live_object = crate::managed::api::object_named(&live, &request.object_name)?;
+    let snapshot_object =
+        crate::managed::api::object_named(&request.previous_doc, &request.object_name)?;
+    if !crate::managed::api::object_content_equal(live_object, snapshot_object) {
+        return Err(crate::Error::Config(
+            "managed object changed since you opened it; refresh and retry".into(),
+        ));
+    }
+    let (new_doc, _) =
+        delete_object_in_doc(&live, &request.object_name).map_err(crate::Error::Config)?;
+    crate::managed::api::replace_managed(&request.tenant_name, new_doc, confirmed_prod).await?;
+    let confirmed = crate::managed::api::get_managed(&request.tenant_name).await?;
+    if crate::managed::api::object_named(&confirmed, &request.object_name).is_ok() {
+        return Err(crate::Error::Config(
+            "managed object delete write returned but read-back did not match".into(),
+        ));
+    }
+    Ok(confirmed)
+}
+
 pub fn apply_rename_result(
     app: &mut App,
     tenant: String,
@@ -949,6 +1136,40 @@ pub fn apply_rename_result(
             app.push_toast(
                 ToastKind::Error,
                 format!("Managed rename failed: {old_name}: {error}"),
+            );
+        }
+    }
+}
+
+pub fn apply_delete_object_result(
+    app: &mut App,
+    tenant: String,
+    object_name: String,
+    inbound_count: usize,
+    undo_id: UndoId,
+    result: Result<Value, String>,
+) {
+    app.managed
+        .in_flight_writes
+        .remove(&(tenant.clone(), object_name.clone()));
+    match result {
+        Ok(doc) => {
+            app.managed.data.insert(tenant, LoadState::Loaded(doc));
+            let suffix = if inbound_count == 0 {
+                String::new()
+            } else {
+                format!(" Also removed {inbound_count} inbound relationship(s).")
+            };
+            app.push_toast(
+                ToastKind::Success,
+                format!("Deleted managed object {object_name}. Press ^Z to undo.{suffix}"),
+            );
+        }
+        Err(error) => {
+            let _ = app.undo.mark_applied(undo_id, EntryStatus::Expired);
+            app.push_toast(
+                ToastKind::Error,
+                format!("Managed delete failed: {object_name}: {error}"),
             );
         }
     }
@@ -2052,6 +2273,7 @@ pub fn execute_prod_action(app: &mut App, action: ProdAction) {
     match action {
         ProdAction::Update(plan) => execute_update_plan(app, *plan, true),
         ProdAction::RenameObject(request) => execute_rename_object(app, *request, true),
+        ProdAction::DeleteObject(request) => execute_delete_object(app, *request, true),
         ProdAction::CreateObject(request) => execute_create_object(app, *request, true),
         ProdAction::WriteRelationship(request) => execute_relationship_write(app, *request, true),
         ProdAction::Undo(undo_id) => execute_undo(app, undo_id, true),
@@ -2508,6 +2730,68 @@ mod tests {
         let doc = json!({"objects": [{"name": "A"}, {"name": "B"}]});
         assert!(rename_object_in_doc(&doc, "A", "B").is_err());
         assert!(rename_object_in_doc(&doc, "missing", "C").is_err());
+    }
+
+    #[test]
+    fn delete_object_removes_inbound_relationships_and_schema_references() {
+        let doc = json!({"objects": [
+            {"name": "A", "schema": {"properties": {}}},
+            {"name": "B", "schema": {
+                "properties": {
+                    "a": {"type": "relationship", "resourceCollection": [{"path": "managed/A"}]},
+                    "keep": {"type": "string"}
+                },
+                "order": ["a", "keep"],
+                "required": ["a", "keep"]
+            }},
+            {"name": "C", "schema": {
+                "properties": {
+                    "as": {"type": "array", "items": {"type": "relationship", "resourceCollection": [{"path": "managed/A"}]}}
+                },
+                "order": ["as"],
+                "required": ["as"]
+            }}
+        ]});
+        let (deleted, inbound) = delete_object_in_doc(&doc, "A").unwrap();
+        assert_eq!(
+            inbound,
+            vec![("B".into(), "a".into()), ("C".into(), "as".into())]
+        );
+        assert_eq!(deleted["objects"].as_array().unwrap().len(), 2);
+        assert!(
+            deleted["objects"][0]["schema"]["properties"]
+                .get("a")
+                .is_none()
+        );
+        assert_eq!(deleted["objects"][0]["schema"]["order"], json!(["keep"]));
+        assert_eq!(deleted["objects"][0]["schema"]["required"], json!(["keep"]));
+        assert!(
+            deleted["objects"][1]["schema"]["properties"]
+                .get("as")
+                .is_none()
+        );
+        assert_eq!(deleted["objects"][1]["schema"]["order"], json!([]));
+        assert_eq!(deleted["objects"][1]["schema"]["required"], json!([]));
+    }
+
+    #[test]
+    fn delete_object_rejects_unknown_object() {
+        let doc = json!({"objects": [{"name": "A"}]});
+        assert_eq!(
+            delete_object_in_doc(&doc, "missing").unwrap_err(),
+            "No managed object named 'missing'"
+        );
+    }
+
+    #[test]
+    fn delete_object_without_inbound_relationships_reports_none() {
+        let doc = json!({"objects": [
+            {"name": "A", "schema": {"properties": {}}},
+            {"name": "B", "schema": {"properties": {"name": {"type": "string"}}}}
+        ]});
+        let (_, inbound) = delete_object_in_doc(&doc, "A").unwrap();
+        assert!(inbound.is_empty());
+        assert!(inbound_relationships(&doc, "A").is_empty());
     }
 
     #[test]

@@ -15,8 +15,8 @@ use crate::app::{App, InputMode};
 use crate::managed::api::ObjectSummary;
 use crate::managed::screen::Mode;
 use crate::managed::state::{
-    AddFieldFocus, AddKind, EditFieldFocus, FieldAttr, LoadState, ManagedMatch, NewObjectFocus,
-    RefPropFocus, RelationshipFocus,
+    AddFieldFocus, AddKind, DeleteObjectState, EditFieldFocus, FieldAttr, LoadState, ManagedMatch,
+    NewObjectFocus, RefPropFocus, RelationshipFocus,
 };
 
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
@@ -274,6 +274,12 @@ fn draw_detail(
             draw_rename_object_confirm(f, app, inner);
             return;
         }
+        InputMode::Managed(Mode::DeleteObjectConfirm)
+            if app.managed.pending_object_delete.is_some() =>
+        {
+            draw_delete_object_confirm(f, app, inner);
+            return;
+        }
         _ => {}
     }
 
@@ -493,6 +499,50 @@ fn draw_rename_object_confirm(f: &mut Frame, app: &App, area: Rect) {
         Line::from("Press y to proceed, n or Esc to cancel"),
     ];
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn draw_delete_object_confirm(f: &mut Frame, app: &App, area: Rect) {
+    let Some(state) = app.managed.pending_object_delete.as_ref() else {
+        return;
+    };
+    let lines: Vec<Line> = delete_object_warning(state)
+        .into_iter()
+        .map(Line::from)
+        .collect();
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+/// Confirm-modal copy. The record-fate wording rests on a live probe
+/// (2026-07-31, `docs/api/10-managed-objects.md`): removing an object from
+/// `config/managed` detaches its records from the API without destroying them,
+/// and restoring the config brings every record back under its original `_id`.
+/// That is what makes `^Z` a genuine recovery rather than a partial one.
+fn delete_object_warning(state: &DeleteObjectState) -> Vec<String> {
+    let records = match &state.record_count {
+        None => "Record count: counting…".to_string(),
+        Some(Ok(count)) => format!(
+            "{count} record(s) detach from the API but are not destroyed — undo restores them"
+        ),
+        Some(Err(error)) => format!("Record count unavailable: {error}"),
+    };
+    let mut lines = vec![
+        format!("Delete managed object {}", state.object_name),
+        records,
+    ];
+    if state.inbound.is_empty() {
+        lines.push("No inbound relationships will be removed".to_string());
+    } else {
+        lines.push("Inbound relationships to remove:".to_string());
+        lines.extend(
+            state
+                .inbound
+                .iter()
+                .map(|(object, property)| format!("{object}.{property}")),
+        );
+    }
+    lines.push("This can be undone from the undo log.".to_string());
+    lines.push("Press y to proceed, n or Esc to cancel".to_string());
+    lines
 }
 
 fn property_line(name: &str, property: &Value, required: bool, selected: bool) -> Line<'static> {
