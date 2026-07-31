@@ -10,8 +10,9 @@
 //! - `Enter` (textarea only) — insert a newline at the cursor
 //! - any other `Char(c)` without `Ctrl` — insert at the cursor
 //!
-//! For textarea, `↑` / `↓` walk one visual line up/down using a best-effort
-//! column-preserving heuristic — enough for editing JSON or plain text.
+//! For textarea, `↑` / `↓` walk one *logical* (`\n`-delimited) line up/down,
+//! preserving the column where possible. They deliberately don't step by
+//! visual row: the widget doesn't know its render width at key-handling time.
 //!
 //! The terminal's native cursor is shown when the field is focused, so the
 //! user always sees where they're typing.
@@ -22,7 +23,7 @@ use ratatui::{
     layout::{Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::Paragraph,
 };
 
 /// Background shade for input value rows. A dim, near-black grey reads as
@@ -408,10 +409,11 @@ fn draw_textarea(f: &mut Frame, area: Rect, field: &TextField, focused: bool) {
     let inner_width = body_area.width.max(1) as usize;
     let inner_height = body_area.height as usize;
 
-    // Visual (row, col) of every char position. Used both for scroll
-    // alignment and for placing the terminal cursor.
-    let (cursor_row, cursor_col) = visual_position(&field.value, field.cursor, inner_width);
-    let total_rows = visual_position(&field.value, field.value.chars().count(), inner_width).0 + 1;
+    // One wrap decision, used for both the rendered rows and the cursor
+    // position — see `wrap_rows` for why we don't let `Paragraph` wrap.
+    let rows = wrap_rows(&field.value, inner_width);
+    let (cursor_row, cursor_col) = position_in_rows(&rows, field.cursor);
+    let total_rows = rows.len();
     let mut scroll_y = total_rows.saturating_sub(inner_height);
     // Make sure the cursor row is visible — if the user navigates upward
     // into the scrolled-off region, scroll back up.
@@ -422,10 +424,14 @@ fn draw_textarea(f: &mut Frame, area: Rect, field: &TextField, focused: bool) {
     }
     let body_style = Style::default().fg(value_fg(focused)).bg(bg);
 
+    let chars: Vec<char> = field.value.chars().collect();
+    let lines: Vec<Line> = rows
+        .iter()
+        .map(|row| Line::from(chars[row.start..row.end].iter().collect::<String>()))
+        .collect();
     f.render_widget(
-        Paragraph::new(field.value.clone())
+        Paragraph::new(lines)
             .style(body_style)
-            .wrap(Wrap { trim: false })
             .scroll((scroll_y as u16, 0)),
         body_area,
     );
@@ -459,28 +465,85 @@ fn mask_for_display(value: &str) -> String {
     format!("{head}••••••••{tail}  ({n} chars)")
 }
 
-/// Convert a char-index cursor into a visual `(row, col)` in a wrapped
-/// textarea of the given `width`. Explicit `\n` advances to the next row;
-/// otherwise we wrap whenever the column would equal `width`.
-fn visual_position(text: &str, cursor: usize, width: usize) -> (usize, usize) {
-    let mut row = 0usize;
+/// One visual row of a wrapped textarea: the half-open char range `start..end`
+/// of the buffer that it displays.
+struct Row {
+    start: usize,
+    end: usize,
+    /// True when the row ended because the column filled rather than because a
+    /// `\n` terminated it. The distinction only matters for a cursor sitting at
+    /// `end`: on a wrapped row that position is column 0 of the next row, but on
+    /// a newline-terminated row it stays here, just before the newline.
+    wrapped: bool,
+}
+
+/// Break `text` into the visual rows a textarea of `width` columns displays.
+///
+/// This hard-wraps at the column boundary rather than at word boundaries, and
+/// the caller renders these rows verbatim instead of handing the raw string to
+/// `Paragraph::wrap`. Both halves of that are deliberate: ratatui's wrap is a
+/// *word* wrap, so a long word that doesn't fit moves to the next row whole and
+/// leaves the row before it short. Nothing reports that decision back, so any
+/// cursor math has to guess where the word went — and guessing character wrap
+/// puts the cursor left of the text the user is typing, by however many columns
+/// the wrap left blank. Deriving the rows and the cursor from this one function
+/// keeps them in agreement by construction.
+///
+/// Columns are counted in `char`s, so double-width glyphs still misplace the
+/// cursor. That predates this function and needs `unicode-width` to fix.
+fn wrap_rows(text: &str, width: usize) -> Vec<Row> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut start = 0usize;
     let mut col = 0usize;
-    for (count, c) in text.chars().enumerate() {
-        if count == cursor {
-            break;
-        }
+    let mut total = 0usize;
+    for (idx, c) in text.chars().enumerate() {
+        total = idx + 1;
         if c == '\n' {
-            row += 1;
+            rows.push(Row {
+                start,
+                end: idx,
+                wrapped: false,
+            });
+            start = idx + 1;
             col = 0;
         } else {
             col += 1;
-            if col >= width {
-                row += 1;
+            if col == width {
+                rows.push(Row {
+                    start,
+                    end: idx + 1,
+                    wrapped: true,
+                });
+                start = idx + 1;
                 col = 0;
             }
         }
     }
-    (row, col)
+    // The trailing row is always present, even when empty: a buffer ending in a
+    // newline or on a wrap boundary still needs a row for the cursor to sit on.
+    rows.push(Row {
+        start,
+        end: total.max(start),
+        wrapped: false,
+    });
+    rows
+}
+
+/// Locate a char-index cursor within pre-computed `rows` as `(row, column)`.
+fn position_in_rows(rows: &[Row], cursor: usize) -> (usize, usize) {
+    for (idx, row) in rows.iter().enumerate() {
+        let at_end = cursor == row.end;
+        // A cursor at the end of a wrapped row renders at column 0 of the next
+        // one; the final row has no next one to fall through to.
+        if cursor < row.end || (at_end && !(row.wrapped && idx + 1 < rows.len())) {
+            return (idx, cursor.saturating_sub(row.start));
+        }
+    }
+    match rows.last() {
+        Some(row) => (rows.len() - 1, row.end.saturating_sub(row.start)),
+        None => (0, 0),
+    }
 }
 
 /// Locate the start/end char indices of the line that contains `cursor`.
@@ -519,6 +582,104 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    /// The rendered rows and the cursor come from one wrap, so the char under
+    /// the cursor is always the char the cursor sits on. This is the property
+    /// that broke when `Paragraph`'s word wrap decided the rows instead.
+    fn rendered_char_at_cursor(text: &str, cursor: usize, width: usize) -> Option<char> {
+        let rows = wrap_rows(text, width);
+        let (row, col) = position_in_rows(&rows, cursor);
+        let chars: Vec<char> = text.chars().collect();
+        let range = &rows[row];
+        chars.get(range.start + col).copied().filter(|_| {
+            // Only meaningful inside the row's own span.
+            range.start + col < range.end
+        })
+    }
+
+    #[test]
+    fn cursor_tracks_the_end_of_a_long_wrapped_word() {
+        // A single word longer than the row: word wrap would move it whole and
+        // leave row 0 blank, which is what used to desync the cursor.
+        let text = "aaaa bbbbbbbbbb";
+        let width = 8;
+        let rows = wrap_rows(text, width);
+        let rendered: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                text.chars().collect::<Vec<_>>()[r.start..r.end]
+                    .iter()
+                    .collect()
+            })
+            .collect();
+        // Hard wrap fills row 0 to the column boundary. Word wrap would have
+        // rendered "aaaa" then "bbbbbbbbbb", leaving row 0 four columns short
+        // while the cursor math still counted them as used.
+        assert_eq!(rendered, vec!["aaaa bbb", "bbbbbbb"]);
+
+        // Cursor at end-of-buffer lands just past the last rendered char.
+        let (row, col) = position_in_rows(&rows, text.chars().count());
+        assert_eq!((row, col), (1, 7));
+
+        // And every interior position points at the char it should.
+        for (i, expected) in text.chars().enumerate() {
+            assert_eq!(
+                rendered_char_at_cursor(text, i, width),
+                Some(expected),
+                "cursor {i} of {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_boundary_puts_the_cursor_on_the_next_row() {
+        let rows = wrap_rows("abcd", 2);
+        assert_eq!(position_in_rows(&rows, 0), (0, 0));
+        assert_eq!(position_in_rows(&rows, 1), (0, 1));
+        // End of a filled row is column 0 of the next, not column `width`.
+        assert_eq!(position_in_rows(&rows, 2), (1, 0));
+        assert_eq!(position_in_rows(&rows, 4), (2, 0));
+    }
+
+    #[test]
+    fn newline_terminated_row_keeps_the_cursor_before_the_newline() {
+        let rows = wrap_rows("ab\ncd", 8);
+        // Unlike a wrap, a `\n` leaves the cursor at the end of its own row.
+        assert_eq!(position_in_rows(&rows, 2), (0, 2));
+        assert_eq!(position_in_rows(&rows, 3), (1, 0));
+        assert_eq!(position_in_rows(&rows, 5), (1, 2));
+    }
+
+    #[test]
+    fn trailing_newline_gets_a_row_to_sit_on() {
+        let rows = wrap_rows("ab\n", 8);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(position_in_rows(&rows, 3), (1, 0));
+    }
+
+    #[test]
+    fn empty_buffer_has_one_row() {
+        let rows = wrap_rows("", 8);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(position_in_rows(&rows, 0), (0, 0));
+    }
+
+    #[test]
+    fn rows_never_exceed_the_render_width() {
+        // Nothing overflows the area, so the caller can render rows verbatim
+        // with no `Wrap` to second-guess the line breaks.
+        let text = "short\nan extremely long unbroken token aaaaaaaaaaaaaaaaaaaa\n\nx";
+        for width in 1..20 {
+            for row in wrap_rows(text, width) {
+                assert!(
+                    row.end - row.start <= width,
+                    "row {}..{} exceeds width {width}",
+                    row.start,
+                    row.end
+                );
+            }
+        }
     }
 
     #[test]
