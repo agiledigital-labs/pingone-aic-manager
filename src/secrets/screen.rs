@@ -8,6 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::event::ToastKind;
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
+use crate::tui::is_save_chord;
 #[derive(Debug)]
 pub enum ProdAction {
     Create(crate::secrets::state::CreatePlan),
@@ -207,6 +208,10 @@ pub fn detail_focus(app: &App) -> DetailFocus {
 }
 
 fn handle_create_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    if is_save_chord(&key) {
+        ops::commit_create(app);
+        return Ok(());
+    }
     let Some(form) = app.secret.create.as_mut() else {
         return Ok(());
     };
@@ -303,6 +308,10 @@ fn open_add_version(app: &mut App) {
 }
 
 fn handle_add_version_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    if is_save_chord(&key) {
+        ops::commit_add_version(app);
+        return Ok(());
+    }
     let Some(form) = app.secret.add_version.as_mut() else {
         return Ok(());
     };
@@ -381,7 +390,7 @@ fn handle_versions_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     }
 
     if app.secret.detail_focus == DetailFocus::Description {
-        if key.code == KeyCode::Enter {
+        if key.code == KeyCode::Enter || is_save_chord(&key) {
             ops::commit_description(app);
         } else {
             app.secret.description.handle_key(&key);

@@ -7,6 +7,8 @@
 //!
 //! Visual + interaction rules: `docs/DESIGN.md`. Don't redebate them.
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
 pub mod fuzzy;
 pub mod header;
 pub mod keybind_help;
@@ -17,3 +19,42 @@ pub mod popup_confirm;
 pub mod theme;
 pub mod toast;
 pub mod widgets;
+
+/// True when `key` is the universal save chord. Accepts a shifted `S` so a
+/// stuck shift key doesn't turn saving into a dead key.
+pub fn is_save_chord(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('s' | 'S')) && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_chord_accepts_control_s_with_or_without_shift() {
+        assert!(is_save_chord(&KeyEvent::new(
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(is_save_chord(&KeyEvent::new(
+            KeyCode::Char('S'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )));
+    }
+
+    #[test]
+    fn save_chord_rejects_other_or_unmodified_chords() {
+        assert!(!is_save_chord(&KeyEvent::new(
+            KeyCode::Char('s'),
+            KeyModifiers::NONE,
+        )));
+        assert!(!is_save_chord(&KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!is_save_chord(&KeyEvent::new(
+            KeyCode::Char('s'),
+            KeyModifiers::ALT,
+        )));
+    }
+}

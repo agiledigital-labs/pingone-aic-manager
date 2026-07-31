@@ -5,7 +5,7 @@
 //! and the post-enrolment finaliser. Rendering lives in sibling
 //! `setup_view.rs`.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::event::{AppEvent, ToastKind};
 use crate::app::{App, InputMode};
@@ -13,6 +13,7 @@ use crate::config::ProjectConfig;
 use crate::config::Settings;
 use crate::config::crypto::{self, Dek};
 use crate::config::wraps::{self, Wrap};
+use crate::tui::is_save_chord;
 
 use super::screen::{Event, Mode};
 use super::{security_key, unlock};
@@ -255,6 +256,10 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         return Ok(());
     }
 
+    if is_save_chord(&key) {
+        commit(app).await?;
+        return Ok(());
+    }
     match key.code {
         KeyCode::Esc => match app.auth_setup.context {
             SetupContext::FirstRun => app.should_quit = true,
@@ -303,13 +308,15 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             }
             _ => {}
         },
-        KeyCode::Char(c) => match app.auth_setup.form.focused {
-            AuthSetupField::Password => app.auth_setup.form.password.push(c),
-            AuthSetupField::Confirm => app.auth_setup.form.confirm.push(c),
-            AuthSetupField::Pin => app.auth_setup.form.pin.push(c),
-            AuthSetupField::Label => app.auth_setup.form.label.push(c),
-            _ => {}
-        },
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            match app.auth_setup.form.focused {
+                AuthSetupField::Password => app.auth_setup.form.password.push(c),
+                AuthSetupField::Confirm => app.auth_setup.form.confirm.push(c),
+                AuthSetupField::Pin => app.auth_setup.form.pin.push(c),
+                AuthSetupField::Label => app.auth_setup.form.label.push(c),
+                _ => {}
+            }
+        }
         _ => {}
     }
     Ok(())

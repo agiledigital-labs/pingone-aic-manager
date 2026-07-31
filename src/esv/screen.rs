@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::event::ToastKind;
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
+use crate::tui::is_save_chord;
 #[derive(Debug)]
 pub enum ProdAction {
     Save(crate::esv::state::SavePlan),
@@ -415,6 +416,10 @@ pub fn cancel_edit(app: &mut App) {
 }
 
 pub fn handle_edit_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
+    if is_save_chord(&key) {
+        commit_save(app);
+        return Ok(());
+    }
     let Some(edit) = app.esv.editing.as_mut() else {
         return Ok(());
     };
