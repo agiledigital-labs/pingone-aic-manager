@@ -155,14 +155,32 @@ cannot mint or read log keys.
 
 ## `aic managed` — IDM managed-object schema
 
-Inspects the per-tenant IDM managed-object **schema** (not the records — for
-record data use `aic idm`). Object hooks (`onCreate`/`onUpdate`/…) sync as
-workspace scripts via `aic script` (`managed/<object>.<hook>`).
+Inspects and edits the per-tenant IDM managed-object **schema** (not the
+records — for record data use `aic idm`). Object hooks (`onCreate`/`onUpdate`/
+…) sync as workspace scripts via `aic script` (`managed/<object>.<hook>`).
 
 ```bash
 aic managed list [--json]                        # object types with property + hook counts
 aic managed get alpha_user                        # one object's full definition as JSON
+aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
+aic managed object rename custom_widget custom_gadget [--yes] [--json]
+aic managed object delete custom_gadget [--yes] [--json]
+aic managed field add custom_widget.code --type string [--title T] [--required false] [--yes] [--json]
+aic managed field edit custom_widget.code --searchable true [--yes] [--json]
+aic managed field rename custom_widget.code external_code [--yes] [--json]
+aic managed field delete custom_widget.external_code [--yes] [--json]
+aic managed hook add custom_widget onCreate [--yes] [--json]
+aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse many] [--reverse-key widgets] [--yes] [--json]
+aic managed relationship delete custom_widget.owner [--yes] [--json]
 ```
+
+Every write accepts `--tenant <name>` and requires `--yes` for a
+production-themed tenant. Field and relationship booleans take explicit values
+(for example `--viewable false`). Field creation defaults to non-searchable,
+viewable, user-editable, and optional; omitted field-edit flags leave that
+attribute unchanged. `<object>.<key>` must contain exactly one dot. Every
+schema write is recorded for reversal from the TUI history overlay; there is no
+CLI undo command.
 
 ---
 
