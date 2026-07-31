@@ -95,7 +95,7 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
             &[("Enter", "save"), ("Esc", "cancel")],
         ),
         InputMode::Vault(VaultMode::Setup) => setup_auth_lines(app, &mut lines),
-        InputMode::Vault(VaultMode::Unlock) => unlock_lines(app, &mut lines),
+        InputMode::Vault(VaultMode::Unlock | VaultMode::Relock) => unlock_lines(app, &mut lines),
         InputMode::Onboard(mode) => onboard_lines(app, mode, &mut lines),
         InputMode::EnvPicker => env_picker_lines(app, &mut lines),
         InputMode::Selector => selector_lines(&mut lines),

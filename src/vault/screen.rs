@@ -12,6 +12,8 @@ use super::auth::UnlockOk;
 pub enum Mode {
     Setup,
     Unlock,
+    /// Overlay shown when the resident agent drops its idle session.
+    Relock,
     Settings,
     SettingsConfirm,
     SettingsRename,
@@ -20,12 +22,14 @@ pub enum Mode {
 #[derive(Debug)]
 pub enum Event {
     UnlockFinished(std::result::Result<UnlockOk, String>),
+    AgentStatus(bool),
     EnrollmentFinished(std::result::Result<Wrap, String>),
 }
 
 pub async fn apply_event(app: &mut App, event: Event) {
     match event {
         Event::UnlockFinished(result) => super::unlock::handle_result(app, result).await,
+        Event::AgentStatus(unlocked) => super::unlock::handle_agent_status(app, unlocked),
         Event::EnrollmentFinished(result) => super::setup::handle_enroll_result(app, result).await,
     }
 }
@@ -33,7 +37,7 @@ pub async fn apply_event(app: &mut App, event: Event) {
 pub async fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) -> crate::Result<()> {
     match mode {
         Mode::Setup => super::setup::handle_key(app, key).await?,
-        Mode::Unlock => super::unlock::handle_key(app, key),
+        Mode::Unlock | Mode::Relock => super::unlock::handle_key(app, key, mode),
         Mode::Settings => super::settings::handle_key(app, key)?,
         Mode::SettingsConfirm => super::settings::handle_confirm_key(app, key).await?,
         Mode::SettingsRename => super::settings::handle_rename_key(app, key)?,

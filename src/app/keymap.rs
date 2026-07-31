@@ -88,6 +88,8 @@ pub enum Act {
     Onboard,
     AuthSettings,
     Lock,
+    /// Reopen the idle-lock prompt after the user dismissed it.
+    Relock,
 }
 
 /// A single binding: which keys fire it, how it's labelled in the footer / F1
@@ -487,6 +489,12 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         AuthSettings,
     ));
     out.push(help_only(&[Trigger::Char('L')], "L", "lock & quit", Lock));
+    // Only reachable — and only worth footer width — while the user has an
+    // outstanding dismissed relock prompt. Without it, dismissing the prompt
+    // would strand them with a locked agent and no way to re-authenticate.
+    if app.unlock.relock_dismissed {
+        out.push(hint(&[Trigger::Ctrl('l')], "^L", "unlock session", Relock));
+    }
     push_global(&mut out);
     out
 }
@@ -643,6 +651,7 @@ async fn run_normal(app: &mut App, act: Act) {
         }
         AuthSettings => crate::vault::settings::open(app),
         Lock => crate::vault::unlock::lock_and_quit(app).await,
+        Relock => crate::vault::unlock::open_relock(app),
     }
 }
 

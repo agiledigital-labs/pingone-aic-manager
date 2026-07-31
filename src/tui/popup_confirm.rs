@@ -6,13 +6,13 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::Span,
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 
-use crate::tui::modal_chrome::hint_line;
+use crate::tui::modal_chrome::{centered, hint_line};
 
 const WIDTH: u16 = 72;
 const HEIGHT: u16 = 11;
@@ -54,15 +54,4 @@ pub fn draw(f: &mut Frame, title: &str, message: &str) {
         Paragraph::new(hint_line(&[("y", "yes"), ("n/Esc", "cancel")])),
         chunks[2],
     );
-}
-
-fn centered(parent: Rect, width: u16, height: u16) -> Rect {
-    let w = width.min(parent.width);
-    let h = height.min(parent.height);
-    Rect {
-        x: parent.x + (parent.width.saturating_sub(w)) / 2,
-        y: parent.y + (parent.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    }
 }

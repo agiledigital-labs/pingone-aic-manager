@@ -543,6 +543,7 @@ impl App {
         {
             crate::scripts::screen::refresh(self, true);
         }
+        crate::vault::unlock::poll_agent_status(self);
     }
 
     async fn handle_key(&mut self, key: KeyEvent) -> Result<()> {

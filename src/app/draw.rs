@@ -22,6 +22,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Every modal owns the whole screen. The dashboard (Normal + ESV search)
     // is the only thing that gets the header / body / global-hints layout.
     match app.input_mode {
+        InputMode::Vault(crate::vault::screen::Mode::Relock) => {}
         InputMode::Vault(mode) => {
             crate::vault::draw(f, app, mode);
             return;
@@ -121,6 +122,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     // by `secret::draw_body`), so these are just the create / add-version
     // forms and the two y/n confirmations — each drawn over that panel.
     match app.input_mode {
+        InputMode::Vault(crate::vault::screen::Mode::Relock) => {
+            crate::vault::draw(f, app, crate::vault::screen::Mode::Relock)
+        }
         InputMode::Managed(ManagedMode::DeleteFieldConfirm) => {
             crate::managed::view::draw_delete_field_confirm(f, app);
         }
