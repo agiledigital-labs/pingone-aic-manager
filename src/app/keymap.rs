@@ -24,6 +24,19 @@ pub enum Trigger {
 }
 
 impl Trigger {
+    // Named constants for the keys that appear in nearly every form table.
+    // `Trigger::Code(KeyCode::Tab)` spelled out at every call site turns a
+    // binding table into something you can't read as a table.
+    pub const TAB: Self = Trigger::Code(KeyCode::Tab);
+    pub const BACKTAB: Self = Trigger::Code(KeyCode::BackTab);
+    pub const ENTER: Self = Trigger::Code(KeyCode::Enter);
+    pub const ESC: Self = Trigger::Code(KeyCode::Esc);
+    pub const LEFT: Self = Trigger::Code(KeyCode::Left);
+    pub const RIGHT: Self = Trigger::Code(KeyCode::Right);
+    pub const UP: Self = Trigger::Code(KeyCode::Up);
+    pub const DOWN: Self = Trigger::Code(KeyCode::Down);
+    pub const SPACE: Self = Trigger::Char(' ');
+
     pub fn matches(self, key: &KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match self {
@@ -80,23 +93,28 @@ pub enum Act {
 
 /// A single binding: which keys fire it, how it's labelled in the footer / F1
 /// help, and the action it runs.
-pub struct Bind {
+///
+/// Generic over the action so each feature can define its own. A mode's binding
+/// table is the single description of what its keys do: dispatch, the footer,
+/// and the F1 overlay all derive from it, which is what stops the three from
+/// drifting apart.
+pub struct Bind<A = Act> {
     pub triggers: &'static [Trigger],
     pub label: &'static str,
     pub desc: &'static str,
     pub footer: bool,
     pub help: bool,
-    pub act: Act,
+    pub act: A,
 }
 
-const fn b(
+pub const fn b<A>(
     triggers: &'static [Trigger],
     label: &'static str,
     desc: &'static str,
     footer: bool,
     help: bool,
-    act: Act,
-) -> Bind {
+    act: A,
+) -> Bind<A> {
     Bind {
         triggers,
         label,
@@ -107,37 +125,100 @@ const fn b(
     }
 }
 
+/// A binding shown in both the footer and the F1 overlay — the common case.
+pub const fn hint<A>(
+    triggers: &'static [Trigger],
+    label: &'static str,
+    desc: &'static str,
+    act: A,
+) -> Bind<A> {
+    b(triggers, label, desc, true, true, act)
+}
+
+/// A binding listed only in the F1 overlay. For keys worth documenting but not
+/// worth footer width — movement, conventions the user already knows.
+pub const fn help_only<A>(
+    triggers: &'static [Trigger],
+    label: &'static str,
+    desc: &'static str,
+    act: A,
+) -> Bind<A> {
+    b(triggers, label, desc, false, true, act)
+}
+
+/// A binding that fires but is never advertised. Label and description are kept
+/// anyway: they document the intent, and they're what you'd want if the key is
+/// ever promoted to a hint.
+pub const fn hidden<A>(
+    triggers: &'static [Trigger],
+    label: &'static str,
+    desc: &'static str,
+    act: A,
+) -> Bind<A> {
+    b(triggers, label, desc, false, false, act)
+}
+
+/// `^S` for a form row where `Enter` won't commit. Advertised, because here it
+/// is the only way to save without tabbing to the Save button — the inverse
+/// case shares one binding with `Enter` and is labelled `Enter` instead.
+///
+/// `verb` is the form's own word for committing ("save" / "add" / "create"), so
+/// the footer says what the key does.
+pub const fn save_chord_bind<A>(act: A, verb: &'static str) -> Bind<A> {
+    hint(&[Trigger::Ctrl('s')], "^S", verb, act)
+}
+
+impl<A: Copy> Bind<A> {
+    /// The action bound to `key` in `binds`, if any. Table order decides
+    /// precedence, so the first match wins.
+    pub fn resolve(binds: &[Self], key: &KeyEvent) -> Option<A> {
+        binds
+            .iter()
+            .find(|bind| bind.triggers.iter().any(|t| t.matches(key)))
+            .map(|bind| bind.act)
+    }
+
+    /// Footer hints for `binds`, in table order.
+    pub fn footer_hints(binds: &[Self]) -> Vec<(&'static str, &'static str)> {
+        Self::hints(binds, |bind| bind.footer)
+    }
+
+    /// F1 overlay rows for `binds`, in table order.
+    pub fn help_hints(binds: &[Self]) -> Vec<(&'static str, &'static str)> {
+        Self::hints(binds, |bind| bind.help)
+    }
+
+    fn hints(binds: &[Self], include: impl Fn(&Self) -> bool) -> Vec<(&'static str, &'static str)> {
+        binds
+            .iter()
+            .filter(|bind| include(bind))
+            .map(|bind| (bind.label, bind.desc))
+            .collect()
+    }
+}
+
 /// The Normal-mode bindings for the current state. Conditional on active view,
 /// and selection so the footer never advertises a key that won't fire.
 pub fn normal_binds(app: &App) -> Vec<Bind> {
     use Act::*;
     let mut out: Vec<Bind> = Vec::new();
 
-    out.push(b(
+    // Help-only: the header already shows `Ctrl-P`, so repeating it in the
+    // footer buys nothing but width.
+    out.push(help_only(
         &[Trigger::Ctrl('p')],
         "Ctrl-P",
         "functions",
-        true,
-        true,
         Functions,
     ));
 
     // First-run / no tenants: only the bootstrap shortcuts make sense.
     if app.tenants.is_empty() {
-        out.push(b(
-            &[Trigger::Ctrl('t')],
-            "^T",
-            "add tenant",
-            true,
-            true,
-            Onboard,
-        ));
-        out.push(b(
+        out.push(hint(&[Trigger::Ctrl('t')], "^T", "add tenant", Onboard));
+        out.push(hint(
             &[Trigger::Ctrl('a')],
             "^A",
             "auth settings",
-            true,
-            true,
             AuthSettings,
         ));
         push_global(&mut out);
@@ -162,14 +243,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             .unwrap_or(false);
 
     if can_apply {
-        out.push(b(
-            &[Trigger::Ctrl('s')],
-            "^S",
-            "apply changes",
-            true,
-            true,
-            Apply,
-        ));
+        out.push(hint(&[Trigger::Ctrl('s')], "^S", "apply changes", Apply));
     }
     // `[` / `]` switch the ESV view's inner sections; mappings are only present
     // on lower-environment tenants.
@@ -186,133 +260,84 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             (EsvView::Secrets, _) => "variables",
             (EsvView::Mappings, _) => "secrets",
         };
-        out.push(b(
-            &[Trigger::Char('[')],
-            "[",
-            prev_label,
-            true,
-            true,
-            PrevView,
-        ));
-        out.push(b(
-            &[Trigger::Char(']')],
-            "]",
-            next_label,
-            true,
-            true,
-            NextView,
-        ));
+        out.push(hint(&[Trigger::Char('[')], "[", prev_label, PrevView));
+        out.push(hint(&[Trigger::Char(']')], "]", next_label, NextView));
     }
-    out.push(b(&[Trigger::Char('/')], "/", "search", true, true, Search));
+    // Help-only, like the movement keys below: `/` for search is a convention
+    // the footer doesn't need to spend width teaching.
+    out.push(help_only(&[Trigger::Char('/')], "/", "search", Search));
 
     // Movement (help-only; the footer stays uncluttered).
-    out.push(b(
-        &[Trigger::Char('j'), Trigger::Code(KeyCode::Down)],
+    out.push(help_only(
+        &[Trigger::Char('j'), Trigger::DOWN],
         "↓",
         "move down",
-        false,
-        true,
         MoveDown,
     ));
-    out.push(b(
-        &[Trigger::Char('k'), Trigger::Code(KeyCode::Up)],
+    out.push(help_only(
+        &[Trigger::Char('k'), Trigger::UP],
         "↑",
         "move up",
-        false,
-        true,
         MoveUp,
     ));
-    out.push(b(&[Trigger::Char('g')], "g", "top", false, true, Top));
-    out.push(b(&[Trigger::Char('G')], "G", "bottom", false, true, Bottom));
-    out.push(b(
+    out.push(help_only(&[Trigger::Char('g')], "g", "top", Top));
+    out.push(help_only(&[Trigger::Char('G')], "G", "bottom", Bottom));
+    out.push(help_only(
         &[Trigger::Code(KeyCode::PageDown)],
         "PgDn",
         "page down",
-        false,
-        true,
         PageDown,
     ));
-    out.push(b(
+    out.push(help_only(
         &[Trigger::Code(KeyCode::PageUp)],
         "PgUp",
         "page up",
-        false,
-        true,
         PageUp,
     ));
 
     if scripts_view {
         if n > 0 {
-            out.push(b(
-                &[Trigger::Char('p'), Trigger::Code(KeyCode::Enter)],
+            out.push(hint(
+                &[Trigger::Char('p'), Trigger::ENTER],
                 "p",
                 "pull",
-                true,
-                true,
                 Pull,
             ));
-            out.push(b(&[Trigger::Char('P')], "P", "push", true, true, Push));
+            out.push(hint(&[Trigger::Char('P')], "P", "push", Push));
         }
-        out.push(b(
-            &[Trigger::Char('a')],
-            "a",
-            "pull all",
-            true,
-            true,
-            PullAll,
-        ));
+        out.push(hint(&[Trigger::Char('a')], "a", "pull all", PullAll));
     } else if esv_view_active {
         if n > 0 {
             if secrets {
-                out.push(b(
-                    &[Trigger::Code(KeyCode::Enter), Trigger::Char('v')],
+                out.push(hint(
+                    &[Trigger::ENTER, Trigger::Char('v')],
                     "Enter",
                     "versions",
-                    true,
-                    true,
                     Primary,
                 ));
             } else if mappings {
-                out.push(b(
-                    &[Trigger::Char('e')],
-                    "e",
-                    "edit alias",
-                    true,
-                    true,
-                    Primary,
-                ));
-                out.push(b(
+                out.push(hint(&[Trigger::Char('e')], "e", "edit alias", Primary));
+                out.push(hint(
                     &[Trigger::Char('d'), Trigger::Char('D')],
                     "d",
                     "remove",
-                    true,
-                    true,
                     Delete,
                 ));
             } else {
-                out.push(b(
-                    &[Trigger::Code(KeyCode::Enter)],
-                    "Enter",
-                    "edit",
-                    true,
-                    true,
-                    Primary,
-                ));
+                out.push(hint(&[Trigger::ENTER], "Enter", "edit", Primary));
             }
             if !mappings {
-                out.push(b(
+                out.push(hint(
                     &[Trigger::Char('d'), Trigger::Char('D')],
                     "d",
                     "delete",
-                    true,
-                    true,
                     Delete,
                 ));
             }
         }
 
         if !mappings {
-            out.push(b(
+            out.push(hint(
                 &[Trigger::Ctrl('n')],
                 "^N",
                 if secrets {
@@ -320,169 +345,96 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
                 } else {
                     "new variable"
                 },
-                true,
-                true,
                 NewItem,
             ));
         } else {
-            out.push(b(&[Trigger::Char('a')], "a", "add", true, true, NewItem));
+            out.push(hint(&[Trigger::Char('a')], "a", "add", NewItem));
         }
-        out.push(b(&[Trigger::Ctrl('z')], "^Z", "undo", true, true, Undo));
-        out.push(b(
+        out.push(hint(&[Trigger::Ctrl('z')], "^Z", "undo", Undo));
+        out.push(hint(
             &[Trigger::Ctrl('y')],
             "^Y",
             "undo history",
-            true,
-            true,
             UndoHistory,
         ));
     } else if managed_view && n > 0 {
-        out.push(b(
-            &[Trigger::Code(KeyCode::Enter)],
-            "Enter",
-            "edit field",
-            true,
-            true,
-            Primary,
-        ));
-        out.push(b(&[Trigger::Char('a')], "a", "add", true, true, NewItem));
-        out.push(b(
+        out.push(hint(&[Trigger::ENTER], "Enter", "edit field", Primary));
+        out.push(hint(&[Trigger::Char('a')], "a", "add", NewItem));
+        out.push(hint(
             &[Trigger::Char('r')],
             "r",
             "rename field",
-            true,
-            true,
             RenameField,
         ));
-        out.push(b(
+        out.push(hint(
             &[Trigger::Char('R')],
             "R",
             "rename object",
-            true,
-            true,
             RenameObject,
         ));
-        out.push(b(
-            &[Trigger::Char('h')],
-            "h",
-            "add hook",
-            true,
-            true,
-            AddHook,
-        ));
-        out.push(b(
-            &[Trigger::Char('d')],
-            "d",
-            "delete field",
-            true,
-            true,
-            Delete,
-        ));
-        out.push(b(
+        out.push(hint(&[Trigger::Char('h')], "h", "add hook", AddHook));
+        out.push(hint(&[Trigger::Char('d')], "d", "delete field", Delete));
+        out.push(hint(
             &[Trigger::Char('D')],
             "D",
             "delete object",
-            true,
-            true,
             DeleteObject,
         ));
-        out.push(b(
+        out.push(help_only(
             &[Trigger::Char('[')],
             "[",
             "previous field",
-            false,
-            true,
             PrevField,
         ));
-        out.push(b(
+        out.push(help_only(
             &[Trigger::Char(']')],
             "]",
             "next field",
-            false,
-            true,
             NextField,
         ));
-        out.push(b(&[Trigger::Ctrl('z')], "^Z", "undo", true, true, Undo));
-        out.push(b(
+        out.push(hint(&[Trigger::Ctrl('z')], "^Z", "undo", Undo));
+        out.push(hint(
             &[Trigger::Ctrl('y')],
             "^Y",
             "undo history",
-            true,
-            true,
             UndoHistory,
         ));
     } else if mappings_view && n > 0 {
-        out.push(b(
-            &[Trigger::Char('r')],
-            "r",
-            "reconcile",
-            true,
-            true,
-            ReconMapping,
-        ));
-        out.push(b(
+        out.push(hint(&[Trigger::Char('r')], "r", "reconcile", ReconMapping));
+        out.push(hint(
             &[Trigger::Char('p')],
             "p",
             "pull scripts",
-            true,
-            true,
             PullMappingScripts,
         ));
     } else if oauth_view && n > 0 {
-        out.push(b(
-            &[Trigger::Code(KeyCode::Enter)],
-            "Enter",
-            "inspect",
-            true,
-            true,
-            Primary,
-        ));
-        out.push(b(
+        out.push(hint(&[Trigger::ENTER], "Enter", "inspect", Primary));
+        out.push(hint(
             &[Trigger::Ctrl('d')],
             "^D",
             "scroll detail down",
-            true,
-            true,
             DetailScrollDown,
         ));
-        out.push(b(
+        out.push(hint(
             &[Trigger::Ctrl('u')],
             "^U",
             "scroll detail up",
-            true,
-            true,
             DetailScrollUp,
         ));
     }
     if managed_view {
-        out.push(b(
-            &[Trigger::Ctrl('n')],
-            "^N",
-            "new object",
-            true,
-            true,
-            NewObject,
-        ));
+        out.push(hint(&[Trigger::Ctrl('n')], "^N", "new object", NewObject));
     }
     if managed_view || mappings_view || idmstore_view || oauth_view || mappings {
-        out.push(b(
-            &[Trigger::Ctrl('r')],
-            "^R",
-            "refresh",
-            true,
-            true,
-            Refresh,
-        ));
+        out.push(hint(&[Trigger::Ctrl('r')], "^R", "refresh", Refresh));
     }
 
     // Esc clears an active filter (only meaningful when one is applied).
     if filter_active(app) {
-        out.push(b(
-            &[Trigger::Code(KeyCode::Esc)],
+        out.push(help_only(
+            &[Trigger::ESC],
             "Esc",
             "clear filter",
-            false,
-            true,
             ClearFilter,
         ));
     }
@@ -495,47 +447,32 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         } else {
             &[Trigger::Char('r'), Trigger::Char('R')]
         };
-        out.push(b(
+        out.push(help_only(
             realm_triggers,
             if mappings { "r" } else { "r/R" },
             "switch realm",
-            false,
-            true,
             RealmToggle,
         ));
     }
-    out.push(b(
+    out.push(help_only(
         &[Trigger::Char('t'), Trigger::Char('T')],
         "t",
         "switch tenant",
-        false,
-        true,
         TenantPicker,
     ));
-    out.push(b(
+    out.push(help_only(
         &[Trigger::Ctrl('t')],
         "^T",
         "add tenant",
-        false,
-        true,
         Onboard,
     ));
-    out.push(b(
+    out.push(help_only(
         &[Trigger::Ctrl('a')],
         "^A",
         "auth settings",
-        false,
-        true,
         AuthSettings,
     ));
-    out.push(b(
-        &[Trigger::Char('L')],
-        "L",
-        "lock & quit",
-        false,
-        true,
-        Lock,
-    ));
+    out.push(help_only(&[Trigger::Char('L')], "L", "lock & quit", Lock));
     push_global(&mut out);
     out
 }
@@ -561,13 +498,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         InputMode::Managed(_) => crate::managed::screen::footer_hints(app),
         InputMode::Mappings(_) => crate::mappings::screen::footer_hints(app),
         InputMode::IdmStore(_) => crate::idmstore::screen::footer_hints(app),
-        InputMode::Oauth(mode) => {
-            let mut out = crate::oauth::screen::footer_hints(app);
-            if mode == crate::oauth::screen::Mode::Normal {
-                out.insert(0, ("Ctrl-P", "functions"));
-            }
-            out
-        }
+        InputMode::Oauth(_) => crate::oauth::screen::footer_hints(app),
         InputMode::Selector => Vec::new(),
         InputMode::Secretmap(_) => crate::secretmap::screen::footer_hints(app),
         InputMode::Secrets(SecretsMode::Create) => crate::secrets::screen::create_hints(app),
@@ -580,22 +511,8 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
 
 /// Quit bindings — present in every Normal state, never shown as hints.
 fn push_global(out: &mut Vec<Bind>) {
-    out.push(b(
-        &[Trigger::Char('q')],
-        "q",
-        "quit",
-        false,
-        false,
-        Act::Quit,
-    ));
-    out.push(b(
-        &[Trigger::Ctrl('c')],
-        "^C",
-        "quit",
-        false,
-        false,
-        Act::Quit,
-    ));
+    out.push(hidden(&[Trigger::Char('q')], "q", "quit", Act::Quit));
+    out.push(hidden(&[Trigger::Ctrl('c')], "^C", "quit", Act::Quit));
 }
 
 /// The single key-dispatch entry point for every input mode. `app::handle_key`
