@@ -37,13 +37,16 @@ pub fn draw(f: &mut Frame, app: &App, mode: screen::Mode) {
     match mode {
         screen::Mode::Setup => setup_view::draw(f, app),
         screen::Mode::Unlock => unlock_view::draw(f, app),
+        screen::Mode::Relock => unlock_view::draw_relock(f, app),
         screen::Mode::Settings => settings_view::draw(f, app),
         screen::Mode::SettingsConfirm => settings_view::draw_confirm(f, app),
         screen::Mode::SettingsRename => settings_view::draw_rename(f, app),
     }
 
-    if app.keybind_help_open {
-        crate::tui::keybind_help::draw(f, app);
+    if mode != screen::Mode::Relock {
+        if app.keybind_help_open {
+            crate::tui::keybind_help::draw(f, app);
+        }
+        crate::tui::toast::draw(f, app);
     }
-    crate::tui::toast::draw(f, app);
 }

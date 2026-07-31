@@ -3,11 +3,11 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Style},
     text::Span,
-    widgets::{Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 
 use crate::app::App;
-use crate::tui::modal_chrome::Modal;
+use crate::tui::modal_chrome::{Modal, centered, hint_line};
 use crate::tui::widgets::secret_field;
 
 use super::security_key;
@@ -95,4 +95,95 @@ pub fn draw(f: &mut Frame, app: &App) {
             );
         }
     }
+}
+
+/// Draw the idle-lock prompt over the active dashboard instead of replacing it.
+pub fn draw_relock(f: &mut Frame, app: &App) {
+    const WIDTH: u16 = 72;
+    const HEIGHT: u16 = 15;
+    let area = centered(f.area(), WIDTH, HEIGHT);
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .padding(Padding::new(2, 2, 1, 1))
+        .title(Span::styled(
+            " Session locked ",
+            Style::default().fg(Color::Cyan),
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let has_yk = app.wraps.has_security_key();
+    let both = has_yk && app.wraps.has_password();
+    let show_pin = if both {
+        app.unlock.focus == UnlockFocus::SecurityKeyPin
+    } else {
+        has_yk
+    };
+    let hints: &[(&str, &str)] = if both {
+        &[
+            ("Tab", "switch method"),
+            ("Enter", "unlock"),
+            ("Esc", "cancel"),
+        ]
+    } else {
+        &[("Enter", "unlock"), ("Esc", "cancel")]
+    };
+    let chunks = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(secret_field::HEIGHT),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    f.render_widget(
+        Paragraph::new(
+            "The agent session locked after being idle. Re-enter a credential to continue.",
+        )
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    let waiting_for_tap = app.unlock.error.as_deref() == Some(security_key::TAP_MESSAGE);
+    if show_pin {
+        secret_field::draw(
+            f,
+            chunks[2],
+            "Security key PIN",
+            &app.unlock.pin_input,
+            true,
+            if waiting_for_tap {
+                Some(security_key::TAP_MESSAGE)
+            } else {
+                None
+            },
+        );
+    } else {
+        secret_field::draw(
+            f,
+            chunks[2],
+            "Master password",
+            &app.unlock.input,
+            true,
+            if app.unlock.busy {
+                Some(UNLOCKING)
+            } else {
+                None
+            },
+        );
+    }
+    if let Some(error) = &app.unlock.error {
+        if !waiting_for_tap {
+            f.render_widget(
+                Paragraph::new(Span::styled(error, Style::default().fg(Color::Red)))
+                    .wrap(Wrap { trim: false }),
+                chunks[4],
+            );
+        }
+    }
+    f.render_widget(Paragraph::new(hint_line(hints)), chunks[6]);
 }

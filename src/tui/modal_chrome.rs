@@ -34,6 +34,19 @@ use ratatui::{
 /// wide terminals so they look like siblings instead of unrelated screens.
 pub const CONTENT_WIDTH: u16 = 80;
 
+/// Return a rectangle of at most `width` × `height` centered in `parent`.
+/// Overlay modals use this instead of the full-screen [`Modal`] gutter.
+pub fn centered(parent: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(parent.width);
+    let height = height.min(parent.height);
+    Rect {
+        x: parent.x + (parent.width.saturating_sub(width)) / 2,
+        y: parent.y + (parent.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    }
+}
+
 pub struct Modal<'a> {
     pub title: &'a str,
     pub status: Option<&'a str>,
