@@ -365,25 +365,37 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
             ("PgUp/PgDn", "move by page"),
             ("F1", "show keybinds"),
         ]),
-        Mode::Edit => {
-            let mut out = vec![("Tab", "navigate")];
-            let focused = app.esv.editing.as_ref().map(|edit| edit.focused);
-            match focused {
-                Some(EditField::Id | EditField::Description | EditField::Type) => {
-                    out.push(("Enter", "next"));
-                }
-                Some(EditField::Save) => out.push(("Enter", "save")),
-                _ => {}
-            }
-            if focused == Some(EditField::Type) {
-                out.push(("←/→", "change type"));
-            }
-            out.push(("Esc", "cancel"));
-            Some(out)
-        }
+        Mode::Edit => Some(edit_hints(app)),
         Mode::RestartConfirm => Some(vec![("y", "restart tenant runtime"), ("n/Esc", "cancel")]),
         Mode::DeleteConfirm => Some(vec![("y", "delete variable"), ("n/Esc", "cancel")]),
     }
+}
+
+/// Keys the Edit form responds to, given the current focus. Shared by the
+/// footer (via `app::keymap::footer_hints`) and the F1 overlay so the two can't
+/// drift — they did before this was one function.
+///
+/// `^S` saves from any field but is advertised only where `Enter` won't: on the
+/// Save row `Enter` already says so. Note the Value field is a textarea where
+/// `Enter` inserts a newline, so `^S` is the only way to save from it.
+pub fn edit_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    let focused = app.esv.editing.as_ref().map(|edit| edit.focused);
+    let mut out = vec![("Tab", "navigate")];
+    match focused {
+        Some(EditField::Id | EditField::Description | EditField::Type) => {
+            out.push(("Enter", "next"));
+        }
+        Some(EditField::Save) => out.push(("Enter", "save")),
+        _ => {}
+    }
+    if focused == Some(EditField::Type) {
+        out.push(("←/→", "change type"));
+    }
+    if focused != Some(EditField::Save) {
+        out.push(("^S", "save"));
+    }
+    out.push(("Esc", "cancel"));
+    out
 }
 
 pub fn mappings_subview_active(app: &App) -> bool {
@@ -403,10 +415,6 @@ pub fn current_view(app: &App) -> EsvView {
         app.active_tenant()
             .is_some_and(|tenant| tenant.allows_secret_mappings()),
     )
-}
-
-pub fn edit_focused(app: &App) -> Option<EditField> {
-    app.esv.editing.as_ref().map(|edit| edit.focused)
 }
 
 /// Discard the in-flight edit and return to preview mode.

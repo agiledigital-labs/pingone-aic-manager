@@ -158,27 +158,8 @@ pub fn new_item(app: &mut App) {
 
 pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static str)>> {
     match mode {
-        Mode::Create => Some(vec![
-            ("Tab/Shift-Tab", "move between fields"),
-            ("←/→ or Space", "encoding / toggles"),
-            ("Enter", "create"),
-            ("Esc", "cancel"),
-        ]),
-        Mode::Versions => Some(match app.secret.detail_focus {
-            DetailFocus::Description => vec![
-                ("Tab", "versions"),
-                ("Enter", "save description"),
-                ("Esc", "close"),
-            ],
-            DetailFocus::Versions => vec![
-                ("Tab", "edit description"),
-                ("↑/↓", "navigate"),
-                ("e/d", "enable/disable"),
-                ("x", "destroy"),
-                ("^N", "add version"),
-                ("Esc", "close"),
-            ],
-        }),
+        Mode::Create => Some(create_hints(app)),
+        Mode::Versions => Some(versions_hints(app)),
         Mode::AddVersion => Some(vec![("Enter", "add version"), ("Esc", "cancel")]),
         Mode::DeleteConfirm => Some(vec![
             ("y", "delete secret + all versions"),
@@ -191,20 +172,57 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
     }
 }
 
+/// Keys the Create form responds to, given the current focus. Shared by the
+/// footer (via `app::keymap::footer_hints`) and the F1 overlay; the two used to
+/// be written separately and had already diverged.
+///
+/// `Enter` creates from the Value row as well as the Save row, so `^S` is
+/// advertised on neither.
+pub fn create_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    let focused = create_focus(app);
+    let mut out = vec![("Tab", "next field")];
+    match focused {
+        Some(CreateField::Encoding | CreateField::Placeholders | CreateField::Json) => {
+            out.push(("←/→", "change"))
+        }
+        Some(CreateField::Value | CreateField::Save) => out.push(("Enter", "create")),
+        Some(_) => out.push(("Enter", "next")),
+        None => {}
+    }
+    if !matches!(focused, Some(CreateField::Value | CreateField::Save) | None) {
+        out.push(("^S", "create"));
+    }
+    out.push(("Esc", "cancel"));
+    out
+}
+
+/// Keys the version-detail view responds to. `Enter` already saves the
+/// description from the only editable field here, so `^S` stays unadvertised
+/// even though it works.
+pub fn versions_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    match app.secret.detail_focus {
+        DetailFocus::Description => vec![
+            ("Tab", "versions"),
+            ("Enter", "save description"),
+            ("Esc", "close"),
+        ],
+        DetailFocus::Versions => vec![
+            ("Tab", "edit description"),
+            ("↑/↓", "navigate"),
+            ("e/d", "enable/disable"),
+            ("x", "destroy"),
+            ("^N", "add version"),
+            ("Esc", "close"),
+        ],
+    }
+}
+
 pub fn create_field_active(app: &App) -> bool {
     app.secret.create.is_some()
 }
 
-pub fn detail_focus_active(app: &App) -> bool {
-    app.secret.detail_focus == DetailFocus::Description
-}
-
 pub fn create_focus(app: &App) -> Option<CreateField> {
     app.secret.create.as_ref().map(|form| form.focused)
-}
-
-pub fn detail_focus(app: &App) -> DetailFocus {
-    app.secret.detail_focus
 }
 
 fn handle_create_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
