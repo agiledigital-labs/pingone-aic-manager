@@ -28,6 +28,7 @@
 
 pub mod api;
 pub mod cli;
+mod keys;
 pub mod ops;
 pub mod screen;
 pub mod state;
