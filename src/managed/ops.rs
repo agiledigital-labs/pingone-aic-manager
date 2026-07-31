@@ -628,21 +628,13 @@ pub fn start_object_record_count(app: &mut App, draft: DeleteObjectState) {
 }
 
 pub fn execute_rename_object(app: &mut App, request: RenameObjectRequest, confirmed_prod: bool) {
-    let undo_id = match app.undo.record(UndoEntry::pending(
-        request.tenant_name.clone(),
-        "managed",
-        format!("Revert managed object rename {}", request.new_name),
-        Sensitivity::TenantConfig,
-        Capability::Undoable,
-        Some(UndoOp::ManagedConfigReplace {
-            tenant: request.tenant_name.clone(),
-            body: request.previous_doc.clone(),
-        }),
-        ConflictCheck::ContentEqualsAfter {
-            body: rename_object_in_doc(&request.previous_doc, &request.old_name, &request.new_name)
-                .map_or(Value::Null, |(doc, _)| doc),
-        },
-    )) {
+    let undo_id = match record_rename_object_undo(
+        &mut *app.undo,
+        &request.tenant_name,
+        &request.old_name,
+        &request.new_name,
+        &request.previous_doc,
+    ) {
         Ok(id) => id,
         Err(error) => {
             app.push_toast(
@@ -676,21 +668,12 @@ pub fn execute_rename_object(app: &mut App, request: RenameObjectRequest, confir
 /// Deletes a custom managed object through a guarded whole-document replace.
 pub fn execute_delete_object(app: &mut App, request: DeleteObjectRequest, confirmed_prod: bool) {
     let inbound_count = inbound_relationships(&request.previous_doc, &request.object_name).len();
-    let undo_id = match app.undo.record(UndoEntry::pending(
-        request.tenant_name.clone(),
-        "managed",
-        format!("Restore managed object {}", request.object_name),
-        Sensitivity::TenantConfig,
-        Capability::Undoable,
-        Some(UndoOp::ManagedConfigReplace {
-            tenant: request.tenant_name.clone(),
-            body: request.previous_doc.clone(),
-        }),
-        ConflictCheck::ContentEqualsAfter {
-            body: delete_object_in_doc(&request.previous_doc, &request.object_name)
-                .map_or(Value::Null, |(doc, _)| doc),
-        },
-    )) {
+    let undo_id = match record_delete_object_undo(
+        &mut *app.undo,
+        &request.tenant_name,
+        &request.object_name,
+        &request.previous_doc,
+    ) {
         Ok(id) => id,
         Err(error) => {
             app.push_toast(
@@ -722,26 +705,14 @@ pub fn execute_delete_object(app: &mut App, request: DeleteObjectRequest, confir
 }
 
 pub fn execute_create_object(app: &mut App, request: CreateObjectRequest, confirmed_prod: bool) {
-    let undo_id = match app.undo.record(UndoEntry::pending(
-        request.tenant_name.clone(),
-        "managed",
-        format!("Remove managed object {}", request.name),
-        Sensitivity::TenantConfig,
-        Capability::Undoable,
-        Some(UndoOp::ManagedConfigReplace {
-            tenant: request.tenant_name.clone(),
-            body: request.previous_doc.clone(),
-        }),
-        ConflictCheck::ContentEqualsAfter {
-            body: create_object_in_doc(
-                &request.previous_doc,
-                &request.name,
-                &request.title,
-                &request.description,
-            )
-            .unwrap_or(Value::Null),
-        },
-    )) {
+    let undo_id = match record_create_object_undo(
+        &mut *app.undo,
+        &request.tenant_name,
+        &request.name,
+        &request.title,
+        &request.description,
+        &request.previous_doc,
+    ) {
         Ok(id) => id,
         Err(error) => {
             app.push_toast(
@@ -1492,6 +1463,80 @@ pub(crate) fn record_replace_undo(
     ))
 }
 
+/// Records the undo entry for a whole-document managed-object creation.
+pub fn record_create_object_undo(
+    undo: &mut dyn crate::undo::UndoLog,
+    tenant_name: &str,
+    name: &str,
+    title: &str,
+    description: &str,
+    previous_doc: &Value,
+) -> crate::Result<UndoId> {
+    let expected = create_object_in_doc(previous_doc, name, title, description)
+        .map_err(crate::Error::Config)?;
+    undo.record(UndoEntry::pending(
+        tenant_name.to_string(),
+        "managed",
+        format!("Remove managed object {name}"),
+        Sensitivity::TenantConfig,
+        Capability::Undoable,
+        Some(UndoOp::ManagedConfigReplace {
+            tenant: tenant_name.to_string(),
+            body: previous_doc.clone(),
+        }),
+        ConflictCheck::ContentEqualsAfter { body: expected },
+    ))
+}
+
+/// Records the undo entry for a whole-document managed-object rename.
+pub fn record_rename_object_undo(
+    undo: &mut dyn crate::undo::UndoLog,
+    tenant_name: &str,
+    old_name: &str,
+    new_name: &str,
+    previous_doc: &Value,
+) -> crate::Result<UndoId> {
+    let expected = rename_object_in_doc(previous_doc, old_name, new_name)
+        .map_err(crate::Error::Config)?
+        .0;
+    undo.record(UndoEntry::pending(
+        tenant_name.to_string(),
+        "managed",
+        format!("Revert managed object rename {new_name}"),
+        Sensitivity::TenantConfig,
+        Capability::Undoable,
+        Some(UndoOp::ManagedConfigReplace {
+            tenant: tenant_name.to_string(),
+            body: previous_doc.clone(),
+        }),
+        ConflictCheck::ContentEqualsAfter { body: expected },
+    ))
+}
+
+/// Records the undo entry for a whole-document managed-object deletion.
+pub fn record_delete_object_undo(
+    undo: &mut dyn crate::undo::UndoLog,
+    tenant_name: &str,
+    name: &str,
+    previous_doc: &Value,
+) -> crate::Result<UndoId> {
+    let expected = delete_object_in_doc(previous_doc, name)
+        .map_err(crate::Error::Config)?
+        .0;
+    undo.record(UndoEntry::pending(
+        tenant_name.to_string(),
+        "managed",
+        format!("Restore managed object {name}"),
+        Sensitivity::TenantConfig,
+        Capability::Undoable,
+        Some(UndoOp::ManagedConfigReplace {
+            tenant: tenant_name.to_string(),
+            body: previous_doc.clone(),
+        }),
+        ConflictCheck::ContentEqualsAfter { body: expected },
+    ))
+}
+
 async fn replace_object_request(
     plan: ObjectReplacePlan,
     confirmed_prod: bool,
@@ -1983,7 +2028,11 @@ pub fn apply_add_field(object_def: &Value, spec: &AddFieldSpec) -> Result<AddFie
     })
 }
 
-fn apply_add_hook(object_def: &Value, object_name: &str, event: &str) -> Result<Value, String> {
+/// Adds one supported lifecycle hook unless it is already present.
+pub fn apply_add_hook(object_def: &Value, object_name: &str, event: &str) -> Result<Value, String> {
+    if !crate::managed::state::HOOK_EVENTS.contains(&event) {
+        return Err(format!("unsupported managed lifecycle hook '{event}'"));
+    }
     let mut object = object_def.clone();
     let object_map = object
         .as_object_mut()
