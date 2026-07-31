@@ -18,6 +18,7 @@
 //! changes create new versions. See CLAUDE.md for project-wide rules.
 
 pub mod cli;
+mod keys;
 pub mod ops;
 pub mod screen;
 pub mod state;

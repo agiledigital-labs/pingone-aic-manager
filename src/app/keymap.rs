@@ -13,7 +13,6 @@ use crate::app::{App, InputMode, Realm, View};
 use crate::esv::screen::Mode as EsvMode;
 use crate::esv::state::EsvView;
 use crate::onboard::screen::Mode as OnboardMode;
-use crate::secrets::screen::Mode as SecretsMode;
 
 /// One key that fires a binding. Matching is by code + the ctrl modifier.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -194,6 +193,21 @@ impl<A: Copy> Bind<A> {
             .filter(|bind| include(bind))
             .map(|bind| (bind.label, bind.desc))
             .collect()
+    }
+}
+
+/// Which binding subset a renderer needs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HintTarget {
+    Footer,
+    Help,
+}
+
+/// Select footer or help rows from a binding table, preserving table order.
+pub fn pick<A: Copy>(binds: &[Bind<A>], target: HintTarget) -> Vec<(&'static str, &'static str)> {
+    match target {
+        HintTarget::Footer => Bind::footer_hints(binds),
+        HintTarget::Help => Bind::help_hints(binds),
     }
 }
 
@@ -492,18 +506,17 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             out.push(("?", "keys"));
             out
         }
-        InputMode::Esv(EsvMode::Search) | InputMode::Scripts(_) => {
+        InputMode::Scripts(_) => {
             vec![("Enter", "keep filter"), ("Esc", "clear + exit")]
         }
+        InputMode::Esv(_) => crate::esv::screen::footer_hints(app),
         InputMode::Managed(_) => crate::managed::screen::footer_hints(app),
         InputMode::Mappings(_) => crate::mappings::screen::footer_hints(app),
         InputMode::IdmStore(_) => crate::idmstore::screen::footer_hints(app),
         InputMode::Oauth(_) => crate::oauth::screen::footer_hints(app),
         InputMode::Selector => Vec::new(),
         InputMode::Secretmap(_) => crate::secretmap::screen::footer_hints(app),
-        InputMode::Secrets(SecretsMode::Create) => crate::secrets::screen::create_hints(app),
-        InputMode::Secrets(SecretsMode::Versions) => crate::secrets::screen::versions_hints(app),
-        InputMode::Esv(EsvMode::Edit) => crate::esv::screen::edit_hints(app),
+        InputMode::Secrets(_) => crate::secrets::screen::footer_hints(app),
         InputMode::Vault(_) => Vec::new(),
         _ => Vec::new(),
     }

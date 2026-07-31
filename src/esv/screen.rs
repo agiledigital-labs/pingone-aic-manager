@@ -5,12 +5,11 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::KeyEvent;
 
 use crate::app::event::ToastKind;
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
-use crate::tui::is_save_chord;
 #[derive(Debug)]
 pub enum ProdAction {
     Save(crate::esv::state::SavePlan),
@@ -101,128 +100,7 @@ pub fn apply_event(app: &mut App, event: Event) {
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) -> crate::Result<()> {
-    match mode {
-        Mode::Search => {
-            handle_search_key(app, key);
-            Ok(())
-        }
-        Mode::Edit => handle_edit_key(app, key),
-        Mode::RestartConfirm => handle_restart_confirm_key(app, key),
-        Mode::DeleteConfirm => handle_delete_confirm_key(app, key),
-    }
-}
-
-/// Dispatched from the y/n delete popup. `y` may still route through the
-/// shared production confirmation before executing the delete.
-pub fn handle_delete_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let Some(plan) = app.esv.pending_delete.take() else {
-                app.input_mode = InputMode::Normal;
-                return Ok(());
-            };
-            let is_prod = app
-                .active_tenant()
-                .is_some_and(|t| t.theme == TenantTheme::Production);
-            if is_prod {
-                app.prod_confirm.pending = Some(PendingProdAction::Esv(ProdAction::Delete(plan)));
-                app.input_mode = InputMode::ProdConfirm;
-            } else {
-                ops::execute_delete_plan(app, plan, false);
-            }
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.esv.pending_delete = None;
-            app.input_mode = InputMode::Normal;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// Dispatched from the y/n popup. `y` triggers the restart, `n`/`Esc`
-/// closes the popup.
-pub fn handle_restart_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            ops::trigger_restart(app);
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.input_mode = InputMode::Normal;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// ESV search keys: chars/backspace/cursor → editor; ↑/↓/PgUp/PgDn keep
-/// scrolling the results list while the user is still typing; Esc clears
-/// the filter; Enter commits and returns to Normal mode.
-pub fn handle_search_key(app: &mut App, key: KeyEvent) {
-    // The search box edits whichever half's query is showing.
-    if app.esv.view == EsvView::Mappings {
-        crate::secretmap::screen::handle_key(app, key, crate::secretmap::screen::Mode::Search);
-        return;
-    }
-    if app.esv.view == EsvView::Secrets {
-        match key.code {
-            KeyCode::Esc => {
-                app.secret.list.query.clear();
-                app.secret.list.selected = 0;
-                app.secret.list.scroll = 0;
-                app.input_mode = InputMode::Normal;
-            }
-            KeyCode::Enter => {
-                app.input_mode = InputMode::Normal;
-            }
-            KeyCode::Up => crate::app::keymap::move_selection(app, -1),
-            KeyCode::Down => crate::app::keymap::move_selection(app, 1),
-            KeyCode::PageUp => crate::app::keymap::move_selection(app, -10),
-            KeyCode::PageDown => crate::app::keymap::move_selection(app, 10),
-            _ => {
-                let before = app.secret.list.query.value().to_string();
-                if app.secret.list.query.handle_key(&key) && app.secret.list.query.value() != before
-                {
-                    app.secret.list.selected = 0;
-                    app.secret.list.scroll = 0;
-                }
-            }
-        }
-        return;
-    }
-    match key.code {
-        KeyCode::Esc => {
-            app.esv.reset_view();
-            app.input_mode = InputMode::Normal;
-            return;
-        }
-        KeyCode::Enter => {
-            app.input_mode = InputMode::Normal;
-            return;
-        }
-        KeyCode::Up => {
-            crate::app::keymap::move_selection(app, -1);
-            return;
-        }
-        KeyCode::Down => {
-            crate::app::keymap::move_selection(app, 1);
-            return;
-        }
-        KeyCode::PageUp => {
-            crate::app::keymap::move_selection(app, -10);
-            return;
-        }
-        KeyCode::PageDown => {
-            crate::app::keymap::move_selection(app, 10);
-            return;
-        }
-        _ => {}
-    }
-    let before = app.esv.list.query.value().to_string();
-    if app.esv.list.query.handle_key(&key) && app.esv.list.query.value() != before {
-        app.esv.list.selected = 0;
-        app.esv.list.scroll = 0;
-    }
+    crate::esv::keys::handle_key(app, key, mode)
 }
 
 /// Open the edit form for the currently-selected list row. Snapshots the
@@ -355,47 +233,11 @@ pub fn new_item(app: &mut App) {
 }
 
 pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static str)>> {
-    match mode {
-        Mode::Search => Some(vec![
-            ("Type", "edit search query"),
-            ("Backspace", "delete character"),
-            ("Enter", "keep filter and return to list"),
-            ("Esc", "clear filter and return to list"),
-            ("↑/↓", "move selection"),
-            ("PgUp/PgDn", "move by page"),
-            ("F1", "show keybinds"),
-        ]),
-        Mode::Edit => Some(edit_hints(app)),
-        Mode::RestartConfirm => Some(vec![("y", "restart tenant runtime"), ("n/Esc", "cancel")]),
-        Mode::DeleteConfirm => Some(vec![("y", "delete variable"), ("n/Esc", "cancel")]),
-    }
+    crate::esv::keys::help_lines(mode, app)
 }
 
-/// Keys the Edit form responds to, given the current focus. Shared by the
-/// footer (via `app::keymap::footer_hints`) and the F1 overlay so the two can't
-/// drift — they did before this was one function.
-///
-/// `^S` saves from any field but is advertised only where `Enter` won't: on the
-/// Save row `Enter` already says so. Note the Value field is a textarea where
-/// `Enter` inserts a newline, so `^S` is the only way to save from it.
-pub fn edit_hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    let focused = app.esv.editing.as_ref().map(|edit| edit.focused);
-    let mut out = vec![("Tab", "navigate")];
-    match focused {
-        Some(EditField::Id | EditField::Description | EditField::Type) => {
-            out.push(("Enter", "next"));
-        }
-        Some(EditField::Save) => out.push(("Enter", "save")),
-        _ => {}
-    }
-    if focused == Some(EditField::Type) {
-        out.push(("←/→", "change type"));
-    }
-    if focused != Some(EditField::Save) {
-        out.push(("^S", "save"));
-    }
-    out.push(("Esc", "cancel"));
-    out
+pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    crate::esv::keys::footer_hints(app)
 }
 
 pub fn mappings_subview_active(app: &App) -> bool {
@@ -423,69 +265,7 @@ pub fn cancel_edit(app: &mut App) {
     app.input_mode = InputMode::Normal;
 }
 
-pub fn handle_edit_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    if is_save_chord(&key) {
-        commit_save(app);
-        return Ok(());
-    }
-    let Some(edit) = app.esv.editing.as_mut() else {
-        return Ok(());
-    };
-    let creating = edit.creating;
-    // Keys that the form owns regardless of which field is focused.
-    match key.code {
-        KeyCode::Esc => {
-            cancel_edit(app);
-            return Ok(());
-        }
-        KeyCode::Tab => {
-            edit.focused = edit.focused.next(creating);
-            return Ok(());
-        }
-        KeyCode::BackTab => {
-            edit.focused = edit.focused.prev(creating);
-            return Ok(());
-        }
-        KeyCode::Enter => {
-            match edit.focused {
-                EditField::Save => commit_save(app),
-                EditField::Value => edit.value.push_newline(),
-                // Enter on a non-textarea field advances focus.
-                _ => edit.focused = edit.focused.next(creating),
-            }
-            return Ok(());
-        }
-        // ←/→ cycle the chip on the Type row; on any other field they
-        // fall through to the TextField's cursor nav below.
-        KeyCode::Left if edit.focused == EditField::Type => {
-            edit.expr_type = edit.expr_type.cycle(-1);
-            return Ok(());
-        }
-        KeyCode::Right if edit.focused == EditField::Type => {
-            edit.expr_type = edit.expr_type.cycle(1);
-            return Ok(());
-        }
-        _ => {}
-    }
-
-    // Everything else is per-field text editing — cursor moves, char
-    // inserts, backspace, delete-forward.
-    match edit.focused {
-        EditField::Id if creating => {
-            edit.id_input.handle_key(&key);
-        }
-        EditField::Description => {
-            edit.description.handle_key(&key);
-        }
-        EditField::Value => {
-            edit.value.handle_key(&key);
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn commit_save(app: &mut App) {
+pub(crate) fn commit_save(app: &mut App) {
     let Some(plan) = ops::build_save_plan(app) else {
         return;
     };
@@ -498,4 +278,22 @@ fn commit_save(app: &mut App) {
         return;
     }
     ops::execute_save_plan(app, plan, false);
+}
+
+/// Confirms the pending delete, routing production tenants through the shared
+/// production confirmation before executing the plan.
+pub(crate) fn confirm_delete(app: &mut App) {
+    let Some(plan) = app.esv.pending_delete.take() else {
+        app.input_mode = InputMode::Normal;
+        return;
+    };
+    let is_prod = app
+        .active_tenant()
+        .is_some_and(|t| t.theme == TenantTheme::Production);
+    if is_prod {
+        app.prod_confirm.pending = Some(PendingProdAction::Esv(ProdAction::Delete(plan)));
+        app.input_mode = InputMode::ProdConfirm;
+    } else {
+        ops::execute_delete_plan(app, plan, false);
+    }
 }
