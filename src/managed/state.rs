@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
+use crate::managed::spec::ScalarFieldType;
+
 use crate::tui::widgets::{LineEditor, TextField};
 
 #[derive(Debug)]
@@ -366,43 +368,6 @@ impl FieldEditState {
             EditFieldFocus::Viewable => self.viewable = !self.viewable,
             EditFieldFocus::UserEditable => self.user_editable = !self.user_editable,
             _ => {}
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScalarFieldType {
-    String,
-    Boolean,
-    Number,
-    StringArray,
-}
-
-impl ScalarFieldType {
-    pub fn next(self) -> Self {
-        match self {
-            ScalarFieldType::String => ScalarFieldType::Boolean,
-            ScalarFieldType::Boolean => ScalarFieldType::Number,
-            ScalarFieldType::Number => ScalarFieldType::StringArray,
-            ScalarFieldType::StringArray => ScalarFieldType::String,
-        }
-    }
-
-    pub fn prev(self) -> Self {
-        match self {
-            ScalarFieldType::String => ScalarFieldType::StringArray,
-            ScalarFieldType::Boolean => ScalarFieldType::String,
-            ScalarFieldType::Number => ScalarFieldType::Boolean,
-            ScalarFieldType::StringArray => ScalarFieldType::Number,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ScalarFieldType::String => "string",
-            ScalarFieldType::Boolean => "boolean",
-            ScalarFieldType::Number => "number",
-            ScalarFieldType::StringArray => "string[]",
         }
     }
 }

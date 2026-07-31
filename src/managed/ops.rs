@@ -21,11 +21,13 @@ pub enum ProdAction {
     Undo(crate::undo::UndoId),
 }
 use crate::managed::screen::Event;
+use crate::managed::spec::{
+    AddFieldSpec, DeleteFieldSpec, FieldEditSpec, RenameFieldSpec, ScalarFieldType,
+};
 use crate::managed::state::{
-    AddFieldState, Cardinality, DeleteFieldState, DeleteObjectState, EditFieldFocus, FieldAttr,
-    FieldEditState, LoadState, ParsedRelationship, PreviousRelationship, RefProperty,
-    RelationshipSpec, RenameFieldState, RenameObjectState, ReverseCardinality, ScalarFieldType,
-    State,
+    AddFieldState, Cardinality, DeleteObjectState, EditFieldFocus, FieldAttr, FieldEditState,
+    LoadState, ParsedRelationship, PreviousRelationship, RefProperty, RelationshipSpec,
+    RenameFieldState, RenameObjectState, ReverseCardinality, State,
 };
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
@@ -1192,7 +1194,16 @@ pub fn build_edit_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         return None;
     }
 
-    let applied = match apply_field_edit(edit) {
+    let spec = FieldEditSpec {
+        new_key: Some(edit.key.value.clone()),
+        title: Some(edit.title.value.clone()),
+        description: Some(edit.description.value.clone()),
+        required: Some(edit.required),
+        searchable: Some(edit.searchable),
+        viewable: Some(edit.viewable),
+        user_editable: Some(edit.user_editable),
+    };
+    let applied = match apply_field_edit(&edit.original_object, &edit.field_key, &spec) {
         Ok(applied) => applied,
         Err(message) => {
             edit.error = Some(message);
@@ -1234,7 +1245,17 @@ pub fn build_add_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         return None;
     }
 
-    let applied = match apply_add_field(draft) {
+    let spec = AddFieldSpec {
+        key: draft.key.value.clone(),
+        field_type: draft.field_type,
+        title: Some(draft.title.trimmed().to_string()),
+        description: Some(draft.description.trimmed().to_string()),
+        required: draft.required,
+        searchable: draft.searchable,
+        viewable: draft.viewable,
+        user_editable: draft.user_editable,
+    };
+    let applied = match apply_add_field(&draft.original_object, &spec) {
         Ok(applied) => applied,
         Err(message) => {
             draft.error = Some(message);
@@ -1312,7 +1333,11 @@ pub fn build_delete_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         return None;
     }
 
-    let new_object = match apply_delete_field(pending) {
+    let new_object = match apply_delete_field(
+        &pending.original_object,
+        &pending.field_key,
+        &DeleteFieldSpec,
+    ) {
         Ok(object) => object,
         Err(message) => {
             app.push_toast(ToastKind::Error, message);
@@ -1352,8 +1377,10 @@ pub fn build_rename_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         return None;
     }
 
-    let new_key = rename.key.value.clone();
-    let new_object = match apply_rename_field(rename, &new_key) {
+    let spec = RenameFieldSpec {
+        new_key: rename.key.value.clone(),
+    };
+    let new_object = match apply_rename_field(&rename.original_object, &rename.old_key, &spec) {
         Ok(object) => object,
         Err(message) => {
             rename.error = Some(message);
@@ -1373,7 +1400,7 @@ pub fn build_rename_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         searchable_changed: false,
         success_message: format!(
             "Renamed managed field {}.{} to {}. Press ^Z to undo.",
-            rename.object_name, rename.old_key, new_key
+            rename.object_name, rename.old_key, spec.new_key
         ),
     })
 }
@@ -1389,7 +1416,7 @@ pub fn execute_update_plan(app: &mut App, plan: ObjectReplacePlan, confirmed_pro
     } = plan;
 
     let undo_id = match record_replace_undo(
-        app,
+        &mut *app.undo,
         &tenant_name,
         &object_name,
         &previous_object,
@@ -1441,14 +1468,14 @@ pub fn execute_update_plan(app: &mut App, plan: ObjectReplacePlan, confirmed_pro
     });
 }
 
-fn record_replace_undo(
-    app: &mut App,
+pub(crate) fn record_replace_undo(
+    undo: &mut dyn crate::undo::UndoLog,
     tenant_name: &str,
     object_name: &str,
     previous_object: &Value,
     new_object: &Value,
 ) -> crate::Result<UndoId> {
-    app.undo.record(UndoEntry::pending(
+    undo.record(UndoEntry::pending(
         tenant_name.to_string(),
         "managed",
         format!("Revert managed object {object_name}"),
@@ -1823,89 +1850,113 @@ fn revert_failed_update(
 }
 
 #[derive(Debug)]
-struct FieldEditApplied {
-    object: Value,
-    field_key: String,
-    searchable_changed: bool,
-    renamed: bool,
+pub struct FieldEditApplied {
+    pub object: Value,
+    pub field_key: String,
+    pub searchable_changed: bool,
+    pub renamed: bool,
 }
 
 #[derive(Debug)]
-struct AddFieldApplied {
-    object: Value,
-    field_key: String,
-    searchable_changed: bool,
+pub struct AddFieldApplied {
+    pub object: Value,
+    pub field_key: String,
+    pub searchable_changed: bool,
 }
 
-fn apply_field_edit(edit: &FieldEditState) -> Result<FieldEditApplied, String> {
-    let mut object = edit.original_object.clone();
-    let mut property = edit.original_property.clone();
-    let property_map = property.as_object_mut().ok_or_else(|| {
-        format!(
-            "field '{}' is not an object-valued property",
-            edit.field_key
-        )
-    })?;
+/// Applies an optional attribute edit to one managed property.
+pub fn apply_field_edit(
+    object_def: &Value,
+    field_key: &str,
+    spec: &FieldEditSpec,
+) -> Result<FieldEditApplied, String> {
+    let mut object = object_def.clone();
+    let mut property = crate::managed::state::properties(object_def)
+        .and_then(|properties| properties.get(field_key))
+        .cloned()
+        .ok_or_else(|| format!("field '{field_key}' no longer exists"))?;
+    let caps =
+        crate::managed::state::field_capability_for_property(object_def, field_key, &property);
+    let property_map = property
+        .as_object_mut()
+        .ok_or_else(|| format!("field '{field_key}' is not an object-valued property"))?;
 
-    if edit.caps.can_edit_attr(FieldAttr::Title) {
-        set_optional_string(property_map, "title", &edit.title.value);
+    if caps.can_edit_attr(FieldAttr::Title)
+        && let Some(title) = &spec.title
+    {
+        set_optional_string(property_map, "title", title);
     }
-    if edit.caps.can_edit_attr(FieldAttr::Description) {
-        set_optional_string(property_map, "description", &edit.description.value);
+    if caps.can_edit_attr(FieldAttr::Description)
+        && let Some(description) = &spec.description
+    {
+        set_optional_string(property_map, "description", description);
     }
-    if edit.caps.can_edit_attr(FieldAttr::Searchable) {
-        property_map.insert("searchable".into(), Value::Bool(edit.searchable));
+    if caps.can_edit_attr(FieldAttr::Searchable)
+        && let Some(searchable) = spec.searchable
+    {
+        property_map.insert("searchable".into(), Value::Bool(searchable));
     }
-    if edit.caps.can_edit_attr(FieldAttr::Viewable) {
-        property_map.insert("viewable".into(), Value::Bool(edit.viewable));
+    if caps.can_edit_attr(FieldAttr::Viewable)
+        && let Some(viewable) = spec.viewable
+    {
+        property_map.insert("viewable".into(), Value::Bool(viewable));
     }
-    if edit.caps.can_edit_attr(FieldAttr::UserEditable) {
-        property_map.insert("userEditable".into(), Value::Bool(edit.user_editable));
+    if caps.can_edit_attr(FieldAttr::UserEditable)
+        && let Some(user_editable) = spec.user_editable
+    {
+        property_map.insert("userEditable".into(), Value::Bool(user_editable));
     }
 
-    let field_key = if edit.caps.rename_key {
-        crate::managed::state::normalize_new_property_key(&edit.original_object, &edit.key.value)?
+    let new_field_key = if caps.rename_key {
+        match &spec.new_key {
+            Some(new_key) => {
+                crate::managed::state::normalize_new_property_key(object_def, new_key)?
+            }
+            None => field_key.to_string(),
+        }
     } else {
-        edit.field_key.clone()
+        field_key.to_string()
     };
-    if !edit.caps.rename_key && field_key != edit.field_key {
+    if !caps.rename_key && new_field_key != field_key {
         return Err("This field key cannot be renamed".into());
     }
-    if edit.caps.rename_key && crate::managed::state::is_relationship_property(&property) {
+    if caps.rename_key && crate::managed::state::is_relationship_property(&property) {
         return Err(
             "Relationship keys cannot be renamed; delete and recreate the relationship".into(),
         );
     }
 
-    upsert_property(&mut object, &edit.field_key, &field_key, property)?;
+    upsert_property(&mut object, field_key, &new_field_key, property)?;
 
-    if edit.caps.can_edit_attr(FieldAttr::Required) {
-        set_required(&mut object, &field_key, edit.required)?;
+    if caps.can_edit_attr(FieldAttr::Required)
+        && let Some(required) = spec.required
+    {
+        set_required(&mut object, &new_field_key, required)?;
     }
-    let searchable_changed = edit
-        .original_property
-        .get("searchable")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        != edit.searchable;
+    let searchable_changed = spec.searchable.is_some_and(|searchable| {
+        crate::managed::state::properties(object_def)
+            .and_then(|properties| properties.get(field_key))
+            .and_then(|property| property.get("searchable"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            != searchable
+    });
 
     Ok(FieldEditApplied {
         object,
-        renamed: field_key != edit.field_key,
-        field_key,
+        renamed: new_field_key != field_key,
+        field_key: new_field_key,
         searchable_changed,
     })
 }
 
-fn apply_add_field(draft: &AddFieldState) -> Result<AddFieldApplied, String> {
-    let mut object = draft.original_object.clone();
-    let field_key = crate::managed::state::normalize_new_property_key(
-        &draft.original_object,
-        &draft.key.value,
-    )?;
+/// Adds a scalar managed property to an object definition.
+pub fn apply_add_field(object_def: &Value, spec: &AddFieldSpec) -> Result<AddFieldApplied, String> {
+    let mut object = object_def.clone();
+    let field_key = crate::managed::state::normalize_new_property_key(object_def, &spec.key)?;
     ensure_property_available(&object, &field_key, None)?;
 
-    let mut property = match draft.field_type {
+    let mut property = match spec.field_type {
         ScalarFieldType::String => json!({"type": "string"}),
         ScalarFieldType::Boolean => json!({"type": "boolean"}),
         ScalarFieldType::Number => json!({"type": "number"}),
@@ -1914,17 +1965,21 @@ fn apply_add_field(draft: &AddFieldState) -> Result<AddFieldApplied, String> {
     let property_map = property
         .as_object_mut()
         .ok_or_else(|| "new scalar property is not object-valued".to_string())?;
-    set_optional_string(property_map, "title", draft.title.trimmed());
-    set_optional_string(property_map, "description", draft.description.trimmed());
-    property_map.insert("searchable".into(), Value::Bool(draft.searchable));
-    property_map.insert("viewable".into(), Value::Bool(draft.viewable));
-    property_map.insert("userEditable".into(), Value::Bool(draft.user_editable));
+    if let Some(title) = &spec.title {
+        set_optional_string(property_map, "title", title);
+    }
+    if let Some(description) = &spec.description {
+        set_optional_string(property_map, "description", description);
+    }
+    property_map.insert("searchable".into(), Value::Bool(spec.searchable));
+    property_map.insert("viewable".into(), Value::Bool(spec.viewable));
+    property_map.insert("userEditable".into(), Value::Bool(spec.user_editable));
 
-    insert_new_property(&mut object, &field_key, property, draft.required)?;
+    insert_new_property(&mut object, &field_key, property, spec.required)?;
     Ok(AddFieldApplied {
         object,
         field_key,
-        searchable_changed: draft.searchable,
+        searchable_changed: spec.searchable,
     })
 }
 
@@ -1946,33 +2001,40 @@ fn apply_add_hook(object_def: &Value, object_name: &str, event: &str) -> Result<
     Ok(object)
 }
 
-fn apply_delete_field(pending: &DeleteFieldState) -> Result<Value, String> {
-    let mut object = pending.original_object.clone();
+/// Deletes a managed property from an object definition.
+pub fn apply_delete_field(
+    object_def: &Value,
+    field_key: &str,
+    _spec: &DeleteFieldSpec,
+) -> Result<Value, String> {
+    let mut object = object_def.clone();
     let property = properties_mut(&mut object)?
-        .remove(&pending.field_key)
-        .ok_or_else(|| format!("field '{}' no longer exists", pending.field_key))?;
-    let caps = crate::managed::state::field_capability_for_property(
-        &pending.original_object,
-        &pending.field_key,
-        &property,
-    );
+        .remove(field_key)
+        .ok_or_else(|| format!("field '{field_key}' no longer exists"))?;
+    let caps =
+        crate::managed::state::field_capability_for_property(object_def, field_key, &property);
     if !caps.delete {
         return Err("Standard fields cannot be deleted".into());
     }
-    remove_order_key(&mut object, &pending.field_key)?;
-    set_required(&mut object, &pending.field_key, false)?;
+    remove_order_key(&mut object, field_key)?;
+    set_required(&mut object, field_key, false)?;
     Ok(object)
 }
 
-fn apply_rename_field(rename: &RenameFieldState, new_key: &str) -> Result<Value, String> {
-    if new_key.trim() != new_key {
+/// Renames a managed property and keeps its schema references in sync.
+pub fn apply_rename_field(
+    object_def: &Value,
+    old_key: &str,
+    spec: &RenameFieldSpec,
+) -> Result<Value, String> {
+    if spec.new_key.trim() != spec.new_key {
         return Err("Property key cannot have leading or trailing whitespace".into());
     }
-    crate::managed::state::validate_property_key(new_key)?;
+    crate::managed::state::validate_property_key(&spec.new_key)?;
 
-    let mut object = rename.original_object.clone();
-    ensure_property_available(&object, new_key, Some(&rename.old_key))?;
-    if new_key == rename.old_key {
+    let mut object = object_def.clone();
+    ensure_property_available(&object, &spec.new_key, Some(old_key))?;
+    if spec.new_key == old_key {
         return Ok(object);
     }
 
@@ -1980,19 +2042,19 @@ fn apply_rename_field(rename: &RenameFieldState, new_key: &str) -> Result<Value,
     let previous = std::mem::take(properties);
     let mut renamed = false;
     for (key, property) in previous {
-        if key == rename.old_key {
-            properties.insert(new_key.to_string(), property);
+        if key == old_key {
+            properties.insert(spec.new_key.clone(), property);
             renamed = true;
         } else {
             properties.insert(key, property);
         }
     }
     if !renamed {
-        return Err(format!("field '{}' no longer exists", rename.old_key));
+        return Err(format!("field '{old_key}' no longer exists"));
     }
 
-    replace_key_in_array(&mut object, "/schema/order", &rename.old_key, new_key);
-    replace_key_in_array(&mut object, "/schema/required", &rename.old_key, new_key);
+    replace_key_in_array(&mut object, "/schema/order", old_key, &spec.new_key);
+    replace_key_in_array(&mut object, "/schema/required", old_key, &spec.new_key);
     Ok(object)
 }
 
@@ -2297,7 +2359,7 @@ mod tests {
 
     use super::*;
 
-    fn edit_state(required: bool) -> FieldEditState {
+    fn custom_object(required: bool) -> Value {
         let required_value = if required {
             json!(["custom_code"])
         } else {
@@ -2322,15 +2384,20 @@ mod tests {
                 "order": ["custom_code"]
             }
         });
-        let property = object["schema"]["properties"]["custom_code"].clone();
-        FieldEditState::from_property(
-            "sandbox".into(),
-            "alpha_user".into(),
-            "custom_code".into(),
-            object,
-            property,
-            required,
-        )
+        object
+    }
+
+    fn add_field_spec(key: &str) -> AddFieldSpec {
+        AddFieldSpec {
+            key: key.into(),
+            field_type: ScalarFieldType::String,
+            title: Some(String::new()),
+            description: Some(String::new()),
+            required: false,
+            searchable: false,
+            viewable: true,
+            user_editable: true,
+        }
     }
 
     fn managed_doc(object: Value) -> Value {
@@ -2350,14 +2417,20 @@ mod tests {
 
     #[test]
     fn field_edit_updates_property_and_required_without_touching_order() {
-        let mut edit = edit_state(false);
-        edit.title.set("New");
-        edit.description.set("New desc");
-        edit.required = true;
-        edit.searchable = true;
-        edit.user_editable = true;
+        let object = custom_object(false);
+        let spec = FieldEditSpec {
+            new_key: Some("custom_code".into()),
+            title: Some("New".into()),
+            description: Some("New desc".into()),
+            required: Some(true),
+            searchable: Some(true),
+            viewable: Some(true),
+            user_editable: Some(true),
+        };
 
-        let object = apply_field_edit(&edit).unwrap().object;
+        let object = apply_field_edit(&object, "custom_code", &spec)
+            .unwrap()
+            .object;
         let property = &object["schema"]["properties"]["custom_code"];
         assert_eq!(property["title"], json!("New"));
         assert_eq!(property["description"], json!("New desc"));
@@ -2370,11 +2443,45 @@ mod tests {
 
     #[test]
     fn field_edit_removes_required_when_cleared() {
-        let mut edit = edit_state(true);
-        edit.required = false;
+        let object = custom_object(true);
+        let spec = FieldEditSpec {
+            required: Some(false),
+            ..FieldEditSpec::default()
+        };
 
-        let object = apply_field_edit(&edit).unwrap().object;
+        let object = apply_field_edit(&object, "custom_code", &spec)
+            .unwrap()
+            .object;
         assert_eq!(object["schema"]["required"], json!([]));
+    }
+
+    #[test]
+    fn field_edit_only_changes_requested_attribute() {
+        let object = custom_object(true);
+        let spec = FieldEditSpec {
+            title: Some("New".into()),
+            ..FieldEditSpec::default()
+        };
+
+        let edited = apply_field_edit(&object, "custom_code", &spec)
+            .unwrap()
+            .object;
+        let property = &edited["schema"]["properties"]["custom_code"];
+        assert_eq!(property["title"], json!("New"));
+        assert_eq!(property["description"], json!("Old desc"));
+        assert_eq!(property["searchable"], json!(false));
+        assert_eq!(property["viewable"], json!(true));
+        assert_eq!(property["userEditable"], json!(false));
+        assert_eq!(edited["schema"]["required"], json!(["custom_code"]));
+    }
+
+    #[test]
+    fn field_edit_with_no_attributes_is_a_noop() {
+        let object = custom_object(true);
+        let edited = apply_field_edit(&object, "custom_code", &FieldEditSpec::default())
+            .unwrap()
+            .object;
+        assert!(crate::managed::api::object_content_equal(&edited, &object));
     }
 
     #[test]
@@ -2397,18 +2504,14 @@ mod tests {
                 "order": ["givenName"]
             }
         });
-        let property = object["schema"]["properties"]["custom_code"].clone();
-        let mut edit = FieldEditState::from_property(
-            "sandbox".into(),
-            "alpha_user".into(),
-            "custom_code".into(),
-            object,
-            property,
-            false,
-        );
-        edit.title.set("New");
+        let spec = FieldEditSpec {
+            title: Some("New".into()),
+            ..FieldEditSpec::default()
+        };
 
-        let object = apply_field_edit(&edit).unwrap().object;
+        let object = apply_field_edit(&object, "custom_code", &spec)
+            .unwrap()
+            .object;
         assert_eq!(
             object["schema"]["properties"]["custom_code"]["title"],
             json!("New")
@@ -2424,12 +2527,14 @@ mod tests {
             "meta": {},
             "schema": {"properties": {}, "required": [], "order": []}
         });
-        let mut draft = AddFieldState::new("sandbox".into(), "alpha_user".into(), object);
-        draft.key.set("loyaltyId");
-        draft.title.set("Loyalty ID");
-        draft.required = true;
+        let spec = AddFieldSpec {
+            key: "loyaltyId".into(),
+            title: Some("Loyalty ID".into()),
+            required: true,
+            ..add_field_spec("")
+        };
 
-        let applied = apply_add_field(&draft).unwrap();
+        let applied = apply_add_field(&object, &spec).unwrap();
         assert_eq!(applied.field_key, "custom_loyaltyId");
         assert!(applied.object["schema"]["properties"]["custom_loyaltyId"].is_object());
         assert!(applied.object["schema"]["properties"]["loyaltyId"].is_null());
@@ -2444,12 +2549,18 @@ mod tests {
     }
 
     #[test]
+    fn add_field_rejects_existing_key() {
+        let object = custom_object(false);
+        let error = apply_add_field(&object, &add_field_spec("custom_code")).unwrap_err();
+        assert_eq!(error, "field 'custom_code' already exists");
+    }
+
+    #[test]
     fn add_field_materializes_missing_schema() {
         let object = json!({"name": "test_empty"});
-        let mut draft = AddFieldState::new("sandbox".into(), "test_empty".into(), object);
-        draft.key.set("first");
+        let spec = add_field_spec("first");
 
-        let applied = apply_add_field(&draft).unwrap();
+        let applied = apply_add_field(&object, &spec).unwrap();
         assert!(applied.object["schema"].is_object());
         assert!(applied.object["schema"]["properties"]["first"].is_object());
         assert_eq!(applied.object["schema"]["order"], json!(["first"]));
@@ -2458,10 +2569,9 @@ mod tests {
     #[test]
     fn add_field_materializes_missing_properties() {
         let object = json!({"name": "test_empty", "schema": {}});
-        let mut draft = AddFieldState::new("sandbox".into(), "test_empty".into(), object);
-        draft.key.set("first");
+        let spec = add_field_spec("first");
 
-        let applied = apply_add_field(&draft).unwrap();
+        let applied = apply_add_field(&object, &spec).unwrap();
         assert!(applied.object["schema"]["properties"]["first"].is_object());
         assert_eq!(applied.object["schema"]["order"], json!(["first"]));
     }
@@ -2492,10 +2602,15 @@ mod tests {
 
     #[test]
     fn rename_custom_field_keeps_order_and_required_in_sync() {
-        let mut edit = edit_state(true);
-        edit.key.set("custom_new_code");
+        let object = custom_object(true);
+        let spec = FieldEditSpec {
+            new_key: Some("custom_new_code".into()),
+            ..FieldEditSpec::default()
+        };
 
-        let object = apply_field_edit(&edit).unwrap().object;
+        let object = apply_field_edit(&object, "custom_code", &spec)
+            .unwrap()
+            .object;
         assert!(object["schema"]["properties"]["custom_code"].is_null());
         assert!(object["schema"]["properties"]["custom_new_code"].is_object());
         assert_eq!(object["schema"]["order"], json!(["custom_new_code"]));
@@ -2516,15 +2631,11 @@ mod tests {
                 "required": ["old_key"]
             }
         });
-        let mut rename = RenameFieldState::new(
-            "sandbox".into(),
-            "alpha_lock".into(),
-            "old_key".into(),
-            object,
-        );
-        rename.key.set("new_key");
+        let spec = RenameFieldSpec {
+            new_key: "new_key".into(),
+        };
 
-        let renamed = apply_rename_field(&rename, &rename.key.value).unwrap();
+        let renamed = apply_rename_field(&object, "old_key", &spec).unwrap();
         let properties = renamed["schema"]["properties"].as_object().unwrap();
         assert!(properties.contains_key("new_key"));
         assert!(!properties.contains_key("old_key"));
@@ -2536,23 +2647,34 @@ mod tests {
         );
         assert_eq!(renamed["schema"]["required"], json!(["new_key"]));
 
-        rename.key.set("after");
-        let error = apply_rename_field(&rename, &rename.key.value).unwrap_err();
+        let error = apply_rename_field(
+            &object,
+            "old_key",
+            &RenameFieldSpec {
+                new_key: "after".into(),
+            },
+        )
+        .unwrap_err();
         assert_eq!(error, "field 'after' already exists");
+
+        let unchanged = apply_rename_field(
+            &object,
+            "old_key",
+            &RenameFieldSpec {
+                new_key: "old_key".into(),
+            },
+        )
+        .unwrap();
+        assert!(crate::managed::api::object_content_equal(
+            &unchanged, &object
+        ));
     }
 
     #[test]
     fn delete_custom_field_keeps_order_and_required_in_sync() {
-        let edit = edit_state(true);
-        let pending = DeleteFieldState {
-            tenant_name: "sandbox".into(),
-            object_name: "alpha_user".into(),
-            field_key: "custom_code".into(),
-            original_object: edit.original_object,
-            is_relationship: false,
-        };
+        let object = custom_object(true);
 
-        let object = apply_delete_field(&pending).unwrap();
+        let object = apply_delete_field(&object, "custom_code", &DeleteFieldSpec).unwrap();
         assert!(object["schema"]["properties"]["custom_code"].is_null());
         assert_eq!(object["schema"]["order"], json!([]));
         assert_eq!(object["schema"]["required"], json!([]));
@@ -2570,15 +2692,7 @@ mod tests {
                 "order": ["givenName"]
             }
         });
-        let pending = DeleteFieldState {
-            tenant_name: "sandbox".into(),
-            object_name: "alpha_user".into(),
-            field_key: "givenName".into(),
-            original_object: object,
-            is_relationship: false,
-        };
-
-        let error = apply_delete_field(&pending).unwrap_err();
+        let error = apply_delete_field(&object, "givenName", &DeleteFieldSpec).unwrap_err();
         assert!(error.contains("Standard fields"));
     }
 

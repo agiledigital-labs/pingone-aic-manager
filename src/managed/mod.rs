@@ -31,5 +31,6 @@ pub mod cli;
 mod keys;
 pub mod ops;
 pub mod screen;
+pub mod spec;
 pub mod state;
 pub mod view;
