@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, InputMode, Realm, View};
 use crate::esv::screen::Mode as EsvMode;
-use crate::esv::state::{EditField, EsvView};
+use crate::esv::state::EsvView;
 use crate::onboard::screen::Mode as OnboardMode;
 use crate::secrets::screen::Mode as SecretsMode;
 
@@ -570,57 +570,9 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         }
         InputMode::Selector => Vec::new(),
         InputMode::Secretmap(_) => crate::secretmap::screen::footer_hints(app),
-        InputMode::Secrets(SecretsMode::Create) => {
-            let mut out = vec![("Tab", "next field")];
-            if let Some(focused) = crate::secrets::screen::create_focus(app) {
-                match focused {
-                    crate::secrets::state::CreateField::Encoding
-                    | crate::secrets::state::CreateField::Placeholders
-                    | crate::secrets::state::CreateField::Json => out.push(("←/→", "change")),
-                    crate::secrets::state::CreateField::Value
-                    | crate::secrets::state::CreateField::Save => out.push(("Enter", "create")),
-                    _ => out.push(("Enter", "next")),
-                }
-            }
-            out.push(("^S", "save"));
-            out.push(("Esc", "cancel"));
-            out
-        }
-        InputMode::Secrets(SecretsMode::Versions) => {
-            match crate::secrets::screen::detail_focus(app) {
-                crate::secrets::state::DetailFocus::Description => vec![
-                    ("Tab", "versions"),
-                    ("Enter", "save description"),
-                    ("^S", "save"),
-                    ("Esc", "close"),
-                ],
-                crate::secrets::state::DetailFocus::Versions => vec![
-                    ("Tab", "edit description"),
-                    ("↑/↓", "navigate"),
-                    ("e/d", "enable/disable"),
-                    ("x", "destroy"),
-                    ("^N", "add version"),
-                    ("Esc", "close"),
-                ],
-            }
-        }
-        InputMode::Esv(EsvMode::Edit) => {
-            let mut out = vec![("Tab", "navigate")];
-            let focused = crate::esv::screen::edit_focused(app);
-            match focused {
-                Some(EditField::Id | EditField::Description | EditField::Type) => {
-                    out.push(("Enter", "next"));
-                }
-                Some(EditField::Save) => out.push(("Enter", "save")),
-                _ => {}
-            }
-            if focused == Some(EditField::Type) {
-                out.push(("←/→", "change type"));
-            }
-            out.push(("^S", "save"));
-            out.push(("Esc", "cancel"));
-            out
-        }
+        InputMode::Secrets(SecretsMode::Create) => crate::secrets::screen::create_hints(app),
+        InputMode::Secrets(SecretsMode::Versions) => crate::secrets::screen::versions_hints(app),
+        InputMode::Esv(EsvMode::Edit) => crate::esv::screen::edit_hints(app),
         InputMode::Vault(_) => Vec::new(),
         _ => Vec::new(),
     }

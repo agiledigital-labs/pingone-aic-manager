@@ -216,11 +216,38 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     let InputMode::Managed(mode) = app.input_mode else {
         return Vec::new();
     };
+    hints(mode, app)
+}
+
+/// F1 help rows. Identical to the footer for every mode except `Search`, where
+/// the overlay has room to spell out the list navigation the footer leaves
+/// implicit. Deriving both from `hints` is what stops the two from drifting.
+pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static str)>> {
+    let mut out = hints(mode, app);
+    if mode == Mode::Search {
+        out.extend([
+            ("↑/↓", "move selection"),
+            ("PgUp/PgDn", "move by page"),
+            ("F1", "show keybinds"),
+        ]);
+    }
+    Some(out)
+}
+
+/// The keys `mode` responds to, given the current focus.
+///
+/// `^S` commits from any field, but it is advertised only where `Enter` won't
+/// do the job — on a Save row `Enter` already says so, and two hints for one
+/// action just costs footer width. The `^S` label carries the form's own verb
+/// (add / create / save) so the footer says what the key does, not what the
+/// chord is conventionally called.
+fn hints(mode: Mode, app: &App) -> Vec<(&'static str, &'static str)> {
     match mode {
         Mode::Search => vec![("Enter", "keep filter"), ("Esc", "clear + exit")],
         Mode::EditField => {
+            let focused = app.managed.editing.as_ref().map(|edit| edit.focused);
             let mut out = vec![("Tab", "navigate")];
-            match app.managed.editing.as_ref().map(|edit| edit.focused) {
+            match focused {
                 Some(EditFieldFocus::Save) => out.push(("Enter", "save")),
                 Some(focus) if focus.is_bool() => {
                     out.push(("Space", "toggle"));
@@ -229,7 +256,9 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
             }
-            out.push(("^S", "save"));
+            if focused != Some(EditFieldFocus::Save) {
+                out.push(("^S", "save"));
+            }
             out.push(("Esc", "cancel"));
             out
         }
@@ -239,26 +268,29 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Esc", "cancel"),
         ],
         Mode::AddField => {
+            let focused = app.managed.add_field.as_ref().map(|draft| draft.focused);
             let mut out = vec![("Tab", "navigate")];
-            match app.managed.add_field.as_ref().map(|draft| draft.focused) {
+            match focused {
                 Some(AddFieldFocus::Save) => out.push(("Enter", "add")),
                 Some(AddFieldFocus::Type) => out.push(("←/→", "change type")),
                 Some(focus) if focus.is_bool() => out.push(("Space", "toggle")),
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
             }
-            out.push(("^S", "save"));
+            if focused != Some(AddFieldFocus::Save) {
+                out.push(("^S", "add"));
+            }
             out.push(("Esc", "cancel"));
             out
         }
         Mode::Relationship => {
-            let mut out = vec![("Tab", "navigate")];
-            match app
+            let focused = app
                 .managed
                 .relationship_form
                 .as_ref()
-                .map(|draft| draft.focused)
-            {
+                .map(|draft| draft.focused);
+            let mut out = vec![("Tab", "navigate")];
+            match focused {
                 Some(RelationshipFocus::Save) => out.push(("Enter", "save")),
                 Some(RelationshipFocus::Target) => out.push(("Enter", "pick target")),
                 Some(RelationshipFocus::Forward | RelationshipFocus::Reverse) => {
@@ -271,7 +303,9 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
             }
-            out.push(("^S", "save"));
+            if focused != Some(RelationshipFocus::Save) {
+                out.push(("^S", "save"));
+            }
             out.push(("Esc", "cancel"));
             out
         }
@@ -280,13 +314,27 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("↑/↓", "navigate"),
             ("Esc", "back"),
         ],
-        Mode::RefProp => vec![
-            ("Tab", "navigate"),
-            ("Enter", "save/next"),
-            ("←/→", "type"),
-            ("^S", "save"),
-            ("Esc", "cancel"),
-        ],
+        Mode::RefProp => {
+            let focused = app
+                .managed
+                .ref_prop_draft
+                .as_ref()
+                .map(|draft| draft.focused);
+            let mut out = vec![("Tab", "navigate")];
+            match focused {
+                Some(RefPropFocus::Save) => out.push(("Enter", "save")),
+                // ←/→ only cycles on the Type row; the old static hint list
+                // advertised it on every field.
+                Some(RefPropFocus::Type) => out.push(("←/→", "change type")),
+                Some(_) => out.push(("Enter", "next")),
+                None => {}
+            }
+            if focused != Some(RefPropFocus::Save) {
+                out.push(("^S", "save"));
+            }
+            out.push(("Esc", "cancel"));
+            out
+        }
         Mode::AddHook => vec![
             ("Enter", "register hook"),
             ("↑/↓", "navigate"),
@@ -297,109 +345,20 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         Mode::RenameField => vec![("Enter", "rename"), ("Esc", "cancel")],
         Mode::RenameObject => vec![("Enter", "continue"), ("Esc", "cancel")],
         Mode::RenameObjectConfirm => vec![("y", "rename"), ("n/Esc", "cancel")],
-        Mode::NewObject => vec![
-            ("Tab", "navigate"),
-            ("Enter", "create/next"),
-            ("^S", "save"),
-            ("Esc", "cancel"),
-        ],
-    }
-}
-
-pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static str)>> {
-    match mode {
-        Mode::Search => Some(vec![
-            ("Enter", "keep filter"),
-            ("Esc", "clear + exit"),
-            ("↑/↓", "move selection"),
-            ("PgUp/PgDn", "move by page"),
-            ("F1", "show keybinds"),
-        ]),
-        Mode::EditField => {
+        Mode::NewObject => {
+            let focused = app.managed.new_object.as_ref().map(|draft| draft.focused);
             let mut out = vec![("Tab", "navigate")];
-            match app.managed.editing.as_ref().map(|edit| edit.focused) {
-                Some(EditFieldFocus::Save) => out.push(("Enter", "save")),
-                Some(focus) if focus.is_bool() => {
-                    out.push(("Space", "toggle"));
-                    out.push(("Enter", "toggle"));
-                }
+            match focused {
+                Some(NewObjectFocus::Save) => out.push(("Enter", "create")),
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
             }
-            out.push(("^S", "save"));
-            out.push(("Esc", "cancel"));
-            Some(out)
-        }
-        Mode::AddChooseKind => Some(vec![
-            ("←/→ or Tab", "choose kind"),
-            ("Enter", "continue"),
-            ("Esc", "cancel"),
-        ]),
-        Mode::AddField => {
-            let mut out = vec![("Tab", "navigate")];
-            match app.managed.add_field.as_ref().map(|draft| draft.focused) {
-                Some(AddFieldFocus::Save) => out.push(("Enter", "add")),
-                Some(AddFieldFocus::Type) => out.push(("←/→", "change type")),
-                Some(focus) if focus.is_bool() => out.push(("Space", "toggle")),
-                Some(_) => out.push(("Enter", "next")),
-                None => {}
+            if focused != Some(NewObjectFocus::Save) {
+                out.push(("^S", "create"));
             }
-            out.push(("^S", "save"));
             out.push(("Esc", "cancel"));
-            Some(out)
+            out
         }
-        Mode::Relationship => {
-            let mut out = vec![("Tab", "navigate")];
-            match app
-                .managed
-                .relationship_form
-                .as_ref()
-                .map(|draft| draft.focused)
-            {
-                Some(RelationshipFocus::Save) => out.push(("Enter", "save")),
-                Some(RelationshipFocus::Target) => out.push(("Enter", "pick target")),
-                Some(RelationshipFocus::Forward | RelationshipFocus::Reverse) => {
-                    out.push(("←/→", "change"))
-                }
-                Some(RelationshipFocus::RefProperties) => {
-                    out.extend([("Ctrl-A", "add"), ("Enter", "edit"), ("d", "delete")]);
-                }
-                Some(focus) if focus.is_bool() => out.push(("Space", "toggle")),
-                Some(_) => out.push(("Enter", "next")),
-                None => {}
-            }
-            out.push(("^S", "save"));
-            out.push(("Esc", "cancel"));
-            Some(out)
-        }
-        Mode::RelationshipTarget => Some(vec![
-            ("Enter", "choose target"),
-            ("↑/↓", "navigate"),
-            ("Esc", "back"),
-        ]),
-        Mode::RefProp => Some(vec![
-            ("Tab", "navigate"),
-            ("Enter", "save/next"),
-            ("←/→", "type"),
-            ("^S", "save"),
-            ("Esc", "cancel"),
-        ]),
-        Mode::AddHook => Some(vec![
-            ("Enter", "register hook"),
-            ("↑/↓", "navigate"),
-            ("Esc", "cancel"),
-        ]),
-        Mode::DeleteFieldConfirm => Some(vec![("y", "delete"), ("n/Esc", "cancel")]),
-        Mode::DeleteObjectConfirm => Some(vec![("y", "delete"), ("n/Esc", "cancel")]),
-        Mode::RenameField => Some(vec![("Enter", "rename"), ("Esc", "cancel")]),
-        Mode::RenameObject => Some(vec![("Enter", "continue"), ("Esc", "cancel")]),
-        Mode::RenameObjectConfirm => Some(vec![("y", "rename"), ("n/Esc", "cancel")]),
-        Mode::NewObject => Some(vec![
-            ("Tab", "navigate"),
-            ("Enter", "create/next"),
-            ("^S", "save"),
-            ("Esc", "cancel"),
-        ]),
     }
 }
 
