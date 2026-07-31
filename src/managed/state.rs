@@ -79,10 +79,16 @@ impl FieldCaps {
     }
 }
 
-/// Ping-shipped realm objects carry both top-level markers; custom objects do
-/// not. This mirrors the verified 2026-06-14 schema behaviour.
+/// Ping-shipped realm objects carry a top-level `type`; custom objects don't.
+///
+/// `meta` is *not* part of the test. Only the `*_user` objects carry it —
+/// `role`, `organization`, `assignment` and `application` have `type` and no
+/// `meta` (verified 2026-07-27, `docs/api/10-managed-objects.md`). Requiring
+/// both markers classified those four as [`ObjectClass::Custom`], which handed
+/// their Ping-shipped fields the full custom-field rights: rename, retype and
+/// delete on things like `alpha_role.name`.
 pub fn object_class(object_def: &Value) -> ObjectClass {
-    if object_def.get("type").is_some() && object_def.get("meta").is_some() {
+    if is_ping_shipped_object(object_def) {
         ObjectClass::Standard
     } else {
         ObjectClass::Custom
@@ -93,8 +99,8 @@ pub fn is_standard_object(object_def: &Value) -> bool {
     object_class(object_def) == ObjectClass::Standard
 }
 
-/// Ping-provided objects cannot be renamed.  Some shipped objects omit `meta`,
-/// so this intentionally differs from `is_standard_object`.
+/// Ping-provided objects cannot be renamed. Same discriminator as
+/// [`object_class`] — the presence of a top-level `type`.
 pub fn is_ping_shipped_object(object_def: &Value) -> bool {
     object_def.get("type").is_some()
 }
@@ -1334,6 +1340,29 @@ mod tests {
         assert!(!is_custom_field(&standard, "givenName"));
         assert!(is_custom_field(&standard, "custom_pet"));
         assert!(is_custom_field(&custom, "lockKey"));
+    }
+
+    /// Only `*_user` carries `meta`; role/organization/assignment/application
+    /// have `type` alone. Keying on both markers classified them as custom and
+    /// gave their shipped fields rename/retype/delete rights.
+    #[test]
+    fn ping_shipped_objects_without_meta_are_still_standard() {
+        let role = json!({"name": "alpha_role", "type": "managed", "schema": {"properties": {}}});
+
+        assert_eq!(object_class(&role), ObjectClass::Standard);
+        assert!(!is_custom_field(&role, "name"));
+        assert!(is_custom_field(&role, "custom_pet"));
+
+        let caps = field_capability(&role, "name");
+        assert_eq!(caps.tier, FieldTier::StandardFieldOnStandardObject);
+        assert!(!caps.delete, "shipped role field must not be deletable");
+        assert!(!caps.rename_key, "shipped role field must not be renamable");
+        assert!(!caps.change_type, "shipped role field must not be retyped");
+
+        // A genuinely custom field on the same object keeps full rights.
+        let caps = field_capability(&role, "custom_pet");
+        assert_eq!(caps.tier, FieldTier::CustomFieldOnStandardObject);
+        assert!(caps.delete && caps.rename_key && caps.change_type);
     }
 
     #[test]
