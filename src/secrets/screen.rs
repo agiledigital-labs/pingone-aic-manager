@@ -3,12 +3,11 @@
 //! The state struct lives on `App` as `app.secret`; handlers remain free
 //! functions so global dispatch keeps one arm for the whole feature.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyEvent;
 
 use crate::app::event::ToastKind;
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
-use crate::tui::is_save_chord;
 #[derive(Debug)]
 pub enum ProdAction {
     Create(crate::secrets::state::CreatePlan),
@@ -110,13 +109,7 @@ pub fn apply_event(app: &mut App, event: Event) {
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) -> crate::Result<()> {
-    match mode {
-        Mode::Create => handle_create_key(app, key),
-        Mode::Versions => handle_versions_key(app, key),
-        Mode::AddVersion => handle_add_version_key(app, key),
-        Mode::DeleteConfirm => handle_delete_confirm_key(app, key),
-        Mode::VersionDestroyConfirm => handle_version_destroy_confirm_key(app, key),
-    }
+    crate::secrets::keys::handle_key(app, key, mode)
 }
 
 pub fn start_create(app: &mut App) {
@@ -157,64 +150,11 @@ pub fn new_item(app: &mut App) {
 }
 
 pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static str)>> {
-    match mode {
-        Mode::Create => Some(create_hints(app)),
-        Mode::Versions => Some(versions_hints(app)),
-        Mode::AddVersion => Some(vec![("Enter", "add version"), ("Esc", "cancel")]),
-        Mode::DeleteConfirm => Some(vec![
-            ("y", "delete secret + all versions"),
-            ("n/Esc", "cancel"),
-        ]),
-        Mode::VersionDestroyConfirm => Some(vec![
-            ("y", "destroy version (irreversible)"),
-            ("n/Esc", "cancel"),
-        ]),
-    }
+    crate::secrets::keys::help_lines(mode, app)
 }
 
-/// Keys the Create form responds to, given the current focus. Shared by the
-/// footer (via `app::keymap::footer_hints`) and the F1 overlay; the two used to
-/// be written separately and had already diverged.
-///
-/// `Enter` creates from the Value row as well as the Save row, so `^S` is
-/// advertised on neither.
-pub fn create_hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    let focused = create_focus(app);
-    let mut out = vec![("Tab", "next field")];
-    match focused {
-        Some(CreateField::Encoding | CreateField::Placeholders | CreateField::Json) => {
-            out.push(("←/→", "change"))
-        }
-        Some(CreateField::Value | CreateField::Save) => out.push(("Enter", "create")),
-        Some(_) => out.push(("Enter", "next")),
-        None => {}
-    }
-    if !matches!(focused, Some(CreateField::Value | CreateField::Save) | None) {
-        out.push(("^S", "create"));
-    }
-    out.push(("Esc", "cancel"));
-    out
-}
-
-/// Keys the version-detail view responds to. `Enter` already saves the
-/// description from the only editable field here, so `^S` stays unadvertised
-/// even though it works.
-pub fn versions_hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    match app.secret.detail_focus {
-        DetailFocus::Description => vec![
-            ("Tab", "versions"),
-            ("Enter", "save description"),
-            ("Esc", "close"),
-        ],
-        DetailFocus::Versions => vec![
-            ("Tab", "edit description"),
-            ("↑/↓", "navigate"),
-            ("e/d", "enable/disable"),
-            ("x", "destroy"),
-            ("^N", "add version"),
-            ("Esc", "close"),
-        ],
-    }
+pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    crate::secrets::keys::footer_hints(app)
 }
 
 pub fn create_field_active(app: &App) -> bool {
@@ -225,84 +165,7 @@ pub fn create_focus(app: &App) -> Option<CreateField> {
     app.secret.create.as_ref().map(|form| form.focused)
 }
 
-fn handle_create_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    if is_save_chord(&key) {
-        ops::commit_create(app);
-        return Ok(());
-    }
-    let Some(form) = app.secret.create.as_mut() else {
-        return Ok(());
-    };
-    let focused = form.focused;
-    match key.code {
-        KeyCode::Esc => {
-            app.secret.create = None;
-            app.input_mode = InputMode::Normal;
-            return Ok(());
-        }
-        KeyCode::Tab => {
-            form.focused = focused.next();
-            return Ok(());
-        }
-        KeyCode::BackTab => {
-            form.focused = focused.prev();
-            return Ok(());
-        }
-        KeyCode::Enter => {
-            match focused {
-                CreateField::Value | CreateField::Save => ops::commit_create(app),
-                _ => form.focused = focused.next(),
-            }
-            return Ok(());
-        }
-        KeyCode::Left | KeyCode::Right => {
-            let left = key.code == KeyCode::Left;
-            match focused {
-                CreateField::Encoding => {
-                    form.encoding = if left {
-                        form.encoding.prev()
-                    } else {
-                        form.encoding.next()
-                    };
-                    return Ok(());
-                }
-                CreateField::Placeholders => {
-                    form.use_in_placeholders = !form.use_in_placeholders;
-                    return Ok(());
-                }
-                CreateField::Json => {
-                    form.as_json = !form.as_json;
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-        _ => {}
-    }
-
-    form.error = None;
-    match focused {
-        CreateField::Id => {
-            form.id.handle_key(&key);
-        }
-        CreateField::Description => {
-            form.description.handle_key(&key);
-        }
-        CreateField::Value => {
-            form.value.handle_key(&key);
-        }
-        CreateField::Placeholders if key.code == KeyCode::Char(' ') => {
-            form.use_in_placeholders = !form.use_in_placeholders;
-        }
-        CreateField::Json if key.code == KeyCode::Char(' ') => {
-            form.as_json = !form.as_json;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn open_add_version(app: &mut App) {
+pub(crate) fn open_add_version(app: &mut App) {
     let Some((tenant, id)) = app.secret.version_target.clone() else {
         return;
     };
@@ -323,28 +186,6 @@ fn open_add_version(app: &mut App) {
         error: None,
     });
     app.input_mode = InputMode::Secrets(Mode::AddVersion);
-}
-
-fn handle_add_version_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    if is_save_chord(&key) {
-        ops::commit_add_version(app);
-        return Ok(());
-    }
-    let Some(form) = app.secret.add_version.as_mut() else {
-        return Ok(());
-    };
-    match key.code {
-        KeyCode::Esc => {
-            app.secret.add_version = None;
-            app.input_mode = InputMode::Secrets(Mode::Versions);
-        }
-        KeyCode::Enter => ops::commit_add_version(app),
-        _ => {
-            form.error = None;
-            form.value.handle_key(&key);
-        }
-    }
-    Ok(())
 }
 
 pub fn versions_panel_open(app: &App) -> bool {
@@ -374,72 +215,22 @@ pub fn open_versions(app: &mut App) {
     ops::reload_versions(app, tenant, id);
 }
 
-fn handle_versions_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    let (tenant, id, versions) = match versions_view(app) {
+pub(crate) fn toggle_selected_version(app: &mut App) {
+    match versions_view(app) {
         Some(VersionsView::Loaded {
             tenant,
             id,
             versions,
-        }) => (tenant, id, versions),
-        Some(_) => {
-            if key.code == KeyCode::Esc {
-                app.input_mode = InputMode::Normal;
+        }) => {
+            if let Some(version) = versions.get(app.secret.version_selected) {
+                toggle_version_status(app, &tenant, &id, version);
             }
-            return Ok(());
         }
+        Some(_) => {}
         None => {
             app.input_mode = InputMode::Normal;
-            return Ok(());
         }
-    };
-    match key.code {
-        KeyCode::Esc => {
-            app.input_mode = InputMode::Normal;
-            return Ok(());
-        }
-        KeyCode::Tab | KeyCode::BackTab => {
-            app.secret.detail_focus = match app.secret.detail_focus {
-                DetailFocus::Versions => DetailFocus::Description,
-                DetailFocus::Description => DetailFocus::Versions,
-            };
-            return Ok(());
-        }
-        _ => {}
     }
-
-    if app.secret.detail_focus == DetailFocus::Description {
-        if key.code == KeyCode::Enter || is_save_chord(&key) {
-            ops::commit_description(app);
-        } else {
-            app.secret.description.handle_key(&key);
-        }
-        return Ok(());
-    }
-
-    let n = versions.len();
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down if n > 0 && app.secret.version_selected + 1 < n => {
-            app.secret.version_selected += 1;
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.secret.version_selected = app.secret.version_selected.saturating_sub(1);
-        }
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            open_add_version(app);
-        }
-        KeyCode::Char('e') | KeyCode::Char('d') => {
-            if let Some(v) = versions.get(app.secret.version_selected) {
-                toggle_version_status(app, &tenant, &id, v);
-            }
-        }
-        KeyCode::Char('x') | KeyCode::Delete => {
-            if let Some(v) = versions.get(app.secret.version_selected) {
-                destroy_version(app, &tenant, &id, v);
-            }
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 fn toggle_version_status(app: &mut App, tenant: &str, id: &str, v: &serde_json::Value) {
@@ -476,6 +267,24 @@ fn toggle_version_status(app: &mut App, tenant: &str, id: &str, v: &serde_json::
     }
 }
 
+pub(crate) fn destroy_selected_version(app: &mut App) {
+    match versions_view(app) {
+        Some(VersionsView::Loaded {
+            tenant,
+            id,
+            versions,
+        }) => {
+            if let Some(version) = versions.get(app.secret.version_selected) {
+                destroy_version(app, &tenant, &id, version);
+            }
+        }
+        Some(_) => {}
+        None => {
+            app.input_mode = InputMode::Normal;
+        }
+    }
+}
+
 fn destroy_version(app: &mut App, tenant: &str, id: &str, v: &serde_json::Value) {
     let Some(version) = version_num(v) else {
         return;
@@ -491,35 +300,24 @@ fn destroy_version(app: &mut App, tenant: &str, id: &str, v: &serde_json::Value)
     app.input_mode = InputMode::Secrets(Mode::VersionDestroyConfirm);
 }
 
-fn handle_version_destroy_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let Some((tenant, id, version)) = app.secret.pending_version_destroy.take() else {
-                app.input_mode = InputMode::Secrets(Mode::Versions);
-                return Ok(());
-            };
-            let is_prod = app
-                .active_tenant()
-                .is_some_and(|t| t.theme == TenantTheme::Production);
-            if is_prod {
-                app.prod_confirm.pending =
-                    Some(PendingProdAction::Secrets(ProdAction::VersionDestroy {
-                        tenant,
-                        id,
-                        version,
-                    }));
-                app.input_mode = InputMode::ProdConfirm;
-            } else {
-                ops::execute_version_destroy(app, tenant, id, version, false);
-            }
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.secret.pending_version_destroy = None;
-            app.input_mode = InputMode::Secrets(Mode::Versions);
-        }
-        _ => {}
+pub(crate) fn confirm_version_destroy(app: &mut App) {
+    let Some((tenant, id, version)) = app.secret.pending_version_destroy.take() else {
+        app.input_mode = InputMode::Secrets(Mode::Versions);
+        return;
+    };
+    let is_prod = app
+        .active_tenant()
+        .is_some_and(|t| t.theme == TenantTheme::Production);
+    if is_prod {
+        app.prod_confirm.pending = Some(PendingProdAction::Secrets(ProdAction::VersionDestroy {
+            tenant,
+            id,
+            version,
+        }));
+        app.input_mode = InputMode::ProdConfirm;
+    } else {
+        ops::execute_version_destroy(app, tenant, id, version, false);
     }
-    Ok(())
 }
 
 pub fn request_delete(app: &mut App) {
@@ -536,29 +334,18 @@ pub fn request_delete(app: &mut App) {
     app.input_mode = InputMode::Secrets(Mode::DeleteConfirm);
 }
 
-fn handle_delete_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
-            let Some(plan) = app.secret.pending_delete.take() else {
-                app.input_mode = InputMode::Normal;
-                return Ok(());
-            };
-            let is_prod = app
-                .active_tenant()
-                .is_some_and(|t| t.theme == TenantTheme::Production);
-            if is_prod {
-                app.prod_confirm.pending =
-                    Some(PendingProdAction::Secrets(ProdAction::Delete(plan)));
-                app.input_mode = InputMode::ProdConfirm;
-            } else {
-                ops::execute_delete(app, plan, false);
-            }
-        }
-        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-            app.secret.pending_delete = None;
-            app.input_mode = InputMode::Normal;
-        }
-        _ => {}
+pub(crate) fn confirm_delete(app: &mut App) {
+    let Some(plan) = app.secret.pending_delete.take() else {
+        app.input_mode = InputMode::Normal;
+        return;
+    };
+    let is_prod = app
+        .active_tenant()
+        .is_some_and(|t| t.theme == TenantTheme::Production);
+    if is_prod {
+        app.prod_confirm.pending = Some(PendingProdAction::Secrets(ProdAction::Delete(plan)));
+        app.input_mode = InputMode::ProdConfirm;
+    } else {
+        ops::execute_delete(app, plan, false);
     }
-    Ok(())
 }

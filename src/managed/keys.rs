@@ -6,7 +6,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
 
-use crate::app::keymap::{Bind, Trigger, hidden, hint, save_chord_bind};
+use crate::app::keymap::{Bind, HintTarget, Trigger, hidden, hint, pick, save_chord_bind};
 use crate::app::{App, InputMode};
 use crate::managed::ops;
 use crate::managed::screen::{
@@ -56,21 +56,6 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
         ]);
     }
     Some(out)
-}
-
-/// Which renderer is asking. Modes backed by a binding table honour the
-/// per-binding `footer` / `help` flags; the rest serve one list to both.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum HintTarget {
-    Footer,
-    Help,
-}
-
-fn pick<A: Copy>(binds: &[Bind<A>], target: HintTarget) -> Vec<(&'static str, &'static str)> {
-    match target {
-        HintTarget::Footer => Bind::footer_hints(binds),
-        HintTarget::Help => Bind::help_hints(binds),
-    }
 }
 
 /// The keys `mode` responds to, given the current focus.
