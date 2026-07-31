@@ -542,3 +542,32 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   custom object. Tenant-global service/configuration data should use a
   descriptive non-realm prefix, such as `idr_name_variants`. The earlier
   convention in `10-managed-objects.md` was too broad.
+- **2026-07-31 (Q-enum, partly open)** — Managed-object properties support an
+  `enum` constraint, and it is a **constraint on a scalar, not a distinct
+  property type**: the property keeps `"type": "string"` and gains a sibling
+  `enum` array of allowed values. Confirmed by reading the live sandbox
+  `config/managed`: `idr_name_variants.role`
+  (`enum: ["given","surname"]`), plus `idr_name_variant_discrepancies.role` and
+  `.status` (`enum: ["new","scored","promoted","rejected"]`). This matters for the
+  editor design — enum belongs alongside `searchable`/`viewable` as an attribute
+  of a string field, not as a fourth entry next to `string`/`boolean`/`number`.
+
+  **Still unverified — do not write code that assumes any of these:**
+
+  1. Whether `options: { enum_titles: [...] }` (the display-label convention used
+     by the IDM admin UI) survives a `PUT /openidm/config/managed`. It appears
+     **nowhere** in the sandbox, so it is entirely untested here. If labels don't
+     round-trip, an enum field can only show raw values.
+  2. Whether `enum` is honoured on an array's `items`
+     (`{"type":"array","items":{"type":"string","enum":[…]}}`).
+  3. Whether a non-string `enum` (e.g. numeric) is accepted.
+  4. **Whether the constraint is enforced on record write to
+     `/openidm/managed/{type}`, or is UI-only metadata.** This is the one that
+     changes behaviour rather than presentation: if enforced, narrowing an
+     existing field's `enum` can start rejecting record writes that previously
+     succeeded, which makes editing the allowed values of a populated field a
+     data-affecting operation and not just a schema tweak.
+
+  A probe object (`test_enum_probe`, covering all four questions in one
+  whole-document PUT) was prepared but not sent — writing tenant config needs
+  explicit approval. Verify before exposing enum editing in the TUI or CLI.
