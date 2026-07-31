@@ -519,9 +519,11 @@ pub async fn create(
 /// because AIC ignores them on a write and stamps its own (verified 2026-07-30).
 ///
 /// The one exception is `default`: a copy of a product-shipped script is not
-/// itself a product default, and it is unverified whether AM would honour
-/// `default: true` from a client — a script that AM considered default would be
-/// undeletable (403), so we never send it.
+/// itself a product default, so we send `false`. AM ignores the field on write
+/// and computes it itself (verified 2026-07-31 — a client-sent `true` reads back
+/// as `false` on both create routes and on update), so this is belt-and-braces
+/// against a future AM that honours it: a script AM considered default would be
+/// undeletable (403).
 pub fn copy_body(raw: &Value, id: &str, name: &str) -> Result<Value> {
     let mut copied = raw.clone();
     let object = copied
