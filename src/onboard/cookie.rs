@@ -8,6 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::event::AppEvent;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
+use crate::tui::is_save_chord;
 use crate::tui::widgets::text_field::{TextField, fields};
 
 use super::common::{queue_overwrite_confirm, send_onboard_error, tenant_name_exists};
@@ -139,13 +140,19 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     }
 
     // Normalise the domain field whenever focus leaves it.
-    let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+    let leaving_domain = (matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+        || is_save_chord(&key))
         && form.focused == CookieField::Domain;
     if leaving_domain {
         let cleaned = super::normalise_domain(&form.domain.value);
         form.domain.set(cleaned);
     }
 
+    // `Ctrl-S` submits from any field. Handled as an arm rather than an early
+    // return so the domain normalisation above still runs first — and it must
+    // stay ahead of the plain-`Enter` arm to win.
+    let submitting =
+        is_save_chord(&key) || (key.code == KeyCode::Enter && form.focused == CookieField::Submit);
     match key.code {
         KeyCode::Esc => {
             app.onboard.cookie_form = None;
@@ -155,7 +162,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         KeyCode::BackTab => form.focused = form.focused.prev(),
         KeyCode::Left if form.focused == CookieField::Theme => form.cycle_theme_backward(),
         KeyCode::Right if form.focused == CookieField::Theme => form.cycle_theme_forward(),
-        KeyCode::Enter if form.focused == CookieField::Submit => {
+        _ if submitting => {
             if let Err(e) = form.validate() {
                 form.error = Some(e);
             } else {

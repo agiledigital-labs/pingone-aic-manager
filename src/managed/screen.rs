@@ -14,6 +14,7 @@ use crate::managed::state::{
     RefPropDraft, RefPropFocus, RelationshipFocus, RelationshipFormState, RenameFieldState,
     RenameObjectConfirmState, RenameObjectState,
 };
+use crate::tui::is_save_chord;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -228,6 +229,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
             }
+            out.push(("^S", "save"));
             out.push(("Esc", "cancel"));
             out
         }
@@ -245,6 +247,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
             }
+            out.push(("^S", "save"));
             out.push(("Esc", "cancel"));
             out
         }
@@ -268,6 +271,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
             }
+            out.push(("^S", "save"));
             out.push(("Esc", "cancel"));
             out
         }
@@ -280,6 +284,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Tab", "navigate"),
             ("Enter", "save/next"),
             ("←/→", "type"),
+            ("^S", "save"),
             ("Esc", "cancel"),
         ],
         Mode::AddHook => vec![
@@ -295,6 +300,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         Mode::NewObject => vec![
             ("Tab", "navigate"),
             ("Enter", "create/next"),
+            ("^S", "save"),
             ("Esc", "cancel"),
         ],
     }
@@ -320,6 +326,7 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
             }
+            out.push(("^S", "save"));
             out.push(("Esc", "cancel"));
             Some(out)
         }
@@ -337,6 +344,7 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
             }
+            out.push(("^S", "save"));
             out.push(("Esc", "cancel"));
             Some(out)
         }
@@ -360,6 +368,7 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
                 Some(_) => out.push(("Enter", "next")),
                 None => {}
             }
+            out.push(("^S", "save"));
             out.push(("Esc", "cancel"));
             Some(out)
         }
@@ -372,6 +381,7 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
             ("Tab", "navigate"),
             ("Enter", "save/next"),
             ("←/→", "type"),
+            ("^S", "save"),
             ("Esc", "cancel"),
         ]),
         Mode::AddHook => Some(vec![
@@ -387,6 +397,7 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
         Mode::NewObject => Some(vec![
             ("Tab", "navigate"),
             ("Enter", "create/next"),
+            ("^S", "save"),
             ("Esc", "cancel"),
         ]),
     }
@@ -860,6 +871,10 @@ fn handle_add_choose_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_rename_field_key(app: &mut App, key: KeyEvent) {
+    if is_save_chord(&key) {
+        ops::commit_rename_field(app);
+        return;
+    }
     match key.code {
         KeyCode::Esc => ops::cancel_active_draft(app),
         KeyCode::Tab | KeyCode::BackTab => {
@@ -882,7 +897,7 @@ fn handle_rename_object_key(app: &mut App, key: KeyEvent) {
         ops::cancel_active_draft(app);
         return;
     }
-    if key.code == KeyCode::Enter {
+    if key.code == KeyCode::Enter || is_save_chord(&key) {
         let Some(mut draft) = app.managed.renaming_object.take() else {
             return;
         };
@@ -960,6 +975,10 @@ fn handle_new_object_key(app: &mut App, key: KeyEvent) {
         app.input_mode = InputMode::Normal;
         return;
     };
+    if is_save_chord(&key) {
+        commit_new_object(app);
+        return;
+    }
     match key.code {
         KeyCode::Esc => {
             ops::cancel_active_draft(app);
@@ -978,48 +997,7 @@ fn handle_new_object_key(app: &mut App, key: KeyEvent) {
             return;
         }
         KeyCode::Enter if focused == NewObjectFocus::Save => {
-            let Some(mut draft) = app.managed.new_object.take() else {
-                return;
-            };
-            let existing = crate::managed::api::objects(&draft.original_doc)
-                .map(|objects| {
-                    objects
-                        .iter()
-                        .filter_map(|object| {
-                            object
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .map(ToString::to_string)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            if let Err(error) =
-                crate::managed::state::validate_object_name(&draft.name.value, &existing, "")
-            {
-                draft.error = Some(error);
-                app.managed.new_object = Some(draft);
-                return;
-            }
-            let request = ops::CreateObjectRequest {
-                tenant_name: draft.tenant_name.clone(),
-                name: draft.name.value.clone(),
-                title: draft.title.value.clone(),
-                description: draft.description.value.clone(),
-                previous_doc: draft.original_doc.clone(),
-            };
-            if app.active_tenant().is_some_and(|tenant| {
-                tenant.theme == crate::config::tenant::TenantTheme::Production
-            }) {
-                app.managed.new_object = Some(draft);
-                app.prod_confirm.pending =
-                    Some(crate::app::prod_confirm::PendingProdAction::Managed(
-                        ops::ProdAction::CreateObject(Box::new(request)),
-                    ));
-                app.input_mode = InputMode::ProdConfirm;
-            } else {
-                ops::execute_create_object(app, request, false);
-            }
+            commit_new_object(app);
             return;
         }
         KeyCode::Enter => {
@@ -1048,12 +1026,65 @@ fn handle_new_object_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Validate the new-object draft and either queue a prod confirmation or write
+/// it. The draft is taken out so a name-validation failure can put it back with
+/// the error attached; the prod-confirm branch puts it back too, because the
+/// user may still cancel at the confirmation and expect their input intact.
+fn commit_new_object(app: &mut App) {
+    let Some(mut draft) = app.managed.new_object.take() else {
+        return;
+    };
+    let existing = crate::managed::api::objects(&draft.original_doc)
+        .map(|objects| {
+            objects
+                .iter()
+                .filter_map(|object| {
+                    object
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if let Err(error) =
+        crate::managed::state::validate_object_name(&draft.name.value, &existing, "")
+    {
+        draft.error = Some(error);
+        app.managed.new_object = Some(draft);
+        return;
+    }
+    let request = ops::CreateObjectRequest {
+        tenant_name: draft.tenant_name.clone(),
+        name: draft.name.value.clone(),
+        title: draft.title.value.clone(),
+        description: draft.description.value.clone(),
+        previous_doc: draft.original_doc.clone(),
+    };
+    if app
+        .active_tenant()
+        .is_some_and(|tenant| tenant.theme == crate::config::tenant::TenantTheme::Production)
+    {
+        app.managed.new_object = Some(draft);
+        app.prod_confirm.pending = Some(crate::app::prod_confirm::PendingProdAction::Managed(
+            ops::ProdAction::CreateObject(Box::new(request)),
+        ));
+        app.input_mode = InputMode::ProdConfirm;
+    } else {
+        ops::execute_create_object(app, request, false);
+    }
+}
+
 fn handle_edit_key(app: &mut App, key: KeyEvent) {
     let Some(focused) = app.managed.editing.as_ref().map(|edit| edit.focused) else {
         app.input_mode = InputMode::Normal;
         return;
     };
 
+    if is_save_chord(&key) {
+        ops::commit_edit(app);
+        return;
+    }
     match key.code {
         KeyCode::Esc => {
             ops::cancel_active_draft(app);
@@ -1121,6 +1152,10 @@ fn handle_add_field_key(app: &mut App, key: KeyEvent) {
         app.input_mode = InputMode::Normal;
         return;
     };
+    if is_save_chord(&key) {
+        ops::commit_add_field(app);
+        return;
+    }
     match key.code {
         KeyCode::Esc => {
             ops::cancel_active_draft(app);
@@ -1221,6 +1256,10 @@ fn handle_relationship_key(app: &mut App, key: KeyEvent) {
         app.input_mode = InputMode::Normal;
         return;
     };
+    if is_save_chord(&key) {
+        ops::commit_relationship(app);
+        return;
+    }
     if key.code == KeyCode::Char('a') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.managed.ref_prop_draft = Some(RefPropDraft::new_add());
         app.input_mode = InputMode::Managed(Mode::RefProp);
@@ -1398,6 +1437,10 @@ fn handle_ref_prop_key(app: &mut App, key: KeyEvent) {
         app.input_mode = InputMode::Managed(Mode::Relationship);
         return;
     };
+    if is_save_chord(&key) {
+        commit_ref_prop_draft(app);
+        return;
+    }
     match key.code {
         KeyCode::Esc => {
             app.managed.ref_prop_draft = None;
@@ -1431,22 +1474,7 @@ fn handle_ref_prop_key(app: &mut App, key: KeyEvent) {
             return;
         }
         KeyCode::Enter if focused == RefPropFocus::Save => {
-            let Some(mut draft) = app.managed.ref_prop_draft.take() else {
-                return;
-            };
-            let result = app
-                .managed
-                .relationship_form
-                .as_mut()
-                .ok_or_else(|| "Relationship form is no longer active".to_string())
-                .and_then(|form| ops::commit_ref_prop(form, &draft));
-            match result {
-                Ok(()) => app.input_mode = InputMode::Managed(Mode::Relationship),
-                Err(error) => {
-                    draft.error = Some(error);
-                    app.managed.ref_prop_draft = Some(draft);
-                }
-            }
+            commit_ref_prop_draft(app);
             return;
         }
         KeyCode::Enter => {
@@ -1470,6 +1498,28 @@ fn handle_ref_prop_key(app: &mut App, key: KeyEvent) {
             draft.label.handle_key(&key);
         }
         RefPropFocus::Type | RefPropFocus::Save => {}
+    }
+}
+
+/// Fold the draft `_refProperties` sub-property back into the relationship
+/// form it belongs to. The draft is taken out so a validation failure can put
+/// it back with the error attached rather than leaving a half-committed one.
+fn commit_ref_prop_draft(app: &mut App) {
+    let Some(mut draft) = app.managed.ref_prop_draft.take() else {
+        return;
+    };
+    let result = app
+        .managed
+        .relationship_form
+        .as_mut()
+        .ok_or_else(|| "Relationship form is no longer active".to_string())
+        .and_then(|form| ops::commit_ref_prop(form, &draft));
+    match result {
+        Ok(()) => app.input_mode = InputMode::Managed(Mode::Relationship),
+        Err(error) => {
+            draft.error = Some(error);
+            app.managed.ref_prop_draft = Some(draft);
+        }
     }
 }
 
@@ -1552,6 +1602,10 @@ fn move_relationship_target(app: &mut App, delta: isize) {
 }
 
 fn handle_add_hook_key(app: &mut App, key: KeyEvent) {
+    if is_save_chord(&key) {
+        ops::commit_add_hook(app);
+        return;
+    }
     match key.code {
         KeyCode::Esc => {
             ops::cancel_active_draft(app);

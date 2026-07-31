@@ -8,11 +8,12 @@
 //! Passkey / push (PollingWaitCallback) is intentionally unsupported — those
 //! flows need a real browser. Pattern 1 is the answer in that case.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::event::AppEvent;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
+use crate::tui::is_save_chord;
 use crate::tui::widgets::text_field::{TextField, fields};
 
 use super::common::{queue_overwrite_confirm, send_onboard_error, tenant_name_exists};
@@ -350,6 +351,9 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
 
     // OTP / extra prompt is in flight — only the prompt input listens.
     if form.pending_prompt.is_some() {
+        // `Ctrl-S` submits the prompt just as `Enter` does.
+        let submitting =
+            (key.code == KeyCode::Enter || is_save_chord(&key)) && !form.prompt_input.is_empty();
         match key.code {
             KeyCode::Esc => {
                 form.pending_prompt = None;
@@ -358,7 +362,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                 form.status = None;
                 app.onboard.pending_callback_body = None;
             }
-            KeyCode::Enter if !form.prompt_input.is_empty() => {
+            _ if submitting => {
                 let extra = form.prompt_input.clone();
                 form.prompt_input.clear();
                 form.pending_prompt = None;
@@ -368,7 +372,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             KeyCode::Backspace => {
                 form.prompt_input.pop();
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 form.prompt_input.push(c);
             }
             _ => {}
@@ -387,13 +391,19 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         return Ok(());
     }
 
-    let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+    let leaving_domain = (matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+        || is_save_chord(&key))
         && form.focused == UpField::Domain;
     if leaving_domain {
         let cleaned = super::normalise_domain(&form.domain.value);
         form.domain.set(cleaned);
     }
 
+    // `Ctrl-S` submits from any field. Handled as an arm rather than an early
+    // return so the domain normalisation above still runs first — and it must
+    // stay ahead of the plain-`Enter` arm to win.
+    let submitting =
+        is_save_chord(&key) || (key.code == KeyCode::Enter && form.focused == UpField::Submit);
     match key.code {
         KeyCode::Esc => {
             app.onboard.up_form = None;
@@ -403,7 +413,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         KeyCode::BackTab => form.focused = form.focused.prev(),
         KeyCode::Left if form.focused == UpField::Theme => form.cycle_theme_backward(),
         KeyCode::Right if form.focused == UpField::Theme => form.cycle_theme_forward(),
-        KeyCode::Enter if form.focused == UpField::Submit => {
+        _ if submitting => {
             if let Err(e) = form.validate() {
                 form.error = Some(e);
             } else {

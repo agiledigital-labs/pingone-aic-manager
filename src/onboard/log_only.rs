@@ -9,6 +9,7 @@ use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
 use crate::config::tenant::{Tenant, TenantTheme};
 use crate::logs::LogKeyPair;
+use crate::tui::is_save_chord;
 use crate::tui::widgets::text_field::{TextField, fields};
 
 use super::common::{
@@ -155,13 +156,19 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         return Ok(());
     }
 
-    let leaving_domain = matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+    let leaving_domain = (matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::Enter)
+        || is_save_chord(&key))
         && form.focused == LogOnlyField::Domain;
     if leaving_domain {
         let cleaned = super::normalise_domain(&form.domain.value);
         form.domain.set(cleaned);
     }
 
+    // `Ctrl-S` submits from any field. Handled as an arm rather than an early
+    // return so the domain normalisation above still runs first — and it must
+    // stay ahead of the plain-`Enter` arm to win.
+    let submitting =
+        is_save_chord(&key) || (key.code == KeyCode::Enter && form.focused == LogOnlyField::Submit);
     match key.code {
         KeyCode::Esc => {
             app.onboard.log_only_form = None;
@@ -171,7 +178,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         KeyCode::BackTab => form.focused = form.focused.prev(),
         KeyCode::Left if form.focused == LogOnlyField::Theme => form.cycle_theme_backward(),
         KeyCode::Right if form.focused == LogOnlyField::Theme => form.cycle_theme_forward(),
-        KeyCode::Enter if form.focused == LogOnlyField::Submit => match form.validate() {
+        _ if submitting => match form.validate() {
             Ok(intent) => {
                 form.error = None;
                 if tenant_name_exists(&app.tenants, &intent.tenant_name) {

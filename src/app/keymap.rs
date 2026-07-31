@@ -582,6 +582,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                     _ => out.push(("Enter", "next")),
                 }
             }
+            out.push(("^S", "save"));
             out.push(("Esc", "cancel"));
             out
         }
@@ -590,6 +591,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 crate::secrets::state::DetailFocus::Description => vec![
                     ("Tab", "versions"),
                     ("Enter", "save description"),
+                    ("^S", "save"),
                     ("Esc", "close"),
                 ],
                 crate::secrets::state::DetailFocus::Versions => vec![
@@ -615,6 +617,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             if focused == Some(EditField::Type) {
                 out.push(("←/→", "change type"));
             }
+            out.push(("^S", "save"));
             out.push(("Esc", "cancel"));
             out
         }
