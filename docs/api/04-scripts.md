@@ -48,8 +48,21 @@ message:
 | `script`   | `A script must be specified`           |
 
 Everything else defaults: `description` → `null`, `default` → `false`,
-`evaluatorVersion` → `"2.0"`. An **empty** `script` (`""`) is accepted (201) —
-only a _missing_ one 400s.
+`evaluatorVersion` → **`"1.0"`** (see below). An **empty** `script` (`""`) is
+accepted (201) — only a _missing_ one 400s.
+
+**Always send `evaluatorVersion` explicitly.** Omitting it creates a **legacy
+(v1) engine** script — on _both_ routes (verified 2026-07-31). An earlier note
+here claimed the default was `"2.0"`; that was wrong. `aic script create` always
+sends the field and refuses `1.0` outright, so it never trips this.
+
+**`default` is server-owned — a client-sent value is ignored** (verified
+2026-07-31). `default: true` in the body is silently dropped to `false` on
+`PUT`-create, on `POST ?_action=create`, and on a `PUT` update of an existing
+non-default script. There is therefore **no way for a client to mint an
+undeletable script**, and no way to promote one to a product default. Stripping
+or overwriting the field on a copy (which `aic` does) is belt-and-braces, not a
+correctness requirement.
 
 **Body `_id` must match the URL id.** Sending a body whose `_id` is a different
 script's id — the obvious way to copy a script — fails with
@@ -142,9 +155,12 @@ advertise `GROOVY` in `languages`.
 
 - `default: true` ⇒ ForgeRock-shipped default. **Editable** (a content PUT
   succeeds — verified 2026-06-03); cannot be _deleted_. (`aic` pushes defaults
-  like any other script — no `--force` needed.)
-- `evaluatorVersion`: `"1.0"` or `"2.0"`. Affects available bindings; v2 is the
-  current default for new scripts.
+  like any other script — no `--force` needed.) The field is **read-only to
+  clients**: AM ignores whatever you send and computes it itself (verified
+  2026-07-31 — see "Creating scripts").
+- `evaluatorVersion`: `"1.0"` or `"2.0"`. Affects available bindings. v2 is the
+  current engine, but **it is not the create default** — omit the field and you
+  get v1 (verified 2026-07-31).
 - **No `_rev` field** on a `GET` or on an update `PUT` echo — so optimistic
   locking via `If-Match` is not available and **conflict detection must be
   content-based**. One exception, verified 2026-07-30: the **create** echo (201,
@@ -274,6 +290,22 @@ behind:
   `enabled:false, persisted:true, type:"cron", schedule:"0 0 0 1 1 ? 2099", invokeService:"script"`
   → **201** and reads back verbatim (the shape
   `aic script create schedule/<name>` writes).
+
+### `default` and `evaluatorVersion` on write — 2026-07-31
+
+Realm `alpha`, three throwaway scripts, all deleted afterwards and the realm
+re-listed (`test_aic*` → empty):
+
+- `PUT …/scripts/test_aic_default_probe` with `"default": true` in the body →
+  **201**, echo shows `"default": false`; a follow-up `GET` also shows `false`
+  (so it is the stored value, not just the echo).
+- A second `PUT` to that now-existing script, again with `"default": true` →
+  **200**, still `false`. Clients cannot promote a script to a product default.
+- `POST …/scripts/?_action=create` with `"default": true` → **201**, `false`.
+- Both create routes with `evaluatorVersion` **omitted** → **201** with
+  `"evaluatorVersion": "1.0"`, contradicting the previous "defaults to 2.0"
+  claim. Recorded in `99-quirks-and-open-questions.md`.
+- `DELETE` of all three → **200** each.
 
 ## Source citations
 

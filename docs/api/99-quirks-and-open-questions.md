@@ -216,6 +216,7 @@ new things are learned.
 | Journey `_rev` means use `If-Match`                                               | 09-journeys.md (earlier note)        | Superseded — `_rev` is content-derived, and plain `PUT` works for create/update. Use content snapshots, not `If-Match`.                                                                   |
 | OAuth2 client `_rev` means use `If-Match`                                         | 05-oauth2-oidc.md (earlier note)     | False — plain `PUT` works for create/update, and `_rev` must be stripped from the body. Use content snapshots, not `If-Match`.                                                            |
 | Managed-object `totalPagedResults` is exact with `_totalPagedResultsPolicy=EXACT` | 10-managed-objects.md (earlier note) | False — empty objects can report `NONE`/`-1`, and populated objects can report `ESTIMATE`. Use cursor cookies for bulk record reads; do not use offset paging as a completeness strategy. |
+| Script `evaluatorVersion` defaults to `"2.0"` on create                           | 04-scripts.md (earlier note)         | False — omitting it yields `"1.0"` (legacy engine) on both create routes. Always send it explicitly.                                                                                      |
 
 **Lesson:** Both libraries' research summaries had errors. Always verify
 endpoints + shapes against the live tenant before writing code.
@@ -226,9 +227,9 @@ endpoints + shapes against the live tenant before writing code.
 - **Original finding:** `idmAdminClient` rejects `http://localhost:*/callback`
   loopback redirect URIs, so we tried provisioning a dedicated `AicEdit` OAuth2
   client in the alpha realm. That worked for alpha-realm identities, but
-  platform admins (the users who actually need to bootstrap pingone-aic-manager) live in
-  the **root realm** in AIC, and AIC explicitly blocks root-realm OAuth2 client
-  management API
+  platform admins (the users who actually need to bootstrap pingone-aic-manager)
+  live in the **root realm** in AIC, and AIC explicitly blocks root-realm OAuth2
+  client management API
   (`403 "This operation is not available in PingOne Advanced Identity Cloud"`).
   DCR is exposed but rejects SA bearers. Device code is in
   `grant_types_supported` but no `device_authorization_endpoint` is advertised.
@@ -248,14 +249,14 @@ bootstrap, the SA's JWK takes over; the bootstrap credentials are discarded.
 
 **Pattern 1 — Paste session cookie.** User logs into the AIC admin console in
 their normal browser (full SSO/MFA/passkey/SAML stack). They copy the AM session
-cookie value from DevTools → Application → Cookies. pingone-aic-manager drives the OAuth
-flow server-side using the cookie.
+cookie value from DevTools → Application → Cookies. pingone-aic-manager drives
+the OAuth flow server-side using the cookie.
 
-**Pattern 2 — Username/password in-app.** pingone-aic-manager walks AM's authentication
-journey via `POST /am/json/realms/root/authenticate`, handling each callback
-round (NameCallback, PasswordCallback, ConfirmationCallback, etc.). Works for
-username+password and TOTP. Does NOT work for passkey/push/CAPTCHA — those
-require a real browser.
+**Pattern 2 — Username/password in-app.** pingone-aic-manager walks AM's
+authentication journey via `POST /am/json/realms/root/authenticate`, handling
+each callback round (NameCallback, PasswordCallback, ConfirmationCallback,
+etc.). Works for username+password and TOTP. Does NOT work for
+passkey/push/CAPTCHA — those require a real browser.
 
 **Pattern 3 — Paste SA details.** User already has a service account JWK and
 client_id. pingone-aic-manager stores them directly. (Same path as
@@ -360,15 +361,21 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
 
 ## Changelog
 
+- **2026-07-31** — AM script `default` verified **server-owned on write**: a
+  client-sent `"default": true` is silently dropped to `false` on `PUT`-create,
+  `POST ?_action=create`, and `PUT`-update. Clients cannot mint an undeletable
+  script or promote one to a product default. Same probe run showed
+  `evaluatorVersion` defaults to **`"1.0"`**, not `"2.0"` — see the
+  contradictions table. Updated `04-scripts.md`.
 - **2026-07-15** — IDM schedule console visibility verified: a schedule with
   `persisted:false` can exist and run through the API while being hidden from
   the AIC console. Changing only `persisted:true` made it visible with
   `enabled:false` unchanged. Manual-only schedules that should be visible use
   `persisted:true, enabled:false`.
 - **2026-07-15** — IDM manual schedule trigger header behaviour verified:
-  `POST /openidm/scheduler/job/<name>?_action=trigger` returns 501 `Not
-  Implemented` when sent `Accept-API-Version: resource=1.0`, but the identical
-  headerless call returns 200 `{"success":true}`. Updated
+  `POST /openidm/scheduler/job/<name>?_action=trigger` returns 501
+  `Not Implemented` when sent `Accept-API-Version: resource=1.0`, but the
+  identical headerless call returns 200 `{"success":true}`. Updated
   `11-idm-endpoints.md`; scheduler-trigger curl examples must omit the header.
 - **2026-05-17** — Initial verification pass; Q1-Q4 + secret stores resolved.
 - **2026-05-18** — Step 2 implemented (TUI skeleton, crypto, onboarding). Q11
@@ -456,9 +463,9 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   only `{"aliases":[…]}` fails with
   `400 "Invalid config: Secret value is missing"` every time. That 400 is NOT
   eventual consistency/value-staging (an earlier mis-diagnosis) — adding
-  `secretId` to the body fixes it for any label/alias pairing.** pingone-aic-manager
-  validates the alias is an existing ESV secret before writing (the API itself
-  accepts any string, creating dangling mappings).
+  `secretId` to the body fixes it for any label/alias pairing.**
+  pingone-aic-manager validates the alias is an existing ESV secret before
+  writing (the API itself accepts any string, creating dangling mappings).
 - **2026-06-24** — **Logs API (`08-logs.md`) partial live pass.** (1) Real
   source list captured (no `idm-recon`; includes `am-core`, `ctsstore*`,
   `userstore*`); `am-everything`/`idm-everything` are the roll-ups → CLI
@@ -501,9 +508,9 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
     node events carry no principal. Module/service-account logins
     (`AM-LOGIN-MODULE-COMPLETED`/`AM-LOGIN-COMPLETED`,
     `authIndex=module_instance`, no `treeName`) are OAuth2 client auth, not
-    journeys — skip them. The pingone-aic-manager sandbox has only these module logins in
-    the synced window, so journey rollup was verified against the client-a prod
-    capture, not the sandbox.
+    journeys — skip them. The pingone-aic-manager sandbox has only these module
+    logins in the synced window, so journey rollup was verified against the client-a
+    prod capture, not the sandbox.
 - **2026-07-01 (later)** — **Journey join key RE-corrected — the same-day fix
   above was also wrong.** Stripping the trailing `-<digits>` and keying the tree
   event off `_id` (the fix in the prior bullet) MERGES thousands of executions:
@@ -526,10 +533,10 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   manually triggered throwaway schedule that wrote the expected interpolated
   value with `openidm.create`; the schedule and record were removed afterward.
   **Exception:** a `const` declared inside a loop body parsed but silently
-  terminated the loop after its first iteration (created sum 0, expected 3).
-  The same `for (let ...)` loop without a body `const` completed correctly.
-  Schedule scripts must use `let` for bindings declared in repeated loop
-  bodies; root-level immutable bindings may remain `const`.
+  terminated the loop after its first iteration (created sum 0, expected 3). The
+  same `for (let ...)` loop without a body `const` completed correctly. Schedule
+  scripts must use `let` for bindings declared in repeated loop bodies;
+  root-level immutable bindings may remain `const`.
 - **2026-07-15** — Managed-object naming convention corrected: `alpha_` and
   `bravo_` identify realm-owned data; they are not a blanket prefix for every
   custom object. Tenant-global service/configuration data should use a

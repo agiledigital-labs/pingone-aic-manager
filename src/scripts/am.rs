@@ -121,6 +121,9 @@ pub fn new_script(name: &str, source: &[u8], opts: &NewScriptOpts) -> Result<Rem
         .ok_or_else(|| Error::Config("AM script create requires --context".into()))?;
     let id = id_for_new(name);
     let language = opts.language.clone().unwrap_or_else(|| "JAVASCRIPT".into());
+    // Always sent, never omitted: AM's own create default is "1.0" (verified
+    // 2026-07-31), so leaving the field off would quietly produce legacy-engine
+    // scripts — the exact thing the check below refuses.
     let evaluator_version = opts
         .evaluator_version
         .clone()
