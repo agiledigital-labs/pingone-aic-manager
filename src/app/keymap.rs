@@ -55,6 +55,7 @@ pub enum Act {
     NewItem,
     RenameField,
     RenameObject,
+    DeleteObject,
     NewObject,
     AddHook,
     Pull,
@@ -370,12 +371,20 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             AddHook,
         ));
         out.push(b(
-            &[Trigger::Char('d'), Trigger::Char('D')],
+            &[Trigger::Char('d')],
             "d",
             "delete field",
             true,
             true,
             Delete,
+        ));
+        out.push(b(
+            &[Trigger::Char('D')],
+            "D",
+            "delete object",
+            true,
+            true,
+            DeleteObject,
         ));
         out.push(b(
             &[Trigger::Char('[')],
@@ -700,6 +709,7 @@ async fn run_normal(app: &mut App, act: Act) {
         NewItem => new_item(app),
         RenameField => crate::managed::screen::start_rename_field(app),
         RenameObject => crate::managed::screen::start_rename_object(app),
+        DeleteObject => crate::managed::screen::start_delete_object(app),
         NewObject => crate::managed::screen::start_new_object(app),
         AddHook => crate::managed::screen::start_add_hook(app),
         Pull => crate::scripts::screen::pull_selected(app),
