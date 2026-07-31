@@ -772,9 +772,12 @@ fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        // A single-line TextField needs two rows (label + value); one row renders
+        // the label only, leaving no visible input. Collapses to 0 when there is
+        // no reverse relationship to name.
         Constraint::Length(
             if draft.reverse != crate::managed::state::ReverseCardinality::None {
-                1
+                2
             } else {
                 0
             },
