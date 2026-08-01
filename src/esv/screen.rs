@@ -248,10 +248,6 @@ pub fn mappings_subview_active(app: &App) -> bool {
         ) == EsvView::Mappings
 }
 
-pub fn edit_field_active(app: &App) -> bool {
-    app.esv.editing.is_some()
-}
-
 pub fn current_view(app: &App) -> EsvView {
     app.esv.view.clamp(
         app.active_tenant()

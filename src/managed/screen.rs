@@ -193,14 +193,6 @@ pub fn apply_event(app: &mut App, event: Event) {
     }
 }
 
-pub fn editing_field_active(app: &App) -> bool {
-    app.managed.editing.is_some()
-}
-
-pub fn add_field_active(app: &App) -> bool {
-    app.managed.add_field.is_some()
-}
-
 pub fn resume_mode_after_prod_cancel(app: &App) -> Option<Mode> {
     if app.managed.editing.is_some() {
         Some(Mode::EditField)
