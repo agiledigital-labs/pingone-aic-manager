@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
-use crate::managed::spec::ScalarFieldType;
+use crate::managed::spec::{
+    EnumChange, EnumSpec, FieldEditSpec, ScalarFieldType, parse_enum_items,
+};
 
 use crate::tui::widgets::{LineEditor, TextField};
 
@@ -48,6 +50,7 @@ pub enum FieldEditAttrs {
 pub enum FieldAttr {
     Title,
     Description,
+    Enum,
     Required,
     Searchable,
     Viewable,
@@ -70,6 +73,7 @@ impl FieldCaps {
                 attr,
                 FieldAttr::Title
                     | FieldAttr::Description
+                    | FieldAttr::Enum
                     | FieldAttr::Required
                     | FieldAttr::Searchable
                     | FieldAttr::Viewable
@@ -230,6 +234,7 @@ pub enum EditFieldFocus {
     Key,
     Title,
     Description,
+    Enum,
     Required,
     Searchable,
     Viewable,
@@ -238,7 +243,7 @@ pub enum EditFieldFocus {
 }
 
 impl EditFieldFocus {
-    fn order(caps: FieldCaps) -> Vec<EditFieldFocus> {
+    fn order(caps: FieldCaps, enum_eligible: bool) -> Vec<EditFieldFocus> {
         let mut order = Vec::new();
         if caps.rename_key {
             order.push(EditFieldFocus::Key);
@@ -248,6 +253,9 @@ impl EditFieldFocus {
         }
         if caps.can_edit_attr(FieldAttr::Description) {
             order.push(EditFieldFocus::Description);
+        }
+        if enum_eligible && caps.can_edit_attr(FieldAttr::Enum) {
+            order.push(EditFieldFocus::Enum);
         }
         if caps.can_edit_attr(FieldAttr::Required) {
             order.push(EditFieldFocus::Required);
@@ -265,14 +273,14 @@ impl EditFieldFocus {
         order
     }
 
-    pub fn next(self, caps: FieldCaps) -> Self {
-        let order = Self::order(caps);
+    pub fn next(self, caps: FieldCaps, enum_eligible: bool) -> Self {
+        let order = Self::order(caps, enum_eligible);
         let i = order.iter().position(|field| *field == self).unwrap_or(0);
         order[(i + 1) % order.len()]
     }
 
-    pub fn prev(self, caps: FieldCaps) -> Self {
-        let order = Self::order(caps);
+    pub fn prev(self, caps: FieldCaps, enum_eligible: bool) -> Self {
+        let order = Self::order(caps, enum_eligible);
         let i = order.iter().position(|field| *field == self).unwrap_or(0);
         order[(i + order.len() - 1) % order.len()]
     }
@@ -300,11 +308,16 @@ pub struct FieldEditState {
     pub key: TextField,
     pub title: TextField,
     pub description: TextField,
+    pub enum_values: TextField,
+    /// Stable rendering of the stored constraint; preserves untouched edits.
+    pub enum_seed: String,
     pub required: bool,
     pub searchable: bool,
     pub viewable: bool,
     pub user_editable: bool,
     pub focused: EditFieldFocus,
+    pub allow_narrowing: bool,
+    pub narrowed_enum_values: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -341,6 +354,9 @@ impl FieldEditState {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let property_type = crate::managed::state::property_type(&property);
+        let enum_seed = crate::managed::ops::property_enum(&property)
+            .map(|constraint| constraint.to_items().join(", "))
+            .unwrap_or_default();
         let mut key = TextField::single_line("Key").with_initial(field_key.clone());
         if object_class(&object_def) == ObjectClass::Standard && field_key.starts_with("custom_") {
             key.locked_prefix = "custom_".into();
@@ -358,13 +374,44 @@ impl FieldEditState {
             key,
             title: TextField::single_line("Title").with_initial(title),
             description: TextField::textarea("Description").with_initial(description),
+            enum_values: TextField::single_line("Allowed values").with_initial(enum_seed.clone()),
+            enum_seed,
             required,
             searchable,
             viewable,
             user_editable,
             focused: EditFieldFocus::Title,
+            allow_narrowing: false,
+            narrowed_enum_values: Vec::new(),
             error: None,
         }
+    }
+
+    /// Parses the draft's comma-separated enum row, retaining an untouched
+    /// constraint verbatim rather than rewriting it on every field save.
+    pub fn enum_change(&self) -> Result<EnumChange, String> {
+        if self.enum_values.value == self.enum_seed {
+            return Ok(EnumChange::Unchanged);
+        }
+        if self.enum_values.value.trim().is_empty() {
+            return Ok(EnumChange::Clear);
+        }
+        let items = self.enum_values.value.split(',').collect::<Vec<_>>();
+        parse_enum_items(&items).map(EnumChange::Set)
+    }
+
+    pub fn edit_spec(&self) -> Result<FieldEditSpec, String> {
+        Ok(FieldEditSpec {
+            new_key: Some(self.key.value.clone()),
+            title: Some(self.title.value.clone()),
+            description: Some(self.description.value.clone()),
+            required: Some(self.required),
+            searchable: Some(self.searchable),
+            viewable: Some(self.viewable),
+            user_editable: Some(self.user_editable),
+            enum_change: self.enum_change()?,
+            allow_narrowing: self.allow_narrowing,
+        })
     }
 
     pub fn toggle_focused_bool(&mut self) {
@@ -526,6 +573,7 @@ pub enum AddFieldFocus {
     Key,
     Title,
     Description,
+    Enum,
     Type,
     Searchable,
     Viewable,
@@ -535,11 +583,13 @@ pub enum AddFieldFocus {
 }
 
 impl AddFieldFocus {
-    const ORDER: [AddFieldFocus; 9] = [
+    const ORDER: [AddFieldFocus; 10] = [
         AddFieldFocus::Key,
         AddFieldFocus::Title,
         AddFieldFocus::Description,
+        // After Type, because Type decides whether this row exists at all.
         AddFieldFocus::Type,
+        AddFieldFocus::Enum,
         AddFieldFocus::Searchable,
         AddFieldFocus::Viewable,
         AddFieldFocus::UserEditable,
@@ -547,20 +597,24 @@ impl AddFieldFocus {
         AddFieldFocus::Save,
     ];
 
-    pub fn next(self) -> Self {
-        let i = Self::ORDER
-            .iter()
-            .position(|field| *field == self)
-            .unwrap_or(0);
-        Self::ORDER[(i + 1) % Self::ORDER.len()]
+    pub fn next(self, enum_eligible: bool) -> Self {
+        let order = Self::order(enum_eligible);
+        let i = order.iter().position(|field| *field == self).unwrap_or(0);
+        order[(i + 1) % order.len()]
     }
 
-    pub fn prev(self) -> Self {
-        let i = Self::ORDER
-            .iter()
-            .position(|field| *field == self)
-            .unwrap_or(0);
-        Self::ORDER[(i + Self::ORDER.len() - 1) % Self::ORDER.len()]
+    pub fn prev(self, enum_eligible: bool) -> Self {
+        let order = Self::order(enum_eligible);
+        let i = order.iter().position(|field| *field == self).unwrap_or(0);
+        order[(i + order.len() - 1) % order.len()]
+    }
+
+    fn order(enum_eligible: bool) -> Vec<AddFieldFocus> {
+        let mut order = Self::ORDER.to_vec();
+        if !enum_eligible {
+            order.retain(|focus| *focus != Self::Enum);
+        }
+        order
     }
 
     pub fn is_bool(self) -> bool {
@@ -582,6 +636,7 @@ pub struct AddFieldState {
     pub key: TextField,
     pub title: TextField,
     pub description: TextField,
+    pub enum_values: TextField,
     pub field_type: ScalarFieldType,
     pub searchable: bool,
     pub viewable: bool,
@@ -601,6 +656,7 @@ impl AddFieldState {
             key,
             title: TextField::single_line("Title"),
             description: TextField::textarea("Description"),
+            enum_values: TextField::single_line("Allowed values"),
             field_type: ScalarFieldType::String,
             searchable: false,
             viewable: true,
@@ -609,6 +665,18 @@ impl AddFieldState {
             focused: AddFieldFocus::Key,
             error: None,
         }
+    }
+
+    pub fn enum_eligible(&self) -> bool {
+        crate::managed::ops::scalar_type_supports_enum(self.field_type)
+    }
+
+    pub fn parsed_enum_values(&self) -> Result<Option<EnumSpec>, String> {
+        if !self.enum_eligible() || self.enum_values.value.trim().is_empty() {
+            return Ok(None);
+        }
+        let items = self.enum_values.value.split(',').collect::<Vec<_>>();
+        parse_enum_items(&items).map(Some)
     }
 
     pub fn toggle_focused_bool(&mut self) {
@@ -1500,5 +1568,77 @@ mod tests {
         assert_eq!(form.ref_properties.len(), 1);
         assert_eq!(form.ref_properties[0].name, "first");
         assert_eq!(form.ref_selected, 0);
+    }
+
+    #[test]
+    fn enum_draft_parsing_uses_the_shared_item_grammar() {
+        let mut draft = AddFieldState::new("sandbox".into(), "thing".into(), json!({}));
+        draft.enum_values.value = " new:New, done:All done: now, ".into();
+
+        let values = draft.parsed_enum_values().unwrap().unwrap();
+        assert_eq!(values.to_items(), ["new:New", "done:All done: now"]);
+    }
+
+    #[test]
+    fn enum_edit_seed_distinguishes_unchanged_clear_and_set() {
+        let object = json!({"name": "thing", "schema": {"properties": {}}});
+        let property = json!({
+            "type": "string",
+            "enum": ["new", "done"],
+            "options": {"enum_titles": ["New", "Done"]}
+        });
+        let mut edit = FieldEditState::from_property(
+            "sandbox".into(),
+            "thing".into(),
+            "status".into(),
+            object,
+            property,
+            false,
+        );
+
+        assert!(matches!(edit.enum_change().unwrap(), EnumChange::Unchanged));
+        edit.enum_values.value.clear();
+        assert!(matches!(edit.enum_change().unwrap(), EnumChange::Clear));
+        edit.enum_values.value = "new:Brand new, in_progress:In progress".into();
+        assert_eq!(
+            edit.enum_change().unwrap(),
+            EnumChange::Set(EnumSpec {
+                values: vec![
+                    crate::managed::spec::EnumValue {
+                        value: "new".into(),
+                        title: Some("Brand new".into()),
+                    },
+                    crate::managed::spec::EnumValue {
+                        value: "in_progress".into(),
+                        title: Some("In progress".into()),
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn enum_focus_sits_after_the_row_that_decides_its_type() {
+        let caps = FieldCaps {
+            tier: FieldTier::FieldOnCustomObject,
+            attrs: FieldEditAttrs::Full,
+            change_type: true,
+            rename_key: true,
+            delete: true,
+        };
+        assert_eq!(
+            EditFieldFocus::Description.next(caps, true),
+            EditFieldFocus::Enum
+        );
+        assert_eq!(
+            EditFieldFocus::Enum.prev(caps, true),
+            EditFieldFocus::Description
+        );
+        // On the add form the type is still being chosen, and choosing a
+        // boolean removes this row — so it follows Type rather than preceding
+        // it.
+        assert_eq!(AddFieldFocus::Type.next(true), AddFieldFocus::Enum);
+        assert_eq!(AddFieldFocus::Enum.prev(true), AddFieldFocus::Type);
+        assert_eq!(AddFieldFocus::Type.next(false), AddFieldFocus::Searchable);
     }
 }

@@ -10,7 +10,8 @@ use crate::app::keymap::{Bind, HintTarget, Trigger, hidden, hint, pick, save_cho
 use crate::app::{App, InputMode};
 use crate::managed::ops;
 use crate::managed::screen::{
-    Mode, relationship_target_matches, start_add_field, start_relationship_create,
+    Mode, relationship_target_matches, request_edit_save, start_add_field,
+    start_relationship_create,
 };
 use crate::managed::state::{
     AddFieldFocus, AddKind, EditFieldFocus, NewObjectFocus, RefPropDraft, RefPropFocus,
@@ -27,6 +28,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
         Mode::RelationshipTarget => handle_relationship_target_key(app, key),
         Mode::RefProp => handle_ref_prop_key(app, key),
         Mode::AddHook => handle_add_hook_key(app, key),
+        Mode::EnumNarrowConfirm => handle_enum_narrow_confirm_key(app, key),
         Mode::DeleteFieldConfirm => handle_delete_confirm_key(app, key),
         Mode::DeleteObjectConfirm => handle_delete_object_confirm_key(app, key),
         Mode::RenameField => handle_rename_field_key(app, key),
@@ -87,6 +89,7 @@ fn hints(mode: Mode, app: &App, target: HintTarget) -> Vec<(&'static str, &'stat
             target,
         ),
         Mode::AddHook => pick(&add_hook_binds(), target),
+        Mode::EnumNarrowConfirm => pick(&enum_narrow_binds(), target),
         Mode::DeleteFieldConfirm => pick(&delete_field_binds(), target),
         Mode::DeleteObjectConfirm => pick(&delete_object_binds(), target),
         Mode::RenameField => pick(&rename_field_binds(), target),
@@ -442,6 +445,9 @@ fn delete_field_binds() -> Vec<Bind<SimpleAct>> {
 }
 fn delete_object_binds() -> Vec<Bind<SimpleAct>> {
     confirm_binds("delete")
+}
+fn enum_narrow_binds() -> Vec<Bind<SimpleAct>> {
+    confirm_binds("save")
 }
 fn rename_object_confirm_binds() -> Vec<Bind<SimpleAct>> {
     confirm_binds("rename")
@@ -852,7 +858,7 @@ fn edit_field_binds(focused: Option<EditFieldFocus>) -> Vec<Bind<EditFieldAct>> 
 fn run_edit_field(app: &mut App, act: EditFieldAct) {
     match act {
         EditFieldAct::Cancel => ops::cancel_active_draft(app),
-        EditFieldAct::Save => ops::commit_edit(app),
+        EditFieldAct::Save => request_edit_save(app),
         EditFieldAct::FocusNext | EditFieldAct::FocusPrev => {
             if let Some(edit) = app.managed.editing.as_mut() {
                 ops::advance_focus(edit, act == EditFieldAct::FocusNext);
@@ -893,6 +899,11 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) {
         }
         EditFieldFocus::Description => {
             edit.description.handle_key(&key);
+        }
+        EditFieldFocus::Enum => {
+            edit.enum_values.handle_key(&key);
+            edit.allow_narrowing = false;
+            edit.narrowed_enum_values.clear();
         }
         _ => {}
     }
@@ -992,6 +1003,9 @@ fn handle_add_field_key(app: &mut App, key: KeyEvent) {
         }
         AddFieldFocus::Description => {
             draft.description.handle_key(&key);
+        }
+        AddFieldFocus::Enum => {
+            draft.enum_values.handle_key(&key);
         }
         _ => {}
     }
@@ -1575,6 +1589,26 @@ fn handle_delete_confirm_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn handle_enum_narrow_confirm_key(app: &mut App, key: KeyEvent) {
+    if let Some(act) = Bind::resolve(&enum_narrow_binds(), &key) {
+        match act {
+            SimpleAct::Yes => {
+                if let Some(edit) = app.managed.editing.as_mut() {
+                    edit.allow_narrowing = true;
+                }
+                ops::commit_edit(app);
+            }
+            SimpleAct::No => {
+                if let Some(edit) = app.managed.editing.as_mut() {
+                    edit.allow_narrowing = false;
+                }
+                app.input_mode = InputMode::Managed(Mode::EditField);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn handle_delete_object_confirm_key(app: &mut App, key: KeyEvent) {
     if let Some(act) = Bind::resolve(&delete_object_binds(), &key) {
         if act == SimpleAct::No {
@@ -1649,10 +1683,11 @@ mod tests {
     }
 
     /// Every variant, so the property test below can't silently skip one.
-    const ALL_FOCUS: [EditFieldFocus; 8] = [
+    const ALL_FOCUS: [EditFieldFocus; 9] = [
         EditFieldFocus::Key,
         EditFieldFocus::Title,
         EditFieldFocus::Description,
+        EditFieldFocus::Enum,
         EditFieldFocus::Required,
         EditFieldFocus::Searchable,
         EditFieldFocus::Viewable,
@@ -1750,10 +1785,11 @@ mod tests {
         }
     }
 
-    const ALL_ADD_FIELD_FOCUS: [AddFieldFocus; 9] = [
+    const ALL_ADD_FIELD_FOCUS: [AddFieldFocus; 10] = [
         AddFieldFocus::Key,
         AddFieldFocus::Title,
         AddFieldFocus::Description,
+        AddFieldFocus::Enum,
         AddFieldFocus::Type,
         AddFieldFocus::Searchable,
         AddFieldFocus::Viewable,
@@ -1857,6 +1893,7 @@ mod tests {
         for binds in [
             delete_field_binds(),
             delete_object_binds(),
+            enum_narrow_binds(),
             rename_object_confirm_binds(),
         ] {
             assert_eq!(
