@@ -60,9 +60,9 @@ use crate::config::tenant::TenantTheme;
 use crate::esv::state::{LoadState, id_of};
 use crate::secrets::ops;
 use crate::secrets::state::{
-    AddVersionForm, CreateField, CreateForm, DeletePlan, DetailFocus, Encoding, SecretOpKind,
-    VersionsView, description_of, encoding_of, secret_in_cache, selected_secret, version_num,
-    version_status, versions_view,
+    AddVersionForm, CreateForm, DeletePlan, DetailFocus, Encoding, SecretOpKind, VersionsView,
+    description_of, encoding_of, secret_in_cache, selected_secret, version_num, version_status,
+    versions_view,
 };
 use crate::tui::widgets::TextField;
 
@@ -155,14 +155,6 @@ pub fn help_lines(mode: Mode, app: &App) -> Option<Vec<(&'static str, &'static s
 
 pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
     crate::secrets::keys::footer_hints(app)
-}
-
-pub fn create_field_active(app: &App) -> bool {
-    app.secret.create.is_some()
-}
-
-pub fn create_focus(app: &App) -> Option<CreateField> {
-    app.secret.create.as_ref().map(|form| form.focused)
 }
 
 pub(crate) fn open_add_version(app: &mut App) {
