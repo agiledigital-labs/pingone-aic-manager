@@ -225,6 +225,9 @@ patches keep working. Widening an enum is safe; narrowing one needs the affected
 records migrated first. Anything that offers enum editing should treat removing
 a value differently from adding one.
 
+The CLI can set or clear these constraints with `aic managed field add` and
+`aic managed field edit`; see [`docs/CLI.md`](../CLI.md) for its narrowing gate.
+
 No cross-object reverse-property validation runs on config write. A PUT with
 `validate: true` and a `reversePropertyName` that did not exist on the target
 object returned 200 and stored the property. Treat `validate` and

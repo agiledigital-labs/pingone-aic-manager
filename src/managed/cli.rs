@@ -144,6 +144,15 @@ pub struct FieldAttrs {
     viewable: Option<bool>,
     #[arg(long = "user-editable", action = ArgAction::Set)]
     user_editable: Option<bool>,
+    /// Allowed value, optionally followed by a display title. Repeat to replace the set.
+    #[arg(long = "enum", conflicts_with = "clear_enum")]
+    enum_values: Vec<String>,
+    /// Remove the allowed-value constraint.
+    #[arg(long, conflicts_with = "enum_values")]
+    clear_enum: bool,
+    /// Permit removing values from an existing allowed-value constraint.
+    #[arg(long)]
+    allow_narrowing: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -173,7 +182,7 @@ pub enum RelationshipCommand {
         #[arg(long = "reverse-key")]
         reverse_key: Option<String>,
         #[command(flatten)]
-        attrs: FieldAttrs,
+        attrs: Box<FieldAttrs>,
         #[arg(long, action = ArgAction::Set)]
         validate: Option<bool>,
         #[arg(long = "ref-property")]
@@ -313,11 +322,18 @@ async fn field(command: FieldCommand) -> Result<()> {
             yes,
             json,
         } => {
+            if attrs.clear_enum {
+                return Err(crate::Error::Config(
+                    "field add cannot use --clear-enum: a new field has no allowed-value constraint"
+                        .into(),
+                ));
+            }
             let (object, key) = parse_object_key(&field)?;
             let tenant = tenant_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant, yes)?;
             let mut doc = api::get_managed(&tenant).await?;
             let previous = api::object_named(&doc, &object)?.clone();
+            let enum_values = enum_spec(&attrs)?;
             let spec = spec::AddFieldSpec {
                 key,
                 field_type: scalar_type(&field_type)?,
@@ -327,6 +343,7 @@ async fn field(command: FieldCommand) -> Result<()> {
                 searchable: attrs.searchable.unwrap_or(false),
                 viewable: attrs.viewable.unwrap_or(true),
                 user_editable: attrs.user_editable.unwrap_or(true),
+                enum_values,
             };
             let applied = ops::apply_add_field(&previous, &spec).map_err(crate::Error::Config)?;
             replace_object_write(&ok, &mut doc, &object, &previous, applied.object.clone()).await?;
@@ -349,9 +366,28 @@ async fn field(command: FieldCommand) -> Result<()> {
             let ok = ensure_prod_confirmed(&tenant, yes)?;
             let mut doc = api::get_managed(&tenant).await?;
             let previous = api::object_named(&doc, &object)?.clone();
-            let applied = ops::apply_field_edit(&previous, &key, &field_edit_spec(attrs))
-                .map_err(crate::Error::Config)?;
+            let edit_spec = field_edit_spec(attrs)?;
+            let removed = state::properties(&previous)
+                .and_then(|properties| properties.get(&key))
+                .map(|property| ops::removed_enum_values(property, &edit_spec.enum_change))
+                .unwrap_or_default();
+            // The transform refuses this too, but its message can't name a flag
+            // it doesn't know about.
+            if !removed.is_empty() && !edit_spec.allow_narrowing {
+                return Err(crate::Error::Config(format!(
+                    "dropping enum values {} would leave records that fail whole-record updates; pass --allow-narrowing to confirm",
+                    removed.join(", ")
+                )));
+            }
+            let applied =
+                ops::apply_field_edit(&previous, &key, &edit_spec).map_err(crate::Error::Config)?;
             replace_object_write(&ok, &mut doc, &object, &previous, applied.object.clone()).await?;
+            if !removed.is_empty() {
+                eprintln!(
+                    "WARNING: dropped enum values {}. Records still holding them will fail whole-record read-modify-write updates.",
+                    removed.join(", ")
+                );
+            }
             confirmation(&format!(
                 "managed field {object}.{} edited",
                 applied.field_key
@@ -422,6 +458,11 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             yes,
             json,
         } => {
+            if !attrs.enum_values.is_empty() || attrs.clear_enum {
+                return Err(crate::Error::Config(
+                    "relationship set cannot use --enum or --clear-enum".into(),
+                ));
+            }
             let (source_object, key) = parse_object_key(&field)?;
             let tenant = tenant_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant, yes)?;
@@ -686,8 +727,22 @@ fn ref_property(value: &str) -> Result<state::RefProperty> {
         kind,
     })
 }
-fn field_edit_spec(attrs: FieldAttrs) -> spec::FieldEditSpec {
-    spec::FieldEditSpec {
+fn enum_spec(attrs: &FieldAttrs) -> Result<Option<spec::EnumSpec>> {
+    if attrs.enum_values.is_empty() {
+        Ok(None)
+    } else {
+        spec::parse_enum_items(&attrs.enum_values)
+            .map(Some)
+            .map_err(crate::Error::Config)
+    }
+}
+fn field_edit_spec(attrs: FieldAttrs) -> Result<spec::FieldEditSpec> {
+    let enum_change = if attrs.clear_enum {
+        spec::EnumChange::Clear
+    } else {
+        enum_spec(&attrs)?.map_or(spec::EnumChange::Unchanged, spec::EnumChange::Set)
+    };
+    Ok(spec::FieldEditSpec {
         new_key: None,
         title: attrs.title,
         description: attrs.description,
@@ -695,7 +750,9 @@ fn field_edit_spec(attrs: FieldAttrs) -> spec::FieldEditSpec {
         searchable: attrs.searchable,
         viewable: attrs.viewable,
         user_editable: attrs.user_editable,
-    }
+        enum_change,
+        allow_narrowing: attrs.allow_narrowing,
+    })
 }
 fn attrs_present(attrs: &FieldAttrs) -> bool {
     attrs.title.is_some()
@@ -704,6 +761,8 @@ fn attrs_present(attrs: &FieldAttrs) -> bool {
         || attrs.searchable.is_some()
         || attrs.viewable.is_some()
         || attrs.user_editable.is_some()
+        || !attrs.enum_values.is_empty()
+        || attrs.clear_enum
 }
 fn ensure_edit_attrs(attrs: &FieldAttrs) -> Result<()> {
     if attrs_present(attrs) {
@@ -823,6 +882,69 @@ mod tests {
     #[test]
     fn field_edit_requires_an_attribute() {
         assert!(ensure_edit_attrs(&FieldAttrs::default()).is_err());
+    }
+
+    #[test]
+    fn enum_flags_parse_and_conflict() {
+        for args in [
+            [
+                "aic",
+                "managed",
+                "field",
+                "add",
+                "test.status",
+                "--type",
+                "string",
+                "--enum",
+                "new",
+            ]
+            .as_slice(),
+            [
+                "aic",
+                "managed",
+                "field",
+                "edit",
+                "test.status",
+                "--enum",
+                "new",
+                "--enum",
+                "done:Done",
+            ]
+            .as_slice(),
+            [
+                "aic",
+                "managed",
+                "field",
+                "edit",
+                "test.status",
+                "--clear-enum",
+            ]
+            .as_slice(),
+            [
+                "aic",
+                "managed",
+                "field",
+                "edit",
+                "test.status",
+                "--allow-narrowing",
+            ]
+            .as_slice(),
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+        }
+        assert!(
+            Cli::try_parse_from([
+                "aic",
+                "managed",
+                "field",
+                "edit",
+                "test.status",
+                "--enum",
+                "new",
+                "--clear-enum",
+            ])
+            .is_err()
+        );
     }
     #[test]
     fn managed_write_commands_parse() {
