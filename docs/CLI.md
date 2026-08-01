@@ -18,8 +18,8 @@ aic <command> <subcommand> --help
 ## Conventions that apply everywhere
 
 - **Project-rooted.** `aic` walks up from your current directory to find the
-  project root (the directory containing `.aic/`), so any command works
-  from any subdirectory.
+  project root (the directory containing `.aic/`), so any command works from any
+  subdirectory.
 - **`--tenant <name>`** overrides the active context for a single call. With no
   flag, commands use the current context (`aic ctx current`); the default
   context name is `sandbox`. For `script` commands the tenant is also inferred
@@ -27,10 +27,10 @@ aic <command> <subcommand> --help
 - **`--realm <alpha|bravo>`** selects the AM realm for realm-scoped commands
   (`journey`, `oauth`, `secretmap`, and AM `script` namespaces). Defaults to
   **`alpha`**. ESVs and IDM endpoints are tenant-global and take no realm.
-- **Production-write guard.** Commands that mutate a *production-themed* tenant
+- **Production-write guard.** Commands that mutate a _production-themed_ tenant
   refuse to run without **`--yes`** — the CLI equivalent of the TUI's prod
   guard. Irreversible commands (`esv secret destroy`/`delete`) prompt for a
-  typed confirmation on *any* tenant unless `--yes` is given.
+  typed confirmation on _any_ tenant unless `--yes` is given.
 - **`--force`** skips a safety check specific to the command (e.g. overwriting a
   drifted remote, deleting a journey/client). It's called out per command below.
 - **Output format.** List commands default to kubectl-style tables. Pass
@@ -45,28 +45,28 @@ The agent holds your decrypted service-account key in memory and mints/refreshes
 bearer tokens. See the [agent section of the README](../README.md#the-agent) for
 the locked/unlocked model and why `logout` ≠ `stop`.
 
-| Command | What it does |
-|---|---|
-| `aic agent` | Run the agent in the foreground (Ctrl-C to stop; logs to stderr). Normally auto-spawned — you rarely run this directly. |
-| `aic agent --detach` | Spawn a detached agent (logs to `.aic/agent.log`) and exit. |
-| `aic agent --idle-timeout <seconds>` | Override the auto-lock timeout (default 3600s, or `settings.toml`). |
-| `aic session login` | Unlock the agent (no-echo master-password prompt). |
-| `aic session logout` | **Lock** the agent — wipe keys + tokens from memory, leave it running. |
-| `aic session stop` | **Stop** the agent process entirely. |
-| `aic session status` | Show whether the agent is running/unlocked, the active tenant, and token expiry. |
+| Command                              | What it does                                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `aic agent`                          | Run the agent in the foreground (Ctrl-C to stop; logs to stderr). Normally auto-spawned — you rarely run this directly. |
+| `aic agent --detach`                 | Spawn a detached agent (logs to `.aic/agent.log`) and exit.                                                             |
+| `aic agent --idle-timeout <seconds>` | Override the auto-lock timeout (default 3600s, or `settings.toml`).                                                     |
+| `aic session login`                  | Unlock the agent (no-echo master-password prompt).                                                                      |
+| `aic session logout`                 | **Lock** the agent — wipe keys + tokens from memory, leave it running.                                                  |
+| `aic session stop`                   | **Stop** the agent process entirely.                                                                                    |
+| `aic session status`                 | Show whether the agent is running/unlocked, the active tenant, and token expiry.                                        |
 
 The older top-level `aic login`, `aic logout`, `aic stop`, and `aic status`
 forms still work as compatibility aliases, but are hidden from help.
 
 ### Context
 
-| Command | What it does |
-|---|---|
-| `aic ctx list [--json]` | List tenants defined in `.aic/config.toml`. |
-| `aic ctx current` | Print the active context. |
-| `aic ctx use <tenant>` | Switch the active context. |
-| `aic whoami [--tenant <name>]` | Mint and print token info for a context. |
-| `aic whoami --token` | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
+| Command                        | What it does                                                                                                   |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `aic ctx list [--json]`        | List tenants defined in `.aic/config.toml`.                                                                    |
+| `aic ctx current`              | Print the active context.                                                                                      |
+| `aic ctx use <tenant>`         | Switch the active context.                                                                                     |
+| `aic whoami [--tenant <name>]` | Mint and print token info for a context.                                                                       |
+| `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
 
 ---
 
@@ -92,7 +92,7 @@ aic esv apply [--yes]                            # restart the runtime to apply 
 
 ### Secrets (versioned, write-only)
 
-Secret *values* are never readable back; commands return metadata only.
+Secret _values_ are never readable back; commands return metadata only.
 
 ```bash
 aic esv secret list [--json]                     # metadata for all secrets
@@ -110,7 +110,8 @@ aic esv secret delete  esv-my-secret --yes       # irreversible — delete the s
 **Value sources** (for `create` / `add-version`), in priority order:
 
 1. `--value-file <path>` — read from a file (one trailing newline stripped).
-2. `--value-stdin` — read from stdin (e.g. `printf 'secret' | aic esv secret add-version … --value-stdin`).
+2. `--value-stdin` — read from stdin (e.g.
+   `printf 'secret' | aic esv secret add-version … --value-stdin`).
 3. interactive no-echo prompt (default if none given).
 
 `--value <v>` exists for scripting but is **discouraged** — it leaks into shell
@@ -121,43 +122,43 @@ history and `ps`. `create` is create-only (PUT); change a value with
 
 ## `aic logs` — fetch, sync, search, compact
 
-Logs use the tenant's separate API-key auth plane. `key create` mints a key
-pair only while an admin-user session is available; the service-account bearer
-cannot mint or read log keys.
+Logs use the tenant's separate API-key auth plane. `key create` mints a key pair
+only while an admin-user session is available; the service-account bearer cannot
+mint or read log keys.
 
 ### Key management
 
-| Command | What it does |
-|---|---|
-| `aic logs key set [--tenant <name>] [--id <api_key_id>]` | Store or replace the log API key pair in the vault. Prompts for the secret. |
-| `aic logs key show [--tenant <name>]` | Show whether a log API key pair is stored, and print the key id. |
-| `aic logs key rm [--tenant <name>]` | Remove the stored log API key pair. |
+| Command                                                        | What it does                                                                                                 |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `aic logs key set [--tenant <name>] [--id <api_key_id>]`       | Store or replace the log API key pair in the vault. Prompts for the secret.                                  |
+| `aic logs key show [--tenant <name>]`                          | Show whether a log API key pair is stored, and print the key id.                                             |
+| `aic logs key rm [--tenant <name>]`                            | Remove the stored log API key pair.                                                                          |
 | `aic logs key create [--tenant <name>] [--cookie-name <name>]` | Mint a new key pair from an admin session, then store it. Prompts for the AM session cookie value if needed. |
 
 ### Remote fetch
 
-| Command | What it does |
-|---|---|
-| `aic logs sources [--tenant <name>] [--json] [--output <path>]` | List available log source ids. `--json` prints the list as JSON; `--output` writes it to a file. |
-| `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>]` | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list. |
-| `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]` | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter. |
-| `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]` | Run a CREST filter over the logs API. Defaults to the most recent 24 hours. |
+| Command                                                                                                      | What it does                                                                                     |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `aic logs sources [--tenant <name>] [--json] [--output <path>]`                                              | List available log source ids. `--json` prints the list as JSON; `--output` writes it to a file. |
+| `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>]`                          | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list.    |
+| `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]`        | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter.                 |
+| `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]` | Run a CREST filter over the logs API. Defaults to the most recent 24 hours.                      |
 
 ### Local store
 
-| Command | What it does |
-|---|---|
-| `aic logs search [--tenant <name>] [--tx <id>] [--source <source>] [--event <name>] [--user <id>] [--level <level>] [--begin <iso>] [--end <iso>] [--contains <text>] [--limit <n>] [--count] [--output <path>]` | Query the synced DuckDB store offline. `--count` prints only the match count; `--output` writes JSON results. |
-| `aic logs sync [--tenant <name>] [--source <csv>] [--since <iso>]` | Incrementally sync log sources into the local DuckDB store. Defaults to the curated source list when `--source` is omitted. |
-| `aic logs compact [--tenant <name>] [--retain-months <n>]` | Roll up journeys from `am-authentication` and prune raw events older than the retention window. Default retention is 3 months. |
+| Command                                                                                                                                                                                                          | What it does                                                                                                                   |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `aic logs search [--tenant <name>] [--tx <id>] [--source <source>] [--event <name>] [--user <id>] [--level <level>] [--begin <iso>] [--end <iso>] [--contains <text>] [--limit <n>] [--count] [--output <path>]` | Query the synced DuckDB store offline. `--count` prints only the match count; `--output` writes JSON results.                  |
+| `aic logs sync [--tenant <name>] [--source <csv>] [--since <iso>]`                                                                                                                                               | Incrementally sync log sources into the local DuckDB store. Defaults to the curated source list when `--source` is omitted.    |
+| `aic logs compact [--tenant <name>] [--retain-months <n>]`                                                                                                                                                       | Roll up journeys from `am-authentication` and prune raw events older than the retention window. Default retention is 3 months. |
 
 ---
 
 ## `aic managed` — IDM managed-object schema
 
-Inspects and edits the per-tenant IDM managed-object **schema** (not the
-records — for record data use `aic idm`). Object hooks (`onCreate`/`onUpdate`/
-…) sync as workspace scripts via `aic script` (`managed/<object>.<hook>`).
+Inspects and edits the per-tenant IDM managed-object **schema** (not the records
+— for record data use `aic idm`). Object hooks (`onCreate`/`onUpdate`/ …) sync
+as workspace scripts via `aic script` (`managed/<object>.<hook>`).
 
 ```bash
 aic managed list [--json]                        # object types with property + hook counts
@@ -165,8 +166,8 @@ aic managed get alpha_user                        # one object's full definition
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
 aic managed object rename custom_widget custom_gadget [--yes] [--json]
 aic managed object delete custom_gadget [--yes] [--json]
-aic managed field add custom_widget.code --type string [--title T] [--required false] [--yes] [--json]
-aic managed field edit custom_widget.code --searchable true [--yes] [--json]
+aic managed field add custom_widget.code --type string [--title T] [--required false] [--enum value[:Title] ...] [--yes] [--json]
+aic managed field edit custom_widget.code --searchable true [--enum value[:Title] ... | --clear-enum] [--allow-narrowing] [--yes] [--json]
 aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
@@ -178,9 +179,20 @@ Every write accepts `--tenant <name>` and requires `--yes` for a
 production-themed tenant. Field and relationship booleans take explicit values
 (for example `--viewable false`). Field creation defaults to non-searchable,
 viewable, user-editable, and optional; omitted field-edit flags leave that
-attribute unchanged. `<object>.<key>` must contain exactly one dot. Every
-schema write is recorded for reversal from the TUI history overlay; there is no
-CLI undo command.
+attribute unchanged. `<object>.<key>` must contain exactly one dot. Every schema
+write is recorded for reversal from the TUI history overlay; there is no CLI
+undo command.
+
+`--enum` is repeatable and replaces the field's allowed-value set; use
+`value:Title` for a display label. On `field edit`, `--clear-enum` removes the
+constraint entirely (`field add` rejects it — a new field has none to clear).
+
+Removing a value from an existing set requires `--allow-narrowing`, and warns on
+stderr even then. Nothing fails at the moment you narrow: records holding a
+removed value still read back, and patches to their other properties still
+succeed. What breaks is a whole-record `PUT` of such a record — in some other
+integration, on a property that code never touched. Adding a value, and
+`--clear-enum`, are both widening and need no flag.
 
 ---
 
@@ -212,8 +224,8 @@ includes records/sec so it can be compared with queued-sync drain rate.
 ## `aic idm` — local record store & query
 
 Syncs IDM managed-object **records** into a local SQLite store
-(`.aic/idmstore/<tenant>.sqlite`, gitignored) so you can query them with
-SQL — including joins into nested arrays. Each object becomes a base table
+(`.aic/idmstore/<tenant>.sqlite`, gitignored) so you can query them with SQL —
+including joins into nested arrays. Each object becomes a base table
 `obj_<type>` (full record JSON in `data`, plus generated columns for top-level
 scalar fields), with child tables `obj_<type>__<field>` for arrays and
 relationships.
@@ -286,7 +298,7 @@ aic oauth delete <id> --force [--realm alpha]     # delete (requires --force)
 
 ## `aic secretmap` — AM secret-label → ESV-secret mappings
 
-Realm-scoped. Re-point AM secret *labels* (purposes) at existing ESV secrets.
+Realm-scoped. Re-point AM secret _labels_ (purposes) at existing ESV secrets.
 
 ```bash
 aic secretmap list [--realm alpha] [--json]            # configured mappings
@@ -300,10 +312,9 @@ aic secretmap remove <secret-label> [--realm alpha]    # alias: delete
 
 ## `aic workspace` — typed script workspace scaffold
 
-Scaffold and refresh the local **typed workspace** at
-`./workspace/<tenant>/` (one tree per tenant) with `.d.ts` definitions +
-ESLint/TypeScript config, so your editor gets full IntelliSense on script
-bodies.
+Scaffold and refresh the local **typed workspace** at `./workspace/<tenant>/`
+(one tree per tenant) with `.d.ts` definitions + ESLint/TypeScript config, so
+your editor gets full IntelliSense on script bodies.
 
 ```bash
 aic workspace init                            # scaffold the tenant tree (both realms + idm)
@@ -312,8 +323,8 @@ aic workspace update                          # refresh bundled types/config to 
 
 ## `aic script` — typed script workspace sync
 
-Two-way sync of AIC scripts to the workspace. Four script "kinds" sit behind
-one engine:
+Two-way sync of AIC scripts to the workspace. Four script "kinds" sit behind one
+engine:
 
 - **AM scripts** — realm-scoped, under `am/<realm>/<type>/` (e.g.
   `decision-node`, `lib`, `oidc-claims`; Groovy scripts aren't synced).
@@ -326,11 +337,11 @@ one engine:
 ### The `<ref>` model
 
 Scripts are addressed by a **full-name** `<namespace>/<name>`, where the
-namespace is `alpha`/`bravo` (AM realm), `endpoint`, `schedule`, `sync`, or `managed`
-(hook name is `<object>.<hook>`, e.g. `managed/alpha_user.onCreate`). So you
-never pass `--kind`/`--realm` to script commands. A bare `<name>` resolves its
-namespace from your current directory. A bare namespace (`bravo`, `endpoint`)
-means "all of it"; `all` means everything.
+namespace is `alpha`/`bravo` (AM realm), `endpoint`, `schedule`, `sync`, or
+`managed` (hook name is `<object>.<hook>`, e.g. `managed/alpha_user.onCreate`).
+So you never pass `--kind`/`--realm` to script commands. A bare `<name>`
+resolves its namespace from your current directory. A bare namespace (`bravo`,
+`endpoint`) means "all of it"; `all` means everything.
 
 ### Commands
 
@@ -348,13 +359,13 @@ aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 ```
 
 - `create`, `copy`, and `delete` apply only to standalone AM scripts, IDM
-  endpoints, and IDM schedules. Managed hooks and sync-mapping scripts are
-  slots in their owning configuration documents.
-- AM `create` requires `--context`; it accepts either an AM context constant
-  or the workspace folder slug (such as `decision-node` or `lib`). `copy`
-  is same-tenant only (including alpha-to-bravo cross-realm copies), retains
-  the complete source config, and both create/copy pull the server's canonical
-  form into the workspace. `create` refuses legacy (`evaluatorVersion: "1.0"`)
+  endpoints, and IDM schedules. Managed hooks and sync-mapping scripts are slots
+  in their owning configuration documents.
+- AM `create` requires `--context`; it accepts either an AM context constant or
+  the workspace folder slug (such as `decision-node` or `lib`). `copy` is
+  same-tenant only (including alpha-to-bravo cross-realm copies), retains the
+  complete source config, and both create/copy pull the server's canonical form
+  into the workspace. `create` refuses legacy (`evaluatorVersion: "1.0"`)
   scripts.
 - `delete` requires `--force` and retains the local `.cjs` file while removing
   its snapshot/manifest entry. All three lifecycle writes require an initialized
@@ -365,8 +376,8 @@ aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
   tenant for promotion verification.
 
 - **Fuzzy picker.** `pull`/`push` with no `<ref>` open an interactive picker
-  (type to filter). Lines are marked `!` (local changes) or `-` (not pulled);
-  on `push`, locally-changed scripts sort first.
+  (type to filter). Lines are marked `!` (local changes) or `-` (not pulled); on
+  `push`, locally-changed scripts sort first.
 - **Conflict detection is content-based** (scripts have no `_rev`): a push only
   proceeds if the remote still matches what you last synced — even if the
   revision moved but the content reverted. If the remote content drifted, the
@@ -380,8 +391,9 @@ aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
   `--local-vs-snapshot` shows your edits since the last pull,
   `--snapshot-vs-remote` shows tenant drift since you pulled.
 
-> After upgrading the binary, restart the agent (`aic session stop` then `aic session login`)
-> so it loads new `Accept-API-Version` headers used by AM-script support.
+> After upgrading the binary, restart the agent (`aic session stop` then
+> `aic session login`) so it loads new `Accept-API-Version` headers used by
+> AM-script support.
 
 ---
 

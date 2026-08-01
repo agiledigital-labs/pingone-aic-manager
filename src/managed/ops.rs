@@ -22,7 +22,8 @@ pub enum ProdAction {
 }
 use crate::managed::screen::Event;
 use crate::managed::spec::{
-    AddFieldSpec, DeleteFieldSpec, FieldEditSpec, RenameFieldSpec, ScalarFieldType,
+    AddFieldSpec, DeleteFieldSpec, EnumChange, EnumSpec, EnumValue, FieldEditSpec, RenameFieldSpec,
+    ScalarFieldType,
 };
 use crate::managed::state::{
     AddFieldState, Cardinality, DeleteObjectState, EditFieldFocus, FieldAttr, FieldEditState,
@@ -1173,6 +1174,8 @@ pub fn build_edit_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         searchable: Some(edit.searchable),
         viewable: Some(edit.viewable),
         user_editable: Some(edit.user_editable),
+        enum_change: EnumChange::Unchanged,
+        allow_narrowing: false,
     };
     let applied = match apply_field_edit(&edit.original_object, &edit.field_key, &spec) {
         Ok(applied) => applied,
@@ -1225,6 +1228,7 @@ pub fn build_add_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         searchable: draft.searchable,
         viewable: draft.viewable,
         user_editable: draft.user_editable,
+        enum_values: None,
     };
     let applied = match apply_add_field(&draft.original_object, &spec) {
         Ok(applied) => applied,
@@ -1909,6 +1913,207 @@ pub struct AddFieldApplied {
     pub searchable_changed: bool,
 }
 
+// ── Allowed-value constraints ────────────────────────────────────────────
+
+/// Returns the node which owns an enum constraint and its declared type.
+///
+/// Scalars store it on the property; arrays store it on `items`. Keeping that
+/// distinction here prevents readers and writers from drifting apart.
+fn enum_target(property: &Value) -> Result<(&Value, &str), String> {
+    if crate::managed::state::is_relationship_property(property) {
+        return Err("enum constraints are not supported for type 'relationship'".into());
+    }
+    let target = match property.get("type").and_then(Value::as_str) {
+        Some("string" | "number" | "integer") => property,
+        Some("array") => property.get("items").ok_or_else(|| {
+            "enum constraints are not supported for array items of missing type".to_string()
+        })?,
+        Some(kind) => {
+            return Err(format!(
+                "enum constraints are not supported for type '{kind}'"
+            ));
+        }
+        None => {
+            return Err("enum constraints are not supported for a property with no type".into());
+        }
+    };
+    let kind = target
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    if matches!(kind, "string" | "number" | "integer") {
+        Ok((target, kind))
+    } else {
+        Err(format!(
+            "enum constraints are not supported for type '{kind}'"
+        ))
+    }
+}
+
+fn enum_target_mut(property: &mut Value) -> Result<(&mut Value, String), String> {
+    let kind = enum_target(property)?.1.to_string();
+    let target = if property.get("type").and_then(Value::as_str) == Some("array") {
+        property.get_mut("items").ok_or_else(|| {
+            "enum constraints are not supported for array items of missing type".to_string()
+        })?
+    } else {
+        property
+    };
+    Ok((target, kind))
+}
+
+/// The property's current allowed-value constraint, if it has one.
+pub fn property_enum(property: &Value) -> Option<EnumSpec> {
+    let (target, _) = enum_target(property).ok()?;
+    let values = target.get("enum")?.as_array()?;
+    let titles = target
+        .pointer("/options/enum_titles")
+        .and_then(Value::as_array);
+    let values = values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| EnumValue {
+            value: enum_value_text(value),
+            title: titles
+                .and_then(|titles| titles.get(index))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+        .collect();
+    Some(EnumSpec { values })
+}
+
+/// Renders one stored allowed value as the text the item grammar uses.
+///
+/// Total on purpose: a constraint holding a value we didn't write — a boolean,
+/// say — must still be reported, not silently dropped from the set.
+fn enum_value_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn coerce_enum_value(value: &str, kind: &str) -> Result<Value, String> {
+    match kind {
+        "string" => Ok(Value::String(value.to_string())),
+        // Whole numbers stay integers. A `number` enum written as `[1.0]` risks
+        // never matching a record holding `1` if IDM's policy compares the boxed
+        // JSON values rather than their numeric value.
+        "number" => value
+            .parse::<i64>()
+            .map(|number| Value::Number(number.into()))
+            .or_else(|_| {
+                value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|number| number.is_finite())
+                    .and_then(serde_json::Number::from_f64)
+                    .map(Value::Number)
+                    .ok_or_else(|| format!("enum value '{value}' is not a valid {kind}"))
+            }),
+        "integer" => value
+            .parse::<i64>()
+            .map(serde_json::Number::from)
+            .map(Value::Number)
+            .map_err(|_| format!("enum value '{value}' is not a valid {kind}")),
+        _ => Err(format!(
+            "enum constraints are not supported for type '{kind}'"
+        )),
+    }
+}
+
+/// The form a value takes once written, for comparing one constraint to another.
+///
+/// Falls back to the raw text when the value can't be coerced to the declared
+/// type. A value that won't round-trip is still a value the constraint allows,
+/// and [`removed_enum_values`] guards a destructive change — it has to count
+/// what it can't parse rather than quietly treat it as absent.
+fn comparable_enum_value(value: &str, kind: &str) -> String {
+    coerce_enum_value(value, kind)
+        .as_ref()
+        .map_or_else(|_| value.to_string(), enum_value_text)
+}
+
+/// Values the current constraint allows that `change` would drop.
+///
+/// Empty for a widening change, for `Clear`, and when no current constraint
+/// exists. Numeric values are compared after coercion, so `1` and `01` match.
+pub fn removed_enum_values(property: &Value, change: &EnumChange) -> Vec<String> {
+    let EnumChange::Set(new) = change else {
+        return Vec::new();
+    };
+    let Ok((_, kind)) = enum_target(property) else {
+        return Vec::new();
+    };
+    let Some(current) = property_enum(property) else {
+        return Vec::new();
+    };
+    let replacement = new
+        .values
+        .iter()
+        .map(|item| comparable_enum_value(&item.value, kind))
+        .collect::<std::collections::HashSet<_>>();
+    current
+        .values
+        .iter()
+        .filter(|item| !replacement.contains(&comparable_enum_value(&item.value, kind)))
+        .map(|item| item.value.clone())
+        .collect()
+}
+
+fn apply_enum_change(property: &mut Value, change: &EnumChange) -> Result<(), String> {
+    if matches!(change, EnumChange::Unchanged) {
+        return Ok(());
+    }
+    let (target, kind) = enum_target_mut(property)?;
+    let target_map = target
+        .as_object_mut()
+        .ok_or_else(|| "enum target is not object-valued".to_string())?;
+    match change {
+        EnumChange::Unchanged => {}
+        EnumChange::Set(spec) => {
+            let values = spec
+                .values
+                .iter()
+                .map(|item| coerce_enum_value(&item.value, &kind))
+                .collect::<Result<Vec<_>, _>>()?;
+            target_map.insert("enum".into(), Value::Array(values));
+            if spec.values.iter().any(|item| item.title.is_some()) {
+                let titles = spec
+                    .values
+                    .iter()
+                    .map(|item| item.title.clone().unwrap_or_else(|| item.value.clone()))
+                    .map(Value::String)
+                    .collect();
+                target_map
+                    .entry("options")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()))
+                    .as_object_mut()
+                    .ok_or_else(|| "enum options is not object-valued".to_string())?
+                    .insert("enum_titles".into(), Value::Array(titles));
+            } else if let Some(options) =
+                target_map.get_mut("options").and_then(Value::as_object_mut)
+            {
+                options.remove("enum_titles");
+                if options.is_empty() {
+                    target_map.remove("options");
+                }
+            }
+        }
+        EnumChange::Clear => {
+            target_map.remove("enum");
+            if let Some(options) = target_map.get_mut("options").and_then(Value::as_object_mut) {
+                options.remove("enum_titles");
+                if options.is_empty() {
+                    target_map.remove("options");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Applies an optional attribute edit to one managed property.
 pub fn apply_field_edit(
     object_def: &Value,
@@ -1920,6 +2125,16 @@ pub fn apply_field_edit(
         .and_then(|properties| properties.get(field_key))
         .cloned()
         .ok_or_else(|| format!("field '{field_key}' no longer exists"))?;
+    let removed = removed_enum_values(&property, &spec.enum_change);
+    if !removed.is_empty() && !spec.allow_narrowing {
+        // Deliberately names no affordance: each caller offers its own (the CLI
+        // a flag, the TUI a confirm prompt) and should catch this before the
+        // user sees it. This is the backstop for a caller that forgot.
+        return Err(format!(
+            "refusing to drop enum values {}: records still holding them will fail whole-record updates, so the change must be confirmed",
+            removed.join(", ")
+        ));
+    }
     let caps =
         crate::managed::state::field_capability_for_property(object_def, field_key, &property);
     let property_map = property
@@ -1951,6 +2166,8 @@ pub fn apply_field_edit(
     {
         property_map.insert("userEditable".into(), Value::Bool(user_editable));
     }
+
+    apply_enum_change(&mut property, &spec.enum_change)?;
 
     let new_field_key = if caps.rename_key {
         match &spec.new_key {
@@ -2019,6 +2236,9 @@ pub fn apply_add_field(object_def: &Value, spec: &AddFieldSpec) -> Result<AddFie
     property_map.insert("searchable".into(), Value::Bool(spec.searchable));
     property_map.insert("viewable".into(), Value::Bool(spec.viewable));
     property_map.insert("userEditable".into(), Value::Bool(spec.user_editable));
+    if let Some(enum_values) = &spec.enum_values {
+        apply_enum_change(&mut property, &EnumChange::Set(enum_values.clone()))?;
+    }
 
     insert_new_property(&mut object, &field_key, property, spec.required)?;
     Ok(AddFieldApplied {
@@ -2446,6 +2666,19 @@ mod tests {
             searchable: false,
             viewable: true,
             user_editable: true,
+            enum_values: None,
+        }
+    }
+
+    fn enum_spec(values: &[(&str, Option<&str>)]) -> EnumSpec {
+        EnumSpec {
+            values: values
+                .iter()
+                .map(|(value, title)| EnumValue {
+                    value: (*value).into(),
+                    title: title.map(str::to_string),
+                })
+                .collect(),
         }
     }
 
@@ -2475,6 +2708,8 @@ mod tests {
             searchable: Some(true),
             viewable: Some(true),
             user_editable: Some(true),
+            enum_change: EnumChange::Unchanged,
+            allow_narrowing: false,
         };
 
         let object = apply_field_edit(&object, "custom_code", &spec)
@@ -2531,6 +2766,210 @@ mod tests {
             .unwrap()
             .object;
         assert!(crate::managed::api::object_content_equal(&edited, &object));
+    }
+
+    #[test]
+    fn property_enum_reads_scalar_and_array_constraints() {
+        let scalar =
+            json!({"type": "string", "enum": ["new"], "options": {"enum_titles": ["New"]}});
+        let array = json!({"type": "array", "items": {"type": "string", "enum": ["done"]}});
+        assert_eq!(property_enum(&scalar).unwrap().to_items(), ["new:New"]);
+        assert_eq!(property_enum(&array).unwrap().to_items(), ["done"]);
+        assert!(property_enum(&json!({"type": "string"})).is_none());
+    }
+
+    #[test]
+    fn field_edit_writes_enums_at_the_declared_target() {
+        let string = custom_object(false);
+        let string = apply_field_edit(
+            &string,
+            "custom_code",
+            &FieldEditSpec {
+                enum_change: EnumChange::Set(enum_spec(&[("new", Some("New")), ("done", None)])),
+                ..FieldEditSpec::default()
+            },
+        )
+        .unwrap()
+        .object;
+        assert_eq!(
+            string["schema"]["properties"]["custom_code"]["enum"],
+            json!(["new", "done"])
+        );
+        assert_eq!(
+            string["schema"]["properties"]["custom_code"]["options"]["enum_titles"],
+            json!(["New", "done"])
+        );
+
+        let number = json!({"name":"test", "schema":{"properties":{"code":{"type":"number"}},"required":[],"order":["code"]}});
+        let number = apply_field_edit(
+            &number,
+            "code",
+            &FieldEditSpec {
+                enum_change: EnumChange::Set(enum_spec(&[("01", None), ("2", None)])),
+                ..FieldEditSpec::default()
+            },
+        )
+        .unwrap()
+        .object;
+        // Whole numbers stay integers, so the constraint matches a record
+        // holding `1` rather than only one holding `1.0`.
+        assert_eq!(
+            number["schema"]["properties"]["code"]["enum"],
+            json!([1, 2])
+        );
+        assert!(
+            apply_field_edit(
+                &json!({"name":"test", "schema":{"properties":{"code":{"type":"number"}},"required":[],"order":["code"]}}),
+                "code",
+                &FieldEditSpec {
+                    enum_change: EnumChange::Set(enum_spec(&[("1.5", None)])),
+                    ..FieldEditSpec::default()
+                },
+            )
+            .unwrap()
+            .object["schema"]["properties"]["code"]["enum"][0]
+                .as_f64()
+                .is_some_and(|value| (value - 1.5).abs() < f64::EPSILON)
+        );
+
+        let array = json!({"name":"test", "schema":{"properties":{"codes":{"type":"array","items":{"type":"string"}}},"required":[],"order":["codes"]}});
+        let array = apply_field_edit(
+            &array,
+            "codes",
+            &FieldEditSpec {
+                enum_change: EnumChange::Set(enum_spec(&[("new", None)])),
+                ..FieldEditSpec::default()
+            },
+        )
+        .unwrap()
+        .object;
+        assert_eq!(
+            array["schema"]["properties"]["codes"]["items"]["enum"],
+            json!(["new"])
+        );
+    }
+
+    #[test]
+    fn enum_edits_reject_unsupported_types_and_relationships() {
+        for property in [json!({"type":"boolean"}), json!({"type":"relationship"})] {
+            let object = json!({"name":"test", "schema":{"properties":{"value":property},"required":[],"order":["value"]}});
+            assert!(
+                apply_field_edit(
+                    &object,
+                    "value",
+                    &FieldEditSpec {
+                        enum_change: EnumChange::Set(enum_spec(&[("new", None)])),
+                        ..FieldEditSpec::default()
+                    }
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn enum_clear_preserves_other_options_and_narrowing_requires_consent() {
+        let object = json!({"name":"test", "schema":{"properties":{"status":{"type":"string", "enum":["new","done"], "options":{"enum_titles":["New","Done"],"widget":"select"}}},"required":[],"order":["status"]}});
+        let change = EnumChange::Set(enum_spec(&[("new", None)]));
+        assert_eq!(
+            removed_enum_values(&object["schema"]["properties"]["status"], &change),
+            ["done"]
+        );
+        assert!(
+            removed_enum_values(
+                &object["schema"]["properties"]["status"],
+                &EnumChange::Set(enum_spec(&[("new", None), ("done", None), ("later", None)]))
+            )
+            .is_empty()
+        );
+        assert!(
+            removed_enum_values(
+                &object["schema"]["properties"]["status"],
+                &EnumChange::Clear
+            )
+            .is_empty()
+        );
+        assert!(removed_enum_values(&json!({"type":"string"}), &change).is_empty());
+        // A stored value we could not have written ourselves still counts as
+        // dropped — the guard fails closed on anything it can't canonicalise.
+        assert_eq!(
+            removed_enum_values(
+                &json!({"type": "number", "enum": ["legacy", 1]}),
+                &EnumChange::Set(enum_spec(&[("1", None)]))
+            ),
+            ["legacy"]
+        );
+        let error = apply_field_edit(
+            &object,
+            "status",
+            &FieldEditSpec {
+                enum_change: change.clone(),
+                ..FieldEditSpec::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("done") && error.contains("whole-record updates"));
+        let narrowed = apply_field_edit(
+            &object,
+            "status",
+            &FieldEditSpec {
+                enum_change: change,
+                allow_narrowing: true,
+                ..FieldEditSpec::default()
+            },
+        )
+        .unwrap()
+        .object;
+        assert_eq!(
+            narrowed["schema"]["properties"]["status"]["enum"],
+            json!(["new"])
+        );
+        let cleared = apply_field_edit(
+            &object,
+            "status",
+            &FieldEditSpec {
+                enum_change: EnumChange::Clear,
+                ..FieldEditSpec::default()
+            },
+        )
+        .unwrap()
+        .object;
+        assert!(
+            cleared["schema"]["properties"]["status"]
+                .get("enum")
+                .is_none()
+        );
+        assert!(
+            cleared["schema"]["properties"]["status"]["options"]
+                .get("enum_titles")
+                .is_none()
+        );
+        assert_eq!(
+            cleared["schema"]["properties"]["status"]["options"]["widget"],
+            "select"
+        );
+        let empty_options = apply_field_edit(&json!({"name":"test", "schema":{"properties":{"status":{"type":"string", "enum":["new"], "options":{"enum_titles":["New"]}}},"required":[],"order":["status"]}}), "status", &FieldEditSpec { enum_change: EnumChange::Clear, ..FieldEditSpec::default() }).unwrap().object;
+        assert!(
+            empty_options["schema"]["properties"]["status"]
+                .get("options")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn add_field_accepts_an_enum_constraint() {
+        let applied = apply_add_field(
+            &json!({"name":"test", "schema":{"properties":{},"required":[],"order":[]}}),
+            &AddFieldSpec {
+                enum_values: Some(enum_spec(&[("new", None)])),
+                ..add_field_spec("status")
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            applied.object["schema"]["properties"]["status"]["enum"],
+            json!(["new"])
+        );
     }
 
     #[test]
