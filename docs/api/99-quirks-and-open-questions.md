@@ -542,32 +542,30 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   custom object. Tenant-global service/configuration data should use a
   descriptive non-realm prefix, such as `idr_name_variants`. The earlier
   convention in `10-managed-objects.md` was too broad.
-- **2026-07-31 (Q-enum, partly open)** — Managed-object properties support an
+- **2026-07-31 (Q-enum, RESOLVED)** — Managed-object properties support an
   `enum` constraint, and it is a **constraint on a scalar, not a distinct
-  property type**: the property keeps `"type": "string"` and gains a sibling
-  `enum` array of allowed values. Confirmed by reading the live sandbox
-  `config/managed`: `idr_name_variants.role`
-  (`enum: ["given","surname"]`), plus `idr_name_variant_discrepancies.role` and
-  `.status` (`enum: ["new","scored","promoted","rejected"]`). This matters for the
-  editor design — enum belongs alongside `searchable`/`viewable` as an attribute
-  of a string field, not as a fourth entry next to `string`/`boolean`/`number`.
+  property type**: the property keeps its `type` and gains a sibling `enum`
+  array. Probed end-to-end against the sandbox with a throwaway
+  `test_enum_probe` object (schema and records removed afterwards; the managed
+  document was diffed back to byte-identical). All four originally-open
+  questions answered:
 
-  **Still unverified — do not write code that assumes any of these:**
+  1. `options: { enum_titles: [...] }` **does** round-trip, positionally matched
+     to `enum`.
+  2. `enum` on an array's `items` **is** honoured and enforced.
+  3. Numeric `enum` (`{"type":"number","enum":[1,2,3]}`) **is** accepted and
+     enforced.
+  4. The constraint **is enforced on record write**, not UI-only metadata: a
+     value outside the set gives `403` / `"Policy validation failed"` with
+     `policyRequirement: "VALID_ENUM_VALUE"` and `params.enumValues`.
 
-  1. Whether `options: { enum_titles: [...] }` (the display-label convention used
-     by the IDM admin UI) survives a `PUT /openidm/config/managed`. It appears
-     **nowhere** in the sandbox, so it is entirely untested here. If labels don't
-     round-trip, an enum field can only show raw values.
-  2. Whether `enum` is honoured on an array's `items`
-     (`{"type":"array","items":{"type":"string","enum":[…]}}`).
-  3. Whether a non-string `enum` (e.g. numeric) is accepted.
-  4. **Whether the constraint is enforced on record write to
-     `/openidm/managed/{type}`, or is UI-only metadata.** This is the one that
-     changes behaviour rather than presentation: if enforced, narrowing an
-     existing field's `enum` can start rejecting record writes that previously
-     succeeded, which makes editing the allowed values of a populated field a
-     data-affecting operation and not just a schema tweak.
-
-  A probe object (`test_enum_probe`, covering all four questions in one
-  whole-document PUT) was prepared but not sent — writing tenant config needs
-  explicit approval. Verify before exposing enum editing in the TUI or CLI.
+  The operationally surprising part, and the reason this took a live probe
+  rather than a doc read: **narrowing an enum on a populated field breaks
+  read-modify-write but nothing else.** With a record still holding a removed
+  value, `GET` returns 200 and a `PATCH` of an *unrelated* field returns 200 —
+  policy validates only the properties actually being written — but a `PUT` of
+  the whole record exactly as it was read back returns 403 on the stale
+  property. So the failure surfaces later, in whichever integration does
+  read-modify-write, not at the point the schema changed. Widening is safe;
+  narrowing needs the affected records migrated first. Full table in
+  `10-managed-objects.md` → "Enum constraints".
