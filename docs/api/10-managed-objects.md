@@ -227,6 +227,23 @@ a value differently from adding one.
 
 The CLI can set or clear these constraints with `aic managed field add` and
 `aic managed field edit`; see [`docs/CLI.md`](../CLI.md) for its narrowing gate.
+The whole table above was re-confirmed against the sandbox through those
+commands on 2026-08-01, including the `403` on the whole-record `PUT`.
+
+Two further observations from that run:
+
+- **Whole floats are normalised to integers.** A config `PUT` sending
+  `"enum": [1.0, 2.0]` reads back as `[1, 2]`, and a record holding integer `2`
+  validates against it. So the float form is not an enforcement hazard — but it
+  does mean a writer that emits `1.0` never sees its own bytes again, which
+  would show as permanent drift to any content-snapshot comparison (§5). Emit
+  integers for whole numbers.
+- **Schema changes are not immediately effective for record policy.** A widening
+  `PUT` to `config/managed` followed straight away by a record write was
+  rejected `403` against the _old_ enum. A second attempt moments later
+  succeeded. Don't write a record immediately after changing the constraint that
+  governs it, and don't read a 403 there as a failed schema write — re-`GET` the
+  config to see which one actually happened.
 
 No cross-object reverse-property validation runs on config write. A PUT with
 `validate: true` and a `reversePropertyName` that did not exist on the target
@@ -497,20 +514,24 @@ error. Do not offer `ne` or `in` in script-template query validation.
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-07-31 (object-type delete: records detach and return intact on
-  config restore; dangling relationship path accepted by the config PUT).
-  2026-06-21 (record querying + change detection: no record timestamp;
-  `_meta`→`<type>meta` sidecar with `lastChanged/createDate`, queryable/sortable
-  on the sidecar but **not** via parent traversal — `_meta/...` filter → 0, sort
-  → 500; `alpha_rolemeta` 404 / non-user objects have no sidecar; cursor paging
-  works and is the required bulk-read path; `EXACT` count policy). 2026-07-03
-  (query-filter negation: `!` accepted, word `not` rejected; query-filter
-  operators: `ne` rejected as unsupported, `in` and array values rejected as
-  parse errors). 2026-06-14 (managed-config write behaviour, custom
-  object/property/relationship/hook round-trips, no reverse-property
-  validation); 2026-06-13 (hook inventory, hook bindings probe, schema PUT
-  round-trip + application lag); 2026-06-09 (create-if-absent test); 2026-05-17
-  (schema read).
+- Date: 2026-08-01 (enum constraints exercised end-to-end through
+  `aic managed field add`/`edit`: string+titles, numeric and array-`items`
+  shapes; `VALID_ENUM_VALUE` enforcement on all three; the read-modify-write
+  table re-confirmed; whole floats normalised to integers; schema changes lag
+  before record policy sees them). 2026-07-31 (object-type delete: records
+  detach and return intact on config restore; dangling relationship path
+  accepted by the config PUT). 2026-06-21 (record querying + change detection:
+  no record timestamp; `_meta`→`<type>meta` sidecar with
+  `lastChanged/createDate`, queryable/sortable on the sidecar but **not** via
+  parent traversal — `_meta/...` filter → 0, sort → 500; `alpha_rolemeta` 404 /
+  non-user objects have no sidecar; cursor paging works and is the required
+  bulk-read path; `EXACT` count policy). 2026-07-03 (query-filter negation: `!`
+  accepted, word `not` rejected; query-filter operators: `ne` rejected as
+  unsupported, `in` and array values rejected as parse errors). 2026-06-14
+  (managed-config write behaviour, custom object/property/relationship/hook
+  round-trips, no reverse-property validation); 2026-06-13 (hook inventory, hook
+  bindings probe, schema PUT round-trip + application lag); 2026-06-09
+  (create-if-absent test); 2026-05-17 (schema read).
 - Calls: `GET /openidm/config/managed` (200); `PUT /openidm/config/managed`
   (200, full-document replace; object entries stored verbatim; fresh GET
   reflected changes on first poll, ~164 ms); relationship PUT with
