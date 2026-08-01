@@ -25,6 +25,7 @@ pub enum Mode {
     RelationshipTarget,
     RefProp,
     AddHook,
+    EnumNarrowConfirm,
     DeleteFieldConfirm,
     DeleteObjectConfirm,
     RenameField,
@@ -228,6 +229,28 @@ pub fn resume_mode_after_prod_cancel(app: &App) -> Option<Mode> {
     } else {
         None
     }
+}
+
+/// Saves an edited field, interposing a warning only when its enum loses
+/// values. The confirmed path still uses `ops::commit_edit`.
+pub fn request_edit_save(app: &mut App) {
+    let Some(edit) = app.managed.editing.as_mut() else {
+        return;
+    };
+    let change = match edit.enum_change() {
+        Ok(change) => change,
+        Err(error) => {
+            edit.error = Some(error);
+            return;
+        }
+    };
+    let removed = ops::removed_enum_values(&edit.original_property, &change);
+    if !edit.allow_narrowing && !removed.is_empty() {
+        edit.narrowed_enum_values = removed;
+        app.input_mode = InputMode::Managed(Mode::EnumNarrowConfirm);
+        return;
+    }
+    ops::commit_edit(app);
 }
 
 pub fn refresh(app: &mut App, force: bool) {

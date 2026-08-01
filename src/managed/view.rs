@@ -234,8 +234,15 @@ fn draw_detail(
             draw_add_kind_chooser(f, app, inner);
             return;
         }
-        InputMode::Managed(Mode::EditField) if app.managed.editing.is_some() => {
+        InputMode::Managed(Mode::EditField | Mode::EnumNarrowConfirm)
+            if app.managed.editing.is_some() =>
+        {
+            // The warning floats over the form it is about, so the user can see
+            // the values they are dropping while deciding.
             draw_edit_field_form(f, app, inner);
+            if app.input_mode == InputMode::Managed(Mode::EnumNarrowConfirm) {
+                draw_enum_narrow_confirm(f, app);
+            }
             return;
         }
         InputMode::Managed(Mode::AddField) if app.managed.add_field.is_some() => {
@@ -340,6 +347,7 @@ fn draw_detail(
                 &properties[name],
                 required.contains(name),
                 idx == selected_property,
+                inner.width as usize,
             ));
         }
     }
@@ -545,7 +553,13 @@ fn delete_object_warning(state: &DeleteObjectState) -> Vec<String> {
     lines
 }
 
-fn property_line(name: &str, property: &Value, required: bool, selected: bool) -> Line<'static> {
+fn property_line(
+    name: &str,
+    property: &Value,
+    required: bool,
+    selected: bool,
+    max_width: usize,
+) -> Line<'static> {
     let base_style = if selected {
         Style::default()
             .fg(Color::Black)
@@ -576,15 +590,46 @@ fn property_line(name: &str, property: &Value, required: bool, selected: bool) -
             Style::default().fg(Color::DarkGray)
         },
     ));
+    let property_type = crate::managed::state::property_type(property);
     spans.push(Span::styled(
-        crate::managed::state::property_type(property),
+        property_type.clone(),
         if selected {
             base_style
         } else {
             Style::default().fg(Color::White)
         },
     ));
+    if let Some(constraint) = crate::managed::ops::property_enum(property) {
+        let values = constraint
+            .values
+            .iter()
+            .map(|value| value.value.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        let prefix_width =
+            name.chars().count() + property_type.chars().count() + 4 + usize::from(required);
+        let available = max_width.saturating_sub(prefix_width + 3);
+        let metadata = truncate_metadata(&values, available);
+        spans.push(Span::styled(
+            format!(" ({metadata})"),
+            if selected {
+                base_style
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ));
+    }
     Line::from(spans)
+}
+
+fn truncate_metadata(value: &str, max_width: usize) -> String {
+    if value.chars().count() <= max_width {
+        return value.to_string();
+    }
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+    format!("{}…", value.chars().take(max_width - 1).collect::<String>())
 }
 
 fn hook_lines(summary: &ObjectSummary) -> Vec<Line<'static>> {
@@ -622,6 +667,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let error_h = if edit.error.is_some() { 2 } else { 0 };
+    let enum_eligible = crate::managed::ops::enum_constraint_eligible(&edit.original_property);
     let rows = Layout::vertical([
         Constraint::Length(1), // field id
         Constraint::Length(1), // type/capability
@@ -632,6 +678,8 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
         Constraint::Min(4), // description
         Constraint::Length(1),
+        Constraint::Length(if enum_eligible { 2 } else { 0 }),
+        Constraint::Length(if enum_eligible { 1 } else { 0 }),
         Constraint::Length(1), // required
         Constraint::Length(1), // searchable
         Constraint::Length(1), // viewable
@@ -684,7 +732,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
 
     draw_bool_row(
         f,
-        rows[9],
+        rows[11],
         "Required",
         edit.required,
         edit.focused == EditFieldFocus::Required,
@@ -692,7 +740,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[10],
+        rows[12],
         "Searchable",
         edit.searchable,
         edit.focused == EditFieldFocus::Searchable,
@@ -700,7 +748,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[11],
+        rows[13],
         "Viewable",
         edit.viewable,
         edit.focused == EditFieldFocus::Viewable,
@@ -708,7 +756,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[12],
+        rows[14],
         "User editable",
         edit.user_editable,
         edit.focused == EditFieldFocus::UserEditable,
@@ -722,10 +770,14 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Yellow),
             )))
             .wrap(Wrap { trim: false }),
-            rows[13],
+            rows[15],
         );
     }
-    draw_save_button(f, rows[14], edit.focused == EditFieldFocus::Save);
+    if enum_eligible {
+        edit.enum_values
+            .draw(f, rows[9], edit.focused == EditFieldFocus::Enum);
+    }
+    draw_save_button(f, rows[16], edit.focused == EditFieldFocus::Save);
 }
 
 fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
@@ -733,6 +785,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
     let error_h = if draft.error.is_some() { 2 } else { 0 };
+    let enum_eligible = draft.enum_eligible();
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
@@ -742,7 +795,9 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
         Constraint::Min(4),
         Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(1), // type
+        Constraint::Length(if enum_eligible { 2 } else { 0 }),
+        Constraint::Length(if enum_eligible { 1 } else { 0 }),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -769,9 +824,14 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         draft.field_type.label(),
         draft.focused == AddFieldFocus::Type,
     );
+    if enum_eligible {
+        draft
+            .enum_values
+            .draw(f, rows[9], draft.focused == AddFieldFocus::Enum);
+    }
     draw_bool_row(
         f,
-        rows[9],
+        rows[11],
         "Searchable",
         draft.searchable,
         draft.focused == AddFieldFocus::Searchable,
@@ -779,7 +839,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[10],
+        rows[12],
         "Viewable",
         draft.viewable,
         draft.focused == AddFieldFocus::Viewable,
@@ -787,7 +847,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[11],
+        rows[13],
         "User editable",
         draft.user_editable,
         draft.focused == AddFieldFocus::UserEditable,
@@ -795,14 +855,14 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[12],
+        rows[14],
         "Required",
         draft.required,
         draft.focused == AddFieldFocus::Required,
         true,
     );
-    draw_form_error(f, rows[13], draft.error.as_deref());
-    draw_save_button(f, rows[14], draft.focused == AddFieldFocus::Save);
+    draw_form_error(f, rows[15], draft.error.as_deref());
+    draw_save_button(f, rows[16], draft.focused == AddFieldFocus::Save);
 }
 
 fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
@@ -1115,6 +1175,19 @@ pub fn draw_delete_field_confirm(f: &mut Frame, app: &App) {
     crate::tui::popup_confirm::draw(f, "Delete managed field?", &message);
 }
 
+fn draw_enum_narrow_confirm(f: &mut Frame, app: &App) {
+    let removed = app
+        .managed
+        .editing
+        .as_ref()
+        .map(|edit| edit.narrowed_enum_values.join(", "))
+        .unwrap_or_default();
+    let message = format!(
+        "Remove allowed value(s): {removed}?\n\nRecords still holding them keep reading fine and still accept patches to other properties, but a whole-record update of such a record will fail.\n\nPress y to save, n or Esc to return to the edit."
+    );
+    crate::tui::popup_confirm::draw(f, "Narrow allowed values?", &message);
+}
+
 fn form_title(f: &mut Frame, area: Rect, object_name: &str, action: &'static str) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -1254,4 +1327,45 @@ fn draw_save_button(f: &mut Frame, area: Rect, focused: bool) {
         height: 1,
     };
     f.render_widget(Paragraph::new(Span::styled(" Save ", style)), row);
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn line_text(line: Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn property_line_shows_allowed_values_only_when_constrained() {
+        let constrained = property_line(
+            "status",
+            &json!({"type": "string", "enum": ["new", "done"]}),
+            false,
+            false,
+            80,
+        );
+        assert_eq!(line_text(constrained), "  status: string (new|done)");
+
+        let unconstrained = property_line("status", &json!({"type": "string"}), false, false, 80);
+        assert_eq!(line_text(unconstrained), "  status: string");
+    }
+
+    #[test]
+    fn property_line_truncates_long_allowed_values() {
+        let line = property_line(
+            "status",
+            &json!({"type": "string", "enum": ["new", "in_progress", "done"]}),
+            false,
+            false,
+            23,
+        );
+        assert_eq!(line_text(line), "  status: string (new…)");
+    }
 }

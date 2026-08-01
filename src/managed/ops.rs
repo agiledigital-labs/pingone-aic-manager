@@ -26,9 +26,9 @@ use crate::managed::spec::{
     ScalarFieldType,
 };
 use crate::managed::state::{
-    AddFieldState, Cardinality, DeleteObjectState, EditFieldFocus, FieldAttr, FieldEditState,
-    LoadState, ParsedRelationship, PreviousRelationship, RefProperty, RelationshipSpec,
-    RenameFieldState, RenameObjectState, ReverseCardinality, State,
+    AddFieldState, Cardinality, DeleteObjectState, FieldAttr, FieldEditState, LoadState,
+    ParsedRelationship, PreviousRelationship, RefProperty, RelationshipSpec, RenameFieldState,
+    RenameObjectState, ReverseCardinality, State,
 };
 use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 
@@ -1166,16 +1166,12 @@ pub fn build_edit_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         return None;
     }
 
-    let spec = FieldEditSpec {
-        new_key: Some(edit.key.value.clone()),
-        title: Some(edit.title.value.clone()),
-        description: Some(edit.description.value.clone()),
-        required: Some(edit.required),
-        searchable: Some(edit.searchable),
-        viewable: Some(edit.viewable),
-        user_editable: Some(edit.user_editable),
-        enum_change: EnumChange::Unchanged,
-        allow_narrowing: false,
+    let spec = match edit.edit_spec() {
+        Ok(spec) => spec,
+        Err(message) => {
+            edit.error = Some(message);
+            return None;
+        }
     };
     let applied = match apply_field_edit(&edit.original_object, &edit.field_key, &spec) {
         Ok(applied) => applied,
@@ -1228,7 +1224,13 @@ pub fn build_add_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         searchable: draft.searchable,
         viewable: draft.viewable,
         user_editable: draft.user_editable,
-        enum_values: None,
+        enum_values: match draft.parsed_enum_values() {
+            Ok(values) => values,
+            Err(message) => {
+                draft.error = Some(message);
+                return None;
+            }
+        },
     };
     let applied = match apply_add_field(&draft.original_object, &spec) {
         Ok(applied) => applied,
@@ -1950,6 +1952,22 @@ fn enum_target(property: &Value) -> Result<(&Value, &str), String> {
     }
 }
 
+/// Whether a property can carry an allowed-value constraint.
+///
+/// Scalars own the constraint directly; arrays carry it on scalar `items`.
+/// Relationships and booleans are deliberately excluded.
+pub fn enum_constraint_eligible(property: &Value) -> bool {
+    enum_target(property).is_ok()
+}
+
+/// Whether a field type offered by the scalar-field form supports a constraint.
+pub fn scalar_type_supports_enum(field_type: ScalarFieldType) -> bool {
+    matches!(
+        field_type,
+        ScalarFieldType::String | ScalarFieldType::Number | ScalarFieldType::StringArray
+    )
+}
+
 fn enum_target_mut(property: &mut Value) -> Result<(&mut Value, String), String> {
     let kind = enum_target(property)?.1.to_string();
     let target = if property.get("type").and_then(Value::as_str) == Some("array") {
@@ -2563,42 +2581,24 @@ pub fn cancel_active_draft(app: &mut App) {
 
 pub fn advance_focus(edit: &mut FieldEditState, forward: bool) {
     edit.focused = if forward {
-        edit.focused.next(edit.caps)
+        edit.focused
+            .next(edit.caps, enum_constraint_eligible(&edit.original_property))
     } else {
-        edit.focused.prev(edit.caps)
+        edit.focused
+            .prev(edit.caps, enum_constraint_eligible(&edit.original_property))
     };
 }
 
 pub fn advance_add_field_focus(draft: &mut AddFieldState, forward: bool) {
     draft.focused = if forward {
-        draft.focused.next()
+        draft.focused.next(draft.enum_eligible())
     } else {
-        draft.focused.prev()
+        draft.focused.prev(draft.enum_eligible())
     };
 }
 
 /// Advances the rename draft's single focusable field.
 pub fn advance_rename_field_focus(_draft: &mut RenameFieldState, _forward: bool) {}
-
-pub fn handle_enter_in_edit(app: &mut App) {
-    let Some(focused) = app.managed.editing.as_ref().map(|edit| edit.focused) else {
-        return;
-    };
-    match focused {
-        EditFieldFocus::Save => commit_edit(app),
-        focus if focus.is_bool() => {
-            if let Some(edit) = app.managed.editing.as_mut() {
-                edit.toggle_focused_bool();
-                edit.error = None;
-            }
-        }
-        _ => {
-            if let Some(edit) = app.managed.editing.as_mut() {
-                advance_focus(edit, true);
-            }
-        }
-    }
-}
 
 pub fn execute_prod_action(app: &mut App, action: ProdAction) {
     match action {
@@ -3712,5 +3712,26 @@ mod tests {
             properties[2].kind,
             crate::managed::state::RefPropType::Number
         );
+    }
+
+    #[test]
+    fn enum_eligibility_accepts_scalar_and_scalar_array_only() {
+        for property in [
+            json!({"type": "string"}),
+            json!({"type": "number"}),
+            json!({"type": "integer"}),
+            json!({"type": "array", "items": {"type": "string"}}),
+            json!({"type": "array", "items": {"type": "number"}}),
+            json!({"type": "array", "items": {"type": "integer"}}),
+        ] {
+            assert!(enum_constraint_eligible(&property), "{property}");
+        }
+        for property in [
+            json!({"type": "boolean"}),
+            json!({"type": "relationship"}),
+            json!({"type": "array", "items": {"type": "relationship"}}),
+        ] {
+            assert!(!enum_constraint_eligible(&property), "{property}");
+        }
     }
 }
