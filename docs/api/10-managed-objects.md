@@ -170,10 +170,60 @@ runtime, which is separate from config read-back.
 | Minimal custom object   | `{ "name": "...", "schema": { "type": "object", "title": "...", "properties": {}, "required": [], "order": [] } }`. Objects carry no `_id`/`$id`; the document's `_id: "managed"` is the only id.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Standard object marker  | Ping-shipped standard objects carry a top-level `type` key; custom objects (`mock_*`, `alpha_lock`, `test_*`, `idr_*`) have neither `type` nor `meta`. **Correction (verified 2026-07-27): only the `*_user` objects also carry `meta`** — `role`/`organization`/`assignment`/`application` have `type` but **no** `meta`. So the reliable "is Ping-shipped" discriminator is the **presence of top-level `type` alone**, NOT `type` + `meta` together. (`crate::managed::state::object_class` keyed on both markers until 2026-07-31 and so misclassified role/org/assignment/application as `Custom`, handing their shipped fields rename/retype/delete rights; it now keys on `type` alone.) |
 | Scalar property         | `{ "title": "...", "description": "...", "type": "string", "searchable": true, "viewable": true, "userEditable": true }` round-trips.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Enum-constrained scalar | `{ "type": "string", "title": "...", "enum": ["new", "done"], "searchable": …, "viewable": …, "userEditable": … }`. **`enum` is a constraint on a scalar, not a distinct property type** — the property keeps `"type": "string"` and gains a sibling `enum` array of allowed values. Observed live on three sandbox properties 2026-07-31 (`idr_name_variants.role`, `idr_name_variant_discrepancies.role`/`.status`); see Q-enum in `99-quirks-and-open-questions.md` for what is **not** yet verified (display labels, array items, numeric values, and whether the constraint is enforced on record write).                                                                                  |
+| Enum-constrained scalar | `{ "type": "string", "title": "...", "enum": ["new", "done"], "options": { "enum_titles": ["Brand new", "All done"] }, "searchable": …, "viewable": …, "userEditable": … }`. **`enum` is a constraint on a scalar, not a distinct property type** — the property keeps its `type` and gains a sibling `enum` array. Round-trips verbatim, including optional `options.enum_titles` display labels. Also works on `"type": "number"` (`enum: [1,2,3]`) and on an array's items (`{"type":"array","items":{"type":"string","enum":[…]}}`). **Enforced on record write**, not just UI metadata — see "Enum constraints" below. Verified 2026-07-31.                                                |
 | Single relationship     | `{ "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] }`. `reversePropertyName`, `validate`, and explicit `_ref`/`_refProperties` are optional at config-write time.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | Array of relationships  | `{ "type": "array", "items": { "type": "relationship", "resourceCollection": [{ "path": "managed/<target>" }] } }`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Lifecycle hook          | Top-level sibling of `schema`, e.g. `"onCreate": { "type": "text/javascript", "source": "..." }`. Round-trips verbatim and is immediately discoverable/pullable via `aic script list managed` / `aic script pull managed/<object>.<hook>`.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+
+### Enum constraints (verified 2026-07-31)
+
+`enum` is a constraint on a scalar, not a fourth property type. The property
+keeps `"type": "string"` (or `number`, or `array` with the constraint on
+`items`) and gains a sibling `enum` array. Optional display labels go in
+`options.enum_titles`, positionally matched to `enum`. All of these round-trip
+through `PUT /openidm/config/managed` verbatim.
+
+**The constraint is enforced on record write.** A value outside the set is
+rejected `403 Forbidden` / `"Policy validation failed"` with a machine-readable
+detail naming the property and the permitted values:
+
+```json
+{
+  "code": 403,
+  "message": "Policy validation failed",
+  "detail": {
+    "failedPolicyRequirements": [
+      {
+        "property": "status",
+        "policyRequirements": [
+          {
+            "policyRequirement": "VALID_ENUM_VALUE",
+            "params": { "enumValues": ["new", "done"] }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Enforcement applies to array items and numeric enums too, not just strings.
+
+**Narrowing an enum on a populated field is a data-affecting change.** Removing
+a value that existing records still hold does _not_ rewrite or invalidate them,
+and it does not break everything — but it breaks the most common update idiom:
+
+| Operation on a record holding a now-removed value | Result                                                        |
+| ------------------------------------------------- | ------------------------------------------------------------- |
+| `GET` the record                                  | 200 — the stale value reads back                              |
+| `PATCH` an **unrelated** field                    | 200 — policy checks only the properties being written         |
+| `PATCH` the enum field to the removed value       | 403                                                           |
+| **`PUT` the whole record as read back**           | **403** — the unchanged stale value is re-submitted and fails |
+
+So read-modify-write of an untouched record starts failing, while targeted
+patches keep working. Widening an enum is safe; narrowing one needs the affected
+records migrated first. Anything that offers enum editing should treat removing
+a value differently from adding one.
 
 No cross-object reverse-property validation runs on config write. A PUT with
 `validate: true` and a `reversePropertyName` that did not exist on the target
