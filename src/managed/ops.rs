@@ -311,7 +311,15 @@ fn build_relationship_node(
     }
     node.insert(
         "resourceCollection".into(),
-        json!([{"path": format!("managed/{target}"), "label": target}]),
+        json!([{
+            "path": format!("managed/{target}"),
+            "label": target,
+            // Not cosmetic, despite `config/managed` accepting the entry without
+            // it: the admin console reads `query.fields` while rendering a
+            // relationship, and a resource collection that lacks `query` breaks
+            // every console page that shows the property (verified 2026-08-04).
+            "query": {"fields": [], "queryFilter": "true", "sortKeys": []},
+        }]),
     );
     node.insert(
         "properties".into(),
@@ -3562,6 +3570,25 @@ mod tests {
             updated["objects"][1]["schema"]["properties"]["owned"]["properties"]["_refProperties"]
                 ["properties"],
             json!({"_id": {"type": "string"}})
+        );
+    }
+
+    /// `config/managed` accepts a resource collection with no `query`, so only the
+    /// console notices when one goes missing — and it notices by refusing to open
+    /// the page. Pin it on both ends of the pair.
+    #[test]
+    fn relationship_resource_collections_carry_a_query_for_the_console() {
+        let query = json!({"fields": [], "queryFilter": "true", "sortKeys": []});
+        let spec = relationship_spec(Cardinality::Many, ReverseCardinality::One);
+        let updated = apply_relationship_spec(&relationship_doc(&["a", "b"]), &spec, None).unwrap();
+
+        assert_eq!(
+            updated["objects"][0]["schema"]["properties"]["owner"]["items"]["resourceCollection"],
+            json!([{"path": "managed/b", "label": "b", "query": query}])
+        );
+        assert_eq!(
+            updated["objects"][1]["schema"]["properties"]["owned"]["resourceCollection"],
+            json!([{"path": "managed/a", "label": "a", "query": query}])
         );
     }
 
