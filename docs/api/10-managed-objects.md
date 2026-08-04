@@ -257,7 +257,7 @@ whole-document RMW edits. `schema.order` is independent of `schema.properties`,
 and `schema.required` is independent too; the API does not auto-prune either
 list when a property is removed or renamed.
 
-### Relationship cardinality + bidirectional writes (verified 2026-07-27)
+### Relationship cardinality + bidirectional writes (verified 2026-07-27, corrected 2026-08-04)
 
 Verified live against `test_from`/`test_to` (all six forward×reverse
 combinations, created from the web console) and `test_obj2` (self-referential
@@ -300,9 +300,20 @@ write the reverse property on the target object itself — so an add/edit is a
 _not_ a single-object splice. Reconciliation on edit: if the reverse cardinality
 drops to none, or the target is repointed, the tool must remove/move the old
 reverse property (the server won't). `config/managed` PUT accepted every combo
-with 200 and stored verbatim (the console also writes cosmetic
-`id`/`notifySelf`/`label`/`query`/`notify`/`propName` fields; none are required
-— the minimal shapes in the table above round-trip).
+with 200 and stored verbatim.
+
+**`resourceCollection[].query` is required by the console, not by the API**
+(corrected 2026-08-04 — see `99-quirks-and-open-questions.md`). The console
+additionally writes `id`/`notifySelf`/`label`/`notify`/`propName`; those really
+are cosmetic, and the minimal shapes in the table above round-trip. `query` does
+not: omit it and every console page that renders the property fails to load.
+Always write
+
+```json
+"query": { "fields": [], "queryFilter": "true", "sortKeys": [] }
+```
+
+on each `resourceCollection` entry, on **both** ends of a bidirectional pair.
 
 **`_refProperties` are per-side.** The baseline is
 `"_refProperties": { "type": "object", "properties": { "_id": { "type": "string" } } }`.

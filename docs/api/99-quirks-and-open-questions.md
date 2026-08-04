@@ -217,9 +217,14 @@ new things are learned.
 | OAuth2 client `_rev` means use `If-Match`                                         | 05-oauth2-oidc.md (earlier note)     | False — plain `PUT` works for create/update, and `_rev` must be stripped from the body. Use content snapshots, not `If-Match`.                                                            |
 | Managed-object `totalPagedResults` is exact with `_totalPagedResultsPolicy=EXACT` | 10-managed-objects.md (earlier note) | False — empty objects can report `NONE`/`-1`, and populated objects can report `ESTIMATE`. Use cursor cookies for bulk record reads; do not use offset paging as a completeness strategy. |
 | Script `evaluatorVersion` defaults to `"2.0"` on create                           | 04-scripts.md (earlier note)         | False — omitting it yields `"1.0"` (legacy engine) on both create routes. Always send it explicitly.                                                                                      |
+| Relationship `resourceCollection[].query` is cosmetic                             | 10-managed-objects.md (earlier note) | False — the API stores an entry without it, but the console then cannot open the owning object at all. Always emit `query`, on both ends of a pair.                                       |
 
 **Lesson:** Both libraries' research summaries had errors. Always verify
 endpoints + shapes against the live tenant before writing code.
+
+The last three rows are our own notes, not transcribed claims — a live probe
+that only exercises the API can still leave a wrong conclusion behind if the
+console is the real consumer.
 
 ### Q11. PKCE browser flow — superseded (resolved 2026-05-20)
 
@@ -361,6 +366,22 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
 
 ## Changelog
 
+- **2026-08-04** — Relationship `resourceCollection[].query` verified **required
+  by the admin console** even though `config/managed` accepts an entry without
+  it. A relationship created by `aic managed relationship set` on `test_from`
+  round-tripped through the API cleanly and every runtime read succeeded (record
+  list, `_fields`/`_queryFilter`/`_sortKeys` over the new property, and
+  `GET /openidm/schema/managed/test_from` — all 200), but the console could no
+  longer open `test_from` at all. Adding
+  `"query": {"fields": [], "queryFilter": "true", "sortKeys": []}` to each
+  `resourceCollection` entry restored it. This corrects our **own**
+  `10-managed-objects.md` claim of 2026-07-27 that the console's extra fields
+  are all cosmetic — that was verified by config PUT and read-back, i.e. against
+  the API only, never against the console rendering the result. General lesson:
+  for schema config, "the API stored it verbatim" is not the same as "the
+  console can display it"; a shape the console writes deserves the benefit of
+  the doubt. `build_relationship_node` in `src/managed/ops.rs` now always emits
+  `query`, pinned by a test.
 - **2026-07-31** — AM script `default` verified **server-owned on write**: a
   client-sent `"default": true` is silently dropped to `false` on `PUT`-create,
   `POST ?_action=create`, and `PUT`-update. Clients cannot mint an undeletable
@@ -562,7 +583,7 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   The operationally surprising part, and the reason this took a live probe
   rather than a doc read: **narrowing an enum on a populated field breaks
   read-modify-write but nothing else.** With a record still holding a removed
-  value, `GET` returns 200 and a `PATCH` of an *unrelated* field returns 200 —
+  value, `GET` returns 200 and a `PATCH` of an _unrelated_ field returns 200 —
   policy validates only the properties actually being written — but a `PUT` of
   the whole record exactly as it was read back returns 403 on the stale
   property. So the failure surfaces later, in whichever integration does
