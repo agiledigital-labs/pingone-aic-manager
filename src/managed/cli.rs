@@ -150,6 +150,12 @@ pub struct FieldAttrs {
     /// Remove the allowed-value constraint.
     #[arg(long, conflicts_with = "enum_values")]
     clear_enum: bool,
+    /// Value applied on record create when the property is omitted. Must match the field type.
+    #[arg(long = "default", conflicts_with = "clear_default")]
+    default_value: Option<String>,
+    /// Remove the default value.
+    #[arg(long, conflicts_with = "default_value")]
+    clear_default: bool,
     /// Permit removing values from an existing allowed-value constraint.
     #[arg(long)]
     allow_narrowing: bool,
@@ -328,6 +334,11 @@ async fn field(command: FieldCommand) -> Result<()> {
                         .into(),
                 ));
             }
+            if attrs.clear_default {
+                return Err(crate::Error::Config(
+                    "field add cannot use --clear-default: a new field has no default".into(),
+                ));
+            }
             let (object, key) = parse_object_key(&field)?;
             let tenant = tenant_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant, yes)?;
@@ -344,6 +355,7 @@ async fn field(command: FieldCommand) -> Result<()> {
                 viewable: attrs.viewable.unwrap_or(true),
                 user_editable: attrs.user_editable.unwrap_or(true),
                 enum_values,
+                default_value: attrs.default_value,
             };
             let applied = ops::apply_add_field(&previous, &spec).map_err(crate::Error::Config)?;
             replace_object_write(&ok, &mut doc, &object, &previous, applied.object.clone()).await?;
@@ -458,9 +470,13 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
             yes,
             json,
         } => {
-            if !attrs.enum_values.is_empty() || attrs.clear_enum {
+            if !attrs.enum_values.is_empty()
+                || attrs.clear_enum
+                || attrs.default_value.is_some()
+                || attrs.clear_default
+            {
                 return Err(crate::Error::Config(
-                    "relationship set cannot use --enum or --clear-enum".into(),
+                    "relationship set cannot use --enum, --clear-enum, --default, or --clear-default".into(),
                 ));
             }
             let (source_object, key) = parse_object_key(&field)?;
@@ -742,6 +758,13 @@ fn field_edit_spec(attrs: FieldAttrs) -> Result<spec::FieldEditSpec> {
     } else {
         enum_spec(&attrs)?.map_or(spec::EnumChange::Unchanged, spec::EnumChange::Set)
     };
+    let default_change = if attrs.clear_default {
+        spec::DefaultChange::Clear
+    } else {
+        attrs
+            .default_value
+            .map_or(spec::DefaultChange::Unchanged, spec::DefaultChange::Set)
+    };
     Ok(spec::FieldEditSpec {
         new_key: None,
         title: attrs.title,
@@ -751,6 +774,7 @@ fn field_edit_spec(attrs: FieldAttrs) -> Result<spec::FieldEditSpec> {
         viewable: attrs.viewable,
         user_editable: attrs.user_editable,
         enum_change,
+        default_change,
         allow_narrowing: attrs.allow_narrowing,
     })
 }
@@ -763,6 +787,8 @@ fn attrs_present(attrs: &FieldAttrs) -> bool {
         || attrs.user_editable.is_some()
         || !attrs.enum_values.is_empty()
         || attrs.clear_enum
+        || attrs.default_value.is_some()
+        || attrs.clear_default
 }
 fn ensure_edit_attrs(attrs: &FieldAttrs) -> Result<()> {
     if attrs_present(attrs) {

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use crate::managed::spec::{
-    EnumChange, EnumSpec, FieldEditSpec, ScalarFieldType, parse_enum_items,
+    DefaultChange, EnumChange, EnumSpec, FieldEditSpec, ScalarFieldType, parse_enum_items,
 };
 
 use crate::tui::widgets::{LineEditor, TextField};
@@ -51,6 +51,7 @@ pub enum FieldAttr {
     Title,
     Description,
     Enum,
+    Default,
     Required,
     Searchable,
     Viewable,
@@ -74,6 +75,7 @@ impl FieldCaps {
                 FieldAttr::Title
                     | FieldAttr::Description
                     | FieldAttr::Enum
+                    | FieldAttr::Default
                     | FieldAttr::Required
                     | FieldAttr::Searchable
                     | FieldAttr::Viewable
@@ -410,6 +412,7 @@ impl FieldEditState {
             viewable: Some(self.viewable),
             user_editable: Some(self.user_editable),
             enum_change: self.enum_change()?,
+            default_change: DefaultChange::Unchanged,
             allow_narrowing: self.allow_narrowing,
         })
     }

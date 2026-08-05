@@ -22,8 +22,8 @@ pub enum ProdAction {
 }
 use crate::managed::screen::Event;
 use crate::managed::spec::{
-    AddFieldSpec, DeleteFieldSpec, EnumChange, EnumSpec, EnumValue, FieldEditSpec, RenameFieldSpec,
-    ScalarFieldType,
+    AddFieldSpec, DefaultChange, DeleteFieldSpec, EnumChange, EnumSpec, EnumValue, FieldEditSpec,
+    RenameFieldSpec, ScalarFieldType,
 };
 use crate::managed::state::{
     AddFieldState, Cardinality, DeleteObjectState, FieldAttr, FieldEditState, LoadState,
@@ -1239,6 +1239,7 @@ pub fn build_add_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
                 return None;
             }
         },
+        default_value: None,
     };
     let applied = match apply_add_field(&draft.original_object, &spec) {
         Ok(applied) => applied,
@@ -2023,30 +2024,151 @@ fn enum_value_text(value: &Value) -> String {
 fn coerce_enum_value(value: &str, kind: &str) -> Result<Value, String> {
     match kind {
         "string" => Ok(Value::String(value.to_string())),
+        "number" | "integer" => coerce_number_value(value, kind)
+            .ok_or_else(|| format!("enum value '{value}' is not a valid {kind}")),
+        _ => Err(format!(
+            "enum constraints are not supported for type '{kind}'"
+        )),
+    }
+}
+
+/// Parses JSON-schema numeric text while preserving integer JSON values.
+fn coerce_number_value(value: &str, kind: &str) -> Option<Value> {
+    match kind {
         // Whole numbers stay integers. A `number` enum written as `[1.0]` risks
         // never matching a record holding `1` if IDM's policy compares the boxed
         // JSON values rather than their numeric value.
         "number" => value
             .parse::<i64>()
             .map(|number| Value::Number(number.into()))
-            .or_else(|_| {
+            .ok()
+            .or_else(|| {
                 value
                     .parse::<f64>()
                     .ok()
                     .filter(|number| number.is_finite())
                     .and_then(serde_json::Number::from_f64)
                     .map(Value::Number)
-                    .ok_or_else(|| format!("enum value '{value}' is not a valid {kind}"))
             }),
         "integer" => value
             .parse::<i64>()
+            .ok()
             .map(serde_json::Number::from)
-            .map(Value::Number)
-            .map_err(|_| format!("enum value '{value}' is not a valid {kind}")),
-        _ => Err(format!(
-            "enum constraints are not supported for type '{kind}'"
-        )),
+            .map(Value::Number),
+        _ => None,
     }
+}
+
+fn default_error(kind: &str, detail: impl std::fmt::Display) -> String {
+    format!(
+        "default for property type '{kind}' {detail}; the server accepts a mismatch with 200 and the object then 404s forever"
+    )
+}
+
+fn coerce_default_value(raw: &str, property: &Value) -> Result<Value, String> {
+    let kind = property
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    match kind {
+        "string" => Ok(Value::String(raw.to_string())),
+        "boolean" => match raw {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            _ => Err(default_error(kind, "must be exactly true or false")),
+        },
+        "number" | "integer" => coerce_number_value(raw, kind)
+            .ok_or_else(|| default_error(kind, format_args!("value '{raw}' is not numeric"))),
+        "array" => {
+            let value = serde_json::from_str::<Value>(raw)
+                .map_err(|_| default_error(kind, "must be a JSON array"))?;
+            let values = value
+                .as_array()
+                .ok_or_else(|| default_error(kind, "must be a JSON array"))?;
+            let item_kind = property
+                .pointer("/items/type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| default_error(kind, "has items with no supported type"))?;
+            if values
+                .iter()
+                .all(|value| matches_property_type(value, item_kind))
+            {
+                Ok(value)
+            } else {
+                Err(default_error(
+                    kind,
+                    format_args!("contains an element that is not a {item_kind}"),
+                ))
+            }
+        }
+        _ => Err(default_error(kind, "is not supported")),
+    }
+}
+
+fn matches_property_type(value: &Value, kind: &str) -> bool {
+    match kind {
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "number" | "integer" => value.is_number(),
+        _ => false,
+    }
+}
+
+fn validate_default_enum(property: &Value, value: &Value) -> Result<(), String> {
+    let kind = property
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    let permitted = if kind == "array" {
+        property.pointer("/items/enum")
+    } else {
+        property.get("enum")
+    };
+    let Some(permitted) = permitted.and_then(Value::as_array) else {
+        return Ok(());
+    };
+    let values = if kind == "array" {
+        value
+            .as_array()
+            .ok_or_else(|| default_error(kind, "must be an array"))?
+    } else {
+        std::slice::from_ref(value)
+    };
+    if values.iter().all(|value| permitted.contains(value)) {
+        return Ok(());
+    }
+    let permitted = permitted
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    // Deliberately not [`default_error`]: this one doesn't 404 the object. The
+    // config write and the runtime are both fine — the default is simply applied
+    // before policy runs, so every create fails validation instead.
+    Err(format!(
+        "default {value} is outside the allowed values [{permitted}]; every record create would fail VALID_ENUM_VALUE"
+    ))
+}
+
+fn apply_default_change(property: &mut Value, change: &DefaultChange) -> Result<(), String> {
+    match change {
+        DefaultChange::Unchanged => {}
+        DefaultChange::Set(raw) => {
+            let value = coerce_default_value(raw, property)?;
+            validate_default_enum(property, &value)?;
+            property
+                .as_object_mut()
+                .ok_or_else(|| "property is not object-valued".to_string())?
+                .insert("default".into(), value);
+        }
+        DefaultChange::Clear => {
+            property
+                .as_object_mut()
+                .ok_or_else(|| "property is not object-valued".to_string())?
+                .remove("default");
+        }
+    }
+    Ok(())
 }
 
 /// The form a value takes once written, for comparing one constraint to another.
@@ -2194,6 +2316,19 @@ pub fn apply_field_edit(
     }
 
     apply_enum_change(&mut property, &spec.enum_change)?;
+    // Whatever default survives this edit has to sit inside the surviving
+    // constraint. When the same command supplies one, `apply_default_change`
+    // has already checked it against the post-edit `enum`; only an untouched
+    // stored default still needs checking, and only if the constraint moved.
+    let default_edited = caps.can_edit_attr(FieldAttr::Default)
+        && !matches!(spec.default_change, DefaultChange::Unchanged);
+    if default_edited {
+        apply_default_change(&mut property, &spec.default_change)?;
+    } else if !matches!(spec.enum_change, EnumChange::Unchanged)
+        && let Some(default) = property.get("default")
+    {
+        validate_default_enum(&property, default)?;
+    }
 
     let new_field_key = if caps.rename_key {
         match &spec.new_key {
@@ -2264,6 +2399,9 @@ pub fn apply_add_field(object_def: &Value, spec: &AddFieldSpec) -> Result<AddFie
     property_map.insert("userEditable".into(), Value::Bool(spec.user_editable));
     if let Some(enum_values) = &spec.enum_values {
         apply_enum_change(&mut property, &EnumChange::Set(enum_values.clone()))?;
+    }
+    if let Some(default_value) = &spec.default_value {
+        apply_default_change(&mut property, &DefaultChange::Set(default_value.clone()))?;
     }
 
     insert_new_property(&mut object, &field_key, property, spec.required)?;
@@ -2675,6 +2813,7 @@ mod tests {
             viewable: true,
             user_editable: true,
             enum_values: None,
+            default_value: None,
         }
     }
 
@@ -2717,6 +2856,7 @@ mod tests {
             viewable: Some(true),
             user_editable: Some(true),
             enum_change: EnumChange::Unchanged,
+            default_change: DefaultChange::Unchanged,
             allow_narrowing: false,
         };
 
@@ -2977,6 +3117,201 @@ mod tests {
         assert_eq!(
             applied.object["schema"]["properties"]["status"]["enum"],
             json!(["new"])
+        );
+    }
+
+    #[test]
+    fn defaults_are_coerced_and_array_defaults_stay_on_the_property() {
+        let base = json!({"name":"test", "schema":{"properties":{},"required":[],"order":[]}});
+        for (field_type, raw, expected) in [
+            (ScalarFieldType::String, "hello", json!("hello")),
+            (ScalarFieldType::Number, "7", json!(7)),
+            (ScalarFieldType::Number, "0", json!(0)),
+            (ScalarFieldType::Boolean, "true", json!(true)),
+            (
+                ScalarFieldType::StringArray,
+                r#"["a","b"]"#,
+                json!(["a", "b"]),
+            ),
+            (ScalarFieldType::StringArray, "[]", json!([])),
+        ] {
+            let applied = apply_add_field(
+                &base,
+                &AddFieldSpec {
+                    field_type,
+                    default_value: Some(raw.into()),
+                    ..add_field_spec("value")
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                applied.object["schema"]["properties"]["value"]["default"],
+                expected
+            );
+        }
+        let array = apply_add_field(
+            &base,
+            &AddFieldSpec {
+                field_type: ScalarFieldType::StringArray,
+                default_value: Some(r#"["a"]"#.into()),
+                ..add_field_spec("values")
+            },
+        )
+        .unwrap()
+        .object;
+        assert_eq!(
+            array["schema"]["properties"]["values"]["default"],
+            json!(["a"])
+        );
+        assert!(
+            array["schema"]["properties"]["values"]["items"]
+                .get("default")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn defaults_reject_invalid_type_text() {
+        for (property, raw) in [
+            (json!({"type":"boolean"}), "yes"),
+            (json!({"type":"number"}), "not-a-number"),
+            (
+                json!({"type":"array", "items":{"type":"string"}}),
+                "not-json",
+            ),
+        ] {
+            let object = json!({"name":"test", "schema":{"properties":{"value":property},"required":[],"order":["value"]}});
+            let error = apply_field_edit(
+                &object,
+                "value",
+                &FieldEditSpec {
+                    default_change: DefaultChange::Set(raw.into()),
+                    ..FieldEditSpec::default()
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("200") && error.contains("404s forever"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_clear_removes_existing_default_and_unrelated_edit_preserves_it() {
+        let object = json!({"name":"test", "schema":{"properties":{"value":{"type":"string", "title":"Old", "default":"saved"}},"required":[],"order":["value"]}});
+        let cleared = apply_field_edit(
+            &object,
+            "value",
+            &FieldEditSpec {
+                default_change: DefaultChange::Clear,
+                ..FieldEditSpec::default()
+            },
+        )
+        .unwrap()
+        .object;
+        assert!(
+            cleared["schema"]["properties"]["value"]
+                .get("default")
+                .is_none()
+        );
+        let preserved = apply_field_edit(
+            &object,
+            "value",
+            &FieldEditSpec {
+                title: Some("New".into()),
+                ..FieldEditSpec::default()
+            },
+        )
+        .unwrap()
+        .object;
+        // The TUI does not edit defaults, so unrelated saves must retain them.
+        assert_eq!(
+            preserved["schema"]["properties"]["value"]["default"],
+            json!("saved")
+        );
+    }
+
+    #[test]
+    fn defaults_must_remain_in_the_enum_set() {
+        let base = json!({"name":"test", "schema":{"properties":{},"required":[],"order":[]}});
+        let error = apply_add_field(
+            &base,
+            &AddFieldSpec {
+                enum_values: Some(enum_spec(&[("new", None)])),
+                default_value: Some("done".into()),
+                ..add_field_spec("status")
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("new") && error.contains("VALID_ENUM_VALUE"));
+
+        let object = json!({"name":"test", "schema":{"properties":{"status":{"type":"string", "enum":["new"], "default":"done"}},"required":[],"order":["status"]}});
+        assert!(
+            apply_field_edit(
+                &object,
+                "status",
+                &FieldEditSpec {
+                    default_change: DefaultChange::Set("done".into()),
+                    ..FieldEditSpec::default()
+                },
+            )
+            .unwrap_err()
+            .contains("new")
+        );
+
+        let object = json!({"name":"test", "schema":{"properties":{"status":{"type":"string", "enum":["new","done"], "default":"done"}},"required":[],"order":["status"]}});
+        assert!(
+            apply_field_edit(
+                &object,
+                "status",
+                &FieldEditSpec {
+                    enum_change: EnumChange::Set(enum_spec(&[("new", None)])),
+                    allow_narrowing: true,
+                    ..FieldEditSpec::default()
+                },
+            )
+            .unwrap_err()
+            .contains("VALID_ENUM_VALUE")
+        );
+
+        // Narrowing out from under the *stored* default is the refusal above.
+        // Narrowing while replacing it in the same command is not — the stale
+        // value is on its way out, so checking it would refuse a valid edit.
+        let narrowed = apply_field_edit(
+            &object,
+            "status",
+            &FieldEditSpec {
+                enum_change: EnumChange::Set(enum_spec(&[("new", None)])),
+                default_change: DefaultChange::Set("new".into()),
+                allow_narrowing: true,
+                ..FieldEditSpec::default()
+            },
+        )
+        .unwrap()
+        .object;
+        assert_eq!(
+            narrowed["schema"]["properties"]["status"]["default"],
+            json!("new")
+        );
+
+        // Same shape, but clearing the default instead of replacing it.
+        let cleared = apply_field_edit(
+            &object,
+            "status",
+            &FieldEditSpec {
+                enum_change: EnumChange::Set(enum_spec(&[("new", None)])),
+                default_change: DefaultChange::Clear,
+                allow_narrowing: true,
+                ..FieldEditSpec::default()
+            },
+        )
+        .unwrap()
+        .object;
+        assert!(
+            cleared["schema"]["properties"]["status"]
+                .get("default")
+                .is_none()
         );
     }
 

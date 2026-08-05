@@ -166,8 +166,8 @@ aic managed get alpha_user                        # one object's full definition
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
 aic managed object rename custom_widget custom_gadget [--yes] [--json]
 aic managed object delete custom_gadget [--yes] [--json]
-aic managed field add custom_widget.code --type string [--title T] [--required false] [--enum value[:Title] ...] [--yes] [--json]
-aic managed field edit custom_widget.code --searchable true [--enum value[:Title] ... | --clear-enum] [--allow-narrowing] [--yes] [--json]
+aic managed field add custom_widget.code --type string [--title T] [--required false] [--enum value[:Title] ...] [--default VALUE] [--yes] [--json]
+aic managed field edit custom_widget.code --searchable true [--enum value[:Title] ... | --clear-enum] [--default VALUE | --clear-default] [--allow-narrowing] [--yes] [--json]
 aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
@@ -186,6 +186,13 @@ undo command.
 `--enum` is repeatable and replaces the field's allowed-value set; use
 `value:Title` for a display label. On `field edit`, `--clear-enum` removes the
 constraint entirely (`field add` rejects it — a new field has none to clear).
+
+`--default` supplies the server-applied value when a record omits the field on
+create; it is not UI prefill and also satisfies `required`. The value must match
+the field type. The CLI validates this locally because IDM accepts a mismatched
+schema default with 200, then the managed object returns 404 forever. Use
+`--clear-default` on `field edit` to remove it (`field add` rejects it). For a
+`string[]` field, pass JSON such as `'["a","b"]'`.
 
 Removing a value from an existing set requires `--allow-narrowing`, and warns on
 stderr even then. Nothing fails at the moment you narrow: records holding a
