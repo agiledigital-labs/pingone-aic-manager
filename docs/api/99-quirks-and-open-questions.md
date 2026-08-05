@@ -192,6 +192,12 @@ new things are learned.
 - **Not the daemon, and not a second writer.** The observing reads go straight
   to the tenant with `curl`, bypassing the `aic agent` that proxies the CLI's
   own calls, and they still show the loss. No other session was writing.
+- **Independently observed in the AIC admin console** (Dave, 2026-08-05). That
+  settles the layer: the console is a separate client doing its own
+  read-modify-write against the same endpoint, so nothing about our transport,
+  our daemon, or our request shape is implicated — it is the tenant's config
+  store. It also means a user can lose a schema change made in the console, with
+  no indication, which is worth knowing before blaming this tool.
 - **The instantiation window is one cause, not the whole story.** Run without a
   wait after `object create` and the _first_ `field add` is the casualty every
   time — the new managed type is instantiated asynchronously and a write landing
@@ -207,9 +213,35 @@ new things are learned.
   that cares has to re-read and confirm its own change landed, with a bounded
   retry, instead of trusting the status code. `aic` does not do this yet — see
   the note in `10-managed-objects.md`.
-- **Still open:** the mechanism. Replica divergence in the config store fits,
-  but nothing here proves it, and the per-request behaviour is not simple
-  flapping — twenty consecutive reads agreed with each other every time.
+- **Confirm-after-write helps but does not close it (2026-08-05).**
+  `api::replace_managed_confirmed` now PUTs, reads back, and retries up to six
+  times (500ms–8s) until the change is visible, erroring instead of reporting
+  success if it never becomes visible. That reliably fixes the deterministic
+  case: the first `field add` after `object create`, previously lost 100% of the
+  time, now survives every run. It does **not** make longer sequences safe — a
+  14-field run still loses one or two writes that `aic` reported as successful.
+
+  That residue is platform-side, and the reasoning matters: `aic` only returns
+  success after reading the change back, and a stale read can return old data
+  but cannot invent a property that was never written. So a field that was
+  confirmed and is later absent _was_ stored. Either the document was rolled
+  back afterwards, or the confirming read and the observing read hit replicas
+  that disagree. Corroborating the rollback reading: **managed objects deleted
+  hours earlier reappeared** in the config document (`test_defaults4`,
+  `test_defaults5`), with `/environment/startup` reporting `ready` throughout,
+  so this is not a restart.
+
+- **Recommendation:** raise it with Ping. No client-side retry closes a
+  rollback, and the same symptom is visible in their own console. Until then,
+  treat a batch of managed schema writes as needing verification afterwards —
+  the shape of that check is `scripts/experiment-managed-lost-updates.sh` — and
+  prefer fewer, larger writes to many small ones.
+
+- **Still open:** which of rollback or replica divergence it is. The behaviour
+  is intermittent — short runs (8–10 fields) often pass cleanly — and sampling
+  the agent-proxied and direct read paths side by side during a clean run showed
+  no disagreement at all, so the simple divergence story does not obviously fit
+  either.
 
 ### Q6. PUT on resources without `_rev`
 

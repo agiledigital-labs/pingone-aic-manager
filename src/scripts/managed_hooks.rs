@@ -167,7 +167,12 @@ pub async fn write(
             .expect("is_inline_hook guarantees an object")
             .insert("source".into(), Value::String(new_source_str.clone()));
     }
-    let resp = crate::managed::api::replace_managed(tenant, doc, confirmed_prod).await?;
+    let expect = [crate::managed::api::ConfigConfirm::ObjectContent {
+        name: object.to_string(),
+        content: crate::managed::api::object_named(&doc, object)?.clone(),
+    }];
+    crate::managed::api::replace_managed_confirmed(tenant, doc.clone(), &expect, confirmed_prod)
+        .await?;
 
     // The PUT 200s before the hook registry applies the change (verified —
     // see docs/api/10). Confirm the new source is actually live so callers
@@ -176,7 +181,7 @@ pub async fn write(
         let mut live = fetch_managed_doc(tenant).await?;
         if let Ok(slot) = hook_slot(&mut live, object, hook) {
             if slot.get("source").and_then(Value::as_str) == Some(new_source_str.as_str()) {
-                return Ok(resp);
+                return Ok(doc);
             }
         }
         if attempt + 1 < APPLY_RETRIES {
@@ -210,7 +215,13 @@ pub async fn delete(tenant: &str, _realm: &str, id: &str, confirmed_prod: bool) 
             "hook '{hook}' not present on managed object '{object}'"
         )));
     }
-    crate::managed::api::replace_managed(tenant, doc, confirmed_prod).await
+    let expect = [crate::managed::api::ConfigConfirm::ObjectContent {
+        name: object.to_string(),
+        content: crate::managed::api::object_named(&doc, object)?.clone(),
+    }];
+    crate::managed::api::replace_managed_confirmed(tenant, doc.clone(), &expect, confirmed_prod)
+        .await?;
+    Ok(doc)
 }
 
 /// Hook source is plaintext at `.source` of the (narrowed) hook object.

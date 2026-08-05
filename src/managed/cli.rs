@@ -271,7 +271,8 @@ async fn object(command: ObjectCommand) -> Result<()> {
                 .map_err(crate::Error::Config)?;
             let mut undo = DiskLog::load_default()?;
             ops::record_create_object_undo(&mut undo, &tenant, &name, &title, &description, &doc)?;
-            put_managed(&ok, updated.clone()).await?;
+            let expect = [api::ConfigConfirm::ObjectPresent { name: name.clone() }];
+            put_managed(&ok, updated.clone(), &expect).await?;
             confirmation(&format!("managed object {name} created"));
             output(json, &updated)
         }
@@ -293,7 +294,11 @@ async fn object(command: ObjectCommand) -> Result<()> {
                 ops::rename_object_in_doc(&doc, &old, &new).map_err(crate::Error::Config)?;
             let mut undo = DiskLog::load_default()?;
             ops::record_rename_object_undo(&mut undo, &tenant, &old, &new, &doc)?;
-            put_managed(&ok, updated.clone()).await?;
+            let expect = [
+                api::ConfigConfirm::ObjectAbsent { name: old.clone() },
+                api::ConfigConfirm::ObjectPresent { name: new.clone() },
+            ];
+            put_managed(&ok, updated.clone(), &expect).await?;
             confirmation(&format!("managed object {old} renamed to {new}"));
             output(json, &updated)
         }
@@ -311,7 +316,8 @@ async fn object(command: ObjectCommand) -> Result<()> {
                 ops::delete_object_in_doc(&doc, &name).map_err(crate::Error::Config)?;
             let mut undo = DiskLog::load_default()?;
             ops::record_delete_object_undo(&mut undo, &tenant, &name, &doc)?;
-            put_managed(&ok, updated.clone()).await?;
+            let expect = [api::ConfigConfirm::ObjectAbsent { name: name.clone() }];
+            put_managed(&ok, updated.clone(), &expect).await?;
             confirmation(&format!("managed object {name} deleted"));
             output(json, &updated)
         }
@@ -550,7 +556,8 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 &updated,
                 format!("Revert relationship {source_object}.{key}"),
             )?;
-            put_managed(&ok, updated.clone()).await?;
+            let expect = relationship_expectations(&doc, &updated)?;
+            put_managed(&ok, updated.clone(), &expect).await?;
             confirmation(&format!("relationship {source_object}.{key} set"));
             output(json, &updated)
         }
@@ -610,7 +617,8 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                 &updated,
                 format!("Restore relationship {source_object}.{key}"),
             )?;
-            put_managed(&ok, updated.clone()).await?;
+            let expect = relationship_expectations(&doc, &updated)?;
+            put_managed(&ok, updated.clone(), &expect).await?;
             confirmation(&format!("relationship {source_object}.{key} deleted"));
             output(json, &updated)
         }
@@ -647,8 +655,12 @@ async fn replace_object_write(
 ) -> Result<()> {
     let mut undo = DiskLog::load_default()?;
     ops::record_replace_undo(&mut undo, ok.tenant, object, previous, &updated)?;
-    api::replace_object(doc, object, updated)?;
-    put_managed(ok, doc.clone()).await
+    api::replace_object(doc, object, updated.clone())?;
+    let expect = [api::ConfigConfirm::ObjectContent {
+        name: object.to_string(),
+        content: updated,
+    }];
+    put_managed(ok, doc.clone(), &expect).await
 }
 
 fn record_config_undo(
@@ -855,9 +867,24 @@ fn ensure_prod_confirmed(tenant: &str, yes: bool) -> Result<WriteOk<'_>> {
 }
 
 /// The only path from a mutated document to the tenant.
-async fn put_managed(ok: &WriteOk<'_>, doc: Value) -> Result<()> {
-    api::replace_managed(ok.tenant, doc, ok.confirmed_prod).await?;
-    Ok(())
+async fn put_managed(ok: &WriteOk<'_>, doc: Value, expect: &[api::ConfigConfirm]) -> Result<()> {
+    api::replace_managed_confirmed(ok.tenant, doc, expect, ok.confirmed_prod).await
+}
+
+fn relationship_expectations(previous: &Value, updated: &Value) -> Result<Vec<api::ConfigConfirm>> {
+    Ok(api::objects(updated)?
+        .iter()
+        .filter_map(|object| {
+            let name = object.get("name").and_then(Value::as_str)?;
+            let before = api::object_named(previous, name).ok()?;
+            (!api::object_content_equal(before, object)).then(|| {
+                api::ConfigConfirm::ObjectContent {
+                    name: name.to_string(),
+                    content: object.clone(),
+                }
+            })
+        })
+        .collect())
 }
 fn output(json_output: bool, value: &Value) -> Result<()> {
     if json_output {
