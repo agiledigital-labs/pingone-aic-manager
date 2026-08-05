@@ -610,7 +610,18 @@ async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
             if token_only {
                 println!("{access_token}");
             } else {
+                // The service account is worth printing even though it's local
+                // config: it's the `iss`/`sub` of the assertion that minted this
+                // token, so it names which of several same-titled accounts in the
+                // console this tenant actually authenticates as.
+                let sa = cfg
+                    .tenants
+                    .iter()
+                    .find(|candidate| candidate.name == tenant)
+                    .and_then(|candidate| candidate.sa_id.as_deref())
+                    .unwrap_or("(none — log-only tenant)");
                 println!("tenant:  {tenant}");
+                println!("sa:      {sa}");
                 println!("expires: in {ttl}s (unix {expires_at})");
                 println!("token:   {}", redact(&access_token));
             }
