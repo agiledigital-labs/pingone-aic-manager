@@ -157,6 +157,35 @@ new things are learned.
   requires an admin-user bearer; the SA bearer gets 403 regardless of scopes.
 - **Documented in:** `08-logs.md`.
 
+### Q14. `config/managed` reads appeared to go backwards (2026-08-05)
+
+- **Observed:** During CLI verification of `--default`, two throwaway objects
+  lost properties that had already been confirmed written. `test_defaults3` was
+  created and given `flag` then `tags`; a `GET` showed both. Roughly a minute
+  later, with no write in between, `aic managed field edit test_defaults3.flag`
+  failed `field 'flag' no longer exists`, and the next `field add` —
+  read-modify-writing off that state — persisted an object holding only the new
+  property. Same shape on `test_defaults4`. The `.aic/undo.log` write count
+  matches the commands issued exactly, so `aic` made no phantom writes.
+- **Not reproducible on demand.** The identical command sequence run
+  back-to-back in one shell (`test_defaults5`: create → add → add → edit → edit
+  → add) preserved every property, checked against the raw API after each step.
+  A single write then polled every 5s for 70s stayed put. Twenty consecutive raw
+  reads agreed with each other every time — no per-request flapping.
+- **Candidates, none confirmed:** (a) another writer on the same tenant — the
+  config `PUT` is a whole-document replace with no `If-Match`, so any second
+  read-modify-writer silently discards the first's changes, and a long-running
+  agent session in this repo could have been one; (b) replica divergence in the
+  config store, which would contradict the strong-consistency note in
+  `10-managed-objects.md` (verified 2026-06-14); (c) the local `aic agent`
+  daemon, which proxies every HTTP call and was a four-day-old binary at the
+  time.
+- **Next step:** restart the daemon (`aic session stop`, relaunch) to eliminate
+  (c), then retry the cross-minute sequence with no other session touching the
+  tenant. Until this is understood, treat "read, mutate, `PUT` the whole
+  document" as unsafe against concurrent writers, which is what it has always
+  been — the hazard is the silence, not the mechanism.
+
 ### Q6. PUT on resources without `_rev`
 
 - For ESV variables and scripts (both lack `_rev`), what is the server's
