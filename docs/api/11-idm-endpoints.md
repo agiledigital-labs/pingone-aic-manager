@@ -15,6 +15,39 @@ same content-based conflict-detection core.
 Service-account bearer. Scope: `fr:idm:*`. **No realm segment** — IDM config is
 tenant-global (`/openidm/...`), unlike realm-scoped AM scripts.
 
+### Public read endpoints
+
+The endpoint **configuration** APIs above always require the service-account
+bearer token. The endpoint's *runtime URL* can, however, be intentionally made
+available before authentication. IDM authorizes direct HTTP calls through the
+tenant's `config/access` rules. Add a narrowly-scoped rule such as this to the
+existing `configs` array (read the whole config, amend it, then PUT the complete
+object back):
+
+```json
+{
+  "pattern": "endpoint/announcement/*",
+  "roles": "*",
+  "methods": "read",
+  "actions": "*"
+}
+```
+
+This permits an unauthenticated `GET /openidm/endpoint/announcement/{audience}`
+and is appropriate for deliberately public, read-only data such as a login-page
+announcement. `roles: "*"` is not a wildcard for an authenticated role; it
+includes anonymous callers. Do **not** grant it to a broad `endpoint/*` pattern,
+or permit write/action methods, and return only data intended to be public.
+
+The calling hosted-page JavaScript is same-origin in the usual login-page
+deployment. A browser app hosted on another origin also needs an AIC CORS
+configuration; the access rule alone does not grant cross-origin browser access.
+
+This behavior is documented by Ping's IDM authorization guide and is also the
+mechanism used in Christian Brindley's announcement-at-login example. It has
+not yet been re-exercised anonymously against this sandbox because no unlocked
+local agent was available during the 2026-08-05 documentation pass.
+
 ## Endpoints
 
 | Op          | Method   | Path                                | Accept-API-Version | Notes                                                                       |
@@ -380,6 +413,10 @@ Object shape (real example, `schedule/UpdateReviewList`):
 - p1aic-script-editor: `src/resources/EndpointHandler.ts`,
   `src/schemas/endpoint.ts` (Zod schema covers scripted/table/jdbc + nested
   `source`).
+- Ping AIC: [Authorization and roles](https://backstage.forgerock.com/docs/idcloud/latest/idm-auth/authorization-and-roles.html)
+  (direct HTTP authorization, `config/access`, and `roles: "*"` rules).
+- Christian Brindley: [Making announcements at login](https://medium.com/@christian.brindley/pingone-advanced-identity-cloud-making-announcements-at-login-how-to-848b3b948fd1)
+  (public `endpoint/announcement/*` read-rule example).
 
 ## Open questions
 
