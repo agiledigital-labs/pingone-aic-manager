@@ -680,6 +680,8 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1),
         Constraint::Length(if enum_eligible { 2 } else { 0 }),
         Constraint::Length(if enum_eligible { 1 } else { 0 }),
+        Constraint::Length(2), // default
+        Constraint::Length(1),
         Constraint::Length(1), // required
         Constraint::Length(1), // searchable
         Constraint::Length(1), // viewable
@@ -732,7 +734,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
 
     draw_bool_row(
         f,
-        rows[11],
+        rows[13],
         "Required",
         edit.required,
         edit.focused == EditFieldFocus::Required,
@@ -740,7 +742,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[12],
+        rows[14],
         "Searchable",
         edit.searchable,
         edit.focused == EditFieldFocus::Searchable,
@@ -748,7 +750,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[13],
+        rows[15],
         "Viewable",
         edit.viewable,
         edit.focused == EditFieldFocus::Viewable,
@@ -756,7 +758,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[14],
+        rows[16],
         "User editable",
         edit.user_editable,
         edit.focused == EditFieldFocus::UserEditable,
@@ -770,14 +772,16 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Yellow),
             )))
             .wrap(Wrap { trim: false }),
-            rows[15],
+            rows[17],
         );
     }
     if enum_eligible {
         edit.enum_values
             .draw(f, rows[9], edit.focused == EditFieldFocus::Enum);
     }
-    draw_save_button(f, rows[16], edit.focused == EditFieldFocus::Save);
+    edit.default_value
+        .draw(f, rows[11], edit.focused == EditFieldFocus::Default);
+    draw_save_button(f, rows[18], edit.focused == EditFieldFocus::Save);
 }
 
 fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
@@ -798,6 +802,8 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // type
         Constraint::Length(if enum_eligible { 2 } else { 0 }),
         Constraint::Length(if enum_eligible { 1 } else { 0 }),
+        Constraint::Length(2), // default
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -829,9 +835,12 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
             .enum_values
             .draw(f, rows[9], draft.focused == AddFieldFocus::Enum);
     }
+    draft
+        .default_value
+        .draw(f, rows[11], draft.focused == AddFieldFocus::Default);
     draw_bool_row(
         f,
-        rows[11],
+        rows[13],
         "Searchable",
         draft.searchable,
         draft.focused == AddFieldFocus::Searchable,
@@ -839,7 +848,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[12],
+        rows[14],
         "Viewable",
         draft.viewable,
         draft.focused == AddFieldFocus::Viewable,
@@ -847,7 +856,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[13],
+        rows[15],
         "User editable",
         draft.user_editable,
         draft.focused == AddFieldFocus::UserEditable,
@@ -855,14 +864,14 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
     );
     draw_bool_row(
         f,
-        rows[14],
+        rows[16],
         "Required",
         draft.required,
         draft.focused == AddFieldFocus::Required,
         true,
     );
-    draw_form_error(f, rows[15], draft.error.as_deref());
-    draw_save_button(f, rows[16], draft.focused == AddFieldFocus::Save);
+    draw_form_error(f, rows[17], draft.error.as_deref());
+    draw_save_button(f, rows[18], draft.focused == AddFieldFocus::Save);
 }
 
 fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {

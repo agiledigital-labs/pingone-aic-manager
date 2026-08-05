@@ -905,6 +905,9 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) {
             edit.allow_narrowing = false;
             edit.narrowed_enum_values.clear();
         }
+        EditFieldFocus::Default => {
+            edit.default_value.handle_key(&key);
+        }
         _ => {}
     }
 }
@@ -1006,6 +1009,9 @@ fn handle_add_field_key(app: &mut App, key: KeyEvent) {
         }
         AddFieldFocus::Enum => {
             draft.enum_values.handle_key(&key);
+        }
+        AddFieldFocus::Default => {
+            draft.default_value.handle_key(&key);
         }
         _ => {}
     }
@@ -1683,11 +1689,12 @@ mod tests {
     }
 
     /// Every variant, so the property test below can't silently skip one.
-    const ALL_FOCUS: [EditFieldFocus; 9] = [
+    const ALL_FOCUS: [EditFieldFocus; 10] = [
         EditFieldFocus::Key,
         EditFieldFocus::Title,
         EditFieldFocus::Description,
         EditFieldFocus::Enum,
+        EditFieldFocus::Default,
         EditFieldFocus::Required,
         EditFieldFocus::Searchable,
         EditFieldFocus::Viewable,
@@ -1785,11 +1792,12 @@ mod tests {
         }
     }
 
-    const ALL_ADD_FIELD_FOCUS: [AddFieldFocus; 10] = [
+    const ALL_ADD_FIELD_FOCUS: [AddFieldFocus; 11] = [
         AddFieldFocus::Key,
         AddFieldFocus::Title,
         AddFieldFocus::Description,
         AddFieldFocus::Enum,
+        AddFieldFocus::Default,
         AddFieldFocus::Type,
         AddFieldFocus::Searchable,
         AddFieldFocus::Viewable,

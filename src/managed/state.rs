@@ -237,6 +237,7 @@ pub enum EditFieldFocus {
     Title,
     Description,
     Enum,
+    Default,
     Required,
     Searchable,
     Viewable,
@@ -258,6 +259,9 @@ impl EditFieldFocus {
         }
         if enum_eligible && caps.can_edit_attr(FieldAttr::Enum) {
             order.push(EditFieldFocus::Enum);
+        }
+        if caps.can_edit_attr(FieldAttr::Default) {
+            order.push(EditFieldFocus::Default);
         }
         if caps.can_edit_attr(FieldAttr::Required) {
             order.push(EditFieldFocus::Required);
@@ -313,6 +317,9 @@ pub struct FieldEditState {
     pub enum_values: TextField,
     /// Stable rendering of the stored constraint; preserves untouched edits.
     pub enum_seed: String,
+    pub default_value: TextField,
+    /// Stable rendering of the stored default; preserves untouched edits.
+    pub default_seed: String,
     pub required: bool,
     pub searchable: bool,
     pub viewable: bool,
@@ -359,6 +366,7 @@ impl FieldEditState {
         let enum_seed = crate::managed::ops::property_enum(&property)
             .map(|constraint| constraint.to_items().join(", "))
             .unwrap_or_default();
+        let default_seed = crate::managed::ops::property_default(&property).unwrap_or_default();
         let mut key = TextField::single_line("Key").with_initial(field_key.clone());
         if object_class(&object_def) == ObjectClass::Standard && field_key.starts_with("custom_") {
             key.locked_prefix = "custom_".into();
@@ -378,6 +386,8 @@ impl FieldEditState {
             description: TextField::textarea("Description").with_initial(description),
             enum_values: TextField::single_line("Allowed values").with_initial(enum_seed.clone()),
             enum_seed,
+            default_value: TextField::single_line("Default").with_initial(default_seed.clone()),
+            default_seed,
             required,
             searchable,
             viewable,
@@ -402,6 +412,21 @@ impl FieldEditState {
         parse_enum_items(&items).map(EnumChange::Set)
     }
 
+    /// An empty string default is not expressible here: matching the enum row,
+    /// blank input means clear. The CLI can still write an empty string.
+    pub fn default_change(&self) -> DefaultChange {
+        if self.default_value.value == self.default_seed {
+            DefaultChange::Unchanged
+        } else {
+            let value = self.default_value.value.trim();
+            if value.is_empty() {
+                DefaultChange::Clear
+            } else {
+                DefaultChange::Set(value.to_string())
+            }
+        }
+    }
+
     pub fn edit_spec(&self) -> Result<FieldEditSpec, String> {
         Ok(FieldEditSpec {
             new_key: Some(self.key.value.clone()),
@@ -412,7 +437,7 @@ impl FieldEditState {
             viewable: Some(self.viewable),
             user_editable: Some(self.user_editable),
             enum_change: self.enum_change()?,
-            default_change: DefaultChange::Unchanged,
+            default_change: self.default_change(),
             allow_narrowing: self.allow_narrowing,
         })
     }
@@ -577,6 +602,7 @@ pub enum AddFieldFocus {
     Title,
     Description,
     Enum,
+    Default,
     Type,
     Searchable,
     Viewable,
@@ -586,13 +612,14 @@ pub enum AddFieldFocus {
 }
 
 impl AddFieldFocus {
-    const ORDER: [AddFieldFocus; 10] = [
+    const ORDER: [AddFieldFocus; 11] = [
         AddFieldFocus::Key,
         AddFieldFocus::Title,
         AddFieldFocus::Description,
         // After Type, because Type decides whether this row exists at all.
         AddFieldFocus::Type,
         AddFieldFocus::Enum,
+        AddFieldFocus::Default,
         AddFieldFocus::Searchable,
         AddFieldFocus::Viewable,
         AddFieldFocus::UserEditable,
@@ -640,6 +667,7 @@ pub struct AddFieldState {
     pub title: TextField,
     pub description: TextField,
     pub enum_values: TextField,
+    pub default_value: TextField,
     pub field_type: ScalarFieldType,
     pub searchable: bool,
     pub viewable: bool,
@@ -660,6 +688,7 @@ impl AddFieldState {
             title: TextField::single_line("Title"),
             description: TextField::textarea("Description"),
             enum_values: TextField::single_line("Allowed values"),
+            default_value: TextField::single_line("Default"),
             field_type: ScalarFieldType::String,
             searchable: false,
             viewable: true,
@@ -680,6 +709,11 @@ impl AddFieldState {
         }
         let items = self.enum_values.value.split(',').collect::<Vec<_>>();
         parse_enum_items(&items).map(Some)
+    }
+
+    pub fn parsed_default(&self) -> Option<String> {
+        let value = self.default_value.value.trim();
+        (!value.is_empty()).then(|| value.to_string())
     }
 
     pub fn toggle_focused_bool(&mut self) {
@@ -1621,6 +1655,67 @@ mod tests {
     }
 
     #[test]
+    fn default_edit_seed_distinguishes_unchanged_clear_and_set() {
+        let object = json!({"name": "thing", "schema": {"properties": {}}});
+        let property = json!({"type": "string", "default": "saved"});
+        let mut edit = FieldEditState::from_property(
+            "sandbox".into(),
+            "thing".into(),
+            "status".into(),
+            object,
+            property,
+            false,
+        );
+
+        assert_eq!(edit.default_change(), DefaultChange::Unchanged);
+        edit.default_value.value.clear();
+        assert_eq!(edit.default_change(), DefaultChange::Clear);
+        edit.default_value.value = "replacement".into();
+        assert_eq!(
+            edit.default_change(),
+            DefaultChange::Set("replacement".into())
+        );
+    }
+
+    #[test]
+    fn blank_add_field_default_is_absent() {
+        let mut draft = AddFieldState::new("sandbox".into(), "thing".into(), json!({}));
+        assert_eq!(draft.parsed_default(), None);
+        draft.default_value.value = "  \t ".into();
+        assert_eq!(draft.parsed_default(), None);
+    }
+
+    #[test]
+    fn untouched_default_survives_an_edit_form_save() {
+        let object = json!({
+            "name": "thing",
+            "schema": {
+                "properties": {"status": {"type": "string", "default": "saved"}},
+                "required": [],
+                "order": ["status"]
+            }
+        });
+        let property = object["schema"]["properties"]["status"].clone();
+        let edit = FieldEditState::from_property(
+            "sandbox".into(),
+            "thing".into(),
+            "status".into(),
+            object.clone(),
+            property,
+            false,
+        );
+
+        let applied =
+            crate::managed::ops::apply_field_edit(&object, "status", &edit.edit_spec().unwrap())
+                .unwrap();
+        // Opening and saving must not drop an existing default the user left alone.
+        assert_eq!(
+            applied.object["schema"]["properties"]["status"]["default"],
+            json!("saved")
+        );
+    }
+
+    #[test]
     fn enum_focus_sits_after_the_row_that_decides_its_type() {
         let caps = FieldCaps {
             tier: FieldTier::FieldOnCustomObject,
@@ -1637,11 +1732,16 @@ mod tests {
             EditFieldFocus::Enum.prev(caps, true),
             EditFieldFocus::Description
         );
+        assert_eq!(
+            EditFieldFocus::Enum.next(caps, true),
+            EditFieldFocus::Default
+        );
         // On the add form the type is still being chosen, and choosing a
         // boolean removes this row — so it follows Type rather than preceding
         // it.
         assert_eq!(AddFieldFocus::Type.next(true), AddFieldFocus::Enum);
         assert_eq!(AddFieldFocus::Enum.prev(true), AddFieldFocus::Type);
-        assert_eq!(AddFieldFocus::Type.next(false), AddFieldFocus::Searchable);
+        assert_eq!(AddFieldFocus::Enum.next(true), AddFieldFocus::Default);
+        assert_eq!(AddFieldFocus::Type.next(false), AddFieldFocus::Default);
     }
 }
