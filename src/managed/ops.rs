@@ -1223,23 +1223,12 @@ pub fn build_add_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
         return None;
     }
 
-    let spec = AddFieldSpec {
-        key: draft.key.value.clone(),
-        field_type: draft.field_type,
-        title: Some(draft.title.trimmed().to_string()),
-        description: Some(draft.description.trimmed().to_string()),
-        required: draft.required,
-        searchable: draft.searchable,
-        viewable: draft.viewable,
-        user_editable: draft.user_editable,
-        enum_values: match draft.parsed_enum_values() {
-            Ok(values) => values,
-            Err(message) => {
-                draft.error = Some(message);
-                return None;
-            }
-        },
-        default_value: None,
+    let spec = match add_field_spec_from_draft(draft) {
+        Ok(spec) => spec,
+        Err(message) => {
+            draft.error = Some(message);
+            return None;
+        }
     };
     let applied = match apply_add_field(&draft.original_object, &spec) {
         Ok(applied) => applied,
@@ -1259,6 +1248,21 @@ pub fn build_add_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
             "Added managed field {}.{}. Press ^Z to undo.",
             draft.object_name, applied.field_key
         ),
+    })
+}
+
+fn add_field_spec_from_draft(draft: &AddFieldState) -> Result<AddFieldSpec, String> {
+    Ok(AddFieldSpec {
+        key: draft.key.value.clone(),
+        field_type: draft.field_type,
+        title: Some(draft.title.trimmed().to_string()),
+        description: Some(draft.description.trimmed().to_string()),
+        required: draft.required,
+        searchable: draft.searchable,
+        viewable: draft.viewable,
+        user_editable: draft.user_editable,
+        enum_values: draft.parsed_enum_values()?,
+        default_value: draft.parsed_default(),
     })
 }
 
@@ -2008,6 +2012,20 @@ pub fn property_enum(property: &Value) -> Option<EnumSpec> {
         })
         .collect();
     Some(EnumSpec { values })
+}
+
+/// Renders the property's stored default in the grammar accepted by
+/// [`coerce_default_value`].
+///
+/// Total on purpose: a stored default we did not write must remain visible
+/// rather than being silently dropped when the edit form is saved.
+pub fn property_default(property: &Value) -> Option<String> {
+    let value = property.get("default")?;
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(_) => Some(serde_json::to_string(value).unwrap_or_else(|_| value.to_string())),
+        other => Some(other.to_string()),
+    }
 }
 
 /// Renders one stored allowed value as the text the item grammar uses.
@@ -2927,6 +2945,23 @@ mod tests {
     }
 
     #[test]
+    fn property_default_round_trips_supported_values() {
+        for property in [
+            json!({"type": "string", "default": "saved"}),
+            json!({"type": "number", "default": 7.5}),
+            json!({"type": "boolean", "default": true}),
+            json!({"type": "array", "items": {"type": "string"}, "default": ["a", "b"]}),
+        ] {
+            let text = property_default(&property).unwrap();
+            assert_eq!(
+                coerce_default_value(&text, &property).unwrap(),
+                property["default"]
+            );
+        }
+        assert_eq!(property_default(&json!({"type": "string"})), None);
+    }
+
+    #[test]
     fn field_edit_writes_enums_at_the_declared_target() {
         let string = custom_object(false);
         let string = apply_field_edit(
@@ -3121,6 +3156,25 @@ mod tests {
     }
 
     #[test]
+    fn add_field_draft_plan_carries_a_typed_array_default() {
+        let mut draft = AddFieldState::new(
+            "sandbox".into(),
+            "test".into(),
+            json!({"name":"test", "schema":{"properties":{},"required":[],"order":[]}}),
+        );
+        draft.key.value = "values".into();
+        draft.field_type = ScalarFieldType::StringArray;
+        draft.default_value.value = r#"["a","b"]"#.into();
+
+        let spec = add_field_spec_from_draft(&draft).unwrap();
+        let applied = apply_add_field(&draft.original_object, &spec).unwrap();
+        assert_eq!(
+            applied.object["schema"]["properties"]["values"]["default"],
+            json!(["a", "b"])
+        );
+    }
+
+    #[test]
     fn defaults_are_coerced_and_array_defaults_stay_on_the_property() {
         let base = json!({"name":"test", "schema":{"properties":{},"required":[],"order":[]}});
         for (field_type, raw, expected) in [
@@ -3225,7 +3279,7 @@ mod tests {
         )
         .unwrap()
         .object;
-        // The TUI does not edit defaults, so unrelated saves must retain them.
+        // Unrelated saves must retain an existing default.
         assert_eq!(
             preserved["schema"]["properties"]["value"]["default"],
             json!("saved")
