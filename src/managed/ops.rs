@@ -911,25 +911,28 @@ async fn relationship_write_request(
     let live = crate::managed::api::get_managed(&request.tenant_name).await?;
     let updated = apply_relationship_spec(&live, &request.spec, request.previous.as_ref())
         .map_err(crate::Error::Config)?;
-    crate::managed::api::replace_managed(&request.tenant_name, updated, confirmed_prod).await?;
-    let confirmed = crate::managed::api::get_managed(&request.tenant_name).await?;
-    let source =
-        crate::managed::api::object_named(&confirmed, &request.source_object).map_err(|_| {
-            crate::Error::Config("relationship write returned but read-back did not match".into())
-        })?;
-    let forward_ok = crate::managed::state::properties(source)
-        .is_some_and(|properties| properties.contains_key(&request.spec.key));
-    let reverse_ok = request.spec.reverse == ReverseCardinality::None
-        || crate::managed::api::object_named(&confirmed, &request.spec.target_object)
-            .ok()
-            .and_then(crate::managed::state::properties)
-            .is_some_and(|properties| properties.contains_key(&request.spec.reverse_key));
-    if !forward_ok || !reverse_ok {
-        return Err(crate::Error::Config(
-            "relationship write returned but read-back did not match".into(),
-        ));
-    }
-    Ok(confirmed)
+    let expect = crate::managed::api::objects(&updated)?
+        .iter()
+        .filter_map(|object| {
+            let name = object.get("name").and_then(Value::as_str)?;
+            let before = crate::managed::api::object_named(&live, name).ok()?;
+            (!crate::managed::api::object_content_equal(before, object)).then(|| {
+                crate::managed::api::ConfigConfirm::ObjectContent {
+                    name: name.to_string(),
+                    content: object.clone(),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let result = updated.clone();
+    crate::managed::api::replace_managed_confirmed(
+        &request.tenant_name,
+        updated,
+        &expect,
+        confirmed_prod,
+    )
+    .await?;
+    Ok(result)
 }
 
 pub fn apply_relationship_result(
@@ -992,14 +995,18 @@ async fn create_object_request(
     }
     let new_doc = create_object_in_doc(&live, &request.name, &request.title, &request.description)
         .map_err(crate::Error::Config)?;
-    crate::managed::api::replace_managed(&request.tenant_name, new_doc, confirmed_prod).await?;
-    let confirmed = crate::managed::api::get_managed(&request.tenant_name).await?;
-    if crate::managed::api::object_named(&confirmed, &request.name).is_err() {
-        return Err(crate::Error::Config(
-            "managed object create write returned but read-back did not match".into(),
-        ));
-    }
-    Ok(confirmed)
+    let expect = [crate::managed::api::ConfigConfirm::ObjectPresent {
+        name: request.name.clone(),
+    }];
+    let result = new_doc.clone();
+    crate::managed::api::replace_managed_confirmed(
+        &request.tenant_name,
+        new_doc,
+        &expect,
+        confirmed_prod,
+    )
+    .await?;
+    Ok(result)
 }
 
 pub fn apply_create_result(
@@ -1057,16 +1064,23 @@ async fn rename_object_request(
     }
     let (new_doc, _) = rename_object_in_doc(&live, &request.old_name, &request.new_name)
         .map_err(crate::Error::Config)?;
-    crate::managed::api::replace_managed(&request.tenant_name, new_doc, confirmed_prod).await?;
-    let confirmed = crate::managed::api::get_managed(&request.tenant_name).await?;
-    if crate::managed::api::object_named(&confirmed, &request.new_name).is_err()
-        || crate::managed::api::object_named(&confirmed, &request.old_name).is_ok()
-    {
-        return Err(crate::Error::Config(
-            "managed object rename write returned but read-back did not match".into(),
-        ));
-    }
-    Ok(confirmed)
+    let expect = [
+        crate::managed::api::ConfigConfirm::ObjectAbsent {
+            name: request.old_name.clone(),
+        },
+        crate::managed::api::ConfigConfirm::ObjectPresent {
+            name: request.new_name.clone(),
+        },
+    ];
+    let result = new_doc.clone();
+    crate::managed::api::replace_managed_confirmed(
+        &request.tenant_name,
+        new_doc,
+        &expect,
+        confirmed_prod,
+    )
+    .await?;
+    Ok(result)
 }
 
 async fn delete_object_request(
@@ -1084,14 +1098,18 @@ async fn delete_object_request(
     }
     let (new_doc, _) =
         delete_object_in_doc(&live, &request.object_name).map_err(crate::Error::Config)?;
-    crate::managed::api::replace_managed(&request.tenant_name, new_doc, confirmed_prod).await?;
-    let confirmed = crate::managed::api::get_managed(&request.tenant_name).await?;
-    if crate::managed::api::object_named(&confirmed, &request.object_name).is_ok() {
-        return Err(crate::Error::Config(
-            "managed object delete write returned but read-back did not match".into(),
-        ));
-    }
-    Ok(confirmed)
+    let expect = [crate::managed::api::ConfigConfirm::ObjectAbsent {
+        name: request.object_name.clone(),
+    }];
+    let result = new_doc.clone();
+    crate::managed::api::replace_managed_confirmed(
+        &request.tenant_name,
+        new_doc,
+        &expect,
+        confirmed_prod,
+    )
+    .await?;
+    Ok(result)
 }
 
 pub fn apply_rename_result(
@@ -1600,19 +1618,13 @@ async fn replace_object_with_snapshot(
     }
 
     crate::managed::api::replace_object(&mut doc, object_name, replacement.clone())?;
-    crate::managed::api::replace_managed(tenant_name, doc, confirmed_prod).await?;
-
-    // Managed-config read-back is strongly consistent for schema storage
-    // (verified 2026-06-14), so one fresh GET is enough. Hook runtime
-    // activation has a separate lag and is handled by scripts/managed_hooks.
-    let (_, confirmed_object) =
-        crate::managed::api::get_managed_with_object(tenant_name, object_name).await?;
-    if !crate::managed::api::object_content_equal(&confirmed_object, replacement) {
-        return Err(crate::Error::Config(format!(
-            "managed object '{object_name}' write returned but read-back did not match"
-        )));
-    }
-    Ok(confirmed_object)
+    let expect = [crate::managed::api::ConfigConfirm::ObjectContent {
+        name: object_name.to_string(),
+        content: replacement.clone(),
+    }];
+    crate::managed::api::replace_managed_confirmed(tenant_name, doc, &expect, confirmed_prod)
+        .await?;
+    Ok(replacement.clone())
 }
 
 pub fn apply_update_result(
@@ -1791,21 +1803,21 @@ async fn apply_undo_entry(
                     "managed config changed since the rename; refresh and retry".into(),
                 ));
             }
-            crate::managed::api::replace_managed(&tenant, body.clone(), confirmed_prod)
-                .await
-                .map_err(undo_failure)?;
-            let confirmed = crate::managed::api::get_managed(&tenant)
-                .await
-                .map_err(undo_failure)?;
-            if confirmed != body {
-                return Err(UndoFailure::Failed(
-                    "managed config undo write returned but read-back did not match".into(),
-                ));
-            }
+            let expect = [crate::managed::api::ConfigConfirm::DocumentEquals(
+                body.clone(),
+            )];
+            crate::managed::api::replace_managed_confirmed(
+                &tenant,
+                body.clone(),
+                &expect,
+                confirmed_prod,
+            )
+            .await
+            .map_err(undo_failure)?;
             UndoOutcome {
                 description: entry.description,
                 object: None,
-                doc: Some(confirmed),
+                doc: Some(body),
             }
         }
         _ => {
@@ -2053,20 +2065,29 @@ fn coerce_enum_value(value: &str, kind: &str) -> Result<Value, String> {
 /// Parses JSON-schema numeric text while preserving integer JSON values.
 fn coerce_number_value(value: &str, kind: &str) -> Option<Value> {
     match kind {
-        // Whole numbers stay integers. A `number` enum written as `[1.0]` risks
+        // Whole numbers stay integers, however they were typed. Two reasons, and
+        // the second one now has teeth: a `number` enum written as `[1.0]` risks
         // never matching a record holding `1` if IDM's policy compares the boxed
-        // JSON values rather than their numeric value.
+        // JSON values rather than their numeric value; and the server itself
+        // normalises `1.0` to `1` on the way in, so emitting the float form means
+        // never reading our own bytes back. Since `replace_managed_confirmed`
+        // now compares written content against the stored document to detect a
+        // lost write, a value that can't round-trip would look exactly like a
+        // write the tenant dropped — six retries, then a spurious failure on a
+        // write that actually succeeded.
         "number" => value
             .parse::<i64>()
             .map(|number| Value::Number(number.into()))
             .ok()
             .or_else(|| {
-                value
+                let number = value
                     .parse::<f64>()
                     .ok()
-                    .filter(|number| number.is_finite())
-                    .and_then(serde_json::Number::from_f64)
-                    .map(Value::Number)
+                    .filter(|number| number.is_finite())?;
+                if number.fract() == 0.0 && number.abs() < 9.007_199_254_740_992e15 {
+                    return Some(Value::Number((number as i64).into()));
+                }
+                serde_json::Number::from_f64(number).map(Value::Number)
             }),
         "integer" => value
             .parse::<i64>()
@@ -3181,6 +3202,12 @@ mod tests {
             (ScalarFieldType::String, "hello", json!("hello")),
             (ScalarFieldType::Number, "7", json!(7)),
             (ScalarFieldType::Number, "0", json!(0)),
+            // Written as a float, stored as an integer — the server normalises
+            // it that way, and the lost-write confirmation compares what we
+            // wrote against what came back.
+            (ScalarFieldType::Number, "1.0", json!(1)),
+            (ScalarFieldType::Number, "-3.00", json!(-3)),
+            (ScalarFieldType::Number, "2.5", json!(2.5)),
             (ScalarFieldType::Boolean, "true", json!(true)),
             (
                 ScalarFieldType::StringArray,

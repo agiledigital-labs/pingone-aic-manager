@@ -176,9 +176,15 @@ has instantiated** — without that wait, the first `field add` after
 `object create` is lost every time. And **a write path that must not lose
 changes has to re-read and confirm its own change landed**, with a bounded
 retry, rather than trusting the status code; waiting for instantiation alone is
-not sufficient, since a later write in the same sequence was still lost. `aic`
-does not yet do the confirm-after-write, so a rapid batch of `aic managed`
-writes can silently drop one.
+not sufficient, since a later write in the same sequence was still lost.
+
+`aic` does this as of 2026-08-05: every `config/managed` write goes through
+`api::replace_managed_confirmed`, which states what it expects to observe
+(`ConfigConfirm`), re-reads, and retries six times over ~15s before failing with
+an error rather than reporting a success it did not verify. That eliminates the
+deterministic post-`object create` loss. It does **not** make long write
+sequences safe — see Q14 for why the residue is platform-side and what to do
+about it.
 
 The `managed_hooks` sync path already polls, because it waits for hook source to
 go live in the running IDM runtime — which is a separate concern from config

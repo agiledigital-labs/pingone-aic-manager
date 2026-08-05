@@ -4,6 +4,52 @@
 use crate::{Error, Result};
 use serde_json::Value;
 
+/// What a config write must be able to observe before it is believed.
+///
+/// `config/managed` is not read-your-writes consistent, so a 200 on the PUT is
+/// not evidence the change is stored (Q14). Every writer states what it expects
+/// to see and the write is retried until the tenant agrees.
+#[derive(Debug)]
+pub enum ConfigConfirm {
+    /// The object exists and its content equals this exactly.
+    ObjectContent { name: String, content: Value },
+    /// The object exists; content unconstrained.
+    ObjectPresent { name: String },
+    /// No object of this name exists.
+    ObjectAbsent { name: String },
+    /// The whole document equals this.
+    DocumentEquals(Value),
+}
+
+impl ConfigConfirm {
+    /// Whether this confirmation condition holds for a fetched managed document.
+    pub fn holds(&self, doc: &Value) -> bool {
+        match self {
+            Self::ObjectContent { name, content } => {
+                object_named(doc, name).is_ok_and(|object| object_content_equal(object, content))
+            }
+            Self::ObjectPresent { name } => object_named(doc, name).is_ok(),
+            Self::ObjectAbsent { name } => objects(doc).is_ok_and(|objects| {
+                !objects
+                    .iter()
+                    .any(|object| object.get("name").and_then(Value::as_str) == Some(name))
+            }),
+            Self::DocumentEquals(expected) => doc == expected,
+        }
+    }
+
+    fn description(&self) -> String {
+        match self {
+            Self::ObjectContent { name, .. } => {
+                format!("managed object '{name}' with the requested content")
+            }
+            Self::ObjectPresent { name } => format!("managed object '{name}' to be present"),
+            Self::ObjectAbsent { name } => format!("managed object '{name}' to be absent"),
+            Self::DocumentEquals(_) => "the complete managed config document to match".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordCount {
     Exact(usize),
@@ -44,13 +90,57 @@ pub async fn get_managed(tenant: &str) -> Result<Value> {
     crate::aic::api::get(tenant, "/openidm/config/managed").await
 }
 
-/// `PUT /openidm/config/managed` with the complete managed config document.
+/// Unconfirmed `PUT /openidm/config/managed` with the complete managed config
+/// document.
 ///
 /// The API has no object-level patch endpoint: callers must read, mutate the
 /// intended `objects[]` entry, and send the whole `{ "_id": "managed", ... }`
-/// envelope back.
+/// envelope back. External callers should use [`replace_managed_confirmed`].
 pub async fn replace_managed(tenant: &str, doc: Value, confirmed_prod: bool) -> Result<Value> {
     crate::aic::api::put(tenant, "/openidm/config/managed", doc, confirmed_prod).await
+}
+
+/// Replaces a managed config document until every requested condition is visible.
+///
+/// A successful PUT can still be followed by a stale GET (Q14). Retry the exact
+/// same whole document rather than rebuilding it from that stale read: a
+/// relationship may span two objects, and a partial rebase could corrupt its
+/// other end. This endpoint has no `If-Match` and is already last-writer-wins,
+/// so resending the body is no more dangerous than the original PUT.
+pub async fn replace_managed_confirmed(
+    tenant: &str,
+    doc: Value,
+    expect: &[ConfigConfirm],
+    confirmed_prod: bool,
+) -> Result<()> {
+    if expect.is_empty() {
+        return Err(Error::Config(
+            "managed config write requires at least one confirmation condition".into(),
+        ));
+    }
+
+    const ATTEMPTS: u32 = 6;
+    let mut failed = None;
+    for attempt in 0..ATTEMPTS {
+        replace_managed(tenant, doc.clone(), confirmed_prod).await?;
+        let fetched = get_managed(tenant).await?;
+        failed = expect.iter().find(|condition| !condition.holds(&fetched));
+        if failed.is_none() {
+            return Ok(());
+        }
+        if attempt + 1 < ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * (1 << attempt))).await;
+        }
+    }
+
+    let failed = failed.map_or_else(
+        || "an unknown confirmation condition".to_string(),
+        ConfigConfirm::description,
+    );
+    Err(Error::Config(format!(
+        "managed config write for tenant '{tenant}' was accepted but not persisted: expected {failed}; \
+         see scripts/experiment-managed-lost-updates.sh and docs/api/99-quirks-and-open-questions.md Q14"
+    )))
 }
 
 /// The `objects` array of a managed document.
@@ -231,5 +321,70 @@ mod tests {
         let a = json!({"name": "alpha_user", "schema": {"required": ["a"], "properties": {}}});
         let b = json!({"schema": {"properties": {}, "required": ["a"]}, "name": "alpha_user"});
         assert!(object_content_equal(&a, &b));
+    }
+
+    #[test]
+    fn config_confirm_object_content_is_order_independent_but_value_sensitive() {
+        let doc = json!({"objects": [{"name": "alpha_user", "schema": {"properties": {"a": 1}}}]});
+        assert!(
+            ConfigConfirm::ObjectContent {
+                name: "alpha_user".into(),
+                content: json!({"schema": {"properties": {"a": 1}}, "name": "alpha_user"}),
+            }
+            .holds(&doc)
+        );
+        assert!(
+            !ConfigConfirm::ObjectContent {
+                name: "alpha_user".into(),
+                content: json!({"name": "alpha_user", "schema": {"properties": {"a": 2}}}),
+            }
+            .holds(&doc)
+        );
+    }
+
+    #[test]
+    fn config_confirm_object_presence_and_absence() {
+        let doc = json!({"objects": [{"name": "alpha_user"}]});
+        assert!(
+            ConfigConfirm::ObjectPresent {
+                name: "alpha_user".into()
+            }
+            .holds(&doc)
+        );
+        assert!(
+            !ConfigConfirm::ObjectPresent {
+                name: "alpha_role".into()
+            }
+            .holds(&doc)
+        );
+        assert!(
+            !ConfigConfirm::ObjectAbsent {
+                name: "alpha_user".into()
+            }
+            .holds(&doc)
+        );
+        assert!(
+            ConfigConfirm::ObjectAbsent {
+                name: "alpha_role".into()
+            }
+            .holds(&doc)
+        );
+    }
+
+    #[test]
+    fn config_confirm_document_equals_distinguishes_documents() {
+        let doc = json!({"objects": []});
+        assert!(ConfigConfirm::DocumentEquals(json!({"objects": []})).holds(&doc));
+        assert!(!ConfigConfirm::DocumentEquals(json!({"objects": [{}]})).holds(&doc));
+    }
+
+    #[tokio::test]
+    async fn confirmed_replace_rejects_empty_expectations_before_network_io() {
+        let error = replace_managed_confirmed("unused", json!({}), &[], false)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Config(message) if message.contains("confirmation condition"))
+        );
     }
 }

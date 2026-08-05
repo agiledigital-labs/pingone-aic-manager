@@ -108,10 +108,23 @@ echo
   || { echo "error: could not create $OBJ" >&2; exit 2; }
 
 expected=""
+refused=0
+ever_seen=""
 for i in $(seq 1 "$FIELDS"); do
-  "$AIC" managed field add "$OBJ.f$i" --type string --yes >/dev/null 2>&1
+  # Do NOT swallow stderr. Since `replace_managed_confirmed` landed, a write the
+  # tenant fails to persist is a hard error rather than a silent loss, and that
+  # error is the single most interesting line this script can print.
+  if ! "$AIC" managed field add "$OBJ.f$i" --type string --yes >/dev/null; then
+    refused=$((refused + 1))
+  fi
   expected="$expected f$i"
-  printf 'after add %-4s %s\n' "f$i" "$(props)"
+  seen="$(props)"
+  printf 'after add %-4s %s\n' "f$i" "$seen"
+  # Track every field name ever observed stored. This is what separates the two
+  # failure modes at the end: a field that was never once visible means our
+  # confirmation missed a write path; a field that was visible and is gone means
+  # the tenant rolled the document back, which no client-side retry can prevent.
+  ever_seen="$ever_seen $(printf '%s' "$seen" | jq -r '.[]' | tr '\n' ' ')"
 done
 
 printf '\nsettling %ss...\n' "$SETTLE"
@@ -119,19 +132,56 @@ sleep "$SETTLE"
 settled="$(props)"
 printf 'settled       %s\n' "$settled"
 
+# Compare as sorted sets. `jq keys` is lexicographic, so with more than nine
+# fields "f10" sorts before "f2" and a naive string compare reports loss that
+# isn't there.
 # shellcheck disable=SC2086
-want="$(printf '%s\n' $expected | jq -R . | jq -sc .)"
+want="$(printf '%s\n' $expected | jq -R . | jq -sc 'sort')"
+settled="$(printf '%s' "$settled" | jq -c 'sort')"
 printf '\nexpected      %s\n' "$want"
 
 status=0
-if [ "$settled" != "$want" ]; then
-  echo
-  echo "LOST UPDATES: the settled document does not contain every field that was"
-  echo "added, even though every add returned success."
-  status=1
-else
-  echo
+echo
+if [ "$settled" = "$want" ]; then
   echo "every add survived this run"
+else
+  # Classify what went missing, because the two causes have different owners.
+  reverted="" never=""
+  for f in $expected; do
+    printf '%s' "$settled" | jq -e --arg f "$f" 'index($f) != null' >/dev/null && continue
+    case " $ever_seen " in
+      *" $f "*) reverted="$reverted $f" ;;
+      *) never="$never $f" ;;
+    esac
+  done
+
+  [ "$refused" -gt 0 ] && {
+    echo "$refused write(s) were REFUSED by aic after the tenant failed to persist"
+    echo "them. That is confirm-after-write doing its job: the loss is loud, not"
+    echo "silent, and re-running the add is safe because the writes are idempotent."
+    echo
+  }
+  [ -n "$reverted" ] && {
+    echo "ROLLED BACK by the tenant:$reverted"
+    echo "  These were observed stored and later vanished. Confirm-after-write"
+    echo "  cannot prevent this — the write landed, was verified, and the config"
+    echo "  store subsequently reverted to an older snapshot. Objects deleted"
+    echo "  hours earlier have also been seen to reappear. This is a platform"
+    echo "  fault to raise with Ping, not something a client can retry around."
+    status=1
+    echo
+  }
+  [ -n "$never" ] && {
+    echo "MISSING, yet aic reported success:$never"
+    echo "  aic only returns success after reading the change back, and a stale"
+    echo "  read can return old data but cannot invent a field that was never"
+    echo "  written — so each of these WAS stored when aic looked. It then either"
+    echo "  got rolled back, or the confirming read and this script's read hit"
+    echo "  replicas that disagree. This script cannot separate those two, and"
+    echo "  both are platform-side: no client-side retry closes them. Intermittent"
+    echo "  — short runs often pass cleanly, longer ones lose one or two."
+    status=1
+  }
 fi
 
 if [ -z "${KEEP:-}" ]; then
