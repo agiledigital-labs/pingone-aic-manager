@@ -172,19 +172,44 @@ new things are learned.
   → add) preserved every property, checked against the raw API after each step.
   A single write then polled every 5s for 70s stayed put. Twenty consecutive raw
   reads agreed with each other every time — no per-request flapping.
-- **Candidates, none confirmed:** (a) another writer on the same tenant — the
-  config `PUT` is a whole-document replace with no `If-Match`, so any second
-  read-modify-writer silently discards the first's changes, and a long-running
-  agent session in this repo could have been one; (b) replica divergence in the
-  config store, which would contradict the strong-consistency note in
-  `10-managed-objects.md` (verified 2026-06-14); (c) the local `aic agent`
-  daemon, which proxies every HTTP call and was a four-day-old binary at the
-  time.
-- **Next step:** restart the daemon (`aic session stop`, relaunch) to eliminate
-  (c), then retry the cross-minute sequence with no other session touching the
-  tenant. Until this is understood, treat "read, mutate, `PUT` the whole
-  document" as unsafe against concurrent writers, which is what it has always
-  been — the hazard is the silence, not the mechanism.
+- **Reproduced the same day** by `scripts/experiment-managed-lost-updates.sh`,
+  which removes the guesswork: create an object, add N fields one at a time,
+  read the raw config after each.
+
+  ```
+  after add f1   ["f1"]
+  after add f2   ["f2"]          <- f1 silently lost
+  ...
+  after add f8   ["f2".."f8"]
+  settled (+10s) ["f2".."f7"]    <- f8 vanished with no write at all
+  ```
+
+  Every call returned 2xx. Two distinct failures are visible: a read backing
+  write N returning the pre-write-(N-1) state (so the RMW discards it), and a
+  property confirmed present immediately after its write being absent from a
+  later read.
+
+- **Not the daemon, and not a second writer.** The observing reads go straight
+  to the tenant with `curl`, bypassing the `aic agent` that proxies the CLI's
+  own calls, and they still show the loss. No other session was writing.
+- **The instantiation window is one cause, not the whole story.** Run without a
+  wait after `object create` and the _first_ `field add` is the casualty every
+  time — the new managed type is instantiated asynchronously and a write landing
+  during that window does not survive. Waiting for the type to answer queries
+  (9s) saved that first field, but f7 of 8 was still lost later in the same run.
+- **This corrects `10-managed-objects.md`.** Its "config read-back is
+  effectively immediate … strong consistency for the stored config" came from
+  one ~164ms observation on 2026-06-14. `config/managed` is **not
+  read-your-writes consistent**, and a 200 on the `PUT` does not mean the change
+  is durable.
+- **Consequence for tooling:** every `aic managed` write, and the admin
+  console's equivalent, can silently discard a change it just made. A write path
+  that cares has to re-read and confirm its own change landed, with a bounded
+  retry, instead of trusting the status code. `aic` does not do this yet — see
+  the note in `10-managed-objects.md`.
+- **Still open:** the mechanism. Replica divergence in the config store fits,
+  but nothing here proves it, and the per-request behaviour is not simple
+  flapping — twenty consecutive reads agreed with each other every time.
 
 ### Q6. PUT on resources without `_rev`
 
