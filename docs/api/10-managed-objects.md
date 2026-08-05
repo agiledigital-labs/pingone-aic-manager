@@ -159,11 +159,30 @@ PUTs on throwaway `test_*` objects returned 200. The API stores `objects[]`
 entries verbatim — no field injection, normalisation, or reordering was
 observed.
 
-Config read-back is effectively immediate: after PUT returned 200, a fresh GET
-reflected the change on the first poll (~164 ms later). This is strong
-consistency for the stored config. The `managed_hooks` sync path still polls
-when needed because it waits for hook source to go live in the running IDM
-runtime, which is separate from config read-back.
+**Corrected 2026-08-05 — `config/managed` is NOT read-your-writes consistent,
+and a 200 on the `PUT` does not mean the change is durable.** This paragraph
+previously claimed strong consistency on the strength of one observation (a
+fresh GET reflecting a 200'd PUT ~164 ms later). That generalised wrongly.
+`scripts/experiment-managed-lost-updates.sh` reproduces two failures on demand:
+a read backing the next read-modify-write returns the _pre-write_ state, so the
+next write silently discards the previous one; and a property confirmed present
+immediately after its write is absent from a later read with no write in
+between. Every call returns 2xx, and the observing reads bypass the local agent,
+so this is the tenant's config store. See Q14 in
+`99-quirks-and-open-questions.md`.
+
+Two practical rules follow. **Do not write a new object's fields until its type
+has instantiated** — without that wait, the first `field add` after
+`object create` is lost every time. And **a write path that must not lose
+changes has to re-read and confirm its own change landed**, with a bounded
+retry, rather than trusting the status code; waiting for instantiation alone is
+not sufficient, since a later write in the same sequence was still lost. `aic`
+does not yet do the confirm-after-write, so a rapid batch of `aic managed`
+writes can silently drop one.
+
+The `managed_hooks` sync path already polls, because it waits for hook source to
+go live in the running IDM runtime — which is a separate concern from config
+read-back, and remains so.
 
 | Shape                   | Accepted / observed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -277,6 +296,18 @@ the property, and it reads back holding the default:
 
 For an array the `default` sits on the **outer** property, beside `items` — not
 inside `items`.
+
+**A managed type answering queries does not mean its property schema is
+effective.** Immediately after a new object started returning 200 on
+`GET /openidm/managed/<object>?_queryFilter=true`, record creates succeeded
+while applying **no defaults at all** and enforcing **no policy** — an explicit
+`null` on a `required` property returned 201. Seconds later the identical calls
+behaved correctly. This is the record-policy lag noted under "Enum constraints"
+extended to defaults, and it makes the obvious readiness check useless: the only
+trustworthy signal is a default actually landing on a throwaway record. Tooling
+that writes a schema and then immediately writes records against it must poll
+for that, not for the type responding. (`scripts/experiment-managed-defaults.sh`
+does exactly this.)
 
 **A type-mismatched `default` bricks the object with no error anywhere.**
 `{"type": "boolean", "default": "nope"}` is accepted by the config `PUT` with
@@ -594,7 +625,10 @@ error. Do not offer `ne` or `in` in script-template query validation.
   is applied server-side on create, satisfying `REQUIRED`; explicit `null` is
   403 `NOT_NULL` with or without `required`; whole-record `PUT` omitting a
   property drops it silently; `PATCH remove` is 403, `PATCH replace null` is
-  400). 2026-08-01 (enum constraints exercised end-to-end through
+  400; re-confirmed end-to-end through `aic managed field add --default` by
+  `scripts/experiment-managed-defaults.sh`, which also established that a type
+  answering queries is not a signal that its defaults or policies are effective
+  yet). 2026-08-01 (enum constraints exercised end-to-end through
   `aic managed field add`/`edit`: string+titles, numeric and array-`items`
   shapes; `VALID_ENUM_VALUE` enforcement on all three; the read-modify-write
   table re-confirmed; whole floats normalised to integers; schema changes lag
