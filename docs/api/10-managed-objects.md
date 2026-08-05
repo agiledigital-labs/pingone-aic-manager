@@ -257,6 +257,67 @@ whole-document RMW edits. `schema.order` is independent of `schema.properties`,
 and `schema.required` is independent too; the API does not auto-prune either
 list when a property is removed or renamed.
 
+### Property `default` and `required` (verified 2026-08-05)
+
+A scalar property may carry a sibling `default`; it round-trips through
+`PUT /openidm/config/managed` verbatim, and **the server applies it on record
+create.** It is not UI-only prefill metadata. Probe: `test_defaults` with four
+booleans, one of them `default: true` so an applied default is distinguishable
+from an absent property.
+
+Verified for every scalar shape the CLI can write — create the record omitting
+the property, and it reads back holding the default:
+
+| Property                                                                  | Record holds     |
+| ------------------------------------------------------------------------- | ---------------- |
+| `{"type": "string", "default": "hello"}`                                  | `"hello"`        |
+| `{"type": "number", "default": 7}` / `"default": 0`                       | `7` / `0`        |
+| `{"type": "boolean", "default": true}` / `false`                          | `true`/`false`   |
+| `{"type": "array", "items": {…}, "default": ["a","b"]}` / `"default": []` | `["a","b"]`/`[]` |
+
+For an array the `default` sits on the **outer** property, beside `items` — not
+inside `items`.
+
+**A type-mismatched `default` bricks the object with no error anywhere.**
+`{"type": "boolean", "default": "nope"}` is accepted by the config `PUT` with
+**200**, and the managed object then never comes live: every
+`/openidm/managed/<object>` call returns **404 indefinitely** (still 404 after
+two minutes of polling). Nothing server-side reports why. The blast radius is
+that one object — every other managed type keeps serving, and removing the bad
+default restores it. Because there is no server-side signal,
+`aic managed field add`/`edit` coerce `--default` against the declared type and
+refuse a mismatch locally. A default outside an `enum` is refused for a
+different reason: the default is applied before policy, so every create would
+fail `VALID_ENUM_VALUE`.
+
+`default` and `required` answer different questions and neither blocks the
+other:
+
+| Write                                                          | Result                                                                        |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| **Create** omitting a property that has a `default`            | 201, and the record comes back holding the default — `false`/`true`/`0` alike |
+| **Create** omitting a `required` property that has a `default` | 201 — the default is applied _before_ policy runs, so `REQUIRED` is satisfied |
+| **Create** sending an explicit `null`                          | **403 `NOT_NULL`** (+ `VALID_TYPE` when the property is also `required`)      |
+| Same, with the property removed from `schema.required`         | **still 403 `NOT_NULL`** — the null guard is independent of `required`        |
+| **Update** (`PUT` whole record) omitting the property          | **200, and the stored value is dropped** — `required` does not catch this     |
+| `PATCH remove` the property                                    | 403 `REQUIRED`                                                                |
+| `PATCH replace` it with `null`                                 | 400 — rejected as an invalid JSON patch, before policy                        |
+
+Three consequences worth carrying:
+
+- **Removing `required` will not make a `default` "start working"** — the
+  default already applies on create, and dropping `required` only loses the
+  `PATCH remove` guard. It does not make an explicit `null` acceptable.
+- **`null` is never a substitute for "unset".** A caller that sends `null` for
+  an untouched field gets a 403 that reads like "you must supply a value", when
+  the fix is to _omit_ the key and let the default land. Strip null-valued keys
+  from create bodies rather than adding `default`s to satisfy them.
+- **Defaults apply on create only, and whole-record `PUT` silently drops absent
+  properties.** So a read-modify-write that loses a key doesn't re-default it
+  and isn't refused either — it just erases the value. Adding a `required`
+  property to an object that already has records is likewise not retroactive:
+  existing records stay without it, and `GET` → `PUT` of one still returns 200.
+
 ### Relationship cardinality + bidirectional writes (verified 2026-07-27, corrected 2026-08-04)
 
 Verified live against `test_from`/`test_to` (all six forward×reverse
@@ -521,11 +582,19 @@ error. Do not offer `ne` or `in` in script-template query validation.
   fire-and-verify hooks immediately after a push.
 - **`schema.order` / `schema.required` are manual.** The config API does not
   auto-prune them when properties are removed or renamed.
+- **`required` does not protect a whole-record `PUT`.** Omitting a required
+  property on update returns 200 and erases the stored value; only
+  `PATCH remove` is refused. Defaults are applied on create only, so nothing
+  puts it back. See "Property `default` and `required`".
 
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-08-01 (enum constraints exercised end-to-end through
+- Date: 2026-08-05 (property `default` + `required`: `default` round-trips and
+  is applied server-side on create, satisfying `REQUIRED`; explicit `null` is
+  403 `NOT_NULL` with or without `required`; whole-record `PUT` omitting a
+  property drops it silently; `PATCH remove` is 403, `PATCH replace null` is
+  400). 2026-08-01 (enum constraints exercised end-to-end through
   `aic managed field add`/`edit`: string+titles, numeric and array-`items`
   shapes; `VALID_ENUM_VALUE` enforcement on all three; the read-modify-write
   table re-confirmed; whole floats normalised to integers; schema changes lag
