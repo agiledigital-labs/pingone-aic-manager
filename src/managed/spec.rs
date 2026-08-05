@@ -54,6 +54,7 @@ pub struct FieldEditSpec {
     pub viewable: Option<bool>,
     pub user_editable: Option<bool>,
     pub enum_change: EnumChange,
+    pub default_change: DefaultChange,
     pub allow_narrowing: bool,
 }
 
@@ -92,6 +93,18 @@ pub enum EnumChange {
     /// Replace the constraint with this set.
     Set(EnumSpec),
     /// Drop the constraint. Widening, so always safe.
+    Clear,
+}
+
+/// What a change should do to a property's default value.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum DefaultChange {
+    /// Leave the default — or its absence — alone.
+    #[default]
+    Unchanged,
+    /// Set the default from this raw text, coerced against the property's type.
+    Set(String),
+    /// Drop the default.
     Clear,
 }
 
@@ -139,6 +152,7 @@ pub struct AddFieldSpec {
     pub viewable: bool,
     pub user_editable: bool,
     pub enum_values: Option<EnumSpec>,
+    pub default_value: Option<String>,
 }
 
 #[cfg(test)]
