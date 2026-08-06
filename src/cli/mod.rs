@@ -24,6 +24,7 @@ use serde::Serialize;
 use crate::agent::duration::{format_duration, parse_duration};
 use crate::agent::{self, AgentClient, Request, Response};
 use crate::config::crypto::Dek;
+use crate::config::operator::{self, NameSource, NetworkAccess, ResolvedOperator};
 use crate::config::wraps::WrapsFile;
 use crate::config::{self, ProjectConfig};
 use crate::vault::auth;
@@ -90,6 +91,11 @@ pub enum Command {
     Ctx {
         #[command(subcommand)]
         command: CtxCommand,
+    },
+    /// Inspect and change local project settings.
+    Settings {
+        #[command(subcommand)]
+        command: SettingsCommand,
     },
     /// Mint and print a token for the current context (or `--tenant <name>`).
     Whoami {
@@ -182,6 +188,16 @@ pub enum SessionCommand {
     Status,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum SettingsCommand {
+    /// List every user-configurable setting and whether its value is derived.
+    List,
+    /// Print one effective setting value.
+    Get { key: String },
+    /// Persist one setting value.
+    Set { key: String, value: String },
+}
+
 static NO_PROMPT: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn prompting_disabled() -> bool {
@@ -208,7 +224,8 @@ impl Command {
             | Self::Stop
             | Self::Status
             | Self::Session { .. }
-            | Self::Ctx { .. } => false,
+            | Self::Ctx { .. }
+            | Self::Settings { .. } => false,
         }
     }
 }
@@ -217,6 +234,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     NO_PROMPT.store(cli.no_prompt, Ordering::Relaxed);
     if cli.command.as_ref().is_some_and(Command::needs_tenant_auth) {
         ensure_agent_unlocked(false).await?;
+        prepare_operator().await?;
     }
     match cli.command {
         Some(Command::Agent {
@@ -232,6 +250,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Status) => status().await,
         Some(Command::Session { command }) => session(command).await,
         Some(Command::Ctx { command }) => ctx(command).await,
+        Some(Command::Settings { command }) => settings(command).await,
         Some(Command::Whoami { tenant, token }) => whoami(tenant, token).await,
         Some(Command::Esv { command }) => crate::esv::cli::run(command).await,
         Some(Command::Managed { command }) => crate::managed::cli::run(command).await,
@@ -247,6 +266,98 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
 }
 
+async fn prepare_operator() -> Result<()> {
+    let settings = config::Settings::load()?.unwrap_or_default();
+    // Either the name is already established, or there is no terminal to
+    // establish it on. Bail before doing any work: commands that need a name
+    // resolve their own fallback, and this pre-flight runs ahead of *every*
+    // tenant-auth command, so anything it does non-interactively is a cost an
+    // AI agent pays on each invocation and never benefits from.
+    let can_prompt = prompt_available();
+    if operator_action(settings.operator.name.is_some(), can_prompt, None) == OperatorAction::Skip {
+        return Ok(());
+    }
+
+    // Committed to prompting, so the service-account guess is worth fetching:
+    // it is what pre-fills the default the user can accept with Enter.
+    let project = ProjectConfig::load().ok().flatten();
+    let tenant = project.as_ref().and_then(|project| {
+        let name = resolve_tenant(None, project).ok()?;
+        project.tenants.iter().find(|tenant| tenant.name == name)
+    });
+    let resolved = operator::resolve(&settings, tenant, NetworkAccess::Allow).await;
+
+    let guess = (resolved.source == NameSource::ServiceAccount).then_some(resolved.name.as_str());
+    let action = operator_action(false, can_prompt, guess);
+    let answer = match timed_blocking_prompt(move || prompt_for_operator_name(action)).await {
+        Ok(Some(answer)) => answer,
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            tracing::warn!(%error, "operator prompt failed; using fallback for this run");
+            return Ok(());
+        }
+    };
+    if let Err(error) = operator::set_name(answer) {
+        tracing::warn!(%error, "operator setting save failed; using fallback for this run");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OperatorAction {
+    Skip,
+    PromptWithDefault(String),
+    PromptRequired,
+}
+
+fn operator_action(name_set: bool, can_prompt: bool, guess: Option<&str>) -> OperatorAction {
+    if name_set || !can_prompt {
+        return OperatorAction::Skip;
+    }
+    match guess.map(str::trim).filter(|guess| !guess.is_empty()) {
+        Some(guess) => OperatorAction::PromptWithDefault(guess.to_string()),
+        None => OperatorAction::PromptRequired,
+    }
+}
+
+fn prompt_for_operator_name(action: OperatorAction) -> std::io::Result<Option<String>> {
+    use std::io::Write;
+
+    let (label, default) = match action {
+        OperatorAction::Skip => return Ok(None),
+        OperatorAction::PromptWithDefault(default) => {
+            (format!("Operator name [{default}]: "), Some(default))
+        }
+        OperatorAction::PromptRequired => ("Operator name: ".to_string(), None),
+    };
+
+    // Read from the terminal device, not stdin. `timed_blocking_prompt`'s
+    // timeout abandons the task but cannot cancel a thread parked in
+    // `read_line`, so a `StdinLock` taken here would be held for the life of
+    // the process — silently hanging every later stdin reader
+    // (`--password-stdin`, the `inquire` pickers behind a bare `script pull`).
+    // `prompt_available` has already proved /dev/tty opens.
+    let mut tty = std::io::BufReader::new(std::fs::File::open("/dev/tty")?);
+    loop {
+        eprint!("{label}");
+        std::io::stderr().flush()?;
+        let mut input = String::new();
+        if tty.read_line(&mut input)? == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        let answer = input.trim();
+        if !answer.is_empty() {
+            return Ok(Some(answer.to_string()));
+        }
+        // Empty input accepts an offered default; with nothing to fall back on
+        // there is no answer yet, so ask again.
+        match &default {
+            Some(default) => return Ok(Some(default.clone())),
+            None => eprintln!("Operator name cannot be empty."),
+        }
+    }
+}
+
 async fn session(command: SessionCommand) -> Result<()> {
     match command {
         SessionCommand::Login {
@@ -257,6 +368,110 @@ async fn session(command: SessionCommand) -> Result<()> {
         SessionCommand::Stop => stop().await,
         SessionCommand::Status => status().await,
     }
+}
+
+const DEFAULT_AGENT_IDLE_TIMEOUT_SECS: u64 = 3600;
+
+async fn settings(command: SettingsCommand) -> Result<()> {
+    let mut settings = config::Settings::load()?.unwrap_or_default();
+    match command {
+        SettingsCommand::List => {
+            let resolved = operator::resolve(&settings, None, NetworkAccess::Skip).await;
+            print_table(
+                &["KEY", "VALUE", "DEFAULTED"],
+                &[
+                    vec![
+                        "operator.name".into(),
+                        resolved.name,
+                        yes_no(settings.operator.name.is_none()).into(),
+                    ],
+                    vec![
+                        "operator.host".into(),
+                        resolved.host,
+                        yes_no(settings.operator.host.is_none()).into(),
+                    ],
+                    vec![
+                        "agent-idle-timeout-secs".into(),
+                        settings
+                            .agent_idle_timeout_secs
+                            .unwrap_or(DEFAULT_AGENT_IDLE_TIMEOUT_SECS)
+                            .to_string(),
+                        yes_no(settings.agent_idle_timeout_secs.is_none()).into(),
+                    ],
+                ],
+            );
+            Ok(())
+        }
+        SettingsCommand::Get { key } => {
+            let resolved = operator::resolve(&settings, None, NetworkAccess::Skip).await;
+            println!("{}", setting_value(&key, &settings, &resolved)?);
+            Ok(())
+        }
+        SettingsCommand::Set { key, value } => {
+            apply_setting(&mut settings, &key, &value)?;
+            settings.save()?;
+            let resolved = operator::resolve(&settings, None, NetworkAccess::Skip).await;
+            println!("{key} = {}", setting_value(&key, &settings, &resolved)?);
+            Ok(())
+        }
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn setting_value(
+    key: &str,
+    settings: &config::Settings,
+    resolved: &ResolvedOperator,
+) -> Result<String> {
+    match key {
+        "operator.name" => Ok(resolved.name.clone()),
+        "operator.host" => Ok(resolved.host.clone()),
+        "agent-idle-timeout-secs" => Ok(settings
+            .agent_idle_timeout_secs
+            .unwrap_or(DEFAULT_AGENT_IDLE_TIMEOUT_SECS)
+            .to_string()),
+        _ => Err(unknown_setting(key)),
+    }
+}
+
+fn apply_setting(settings: &mut config::Settings, key: &str, value: &str) -> Result<()> {
+    match key {
+        "operator.name" => {
+            settings.operator.name = Some(config::Operator::validated_name(value)?);
+            Ok(())
+        }
+        "operator.host" => {
+            settings.operator.host = Some(config::Operator::validated_host(value)?);
+            Ok(())
+        }
+        "agent-idle-timeout-secs" => {
+            settings.agent_idle_timeout_secs = Some(value.parse::<u64>().map_err(|error| {
+                Error::Config(format!(
+                    "agent-idle-timeout-secs must be an unsigned integer: {error}"
+                ))
+            })?);
+            Ok(())
+        }
+        "encrypt_keys" | "encrypt-keys" => Err(Error::Config(
+            "encrypt_keys cannot be changed with `aic settings set`; use the TUI Auth Settings \
+             screen so the vault files are migrated safely"
+                .into(),
+        )),
+        "version" => Err(Error::Config(
+            "version is managed by aic and cannot be set".into(),
+        )),
+        _ => Err(unknown_setting(key)),
+    }
+}
+
+fn unknown_setting(key: &str) -> Error {
+    Error::Config(format!(
+        "unknown setting '{key}'; expected operator.name, operator.host, or \
+         agent-idle-timeout-secs"
+    ))
 }
 
 /// Locate the project root (the dir containing `.aic/`) by walking up
@@ -533,14 +748,17 @@ fn should_prompt(no_prompt: bool, stdin_tty: bool, stderr_tty: bool, tty_openabl
     !no_prompt && stdin_tty && stderr_tty && tty_openable
 }
 
-fn ensure_prompt_available() -> Result<()> {
-    let tty_openable = std::fs::File::open("/dev/tty").is_ok();
-    if should_prompt(
-        NO_PROMPT.load(Ordering::Relaxed),
+fn prompt_available() -> bool {
+    should_prompt(
+        prompting_disabled(),
         std::io::stdin().is_terminal(),
         std::io::stderr().is_terminal(),
-        tty_openable,
-    ) {
+        std::fs::File::open("/dev/tty").is_ok(),
+    )
+}
+
+fn ensure_prompt_available() -> Result<()> {
+    if prompt_available() {
         Ok(())
     } else {
         Err(Error::AuthRequired)
@@ -725,6 +943,12 @@ async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
     let cfg =
         ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
     let tenant = resolve_tenant(tenant_arg, &cfg)?;
+    let settings = config::Settings::load()?.unwrap_or_default();
+    let tenant_config = cfg
+        .tenants
+        .iter()
+        .find(|candidate| candidate.name == tenant);
+    let operator = operator::resolve(&settings, tenant_config, NetworkAccess::Skip).await;
 
     let client = AgentClient::connect_or_spawn().await?;
     match client
@@ -753,6 +977,20 @@ async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
                     .unwrap_or("(none — log-only tenant)");
                 println!("tenant:  {tenant}");
                 println!("sa:      {sa}");
+                match operator.source {
+                    NameSource::Placeholder => println!(
+                        "operator: name not set on {} (run `aic settings set operator.name \
+                         <name>`)",
+                        operator.host
+                    ),
+                    NameSource::Settings => {
+                        println!("operator: {} on {}", operator.name, operator.host)
+                    }
+                    NameSource::ServiceAccount => println!(
+                        "operator: {} on {} (guessed from service account)",
+                        operator.name, operator.host
+                    ),
+                }
                 println!("expires: in {ttl}s (unix {expires_at})");
                 println!("token:   {}", redact(&access_token));
             }
@@ -991,6 +1229,35 @@ mod tests {
     }
 
     #[test]
+    fn settings_command_forms_parse() {
+        let list = Cli::try_parse_from(["aic", "settings", "list"]).unwrap();
+        assert!(matches!(
+            list.command,
+            Some(Command::Settings {
+                command: SettingsCommand::List
+            })
+        ));
+
+        let set = Cli::try_parse_from(["aic", "settings", "set", "operator.name", "Dave"]).unwrap();
+        assert!(matches!(
+            set.command,
+            Some(Command::Settings {
+                command: SettingsCommand::Set { key, value }
+            }) if key == "operator.name" && value == "Dave"
+        ));
+    }
+
+    #[test]
+    fn settings_set_refuses_the_vault_encryption_flag() {
+        let mut settings = config::Settings::default();
+
+        let error = apply_setting(&mut settings, "encrypt_keys", "true").unwrap_err();
+
+        assert!(!settings.encrypt_keys);
+        assert!(error.to_string().contains("TUI Auth Settings screen"));
+    }
+
+    #[test]
     fn legacy_login_alias_still_parses() {
         let cli = Cli::try_parse_from(["aic", "login"]).unwrap();
 
@@ -1050,6 +1317,29 @@ mod tests {
     }
 
     #[test]
+    fn operator_action_covers_every_prompting_combination() {
+        let cases = [
+            (false, false, None, OperatorAction::Skip),
+            (false, false, Some("guess"), OperatorAction::Skip),
+            (false, true, None, OperatorAction::PromptRequired),
+            (
+                false,
+                true,
+                Some("guess"),
+                OperatorAction::PromptWithDefault("guess".into()),
+            ),
+            (true, false, None, OperatorAction::Skip),
+            (true, false, Some("guess"), OperatorAction::Skip),
+            (true, true, None, OperatorAction::Skip),
+            (true, true, Some("guess"), OperatorAction::Skip),
+        ];
+
+        for (name_set, can_prompt, guess, expected) in cases {
+            assert_eq!(operator_action(name_set, can_prompt, guess), expected);
+        }
+    }
+
+    #[test]
     fn password_stdin_line_parsing_strips_only_the_line_ending() {
         use std::io::Cursor;
 
@@ -1104,6 +1394,7 @@ mod tests {
             (vec!["aic", "status"], false),
             (vec!["aic", "session", "status"], false),
             (vec!["aic", "ctx", "current"], false),
+            (vec!["aic", "settings", "list"], false),
             (vec!["aic", "whoami"], true),
             (vec!["aic", "esv", "list"], true),
             (vec!["aic", "managed", "list"], true),
@@ -1130,6 +1421,7 @@ mod tests {
                 | Command::Status
                 | Command::Session { .. }
                 | Command::Ctx { .. }
+                | Command::Settings { .. }
                 | Command::Whoami { .. }
                 | Command::Esv { .. }
                 | Command::Managed { .. }
