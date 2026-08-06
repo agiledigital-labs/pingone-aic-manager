@@ -81,6 +81,39 @@ pub struct CreateArgs {
     yes: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct GrantChangeArgs {
+    /// OAuth2 client id.
+    id: String,
+    /// Grant types to add or remove.
+    #[arg(required = true, num_args = 1..)]
+    grant: Vec<String>,
+    #[arg(long)]
+    realm: Option<String>,
+    #[arg(long)]
+    tenant: Option<String>,
+    /// Confirm the write on a production-themed tenant.
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GrantCommand {
+    /// List the grant types enabled on an OAuth2 client.
+    List {
+        /// OAuth2 client id.
+        id: String,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// Add one or more grant types to an OAuth2 client.
+    Add(GrantChangeArgs),
+    /// Remove one or more grant types from an OAuth2 client.
+    Remove(GrantChangeArgs),
+}
+
 #[derive(Subcommand, Debug)]
 pub enum OauthCommand {
     /// List OAuth2 client ids in a realm.
@@ -98,6 +131,11 @@ pub enum OauthCommand {
         id: String,
         #[command(flatten)]
         options: Box<CreateArgs>,
+    },
+    /// List or change an OAuth2 client's grant types.
+    Grant {
+        #[command(subcommand)]
+        command: GrantCommand,
     },
     /// Pull an OAuth2 client into the workspace as JSON.
     Pull {
@@ -335,6 +373,48 @@ fn schema_for_validation(result: Result<Value>) -> Option<Value> {
     }
 }
 
+const JWT_BEARER_GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+
+async fn run_grant_change(args: GrantChangeArgs, operation: spec::GrantOperation) -> Result<()> {
+    let tenant = tenant_for(args.tenant)?;
+    let realm = realm_arg("oauth", args.realm)?;
+    validate_client_id(&args.id)?;
+
+    let (client, schema) = tokio::join!(
+        api::read_client(&tenant, &realm, &args.id),
+        api::client_schema(&tenant, &realm, args.yes),
+    );
+    let client = client?;
+    let schema = schema_for_validation(schema);
+    let adding_jwt_bearer = operation == spec::GrantOperation::Add
+        && args.grant.iter().any(|grant| grant == JWT_BEARER_GRANT)
+        && !spec::grant_types(&client)
+            .map_err(Error::Config)?
+            .iter()
+            .any(|grant| grant == JWT_BEARER_GRANT);
+    let update = spec::update_grants(&client, &args.grant, operation).map_err(Error::Config)?;
+    spec::validate_grant_types(&update.body, schema.as_ref()).map_err(Error::Config)?;
+
+    if !update.changed {
+        println!("oauth client {} grants already match; no change", args.id);
+        return Ok(());
+    }
+
+    if adding_jwt_bearer {
+        eprintln!(
+            "warning: jwt-bearer lets a Trusted JWT Issuer with empty allowedSubjects mint tokens as any user in realm {realm}; AIC has no per-client issuer restriction"
+        );
+    }
+
+    prod_hint(api::upsert_client(&tenant, &realm, &args.id, update.body, args.yes).await)?;
+    let verb = match operation {
+        spec::GrantOperation::Add => "added to",
+        spec::GrantOperation::Remove => "removed from",
+    };
+    println!("grant types {verb} oauth client {}", args.id);
+    Ok(())
+}
+
 pub async fn run(cmd: OauthCommand) -> Result<()> {
     match cmd {
         OauthCommand::List {
@@ -412,6 +492,26 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             println!("{verb} oauth client {id}");
             Ok(())
         }
+        OauthCommand::Grant { command } => match command {
+            GrantCommand::List { id, realm, tenant } => {
+                let tenant = tenant_for(tenant)?;
+                let realm = realm_arg("oauth", realm)?;
+                validate_client_id(&id)?;
+                let client = api::read_client(&tenant, &realm, &id).await?;
+                let grants = spec::grant_types(&client).map_err(Error::Config)?;
+                let rows = grants
+                    .iter()
+                    .map(|grant| vec![grant.clone()])
+                    .collect::<Vec<_>>();
+                print_table(&["GRANT_TYPE"], &rows);
+                eprintln!("{} grant types", grants.len());
+                Ok(())
+            }
+            GrantCommand::Add(args) => run_grant_change(args, spec::GrantOperation::Add).await,
+            GrantCommand::Remove(args) => {
+                run_grant_change(args, spec::GrantOperation::Remove).await
+            }
+        },
         OauthCommand::Pull { id, realm, tenant } => {
             let tenant = tenant_for(tenant)?;
             let realm = realm_arg("oauth", realm)?;
@@ -442,7 +542,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             };
 
             let Some(remote) = remote else {
-                api::upsert_client(&tenant, &realm, &id, local).await?;
+                api::upsert_client(&tenant, &realm, &id, local, false).await?;
                 let refreshed = api::read_client(&tenant, &realm, &id).await?;
                 write_snapshot(&tenant, &realm, &id, &refreshed)?;
                 println!("created oauth client {id}");
@@ -460,7 +560,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     Err(Error::Config(push_block_message(&id, &reason)))
                 }
                 PushDecision::Push => {
-                    api::upsert_client(&tenant, &realm, &id, local).await?;
+                    api::upsert_client(&tenant, &realm, &id, local, false).await?;
                     let refreshed = api::read_client(&tenant, &realm, &id).await?;
                     write_snapshot(&tenant, &realm, &id, &refreshed)?;
                     println!("pushed oauth client {id}");
@@ -604,6 +704,51 @@ mod tests {
                 "--generate-secret"
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn grant_commands_parse_repeatable_grants_and_production_confirmation() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "aic",
+            "oauth",
+            "grant",
+            "add",
+            "existing-client",
+            "client_credentials",
+            "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "--realm",
+            "bravo",
+            "--tenant",
+            "sandbox",
+            "--yes",
+        ])
+        .unwrap();
+
+        let Some(crate::cli::Command::Oauth {
+            command:
+                OauthCommand::Grant {
+                    command: GrantCommand::Add(args),
+                },
+        }) = cli.command
+        else {
+            panic!("expected oauth grant add");
+        };
+        assert_eq!(args.id, "existing-client");
+        assert_eq!(
+            args.grant,
+            [
+                "client_credentials",
+                "urn:ietf:params:oauth:grant-type:jwt-bearer"
+            ]
+        );
+        assert_eq!(args.realm.as_deref(), Some("bravo"));
+        assert_eq!(args.tenant.as_deref(), Some("sandbox"));
+        assert!(args.yes);
+
+        assert!(
+            crate::cli::Cli::try_parse_from(["aic", "oauth", "grant", "remove", "existing-client"])
+                .is_err()
         );
     }
 

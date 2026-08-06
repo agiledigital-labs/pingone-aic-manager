@@ -100,11 +100,18 @@ pub async fn client_schema(tenant: &str, realm: &str, confirmed_prod: bool) -> R
     crate::aic::api::post_versioned(tenant, &path, json!({}), confirmed_prod, API_VERSION).await
 }
 
-pub async fn upsert_client(tenant: &str, realm: &str, id: &str, body: Value) -> Result<Value> {
+/// Upsert a complete OAuth2 client body with the caller's production choice.
+pub async fn upsert_client(
+    tenant: &str,
+    realm: &str,
+    id: &str,
+    body: Value,
+    confirmed_prod: bool,
+) -> Result<Value> {
     validate_client_id(id)?;
     let path = format!("{}/{}", clients_path(realm), id);
     let body = sanitize_for_write(&body);
-    crate::aic::api::put_versioned(tenant, &path, body, false, API_VERSION).await
+    crate::aic::api::put_versioned(tenant, &path, body, confirmed_prod, API_VERSION).await
 }
 
 /// Create or explicitly replace a client after the caller's existence check.

@@ -365,6 +365,9 @@ Realm-scoped. Clients pull/push as JSON under the workspace.
 ```bash
 aic oauth list [--realm alpha] [--json]                 # client ids
 aic oauth create <id> [common flags] [--from FILE]      # create from live tenant defaults
+aic oauth grant list <id> [--realm alpha]              # grant types on one client
+aic oauth grant add <id> <grant>... [--realm alpha] [--yes]
+aic oauth grant remove <id> <grant>... [--realm alpha] [--yes]
 aic oauth pull <id> [--realm alpha]                     # one client → workspace JSON
 aic oauth push <id> [--realm alpha] [--force]           # push a workspace client JSON back
 aic oauth delete <id> --force [--realm alpha]           # delete (requires --force)
@@ -385,6 +388,15 @@ For less-common settings, pass an OAuth client JSON object with `--from`; flags
 override its values while missing fields retain the live tenant template.
 `aic oauth pull` output composes directly with this path. For ongoing edits,
 continue to use pull → edit → push.
+
+`grant add` and `grant remove` update only
+`advancedOAuth2ClientConfig.grantTypes` on an existing client. They are
+idempotent: an already-present grant or an absent grant reports no change.
+Grant values are checked against the tenant's live OAuth2 client schema when it
+is available; if the schema cannot be read, AM performs the validation. The
+commands require `--yes` on production-themed tenants. Adding the JWT-bearer
+grant emits a security note because a Trusted JWT Issuer with empty
+`allowedSubjects` can then mint a token as any user in the realm.
 
 > `*-encrypted` fields are cluster-local and stripped from every client PUT;
 > server-managed metadata is also removed and `_rev` is ignored (plain PUT). See

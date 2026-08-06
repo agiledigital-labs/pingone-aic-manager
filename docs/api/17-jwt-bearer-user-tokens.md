@@ -89,9 +89,11 @@ back in a `PUT` body.
 
 The OAuth2 client used in the exchange needs
 `urn:ietf:params:oauth:grant-type:jwt-bearer` in
-`advancedOAuth2ClientConfig.grantTypes`. **That is the only per-client change.**
-On the sandbox, no existing client had it (2026-08-06: 44 clients in alpha, all
-`client_credentials` / `authorization_code` / `password`).
+`advancedOAuth2ClientConfig.grantTypes`. Add it to an existing client with
+`aic oauth grant add <client-id> urn:ietf:params:oauth:grant-type:jwt-bearer`.
+**That is the only per-client change.** On the sandbox, no existing client had
+it (2026-08-06: 44 clients in alpha, all `client_credentials` /
+`authorization_code` / `password`).
 
 The realm-wide provider service already permits the grant — alpha's
 `advancedOAuth2Config.grantTypes` includes it out of the box, and so does the
@@ -196,16 +198,24 @@ the private key equivalent to "log in as anyone in this realm". Verified: with
 - **Client authentication is still required.** Omitting `client_secret` on a
   `client_secret_post` client fails with `invalid_client` "Client authentication
   failed". The assertion authenticates the _user_, not the client.
+- **A missing grant is indistinguishable from a bad secret.** Both fail with
+  `invalid_client` "Invalid authentication method for accessing this endpoint."
+  — verified 2026-08-07 by holding one variable at a time on a single client:
+  grant present + wrong secret, and grant absent + correct secret, produced
+  byte-identical descriptions, while grant present + correct secret minted a
+  token. Note this differs from the _omitted_ `client_secret` case above, which
+  says "Client authentication failed". So `aic auth` cannot tell the caller
+  which of the two is wrong and must name both.
 
 ## Current implementation
 
 The `src/jwtbearer/` vertical implements setup and named-issuer creation/show
 commands. Setup creates or reuses one RSA key pair per local install, stores the
 private record in the agent vault, merges the public JWK into the realm's shared
-`jwkSet` by `kid`, and verifies that AM retained the key after the write.
-Issuer writes explicitly set `allowedSubjects: []`,
-`consentedScopesClaim: "scope"`, and `resourceOwnerIdentityClaim: "sub"` so
-they do not depend on template defaults.
+`jwkSet` by `kid`, and verifies that AM retained the key after the write. Issuer
+writes explicitly set `allowedSubjects: []`, `consentedScopesClaim: "scope"`,
+and `resourceOwnerIdentityClaim: "sub"` so they do not depend on template
+defaults.
 
 - The private half is stored under the tenant name in the agent vault, while
   setup adds the public half to the realm's shared `jwkSet`. The read-modify-
@@ -227,22 +237,20 @@ they do not depend on template defaults.
   the issuer may mint for any user in the realm, which is the point: this exists
   so a tester can become an arbitrary user without a journey or a password.
   Requiring an explicit subject list would defeat the convenience the feature is
-  for.
-The setup command refuses production-themed tenants because an empty
-`allowedSubjects` plus a client with the grant enabled is a realm-wide
-capability. Minting a user token from the stored key, exporting a public JWKS,
-and key rotation/removal remain future work; export must be an explicit command,
-not a setup side effect.
+  for. The setup command refuses production-themed tenants because an empty
+  `allowedSubjects` plus a client with the grant enabled is a realm-wide
+  capability. Minting a user token from the stored key, exporting a public JWKS,
+  and key rotation/removal remain future work; export must be an explicit
+  command, not a setup side effect.
 
 ## Planned shape
 
-- aic auth --as-id <uuid> --client-id <id> or
-  aic auth --as-username <name> --client-id <id> now resolves the subject,
-  signs with the stored tenant key, exchanges at the tenant-relative realm
-  token path, and supports repeatable --scope, --realm, --tenant,
-  --client-secret-stdin, and bare-token --token output. Discovery's `issuer`
-  remains the source of the audience claim; its `token_endpoint` is not used
-  as an outbound URL.
+- aic auth --as-id <uuid> --client-id <id> or aic auth --as-username <name>
+  --client-id <id> now resolves the subject, signs with the stored tenant key,
+  exchanges at the tenant-relative realm token path, and supports repeatable
+  --scope, --realm, --tenant, --client-secret-stdin, and bare-token --token
+  output. Discovery's `issuer` remains the source of the audience claim; its
+  `token_endpoint` is not used as an outbound URL.
 
 ## Verified against
 
@@ -264,6 +272,29 @@ not a setup side effect.
   confirmed 404. Local key material was shredded.
 - Subject used: the pre-existing sandbox `testuser` (`22bc823c-…`). No user was
   created or modified.
+
+### 2026-08-07 — OAuth grant remediation probe
+
+- Purpose: find out whether AM's `invalid_client` response distinguishes a
+  client that lacks the JWT-bearer grant from one given a wrong secret, so
+  `aic auth` can name the right remedy.
+- Client: `test_authprobe`, created with
+  `aic --no-prompt oauth create test_authprobe --client-type Confidential --generate-secret --scope openid --default-scope openid --grant authorization_code --grant urn:ietf:params:oauth:grant-type:jwt-bearer`,
+  then `DELETE`d at the end.
+- Three
+  `aic --no-prompt auth --as-username testuser --client-id test_authprobe --client-secret-stdin --scope openid`
+  calls, one variable changed at a time: grant present + correct secret **minted
+  a token**; grant present + wrong secret and (after
+  `aic --no-prompt oauth grant remove test_authprobe urn:…:jwt-bearer`) grant
+  absent + correct secret both returned `invalid_client` with the identical
+  `error_description`
+  `Invalid authentication method for accessing this endpoint.`
+- Also exercised on the same client, earlier the same day:
+  `oauth grant list/add/remove`, add and remove idempotence, and live-schema
+  rejection of an invalid grant value (`not_a_grant`, refused against the
+  tenant's eleven allowed values).
+- Subject used: the pre-existing sandbox `testuser`. No user was created or
+  modified.
 
 ## Source citations
 
