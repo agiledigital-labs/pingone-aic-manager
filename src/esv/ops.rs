@@ -406,14 +406,14 @@ pub(crate) fn build_save_plan(app: &mut App) -> Option<SavePlan> {
     // A variable value must be non-empty: base64 of "" is "", which AIC
     // rejects (and a rejected create leaves a confusing local-only row).
     // A single space is a valid, non-empty value.
-    if edit.value.value.is_empty() {
+    if edit.value.value().is_empty() {
         edit.error = Some("Value cannot be empty (a single space is allowed)".into());
         return None;
     }
 
     // Pre-flight validation. Catches obvious type/value mismatches before
     // we apply optimistically and ship a request that would just bounce.
-    if let Err(msg) = edit.expr_type.validate(&edit.value.value) {
+    if let Err(msg) = edit.expr_type.validate(edit.value.value()) {
         edit.error = Some(msg);
         return None;
     }
@@ -421,7 +421,7 @@ pub(crate) fn build_save_plan(app: &mut App) -> Option<SavePlan> {
     let id = edit.id.clone();
     let description = edit.description.value.clone();
     let expr_type = edit.expr_type.as_str().to_string();
-    let value_str = edit.value.value.clone();
+    let value_str = edit.value.value().to_string();
     let value_b64 = B64.encode(value_str.as_bytes());
     let creating = edit.creating;
     let was_creating = edit.creating;

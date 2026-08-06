@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::app::App;
 use crate::esv::api::StartupStatus;
 use crate::tui::list_state::TenantListState;
-use crate::tui::widgets::TextField;
+use crate::tui::widgets::{JsonShape, TextField, TypedValueField, ValueShape};
 
 /// Per-tenant ESV load state. `app.esv.list.data` maps tenant name → this.
 #[derive(Debug, Clone)]
@@ -232,6 +232,19 @@ impl ExpressionType {
         Self::ORDER[next]
     }
 
+    pub fn shape(self) -> ValueShape {
+        match self {
+            Self::String | Self::List | Self::KeyValueList | Self::Base64EncodedInlined => {
+                ValueShape::MultilineText
+            }
+            Self::Bool => ValueShape::Bool,
+            Self::Int => ValueShape::Integer,
+            Self::Number => ValueShape::Decimal,
+            Self::Object => ValueShape::Json(JsonShape::Object),
+            Self::Array => ValueShape::Json(JsonShape::Array),
+        }
+    }
+
     /// Local pre-flight validation of the on-screen value against the
     /// selected type. Catches type / value mismatches before we ship a
     /// PUT that would either be rejected by AIC or — worse — accepted
@@ -239,39 +252,7 @@ impl ExpressionType {
     /// a strong contract for (string, list, keyvaluelist,
     /// base64encodedinlined).
     pub fn validate(self, value: &str) -> Result<(), String> {
-        match self {
-            ExpressionType::String
-            | ExpressionType::List
-            | ExpressionType::KeyValueList
-            | ExpressionType::Base64EncodedInlined => Ok(()),
-            ExpressionType::Bool => match value.trim() {
-                "true" | "false" => Ok(()),
-                _ => Err("Value must be 'true' or 'false'".into()),
-            },
-            ExpressionType::Int => value
-                .trim()
-                .parse::<i64>()
-                .map(|_| ())
-                .map_err(|_| "Value must be an integer".into()),
-            ExpressionType::Number => value
-                .trim()
-                .parse::<f64>()
-                .map(|_| ())
-                .map_err(|_| "Value must be a number".into()),
-            ExpressionType::Object => match serde_json::from_str::<serde_json::Value>(value.trim())
-            {
-                Ok(serde_json::Value::Object(_)) => Ok(()),
-                Ok(_) => Err("Value must be a JSON object (e.g. {\"k\":\"v\"})".into()),
-                Err(e) => Err(format!("Value must be valid JSON: {e}")),
-            },
-            ExpressionType::Array => {
-                match serde_json::from_str::<serde_json::Value>(value.trim()) {
-                    Ok(serde_json::Value::Array(_)) => Ok(()),
-                    Ok(_) => Err("Value must be a JSON array (e.g. [1,2,3])".into()),
-                    Err(e) => Err(format!("Value must be valid JSON: {e}")),
-                }
-            }
-        }
+        self.shape().validate(value)
     }
 }
 
@@ -337,7 +318,7 @@ pub struct EditState {
     pub id_input: TextField,
     pub description: TextField,
     pub expr_type: ExpressionType,
-    pub value: TextField,
+    pub value: TypedValueField,
     pub focused: EditField,
     /// Pre-flight validation error to surface in the form. Set on bad
     /// id / type-value mismatch; cleared on any user input.
@@ -366,6 +347,36 @@ pub struct DeletePlan {
     pub(crate) tenant_name: String,
     pub(crate) id: String,
     pub(crate) original: serde_json::Value,
+}
+
+#[cfg(test)]
+mod expression_type_shape_tests {
+    use super::*;
+
+    #[test]
+    fn every_expression_type_maps_to_its_input_shape() {
+        assert_eq!(ExpressionType::String.shape(), ValueShape::MultilineText);
+        assert_eq!(
+            ExpressionType::Array.shape(),
+            ValueShape::Json(JsonShape::Array)
+        );
+        assert_eq!(ExpressionType::Bool.shape(), ValueShape::Bool);
+        assert_eq!(ExpressionType::Int.shape(), ValueShape::Integer);
+        assert_eq!(ExpressionType::Number.shape(), ValueShape::Decimal);
+        assert_eq!(
+            ExpressionType::Object.shape(),
+            ValueShape::Json(JsonShape::Object)
+        );
+        assert_eq!(ExpressionType::List.shape(), ValueShape::MultilineText);
+        assert_eq!(
+            ExpressionType::KeyValueList.shape(),
+            ValueShape::MultilineText
+        );
+        assert_eq!(
+            ExpressionType::Base64EncodedInlined.shape(),
+            ValueShape::MultilineText
+        );
+    }
 }
 
 #[derive(Debug, Clone)]

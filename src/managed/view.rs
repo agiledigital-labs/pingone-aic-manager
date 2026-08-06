@@ -18,6 +18,7 @@ use crate::managed::state::{
     AddFieldFocus, AddKind, DeleteObjectState, EditFieldFocus, FieldAttr, LoadState, ManagedMatch,
     NewObjectFocus, RefPropFocus, RelationshipFocus,
 };
+use crate::tui::widgets::draw_bool_row;
 
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) else {
@@ -666,7 +667,11 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let error_h = if edit.error.is_some() { 2 } else { 0 };
+    let error_h = if edit.default_value.error().is_some() || edit.error.is_some() {
+        2
+    } else {
+        0
+    };
     let enum_eligible = crate::managed::ops::enum_constraint_eligible(&edit.original_property);
     let rows = Layout::vertical([
         Constraint::Length(1), // field id
@@ -736,7 +741,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[13],
         "Required",
-        edit.required,
+        Some(edit.required),
         edit.focused == EditFieldFocus::Required,
         edit.caps.can_edit_attr(FieldAttr::Required),
     );
@@ -744,7 +749,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[14],
         "Searchable",
-        edit.searchable,
+        Some(edit.searchable),
         edit.focused == EditFieldFocus::Searchable,
         edit.caps.can_edit_attr(FieldAttr::Searchable),
     );
@@ -752,7 +757,7 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[15],
         "Viewable",
-        edit.viewable,
+        Some(edit.viewable),
         edit.focused == EditFieldFocus::Viewable,
         edit.caps.can_edit_attr(FieldAttr::Viewable),
     );
@@ -760,15 +765,15 @@ fn draw_edit_field_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[16],
         "User editable",
-        edit.user_editable,
+        Some(edit.user_editable),
         edit.focused == EditFieldFocus::UserEditable,
         edit.caps.can_edit_attr(FieldAttr::UserEditable),
     );
 
-    if let Some(error) = &edit.error {
+    if let Some(error) = edit.default_value.error().or(edit.error.as_deref()) {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                error.clone(),
+                error.to_string(),
                 Style::default().fg(Color::Yellow),
             )))
             .wrap(Wrap { trim: false }),
@@ -788,7 +793,11 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
     let Some(draft) = app.managed.add_field.as_ref() else {
         return;
     };
-    let error_h = if draft.error.is_some() { 2 } else { 0 };
+    let error_h = if draft.default_value.error().is_some() || draft.error.is_some() {
+        2
+    } else {
+        0
+    };
     let enum_eligible = draft.enum_eligible();
     let rows = Layout::vertical([
         Constraint::Length(1),
@@ -827,7 +836,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[8],
         "Type",
-        draft.field_type.label(),
+        draft.field_type().label(),
         draft.focused == AddFieldFocus::Type,
     );
     if enum_eligible {
@@ -842,7 +851,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[13],
         "Searchable",
-        draft.searchable,
+        Some(draft.searchable),
         draft.focused == AddFieldFocus::Searchable,
         true,
     );
@@ -850,7 +859,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[14],
         "Viewable",
-        draft.viewable,
+        Some(draft.viewable),
         draft.focused == AddFieldFocus::Viewable,
         true,
     );
@@ -858,7 +867,7 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[15],
         "User editable",
-        draft.user_editable,
+        Some(draft.user_editable),
         draft.focused == AddFieldFocus::UserEditable,
         true,
     );
@@ -866,11 +875,15 @@ fn draw_add_field_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[16],
         "Required",
-        draft.required,
+        Some(draft.required),
         draft.focused == AddFieldFocus::Required,
         true,
     );
-    draw_form_error(f, rows[17], draft.error.as_deref());
+    draw_form_error(
+        f,
+        rows[17],
+        draft.default_value.error().or(draft.error.as_deref()),
+    );
     draw_save_button(f, rows[18], draft.focused == AddFieldFocus::Save);
 }
 
@@ -964,7 +977,7 @@ fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[12],
         "Searchable",
-        draft.searchable,
+        Some(draft.searchable),
         draft.focused == RelationshipFocus::Searchable,
         true,
     );
@@ -972,7 +985,7 @@ fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[13],
         "Viewable",
-        draft.viewable,
+        Some(draft.viewable),
         draft.focused == RelationshipFocus::Viewable,
         true,
     );
@@ -980,7 +993,7 @@ fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[14],
         "User editable",
-        draft.user_editable,
+        Some(draft.user_editable),
         draft.focused == RelationshipFocus::UserEditable,
         true,
     );
@@ -988,7 +1001,7 @@ fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[15],
         "Required",
-        draft.required,
+        Some(draft.required),
         draft.focused == RelationshipFocus::Required,
         true,
     );
@@ -996,7 +1009,7 @@ fn draw_relationship_form(f: &mut Frame, app: &App, area: Rect) {
         f,
         rows[16],
         "Validate",
-        draft.validate,
+        Some(draft.validate),
         draft.focused == RelationshipFocus::Validate,
         true,
     );
@@ -1283,38 +1296,6 @@ fn caps_label(caps: crate::managed::state::FieldCaps) -> &'static str {
         FieldTier::CustomFieldOnStandardObject => "custom field",
         FieldTier::FieldOnCustomObject => "custom object field",
     }
-}
-
-fn draw_bool_row(
-    f: &mut Frame,
-    area: Rect,
-    label: &str,
-    value: bool,
-    focused: bool,
-    enabled: bool,
-) {
-    if area.height == 0 {
-        return;
-    }
-    let fg = match (enabled, focused) {
-        (false, _) => Color::DarkGray,
-        (true, true) => Color::Yellow,
-        (true, false) => Color::Gray,
-    };
-    let style = if focused {
-        Style::default().fg(fg).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(fg)
-    };
-    let mark = if value { "x" } else { " " };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!("[{mark}] "), style),
-            Span::styled(label.to_string(), style),
-            Span::styled("  Space/Enter toggle", Style::default().fg(Color::DarkGray)),
-        ])),
-        area,
-    );
 }
 
 fn draw_save_button(f: &mut Frame, area: Rect, focused: bool) {

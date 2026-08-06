@@ -6,7 +6,7 @@ use crate::managed::spec::{
     DefaultChange, EnumChange, EnumSpec, FieldEditSpec, ScalarFieldType, parse_enum_items,
 };
 
-use crate::tui::widgets::{LineEditor, TextField};
+use crate::tui::widgets::{LineEditor, TextField, TypedValueField};
 
 #[derive(Debug)]
 pub enum LoadState {
@@ -317,7 +317,7 @@ pub struct FieldEditState {
     pub enum_values: TextField,
     /// Stable rendering of the stored constraint; preserves untouched edits.
     pub enum_seed: String,
-    pub default_value: TextField,
+    pub default_value: TypedValueField,
     /// Stable rendering of the stored default; preserves untouched edits.
     pub default_seed: String,
     pub required: bool,
@@ -363,6 +363,7 @@ impl FieldEditState {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let property_type = crate::managed::state::property_type(&property);
+        let scalar_type = scalar_type_for_property(&property);
         let enum_seed = crate::managed::ops::property_enum(&property)
             .map(|constraint| constraint.to_items().join(", "))
             .unwrap_or_default();
@@ -386,7 +387,8 @@ impl FieldEditState {
             description: TextField::textarea("Description").with_initial(description),
             enum_values: TextField::single_line("Allowed values").with_initial(enum_seed.clone()),
             enum_seed,
-            default_value: TextField::single_line("Default").with_initial(default_seed.clone()),
+            default_value: TypedValueField::new("Default", scalar_type.shape(), false)
+                .with_initial(default_seed.clone()),
             default_seed,
             required,
             searchable,
@@ -415,10 +417,10 @@ impl FieldEditState {
     /// An empty string default is not expressible here: matching the enum row,
     /// blank input means clear. The CLI can still write an empty string.
     pub fn default_change(&self) -> DefaultChange {
-        if self.default_value.value == self.default_seed {
+        if self.default_value.value() == self.default_seed {
             DefaultChange::Unchanged
         } else {
-            let value = self.default_value.value.trim();
+            let value = self.default_value.trimmed();
             if value.is_empty() {
                 DefaultChange::Clear
             } else {
@@ -428,6 +430,9 @@ impl FieldEditState {
     }
 
     pub fn edit_spec(&self) -> Result<FieldEditSpec, String> {
+        if self.caps.can_edit_attr(FieldAttr::Default) {
+            self.default_value.validate()?;
+        }
         Ok(FieldEditSpec {
             new_key: Some(self.key.value.clone()),
             title: Some(self.title.value.clone()),
@@ -667,8 +672,12 @@ pub struct AddFieldState {
     pub title: TextField,
     pub description: TextField,
     pub enum_values: TextField,
-    pub default_value: TextField,
-    pub field_type: ScalarFieldType,
+    pub default_value: TypedValueField,
+    /// Private so it can't drift from `default_value`'s shape — go through
+    /// [`Self::set_field_type`]. A default validated against the wrong shape
+    /// is how a type-mismatched default reaches the tenant, and that bricks
+    /// the managed object (`docs/api/10-managed-objects.md`).
+    field_type: ScalarFieldType,
     pub searchable: bool,
     pub viewable: bool,
     pub user_editable: bool,
@@ -688,7 +697,7 @@ impl AddFieldState {
             title: TextField::single_line("Title"),
             description: TextField::textarea("Description"),
             enum_values: TextField::single_line("Allowed values"),
-            default_value: TextField::single_line("Default"),
+            default_value: TypedValueField::new("Default", ScalarFieldType::String.shape(), false),
             field_type: ScalarFieldType::String,
             searchable: false,
             viewable: true,
@@ -697,6 +706,17 @@ impl AddFieldState {
             focused: AddFieldFocus::Key,
             error: None,
         }
+    }
+
+    pub fn field_type(&self) -> ScalarFieldType {
+        self.field_type
+    }
+
+    /// Retype the field and re-shape the default row with it, so the default
+    /// is always validated against the type it will actually be written under.
+    pub fn set_field_type(&mut self, field_type: ScalarFieldType) {
+        self.field_type = field_type;
+        self.default_value.set_shape(field_type.shape());
     }
 
     pub fn enum_eligible(&self) -> bool {
@@ -712,7 +732,7 @@ impl AddFieldState {
     }
 
     pub fn parsed_default(&self) -> Option<String> {
-        let value = self.default_value.value.trim();
+        let value = self.default_value.trimmed();
         (!value.is_empty()).then(|| value.to_string())
     }
 
@@ -1255,6 +1275,25 @@ pub fn property_type(property: &Value) -> String {
     }
 }
 
+fn scalar_type_for_property(property: &Value) -> ScalarFieldType {
+    let kinds = match property.get("type") {
+        Some(Value::String(kind)) => vec![kind.as_str()],
+        Some(Value::Array(kinds)) => kinds.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    if kinds.contains(&"boolean") {
+        ScalarFieldType::Boolean
+    } else if kinds.contains(&"number") || kinds.contains(&"integer") {
+        ScalarFieldType::Number
+    } else if kinds.contains(&"array")
+        && property.pointer("/items/type").and_then(Value::as_str) == Some("string")
+    {
+        ScalarFieldType::StringArray
+    } else {
+        ScalarFieldType::String
+    }
+}
+
 fn base_type(kind: &str, property: &Value) -> String {
     match kind {
         "string" | "boolean" | "number" | "integer" | "object" | "relationship" => kind.to_string(),
@@ -1668,9 +1707,9 @@ mod tests {
         );
 
         assert_eq!(edit.default_change(), DefaultChange::Unchanged);
-        edit.default_value.value.clear();
+        edit.default_value.set("");
         assert_eq!(edit.default_change(), DefaultChange::Clear);
-        edit.default_value.value = "replacement".into();
+        edit.default_value.set("replacement");
         assert_eq!(
             edit.default_change(),
             DefaultChange::Set("replacement".into())
@@ -1681,8 +1720,28 @@ mod tests {
     fn blank_add_field_default_is_absent() {
         let mut draft = AddFieldState::new("sandbox".into(), "thing".into(), json!({}));
         assert_eq!(draft.parsed_default(), None);
-        draft.default_value.value = "  \t ".into();
+        draft.default_value.set("  \t ");
         assert_eq!(draft.parsed_default(), None);
+    }
+
+    /// Retyping the field has to re-shape the default row with it. If the two
+    /// drift, a `boolean` default gets validated as free text, and a
+    /// type-mismatched default is exactly what bricks the managed object.
+    #[test]
+    fn retyping_the_field_reshapes_the_default() {
+        use crate::tui::widgets::ValueShape;
+
+        let mut draft = AddFieldState::new("sandbox".into(), "thing".into(), json!({}));
+        draft.default_value.set("banana");
+        assert_eq!(draft.default_value.shape(), ValueShape::Text);
+        assert_eq!(draft.default_value.error(), None);
+
+        draft.set_field_type(ScalarFieldType::Boolean);
+        assert_eq!(draft.default_value.shape(), ValueShape::Bool);
+        assert!(draft.default_value.error().is_some());
+
+        draft.default_value.set("true");
+        assert_eq!(draft.default_value.error(), None);
     }
 
     #[test]

@@ -71,12 +71,22 @@ fn hints(mode: Mode, app: &App, target: HintTarget) -> Vec<(&'static str, &'stat
     match mode {
         Mode::Search => pick(&search_binds(), target),
         Mode::EditField => pick(
-            &edit_field_binds(app.managed.editing.as_ref().map(|edit| edit.focused)),
+            &edit_field_binds(
+                app.managed.editing.as_ref().map(|edit| edit.focused),
+                app.managed.editing.as_ref().is_some_and(|edit| {
+                    edit.default_value.shape() == crate::tui::widgets::ValueShape::Bool
+                }),
+            ),
             target,
         ),
         Mode::AddChooseKind => pick(&add_choose_binds(), target),
         Mode::AddField => pick(
-            &add_field_binds(app.managed.add_field.as_ref().map(|d| d.focused)),
+            &add_field_binds(
+                app.managed.add_field.as_ref().map(|d| d.focused),
+                app.managed.add_field.as_ref().is_some_and(|draft| {
+                    draft.default_value.shape() == crate::tui::widgets::ValueShape::Bool
+                }),
+            ),
             target,
         ),
         Mode::Relationship => pick(
@@ -214,7 +224,7 @@ fn form_base<A: Copy>(next: A, prev: A) -> Vec<Bind<A>> {
         hidden(&[Trigger::BACKTAB], "Shift-Tab", "back", prev),
     ]
 }
-fn add_field_binds(focused: Option<AddFieldFocus>) -> Vec<Bind<FormAct>> {
+fn add_field_binds(focused: Option<AddFieldFocus>, default_is_bool: bool) -> Vec<Bind<FormAct>> {
     let mut out = form_base(FormAct::Next, FormAct::Prev);
     match focused {
         Some(AddFieldFocus::Save) => out.push(hint(
@@ -235,6 +245,15 @@ fn add_field_binds(focused: Option<AddFieldFocus>) -> Vec<Bind<FormAct>> {
                 "←/→",
                 "change type",
                 FormAct::PrevChoice,
+            ));
+            out.push(save_chord_bind(FormAct::Save, "add"));
+        }
+        Some(AddFieldFocus::Default) if default_is_bool => {
+            out.push(hint(
+                &[Trigger::ENTER, Trigger::SPACE],
+                "Space/Enter",
+                "toggle",
+                FormAct::ToggleBool,
             ));
             out.push(save_chord_bind(FormAct::Save, "add"));
         }
@@ -819,7 +838,10 @@ pub enum EditFieldAct {
 ///
 /// A pure function of focus rather than of `&App`, which is what makes it
 /// testable — `App::new()` reads config from disk.
-fn edit_field_binds(focused: Option<EditFieldFocus>) -> Vec<Bind<EditFieldAct>> {
+fn edit_field_binds(
+    focused: Option<EditFieldFocus>,
+    default_is_bool: bool,
+) -> Vec<Bind<EditFieldAct>> {
     use EditFieldAct::*;
     let mut out = vec![
         hint(&[Trigger::TAB], "Tab", "navigate", FocusNext),
@@ -835,6 +857,15 @@ fn edit_field_binds(focused: Option<EditFieldFocus>) -> Vec<Bind<EditFieldAct>> 
             "save",
             Save,
         )),
+        Some(EditFieldFocus::Default) if default_is_bool => {
+            out.push(hint(
+                &[Trigger::SPACE, Trigger::ENTER],
+                "Space/Enter",
+                "toggle",
+                ToggleBool,
+            ));
+            out.push(save_chord_bind(Save, "save"));
+        }
         Some(focus) if focus.is_bool() => {
             out.push(hint(
                 &[Trigger::SPACE, Trigger::LEFT, Trigger::RIGHT],
@@ -866,7 +897,12 @@ fn run_edit_field(app: &mut App, act: EditFieldAct) {
         }
         EditFieldAct::ToggleBool => {
             if let Some(edit) = app.managed.editing.as_mut() {
-                edit.toggle_focused_bool();
+                if edit.focused == EditFieldFocus::Default {
+                    edit.default_value
+                        .handle_key(&KeyEvent::from(KeyCode::Enter));
+                } else {
+                    edit.toggle_focused_bool();
+                }
                 edit.error = None;
             }
         }
@@ -879,7 +915,11 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) {
         return;
     };
 
-    if let Some(act) = Bind::resolve(&edit_field_binds(Some(focused)), &key) {
+    let default_is_bool =
+        app.managed.editing.as_ref().is_some_and(|edit| {
+            edit.default_value.shape() == crate::tui::widgets::ValueShape::Bool
+        });
+    if let Some(act) = Bind::resolve(&edit_field_binds(Some(focused), default_is_bool), &key) {
         run_edit_field(app, act);
         return;
     }
@@ -917,7 +957,11 @@ fn handle_add_field_key(app: &mut App, key: KeyEvent) {
         app.input_mode = InputMode::Normal;
         return;
     };
-    if let Some(act) = Bind::resolve(&add_field_binds(Some(focused)), &key) {
+    let default_is_bool =
+        app.managed.add_field.as_ref().is_some_and(|draft| {
+            draft.default_value.shape() == crate::tui::widgets::ValueShape::Bool
+        });
+    if let Some(act) = Bind::resolve(&add_field_binds(Some(focused), default_is_bool), &key) {
         run_add_field(app, act);
         return;
     }
@@ -944,21 +988,21 @@ fn handle_add_field_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Enter if focused == AddFieldFocus::Type => {
             if let Some(draft) = app.managed.add_field.as_mut() {
-                draft.field_type = draft.field_type.next();
+                draft.set_field_type(draft.field_type().next());
                 draft.error = None;
             }
             return;
         }
         KeyCode::Left if focused == AddFieldFocus::Type => {
             if let Some(draft) = app.managed.add_field.as_mut() {
-                draft.field_type = draft.field_type.prev();
+                draft.set_field_type(draft.field_type().prev());
                 draft.error = None;
             }
             return;
         }
         KeyCode::Right if focused == AddFieldFocus::Type => {
             if let Some(draft) = app.managed.add_field.as_mut() {
-                draft.field_type = draft.field_type.next();
+                draft.set_field_type(draft.field_type().next());
                 draft.error = None;
             }
             return;
@@ -972,7 +1016,7 @@ fn handle_add_field_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char(' ') if focused == AddFieldFocus::Type => {
             if let Some(draft) = app.managed.add_field.as_mut() {
-                draft.field_type = draft.field_type.next();
+                draft.set_field_type(draft.field_type().next());
                 draft.error = None;
             }
             return;
@@ -1028,17 +1072,21 @@ fn run_add_field(app: &mut App, act: FormAct) {
         }
         FormAct::ToggleBool => {
             if let Some(d) = app.managed.add_field.as_mut() {
-                d.toggle_focused_bool();
+                if d.focused == AddFieldFocus::Default {
+                    d.default_value.handle_key(&KeyEvent::from(KeyCode::Enter));
+                } else {
+                    d.toggle_focused_bool();
+                }
                 d.error = None;
             }
         }
         FormAct::NextChoice | FormAct::PrevChoice => {
             if let Some(d) = app.managed.add_field.as_mut() {
-                d.field_type = if act == FormAct::NextChoice {
-                    d.field_type.next()
+                d.set_field_type(if act == FormAct::NextChoice {
+                    d.field_type().next()
                 } else {
-                    d.field_type.prev()
-                };
+                    d.field_type().prev()
+                });
                 d.error = None;
             }
         }
@@ -1685,7 +1733,7 @@ mod tests {
     }
 
     fn resolve(focus: EditFieldFocus, key: KeyEvent) -> Option<EditFieldAct> {
-        Bind::resolve(&edit_field_binds(Some(focus)), &key)
+        Bind::resolve(&edit_field_binds(Some(focus), false), &key)
     }
 
     /// Every variant, so the property test below can't silently skip one.
@@ -1735,7 +1783,7 @@ mod tests {
     #[test]
     fn save_chord_is_advertised_exactly_where_enter_does_not_save() {
         for focus in ALL_FOCUS {
-            let binds = edit_field_binds(Some(focus));
+            let binds = edit_field_binds(Some(focus), false);
             let enter_saves =
                 Bind::resolve(&binds, &key(KeyCode::Enter)) == Some(EditFieldAct::Save);
             let advertises_chord = Bind::footer_hints(&binds)
@@ -1781,7 +1829,7 @@ mod tests {
     #[test]
     fn every_footer_hint_has_a_binding_that_fires() {
         for focus in ALL_FOCUS {
-            let binds = edit_field_binds(Some(focus));
+            let binds = edit_field_binds(Some(focus), false);
             for bind in binds.iter().filter(|bind| bind.footer) {
                 assert!(
                     !bind.triggers.is_empty(),
@@ -1849,7 +1897,7 @@ mod tests {
     fn form_save_chords_are_advertised_only_off_save_rows() {
         for focus in ALL_ADD_FIELD_FOCUS {
             chord_advertised_exactly_when_enter_does_not_save(
-                add_field_binds(Some(focus)),
+                add_field_binds(Some(focus), false),
                 FormAct::Save,
             );
         }
@@ -1876,7 +1924,7 @@ mod tests {
     #[test]
     fn form_text_rows_leave_editing_keys_unbound() {
         for binds in [
-            add_field_binds(Some(AddFieldFocus::Title)),
+            add_field_binds(Some(AddFieldFocus::Title), false),
             ref_prop_binds(Some(RefPropFocus::Label)),
             new_object_binds(Some(NewObjectFocus::Name)),
         ] {

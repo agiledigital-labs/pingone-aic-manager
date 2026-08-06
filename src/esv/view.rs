@@ -382,11 +382,12 @@ fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>,
         loaded = false;
     };
 
-    let error_h = if editing.and_then(|e| e.error.as_ref()).is_some() {
-        2
-    } else {
-        0
-    };
+    let error_h =
+        if editing.is_some_and(|edit| edit.value.error().is_some() || edit.error.is_some()) {
+            2
+        } else {
+            0
+        };
     let save_h = if editing.is_some() { 2 } else { 0 };
     // The `_id` row is a 1-line cyan-bold title in preview/edit but a
     // 2-line TextField in create. Metadata rows hide entirely in create.
@@ -503,10 +504,10 @@ fn draw_esv_form(f: &mut Frame, app: &App, snapshot: Option<&serde_json::Value>,
     }
 
     if let Some(e) = editing {
-        if let Some(err) = &e.error {
+        if let Some(err) = e.value.error().or(e.error.as_deref()) {
             f.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    err.clone(),
+                    err.to_string(),
                     Style::default().fg(Color::Yellow),
                 )))
                 .wrap(Wrap { trim: false }),
