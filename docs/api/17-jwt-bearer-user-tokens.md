@@ -202,16 +202,37 @@ Sketch, for whoever implements this — not yet built, so treat as intent:
 
 - Key material: one RSA key pair per person/machine, private half in the local
   vault as a new `VaultArtifact` (recipe in the `src/config/mod.rs` header),
-  public half added to the realm's shared `jwkSet` under a `kid` that names its
-  owner. Adding a key is a read-modify-write of `jwkSet`, so it must merge by
-  `kid` rather than replace — two people setting up concurrently would otherwise
-  clobber each other.
+  public half added to the realm's shared `jwkSet`. Adding a key is a
+  read-modify-write of `jwkSet`, so it must merge by `kid` rather than replace —
+  two people setting up concurrently would otherwise clobber each other.
+- **`kid` is an opaque random string** (decided 2026-08-06), not a composed
+  `owner:host` label. Attribution rides in the non-standard JWK members instead
+  — verified above to survive the round trip byte-for-byte — which is what makes
+  the opaque form viable. Reasons: a composed id would put a person's email in a
+  tenant config object readable by any `fr:am:*` holder and carried along when
+  config is promoted between environments; it needs a sanitiser for characters
+  never tested on the wire; and it can collide, which matters because `kid`
+  _selects_ the verification key, so a repeat setup on the same host would
+  silently overwrite rather than rotate.
+- Consequence: the JWK members are load-bearing, not decorative — they are the
+  only tenant-side record of whose key is whose. The local per-tenant
+  private-key record should store its own `kid` too, so an owner can always
+  identify their key even if tenant-side metadata is lost.
 - Export must exist (the key has to be shareable) and must be an explicit,
   separate verb, not a side effect of setup.
 - `aic auth --as-id <uuid> | --as-username <name> --client-id <id>`, with the
   client secret read from a prompt or stdin rather than argv/env.
-- Guard on tenant tier. `TenantTheme::Production` and `allows_static_content()`
-  are the existing precedent for that refusal shape.
+- **`allowedSubjects` stays empty by default** (decided 2026-08-06). Blank means
+  the issuer may mint for any user in the realm, which is the point: this exists
+  so a tester can become an arbitrary user without a journey or a password.
+  Requiring an explicit subject list would defeat the convenience the feature is
+  for.
+- That makes the **tenant-tier guard the only remaining boundary**, so it has to
+  be firm rather than a warning. Note also that there is no per-client
+  restriction (see Open questions), so an empty `allowedSubjects` plus a client
+  with the grant enabled is a realm-wide capability. Guard on tenant tier:
+  `TenantTheme::Production` and `allows_static_content()` are the existing
+  precedent for that refusal shape.
 
 ## Verified against
 
@@ -249,8 +270,14 @@ Sketch, for whoever implements this — not yet built, so treat as intent:
   custom claim might let a username-keyed assertion resolve properly, which
   would remove the lookup — untested.
 - `jwksUri` untested (we have nowhere to host a JWKS).
-- Whether an issuer can be restricted to specific clients. Nothing in the schema
-  suggests it, and the probe showed cross-client reuse; if a restriction exists
-  it's on the client side.
+- Whether an issuer can be restricted to specific clients. Nothing in the
+  `TrustedJwtIssuer` schema suggests it, and the probe showed cross-client
+  reuse. **`advancedOAuth2ClientConfig.acceptedJwtIssuers` is not it** — its
+  schema description (read 2026-08-06) is "List of JWT issuers that will be
+  accepted in addition to client_id for **private key JWT authentication**", so
+  it governs client auth, not the authorization grant. Don't chase it. If a
+  per-client restriction exists it is somewhere else, and the working assumption
+  should be that there is none: any client in the realm with the grant type
+  enabled can be driven by any trusted issuer in that realm.
 - Refresh tokens: `refresh_token` was never requested alongside `jwt-bearer`, so
   whether the grant issues one is unknown. The 1-hour access token made it moot.
