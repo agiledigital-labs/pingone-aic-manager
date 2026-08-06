@@ -38,7 +38,9 @@ aic <command> <subcommand> --help
   and export-style commands still print JSON by default.
 - **Non-interactive mode.** Pass the global `--no-prompt` flag, or set
   `AIC_NO_PROMPT=1`, to disable every interactive prompt. If input is required,
-  the command fails instead of waiting on a terminal.
+  the command fails instead of waiting on a terminal. Confirming a missing
+  operator name is optional: non-interactive commands use the best fallback for
+  that run and leave the setting unset for a later real terminal.
 
 ### Exit codes
 
@@ -92,8 +94,31 @@ The binary deliberately does not read passwords from environment variables.
 | `aic ctx list [--json]`        | List tenants defined in `.aic/config.toml`.                                                                    |
 | `aic ctx current`              | Print the active context.                                                                                      |
 | `aic ctx use <tenant>`         | Switch the active context.                                                                                     |
-| `aic whoami [--tenant <name>]` | Mint and print token info for a context.                                                                       |
+| `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
+
+The normal `whoami` output includes `operator: <name> on <host>`. When the name
+has not been saved yet, the line says it is unset and points to `aic settings set
+operator.name <name>`. `--token` remains exactly one bare token on stdout.
+
+### Settings
+
+```bash
+aic settings list
+aic settings get operator.name
+aic settings set operator.name dsbalmain@agiledigital.com.au
+aic settings set operator.host daves-laptop
+aic settings set agent-idle-timeout-secs 3600
+```
+
+`list` shows every supported key's effective value and whether it is defaulted.
+Operator defaults are derived locally for this command; `aic settings` does not
+unlock the agent or contact a tenant. Supported keys are `operator.name`,
+`operator.host`, and `agent-idle-timeout-secs`.
+
+`version` is managed by `aic`. `encrypt_keys` is deliberately not settable here:
+changing vault encryption requires the TUI's **Auth Settings** transition so
+the `.enc`/`.plain` files and the flag cannot get out of sync.
 
 ---
 
@@ -151,7 +176,8 @@ history and `ps`. `create` is create-only (PUT); change a value with
 
 Logs use the tenant's separate API-key auth plane. `key create` mints a key pair
 only while an admin-user session is available; the service-account bearer cannot
-mint or read log keys.
+mint or read log keys. The resolved admin username names the remote credential,
+but this standalone command does not set `operator.name`.
 
 ### Key management
 
