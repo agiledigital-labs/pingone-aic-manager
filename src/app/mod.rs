@@ -255,7 +255,7 @@ impl App {
             self.input_mode = InputMode::Normal;
             return;
         }
-        match self.settings {
+        match self.settings.as_ref() {
             Some(Settings {
                 encrypt_keys: true, ..
             }) => {
@@ -307,7 +307,11 @@ impl App {
     /// Write the current JWK map to disk — encrypted with the in-memory DEK,
     /// or plain (mode 600) if the user opted out of encryption.
     pub fn persist_keys(&self) -> Result<()> {
-        let encrypt = self.settings.map(|s| s.encrypt_keys).unwrap_or(true);
+        let encrypt = self
+            .settings
+            .as_ref()
+            .map(|settings| settings.encrypt_keys)
+            .unwrap_or(true);
         let bytes = serde_json::to_vec(&self.jwks)?;
         if encrypt {
             let dek = self
@@ -331,7 +335,12 @@ impl App {
     /// source as the service-account JWK map.
     pub fn persist_log_keys(&self) -> Result<()> {
         let bytes = serde_json::to_vec(&self.log_keys)?;
-        let dek = if self.settings.map(|s| s.encrypt_keys).unwrap_or(true) {
+        let dek = if self
+            .settings
+            .as_ref()
+            .map(|settings| settings.encrypt_keys)
+            .unwrap_or(true)
+        {
             Some(
                 self.dek
                     .as_ref()
@@ -433,7 +442,7 @@ impl App {
             return true;
         }
         matches!(
-            self.settings,
+            self.settings.as_ref(),
             Some(Settings {
                 encrypt_keys: false,
                 ..
@@ -452,7 +461,7 @@ impl App {
         // Encrypted mode either gets the DEK from `try_agent_unlock` (idle-
         // window resume) or via `handle_unlock_result` once the user types.
         if matches!(
-            self.settings,
+            self.settings.as_ref(),
             Some(Settings {
                 encrypt_keys: false,
                 ..

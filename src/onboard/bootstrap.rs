@@ -35,6 +35,9 @@ pub fn credential_name(username: Option<&str>, tenant_name: &str) -> String {
 pub struct MintedLogKey {
     pub credential_name: String,
     pub key: crate::logs::LogKeyPair,
+    /// Admin identity resolved while minting, for onboarding callers that own
+    /// the decision to establish `operator.name`.
+    pub admin_username: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -322,6 +325,7 @@ pub async fn mint_log_key_from_bearer(
     Ok(MintedLogKey {
         credential_name,
         key,
+        admin_username: username,
     })
 }
 

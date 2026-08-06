@@ -187,7 +187,7 @@ pub async fn handle_confirm_key(app: &mut App, key: KeyEvent) -> crate::Result<(
                             drop(dek);
                             app.set_dek(None);
                             app.wraps = WrapsFile::default();
-                            let mut s = app.settings.unwrap_or_default();
+                            let mut s = app.settings.take().unwrap_or_default();
                             s.encrypt_keys = false;
                             app.settings = Some(s);
                             app.auth_settings.idx = 0;

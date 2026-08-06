@@ -300,7 +300,14 @@ async fn run_bootstrap(
     )
     .await
     {
-        Ok(minted) => minted.key,
+        Ok(minted) => {
+            if let Some(username) = minted.admin_username.as_deref()
+                && let Err(error) = crate::config::operator::set_name_if_unset(username)
+            {
+                tracing::warn!(%error, "could not persist operator name during onboarding");
+            }
+            minted.key
+        }
         Err(error) => {
             send_onboard_error(&tx, onboard_id, format!("log API key create: {error}"));
             return;

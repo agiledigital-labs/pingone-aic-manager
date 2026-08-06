@@ -612,6 +612,11 @@ async fn run_bootstrap(
                     return;
                 }
             };
+            if let Some(admin_username) = minted.admin_username.as_deref()
+                && let Err(error) = crate::config::operator::set_name_if_unset(admin_username)
+            {
+                tracing::warn!(%error, "could not persist operator name during onboarding");
+            }
             let kid = uuid::Uuid::new_v4().to_string();
             let priv_jwk = match generate_rsa_jwk(&kid) {
                 Ok(j) => j,
