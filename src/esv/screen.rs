@@ -45,7 +45,7 @@ use crate::esv::state::{
     DeleteOutcome, EditField, EditState, EsvView, ExpressionType, LoadState, RefreshOutcome,
     SaveOutcome, UndoFailure, UndoOutcome,
 };
-use crate::tui::widgets::TextField;
+use crate::tui::widgets::{TextField, TypedValueField};
 use crate::undo::UndoId;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -167,7 +167,7 @@ pub fn start_edit(app: &mut App) {
         id_input: TextField::single_line("_id"),
         description: TextField::single_line("Description").with_initial(description),
         expr_type,
-        value: TextField::textarea("Value").with_initial(value_str),
+        value: TypedValueField::new("Value", expr_type.shape(), true).with_initial(value_str),
         focused: EditField::Description,
         error: None,
     });
@@ -193,7 +193,7 @@ pub fn start_create(app: &mut App) {
         id_input: TextField::single_line("_id").with_locked_prefix("esv-"),
         description: TextField::single_line("Description"),
         expr_type: ExpressionType::String,
-        value: TextField::textarea("Value"),
+        value: TypedValueField::new("Value", ExpressionType::String.shape(), true),
         focused: EditField::Id,
         error: None,
     });

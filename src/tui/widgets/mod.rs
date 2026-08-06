@@ -2,7 +2,9 @@ pub mod filtered_list;
 pub mod line_editor;
 pub mod secret_field;
 pub mod text_field;
+pub mod typed_value;
 
 pub use filtered_list::FilteredList;
 pub use line_editor::LineEditor;
 pub use text_field::{FieldKind, TextField};
+pub use typed_value::{JsonShape, TypedValueField, TypedValueHint, ValueShape, draw_bool_row};

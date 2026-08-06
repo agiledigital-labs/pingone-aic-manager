@@ -1270,9 +1270,10 @@ pub fn build_add_field_plan(app: &mut App) -> Option<ObjectReplacePlan> {
 }
 
 fn add_field_spec_from_draft(draft: &AddFieldState) -> Result<AddFieldSpec, String> {
+    draft.default_value.validate()?;
     Ok(AddFieldSpec {
         key: draft.key.value.clone(),
-        field_type: draft.field_type,
+        field_type: draft.field_type(),
         title: Some(draft.title.trimmed().to_string()),
         description: Some(draft.description.trimmed().to_string()),
         required: draft.required,
@@ -3184,8 +3185,8 @@ mod tests {
             json!({"name":"test", "schema":{"properties":{},"required":[],"order":[]}}),
         );
         draft.key.value = "values".into();
-        draft.field_type = ScalarFieldType::StringArray;
-        draft.default_value.value = r#"["a","b"]"#.into();
+        draft.set_field_type(ScalarFieldType::StringArray);
+        draft.default_value.set(r#"["a","b"]"#);
 
         let spec = add_field_spec_from_draft(&draft).unwrap();
         let applied = apply_add_field(&draft.original_object, &spec).unwrap();

@@ -7,6 +7,7 @@ use crate::app::{App, InputMode};
 use crate::esv::ops;
 use crate::esv::screen::{Mode, cancel_edit, commit_save};
 use crate::esv::state::{EditField, EsvView};
+use crate::tui::widgets::{TypedValueHint, ValueShape};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Act {
@@ -66,6 +67,7 @@ fn hints(mode: Mode, app: &App, target: HintTarget) -> Vec<(&'static str, &'stat
             &edit_binds(
                 app.esv.editing.as_ref().map(|e| e.focused),
                 app.esv.editing.as_ref().is_some_and(|e| e.creating),
+                app.esv.editing.as_ref().map(|e| e.value.shape()),
             ),
             target,
         ),
@@ -97,7 +99,11 @@ fn search_binds() -> Vec<Bind<Act>> {
 
 /// Pure form table. `creating` determines whether the otherwise read-only Id
 /// row exists in the tab order.
-fn edit_binds(focused: Option<EditField>, creating: bool) -> Vec<Bind<Act>> {
+fn edit_binds(
+    focused: Option<EditField>,
+    creating: bool,
+    value_shape: Option<ValueShape>,
+) -> Vec<Bind<Act>> {
     let mut out = vec![
         hint(&[Trigger::TAB], "Tab", "navigate", Act::Next),
         hidden(&[Trigger::BACKTAB], "Shift-Tab", "back", Act::Prev),
@@ -110,12 +116,21 @@ fn edit_binds(focused: Option<EditField>, creating: bool) -> Vec<Bind<Act>> {
             Act::Save,
         )),
         Some(EditField::Value) => {
-            out.push(hidden(
-                &[Trigger::ENTER],
-                "Enter",
-                "insert newline",
-                Act::InsertNewline,
-            ));
+            match value_shape.map(ValueShape::hint) {
+                Some(TypedValueHint::Toggle) => out.push(hint(
+                    &[Trigger::SPACE, Trigger::ENTER],
+                    "Space/Enter",
+                    "toggle",
+                    Act::InsertNewline,
+                )),
+                Some(TypedValueHint::InsertNewline) => out.push(hidden(
+                    &[Trigger::ENTER],
+                    "Enter",
+                    "insert newline",
+                    Act::InsertNewline,
+                )),
+                _ => out.push(hint(&[Trigger::ENTER], "Enter", "next", Act::Next)),
+            }
             out.push(save_chord_bind(Act::Save, "save"));
         }
         Some(EditField::Type) => {
@@ -209,7 +224,8 @@ pub fn handle_edit_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
     else {
         return Ok(());
     };
-    if let Some(act) = Bind::resolve(&edit_binds(Some(focused), creating), &key) {
+    let value_shape = app.esv.editing.as_ref().map(|edit| edit.value.shape());
+    if let Some(act) = Bind::resolve(&edit_binds(Some(focused), creating, value_shape), &key) {
         match act {
             Act::Cancel => cancel_edit(app),
             Act::Save => commit_save(app),
@@ -224,12 +240,15 @@ pub fn handle_edit_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
             }
             Act::InsertNewline => {
                 if let Some(e) = app.esv.editing.as_mut() {
-                    e.value.push_newline();
+                    e.value.handle_key(&key);
+                    e.error = None;
                 }
             }
             Act::PrevType | Act::NextType => {
                 if let Some(e) = app.esv.editing.as_mut() {
                     e.expr_type = e.expr_type.cycle(if act == Act::PrevType { -1 } else { 1 });
+                    e.value.set_shape(e.expr_type.shape());
+                    e.error = None;
                 }
             }
             _ => {}
@@ -237,17 +256,14 @@ pub fn handle_edit_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         return Ok(());
     }
     if let Some(edit) = app.esv.editing.as_mut() {
-        match focused {
-            EditField::Id if creating => {
-                edit.id_input.handle_key(&key);
-            }
-            EditField::Description => {
-                edit.description.handle_key(&key);
-            }
-            EditField::Value => {
-                edit.value.handle_key(&key);
-            }
-            _ => {}
+        let accepted = match focused {
+            EditField::Id if creating => edit.id_input.handle_key(&key),
+            EditField::Description => edit.description.handle_key(&key),
+            EditField::Value => edit.value.handle_key(&key),
+            _ => false,
+        };
+        if accepted {
+            edit.error = None;
         }
     }
     Ok(())
@@ -300,7 +316,7 @@ mod tests {
                 if !creating && focus == EditField::Id {
                     continue;
                 }
-                let binds = edit_binds(Some(focus), creating);
+                let binds = edit_binds(Some(focus), creating, Some(ValueShape::MultilineText));
                 assert_eq!(Bind::resolve(&binds, &ctrl('s')), Some(Act::Save));
                 let save = Bind::footer_hints(&binds)
                     .iter()
@@ -320,7 +336,11 @@ mod tests {
                 KeyCode::Backspace,
             ] {
                 assert!(
-                    Bind::resolve(&edit_binds(Some(focus), true), &key(code)).is_none(),
+                    Bind::resolve(
+                        &edit_binds(Some(focus), true, Some(ValueShape::MultilineText)),
+                        &key(code)
+                    )
+                    .is_none(),
                     "{focus:?} {code:?}"
                 );
             }
@@ -330,7 +350,11 @@ mod tests {
     fn value_enter_inserts_newline() {
         assert_eq!(
             Bind::resolve(
-                &edit_binds(Some(EditField::Value), true),
+                &edit_binds(
+                    Some(EditField::Value),
+                    true,
+                    Some(ValueShape::MultilineText)
+                ),
                 &key(KeyCode::Enter)
             ),
             Some(Act::InsertNewline)

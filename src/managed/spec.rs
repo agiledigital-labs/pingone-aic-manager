@@ -3,6 +3,8 @@
 //! These types deliberately contain no TUI state so the same schema changes
 //! can be performed by both the interactive editor and command-line callers.
 
+use crate::tui::widgets::{JsonShape, ValueShape};
+
 /// Scalar property type supported by the managed field creator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarFieldType {
@@ -13,6 +15,15 @@ pub enum ScalarFieldType {
 }
 
 impl ScalarFieldType {
+    pub fn shape(self) -> ValueShape {
+        match self {
+            Self::String => ValueShape::Text,
+            Self::Boolean => ValueShape::Bool,
+            Self::Number => ValueShape::Decimal,
+            Self::StringArray => ValueShape::Json(JsonShape::Array),
+        }
+    }
+
     pub fn next(self) -> Self {
         match self {
             Self::String => Self::Boolean,
@@ -180,6 +191,17 @@ mod tests {
                 .contains("new")
         );
         assert!(parse_enum_items(&["", " "]).is_err());
+    }
+
+    #[test]
+    fn scalar_types_map_to_value_shapes() {
+        assert_eq!(ScalarFieldType::String.shape(), ValueShape::Text);
+        assert_eq!(ScalarFieldType::Boolean.shape(), ValueShape::Bool);
+        assert_eq!(ScalarFieldType::Number.shape(), ValueShape::Decimal);
+        assert_eq!(
+            ScalarFieldType::StringArray.shape(),
+            ValueShape::Json(JsonShape::Array)
+        );
     }
 }
 
