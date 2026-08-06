@@ -8,6 +8,10 @@
 //! alongside this one (e.g. `esv::api`) that uses these primitives — do
 //! NOT thread a parallel HTTP path through `AicClient::*` in either
 //! frontend.
+//!
+//! [`crate::config::operator`] also uses [`get_versioned`] for its optional,
+//! best-effort service-account-name lookup; keeping that read here means
+//! operator resolution never creates a second bearer or transport path.
 
 use crate::agent::{AgentClient, Request, Response};
 use crate::{Error, Result};

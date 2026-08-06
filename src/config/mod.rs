@@ -27,6 +27,7 @@
 //! enable/disable transitions.
 
 pub mod crypto;
+pub mod operator;
 pub mod tenant;
 pub mod wraps;
 
@@ -424,19 +425,57 @@ pub struct ProjectConfig {
     pub tenants: Vec<Tenant>,
 }
 
-/// First-run user choice: encrypt tenant credentials at rest with a master
-/// password (Argon2id + AES-256-GCM in `keys.enc`) or store them as a plain,
-/// gitignored, mode-600 file (`keys.plain`). Recorded once in
-/// `.aic/settings.toml` so the choice persists across launches.
-///
-/// `agent_idle_timeout_secs` is read by the daemon at startup to decide how
-/// long the cached DEK lives in memory. Omit (or set to `None`) for the
-/// 1-hour default. No UI yet — edit the file by hand.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+/// Latest `settings.toml` schema understood by this binary.
+pub const SETTINGS_VERSION: u32 = 1;
+
+fn default_settings_version() -> u32 {
+    SETTINGS_VERSION
+}
+
+/// Project-local settings persisted in `.aic/settings.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    /// Schema version of settings.toml. Bump when a field changes meaning or
+    /// disappears, and add the corresponding migration step; a `version` that
+    /// predates a rename is the only thing that lets a later `aic` tell "the
+    /// user never set this" from "this used to be called something else".
+    #[serde(default = "default_settings_version")]
+    pub version: u32,
+    /// Whether vault artifacts are encrypted at rest. Change this only through
+    /// [`enable_encryption`] or [`disable_encryption`].
+    #[serde(default)]
     pub encrypt_keys: bool,
+    /// Agent auto-lock timeout. `None` selects the one-hour daemon default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_idle_timeout_secs: Option<u64>,
+    /// Explicit or derived-at-runtime operator identity components.
+    #[serde(default)]
+    pub operator: Operator,
+}
+
+/// Stored operator identity. Missing fields are derived for a run but are not
+/// persisted until a human or onboarding establishes them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Operator {
+    /// How this install identifies its human. `None` means "never
+    /// established" — that is the trigger for the first-run prompt, so do NOT
+    /// persist a derived fallback here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Machine component of the key id. Same rule: `None` means derive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            version: SETTINGS_VERSION,
+            encrypt_keys: false,
+            agent_idle_timeout_secs: None,
+            operator: Operator::default(),
+        }
+    }
 }
 
 impl Settings {
@@ -449,13 +488,37 @@ impl Settings {
         if !path.exists() {
             return Ok(None);
         }
-        Ok(Some(toml::from_str(&fs::read_to_string(&path)?)?))
+        Ok(Some(Self::load_from(&path)?))
     }
 
     pub fn save(&self) -> Result<()> {
         fs::create_dir_all(ProjectConfig::dir())?;
-        fs::write(Self::path(), toml::to_string_pretty(self)?)?;
+        self.save_to(&Self::path())?;
         ProjectConfig::write_gitignore()?;
+        Ok(())
+    }
+
+    fn load_from(path: &Path) -> Result<Self> {
+        let settings: Self = toml::from_str(&fs::read_to_string(path)?)?;
+        match settings.version {
+            SETTINGS_VERSION => {}
+            version if version > SETTINGS_VERSION => {
+                return Err(crate::Error::Config(format!(
+                    "settings.toml is version {version}; this aic understands up to \
+                     {SETTINGS_VERSION} — upgrade aic"
+                )));
+            }
+            version => {
+                return Err(crate::Error::Config(format!(
+                    "settings.toml version {version} is unsupported"
+                )));
+            }
+        }
+        Ok(settings)
+    }
+
+    fn save_to(&self, path: &Path) -> Result<()> {
+        fs::write(path, toml::to_string_pretty(self)?)?;
         Ok(())
     }
 }
@@ -523,6 +586,11 @@ impl ProjectConfig {
     pub fn write_gitignore() -> Result<()> {
         fs::create_dir_all(Self::dir())?;
         let path = Self::dir().join(".gitignore");
+        fs::write(path, Self::gitignore_content())?;
+        Ok(())
+    }
+
+    fn gitignore_content() -> String {
         // Every vault artifact's .enc/.plain pair, plus wraps.toml — which
         // holds the (encrypted) DEK envelope and the FIDO2 credential id for
         // any enrolled security_keys (opaque but device-specific). Never
@@ -534,9 +602,14 @@ impl ProjectConfig {
                 stem = artifact.file_stem()
             ));
         }
-        content.push_str("wraps.toml\nlocal-config/\n*.log\n");
-        fs::write(path, content)?;
-        Ok(())
+        content.push_str(
+            "wraps.toml\n\
+             # Machine-local, per-person settings — not project content.\n\
+             settings.toml\n\
+             local-config/\n\
+             *.log\n",
+        );
+        content
     }
 
     /// Save the encrypted JWK map (Argon2id + AES-256-GCM) at mode 600.
@@ -575,32 +648,36 @@ fn load_optional_file(path: &Path) -> Result<Option<Vec<u8>>> {
     Ok(Some(fs::read(path)?))
 }
 
+/// A scratch directory that cleans itself up on drop, shared by the tests in
+/// this module and in [`operator`]. RAII rather than a trailing
+/// `remove_dir_all` so a failing assertion doesn't leak the directory.
+#[cfg(test)]
+pub(crate) struct TestDir(PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    pub(crate) fn new() -> Self {
+        let path =
+            std::env::temp_dir().join(format!("pingone-aic-manager-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    pub(crate) fn path(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct TestDir(PathBuf);
-
-    impl TestDir {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "pingone-aic-manager-log-keys-{}",
-                uuid::Uuid::new_v4()
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-
-        fn path(&self, name: &str) -> PathBuf {
-            self.0.join(name)
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     /// A stand-in per-tenant map — the registry treats artifact payloads as
     /// opaque JSON bytes, so any serialisable map exercises the generic path.
@@ -659,14 +736,54 @@ mod tests {
     }
 
     #[test]
+    fn old_settings_file_loads_and_round_trips_with_new_defaults() {
+        let dir = TestDir::new();
+        let path = dir.path("settings.toml");
+        fs::write(&path, "encrypt_keys = true\n").unwrap();
+
+        let settings = Settings::load_from(&path).unwrap();
+        assert_eq!(settings.version, SETTINGS_VERSION);
+        assert!(settings.encrypt_keys);
+        assert_eq!(settings.agent_idle_timeout_secs, None);
+        assert_eq!(settings.operator, Operator::default());
+
+        settings.save_to(&path).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("version = 1"));
+        assert!(saved.contains("[operator]"));
+        let reloaded = Settings::load_from(&path).unwrap();
+        assert_eq!(reloaded.version, SETTINGS_VERSION);
+        assert!(reloaded.encrypt_keys);
+        assert_eq!(reloaded.agent_idle_timeout_secs, None);
+        assert_eq!(reloaded.operator, Operator::default());
+    }
+
+    #[test]
+    fn future_settings_version_is_a_clean_error() {
+        let dir = TestDir::new();
+        let path = dir.path("settings.toml");
+        fs::write(&path, "version = 99\nencrypt_keys = true\n").unwrap();
+
+        let error = Settings::load_from(&path).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Config error: settings.toml is version 99; this aic understands up to 1 — upgrade aic"
+        );
+    }
+
+    #[test]
     fn gitignore_covers_every_artifact_stem() {
+        let content = ProjectConfig::gitignore_content();
         for &artifact in VaultArtifact::ALL {
             for suffix in [".enc", ".plain"] {
-                let pattern = format!("{}{suffix}\n", artifact.file_stem());
-                // The literal the writer emits per artifact — assert it's built.
-                assert!(pattern.starts_with(artifact.file_stem()));
+                let pattern = format!("{}{suffix}", artifact.file_stem());
+                assert!(content.lines().any(|line| line == pattern));
             }
         }
+        // A shared settings.toml silently assigns one teammate's operator name
+        // to everyone else using the project.
+        assert!(content.lines().any(|line| line == "settings.toml"));
         // Both known stems must resolve back from their wire `kind`.
         assert_eq!(VaultArtifact::from_kind("keys"), Some(VaultArtifact::Jwks));
         assert_eq!(

@@ -260,6 +260,11 @@ async fn run_bootstrap(
             return;
         }
     };
+    if let Some(username) = minted.admin_username.as_deref()
+        && let Err(error) = crate::config::operator::set_name_if_unset(username)
+    {
+        tracing::warn!(%error, "could not persist operator name during onboarding");
+    }
     let sa_id = match create_service_account(
         &http,
         &base_url,

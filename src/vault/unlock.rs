@@ -96,7 +96,7 @@ impl State {
 pub async fn try_agent_unlock(app: &mut App) {
     // Only meaningful when there's an encrypted blob to unlock.
     if !matches!(
-        app.settings,
+        app.settings.as_ref(),
         Some(Settings {
             encrypt_keys: true,
             ..
@@ -430,7 +430,7 @@ pub fn handle_agent_status(app: &mut App, status_unlocked: bool) {
     // or credential to re-enter, so an inconsistent/stale wraps file must not
     // turn its normal operation into an impossible relock prompt.
     if matches!(
-        app.settings,
+        app.settings.as_ref(),
         Some(Settings {
             encrypt_keys: false,
             ..

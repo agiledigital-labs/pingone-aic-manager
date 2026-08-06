@@ -335,10 +335,10 @@ pub async fn commit(app: &mut App) -> crate::Result<()> {
             // No encryption: write an empty keys.plain at mode 600 and
             // record settings. No DEK; no wraps.toml.
             app.set_dek(None);
-            let mut s = app.settings.unwrap_or_default();
+            let mut s = app.settings.take().unwrap_or_default();
             s.encrypt_keys = false;
-            app.settings = Some(s);
             s.save()?;
+            app.settings = Some(s);
             let bytes = serde_json::to_vec(app.jwks())?;
             ProjectConfig::save_keys_plain(&bytes)?;
             app.auth_setup.form = AuthSetupForm::default();
@@ -416,7 +416,7 @@ async fn finalize_factor_addition(
     success_toast: &str,
 ) -> crate::Result<()> {
     let already_encrypted = matches!(
-        app.settings,
+        app.settings.as_ref(),
         Some(Settings {
             encrypt_keys: true,
             ..
@@ -431,7 +431,7 @@ async fn finalize_factor_addition(
             .dek_clone()
             .ok_or_else(|| crate::Error::Crypto("DEK missing".into()))?;
         crate::config::enable_encryption(&dek)?;
-        let mut s = app.settings.unwrap_or_default();
+        let mut s = app.settings.take().unwrap_or_default();
         s.encrypt_keys = true;
         app.settings = Some(s);
     } else if freshly_minted_dek {
@@ -464,7 +464,7 @@ async fn finalize_factor_addition(
 pub async fn handle_enroll_result(app: &mut App, result: std::result::Result<Wrap, String>) {
     let context = app.auth_setup.context;
     let was_dek_minted_for_this_op = !matches!(
-        app.settings,
+        app.settings.as_ref(),
         Some(Settings {
             encrypt_keys: true,
             ..
