@@ -48,6 +48,55 @@ mechanism used in Christian Brindley's announcement-at-login example. It has
 not yet been re-exercised anonymously against this sandbox because no unlocked
 local agent was available during the 2026-08-05 documentation pass.
 
+### Authenticated user endpoints
+
+Do not make an endpoint public merely so that it can receive a user bearer
+token. Leave it protected and let IDM's built-in `rsFilter` authenticate the
+token before the endpoint script runs. The filter delegates validation to AM,
+checks the scopes configured in `/openidm/config/authentication`, maps the token
+subject to an IDM identity and populates `context.security`. The endpoint's
+`config/access` rule then authorizes an IDM role:
+
+```json
+{
+  "pattern": "endpoint/user-token-poc/whoami",
+  "roles": "internal/role/openidm-authorized",
+  "methods": "read",
+  "actions": "*"
+}
+```
+
+`config/access` authorizes by IDM role, not by OAuth scope. On the sandbox,
+`rsFilter.scopes` is `["fr:idm:*"]`; that prerequisite applies across protected
+`/openidm` routes and `config/access` cannot replace it for one endpoint.
+
+The endpoint can apply an **additional**, endpoint-local scope check after
+`rsFilter` has authenticated the token. Live probing found the validated scope
+set at `context.oauth2.scopes`. The underlying token-info string is also at
+`context.oauth2.rawInfo.scope`, space-delimited. Prefer the set:
+
+```javascript
+var requiredScope = "example:announcements:read";
+if (
+  !context.oauth2 ||
+  !context.oauth2.scopes ||
+  !context.oauth2.scopes.contains(requiredScope)
+) {
+  throw { code: 403, message: "Missing required OAuth scope" };
+}
+```
+
+This supplements rather than bypasses the global `fr:idm:*` requirement. A
+caller therefore needs the scope accepted by `rsFilter`, the role admitted by
+`config/access`, and the endpoint-specific scope checked by the script. Do not
+parse or verify the raw `Authorization` header inside the script: token
+signature, issuer, expiry, and tenant validation remain `rsFilter`'s job.
+
+Use a dedicated IDM authorization role for a real API. The default
+`internal/role/openidm-authorized` is useful for the POC because the tenant's
+subject mappings grant it to authenticated users, but it is broader than a
+purpose-specific role.
+
 ## Endpoints
 
 | Op          | Method   | Path                                | Accept-API-Version | Notes                                                                       |
@@ -75,7 +124,7 @@ wrong here; omit it for `/openidm`.)
   "type": "text/javascript",
   "source": "(function () {\n  if (request.method === \"create\") { ... }\n})();",
   "description": "…",
-  "globalsObject": {}
+  "globals": {}
 }
 ```
 
@@ -89,6 +138,9 @@ wrong here; omit it for `/openidm`.)
 - **No `_rev` field** on read or write — same as AM scripts, so conflict
   detection is content-based (see `04-scripts.md` "Conflict detection rule").
 - **No `name` field** — the human name is the `_id` suffix.
+- **`globals` is the endpoint global-bindings object.** A full-object PUT adding
+  `{"globals":{"endpointConfig":{...}}}` made `endpointConfig` available to
+  the script at runtime (verified 2026-08-06).
 
 ## Examples
 
@@ -147,8 +199,20 @@ root), `additionalParameters` (a map of any non-`_` query params), `fields` (the
   is at `context.security`:
   `{ authenticationId, authorization: { id, component, roles } }`. Many other
   contexts exist (`oauth2`, `transactionId`, `session`, `current`, `parent`, …)
-  and vary by call. (Note `context.http.headers` includes the bearer
-  `Authorization` — never log the full context.)
+  and vary by call.
+- **Validated OAuth scopes are at `context.oauth2.scopes`.** Ping's backing
+  `AccessTokenInfo` API defines this as a Java `Set<String>`, so endpoint code
+  can use `context.oauth2.scopes.contains("scope-name")`. The same scopes are
+  exposed as a space-delimited string at `context.oauth2.rawInfo.scope`. For the
+  service-account probe these contained `fr:am:*`, `fr:idc:esv:*`, `fr:idm:*`,
+  and `fr:idc:cookie-domain:*`. `context.oauth2.scope`,
+  `context.oauth2.accessToken`, and `context.oauth2.accessToken.info` were not
+  present.
+- **Never return or log the full context.** `context.http.headers` includes the
+  bearer `Authorization` header. Serializing `context.security` can also walk
+  its inherited `parent` chain into `context.oauth2`, whose `token` and
+  `rawInfo.sessionToken` fields are credentials. Reconstruct an explicit
+  allowlist of safe diagnostic fields instead.
 - **`context.http` is present only when an HTTP request sits at the ROOT of the
   chain — it is optional even inside a custom endpoint** (verified 2026-07-21).
   A direct REST call has it. An endpoint reached internally from _another_
@@ -365,7 +429,9 @@ Object shape (real example, `schedule/UpdateReviewList`):
   `schedule/aicedit-bindsched` created, probed via HTTP + internal +
   scheduler-triggered paths, and deleted); 2026-07-24 (AM library →
   `openidm.action` → IDM endpoint invocation, plus action response envelopes
-  carrying object, number, string, and `null` results)
+  carrying object, number, string, and `null` results); 2026-08-06 (protected
+  bearer-token endpoint, `config/access` role gate, endpoint `globals`, and
+  OAuth2 context/scope bindings)
 - Endpoints: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
   `endpoint/` ids), `GET /openidm/config/endpoint/test` (200; keys
   `_id, description, source, type`, no `_rev`, plaintext `source`),
@@ -404,6 +470,27 @@ Object shape (real example, `schedule/UpdateReviewList`):
   `null` without throwing; the same call with fallback
   `"aicedit-fallback-value"` returned that string. Endpoint deleted after the
   probe.
+- Authenticated endpoint POC (2026-08-06): deployed
+  `endpoint/user-token-poc` with exact-path read access for
+  `internal/role/openidm-authorized`. A valid tenant service-account token
+  returned 200 and a populated `context.security` (`component:
+  "managed/svcacct"`); no token returned 403 from the access layer; a malformed
+  bearer returned 401; and a valid token with the script's role allowlist set
+  to a nonexistent role returned the script's 403. Restored the intended
+  allowlist after the negative test. `/openidm/config/authentication` showed
+  `rsFilter.scopes: ["fr:idm:*"]` and subject mappings with default role
+  `internal/role/openidm-authorized`. A real end-user token has not yet been
+  exercised.
+- Authenticated endpoint scope probe (2026-08-06): the OAuth2 context exposed
+  keys `class`, `name`, `rawInfo`, `token`, `scopes`, `expiresAt`, and `parent`.
+  `context.oauth2.scopes` was a Java collection containing the token's four
+  validated scopes; `context.oauth2.rawInfo.scope` held the same values as a
+  space-delimited string. `context.oauth2.scope` and `accessToken` were absent.
+  The first diagnostic serialized `context.security` directly and thereby
+  followed its `parent` chain into OAuth2 credentials. The deployed diagnostic
+  was immediately replaced with an explicit safe-field projection and the
+  local agent was locked to clear its cached token. This confirms that neither
+  `context.security` nor the complete `context` is safe to serialize.
 
 ## Source citations
 
@@ -415,13 +502,16 @@ Object shape (real example, `schedule/UpdateReviewList`):
   `source`).
 - Ping AIC: [Authorization and roles](https://backstage.forgerock.com/docs/idcloud/latest/idm-auth/authorization-and-roles.html)
   (direct HTTP authorization, `config/access`, and `roles: "*"` rules).
+- Ping AIC: [Authentication through OAuth 2.0 and subject mappings](https://docs.pingidentity.com/pingoneaic/idm-auth/rsfilter-module.html)
+  (`rsFilter` token validation, required scopes, subject mapping and roles).
+- Ping AM API: [AccessTokenInfo](https://docs.pingidentity.com/pingam/7.4/_attachments/apidocs/org/forgerock/http/oauth2/AccessTokenInfo.html)
+  (`getScopes()` returns `Set<String>`).
 - Christian Brindley: [Making announcements at login](https://medium.com/@christian.brindley/pingone-advanced-identity-cloud-making-announcements-at-login-how-to-848b3b948fd1)
   (public `endpoint/announcement/*` read-rule example).
 
 ## Open questions
 
-- Does `PUT` accept (and is it advisable to send) the `globalsObject` field
-  round-tripped, or should it be stripped like OAuth2 `-encrypted` fields? Not
-  yet tested; current plan round-trips the full config minus nothing.
+- Does `PUT` accept the legacy-looking `globalsObject` field? Not tested. Use
+  `globals`, which is live-verified and available to endpoint source at runtime.
 - Table/JDBC endpoint write shapes are documented from the p1-sync Zod schema
   only — not yet exercised live (sandbox has only scripted endpoints).
