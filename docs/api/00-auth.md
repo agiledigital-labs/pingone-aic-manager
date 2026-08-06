@@ -1,14 +1,15 @@
 # 00 — Authentication
 
 ## Purpose
+
 Mint an OAuth2 access token from a service account using the JWT bearer grant
 (RFC 7523). The token is used as `Authorization: Bearer …` for every AIC API
 call except `/monitoring/logs/*` (see [08-logs.md](08-logs.md)).
 
 ## Token endpoint
 
-| Op | Method | Path | Notes |
-|----|--------|------|-------|
+| Op         | Method | Path                      | Notes                                                   |
+| ---------- | ------ | ------------------------- | ------------------------------------------------------- |
 | Mint token | `POST` | `/am/oauth2/access_token` | Root realm only. Do **not** add `/realms/...` segments. |
 
 Form body (`application/x-www-form-urlencoded`):
@@ -23,18 +24,20 @@ scope=fr:idm:* fr:am:* fr:idc:esv:* fr:idc:cookie-domain:*
 ## JWT structure
 
 Header:
+
 ```json
 { "alg": "RS256", "typ": "JWT" }
 ```
 
 Claims:
+
 ```json
 {
-  "iss": "<SERVICE_ACCOUNT_ID>",       // tenant service-account UUID
-  "sub": "<SERVICE_ACCOUNT_ID>",       // same as iss
+  "iss": "<SERVICE_ACCOUNT_ID>", // tenant service-account UUID
+  "sub": "<SERVICE_ACCOUNT_ID>", // same as iss
   "aud": "https://<tenant>/am/oauth2/access_token",
-  "exp": 1779019160,                    // now + ≤180s
-  "jti": "<uuid>"                       // unique per request
+  "exp": 1779019160, // now + ≤180s
+  "jti": "<uuid>" // unique per request
 }
 ```
 
@@ -57,15 +60,15 @@ a JWK at account creation).
 
 ## Scopes (observed working in sandbox)
 
-| Scope | Grants |
-|-------|--------|
-| `fr:am:*` | Full AM (scripts, OAuth2 clients, SAML, journeys, realm config). |
-| `fr:idm:*` | Full IDM (managed objects, mappings, schedules). |
-| `fr:idc:esv:*` | ESV CRUD + startup/restart. |
-| `fr:idc:cookie-domain:*` | Cookie domain management. |
-| `fr:idc:esv:read` | Read-only ESV. |
-| `fr:idc:esv:update` | ESV write (no restart). |
-| `fr:idc:esv:restart` | Trigger startup/restart only. |
+| Scope                    | Grants                                                           |
+| ------------------------ | ---------------------------------------------------------------- |
+| `fr:am:*`                | Full AM (scripts, OAuth2 clients, SAML, journeys, realm config). |
+| `fr:idm:*`               | Full IDM (managed objects, mappings, schedules).                 |
+| `fr:idc:esv:*`           | ESV CRUD + startup/restart.                                      |
+| `fr:idc:cookie-domain:*` | Cookie domain management.                                        |
+| `fr:idc:esv:read`        | Read-only ESV.                                                   |
+| `fr:idc:esv:update`      | ESV write (no restart).                                          |
+| `fr:idc:esv:restart`     | Trigger startup/restart only.                                    |
 
 Log API uses a **separate** `x-api-key`/`x-api-secret` pair generated in the
 admin console — not a bearer token. See [08-logs.md](08-logs.md).
@@ -117,6 +120,12 @@ curl -sS "$TENANT_BASE_URL/am/oauth2/access_token" \
 - Tenant: `<your-tenant>.forgeblocks.com`
 - Date: 2026-05-17
 - Calls: `POST /am/oauth2/access_token` (200 OK, 898s TTL).
+- Date: 2026-08-06 (principal resolution, SA bearer only)
+- Calls: `GET /am/json/realms/root/users/{id}` for six principals taken from
+  alpha `scripts.lastModifiedBy` — four humans, two service accounts (200 each);
+  `GET /am/oauth2/realms/root/userinfo` and `/tokeninfo` with the SA bearer
+  (200, SA UUID as `sub`/`subname`); `GET /openidm/managed/svcacct/{sa_id}`
+  (200) and `GET /openidm/managed/teammember/{sa_id}` (403).
 
 ## Resolving the onboarding admin's username (verified 2026-06-25)
 
@@ -128,28 +137,69 @@ generic alias), resolve the admin user from the `idmAdminClient` bearer that
    This client returns **only `sub`/`subname`** — `profile`/`email` (and
    `fr:am:*`) scopes are **rejected** with `invalid_scope`, so userinfo never
    carries a readable name. The `sub` is the admin's user UUID.
-2. `GET /openidm/managed/teammember/{sub}` (Bearer) → `{ "userName":
-   "dsbalmain@agiledigital.com.au", "mail": ..., "cn": ... }`. **AIC tenant
-   admins are IDM `managed/teammember` objects**, and this read works with the
-   admin bearer's `fr:idm:*` scope — no SA, no `fr:am:*`, and it works *before*
-   any SA exists, so it can name the SA too.
+2. `GET /openidm/managed/teammember/{sub}` (Bearer) →
+   `{ "userName": "dsbalmain@agiledigital.com.au", "mail": ..., "cn": ... }`.
+   **AIC tenant admins are IDM `managed/teammember` objects**, and this read
+   works with the admin bearer's `fr:idm:*` scope — no SA, no `fr:am:*`, and it
+   works _before_ any SA exists, so it can name the SA too.
 
 Both calls succeed on every onboarding path (cookie / userpass / log-only) since
 all hold the admin bearer. Use `userName` (fall back to `mail`); on any failure
 fall back to a non-identifying name — never block onboarding on it.
 
 Note: the `who-changed` reference script resolves principals via
-`GET /am/json/realms/root/users/{id}` (`Accept-API-Version:
-protocol=2.1,resource=3.0`), but that AM path needs an **`fr:am:*` SA token**
-(the admin `fr:idm:*` bearer gets **401** there) — the `teammember` route above
-is preferred because it needs nothing extra.
+`GET /am/json/realms/root/users/{id}`
+(`Accept-API-Version: protocol=2.1,resource=3.0`), but that AM path needs an
+**`fr:am:*` SA token** (the admin `fr:idm:*` bearer gets **401** there) — the
+`teammember` route above is preferred because it needs nothing extra.
+
+## Resolving any principal, and telling a human from an SA (verified 2026-08-06)
+
+Audit-ish fields (`lastModifiedBy`, `createdBy` on scripts; `payload.userId` in
+am-access logs) hold a DN, not a name:
+
+```
+id=ad604d54-ef8e-454c-b3f3-c2f8197b56f5,ou=user,ou=am-config
+```
+
+Extract the `id=` segment and `GET /am/json/realms/root/users/{id}` with
+`Accept-API-Version: protocol=2.1,resource=3.0`. **This works with our own SA
+bearer** — no admin session. Two distinct shapes come back:
+
+| Principal                | `username`       | `mail`    | `cn`                                                |
+| ------------------------ | ---------------- | --------- | --------------------------------------------------- |
+| **Human** (tenant admin) | the real email   | populated | the email, doubled                                  |
+| **Service account**      | the UUID, echoed | `null`    | the SA's name, e.g. `DaveBalmain-fr-config-manager` |
+
+So the discriminator is **`username == _id` → service account**, and its
+readable name is `cn`. A human's readable name is `username`/`mail`.
+
+Consequences:
+
+- A change made with SA credentials traces back to the **service account's
+  name**, not to whoever was holding the JWK. On a tenant where each person has
+  their own SA this is a good proxy for a person; it is a naming convention, not
+  an identity. Observed on the sandbox: `DaveBalmain-fr-config-manager`
+  (person), `Frodo-SA-1735012367301` (tool, no person in the name at all).
+- The **token itself carries no operator identity**.
+  `GET /am/oauth2/realms/root/userinfo` and `/tokeninfo` with an SA bearer
+  return the SA's UUID as both `sub` and `subname`, `username: null`,
+  `client_id: service-account`. Don't reach for `userinfo` to find out who is
+  running `aic` — it structurally cannot say.
+- The SA can also read its own IDM record:
+  `GET /openidm/managed/svcacct/{sa_id}` (200) returns `name`, `scopes`,
+  `accountStatus`. The same SA gets **403** on `managed/teammember/{id}`, so the
+  teammember route really is admin-bearer-only.
+- `dsameuser` and `amadmin` also appear as principals on stock content. Neither
+  resolves to a person; treat them as "the platform".
 
 ## Source citations
 
 - frodo-lib: `src/ops/OAuth2OidcOps.ts` (`accessTokenRfc7523AuthZGrant`),
   `src/api/OAuth2OIDCApi.ts`, `src/ops/JoseOps.ts`.
 - fr-config-manager: `packages/fr-config-common/src/authenticate.js`.
-- Ping docs: <https://docs.pingidentity.com/pingoneaic/latest/developer-docs/authenticate-to-rest-api-with-access-token.html>
+- Ping docs:
+  <https://docs.pingidentity.com/pingoneaic/latest/developer-docs/authenticate-to-rest-api-with-access-token.html>
 
 ## Open questions
 
