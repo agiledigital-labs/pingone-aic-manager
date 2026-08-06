@@ -3,9 +3,10 @@
 
 use std::path::is_separator;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use url::form_urlencoded::Serializer;
 
+use crate::oauth::spec::sanitize_for_write;
 use crate::{Error, Result};
 
 const API_VERSION: &str = "protocol=2.1,resource=1.0";
@@ -81,31 +82,22 @@ pub async fn read_client(tenant: &str, realm: &str, id: &str) -> Result<Value> {
     crate::aic::api::get_versioned(tenant, &path, API_VERSION).await
 }
 
-fn strip_encrypted_fields(value: &Value) -> Value {
-    match value {
-        Value::Array(values) => Value::Array(values.iter().map(strip_encrypted_fields).collect()),
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .filter(|(key, _)| !key.ends_with("-encrypted"))
-                .map(|(key, value)| (key.clone(), strip_encrypted_fields(value)))
-                .collect(),
-        ),
-        value => value.clone(),
-    }
+/// Fetch the tenant's complete default OAuth2 client body.
+///
+/// The action uses POST but does not mutate tenant state. `confirmed_prod` is
+/// still required by the shared transport for any POST to a production tenant.
+pub async fn client_template(tenant: &str, realm: &str, confirmed_prod: bool) -> Result<Value> {
+    let path = format!("{}?_action=template", clients_path(realm));
+    crate::aic::api::post_versioned(tenant, &path, json!({}), confirmed_prod, API_VERSION).await
 }
 
-fn sanitize_for_write(client: &Value) -> Value {
-    let Value::Object(map) = client else {
-        return strip_encrypted_fields(client);
-    };
-
-    Value::Object(
-        map.iter()
-            .filter(|(key, _)| !matches!(key.as_str(), "_id" | "_rev" | "_type" | "_provider"))
-            .filter(|(key, _)| !key.ends_with("-encrypted"))
-            .map(|(key, value)| (key.clone(), strip_encrypted_fields(value)))
-            .collect(),
-    )
+/// Fetch field metadata and live enum choices for OAuth2 clients.
+///
+/// Like [`client_template`], this read-like action is POST-shaped and therefore
+/// carries the caller's production confirmation through the shared transport.
+pub async fn client_schema(tenant: &str, realm: &str, confirmed_prod: bool) -> Result<Value> {
+    let path = format!("{}?_action=schema", clients_path(realm));
+    crate::aic::api::post_versioned(tenant, &path, json!({}), confirmed_prod, API_VERSION).await
 }
 
 pub async fn upsert_client(tenant: &str, realm: &str, id: &str, body: Value) -> Result<Value> {
@@ -113,6 +105,20 @@ pub async fn upsert_client(tenant: &str, realm: &str, id: &str, body: Value) -> 
     let path = format!("{}/{}", clients_path(realm), id);
     let body = sanitize_for_write(&body);
     crate::aic::api::put_versioned(tenant, &path, body, false, API_VERSION).await
+}
+
+/// Create or explicitly replace a client after the caller's existence check.
+pub async fn create_client(
+    tenant: &str,
+    realm: &str,
+    id: &str,
+    body: Value,
+    confirmed_prod: bool,
+) -> Result<Value> {
+    validate_client_id(id)?;
+    let path = format!("{}/{}", clients_path(realm), id);
+    let body = sanitize_for_write(&body);
+    crate::aic::api::put_versioned(tenant, &path, body, confirmed_prod, API_VERSION).await
 }
 
 pub async fn delete_client(tenant: &str, realm: &str, id: &str) -> Result<()> {

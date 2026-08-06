@@ -44,10 +44,10 @@ aic <command> <subcommand> --help
 
 ### Exit codes
 
-| Code | Meaning |
-| ---- | ------- |
-| `0`  | Success |
-| `1`  | General error, including invalid credentials |
+| Code | Meaning                                                                 |
+| ---- | ----------------------------------------------------------------------- |
+| `0`  | Success                                                                 |
+| `1`  | General error, including invalid credentials                            |
 | `3`  | The agent is locked and the command could not prompt for authentication |
 
 ---
@@ -64,7 +64,7 @@ the locked/unlocked model and why `logout` ≠ `stop`.
 | `aic agent --detach`                 | Spawn a detached agent (logs to `.aic/agent.log`) and exit.                                                             |
 | `aic agent --idle-timeout <seconds>` | Override the auto-lock timeout (default 3600s, or `settings.toml`).                                                     |
 | `aic session login`                  | Unlock the agent (no-echo master-password prompt).                                                                      |
-| `aic session login --password-stdin` | Read one master-password line from stdin and unlock without prompting.                                                   |
+| `aic session login --password-stdin` | Read one master-password line from stdin and unlock without prompting.                                                  |
 | `aic session logout`                 | **Lock** the agent — wipe keys + tokens from memory, leave it running.                                                  |
 | `aic session stop`                   | **Stop** the agent process entirely.                                                                                    |
 | `aic session status`                 | Show whether the agent is running/unlocked, the active tenant, and token expiry.                                        |
@@ -72,11 +72,11 @@ the locked/unlocked model and why `logout` ≠ `stop`.
 The older top-level `aic login`, `aic logout`, `aic stop`, and `aic status`
 forms still work as compatibility aliases, but are hidden from help.
 
-Tenant commands pre-flight the agent session. A locked command prompts only
-when stdin and stderr are terminals and `/dev/tty` is available; the prompt
-times out after 60 seconds. For automation, either unlock explicitly or pass
-`--no-prompt` so a locked session exits with status 3. To unlock without a
-terminal, pipe exactly one password line:
+Tenant commands pre-flight the agent session. A locked command prompts only when
+stdin and stderr are terminals and `/dev/tty` is available; the prompt times out
+after 60 seconds. For automation, either unlock explicitly or pass `--no-prompt`
+so a locked session exits with status 3. To unlock without a terminal, pipe
+exactly one password line:
 
 ```sh
 printf '%s\n' "$PASSWORD" | aic session login --password-stdin --no-prompt
@@ -84,8 +84,8 @@ aic --no-prompt esv list
 ```
 
 `--password-stdin` selects the password factor when both a password and a
-security key are enrolled. It fails if there is no enrolled password factor.
-The binary deliberately does not read passwords from environment variables.
+security key are enrolled. It fails if there is no enrolled password factor. The
+binary deliberately does not read passwords from environment variables.
 
 ### Context
 
@@ -98,8 +98,9 @@ The binary deliberately does not read passwords from environment variables.
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
 
 The normal `whoami` output includes `operator: <name> on <host>`. When the name
-has not been saved yet, the line says it is unset and points to `aic settings set
-operator.name <name>`. `--token` remains exactly one bare token on stdout.
+has not been saved yet, the line says it is unset and points to
+`aic settings set operator.name <name>`. `--token` remains exactly one bare
+token on stdout.
 
 ### Settings
 
@@ -117,8 +118,8 @@ unlock the agent or contact a tenant. Supported keys are `operator.name`,
 `operator.host`, and `agent-idle-timeout-secs`.
 
 `version` is managed by `aic`. `encrypt_keys` is deliberately not settable here:
-changing vault encryption requires the TUI's **Auth Settings** transition so
-the `.enc`/`.plain` files and the flag cannot get out of sync.
+changing vault encryption requires the TUI's **Auth Settings** transition so the
+`.enc`/`.plain` files and the flag cannot get out of sync.
 
 ---
 
@@ -345,14 +346,32 @@ aic journey node-template <nodeType> [--realm alpha]   # a starter node config (
 Realm-scoped. Clients pull/push as JSON under the workspace.
 
 ```bash
-aic oauth list [--realm alpha] [--json]           # client ids
-aic oauth pull <id> [--realm alpha]               # one client → workspace JSON
-aic oauth push <id> [--realm alpha] [--force]     # push a workspace client JSON back
-aic oauth delete <id> --force [--realm alpha]     # delete (requires --force)
+aic oauth list [--realm alpha] [--json]                 # client ids
+aic oauth create <id> [common flags] [--from FILE]      # create from live tenant defaults
+aic oauth pull <id> [--realm alpha]                     # one client → workspace JSON
+aic oauth push <id> [--realm alpha] [--force]           # push a workspace client JSON back
+aic oauth delete <id> --force [--realm alpha]           # delete (requires --force)
 ```
 
-> `*-encrypted` fields are cluster-local and stripped on push; `_rev` is ignored
-> (plain PUT). See `docs/api/05-oauth2-oidc.md`.
+`create` exposes the common client settings (`--name`, repeatable scopes,
+redirect URIs, grants/response types, token auth, consent, and lifetimes); run
+`aic oauth create --help` for the compact list. Use `--secret-stdin` to supply a
+write-only secret, or `--generate-secret` to print a generated secret exactly
+once after a successful create. A secret cannot be recovered from AIC later. The
+command refuses an existing id unless `--force` is given and requires `--yes`
+for a production-themed tenant. **`--force` replaces the client wholesale from
+the tenant template — it is not a merge**, so every field you don't pass returns
+to its tenant default. To change one setting on a client that already exists,
+use pull → edit → push instead.
+
+For less-common settings, pass an OAuth client JSON object with `--from`; flags
+override its values while missing fields retain the live tenant template.
+`aic oauth pull` output composes directly with this path. For ongoing edits,
+continue to use pull → edit → push.
+
+> `*-encrypted` fields are cluster-local and stripped from every client PUT;
+> server-managed metadata is also removed and `_rev` is ignored (plain PUT). See
+> `docs/api/05-oauth2-oidc.md`.
 
 ---
 
