@@ -103,6 +103,22 @@ has not been saved yet, the line says it is unset and points to
 `aic settings set operator.name <name>`. `--token` remains exactly one bare
 token on stdout.
 
+### aic auth — mint a token as an end user
+
+    aic auth --as-id <uuid> --client-id <id> [--client-secret-stdin] [--scope S]...
+    aic auth --as-username <name> --client-id <id> [--scope S]...
+    aic auth ... --token
+
+Exactly one of --as-id and --as-username is required. Usernames are resolved
+to their IDM managed-object UUID before signing. The client secret is read
+from stdin when --client-secret-stdin is supplied; otherwise an interactive
+command prompts on the terminal. Secrets are never accepted as argv or
+environment values. The command refuses production-themed tenants and
+requires a key from aic jwt-bearer setup.
+
+Default output includes the user, client, granted scope, expiry, signing kid,
+and a redacted token. --token prints only the bare access token.
+
 ### Settings
 
 ```bash
