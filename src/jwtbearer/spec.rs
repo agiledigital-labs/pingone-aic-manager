@@ -235,9 +235,11 @@ pub fn map_token_error(error: Error) -> Error {
         .unwrap_or(&body);
     let lower = description.to_ascii_lowercase();
     let message = if code == "invalid_client" {
-        Some("AM rejected client authentication; supply --client-secret-stdin".to_string())
+        Some(
+            "AM rejected client authentication; supply --client-secret-stdin and verify the client allows the JWT-bearer grant with `aic oauth grant add <client-id> urn:ietf:params:oauth:grant-type:jwt-bearer`".to_string(),
+        )
     } else if code == "unauthorized_client" || lower.contains("grant not allowed") {
-        Some("AM rejected the grant; the client needs urn:ietf:params:oauth:grant-type:jwt-bearer in its grant types".to_string())
+        Some("AM rejected the grant; add urn:ietf:params:oauth:grant-type:jwt-bearer with `aic oauth grant add <client-id> urn:ietf:params:oauth:grant-type:jwt-bearer`".to_string())
     } else if lower.contains("unknown jwt issuer") {
         Some("AM does not know this JWT issuer; run aic jwt-bearer setup".to_string())
     } else if lower.contains("issuer is not authorized to grant consent for this subject") {
@@ -253,7 +255,7 @@ pub fn map_token_error(error: Error) -> Error {
         None
     };
     match message {
-        Some(message) => Error::Config(message),
+        Some(message) => Error::Config(format!("{message}; AM error_description: {description}")),
         None => Error::Api { status, body },
     }
 }
@@ -424,7 +426,7 @@ mod tests {
             ),
             (
                 r#"{"error":"unauthorized_client","error_description":"grant not allowed"}"#,
-                "grant types",
+                "aic oauth grant add",
             ),
         ];
         for (body, expected) in cases {
@@ -433,6 +435,10 @@ mod tests {
                 body: body.into(),
             });
             assert!(error.to_string().contains(expected), "{error}");
+            assert!(
+                error.to_string().contains("AM error_description:"),
+                "{error}"
+            );
         }
     }
 

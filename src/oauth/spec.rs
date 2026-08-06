@@ -28,6 +28,21 @@ pub struct CreateClientSpec {
     pub authorization_code_lifetime: Option<u64>,
 }
 
+/// The grant-list change requested by `aic oauth grant add` or `remove`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantOperation {
+    Add,
+    Remove,
+}
+
+/// Result of applying a grant-list change to a complete client object.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GrantUpdate {
+    pub body: Value,
+    pub grants: Vec<String>,
+    pub changed: bool,
+}
+
 /// Build a create body from live defaults, an optional JSON seed, and common
 /// inputs. Object seeds merge recursively so a partial seed retains tenant
 /// defaults; arrays and scalar values replace their template counterparts.
@@ -160,6 +175,66 @@ pub fn build_create_body(
     Ok(sanitize_for_write(&template))
 }
 
+/// Read the effective grant list without changing the surrounding client shape.
+pub fn grant_types(client: &Value) -> Result<Vec<String>, String> {
+    let Some(group) = client
+        .as_object()
+        .and_then(|client| client.get("advancedOAuth2ClientConfig"))
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(field) = group.as_object().and_then(|group| group.get("grantTypes")) else {
+        return Ok(Vec::new());
+    };
+    let field = inherited_value(field);
+    let Some(grants) = field.as_array() else {
+        return Err("advancedOAuth2ClientConfig.grantTypes is not an array".into());
+    };
+    grants
+        .iter()
+        .map(|grant| {
+            grant.as_str().map(str::to_owned).ok_or_else(|| {
+                "advancedOAuth2ClientConfig.grantTypes contains a non-string value".into()
+            })
+        })
+        .collect()
+}
+
+/// Apply an idempotent grant-list change and prepare the full replacement body.
+///
+/// An inherited grant field becomes a local override only when its contents
+/// change. Other inherited wrappers are deliberately left untouched so this
+/// follows the same round-trip shape as `aic oauth push`.
+pub fn update_grants(
+    client: &Value,
+    requested: &[String],
+    operation: GrantOperation,
+) -> Result<GrantUpdate, String> {
+    let current = grant_types(client)?;
+    let mut grants = current.clone();
+    match operation {
+        GrantOperation::Add => {
+            for grant in requested {
+                if !grants.contains(grant) {
+                    grants.push(grant.clone());
+                }
+            }
+        }
+        GrantOperation::Remove => grants.retain(|grant| !requested.contains(grant)),
+    }
+
+    let changed = grants != current;
+    let mut body = client.clone();
+    if changed {
+        set_grant_types(&mut body, grants.clone())?;
+    }
+    Ok(GrantUpdate {
+        body: sanitize_for_write(&body),
+        grants,
+        changed,
+    })
+}
+
 /// Validate enum-backed fields against the live tenant schema.
 ///
 /// `None`, missing enum metadata, and malformed enum metadata all skip local
@@ -174,6 +249,15 @@ pub fn validate_enumerated_fields(body: &Value, schema: Option<&Value>) -> Resul
         validate_enum_target(body, schema, target)?;
     }
     Ok(())
+}
+
+/// Validate only the grant list against the live tenant schema.
+pub fn validate_grant_types(body: &Value, schema: Option<&Value>) -> Result<(), String> {
+    let Some(schema) = schema else {
+        return Ok(());
+    };
+
+    validate_enum_target(body, schema, &GRANT_TYPES_TARGET)
 }
 
 /// Remove fields that the OAuth2 client PUT endpoint rejects or must never
@@ -255,6 +339,45 @@ fn strip_encrypted_fields(value: &Value) -> Value {
     }
 }
 
+fn inherited_value(value: &Value) -> &Value {
+    let Some(object) = value.as_object() else {
+        return value;
+    };
+    if object.get("inherited").and_then(Value::as_bool).is_some() {
+        object.get("value").unwrap_or(value)
+    } else {
+        value
+    }
+}
+
+fn set_grant_types(client: &mut Value, grants: Vec<String>) -> Result<(), String> {
+    let object = client
+        .as_object_mut()
+        .ok_or_else(|| "oauth client body is not a JSON object".to_string())?;
+    let group = object
+        .entry("advancedOAuth2ClientConfig")
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| {
+            "oauth client group advancedOAuth2ClientConfig is not a JSON object".to_string()
+        })?;
+    let field = group
+        .entry("grantTypes")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Some(field_object) = field.as_object_mut()
+        && field_object
+            .get("inherited")
+            .and_then(Value::as_bool)
+            .is_some()
+    {
+        field_object.insert("inherited".into(), Value::Bool(false));
+        field_object.insert("value".into(), json!(grants));
+    } else {
+        *field = json!(grants);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 struct EnumTarget {
     group: &'static str,
@@ -294,6 +417,12 @@ const ENUM_TARGETS: &[EnumTarget] = &[
     },
 ];
 
+const GRANT_TYPES_TARGET: EnumTarget = EnumTarget {
+    group: "advancedOAuth2ClientConfig",
+    field: "grantTypes",
+    array: true,
+};
+
 fn validate_enum_target(body: &Value, schema: &Value, target: &EnumTarget) -> Result<(), String> {
     let schema_path = format!("/properties/{}/properties/{}", target.group, target.field);
     let Some(field_schema) = schema.pointer(&schema_path) else {
@@ -316,7 +445,7 @@ fn validate_enum_target(body: &Value, schema: &Value, target: &EnumTarget) -> Re
     };
 
     let body_path = format!("/{}/{}", target.group, target.field);
-    let Some(value) = body.pointer(&body_path) else {
+    let Some(value) = body.pointer(&body_path).map(inherited_value) else {
         return Ok(());
     };
     let values = if target.array {
@@ -483,6 +612,120 @@ mod tests {
         );
     }
 
+    fn client_with_grants(grant_types: Value) -> Value {
+        json!({
+            "_id": "client-a",
+            "_rev": "123",
+            "_type": {"_id": "OAuth2Client"},
+            "advancedOAuth2ClientConfig": {"grantTypes": grant_types},
+            "coreOAuth2ClientConfig": {
+                "userpassword-encrypted": "ciphertext"
+            }
+        })
+    }
+
+    #[test]
+    fn grant_add_to_empty_client_is_a_change() {
+        let update = update_grants(
+            &client_with_grants(json!([])),
+            &["client_credentials".into()],
+            GrantOperation::Add,
+        )
+        .unwrap();
+
+        assert!(update.changed);
+        assert_eq!(update.grants, ["client_credentials"]);
+        assert_eq!(
+            update.body["advancedOAuth2ClientConfig"]["grantTypes"],
+            json!(["client_credentials"])
+        );
+    }
+
+    #[test]
+    fn grant_add_duplicate_is_idempotent() {
+        let update = update_grants(
+            &client_with_grants(json!(["client_credentials"])),
+            &["client_credentials".into()],
+            GrantOperation::Add,
+        )
+        .unwrap();
+
+        assert!(!update.changed);
+        assert_eq!(update.grants, ["client_credentials"]);
+    }
+
+    #[test]
+    fn grant_remove_only_grant_leaves_an_empty_list() {
+        let update = update_grants(
+            &client_with_grants(json!(["client_credentials"])),
+            &["client_credentials".into()],
+            GrantOperation::Remove,
+        )
+        .unwrap();
+
+        assert!(update.changed);
+        assert!(update.grants.is_empty());
+        assert_eq!(
+            update.body["advancedOAuth2ClientConfig"]["grantTypes"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn grant_remove_absent_is_idempotent() {
+        let update = update_grants(
+            &client_with_grants(json!(["client_credentials"])),
+            &["authorization_code".into()],
+            GrantOperation::Remove,
+        )
+        .unwrap();
+
+        assert!(!update.changed);
+        assert_eq!(update.grants, ["client_credentials"]);
+    }
+
+    #[test]
+    fn grant_update_preserves_wrappers_and_makes_changed_inherited_values_local() {
+        let update = update_grants(
+            &client_with_grants(json!({
+                "inherited": true,
+                "value": ["client_credentials"],
+                "metadata": "preserved"
+            })),
+            &["authorization_code".into()],
+            GrantOperation::Add,
+        )
+        .unwrap();
+
+        assert_eq!(
+            update.body["advancedOAuth2ClientConfig"]["grantTypes"],
+            json!({
+                "inherited": false,
+                "value": ["client_credentials", "authorization_code"],
+                "metadata": "preserved"
+            })
+        );
+    }
+
+    #[test]
+    fn grant_update_sanitizes_server_and_encrypted_fields() {
+        let update = update_grants(
+            &client_with_grants(json!([])),
+            &["authorization_code".into()],
+            GrantOperation::Add,
+        )
+        .unwrap();
+
+        assert!(update.body.get("_id").is_none());
+        assert!(update.body.get("_rev").is_none());
+        assert!(update.body.get("_type").is_none());
+        assert!(
+            update.body["coreOAuth2ClientConfig"]
+                .get("userpassword-encrypted")
+                .is_none()
+        );
+    }
+
     #[test]
     fn create_body_strips_server_and_encrypted_fields() {
         let seed = json!({
@@ -574,6 +817,32 @@ mod tests {
                 .unwrap_err()
                 .contains("tokenEndpointAuthMethod")
         );
+    }
+
+    #[test]
+    fn enum_validation_reads_grants_from_an_inherited_wrapper() {
+        let body = json!({
+            "advancedOAuth2ClientConfig": {
+                "grantTypes": {
+                    "inherited": false,
+                    "value": ["client_credentials"]
+                }
+            }
+        });
+
+        assert!(validate_enumerated_fields(&body, Some(&schema())).is_ok());
+    }
+
+    #[test]
+    fn grant_validation_ignores_unrelated_stale_fields() {
+        let body = json!({
+            "advancedOAuth2ClientConfig": {
+                "grantTypes": ["client_credentials"],
+                "subjectType": "stale-subject-type"
+            }
+        });
+
+        assert!(validate_grant_types(&body, Some(&schema())).is_ok());
     }
 
     #[test]

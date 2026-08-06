@@ -21,6 +21,13 @@ findings). Each should name the guard that will eventually retire it.
   per-person or per-machine that lands beside it will be committed and then
   silently applied to the whole team. _Guard: extend
   `gitignore_covers_every_artifact_stem` to assert `settings.toml`._
+- **A `## Verified against` entry must record calls that support its
+  conclusion.** Not merely calls that were made — check that the experiment
+  described could actually distinguish the outcomes it claims to distinguish. An
+  agent asked "does X differ from Y?" will often vary both at once, or hold the
+  wrong one fixed, and then report the answer it expected. Read the listed calls
+  as an experiment design, not as an activity log. _Guard: none automatable;
+  this is a review judgement._
 - **A `## Verified against` entry must record calls made in that run.** Figures
   quoted in a task prompt, copied from a neighbouring doc, or inferred from
   existing code are not verification, however true they happen to be — the block
@@ -29,18 +36,19 @@ findings). Each should name the guard that will eventually retire it.
   _Guard: none obvious; wants `scripts/verify-endpoint.sh` to work so the honest
   path is also the easy one._
 
-- **No cryptographic key generation in the default test path.** An RSA keygen
-  is seconds, not milliseconds; one of them took this suite from 0.33s to 8.31s
+- **No cryptographic key generation in the default test path.** An RSA keygen is
+  seconds, not milliseconds; one of them took this suite from 0.33s to 8.31s
   (2026-08-06). Test the shape of a key record against a stub, and gate any
   genuine end-to-end keygen behind `#[ignore]`. _Guard: none yet — wants a
-  wall-clock budget assertion, or a grep for `generate_rsa` under `#[cfg(test)]`._
+  wall-clock budget assertion, or a grep for `generate_rsa` under
+  `#[cfg(test)]`._
 
 - **A fix must not outgrow its finding.** When a cosmetic cleanup turns into a
-  change to a shared protocol, storage format, or wire format, that is a
-  finding in itself — the cost/benefit that justified the cleanup no longer
-  applies, and the risk was never reviewed on its own merits. Ask what the
-  smallest change that resolves the finding would have been. _Guard: none
-  automatable; this is a review judgement._
+  change to a shared protocol, storage format, or wire format, that is a finding
+  in itself — the cost/benefit that justified the cleanup no longer applies, and
+  the risk was never reviewed on its own merits. Ask what the smallest change
+  that resolves the finding would have been. _Guard: none automatable; this is a
+  review judgement._
 
 - **Send the smallest credential that works.** Before a new transport helper
   attaches the service-account bearer, ask whether the call authenticates some
@@ -101,7 +109,7 @@ findings). Each should name the guard that will eventually retire it.
   `error: SERVICE_ACCOUNT_ID is not set (check .envrc)`. `.envrc` defines
   `TENANT_BASE_URL`, `ORIGIN`, `API_KEY_ID`, `API_KEY_SECRET`, `REALMS` and
   `AGENT_PASSWORD` — no `SERVICE_ACCOUNT_ID`, no JWK. CLAUDE.md §2, §7 and §10
-  all route agents to this script as *the* way to verify before documenting, so
+  all route agents to this script as _the_ way to verify before documenting, so
   every agent that tries to follow the rule hits a wall and then either gives up
   or documents from inference.
 - **Why missed:** first sighting. Humans reach for `aic whoami --token`; only an
@@ -122,7 +130,7 @@ findings). Each should name the guard that will eventually retire it.
 - **Why missed:** nearly mis-reported in the other direction. A first grep for
   `curl|verify-endpoint` over the agent log matched only documentation text and
   suggested no call had been attempted at all; the actual invocation was on the
-  line *after* the `exec` marker. Read the tool's own transcript format before
+  line _after_ the `exec` marker. Read the tool's own transcript format before
   concluding what it did or didn't run.
 - **Guard:** Standing check 3 above.
 
@@ -131,7 +139,7 @@ findings). Each should name the guard that will eventually retire it.
 - **What:** `src/jwtbearer/ops.rs` tested `generate_key` directly, doing a real
   2048-bit RSA keygen. The workspace suite went from 0.33s to 8.31s; the eight
   new tests alone took 4.53s, nearly all in that one test — which asserts only
-  the *shape* of the record (opaque kid, three `aic_*` members) and needs no
+  the _shape_ of the record (opaque kid, three `aic_*` members) and needs no
   real key at all.
 - **Guard:** Standing check 4 above.
 
@@ -143,8 +151,8 @@ findings). Each should name the guard that will eventually retire it.
   for, and the next `setup` generates a fresh one rather than recovering — so
   the orphan is permanent, in a set the whole team shares.
 - **Why missed:** first sighting. The prompt specified idempotence and a
-  read-back check, which framed the risk as *concurrent writers* rather than
-  *partial failure of a two-store write*.
+  read-back check, which framed the risk as _concurrent writers_ rather than
+  _partial failure of a two-store write_.
 - **Guard:** order the writes so the recoverable side goes first — store
   locally, then publish; a failed publish self-heals on the next run. Worth a
   general rule: when a single operation writes to two stores, write first to
@@ -153,10 +161,10 @@ findings). Each should name the guard that will eventually retire it.
 ### 2026-08-06 — verifying a predicted defect downgraded it
 
 - **What:** `spec::unwrap_inherited` only unwraps two-key `{inherited, value}`
-  wrappers, and AM really does return `jwksUri` as a one-key `{"inherited":
-  false}`. That looked like a second-run `PUT` sending a malformed field. A live
-  round trip against a throwaway issuer returned 200 with the value preserved —
-  AM tolerates it. Reported as a note, not a bug.
+  wrappers, and AM really does return `jwksUri` as a one-key
+  `{"inherited": false}`. That looked like a second-run `PUT` sending a
+  malformed field. A live round trip against a throwaway issuer returned 200
+  with the value preserved — AM tolerates it. Reported as a note, not a bug.
 - **Why worth logging:** the reviewer's instinct was right about the shape and
   wrong about the severity. Predicting a failure from reading code is cheap;
   confirming it against the live API is also cheap here, and the difference
@@ -171,15 +179,15 @@ findings). Each should name the guard that will eventually retire it.
   one-request-per-connection to a loop, added an `*_on_connection` variant of
   every secret verb, and moved `send()`'s socket shutdown from before the
   response read to after. Three consequences: a new CLI cannot talk to a
-  resident old daemon (verified live — the 5-day-old agent replied once and
-  then closed, so a second request got `BrokenPipeError`), a documented
-  deadlock guard was deleted along with the comment explaining it, and
+  resident old daemon (verified live — the 5-day-old agent replied once and then
+  closed, so a second request got `BrokenPipeError`), a documented deadlock
+  guard was deleted along with the comment explaining it, and
   `handle_connection` now parks a task in `read_line` with no timeout where it
   previously did a single bounded read.
-- **Why missed:** not missed — caught. Logged because the *shape* recurs: an
+- **Why missed:** not missed — caught. Logged because the _shape_ recurs: an
   agent asked for ten fixes will size its solution to the file it is already
-  editing rather than to the finding, and the largest blast radius came from
-  the smallest item on the list.
+  editing rather than to the finding, and the largest blast radius came from the
+  smallest item on the list.
 - **Guard:** Standing check 5 above. Also worth noting the repo has no wire
   version handshake between CLI and daemon, so any future protocol change has
   this same failure mode; CLAUDE.md §8 warns about the resident binary but
@@ -198,10 +206,30 @@ findings). Each should name the guard that will eventually retire it.
   `tenant.base_url` — in a daemon that holds decrypted keys, that combination
   means the SA bearer can be addressed at an arbitrary host.
 - **Why missed:** first sighting. The reviewer's habit is to ask whether an
-  endpoint is *authenticated correctly*, not whether it is authenticated
-  *more than necessary*. The transport helper was copied from `write`, and
-  inheriting the bearer looked like consistency rather than a new exposure.
+  endpoint is _authenticated correctly_, not whether it is authenticated _more
+  than necessary_. The transport helper was copied from `write`, and inheriting
+  the bearer looked like consistency rather than a new exposure.
 - **Guard:** promoted to Standing check 6.
+
+### 2026-08-07 — the right answer from an experiment that could not test it
+
+- **What:** `aic auth`'s error mapper hinted "supply --client-secret-stdin" for
+  a client missing the JWT-bearer grant, because AM answers `invalid_client` and
+  the `unauthorized_client` branch that named the remedy never fires. The fix
+  asked whether AM's `error_description` distinguishes the two causes. It does
+  not — but the probe run to establish that created a client **without** the
+  grant and then compared correct-secret against wrong-secret on it. Both fail
+  for the same reason, so the comparison could not have distinguished anything.
+  The doc nonetheless recorded "did not distinguish the two causes" in a
+  `## Verified against` block. A controlled re-run (grant present + wrong secret
+  vs grant absent + correct secret, on one client, with a grant-present +
+  correct-secret positive control) confirmed the conclusion.
+- **Why missed:** nearly accepted on the strength of being right. The done-note
+  read as a clean negative result and the conclusion matched the reviewer's own
+  expectation; only reading the listed calls as an experiment design exposed
+  that the discriminating case was never run.
+- **Guard:** Standing check 3 above, extended. Also worth stating in a prompt
+  that asks "does X differ from Y?": name the control, not just the question.
 
 ### 2026-08-06 — the absolute URL was never required
 
@@ -210,9 +238,9 @@ findings). Each should name the guard that will eventually retire it.
   The `:443` is load-bearing for the **`aud` claim**, not for the request URL —
   during the original verification the POST went to the port-less path and AM
   processed it normally, failing only on `aud`. Taking `issuer` from discovery
-  and building the POST as a tenant-relative path removes the SSRF surface at
-  no cost.
+  and building the POST as a tenant-relative path removes the SSRF surface at no
+  cost.
 - **Why worth logging:** a quirk that is real in one place ("read it from
-  discovery, it has `:443`") got generalised to a place it did not apply. When
-  a doc says a value must come from a specific source, check *which* consumer
-  of that value the requirement attaches to.
+  discovery, it has `:443`") got generalised to a place it did not apply. When a
+  doc says a value must come from a specific source, check _which_ consumer of
+  that value the requirement attaches to.
