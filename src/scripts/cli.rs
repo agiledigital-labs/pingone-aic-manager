@@ -926,6 +926,11 @@ fn pick(
         println!("nothing to choose from");
         return Ok(None);
     }
+    if crate::cli::prompting_disabled() {
+        return Err(Error::Config(
+            "script picker disabled by --no-prompt; pass a script ref or `all`".into(),
+        ));
+    }
     let rank = |s: LocalState| match s {
         LocalState::Modified => 0,
         LocalState::Missing => 1,
@@ -973,6 +978,9 @@ enum ConflictChoice {
 /// cancel) → `Skip` (reported at the end), never a silent clobber.
 fn prompt_conflict(full: &str, allow_local: bool) -> Result<ConflictChoice> {
     use inquire::{Select, error::InquireError};
+    if crate::cli::prompting_disabled() {
+        return Ok(ConflictChoice::Skip);
+    }
     let opts = if allow_local {
         vec![
             "skip — leave both, resolve later",
@@ -1283,6 +1291,9 @@ fn select_synced(
 /// no terminal to prompt on (caller falls back to non-interactive behaviour).
 fn confirm_overwrite(prompt: &str) -> Result<Option<bool>> {
     use inquire::{Confirm, error::InquireError};
+    if crate::cli::prompting_disabled() {
+        return Ok(None);
+    }
     match Confirm::new(prompt).with_default(false).prompt() {
         Ok(b) => Ok(Some(b)),
         Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {

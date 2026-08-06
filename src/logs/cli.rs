@@ -360,16 +360,19 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
     match cmd {
         KeyCommand::Set { tenant, id } => {
             let tenant = tenant_for(tenant)?;
-            crate::cli::ensure_agent_unlocked().await?;
             let api_key_id = match id {
                 Some(id) => id,
-                None => prompt(Text::new("Log API key id").prompt(), "log API key id")?,
+                None => {
+                    require_prompt("log API key id")?;
+                    prompt(Text::new("Log API key id").prompt(), "log API key id")?
+                }
             };
             let api_key_id = api_key_id.trim().to_string();
             if api_key_id.is_empty() {
                 return Err(Error::Config("log API key id cannot be empty".into()));
             }
 
+            require_prompt("log API key secret")?;
             let api_key_secret = prompt(
                 Password::new("Log API key secret")
                     .with_display_mode(PasswordDisplayMode::Hidden)
@@ -396,14 +399,15 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             cookie_name,
         } => {
             let (tenant, base_url) = configured_tenant_base_url(tenant)?;
-            crate::cli::ensure_agent_unlocked().await?;
-
             let cookie_name = match cookie_name {
                 Some(cookie_name) => cookie_name,
-                None => prompt(
-                    Text::new("AM session cookie name").prompt(),
-                    "AM session cookie name",
-                )?,
+                None => {
+                    require_prompt("AM session cookie name")?;
+                    prompt(
+                        Text::new("AM session cookie name").prompt(),
+                        "AM session cookie name",
+                    )?
+                }
             };
             let cookie_name = cookie_name.trim().to_string();
             if cookie_name.is_empty() {
@@ -412,6 +416,7 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
                 ));
             }
 
+            require_prompt("AM session cookie value")?;
             let cookie_value = prompt(
                 Password::new("AM session cookie value")
                     .with_display_mode(PasswordDisplayMode::Hidden)
@@ -447,7 +452,6 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
         }
         KeyCommand::Show { tenant } => {
             let tenant = tenant_for(tenant)?;
-            crate::cli::ensure_agent_unlocked().await?;
             let agent = AgentClient::connect_or_spawn().await?;
             let pair = crate::logs::get_log_key(agent, &tenant).await?;
             println!("tenant: {tenant}");
@@ -457,7 +461,6 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
         }
         KeyCommand::Rm { tenant } => {
             let tenant = tenant_for(tenant)?;
-            crate::cli::ensure_agent_unlocked().await?;
             let agent = AgentClient::connect_or_spawn().await?;
             crate::logs::remove_log_key(agent, &tenant).await?;
             println!("removed log API key for tenant {tenant}");
@@ -579,6 +582,16 @@ fn prompt<T>(result: std::result::Result<T, InquireError>, field: &str) -> Resul
             "no terminal available to prompt for {field}"
         ))),
         Err(error) => Err(Error::Config(format!("prompt for {field}: {error}"))),
+    }
+}
+
+fn require_prompt(field: &str) -> Result<()> {
+    if crate::cli::prompting_disabled() {
+        Err(Error::Config(format!(
+            "interactive prompt for {field} disabled by --no-prompt"
+        )))
+    } else {
+        Ok(())
     }
 }
 

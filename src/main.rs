@@ -2,7 +2,7 @@
 async fn main() {
     if let Err(e) = run().await {
         eprintln!("aic error: {e}");
-        std::process::exit(1);
+        std::process::exit(e.exit_code());
     }
 }
 

@@ -14,6 +14,10 @@
 //! The required flows mix browser cookies, interactive TOTP, and RSA
 //! keygen; we haven't tried to script them. Run the TUI once per tenant.
 
+use std::io::{BufRead, IsTerminal};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde::Serialize;
 
@@ -34,6 +38,10 @@ use crate::{Error, Result};
     disable_help_subcommand = true,
 )]
 pub struct Cli {
+    /// Disable all interactive prompts and fail when input is required.
+    #[arg(long, global = true)]
+    pub no_prompt: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -60,6 +68,9 @@ pub enum Command {
         /// Idle-lock timeout (for example, 1h20m).
         #[arg(long)]
         timeout: Option<String>,
+        /// Read one password line from stdin instead of prompting on the TTY.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// Clear the agent's in-memory JWKs + tokens (but leave the agent running).
     #[command(hide = true)]
@@ -159,6 +170,9 @@ pub enum SessionCommand {
         /// Idle-lock timeout (for example, 1h20m).
         #[arg(long)]
         timeout: Option<String>,
+        /// Read one password line from stdin instead of prompting on the TTY.
+        #[arg(long)]
+        password_stdin: bool,
     },
     /// Clear the agent's in-memory JWKs + tokens (but leave the agent running).
     Logout,
@@ -168,13 +182,51 @@ pub enum SessionCommand {
     Status,
 }
 
+static NO_PROMPT: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn prompting_disabled() -> bool {
+    NO_PROMPT.load(Ordering::Relaxed)
+}
+
+impl Command {
+    fn needs_tenant_auth(&self) -> bool {
+        match self {
+            Self::Whoami { .. }
+            | Self::Esv { .. }
+            | Self::Managed { .. }
+            | Self::Idm { .. }
+            | Self::Sync { .. }
+            | Self::Logs { .. }
+            | Self::Journey { .. }
+            | Self::Oauth { .. }
+            | Self::Secretmap { .. }
+            | Self::Workspace { .. }
+            | Self::Script { .. } => true,
+            Self::Agent { .. }
+            | Self::Login { .. }
+            | Self::Logout
+            | Self::Stop
+            | Self::Status
+            | Self::Session { .. }
+            | Self::Ctx { .. } => false,
+        }
+    }
+}
+
 pub async fn run(cli: Cli) -> Result<()> {
+    NO_PROMPT.store(cli.no_prompt, Ordering::Relaxed);
+    if cli.command.as_ref().is_some_and(Command::needs_tenant_auth) {
+        ensure_agent_unlocked(false).await?;
+    }
     match cli.command {
         Some(Command::Agent {
             detach,
             idle_timeout,
         }) => run_agent(detach, idle_timeout).await,
-        Some(Command::Login { timeout }) => login(timeout).await,
+        Some(Command::Login {
+            timeout,
+            password_stdin,
+        }) => login(timeout, password_stdin).await,
         Some(Command::Logout) => logout().await,
         Some(Command::Stop) => stop().await,
         Some(Command::Status) => status().await,
@@ -197,7 +249,10 @@ pub async fn run(cli: Cli) -> Result<()> {
 
 async fn session(command: SessionCommand) -> Result<()> {
     match command {
-        SessionCommand::Login { timeout } => login(timeout).await,
+        SessionCommand::Login {
+            timeout,
+            password_stdin,
+        } => login(timeout, password_stdin).await,
         SessionCommand::Logout => logout().await,
         SessionCommand::Stop => stop().await,
         SessionCommand::Status => status().await,
@@ -227,9 +282,20 @@ pub fn bootstrap_project_root() {
 pub fn parse_with_defaults() -> Cli {
     let cmd = inject_tenant_default(Cli::command(), resolved_tenant().as_deref());
     match Cli::from_arg_matches(&cmd.get_matches()) {
-        Ok(cli) => cli,
+        Ok(mut cli) => {
+            apply_no_prompt_env(&mut cli, std::env::var_os("AIC_NO_PROMPT").as_deref());
+            cli
+        }
         Err(e) => e.exit(),
     }
+}
+
+fn no_prompt_from_env(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+fn apply_no_prompt_env(cli: &mut Cli, value: Option<&std::ffi::OsStr>) {
+    cli.no_prompt |= no_prompt_from_env(value);
 }
 
 /// The tenant to surface as the `--tenant` default: a workspace-dir tenant
@@ -305,8 +371,8 @@ fn spawn_detached_then_exit() -> Result<()> {
     })
 }
 
-async fn login(timeout: Option<String>) -> Result<()> {
-    ensure_agent_unlocked().await?;
+async fn login(timeout: Option<String>, password_stdin: bool) -> Result<()> {
+    ensure_agent_unlocked(password_stdin).await?;
     if let Some(timeout) = timeout {
         let secs = parse_duration(&timeout).map_err(Error::Config)?;
         let client = AgentClient::connect(agent::socket_path()).await?;
@@ -319,7 +385,7 @@ async fn login(timeout: Option<String>) -> Result<()> {
     print_status_block().await
 }
 
-pub(crate) async fn ensure_agent_unlocked() -> Result<()> {
+pub(crate) async fn ensure_agent_unlocked(password_stdin: bool) -> Result<()> {
     let client = AgentClient::connect_or_spawn().await?;
     match client.send(&Request::Status).await? {
         Response::Status(info) if info.unlocked => return Ok(()),
@@ -363,7 +429,17 @@ pub(crate) async fn ensure_agent_unlocked() -> Result<()> {
         Error::Config("no .aic/wraps.toml — set up an auth factor in the TUI first".into())
     })?;
 
-    let dek = match pick_method(&wraps_file)? {
+    let method = if password_stdin {
+        if !wraps_file.has_password() {
+            return Err(Error::Config("no password factor enrolled".into()));
+        }
+        MethodChoice::Password
+    } else {
+        ensure_prompt_available()?;
+        pick_method(&wraps_file).await?
+    };
+    let dek = match method {
+        MethodChoice::Password if password_stdin => unlock_with_password_stdin().await?,
         MethodChoice::Password => unlock_with_password_prompt().await?,
         MethodChoice::SecurityKey => unlock_with_security_key_prompt(&wraps_file).await?,
     };
@@ -385,7 +461,7 @@ enum MethodChoice {
 /// keys — the device tells us which credential matches when the user taps,
 /// so it's fine to enumerate enrolled wraps internally and just present
 /// "Security key" to the user.
-fn pick_method(wraps_file: &WrapsFile) -> Result<MethodChoice> {
+async fn pick_method(wraps_file: &WrapsFile) -> Result<MethodChoice> {
     let has_password = wraps_file.has_password();
     let has_security_key = wraps_file.has_security_key();
 
@@ -396,18 +472,18 @@ fn pick_method(wraps_file: &WrapsFile) -> Result<MethodChoice> {
         (true, false) => Ok(MethodChoice::Password),
         (false, true) => Ok(MethodChoice::SecurityKey),
         (true, true) => {
-            println!("Authentication methods:");
-            println!("  1) Master password");
-            println!("  2) Security key");
-            print!("Choose [1]: ");
-            use std::io::Write;
-            std::io::stdout()
-                .flush()
-                .map_err(|e| Error::Config(format!("flush: {e}")))?;
-            let mut line = String::new();
-            std::io::stdin()
-                .read_line(&mut line)
-                .map_err(|e| Error::Config(format!("read: {e}")))?;
+            let line = timed_blocking_prompt(|| {
+                eprintln!("Authentication methods:");
+                eprintln!("  1) Master password");
+                eprintln!("  2) Security key");
+                eprint!("Choose [1]: ");
+                use std::io::Write;
+                std::io::stderr().flush()?;
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                Ok(line)
+            })
+            .await?;
             match line.trim() {
                 "" | "1" => Ok(MethodChoice::Password),
                 "2" => Ok(MethodChoice::SecurityKey),
@@ -418,18 +494,73 @@ fn pick_method(wraps_file: &WrapsFile) -> Result<MethodChoice> {
 }
 
 async fn unlock_with_password_prompt() -> Result<Dek> {
-    let password = rpassword::prompt_password("Master password: ")
-        .map_err(|e| Error::Config(format!("read password: {e}")))?;
+    let password =
+        timed_blocking_prompt(|| rpassword::prompt_password("Master password: ")).await?;
     Ok(auth::unlock_password(password).await?.dek)
 }
 
 async fn unlock_with_security_key_prompt(wraps_file: &WrapsFile) -> Result<Dek> {
-    let pin = rpassword::prompt_password("Security key PIN: ")
-        .map_err(|e| Error::Config(format!("read pin: {e}")))?;
+    let pin = timed_blocking_prompt(|| rpassword::prompt_password("Security key PIN: ")).await?;
     eprintln!("{}", crate::vault::security_key::TAP_MESSAGE);
     Ok(auth::unlock_security_key(wraps_file.clone(), pin)
         .await?
         .dek)
+}
+
+async fn unlock_with_password_stdin() -> Result<Dek> {
+    let password = read_password_line(std::io::stdin().lock())?;
+    Ok(auth::unlock_password(password).await?.dek)
+}
+
+fn read_password_line(mut reader: impl BufRead) -> Result<String> {
+    let mut password = String::new();
+    reader
+        .read_line(&mut password)
+        .map_err(|error| Error::Config(format!("read password from stdin: {error}")))?;
+    if password.ends_with('\n') {
+        password.pop();
+        if password.ends_with('\r') {
+            password.pop();
+        }
+    }
+    if password.is_empty() {
+        return Err(Error::Config("password from stdin cannot be empty".into()));
+    }
+    Ok(password)
+}
+
+fn should_prompt(no_prompt: bool, stdin_tty: bool, stderr_tty: bool, tty_openable: bool) -> bool {
+    !no_prompt && stdin_tty && stderr_tty && tty_openable
+}
+
+fn ensure_prompt_available() -> Result<()> {
+    let tty_openable = std::fs::File::open("/dev/tty").is_ok();
+    if should_prompt(
+        NO_PROMPT.load(Ordering::Relaxed),
+        std::io::stdin().is_terminal(),
+        std::io::stderr().is_terminal(),
+        tty_openable,
+    ) {
+        Ok(())
+    } else {
+        Err(Error::AuthRequired)
+    }
+}
+
+async fn timed_blocking_prompt<T, F>(prompt: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> std::io::Result<T> + Send + 'static,
+{
+    let task = tokio::task::spawn_blocking(prompt);
+    // The blocking read cannot be cancelled. On timeout the CLI returns an
+    // error and exits, so leaving that worker blocked cannot stall the process.
+    match tokio::time::timeout(Duration::from_secs(60), task).await {
+        Ok(joined) => joined
+            .map_err(|error| Error::Config(format!("prompt task: {error}")))?
+            .map_err(|error| Error::Config(format!("read prompt: {error}"))),
+        Err(_) => Err(Error::AuthRequired),
+    }
 }
 
 async fn logout() -> Result<()> {
@@ -865,7 +996,10 @@ mod tests {
 
         assert!(matches!(
             cli.command,
-            Some(Command::Login { timeout: None })
+            Some(Command::Login {
+                timeout: None,
+                password_stdin: false
+            })
         ));
     }
 
@@ -876,8 +1010,138 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Login {
-                timeout: Some(timeout)
+                timeout: Some(timeout),
+                password_stdin: false
             }) if timeout == "1h20m"
         ));
+    }
+
+    #[test]
+    fn no_prompt_parses_globally_and_survives_default_injection() {
+        let cli = Cli::try_parse_from(["aic", "esv", "list", "--no-prompt"]).unwrap();
+        assert!(cli.no_prompt);
+
+        let command = inject_tenant_default(Cli::command(), Some("sandbox"));
+        let matches = command
+            .try_get_matches_from(["aic", "--no-prompt", "esv", "list"])
+            .unwrap();
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+        assert!(cli.no_prompt);
+    }
+
+    #[test]
+    fn no_prompt_reads_the_environment() {
+        use std::ffi::OsStr;
+
+        let mut cli = Cli::try_parse_from(["aic", "status"]).unwrap();
+        assert!(!cli.no_prompt);
+
+        apply_no_prompt_env(&mut cli, Some(OsStr::new("1")));
+        assert!(cli.no_prompt);
+    }
+
+    #[test]
+    fn prompt_decision_requires_every_precondition() {
+        assert!(should_prompt(false, true, true, true));
+        assert!(!should_prompt(true, true, true, true));
+        assert!(!should_prompt(false, false, true, true));
+        assert!(!should_prompt(false, true, false, true));
+        assert!(!should_prompt(false, true, true, false));
+    }
+
+    #[test]
+    fn password_stdin_line_parsing_strips_only_the_line_ending() {
+        use std::io::Cursor;
+
+        assert_eq!(
+            read_password_line(Cursor::new("secret\nrest")).unwrap(),
+            "secret"
+        );
+        assert_eq!(
+            read_password_line(Cursor::new("secret\r\n")).unwrap(),
+            "secret"
+        );
+        assert_eq!(read_password_line(Cursor::new("secret")).unwrap(), "secret");
+        assert_eq!(
+            read_password_line(Cursor::new("secret  \n")).unwrap(),
+            "secret  "
+        );
+        assert!(read_password_line(Cursor::new("\n")).is_err());
+        assert!(read_password_line(Cursor::new("\r\n")).is_err());
+        assert!(read_password_line(Cursor::new("")).is_err());
+    }
+
+    #[test]
+    fn password_stdin_parses_on_both_login_forms() {
+        let session = Cli::try_parse_from(["aic", "session", "login", "--password-stdin"]).unwrap();
+        assert!(matches!(
+            session.command,
+            Some(Command::Session {
+                command: SessionCommand::Login {
+                    password_stdin: true,
+                    ..
+                }
+            })
+        ));
+
+        let alias = Cli::try_parse_from(["aic", "login", "--password-stdin"]).unwrap();
+        assert!(matches!(
+            alias.command,
+            Some(Command::Login {
+                password_stdin: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn every_command_variant_is_classified_for_tenant_auth() {
+        let cases = [
+            (vec!["aic", "agent"], false),
+            (vec!["aic", "login"], false),
+            (vec!["aic", "logout"], false),
+            (vec!["aic", "stop"], false),
+            (vec!["aic", "status"], false),
+            (vec!["aic", "session", "status"], false),
+            (vec!["aic", "ctx", "current"], false),
+            (vec!["aic", "whoami"], true),
+            (vec!["aic", "esv", "list"], true),
+            (vec!["aic", "managed", "list"], true),
+            (vec!["aic", "idm", "status"], true),
+            (vec!["aic", "sync", "mappings"], true),
+            (vec!["aic", "logs", "sources"], true),
+            (vec!["aic", "journey", "list"], true),
+            (vec!["aic", "oauth", "list"], true),
+            (vec!["aic", "secretmap", "list"], true),
+            (vec!["aic", "workspace", "init"], true),
+            (vec!["aic", "script", "list"], true),
+        ];
+
+        for (argv, expected) in cases {
+            let command = Cli::try_parse_from(argv).unwrap().command.unwrap();
+            assert_eq!(command.needs_tenant_auth(), expected);
+            // Keep this match exhaustive so adding a root command forces an
+            // explicit test classification as well as a production one.
+            match command {
+                Command::Agent { .. }
+                | Command::Login { .. }
+                | Command::Logout
+                | Command::Stop
+                | Command::Status
+                | Command::Session { .. }
+                | Command::Ctx { .. }
+                | Command::Whoami { .. }
+                | Command::Esv { .. }
+                | Command::Managed { .. }
+                | Command::Idm { .. }
+                | Command::Sync { .. }
+                | Command::Logs { .. }
+                | Command::Journey { .. }
+                | Command::Oauth { .. }
+                | Command::Secretmap { .. }
+                | Command::Workspace { .. }
+                | Command::Script { .. } => {}
+            }
+        }
     }
 }

@@ -36,6 +36,17 @@ aic <command> <subcommand> --help
 - **Output format.** List commands default to kubectl-style tables. Pass
   `--json` on list commands for machine-readable output. Single-resource reads
   and export-style commands still print JSON by default.
+- **Non-interactive mode.** Pass the global `--no-prompt` flag, or set
+  `AIC_NO_PROMPT=1`, to disable every interactive prompt. If input is required,
+  the command fails instead of waiting on a terminal.
+
+### Exit codes
+
+| Code | Meaning |
+| ---- | ------- |
+| `0`  | Success |
+| `1`  | General error, including invalid credentials |
+| `3`  | The agent is locked and the command could not prompt for authentication |
 
 ---
 
@@ -51,12 +62,28 @@ the locked/unlocked model and why `logout` ≠ `stop`.
 | `aic agent --detach`                 | Spawn a detached agent (logs to `.aic/agent.log`) and exit.                                                             |
 | `aic agent --idle-timeout <seconds>` | Override the auto-lock timeout (default 3600s, or `settings.toml`).                                                     |
 | `aic session login`                  | Unlock the agent (no-echo master-password prompt).                                                                      |
+| `aic session login --password-stdin` | Read one master-password line from stdin and unlock without prompting.                                                   |
 | `aic session logout`                 | **Lock** the agent — wipe keys + tokens from memory, leave it running.                                                  |
 | `aic session stop`                   | **Stop** the agent process entirely.                                                                                    |
 | `aic session status`                 | Show whether the agent is running/unlocked, the active tenant, and token expiry.                                        |
 
 The older top-level `aic login`, `aic logout`, `aic stop`, and `aic status`
 forms still work as compatibility aliases, but are hidden from help.
+
+Tenant commands pre-flight the agent session. A locked command prompts only
+when stdin and stderr are terminals and `/dev/tty` is available; the prompt
+times out after 60 seconds. For automation, either unlock explicitly or pass
+`--no-prompt` so a locked session exits with status 3. To unlock without a
+terminal, pipe exactly one password line:
+
+```sh
+printf '%s\n' "$PASSWORD" | aic session login --password-stdin --no-prompt
+aic --no-prompt esv list
+```
+
+`--password-stdin` selects the password factor when both a password and a
+security key are enrolled. It fails if there is no enrolled password factor.
+The binary deliberately does not read passwords from environment variables.
 
 ### Context
 

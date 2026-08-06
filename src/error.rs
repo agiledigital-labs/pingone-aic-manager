@@ -23,6 +23,11 @@ pub enum Error {
     #[error("Auth error: {0}")]
     Auth(String),
 
+    #[error(
+        "agent is locked and no terminal is available to prompt.\n  Run `aic session login` first, or pipe the password:\n  printf '%s\\n' \"$PASSWORD\" | aic session login --password-stdin"
+    )]
+    AuthRequired,
+
     #[error("no {kind} stored for tenant {tenant}")]
     SecretMissing { kind: String, tenant: String },
 
@@ -48,4 +53,27 @@ pub enum Error {
     OnboardCancelled,
 }
 
+impl Error {
+    /// Process exit status for this error. Unknown and general failures retain
+    /// the conventional status 1; callers may branch on an unavailable unlock.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::AuthRequired => 3,
+            _ => 1,
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_required_has_a_distinct_exit_code() {
+        assert_eq!(Error::AuthRequired.exit_code(), 3);
+        assert_eq!(Error::Auth("wrong password".into()).exit_code(), 1);
+        assert_eq!(Error::Config("other".into()).exit_code(), 1);
+    }
+}
