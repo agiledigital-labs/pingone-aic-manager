@@ -139,6 +139,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::jwtbearer::cli::JwtBearerCommand,
     },
+    /// Mint an OAuth2 access token as an end user.
+    Auth {
+        #[command(flatten)]
+        options: crate::jwtbearer::cli::AuthOptions,
+    },
     /// OAuth2 client inspection and export.
     Oauth {
         #[command(subcommand)]
@@ -220,6 +225,7 @@ impl Command {
             | Self::Logs { .. }
             | Self::Journey { .. }
             | Self::JwtBearer { .. }
+            | Self::Auth { .. }
             | Self::Oauth { .. }
             | Self::Secretmap { .. }
             | Self::Workspace { .. }
@@ -239,7 +245,13 @@ impl Command {
 pub async fn run(cli: Cli) -> Result<()> {
     NO_PROMPT.store(cli.no_prompt, Ordering::Relaxed);
     if cli.command.as_ref().is_some_and(Command::needs_tenant_auth) {
-        ensure_agent_unlocked(false).await?;
+        let quiet = matches!(
+            cli.command.as_ref(),
+            Some(Command::Auth {
+                options: crate::jwtbearer::cli::AuthOptions { token: true, .. }
+            })
+        );
+        ensure_agent_unlocked_internal(false, !quiet).await?;
         prepare_operator().await?;
     }
     match cli.command {
@@ -265,6 +277,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Logs { command }) => crate::logs::cli::run(command).await,
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
         Some(Command::JwtBearer { command }) => crate::jwtbearer::cli::run(command).await,
+        Some(Command::Auth { options }) => crate::jwtbearer::cli::run_auth(options).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
         Some(Command::Secretmap { command }) => crate::secretmap::cli::run(command).await,
         Some(Command::Workspace { command }) => crate::scripts::cli::run_workspace(command).await,
@@ -608,6 +621,10 @@ async fn login(timeout: Option<String>, password_stdin: bool) -> Result<()> {
 }
 
 pub(crate) async fn ensure_agent_unlocked(password_stdin: bool) -> Result<()> {
+    ensure_agent_unlocked_internal(password_stdin, true).await
+}
+
+async fn ensure_agent_unlocked_internal(password_stdin: bool, announce: bool) -> Result<()> {
     let client = AgentClient::connect_or_spawn().await?;
     match client.send(&Request::Status).await? {
         Response::Status(info) if info.unlocked => return Ok(()),
@@ -638,7 +655,9 @@ pub(crate) async fn ensure_agent_unlocked(password_stdin: bool) -> Result<()> {
             ));
         }
         auth::unlock_plain_agent().await?;
-        println!("unlocked (plain mode)");
+        if announce {
+            println!("unlocked (plain mode)");
+        }
         return Ok(());
     }
 
@@ -668,7 +687,9 @@ pub(crate) async fn ensure_agent_unlocked(password_stdin: bool) -> Result<()> {
 
     auth::put_dek_to_agent(&dek).await?;
     drop(dek);
-    println!("unlocked");
+    if announce {
+        println!("unlocked");
+    }
     Ok(())
 }
 
@@ -1170,7 +1191,7 @@ fn resolve_tenant(arg: Option<String>, cfg: &ProjectConfig) -> Result<String> {
     ))
 }
 
-fn redact(token: &str) -> String {
+pub(crate) fn redact(token: &str) -> String {
     let n = token.len();
     if n <= 16 {
         return "*".repeat(n);
@@ -1424,6 +1445,10 @@ mod tests {
             (vec!["aic", "logs", "sources"], true),
             (vec!["aic", "journey", "list"], true),
             (vec!["aic", "jwt-bearer", "setup"], true),
+            (
+                vec!["aic", "auth", "--as-id", "user", "--client-id", "client"],
+                true,
+            ),
             (vec!["aic", "oauth", "list"], true),
             (vec!["aic", "secretmap", "list"], true),
             (vec!["aic", "workspace", "init"], true),
@@ -1452,6 +1477,7 @@ mod tests {
                 | Command::Logs { .. }
                 | Command::Journey { .. }
                 | Command::JwtBearer { .. }
+                | Command::Auth { .. }
                 | Command::Oauth { .. }
                 | Command::Secretmap { .. }
                 | Command::Workspace { .. }

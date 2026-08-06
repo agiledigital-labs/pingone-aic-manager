@@ -61,6 +61,10 @@ pub enum Request {
         path: String,
         body: Option<serde_json::Value>,
         confirmed_prod: bool,
+        /// Optional content type for non-JSON request bodies. The body is
+        /// carried as a JSON string when this is set.
+        #[serde(default)]
+        content_type: Option<String>,
         /// Override the `Accept-API-Version` header for this call. `None`
         /// keeps the default `resource=1.0` (ESVs/secrets). AM scripts need
         /// `protocol=2.0,resource=1.0`; IDM config endpoints set their own.

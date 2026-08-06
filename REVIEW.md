@@ -42,6 +42,15 @@ findings). Each should name the guard that will eventually retire it.
   smallest change that resolves the finding would have been. _Guard: none
   automatable; this is a review judgement._
 
+- **Send the smallest credential that works.** Before a new transport helper
+  attaches the service-account bearer, ask whether the call authenticates some
+  other way — OAuth2 token endpoints authenticate by client credentials in the
+  body and need no bearer. Copying an existing helper inherits its auth by
+  default, and that reads as consistency rather than as new exposure. Related:
+  the daemon must not be asked to send tenant credentials to a host outside
+  `tenant.base_url`. _Guard: none yet — wants an origin assertion in
+  `AicClient::url`._
+
 ## Findings log
 
 ### 2026-08-06 — operator identity slice
@@ -175,3 +184,35 @@ findings). Each should name the guard that will eventually retire it.
   version handshake between CLI and daemon, so any future protocol change has
   this same failure mode; CLAUDE.md §8 warns about the resident binary but
   frames it as a testing inconvenience rather than an upgrade hazard.
+
+### 2026-08-06 — a privileged credential sent where it is not needed
+
+- **What:** `aic auth` mints a user token by POSTing an assertion plus
+  `client_id`/`client_secret` to the OAuth2 token endpoint — an exchange that
+  needs no bearer at all (verified: the whole flow succeeds with no
+  `Authorization` header). The new `AicClient::write_form` attaches the
+  service-account bearer anyway, so every `aic auth` ships a full
+  `fr:am:* fr:idm:*` credential to an endpoint with no business seeing it.
+  Alongside it, `AicClient::url()` was changed to forward absolute URLs
+  verbatim, dropping the invariant that every proxied request stays under
+  `tenant.base_url` — in a daemon that holds decrypted keys, that combination
+  means the SA bearer can be addressed at an arbitrary host.
+- **Why missed:** first sighting. The reviewer's habit is to ask whether an
+  endpoint is *authenticated correctly*, not whether it is authenticated
+  *more than necessary*. The transport helper was copied from `write`, and
+  inheriting the bearer looked like consistency rather than a new exposure.
+- **Guard:** promoted to Standing check 6.
+
+### 2026-08-06 — the absolute URL was never required
+
+- **What:** absolute-URL support existed only because the POST target was taken
+  verbatim from discovery's `token_endpoint`, which carries an explicit `:443`.
+  The `:443` is load-bearing for the **`aud` claim**, not for the request URL —
+  during the original verification the POST went to the port-less path and AM
+  processed it normally, failing only on `aud`. Taking `issuer` from discovery
+  and building the POST as a tenant-relative path removes the SSRF surface at
+  no cost.
+- **Why worth logging:** a quirk that is real in one place ("read it from
+  discovery, it has `:443`") got generalised to a place it did not apply. When
+  a doc says a value must come from a specific source, check *which* consumer
+  of that value the requirement attaches to.

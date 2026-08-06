@@ -17,6 +17,30 @@ fn issuers_path(realm: &str) -> String {
     format!("{}/realm-config/agents/TrustedJwtIssuer", realm_path(realm))
 }
 
+pub fn discovery_path(realm: &str) -> String {
+    format!(
+        "/am/oauth2{}/.well-known/openid-configuration",
+        realm_path(realm)
+    )
+}
+
+pub fn token_path(realm: &str) -> String {
+    format!("/am/oauth2/realms/root/realms/{realm}/access_token")
+}
+
+pub async fn discovery(tenant: &str, realm: &str) -> Result<Value> {
+    crate::aic::api::get(tenant, &discovery_path(realm)).await
+}
+
+pub async fn lookup_username(tenant: &str, realm: &str, username: &str) -> Result<Value> {
+    let path = crate::jwtbearer::spec::username_lookup_path(realm, username);
+    crate::aic::api::get(tenant, &path).await
+}
+
+pub async fn mint_user_token(tenant: &str, realm: &str, body: &str) -> Result<Value> {
+    crate::aic::api::post_form(tenant, &token_path(realm), body).await
+}
+
 fn validate_issuer_id(id: &str) -> Result<()> {
     if id.is_empty() || id.chars().any(is_separator) {
         return Err(Error::Config(format!(

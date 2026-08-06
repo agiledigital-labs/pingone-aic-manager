@@ -52,7 +52,7 @@ impl AicClient {
 
     pub async fn get(&self, path: &str, api_version: Option<&str>) -> Result<serde_json::Value> {
         let token = self.bearer().await?;
-        let url = format!("{}{path}", self.tenant.base_url);
+        let url = self.url(path);
         let resp = self
             .http
             .get(&url)
@@ -79,7 +79,7 @@ impl AicClient {
             return Err(Error::ProdConfirmRequired);
         }
         let token = self.bearer().await?;
-        let url = format!("{}{path}", self.tenant.base_url);
+        let url = self.url(path);
         let resp = self
             .http
             .request(method, &url)
@@ -91,6 +91,41 @@ impl AicClient {
             .send()
             .await?;
         self.check_response(resp).await
+    }
+
+    pub async fn write_form(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &str,
+        confirmed_prod: bool,
+    ) -> Result<serde_json::Value> {
+        if self.tenant.theme == TenantTheme::Production && !confirmed_prod {
+            return Err(Error::ProdConfirmRequired);
+        }
+        let resp = self.form_request(method, path, body).send().await?;
+        self.check_response(resp).await
+    }
+
+    fn form_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &str,
+    ) -> reqwest::RequestBuilder {
+        // OAuth2 token exchanges authenticate with the form's client
+        // credentials and assertion. Sending the service-account bearer here
+        // would expose a tenant credential to an endpoint that does not need it.
+        let url = self.url(path);
+        self.http
+            .request(method, &url)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Accept", "application/json")
+            .body(body.to_string())
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.tenant.base_url)
     }
 
     async fn check_response(&self, resp: reqwest::Response) -> Result<serde_json::Value> {
@@ -112,5 +147,57 @@ impl AicClient {
                 body,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tenant(base_url: String) -> Tenant {
+        Tenant {
+            name: "sandbox".into(),
+            base_url,
+            theme: TenantTheme::Sandbox,
+            sa_id: None,
+            scopes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn url_always_prefixes_the_tenant_base_url() {
+        let client = AicClient::new(
+            tenant("https://tenant.example".into()),
+            serde_json::Value::Null,
+        );
+
+        // The property that matters is confinement, not the exact string an
+        // absolute path degrades into: whatever a caller passes, the request
+        // must still be addressed at this tenant. The daemon holds decrypted
+        // keys, so a path that could name its own host would let a tenant
+        // credential be sent anywhere.
+        let mangled = client.url("https://attacker.example/token");
+        assert!(mangled.starts_with("https://tenant.example"));
+        assert_eq!(
+            url::Url::parse(&mangled).unwrap().host_str(),
+            Some("tenant.examplehttps")
+        );
+
+        assert_eq!(client.url("/am/json/x"), "https://tenant.example/am/json/x");
+    }
+
+    #[test]
+    fn form_request_sends_no_bearer_or_api_version_header() {
+        let client = AicClient::new(
+            tenant("https://tenant.example".into()),
+            serde_json::Value::Null,
+        );
+        let request = client
+            .form_request(reqwest::Method::POST, "/token", "grant_type=example")
+            .build()
+            .unwrap();
+
+        assert!(request.headers().get("authorization").is_none());
+        assert!(request.headers().get("accept-api-version").is_none());
     }
 }

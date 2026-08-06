@@ -234,6 +234,16 @@ capability. Minting a user token from the stored key, exporting a public JWKS,
 and key rotation/removal remain future work; export must be an explicit command,
 not a setup side effect.
 
+## Planned shape
+
+- aic auth --as-id <uuid> --client-id <id> or
+  aic auth --as-username <name> --client-id <id> now resolves the subject,
+  signs with the stored tenant key, exchanges at the tenant-relative realm
+  token path, and supports repeatable --scope, --realm, --tenant,
+  --client-secret-stdin, and bare-token --token output. Discovery's `issuer`
+  remains the source of the audience claim; its `token_endpoint` is not used
+  as an outbound URL.
+
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`, realm `alpha`

@@ -66,7 +66,7 @@ struct JwtClaims {
     jti: String,
 }
 
-fn jwk_to_encoding_key(jwk: &serde_json::Value) -> Result<EncodingKey> {
+pub(crate) fn jwk_to_encoding_key(jwk: &serde_json::Value) -> Result<EncodingKey> {
     let n_b64 = jwk["n"]
         .as_str()
         .ok_or_else(|| Error::Auth("JWK missing 'n'".into()))?;

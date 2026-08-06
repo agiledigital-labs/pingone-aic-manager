@@ -348,6 +348,7 @@ async fn handle(
             path,
             body,
             confirmed_prod,
+            content_type,
             api_version,
         } => {
             match do_api_call(
@@ -355,8 +356,11 @@ async fn handle(
                 &method,
                 &path,
                 body,
-                confirmed_prod,
-                api_version,
+                ApiCallOptions {
+                    confirmed_prod,
+                    content_type,
+                    api_version,
+                },
                 state,
             )
             .await
@@ -587,13 +591,18 @@ fn save_secret_map(
 /// Proxy a tenant-scoped HTTP call to AIC. Returns `Ok(None)` when the
 /// agent is locked so the caller can answer with `Response::Locked`.
 /// Connection pooling happens automatically via the per-tenant AicClient.
+struct ApiCallOptions {
+    confirmed_prod: bool,
+    content_type: Option<String>,
+    api_version: Option<String>,
+}
+
 async fn do_api_call(
     tenant: &str,
     method: &str,
     path: &str,
     body: Option<serde_json::Value>,
-    confirmed_prod: bool,
-    api_version: Option<String>,
+    options: ApiCallOptions,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<Option<serde_json::Value>> {
     if !state.read().await.is_unlocked() {
@@ -618,16 +627,24 @@ async fn do_api_call(
         Some(c) => c,
         None => build_client(tenant, state.clone()).await?,
     };
-    let av = api_version.as_deref();
+    let av = options.api_version.as_deref();
     let value = match method {
         "GET" => client.get(path, av).await?,
+        "POST" if options.content_type.as_deref() == Some("application/x-www-form-urlencoded") => {
+            let body = body
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .ok_or_else(|| Error::Config("form request body must be a JSON string".into()))?;
+            client
+                .write_form(reqwest::Method::POST, path, &body, options.confirmed_prod)
+                .await?
+        }
         "POST" => {
             client
                 .write(
                     reqwest::Method::POST,
                     path,
                     body.unwrap_or(serde_json::Value::Null),
-                    confirmed_prod,
+                    options.confirmed_prod,
                     av,
                 )
                 .await?
@@ -638,7 +655,7 @@ async fn do_api_call(
                     reqwest::Method::PUT,
                     path,
                     body.unwrap_or(serde_json::Value::Null),
-                    confirmed_prod,
+                    options.confirmed_prod,
                     av,
                 )
                 .await?
@@ -649,7 +666,7 @@ async fn do_api_call(
                     reqwest::Method::PATCH,
                     path,
                     body.unwrap_or(serde_json::Value::Null),
-                    confirmed_prod,
+                    options.confirmed_prod,
                     av,
                 )
                 .await?
@@ -660,7 +677,7 @@ async fn do_api_call(
                     reqwest::Method::DELETE,
                     path,
                     body.unwrap_or(serde_json::Value::Null),
-                    confirmed_prod,
+                    options.confirmed_prod,
                     av,
                 )
                 .await?

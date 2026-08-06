@@ -38,6 +38,13 @@ pub async fn post(
     call(tenant, "POST", path, Some(body), confirmed_prod, None).await
 }
 
+/// `POST` a form-encoded body through the daemon-owned HTTP connection pool.
+/// The form transport does not attach the service-account bearer because OAuth2
+/// token endpoints authenticate from the form body.
+pub async fn post_form(tenant: &str, path: &str, body: &str) -> Result<serde_json::Value> {
+    call_form(tenant, "POST", path, body, false).await
+}
+
 /// `POST` with an explicit `Accept-API-Version`.
 pub async fn post_versioned(
     tenant: &str,
@@ -133,7 +140,39 @@ async fn call(
             path: path.to_string(),
             body,
             confirmed_prod,
+            content_type: None,
             api_version: api_version.map(|s| s.to_string()),
+        })
+        .await?;
+    match resp {
+        Response::Json { value } => Ok(value),
+        Response::Locked => Err(Error::Auth(
+            "agent is locked — run `aic session login` (CLI) or unlock the TUI".into(),
+        )),
+        Response::ProdConfirmRequired => Err(Error::ProdConfirmRequired),
+        Response::ApiError { status, body } => Err(Error::Api { status, body }),
+        Response::Error { message } => Err(Error::Config(message)),
+        other => Err(Error::Config(format!("unexpected agent reply: {other:?}"))),
+    }
+}
+
+async fn call_form(
+    tenant: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+    confirmed_prod: bool,
+) -> Result<serde_json::Value> {
+    let agent = AgentClient::connect_or_spawn().await?;
+    let resp = agent
+        .send(&Request::ApiCall {
+            tenant: tenant.to_string(),
+            method: method.to_string(),
+            path: path.to_string(),
+            body: Some(serde_json::Value::String(body.to_string())),
+            confirmed_prod,
+            content_type: Some("application/x-www-form-urlencoded".into()),
+            api_version: None,
         })
         .await?;
     match resp {

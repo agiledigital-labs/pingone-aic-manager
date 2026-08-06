@@ -3,7 +3,11 @@
 //! In particular, [`merge_jwk_set`] is deliberately independent of the HTTP
 //! layer so future key removal can share its parser and validation rules.
 
+use jsonwebtoken::Header;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use url::form_urlencoded::Serializer;
+use uuid::Uuid;
 
 use crate::config::TenantTheme;
 use crate::{Error, Result};
@@ -98,10 +102,160 @@ pub fn issuer_body(source: Value, issuer: &str, jwk_set: String) -> Result<Value
 pub fn ensure_not_production(theme: TenantTheme) -> Result<()> {
     if theme == TenantTheme::Production {
         return Err(Error::Config(
-            "jwt-bearer setup is refused on production-themed tenants".into(),
+            "jwt-bearer user-token operations are refused on production-themed tenants".into(),
         ));
     }
     Ok(())
+}
+
+pub const MAX_ASSERTION_TTL_SECS: i64 = 180;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserAssertionClaims {
+    pub iss: String,
+    pub sub: String,
+    pub aud: String,
+    pub iat: i64,
+    pub exp: i64,
+    pub jti: String,
+}
+
+/// Build user assertion claims. Scope is deliberately absent: AM treats
+/// consentedScopesClaim as a ceiling, while requested scopes belong in the
+/// exchange form.
+pub fn user_assertion_claims(
+    issuer: &str,
+    subject: &str,
+    audience: &str,
+    now: i64,
+) -> UserAssertionClaims {
+    UserAssertionClaims {
+        iss: issuer.to_string(),
+        sub: subject.to_string(),
+        aud: audience.to_string(),
+        iat: now,
+        exp: now + MAX_ASSERTION_TTL_SECS,
+        jti: Uuid::new_v4().to_string(),
+    }
+}
+
+pub fn user_assertion_header(kid: &str) -> Header {
+    let mut header = Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(kid.to_string());
+    header
+}
+
+pub fn sign_user_assertion(
+    issuer: &str,
+    subject: &str,
+    audience: &str,
+    now: i64,
+    kid: &str,
+    private_jwk: &Value,
+) -> Result<String> {
+    let claims = user_assertion_claims(issuer, subject, audience, now);
+    let header = user_assertion_header(kid);
+    let key = crate::aic::auth::jwk_to_encoding_key(private_jwk)?;
+    jsonwebtoken::encode(&header, &claims, &key).map_err(|error| Error::Auth(error.to_string()))
+}
+
+pub fn token_request(
+    client_id: &str,
+    client_secret: Option<&str>,
+    assertion: &str,
+    scopes: &[String],
+) -> String {
+    let mut form = Serializer::new(String::new());
+    form.append_pair("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+        .append_pair("client_id", client_id)
+        .append_pair("assertion", assertion);
+    if let Some(secret) = client_secret {
+        form.append_pair("client_secret", secret);
+    }
+    if !scopes.is_empty() {
+        form.append_pair("scope", &scopes.join(" "));
+    }
+    form.finish()
+}
+
+pub fn username_lookup_path(realm: &str, username: &str) -> String {
+    let filter = format!("userName eq \"{username}\"");
+    let query = Serializer::new(String::new())
+        .append_pair("_queryFilter", &filter)
+        .append_pair("_fields", "_id")
+        .finish();
+    format!("/openidm/managed/{realm}_user?{query}")
+}
+
+pub fn user_id_from_lookup(username: &str, response: &Value) -> Result<String> {
+    let results = response
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "username lookup for {username:?} returned an unexpected response"
+            ))
+        })?;
+    match results.as_slice() {
+        [] => Err(Error::Config(format!(
+            "username lookup for {username:?} returned no users; check the username"
+        ))),
+        [_] => results[0]
+            .get("_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                Error::Config(format!(
+                    "username lookup for {username:?} returned a user without _id"
+                ))
+            }),
+        _ => Err(Error::Config(format!(
+            "username lookup for {username:?} returned multiple users; use --as-id"
+        ))),
+    }
+}
+
+/// Turn the verified AM OAuth error strings into the next action an operator
+/// can take, while leaving unrelated transport/API errors intact.
+pub fn map_token_error(error: Error) -> Error {
+    let Error::Api { status, body } = error else {
+        return error;
+    };
+    let parsed = serde_json::from_str::<Value>(&body).ok();
+    let code = parsed
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let description = parsed
+        .as_ref()
+        .and_then(|value| value.get("error_description"))
+        .and_then(Value::as_str)
+        .unwrap_or(&body);
+    let lower = description.to_ascii_lowercase();
+    let message = if code == "invalid_client" {
+        Some("AM rejected client authentication; supply --client-secret-stdin".to_string())
+    } else if code == "unauthorized_client" || lower.contains("grant not allowed") {
+        Some("AM rejected the grant; the client needs urn:ietf:params:oauth:grant-type:jwt-bearer in its grant types".to_string())
+    } else if lower.contains("unknown jwt issuer") {
+        Some("AM does not know this JWT issuer; run aic jwt-bearer setup".to_string())
+    } else if lower.contains("issuer is not authorized to grant consent for this subject") {
+        Some("the issuer is restricted to specific subjects; this user is not allowed".to_string())
+    } else if lower.contains("not able to read user information") {
+        Some("AM could not find the user; check the id/username".to_string())
+    } else if lower.contains("incorrect audience in jwt") {
+        Some(
+            "AM rejected the audience; this is an internal bug because it comes from discovery"
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    match message {
+        Some(message) => Error::Config(message),
+        None => Error::Api { status, body },
+    }
 }
 
 fn unwrap_inherited(value: Value) -> Value {
@@ -188,5 +342,114 @@ mod tests {
         assert_eq!(body["consentedScopesClaim"], "scope");
         assert_eq!(body["resourceOwnerIdentityClaim"], "sub");
         assert_eq!(body["custom"]["aic_host"], "host");
+    }
+
+    #[test]
+    fn user_claims_have_no_scope_and_short_expiry() {
+        let claims = user_assertion_claims("aic-agent", "user-id", "https://tenant:443/aud", 100);
+        let json = serde_json::to_value(&claims).unwrap();
+        assert_eq!(json["iss"], "aic-agent");
+        assert_eq!(json["sub"], "user-id");
+        assert_eq!(json["aud"], "https://tenant:443/aud");
+        assert!(json.get("scope").is_none());
+        assert!(claims.exp - claims.iat <= MAX_ASSERTION_TTL_SECS);
+        assert!(!claims.jti.is_empty());
+    }
+
+    #[test]
+    fn assertion_header_selects_the_stored_kid_and_rs256() {
+        let header = user_assertion_header("stored-kid");
+        assert_eq!(header.alg, jsonwebtoken::Algorithm::RS256);
+        assert_eq!(header.kid.as_deref(), Some("stored-kid"));
+    }
+
+    #[test]
+    fn token_request_puts_scopes_in_the_form_not_the_assertion() {
+        let body = token_request(
+            "client",
+            Some("secret"),
+            "assertion",
+            &["openid".into(), "profile".into()],
+        );
+        assert!(body.contains("client_id=client"));
+        assert!(body.contains("client_secret=secret"));
+        assert!(body.contains("scope=openid+profile"));
+        assert!(!body.contains("scope%22"));
+    }
+
+    #[test]
+    fn username_lookup_uses_the_realm_user_collection() {
+        let path = username_lookup_path("alpha", "a user");
+        assert_eq!(
+            path,
+            "/openidm/managed/alpha_user?_queryFilter=userName+eq+%22a+user%22&_fields=_id"
+        );
+    }
+
+    #[test]
+    fn username_lookup_distinguishes_zero_and_multiple_results() {
+        let zero = user_id_from_lookup("missing", &json!({"result": []})).unwrap_err();
+        let multiple = user_id_from_lookup(
+            "duplicate",
+            &json!({"result": [{"_id": "one"}, {"_id": "two"}]}),
+        )
+        .unwrap_err();
+        assert!(zero.to_string().contains("no users"));
+        assert!(multiple.to_string().contains("multiple users"));
+        assert_ne!(zero.to_string(), multiple.to_string());
+    }
+
+    #[test]
+    fn token_errors_name_the_fix_for_each_verified_am_failure() {
+        let cases = [
+            (
+                r#"{"error":"invalid_grant","error_description":"Unknown JWT issuer"}"#,
+                "jwt-bearer setup",
+            ),
+            (
+                r#"{"error":"invalid_grant","error_description":"Issuer is not authorized to grant consent for this subject"}"#,
+                "restricted to specific subjects",
+            ),
+            (
+                r#"{"error":"invalid_grant","error_description":"Not able to read user information."}"#,
+                "check the id/username",
+            ),
+            (
+                r#"{"error":"invalid_grant","error_description":"incorrect audience in JWT"}"#,
+                "internal bug",
+            ),
+            (
+                r#"{"error":"invalid_client","error_description":"Client authentication failed"}"#,
+                "client-secret-stdin",
+            ),
+            (
+                r#"{"error":"unauthorized_client","error_description":"grant not allowed"}"#,
+                "grant types",
+            ),
+        ];
+        for (body, expected) in cases {
+            let error = map_token_error(Error::Api {
+                status: 400,
+                body: body.into(),
+            });
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn fixed_jwk_can_sign_an_assertion_without_runtime_key_generation() {
+        let jwk = json!({
+            "kty": "RSA",
+            "n": "AKpuDplQxCLK-rAKU07dO7TzfBy7kEzc_dfqET0uBLRifyWGGIX4IphLDLoY4-BcNWAP6hLRRRIP_FkYu1m2MPPuO7pOaua8ZaCzfyjXWt77G0OZP493fXndGKam3sy-UTKgMIN5DfJ557CCPFFN3IEX5I8QzUye8CRCnuyXBP-h",
+            "e": "AQAB",
+            "d": "HBCThtut8KzMK0EIBuyXcGzH-1NHp-CcTHnW7OQvEiVGGr_COg1qZPm21s5SeBe3EmKMgRzE6vyG6YURFOzTkpLEMsjPTMUDXFIuKatyEu0xs6pSIiRRaQkauVheDbezVdd0w2FiZbcYhcfH4ShJZOLpH8u0H7sCkKtQehc0uyE",
+            "p": "ANpSI07iIr2jcZdzXDX5ul13A-x4Add0A07RGa-1VtPaXKEMHSvzEyXwSn0p-EH-LKUi9eB1puqd_Ii_1WV1OuM",
+            "q": "AMfX_9KCXu9iUYQrx3frtsGWkJyC8LjQBogeH2UNnBzrCJldEtijhz08W_Rtak--5SQMflEUYx2Ww8R4rR6czqs"
+        });
+        let token = sign_user_assertion("aic-agent", "user-id", "audience", 100, "fixed-kid", &jwk)
+            .unwrap();
+        let header = jsonwebtoken::decode_header(&token).unwrap();
+        assert_eq!(header.kid.as_deref(), Some("fixed-kid"));
+        assert_eq!(header.alg, jsonwebtoken::Algorithm::RS256);
     }
 }
