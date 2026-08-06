@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf, is_separator};
 use clap::Subcommand;
 use serde_json::Value;
 
-use crate::cli::{print_json, print_table, tenant_for};
+use crate::cli::{print_json, print_table, realm_arg, tenant_for};
 use crate::config::ProjectConfig;
 use crate::journey::api;
 use crate::{Error, Result};
@@ -91,17 +91,6 @@ pub enum JourneyCommand {
         #[arg(long)]
         tenant: Option<String>,
     },
-}
-
-fn journey_realm(realm: Option<String>) -> Result<String> {
-    let realm = realm.unwrap_or_else(|| "alpha".to_string());
-    if realm == "alpha" || realm == "bravo" {
-        Ok(realm)
-    } else {
-        Err(Error::Config(format!(
-            "invalid journey realm {realm:?}; use alpha or bravo"
-        )))
-    }
 }
 
 fn validate_journey_name(name: &str) -> Result<()> {
@@ -402,7 +391,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             json,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = journey_realm(realm)?;
+            let realm = realm_arg("journey", realm)?;
             let names = api::list_trees(&tenant, &realm).await?;
             if json {
                 print_json(&names)?;
@@ -421,7 +410,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             tenant,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = journey_realm(realm)?;
+            let realm = realm_arg("journey", realm)?;
             let path = export_path(&tenant, &realm, &name)?;
             let snapshot = snapshot_path(&tenant, &realm, &name)?;
             let export = api::pull(&tenant, &realm, &name).await?;
@@ -442,7 +431,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             tenant,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = journey_realm(realm)?;
+            let realm = realm_arg("journey", realm)?;
             let path = export_path(&tenant, &realm, &name)?;
             let snapshot = snapshot_path(&tenant, &realm, &name)?;
             let (local_export, local_value) = read_export(&path, &name)?;
@@ -488,7 +477,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             tenant,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = journey_realm(realm)?;
+            let realm = realm_arg("journey", realm)?;
             if !force {
                 eprintln!(
                     "would delete journey {name} from {tenant}/{realm}; pass --force to delete it"
@@ -507,7 +496,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             json,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = journey_realm(realm)?;
+            let realm = realm_arg("journey", realm)?;
             let mut matches = Vec::new();
             for name in api::list_trees(&tenant, &realm).await? {
                 let tree = match api::read_tree(&tenant, &realm, &name).await {
@@ -556,7 +545,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             tenant,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = journey_realm(realm)?;
+            let realm = realm_arg("journey", realm)?;
             let mut node_types = api::list_node_types(&tenant, &realm).await?;
             if let Some(tag) = tag.as_deref() {
                 node_types.retain(|node_type| node_type_matches_tag(node_type, tag));
@@ -576,7 +565,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             tenant,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = journey_realm(realm)?;
+            let realm = realm_arg("journey", realm)?;
             let schema = api::node_schema(&tenant, &realm, &node_type).await?;
             println!("{}", serde_json::to_string_pretty(&schema)?);
             Ok(())
@@ -587,7 +576,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             tenant,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = journey_realm(realm)?;
+            let realm = realm_arg("journey", realm)?;
             let template = api::node_template(&tenant, &realm, &node_type).await?;
             println!("{}", serde_json::to_string_pretty(&template)?);
             Ok(())
@@ -602,13 +591,13 @@ mod tests {
 
     #[test]
     fn journey_realm_defaults_to_alpha_and_accepts_bravo() {
-        assert_eq!(journey_realm(None).unwrap(), "alpha");
-        assert_eq!(journey_realm(Some("bravo".into())).unwrap(), "bravo");
+        assert_eq!(realm_arg("journey", None).unwrap(), "alpha");
+        assert_eq!(realm_arg("journey", Some("bravo".into())).unwrap(), "bravo");
     }
 
     #[test]
     fn journey_realm_rejects_other_realms() {
-        let error = journey_realm(Some("root".into())).unwrap_err();
+        let error = realm_arg("journey", Some("root".into())).unwrap_err();
         assert!(error.to_string().contains("alpha or bravo"));
     }
 

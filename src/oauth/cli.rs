@@ -8,7 +8,7 @@ use clap::{Args, Subcommand};
 use rand::RngCore;
 use serde_json::Value;
 
-use crate::cli::{print_json, print_table, prod_hint, read_password_line, tenant_for};
+use crate::cli::{print_json, print_table, prod_hint, read_password_line, realm_arg, tenant_for};
 use crate::config::ProjectConfig;
 use crate::oauth::{api, spec};
 use crate::{Error, Result};
@@ -130,17 +130,6 @@ pub enum OauthCommand {
         #[arg(long)]
         tenant: Option<String>,
     },
-}
-
-fn oauth_realm(realm: Option<String>) -> Result<String> {
-    let realm = realm.unwrap_or_else(|| "alpha".to_string());
-    if realm == "alpha" || realm == "bravo" {
-        Ok(realm)
-    } else {
-        Err(Error::Config(format!(
-            "invalid oauth realm {realm:?}; use alpha or bravo"
-        )))
-    }
 }
 
 fn validate_client_id(id: &str) -> Result<()> {
@@ -354,7 +343,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             json,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = oauth_realm(realm)?;
+            let realm = realm_arg("oauth", realm)?;
             let clients = api::list_clients(&tenant, &realm).await?;
             if json {
                 print_json(&clients)?;
@@ -370,7 +359,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
         }
         OauthCommand::Create { id, options } => {
             let tenant = tenant_for(options.tenant.clone())?;
-            let realm = oauth_realm(options.realm.clone())?;
+            let realm = realm_arg("oauth", options.realm.clone())?;
             validate_client_id(&id)?;
 
             let exists = match api::read_client(&tenant, &realm, &id).await {
@@ -425,7 +414,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
         }
         OauthCommand::Pull { id, realm, tenant } => {
             let tenant = tenant_for(tenant)?;
-            let realm = oauth_realm(realm)?;
+            let realm = realm_arg("oauth", realm)?;
             let path = export_path(&tenant, &realm, &id)?;
             let snapshot = snapshot_path(&tenant, &realm, &id)?;
             let client = api::read_client(&tenant, &realm, &id).await?;
@@ -442,7 +431,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             tenant,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = oauth_realm(realm)?;
+            let realm = realm_arg("oauth", realm)?;
             let path = export_path(&tenant, &realm, &id)?;
             let snapshot = snapshot_path(&tenant, &realm, &id)?;
             let local = read_export(&path, &id)?;
@@ -486,7 +475,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             tenant,
         } => {
             let tenant = tenant_for(tenant)?;
-            let realm = oauth_realm(realm)?;
+            let realm = realm_arg("oauth", realm)?;
             if !force {
                 eprintln!(
                     "would delete oauth client {id} from {tenant}/{realm}; pass --force to delete it"
@@ -509,13 +498,13 @@ mod tests {
 
     #[test]
     fn oauth_realm_defaults_to_alpha_and_accepts_bravo() {
-        assert_eq!(oauth_realm(None).unwrap(), "alpha");
-        assert_eq!(oauth_realm(Some("bravo".into())).unwrap(), "bravo");
+        assert_eq!(realm_arg("oauth", None).unwrap(), "alpha");
+        assert_eq!(realm_arg("oauth", Some("bravo".into())).unwrap(), "bravo");
     }
 
     #[test]
     fn oauth_realm_rejects_other_realms() {
-        let error = oauth_realm(Some("root".into())).unwrap_err();
+        let error = realm_arg("oauth", Some("root".into())).unwrap_err();
         assert!(error.to_string().contains("alpha or bravo"));
     }
 

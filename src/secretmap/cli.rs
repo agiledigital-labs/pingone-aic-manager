@@ -4,7 +4,7 @@ use clap::Subcommand;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::cli::{clip, print_json, print_table, tenant_config_for};
+use crate::cli::{clip, print_json, print_table, realm_arg, tenant_config_for};
 use crate::config::Tenant;
 use crate::secretmap::{api, labels};
 use crate::{Error, Result};
@@ -74,17 +74,6 @@ struct LabelOutput {
     secret_id: String,
     description: String,
     category: &'static str,
-}
-
-fn secretmap_realm(realm: Option<String>) -> Result<String> {
-    let realm = realm.unwrap_or_else(|| "alpha".to_string());
-    if realm == "alpha" || realm == "bravo" {
-        Ok(realm)
-    } else {
-        Err(Error::Config(format!(
-            "invalid secretmap realm {realm:?}; use alpha or bravo"
-        )))
-    }
 }
 
 fn tenant_for_secretmap(tenant: Option<String>) -> Result<Tenant> {
@@ -213,7 +202,7 @@ pub async fn run(cmd: SecretmapCommand) -> Result<()> {
         } => {
             let tenant = tenant_for_secretmap(tenant)?;
             let tenant_name = tenant.name;
-            let realm = secretmap_realm(realm)?;
+            let realm = realm_arg("secretmap", realm)?;
             let mappings = api::list_mappings(&tenant_name, &realm).await?;
             let count = mappings.len();
             if json {
@@ -232,7 +221,7 @@ pub async fn run(cmd: SecretmapCommand) -> Result<()> {
         } => {
             let tenant = tenant_for_secretmap(tenant)?;
             let tenant_name = tenant.name;
-            let realm = secretmap_realm(realm)?;
+            let realm = realm_arg("secretmap", realm)?;
             let mapping = match api::read_mapping(&tenant_name, &realm, &secret_id).await {
                 Ok(mapping) => mapping,
                 Err(error) if api_not_found(&error) => {
@@ -255,7 +244,7 @@ pub async fn run(cmd: SecretmapCommand) -> Result<()> {
         } => {
             let tenant = tenant_for_secretmap(tenant)?;
             let tenant_name = tenant.name;
-            let realm = secretmap_realm(realm)?;
+            let realm = realm_arg("secretmap", realm)?;
 
             let valid = api::valid_secret_ids(&tenant_name, &realm).await?;
             if !valid.iter().any(|candidate| candidate == &secret_id) {
@@ -305,7 +294,7 @@ pub async fn run(cmd: SecretmapCommand) -> Result<()> {
         } => {
             let tenant = tenant_for_secretmap(tenant)?;
             let tenant_name = tenant.name;
-            let realm = secretmap_realm(realm)?;
+            let realm = realm_arg("secretmap", realm)?;
 
             let valid = api::valid_secret_ids(&tenant_name, &realm).await?;
             if !valid.iter().any(|candidate| candidate == &secret_id) {
@@ -347,7 +336,7 @@ pub async fn run(cmd: SecretmapCommand) -> Result<()> {
         } => {
             let tenant = tenant_for_secretmap(tenant)?;
             let tenant_name = tenant.name;
-            let realm = secretmap_realm(realm)?;
+            let realm = realm_arg("secretmap", realm)?;
             let secret_ids = api::valid_secret_ids(&tenant_name, &realm).await?;
             let count = secret_ids.len();
             if json {
@@ -371,13 +360,16 @@ mod tests {
 
     #[test]
     fn secretmap_realm_defaults_to_alpha_and_accepts_bravo() {
-        assert_eq!(secretmap_realm(None).unwrap(), "alpha");
-        assert_eq!(secretmap_realm(Some("bravo".into())).unwrap(), "bravo");
+        assert_eq!(realm_arg("secretmap", None).unwrap(), "alpha");
+        assert_eq!(
+            realm_arg("secretmap", Some("bravo".into())).unwrap(),
+            "bravo"
+        );
     }
 
     #[test]
     fn secretmap_realm_rejects_other_realms() {
-        let error = secretmap_realm(Some("root".into())).unwrap_err();
+        let error = realm_arg("secretmap", Some("root".into())).unwrap_err();
         assert!(error.to_string().contains("alpha or bravo"));
     }
 
