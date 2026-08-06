@@ -29,6 +29,19 @@ findings). Each should name the guard that will eventually retire it.
   _Guard: none obvious; wants `scripts/verify-endpoint.sh` to work so the honest
   path is also the easy one._
 
+- **No cryptographic key generation in the default test path.** An RSA keygen
+  is seconds, not milliseconds; one of them took this suite from 0.33s to 8.31s
+  (2026-08-06). Test the shape of a key record against a stub, and gate any
+  genuine end-to-end keygen behind `#[ignore]`. _Guard: none yet — wants a
+  wall-clock budget assertion, or a grep for `generate_rsa` under `#[cfg(test)]`._
+
+- **A fix must not outgrow its finding.** When a cosmetic cleanup turns into a
+  change to a shared protocol, storage format, or wire format, that is a
+  finding in itself — the cost/benefit that justified the cleanup no longer
+  applies, and the risk was never reviewed on its own merits. Ask what the
+  smallest change that resolves the finding would have been. _Guard: none
+  automatable; this is a review judgement._
+
 ## Findings log
 
 ### 2026-08-06 — operator identity slice
@@ -103,3 +116,62 @@ findings). Each should name the guard that will eventually retire it.
   line *after* the `exec` marker. Read the tool's own transcript format before
   concluding what it did or didn't run.
 - **Guard:** Standing check 3 above.
+
+### 2026-08-06 — RSA keygen in the default suite
+
+- **What:** `src/jwtbearer/ops.rs` tested `generate_key` directly, doing a real
+  2048-bit RSA keygen. The workspace suite went from 0.33s to 8.31s; the eight
+  new tests alone took 4.53s, nearly all in that one test — which asserts only
+  the *shape* of the record (opaque kid, three `aic_*` members) and needs no
+  real key at all.
+- **Guard:** Standing check 4 above.
+
+### 2026-08-06 — publish-before-store leaves an orphan in a shared key set
+
+- **What:** `ops::setup` writes the public JWK into the realm's shared `jwkSet`
+  and only then stores the private half locally. If the local store fails, the
+  tenant carries a key with your name on it that nobody holds the private half
+  for, and the next `setup` generates a fresh one rather than recovering — so
+  the orphan is permanent, in a set the whole team shares.
+- **Why missed:** first sighting. The prompt specified idempotence and a
+  read-back check, which framed the risk as *concurrent writers* rather than
+  *partial failure of a two-store write*.
+- **Guard:** order the writes so the recoverable side goes first — store
+  locally, then publish; a failed publish self-heals on the next run. Worth a
+  general rule: when a single operation writes to two stores, write first to
+  whichever one makes a retry idempotent.
+
+### 2026-08-06 — verifying a predicted defect downgraded it
+
+- **What:** `spec::unwrap_inherited` only unwraps two-key `{inherited, value}`
+  wrappers, and AM really does return `jwksUri` as a one-key `{"inherited":
+  false}`. That looked like a second-run `PUT` sending a malformed field. A live
+  round trip against a throwaway issuer returned 200 with the value preserved —
+  AM tolerates it. Reported as a note, not a bug.
+- **Why worth logging:** the reviewer's instinct was right about the shape and
+  wrong about the severity. Predicting a failure from reading code is cheap;
+  confirming it against the live API is also cheap here, and the difference
+  between "broken on every second run" and "cosmetic" is the difference between
+  blocking a commit and not.
+
+### 2026-08-06 — a cosmetic nit became an unversioned protocol change
+
+- **What:** the review asked that `ops::setup` stop calling
+  `AgentClient::connect_or_spawn()` twice — the smallest of ten findings, worth
+  microseconds on a local Unix socket. The fix changed the daemon from
+  one-request-per-connection to a loop, added an `*_on_connection` variant of
+  every secret verb, and moved `send()`'s socket shutdown from before the
+  response read to after. Three consequences: a new CLI cannot talk to a
+  resident old daemon (verified live — the 5-day-old agent replied once and
+  then closed, so a second request got `BrokenPipeError`), a documented
+  deadlock guard was deleted along with the comment explaining it, and
+  `handle_connection` now parks a task in `read_line` with no timeout where it
+  previously did a single bounded read.
+- **Why missed:** not missed — caught. Logged because the *shape* recurs: an
+  agent asked for ten fixes will size its solution to the file it is already
+  editing rather than to the finding, and the largest blast radius came from
+  the smallest item on the list.
+- **Guard:** Standing check 5 above. Also worth noting the repo has no wire
+  version handshake between CLI and daemon, so any future protocol change has
+  this same failure mode; CLAUDE.md §8 warns about the resident binary but
+  frames it as a testing inconvenience rather than an upgrade hazard.

@@ -25,8 +25,9 @@ aic <command> <subcommand> --help
   context name is `sandbox`. For `script` commands the tenant is also inferred
   from a `workspace/<tenant>/` path you're inside.
 - **`--realm <alpha|bravo>`** selects the AM realm for realm-scoped commands
-  (`journey`, `oauth`, `secretmap`, and AM `script` namespaces). Defaults to
-  **`alpha`**. ESVs and IDM endpoints are tenant-global and take no realm.
+  (`journey`, `jwt-bearer`, `oauth`, `secretmap`, and AM `script` namespaces).
+  Defaults to **`alpha`**. ESVs and IDM endpoints are tenant-global and take no
+  realm.
 - **Production-write guard.** Commands that mutate a _production-themed_ tenant
   refuse to run without **`--yes`** — the CLI equivalent of the TUI's prod
   guard. Irreversible commands (`esv secret destroy`/`delete`) prompt for a
@@ -372,6 +373,21 @@ continue to use pull → edit → push.
 > `*-encrypted` fields are cluster-local and stripped from every client PUT;
 > server-managed metadata is also removed and `_rev` is ignored (plain PUT). See
 > `docs/api/05-oauth2-oidc.md`.
+
+## `aic jwt-bearer` — Trusted JWT Issuer setup
+
+```bash
+aic jwt-bearer setup [--realm alpha] [--tenant NAME]
+aic jwt-bearer issuer create <id> --issuer ISS --jwks-from FILE [--realm alpha] [--tenant NAME]
+aic jwt-bearer issuer show [<id>] [--realm alpha] [--tenant NAME]
+```
+
+`setup` creates or updates the default lower-environment issuer, merges this
+install's public key into its shared key set, and stores the private key in the
+per-tenant encrypted vault. It is idempotent. All JWT-bearer writes are refused
+on production-themed tenants; no confirmation flag overrides that refusal.
+`issuer create` imports an existing public JWKS under a named issuer, and
+`issuer show` prints one issuer or the realm's issuer list as JSON.
 
 ---
 

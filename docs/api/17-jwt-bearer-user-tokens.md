@@ -1,6 +1,7 @@
 # 17 — JWT bearer user tokens (Trusted JWT Issuer)
 
-Implemented in: _not yet — this doc precedes the code (see "Planned shape")._
+Implemented in: [`src/jwtbearer/`](../../src/jwtbearer/) (`aic jwt-bearer setup`
+and `aic jwt-bearer issuer`).
 
 ## Purpose
 
@@ -196,15 +197,20 @@ the private key equivalent to "log in as anyone in this realm". Verified: with
   `client_secret_post` client fails with `invalid_client` "Client authentication
   failed". The assertion authenticates the _user_, not the client.
 
-## Planned shape
+## Current implementation
 
-Sketch, for whoever implements this — not yet built, so treat as intent:
+The `src/jwtbearer/` vertical implements setup and named-issuer creation/show
+commands. Setup creates or reuses one RSA key pair per local install, stores the
+private record in the agent vault, merges the public JWK into the realm's shared
+`jwkSet` by `kid`, and verifies that AM retained the key after the write.
+Issuer writes explicitly set `allowedSubjects: []`,
+`consentedScopesClaim: "scope"`, and `resourceOwnerIdentityClaim: "sub"` so
+they do not depend on template defaults.
 
-- Key material: one RSA key pair per person/machine, private half in the local
-  vault as a new `VaultArtifact` (recipe in the `src/config/mod.rs` header),
-  public half added to the realm's shared `jwkSet`. Adding a key is a
-  read-modify-write of `jwkSet`, so it must merge by `kid` rather than replace —
-  two people setting up concurrently would otherwise clobber each other.
+- The private half is stored under the tenant name in the agent vault, while
+  setup adds the public half to the realm's shared `jwkSet`. The read-modify-
+  write merges by `kid` rather than replacing the set, so concurrent operators
+  do not clobber each other's keys.
 - **`kid` is an opaque random string** (decided 2026-08-06), not a composed
   `owner:host` label. Attribution rides in the non-standard JWK members instead
   — verified above to survive the round trip byte-for-byte — which is what makes
@@ -214,25 +220,19 @@ Sketch, for whoever implements this — not yet built, so treat as intent:
   never tested on the wire; and it can collide, which matters because `kid`
   _selects_ the verification key, so a repeat setup on the same host would
   silently overwrite rather than rotate.
-- Consequence: the JWK members are load-bearing, not decorative — they are the
-  only tenant-side record of whose key is whose. The local per-tenant
-  private-key record should store its own `kid` too, so an owner can always
-  identify their key even if tenant-side metadata is lost.
-- Export must exist (the key has to be shareable) and must be an explicit,
-  separate verb, not a side effect of setup.
-- `aic auth --as-id <uuid> | --as-username <name> --client-id <id>`, with the
-  client secret read from a prompt or stdin rather than argv/env.
+- The `aic_owner`, `aic_host`, and `aic_created` members are load-bearing: they
+  are the tenant-side attribution record, and the local record stores the same
+  opaque `kid` used to identify that key.
 - **`allowedSubjects` stays empty by default** (decided 2026-08-06). Blank means
   the issuer may mint for any user in the realm, which is the point: this exists
   so a tester can become an arbitrary user without a journey or a password.
   Requiring an explicit subject list would defeat the convenience the feature is
   for.
-- That makes the **tenant-tier guard the only remaining boundary**, so it has to
-  be firm rather than a warning. Note also that there is no per-client
-  restriction (see Open questions), so an empty `allowedSubjects` plus a client
-  with the grant enabled is a realm-wide capability. Guard on tenant tier:
-  `TenantTheme::Production` and `allows_static_content()` are the existing
-  precedent for that refusal shape.
+The setup command refuses production-themed tenants because an empty
+`allowedSubjects` plus a client with the grant enabled is a realm-wide
+capability. Minting a user token from the stored key, exporting a public JWKS,
+and key rotation/removal remain future work; export must be an explicit command,
+not a setup side effect.
 
 ## Verified against
 

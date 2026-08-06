@@ -7,6 +7,7 @@ pub mod error;
 pub mod esv;
 pub mod idmstore;
 pub mod journey;
+pub mod jwtbearer;
 pub mod logging;
 pub mod logs;
 pub mod managed;

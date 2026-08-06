@@ -53,18 +53,25 @@ pub enum VaultArtifact {
     Jwks,
     /// The per-tenant log API key map (`log-keys.enc` / `log-keys.plain`).
     LogKeys,
+    /// Per-tenant Trusted JWT Issuer private key records.
+    JwtBearerKeys,
 }
 
 impl VaultArtifact {
     /// Every registered artifact. Iterated by gitignore + the encrypt/decrypt
     /// transitions so adding a variant here is all it takes for coverage.
-    pub const ALL: &'static [VaultArtifact] = &[VaultArtifact::Jwks, VaultArtifact::LogKeys];
+    pub const ALL: &'static [VaultArtifact] = &[
+        VaultArtifact::Jwks,
+        VaultArtifact::LogKeys,
+        VaultArtifact::JwtBearerKeys,
+    ];
 
     /// The wire name used by the generic agent secret verbs (`kind` field).
     pub fn kind(self) -> &'static str {
         match self {
             VaultArtifact::Jwks => "keys",
             VaultArtifact::LogKeys => "log-keys",
+            VaultArtifact::JwtBearerKeys => "jwt-bearer-keys",
         }
     }
 
@@ -73,6 +80,7 @@ impl VaultArtifact {
         match self {
             VaultArtifact::Jwks => "keys",
             VaultArtifact::LogKeys => "log-keys",
+            VaultArtifact::JwtBearerKeys => "jwt-bearer-keys",
         }
     }
 

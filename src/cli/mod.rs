@@ -134,6 +134,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::journey::cli::JourneyCommand,
     },
+    /// Trusted JWT Issuer setup and inspection.
+    JwtBearer {
+        #[command(subcommand)]
+        command: crate::jwtbearer::cli::JwtBearerCommand,
+    },
     /// OAuth2 client inspection and export.
     Oauth {
         #[command(subcommand)]
@@ -214,6 +219,7 @@ impl Command {
             | Self::Sync { .. }
             | Self::Logs { .. }
             | Self::Journey { .. }
+            | Self::JwtBearer { .. }
             | Self::Oauth { .. }
             | Self::Secretmap { .. }
             | Self::Workspace { .. }
@@ -258,6 +264,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Sync { command }) => crate::mappings::cli::run(command).await,
         Some(Command::Logs { command }) => crate::logs::cli::run(command).await,
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
+        Some(Command::JwtBearer { command }) => crate::jwtbearer::cli::run(command).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
         Some(Command::Secretmap { command }) => crate::secretmap::cli::run(command).await,
         Some(Command::Workspace { command }) => crate::scripts::cli::run_workspace(command).await,
@@ -1012,6 +1019,18 @@ pub(crate) fn tenant_for(tenant_arg: Option<String>) -> Result<String> {
     resolve_tenant(tenant_arg, &cfg)
 }
 
+/// Validate a realm argument shared by realm-scoped resource commands.
+pub(crate) fn realm_arg(feature: &str, realm: Option<String>) -> Result<String> {
+    let realm = realm.unwrap_or_else(|| "alpha".to_string());
+    if realm == "alpha" || realm == "bravo" {
+        Ok(realm)
+    } else {
+        Err(Error::Config(format!(
+            "invalid {feature} realm {realm:?}; use alpha or bravo"
+        )))
+    }
+}
+
 /// Resolve the tenant for a resource command and return the configured record.
 pub(crate) fn tenant_config_for(tenant_arg: Option<String>) -> Result<crate::config::Tenant> {
     let cfg =
@@ -1404,6 +1423,7 @@ mod tests {
             (vec!["aic", "sync", "mappings"], true),
             (vec!["aic", "logs", "sources"], true),
             (vec!["aic", "journey", "list"], true),
+            (vec!["aic", "jwt-bearer", "setup"], true),
             (vec!["aic", "oauth", "list"], true),
             (vec!["aic", "secretmap", "list"], true),
             (vec!["aic", "workspace", "init"], true),
@@ -1431,6 +1451,7 @@ mod tests {
                 | Command::Sync { .. }
                 | Command::Logs { .. }
                 | Command::Journey { .. }
+                | Command::JwtBearer { .. }
                 | Command::Oauth { .. }
                 | Command::Secretmap { .. }
                 | Command::Workspace { .. }
