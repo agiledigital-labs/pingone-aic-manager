@@ -129,6 +129,9 @@ rule or a doc row.
 
 ## 8. Things to NOT do
 
+- **Don't run tenant-touching `aic` commands from an agent without
+  `--no-prompt`.** A locked daemon must fail fast instead of waiting for a
+  master password the agent cannot provide.
 - **Don't add a "Secret Stores" UI tab.** AIC returns 403 on the entire
   secret-stores API. Use ESVs instead. (`docs/api/07-secret-stores.md`.)
 - **Don't send `-encrypted` fields back on OAuth2 client `PUT`.** They contain

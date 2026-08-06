@@ -143,6 +143,12 @@ fn prompt_sync_objects(candidates: Vec<String>) -> Result<Option<Vec<String>>> {
         println!("no syncable managed objects found");
         return Ok(None);
     }
+    if crate::cli::prompting_disabled() {
+        return Err(Error::Config(
+            "object picker disabled by --no-prompt; pass object names explicitly or use `--all`"
+                .into(),
+        ));
+    }
 
     match MultiSelect::new("Sync managed objects", candidates)
         .with_page_size(15)

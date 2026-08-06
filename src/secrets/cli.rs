@@ -317,6 +317,12 @@ fn resolve_secret_value(
             .map_err(|e| Error::Config(format!("read stdin: {e}")))?;
         strip(value)
     } else {
+        if crate::cli::prompting_disabled() {
+            return Err(Error::Config(
+                "secret value prompt disabled by --no-prompt; use --value-file or --value-stdin"
+                    .into(),
+            ));
+        }
         rpassword::prompt_password(prompt).map_err(|e| Error::Config(format!("read value: {e}")))?
     };
     if value.is_empty() {
@@ -328,6 +334,12 @@ fn resolve_secret_value(
 fn confirm_irreversible(action: &str, yes: bool) -> Result<bool> {
     if yes {
         return Ok(true);
+    }
+    if crate::cli::prompting_disabled() {
+        return Err(Error::Config(
+            "irreversible action confirmation disabled by --no-prompt; pass --yes to confirm"
+                .into(),
+        ));
     }
     use std::io::Write;
     eprint!("{action} This cannot be undone. Type 'yes' to confirm: ");
