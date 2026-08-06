@@ -30,9 +30,16 @@ non-obvious behaviour:
    scripts/verify-endpoint.sh "<path>" [--header "<...>"]
    ```
 
-   The script mints a service-account access token (cached in `.token-cache`,
-   gitignored), then `curl`s the path with `Authorization: Bearer …`. First run
-   bootstraps a Python venv at `.venv-tools` for JWT signing.
+   The script takes a bearer from the running agent (`aic whoami --token`, for
+   the tenant in the current context) and `curl`s the path with it. **The agent
+   must be unlocked — run `aic login` first**, or the script exits 3 rather than
+   waiting on a password prompt.
+
+   If verification is impossible for any reason, say so and stop. Do **not**
+   write to a `## Verified against` block from inference, from figures supplied
+   in a task prompt, or from a claim in a neighbouring doc — that block is the
+   audit trail, and a plausible-but-wrong entry stamped "verified" is invisible
+   to every later reader.
 
 2. **Update the relevant `docs/api/*.md`** file. Bump "Verified against" to
    today's date. Add the endpoint to the table.
@@ -48,11 +55,14 @@ non-obvious behaviour:
 - **Never commit** `.envrc`, `.env*`, `.token-cache`, `*.jwk`, `*.pem`,
   service-account secrets, log API key secrets, or any access token. The
   `.gitignore` covers these; never override with `git add -f` on them.
-- The JWK in `.envrc` is the production RSA private key for the sandbox service
-  account. Treat as secret even though it's a sandbox.
-- **Tokens stay in memory** during the Rust app's runtime — no disk caching in
-  production code. (`.token-cache` is a dev-only convenience for the bash verify
-  script.)
+- `.envrc` holds `AGENT_PASSWORD` (the vault master password) and
+  `API_KEY_SECRET` (the log API secret). Treat both as secret even though the
+  tenant is a sandbox. The service-account JWK used to live here too; it now
+  lives in the encrypted vault, and nothing outside `src/` should need it.
+- **Tokens stay in memory**, everywhere — no disk caching. `.token-cache` is a
+  leftover from when `verify-endpoint.sh` signed its own assertion; the script
+  now borrows the agent's in-memory bearer and writes nothing. Delete the file
+  if you still have one; it stays in `.gitignore` as a guard.
 - Log API uses **separate** `x-api-key` / `x-api-secret` — these are
   console-issued and `api_key_secret` is shown only once at creation.
 
@@ -106,7 +116,10 @@ their write bodies and ignore it in content comparisons.
 # Once per shell (direnv handles this automatically if installed):
 source .envrc
 
-# Sanity-check tenant connectivity (also primes the token cache):
+# Unlock the agent — verify-endpoint.sh borrows its bearer:
+aic login
+
+# Sanity-check tenant connectivity:
 scripts/verify-endpoint.sh
 
 # Hit an endpoint to inspect a shape:
@@ -188,7 +201,7 @@ worked example.
 | OAuth2 clients                                                                                                                         | `src/oauth/`                                                                                                                                                                                                                                                                      | `docs/api/05-oauth2-oidc.md`                                 |
 | Tokens / HTTP transport / daemon                                                                                                       | `src/aic/` (transport core), `src/agent/`                                                                                                                                                                                                                                         | `docs/api/00-auth.md`, `01`, `02`; `src/agent/mod.rs` header |
 | Local credential vault / unlock                                                                                                        | `src/vault/` + `src/config/{crypto,wraps}.rs` storage                                                                                                                                                                                                                             | — (local-only, no AIC docs)                                  |
-| Operator identity (name/host resolution + persistence)                                                                                 | `src/config/operator.rs` (`Settings` shape/storage in `src/config/mod.rs`; CLI prompt/settings/whoami in `src/cli/mod.rs`)                                                                                                                                                       | `docs/CLI.md`                                                |
+| Operator identity (name/host resolution + persistence)                                                                                 | `src/config/operator.rs` (`Settings` shape/storage in `src/config/mod.rs`; CLI prompt/settings/whoami in `src/cli/mod.rs`)                                                                                                                                                        | `docs/CLI.md`                                                |
 | Onboarding (add tenant)                                                                                                                | `src/onboard/`                                                                                                                                                                                                                                                                    | `docs/api/00-auth.md`, `99-…` Q11/Q12                        |
 | Undo log + history overlay                                                                                                             | `src/undo/` (executors live in each feature's `ops`)                                                                                                                                                                                                                              | —                                                            |
 | App shell: event loop, mode/tab dispatch, prod guard, env picker                                                                       | `src/app/`                                                                                                                                                                                                                                                                        | —                                                            |
