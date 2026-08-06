@@ -727,7 +727,9 @@ async fn unlock_with_password_stdin() -> Result<Dek> {
     Ok(auth::unlock_password(password).await?.dek)
 }
 
-fn read_password_line(mut reader: impl BufRead) -> Result<String> {
+/// Read one non-empty secret line without trimming content beyond CR/LF.
+/// Shared by explicit `--password-stdin` / `--secret-stdin` paths only.
+pub(crate) fn read_password_line(mut reader: impl BufRead) -> Result<String> {
     let mut password = String::new();
     reader
         .read_line(&mut password)

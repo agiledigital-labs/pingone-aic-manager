@@ -3,13 +3,83 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf, is_separator};
 
-use clap::Subcommand;
+use base64::Engine as _;
+use clap::{Args, Subcommand};
+use rand::RngCore;
 use serde_json::Value;
 
-use crate::cli::{print_json, print_table, tenant_for};
+use crate::cli::{print_json, print_table, prod_hint, read_password_line, tenant_for};
 use crate::config::ProjectConfig;
-use crate::oauth::api;
+use crate::oauth::{api, spec};
 use crate::{Error, Result};
+
+#[derive(Args, Debug)]
+pub struct CreateArgs {
+    /// Seed the template from a JSON object (including `aic oauth pull` output).
+    #[arg(long, value_name = "FILE")]
+    from: Option<PathBuf>,
+    /// coreOAuth2ClientConfig.clientName (one array value).
+    #[arg(long)]
+    name: Option<String>,
+    /// advancedOAuth2ClientConfig.descriptions (one array value).
+    #[arg(long)]
+    description: Option<String>,
+    /// coreOAuth2ClientConfig.clientType. Defaults to Confidential unless
+    /// --from supplies a value.
+    #[arg(long, value_name = "TYPE")]
+    client_type: Option<String>,
+    /// Read coreOAuth2ClientConfig.userpassword as one line from stdin. The
+    /// write-only value reads back as null and cannot be recovered.
+    #[arg(long, conflicts_with = "generate_secret")]
+    secret_stdin: bool,
+    /// Generate a 256-bit userpassword and print it once after success. The
+    /// write-only value reads back as null and cannot be recovered.
+    #[arg(long)]
+    generate_secret: bool,
+    /// coreOAuth2ClientConfig.scopes (repeatable).
+    #[arg(long)]
+    scope: Vec<String>,
+    /// coreOAuth2ClientConfig.defaultScopes (repeatable).
+    #[arg(long)]
+    default_scope: Vec<String>,
+    /// coreOAuth2ClientConfig.redirectionUris (repeatable).
+    #[arg(long)]
+    redirect_uri: Vec<String>,
+    /// advancedOAuth2ClientConfig.grantTypes (repeatable; live-schema validated).
+    #[arg(long)]
+    grant: Vec<String>,
+    /// advancedOAuth2ClientConfig.responseTypes (repeatable).
+    #[arg(long)]
+    response_type: Vec<String>,
+    /// advancedOAuth2ClientConfig.tokenEndpointAuthMethod (live-schema validated).
+    #[arg(long, value_name = "METHOD")]
+    token_auth_method: Option<String>,
+    /// advancedOAuth2ClientConfig.subjectType (live-schema validated).
+    #[arg(long, value_name = "TYPE")]
+    subject_type: Option<String>,
+    /// Set advancedOAuth2ClientConfig.isConsentImplied to true.
+    #[arg(long)]
+    implied_consent: bool,
+    /// coreOAuth2ClientConfig.accessTokenLifetime in seconds (0 inherits).
+    #[arg(long, value_name = "SECONDS")]
+    access_token_lifetime: Option<u64>,
+    /// coreOAuth2ClientConfig.refreshTokenLifetime in seconds (0 inherits).
+    #[arg(long, value_name = "SECONDS")]
+    refresh_token_lifetime: Option<u64>,
+    /// coreOAuth2ClientConfig.authorizationCodeLifetime in seconds (0 inherits).
+    #[arg(long, value_name = "SECONDS")]
+    authorization_code_lifetime: Option<u64>,
+    /// Replace an existing client with the same id.
+    #[arg(long)]
+    force: bool,
+    #[arg(long)]
+    realm: Option<String>,
+    #[arg(long)]
+    tenant: Option<String>,
+    /// Confirm creation or replacement on a production-themed tenant.
+    #[arg(long)]
+    yes: bool,
+}
 
 #[derive(Subcommand, Debug)]
 pub enum OauthCommand {
@@ -21,6 +91,13 @@ pub enum OauthCommand {
         tenant: Option<String>,
         #[arg(long, help = "Print client ids as JSON")]
         json: bool,
+    },
+    /// Create an OAuth2 client from the tenant's live template.
+    Create {
+        /// OAuth2 client id.
+        id: String,
+        #[command(flatten)]
+        options: Box<CreateArgs>,
     },
     /// Pull an OAuth2 client into the workspace as JSON.
     Pull {
@@ -159,9 +236,25 @@ fn parse_client_value(value: Value, label: &str) -> Result<Value> {
         Ok(value)
     } else {
         Err(Error::Config(format!(
-            "oauth client export {label} is not valid JSON object"
+            "oauth client JSON {label} is not an object"
         )))
     }
+}
+
+fn read_seed(path: &Path) -> Result<Value> {
+    let bytes = std::fs::read(path).map_err(|error| {
+        Error::Config(format!(
+            "read oauth client seed {}: {error}",
+            path.display()
+        ))
+    })?;
+    let value = serde_json::from_slice(&bytes).map_err(|error| {
+        Error::Config(format!(
+            "parse oauth client seed {}: {error}",
+            path.display()
+        ))
+    })?;
+    parse_client_value(value, &path.display().to_string())
 }
 
 fn read_export(path: &Path, id: &str) -> Result<Value> {
@@ -226,6 +319,33 @@ fn api_not_found(error: &Error) -> bool {
     matches!(error, Error::Api { status: 404, .. })
 }
 
+fn ensure_create_allowed(exists: bool, force: bool, id: &str) -> Result<()> {
+    if exists && !force {
+        return Err(Error::Config(format!(
+            "oauth client {id:?} already exists; pass --force to replace it"
+        )));
+    }
+    Ok(())
+}
+
+fn generate_client_secret() -> String {
+    let mut bytes = [0_u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn schema_for_validation(result: Result<Value>) -> Option<Value> {
+    match result {
+        Ok(schema) => Some(schema),
+        Err(error) => {
+            eprintln!(
+                "warning: could not fetch oauth client schema; deferring enum validation to AIC: {error}"
+            );
+            None
+        }
+    }
+}
+
 pub async fn run(cmd: OauthCommand) -> Result<()> {
     match cmd {
         OauthCommand::List {
@@ -246,6 +366,61 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 print_table(&["CLIENT_ID"], &rows);
             }
             eprintln!("{} oauth clients", clients.len());
+            Ok(())
+        }
+        OauthCommand::Create { id, options } => {
+            let tenant = tenant_for(options.tenant.clone())?;
+            let realm = oauth_realm(options.realm.clone())?;
+            validate_client_id(&id)?;
+
+            let exists = match api::read_client(&tenant, &realm, &id).await {
+                Ok(_) => true,
+                Err(error) if api_not_found(&error) => false,
+                Err(error) => return Err(error),
+            };
+            ensure_create_allowed(exists, options.force, &id)?;
+
+            let seed = options.from.as_deref().map(read_seed).transpose()?;
+            let (template, schema) = tokio::join!(
+                api::client_template(&tenant, &realm, options.yes),
+                api::client_schema(&tenant, &realm, options.yes),
+            );
+            let template = prod_hint(template)?;
+            let schema = schema_for_validation(schema);
+
+            let generated_secret = options.generate_secret.then(generate_client_secret);
+            let secret = if options.secret_stdin {
+                Some(read_password_line(std::io::stdin().lock())?)
+            } else {
+                generated_secret.clone()
+            };
+            let create_spec = spec::CreateClientSpec {
+                name: options.name,
+                description: options.description,
+                client_type: options.client_type,
+                secret,
+                scopes: options.scope,
+                default_scopes: options.default_scope,
+                redirect_uris: options.redirect_uri,
+                grants: options.grant,
+                response_types: options.response_type,
+                token_auth_method: options.token_auth_method,
+                subject_type: options.subject_type,
+                implied_consent: options.implied_consent.then_some(true),
+                access_token_lifetime: options.access_token_lifetime,
+                refresh_token_lifetime: options.refresh_token_lifetime,
+                authorization_code_lifetime: options.authorization_code_lifetime,
+            };
+            let body =
+                spec::build_create_body(template, seed, &create_spec).map_err(Error::Config)?;
+            spec::validate_enumerated_fields(&body, schema.as_ref()).map_err(Error::Config)?;
+
+            prod_hint(api::create_client(&tenant, &realm, &id, body, options.yes).await)?;
+            if let Some(secret) = generated_secret {
+                println!("client secret: {secret}");
+            }
+            let verb = if exists { "replaced" } else { "created" };
+            println!("{verb} oauth client {id}");
             Ok(())
         }
         OauthCommand::Pull { id, realm, tenant } => {
@@ -329,6 +504,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use serde_json::json;
 
     #[test]
@@ -369,6 +545,99 @@ mod tests {
             snapshot_path("sandbox", "bravo", "service_C1").unwrap(),
             PathBuf::from("workspace/sandbox/oauth/bravo/.snapshots/service_C1.json")
         );
+    }
+
+    #[test]
+    fn create_refuses_an_existing_client_without_force() {
+        let error = ensure_create_allowed(true, false, "existing-client").unwrap_err();
+        assert!(error.to_string().contains("already exists"));
+        assert!(error.to_string().contains("--force"));
+        assert!(ensure_create_allowed(true, true, "existing-client").is_ok());
+        assert!(ensure_create_allowed(false, false, "new-client").is_ok());
+    }
+
+    #[test]
+    fn create_flags_parse_without_an_argv_secret_value() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "aic",
+            "oauth",
+            "create",
+            "test-client",
+            "--from",
+            "source.json",
+            "--name",
+            "Test client",
+            "--scope",
+            "openid",
+            "--scope",
+            "profile",
+            "--secret-stdin",
+            "--access-token-lifetime",
+            "0",
+            "--force",
+            "--yes",
+        ])
+        .unwrap();
+
+        let Some(crate::cli::Command::Oauth {
+            command: OauthCommand::Create { id, options },
+        }) = cli.command
+        else {
+            panic!("expected oauth create");
+        };
+        assert_eq!(id, "test-client");
+        assert_eq!(options.from, Some(PathBuf::from("source.json")));
+        assert_eq!(options.name.as_deref(), Some("Test client"));
+        assert_eq!(options.scope, ["openid", "profile"]);
+        assert!(options.secret_stdin);
+        assert_eq!(options.access_token_lifetime, Some(0));
+        assert!(options.force);
+        assert!(options.yes);
+
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "aic",
+                "oauth",
+                "create",
+                "test-client",
+                "--secret",
+                "visible-in-argv"
+            ])
+            .is_err()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "aic",
+                "oauth",
+                "create",
+                "test-client",
+                "--secret-stdin",
+                "--generate-secret"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn generated_secret_is_256_bits_of_url_safe_random_data() {
+        let secret = generate_client_secret();
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(secret)
+            .unwrap();
+        assert_eq!(decoded.len(), 32);
+    }
+
+    #[test]
+    fn failed_schema_fetch_becomes_validation_fallback() {
+        let schema = schema_for_validation(Err(Error::Config("schema unavailable".into())));
+        let body = json!({
+            "advancedOAuth2ClientConfig": {
+                "grantTypes": ["tenant-future-grant"]
+            }
+        });
+
+        assert!(schema.is_none());
+        assert!(spec::validate_enumerated_fields(&body, schema.as_ref()).is_ok());
     }
 
     fn client_with(name: &str, secret: &str, rev: &str) -> Value {

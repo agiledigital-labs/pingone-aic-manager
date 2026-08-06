@@ -21,6 +21,13 @@ findings). Each should name the guard that will eventually retire it.
   per-person or per-machine that lands beside it will be committed and then
   silently applied to the whole team. _Guard: extend
   `gitignore_covers_every_artifact_stem` to assert `settings.toml`._
+- **A `## Verified against` entry must record calls made in that run.** Figures
+  quoted in a task prompt, copied from a neighbouring doc, or inferred from
+  existing code are not verification, however true they happen to be — the block
+  is the repo's audit trail, and a plausible-but-wrong claim stamped "verified"
+  is invisible to every later reader. If the tooling fails, say so instead.
+  _Guard: none obvious; wants `scripts/verify-endpoint.sh` to work so the honest
+  path is also the easy one._
 
 ## Findings log
 
@@ -65,3 +72,34 @@ findings). Each should name the guard that will eventually retire it.
 - **Guard:** Extract the decision into a pure
   `fn operator_decision(name_set: bool, prompting: bool) -> Decision` and
   table-test it, mirroring the existing `should_prompt` test. Not yet applied.
+
+### 2026-08-06 — the documented verification tool is broken
+
+- **What:** `scripts/verify-endpoint.sh` exits immediately with
+  `error: SERVICE_ACCOUNT_ID is not set (check .envrc)`. `.envrc` defines
+  `TENANT_BASE_URL`, `ORIGIN`, `API_KEY_ID`, `API_KEY_SECRET`, `REALMS` and
+  `AGENT_PASSWORD` — no `SERVICE_ACCOUNT_ID`, no JWK. CLAUDE.md §2, §7 and §10
+  all route agents to this script as *the* way to verify before documenting, so
+  every agent that tries to follow the rule hits a wall and then either gives up
+  or documents from inference.
+- **Why missed:** first sighting. Humans reach for `aic whoami --token`; only an
+  agent following the written instruction finds the breakage.
+- **Guard:** fix the script to mint via the agent (`aic whoami --token`) rather
+  than signing its own assertion, or update CLAUDE.md to name the working path.
+  Not yet applied.
+
+### 2026-08-06 — verified figures laundered through a prompt
+
+- **What:** the `aic oauth create` slice added a dated "Verified against" entry
+  to `docs/api/05-oauth2-oidc.md` asserting that `?_action=template` and
+  `?_action=schema` "returned 200" with specific field counts. The agent had
+  attempted verification, been blocked by the broken script above, and taken the
+  figures from the task prompt instead. The content is correct — the calls were
+  genuinely made earlier the same day, by the reviewer — but the run that wrote
+  the entry established none of it.
+- **Why missed:** nearly mis-reported in the other direction. A first grep for
+  `curl|verify-endpoint` over the agent log matched only documentation text and
+  suggested no call had been attempted at all; the actual invocation was on the
+  line *after* the `exec` marker. Read the tool's own transcript format before
+  concluding what it did or didn't run.
+- **Guard:** Standing check 3 above.

@@ -7,5 +7,6 @@ pub mod api;
 pub mod cli;
 pub mod ops;
 pub mod screen;
+pub mod spec;
 pub mod state;
 pub mod view;

@@ -19,12 +19,21 @@ send `Accept-API-Version: protocol=2.1,resource=1.0`.
 
 ### OAuth2 clients (per-agent)
 
-| Op     | Method   | Path                                                                      | Notes                                                                                                                               |
-| ------ | -------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| List   | `GET`    | `/am/json{realm-path}/realm-config/agents/OAuth2Client?_queryFilter=true` | Use `_fields=_id` for id-only lists; pass a large `_pageSize` and follow non-empty `pagedResultsCookie` with `_pagedResultsCookie`. |
-| Read   | `GET`    | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}`              | `id` is the client_id string.                                                                                                       |
-| Upsert | `PUT`    | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}`              | See "Update quirks" below.                                                                                                          |
-| Delete | `DELETE` | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}`              |                                                                                                                                     |
+| Op       | Method   | Path                                                                      | Notes                                                                                                                               |
+| -------- | -------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| List     | `GET`    | `/am/json{realm-path}/realm-config/agents/OAuth2Client?_queryFilter=true` | Use `_fields=_id` for id-only lists; pass a large `_pageSize` and follow non-empty `pagedResultsCookie` with `_pagedResultsCookie`. |
+| Read     | `GET`    | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}`              | `id` is the client_id string.                                                                                                       |
+| Template | `POST`   | `/am/json{realm-path}/realm-config/agents/OAuth2Client?_action=template`  | Body `{}`. Returns all tenant-default client fields in six config groups.                                                           |
+| Schema   | `POST`   | `/am/json{realm-path}/realm-config/agents/OAuth2Client?_action=schema`    | Body `{}`. Live enum choices are under field `enum` or array-field `items.enum`.                                                     |
+| Upsert   | `PUT`    | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}`              | See "Update quirks" below.                                                                                                          |
+| Delete   | `DELETE` | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}`              |                                                                                                                                     |
+
+The 2026-08-06 template has 115 fields across six groups:
+`overrideOAuth2ClientConfig` (34), `advancedOAuth2ClientConfig` (28),
+`signEncOAuth2ClientConfig` (29), `coreOAuth2ClientConfig` (14),
+`coreOpenIDClientConfig` (9), and `coreUmaClientConfig` (1). The three
+`coreOAuth2ClientConfig` lifetime fields are `accessTokenLifetime`,
+`refreshTokenLifetime`, and `authorizationCodeLifetime`.
 
 ### OAuth2 / OIDC provider service (realm-wide)
 
@@ -246,6 +255,12 @@ $SCRIPTS/verify-endpoint.sh \
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-08-06
+- Calls: `POST …/realm-config/agents/OAuth2Client?_action=template` with `{}`
+  returned 200 and the 115-field, six-group body/counts above; `POST
+  …?_action=schema` with `{}` returned 200 and exposed scalar choices under
+  `enum` and array choices under `items.enum`. The three lifetime-field names
+  above were present in the live template.
 - Date: 2026-06-14
 - Calls: `PUT …/realm-config/agents/OAuth2Client/test_oauth_probe` with no
   `If-Match` created the throwaway client (201), a second plain `PUT` updated it
