@@ -2822,7 +2822,7 @@ mod tests {
         };
         let object = json!({
             "name": "alpha_user",
-            "type": "managed",
+            "type": "Managed Object",
             "meta": {},
             "schema": {
                 "properties": {
@@ -3401,7 +3401,7 @@ mod tests {
     fn pure_attribute_edit_leaves_missing_order_entry_unchanged() {
         let object = json!({
             "name": "alpha_user",
-            "type": "managed",
+            "type": "Managed Object",
             "meta": {},
             "schema": {
                 "properties": {
@@ -3436,7 +3436,7 @@ mod tests {
     fn add_field_auto_prefixes_standard_object_custom_key() {
         let object = json!({
             "name": "alpha_user",
-            "type": "managed",
+            "type": "Managed Object",
             "meta": {},
             "schema": {"properties": {}, "required": [], "order": []}
         });
@@ -3597,7 +3597,7 @@ mod tests {
     fn delete_standard_field_is_blocked_by_capability() {
         let object = json!({
             "name": "alpha_user",
-            "type": "managed",
+            "type": "Managed Object",
             "meta": {},
             "schema": {
                 "properties": {"givenName": {"type": "string"}},
@@ -3613,7 +3613,7 @@ mod tests {
     fn failed_update_reverts_cache_and_expires_pending_undo() {
         let previous = json!({
             "name": "alpha_user",
-            "type": "managed",
+            "type": "Managed Object",
             "meta": {},
             "schema": {
                 "properties": {
@@ -3625,7 +3625,7 @@ mod tests {
         });
         let optimistic = json!({
             "name": "alpha_user",
-            "type": "managed",
+            "type": "Managed Object",
             "meta": {},
             "schema": {
                 "properties": {
