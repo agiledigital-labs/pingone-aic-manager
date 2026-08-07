@@ -9,7 +9,7 @@ use tokio::net::UnixStream;
 
 use crate::{Error, Result};
 
-use super::protocol::{Request, Response};
+use super::protocol::{Request, Response, WireRequest};
 
 pub struct AgentClient {
     stream: UnixStream,
@@ -29,7 +29,7 @@ impl AgentClient {
         let sock = super::socket_path();
 
         // 1. Live agent? Connect and return.
-        if sock.exists() && Self::answers_ping(&sock).await {
+        if sock.exists() && Self::answers_ping(&sock).await? {
             // Reconnect — answers_ping consumed the connection.
             return Self::connect(&sock).await;
         }
@@ -45,7 +45,7 @@ impl AgentClient {
         // Wait for the socket to appear (agent binds early in startup).
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if sock.exists() && Self::answers_ping(&sock).await {
+            if sock.exists() && Self::answers_ping(&sock).await? {
                 return Self::connect(&sock).await;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -56,33 +56,39 @@ impl AgentClient {
         )))
     }
 
-    async fn answers_ping(path: &Path) -> bool {
+    async fn answers_ping(path: &Path) -> Result<bool> {
         let Ok(client) = Self::connect(path).await else {
-            return false;
+            return Ok(false);
         };
-        let result = client.ping_owned().await;
-        result.is_ok()
+        match client.ping_owned().await {
+            Ok(()) => Ok(true),
+            Err(Error::AgentProtocolMismatch) => Err(Error::AgentProtocolMismatch),
+            Err(_) => Ok(false),
+        }
     }
 
     pub async fn send(mut self, req: &Request) -> Result<Response> {
-        let mut buf = serde_json::to_vec(req)?;
+        let mut buf = serde_json::to_vec(&WireRequest::current(req))?;
         buf.push(b'\n');
-        self.stream.write_all(&buf).await?;
-        self.stream.flush().await?;
+        self.stream
+            .write_all(&buf)
+            .await
+            .map_err(map_transport_error)?;
+        self.stream.flush().await.map_err(map_transport_error)?;
         // We never write again after this — close our half so the server's
         // read_line returns even if we forgot a newline somewhere.
         let _ = self.stream.shutdown().await;
 
         let mut reader = BufReader::new(self.stream);
         let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
+        let n = reader
+            .read_line(&mut line)
+            .await
+            .map_err(map_transport_error)?;
         if n == 0 {
-            return Err(Error::Config(
-                "agent closed connection without reply".into(),
-            ));
+            return Err(agent_protocol_error());
         }
-        let resp: Response = serde_json::from_str(line.trim())?;
-        Ok(resp)
+        decode_response(line.trim())
     }
 
     async fn ping_owned(self) -> Result<()> {
@@ -153,6 +159,38 @@ impl AgentClient {
     }
 }
 
+fn decode_response(line: &str) -> Result<Response> {
+    let response: Response = serde_json::from_str(line).map_err(|_| agent_protocol_error())?;
+    match response {
+        Response::ProtocolMismatch { .. } => Err(agent_protocol_error()),
+        Response::Error { ref message } if message.starts_with("bad request:") => {
+            Err(agent_protocol_error())
+        }
+        response => Ok(response),
+    }
+}
+
+fn map_transport_error(error: std::io::Error) -> Error {
+    use std::io::ErrorKind;
+
+    match error.kind() {
+        ErrorKind::BrokenPipe
+        | ErrorKind::ConnectionAborted
+        | ErrorKind::ConnectionReset
+        | ErrorKind::UnexpectedEof => agent_protocol_error(),
+        _ => Error::Io(error),
+    }
+}
+
+fn agent_protocol_error() -> Error {
+    // This is deliberately a heuristic: a legacy daemon cannot identify
+    // itself on the unversioned protocol. A broken/closed connection, its old
+    // `bad request` reply, or an unknown response shape after a successful
+    // connect are the best available evidence that the resident binary
+    // predates the CLI.
+    Error::AgentProtocolMismatch
+}
+
 fn agent_locked_error() -> Error {
     Error::Auth("agent locked; run `aic session login`".into())
 }
@@ -200,4 +238,40 @@ fn spawn_detached_agent() -> Result<()> {
     // Intentionally do not wait — agent runs detached. Dropping `child` does
     // not kill it; only the file handles are closed.
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structured_mismatch_renders_stop_remedy() {
+        let line = serde_json::to_string(&Response::ProtocolMismatch {
+            expected: super::super::PROTOCOL_VERSION,
+            received: super::super::PROTOCOL_VERSION + 1,
+        })
+        .unwrap();
+
+        let error = decode_response(&line).unwrap_err();
+
+        assert!(matches!(error, Error::AgentProtocolMismatch));
+        assert!(error.to_string().contains("aic session stop"));
+        assert!(error.to_string().contains("re-run"));
+    }
+
+    #[test]
+    fn malformed_response_renders_stop_remedy() {
+        let error = decode_response("not json").unwrap_err();
+
+        assert!(matches!(error, Error::AgentProtocolMismatch));
+        assert!(error.to_string().contains("aic session stop"));
+    }
+
+    #[test]
+    fn broken_pipe_renders_stop_remedy() {
+        let error = map_transport_error(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+
+        assert!(matches!(error, Error::AgentProtocolMismatch));
+        assert!(error.to_string().contains("aic session stop"));
+    }
 }

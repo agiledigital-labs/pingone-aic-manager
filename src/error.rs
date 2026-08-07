@@ -28,6 +28,18 @@ pub enum Error {
     )]
     AuthRequired,
 
+    // Deliberately hedged. This covers the definite case (the daemon replied
+    // with a version mismatch) and several heuristic ones — a broken pipe, a
+    // closed connection, an undecodable reply — which also occur when the agent
+    // was simply killed, crashed, or raced with `session stop`. Naming the
+    // upgrade as the cause would be a confident wrong answer in those cases.
+    // The remedy is correct either way: `session stop` on a dead agent is a
+    // no-op and the next command spawns a fresh one.
+    #[error(
+        "lost contact with the agent. If you upgraded `aic` since it started, the resident agent is an older build — run `aic session stop`, then re-run"
+    )]
+    AgentProtocolMismatch,
+
     #[error("no {kind} stored for tenant {tenant}")]
     SecretMissing { kind: String, tenant: String },
 
