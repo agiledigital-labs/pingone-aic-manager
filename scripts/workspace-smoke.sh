@@ -20,6 +20,20 @@ trap cleanup EXIT
 echo "==> building aic"
 cargo build --offline -q
 
+# `workspace init` generates managed/sync type files from the tenant, so it
+# needs an unlocked agent even though the rest of this test is local. Unlock
+# non-interactively when AGENT_PASSWORD is exported (direnv does this from
+# .envrc); the call is idempotent on an already-unlocked agent. Fail loudly
+# rather than letting the run die at the first step with an opaque message.
+if [ -n "${AGENT_PASSWORD:-}" ]; then
+  echo "==> unlocking agent"
+  printf '%s\n' "$AGENT_PASSWORD" | "$AIC_BIN" session login --password-stdin >/dev/null
+elif ! "$AIC_BIN" --no-prompt whoami --token >/dev/null 2>&1; then
+  echo "error: agent is locked and AGENT_PASSWORD is not set." >&2
+  echo "  run 'aic login', or export AGENT_PASSWORD, then re-run." >&2
+  exit 1
+fi
+
 echo "==> aic workspace init --tenant $TENANT"
 "$AIC_BIN" workspace init --tenant "$TENANT" >/dev/null
 

@@ -126,12 +126,13 @@ impl PasteForm {
     }
 
     pub fn into_tenant(&self) -> Tenant {
-        let scopes = vec![
-            "fr:idm:*".into(),
-            "fr:am:*".into(),
-            "fr:idc:esv:*".into(),
-            "fr:idc:cookie-domain:*".into(),
-        ];
+        // Derive from SA_SCOPES like every other onboarding path. A hand-copied
+        // list here would silently keep paste-onboarded tenants on the old set
+        // when SA_SCOPES widens, surfacing much later as a 403.
+        let scopes: Vec<String> = super::bootstrap::SA_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_string())
+            .collect();
         Tenant {
             name: self.name.trimmed().to_string(),
             base_url: self.normalised_base_url(),

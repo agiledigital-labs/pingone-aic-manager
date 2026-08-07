@@ -39,9 +39,11 @@ findings). Each should name the guard that will eventually retire it.
 - **No cryptographic key generation in the default test path.** An RSA keygen is
   seconds, not milliseconds; one of them took this suite from 0.33s to 8.31s
   (2026-08-06). Test the shape of a key record against a stub, and gate any
-  genuine end-to-end keygen behind `#[ignore]`. _Guard: none yet — wants a
-  wall-clock budget assertion, or a grep for `generate_rsa` under
-  `#[cfg(test)]`._
+  genuine end-to-end keygen behind `#[ignore]`. _Guard: **enforced**
+  (2026-08-07) by two complementary checks —
+  `repo_hygiene::no_direct_key_generation_under_cfg_test` in `src/lib.rs` greps
+  for keygen calls under `#[cfg(test)]`, and a 3000ms wall-clock budget in
+  `scripts/release-check.sh` catches the transitive case the grep cannot see._
 
 - **A fix must not outgrow its finding.** When a cosmetic cleanup turns into a
   change to a shared protocol, storage format, or wire format, that is a finding

@@ -329,6 +329,19 @@ defaults.
 
 ## Open questions
 
+- **The JWKS cache cuts both ways, and that is now the leading explanation.**
+  Later on 2026-08-07, after a `key remove` followed by a `setup` that
+  republished the same key, `aic auth` kept failing `invalid_client` for over a
+  minute — while the issuer read back with the key present and `key list` marked
+  it as ours. So a _restore_ is no more immediate than a _removal_. Two
+  observations in opposite directions, both explained by AM serving a cached key
+  set for up to `jwksCacheTimeout` (3600000ms), make the cache a much better
+  explanation than the alternatives below. The TTL is still unmeasured, and the
+  practical consequence is bigger than the original question: **after any
+  `key remove` on a realm, expect `aic auth` there to be unreliable for up to an
+  hour, in whichever direction.** `scripts/experiment-jwt-key-revocation.sh`
+  measures it — read its header first, because running it causes exactly that
+  outage.
 - **Does removing a key from `jwkSet` revoke it promptly? Unresolved — assume
   not.** Probing on 2026-08-07 confirmed the _write_ lands: after
   `aic jwt-bearer key remove`, AM stores `jwkSet` as `{"keys":[]}` and
