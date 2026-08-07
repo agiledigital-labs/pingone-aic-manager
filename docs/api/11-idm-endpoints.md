@@ -213,6 +213,29 @@ root), `additionalParameters` (a map of any non-`_` query params), `fields` (the
   `scopes.includes(…)`, an unguarded `context.oauth2`, and the absent `.scope` /
   `.accessToken` (they fall to the index signature, which
   `noPropertyAccessFromIndexSignature` refuses on dot-access).
+- **`context.oauth2.rawInfo` is AM's token-introspection record.** Full key
+  inventory with types, verified 2026-08-07 against a service-account token:
+
+  | Key                                        | Type      | Note                                                                                                                       |
+  | ------------------------------------------ | --------- | -------------------------------------------------------------------------------------------------------------------------- |
+  | `active`                                   | `boolean` |                                                                                                                            |
+  | `auditTrackingId`                          | `string`  | Joins to the log API's tracking ids.                                                                                       |
+  | `authGrantId`                              | `string`  |                                                                                                                            |
+  | `client_id`                                | `string`  | `service-account` for an SA token.                                                                                         |
+  | `exp`                                      | `number`  | Epoch **seconds**, not millis.                                                                                             |
+  | `expires_in`                               | `number`  | Seconds remaining at introspection.                                                                                        |
+  | `iss`                                      | `string`  | AM's **internal** URL (`https://am.fr-platform:443/am/oauth2`) — _not_ the tenant host. Don't compare it to your base URL. |
+  | `realm`                                    | `string`  | `/` for a root-realm token.                                                                                                |
+  | `scope`                                    | `string`  | Space-delimited; same values as `context.oauth2.scopes`.                                                                   |
+  | `sessionToken`                             | `string`  | **CREDENTIAL.** Never return or log.                                                                                       |
+  | `sub` / `subname` / `user_id` / `username` | `string`  | All four held the SA's UUID for a service-account token.                                                                   |
+  | `token_type`                               | `string`  | `Bearer`.                                                                                                                  |
+
+  A user token carries the same keys; only the identity values differ, and those
+  variants are **not yet verified** — the JWKS cache left user-token minting
+  unavailable during this probe. All of the above are typed in
+  `idm/types/common.d.ts`.
+
 - **Never return or log the full context.** `context.http.headers` includes the
   bearer `Authorization` header. Serializing `context.security` can also walk
   its inherited `parent` chain into `context.oauth2`, whose `token` and
@@ -437,7 +460,8 @@ Object shape (real example, `schedule/UpdateReviewList`):
   `openidm.action` → IDM endpoint invocation, plus action response envelopes
   carrying object, number, string, and `null` results); 2026-08-06 (protected
   bearer-token endpoint, `config/access` role gate, endpoint `globals`, and
-  OAuth2 context/scope bindings)
+  OAuth2 context/scope bindings); 2026-08-07 (`context.oauth2.rawInfo` full key
+  inventory + types)
 - Endpoints: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
   `endpoint/` ids), `GET /openidm/config/endpoint/test` (200; keys
   `_id, description, source, type`, no `_rev`, plaintext `source`),
@@ -496,6 +520,18 @@ Object shape (real example, `schedule/UpdateReviewList`):
   was immediately replaced with an explicit safe-field projection and the local
   agent was locked to clear its cached token. This confirms that neither
   `context.security` nor the complete `context` is safe to serialize.
+- `rawInfo` key/type inventory (2026-08-07): throwaway
+  `endpoint/aicedit-rawinfo-probe` created (`PUT` 201), called with a
+  service-account bearer (200), and deleted (`DELETE` 200, `GET` after → 404).
+  It returned `Object.keys(rawInfo)` plus `typeof` for each — never the object
+  itself, and `sessionToken`'s type only, not its value. Fifteen keys, all as
+  tabled above. The `scope` value matched `SA_SCOPES` exactly
+  (`fr:am:* fr:idc:esv:* fr:idm:* fr:idc:cookie-domain:*`), and `iss` was AM's
+  internal `https://am.fr-platform:443/am/oauth2` rather than the tenant host.
+  **User-token variant not covered**: an attempt to mint one for the same probe
+  failed because the realm's JWKS cache was still serving a stale key set from
+  the revocation probing earlier that day, so the identity-bearing values
+  (`user_id`, `username`, `subname`) are verified for a service account only.
 
 ## Source citations
 
