@@ -20,3 +20,13 @@ interface JavaArray<T = JavaString> {
 interface JavaMap<Key = JavaString, Value = JavaString> {
   get(key: Key): Value | null;
 }
+
+// A java.util.Set surfaced into Rhino. It is NOT a JS array and NOT a JS Set:
+// there is no `.includes`, no `.length`, and no `.has`. Membership is
+// `.contains(x)`. Mirrors the AM-side JavaSet so both workspaces read alike.
+interface JavaSet<T = JavaString> {
+  contains(key: T): boolean;
+  size(): number;
+  toArray(): T[];
+  isEmpty(): boolean;
+}

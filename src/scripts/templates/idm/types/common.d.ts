@@ -40,8 +40,9 @@ type Patch =
 //     boot/startup, or any internal trigger → ABSENT. (Live-verified: a schedule
 //     calling `openidm.action("endpoint/…")` saw `context.http === undefined`
 //     in both the schedule script and the endpoint.)
-// Always guard `context.http` before use. Other contexts (security, oauth2,
-// transactionId, …) vary, hence the index signature.
+// Always guard `context.http` before use — and `context.oauth2` likewise, which
+// exists only when a validated bearer sat at the root. Remaining contexts
+// (transactionId, session, current, parent, …) vary, hence the index signature.
 interface IdmContext {
   http?: {
     method: string;
@@ -55,6 +56,29 @@ interface IdmContext {
   security?: {
     authenticationId: string;
     authorization: { id: string; component: string; roles: string[] };
+  };
+  // Present only when `rsFilter` validated an OAuth2 bearer at the root of the
+  // chain — so absent for a schedule, a recon/liveSync hook, and any internal
+  // trigger. Guard before use. Keys verified 2026-08-06 (docs/api/11):
+  // class, name, rawInfo, token, scopes, expiresAt, parent. Notably ABSENT:
+  // `context.oauth2.scope` (singular) and `context.oauth2.accessToken`.
+  oauth2?: {
+    // The token's validated scopes, from Ping's AccessTokenInfo.getScopes().
+    // A java.util.Set, so membership is `.contains("fr:idm:*")` — `.includes`
+    // and `.indexOf` do not exist on it, and neither does `.length`.
+    scopes: JavaSet<StringLike>;
+    rawInfo: {
+      // The same scopes, space-delimited. Prefer `scopes` above; split this
+      // only if you need the raw string.
+      scope: string;
+      // CREDENTIAL — never return or log.
+      sessionToken?: string;
+      [key: string]: any;
+    };
+    // CREDENTIAL — the bearer itself. Never return or log.
+    token: string;
+    expiresAt?: number;
+    [key: string]: any;
   };
   [key: string]: any;
 }
