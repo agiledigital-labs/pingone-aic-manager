@@ -159,10 +159,12 @@ rule or a doc row.
   running — and treat this as an upgrade hazard, not just a testing one.**
   `aic session logout` only _locks_ the daemon; the old binary stays resident.
   Run `aic session stop`, then relaunch, before testing agent changes **and
-  after upgrading `aic`**. The CLI↔daemon protocol is unversioned, so a new CLI
-  talking to a resident old daemon fails in whatever way that particular change
-  happens to break — verified 2026-08-06, when a daemon 5 days old replied to
-  one request and closed the connection, giving the next request a broken pipe.
+  after upgrading `aic`**. A new CLI talking to a resident old daemon used to
+  fail in whatever way that particular change happened to break — verified
+  2026-08-06, when a daemon 5 days old replied to one request and closed the
+  connection, giving the next request a broken pipe. Protocol version 1 now
+  turns a detectable mismatch into a message naming `aic session stop` as the
+  remedy; it does not provide compatibility.
 - **Don't edit `src/scripts/templates/` without bumping `TEMPLATES_VERSION`** in
   `src/scripts/workspace.rs` — otherwise scaffolded workspaces never receive the
   update.

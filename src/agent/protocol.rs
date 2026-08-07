@@ -2,6 +2,28 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A request plus the wire version understood by its sender.
+///
+/// Flattening preserves the existing `{"op": ...}` request shape and adds one
+/// field, avoiding changes at every request construction site.
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct WireRequest<T> {
+    /// Zero denotes a legacy request that did not carry a version.
+    #[serde(default)]
+    pub protocol_version: u32,
+    #[serde(flatten)]
+    pub request: T,
+}
+
+impl<T> WireRequest<T> {
+    pub fn current(request: T) -> Self {
+        Self {
+            protocol_version: super::PROTOCOL_VERSION,
+            request,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -122,6 +144,11 @@ pub enum Response {
     /// agent isn't holding a DEK. Distinct from `Error` so the TUI can quietly
     /// fall through to the unlock screen.
     Locked,
+    /// The request used a different CLI-to-agent wire protocol version.
+    ProtocolMismatch {
+        expected: u32,
+        received: u32,
+    },
     Error {
         message: String,
     },

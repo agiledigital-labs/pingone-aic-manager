@@ -16,8 +16,8 @@ use crate::aic::AicClient;
 use crate::config::{self, ProjectConfig, VaultArtifact, crypto::Dek};
 use crate::{Error, Result};
 
-use super::protocol::{CachedTokenInfo, Request, Response, StatusInfo};
-use super::{log_path, pid_path, socket_path};
+use super::protocol::{CachedTokenInfo, Request, Response, StatusInfo, WireRequest};
+use super::{PROTOCOL_VERSION, log_path, pid_path, socket_path};
 
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 
@@ -228,7 +228,7 @@ async fn handle_connection(
     if n == 0 {
         return Ok(());
     }
-    let req: Request = match serde_json::from_str(line.trim()) {
+    let wire: WireRequest<Request> = match serde_json::from_str(line.trim()) {
         Ok(r) => r,
         Err(e) => {
             send(
@@ -241,6 +241,11 @@ async fn handle_connection(
             return Ok(());
         }
     };
+    if let Some(response) = protocol_mismatch(wire.protocol_version) {
+        send(&mut write, &response).await?;
+        return Ok(());
+    }
+    let req = wire.request;
 
     // Don't bump idle timer on Ping/Status — Status is used to monitor TTL
     // and we don't want it to keep the session alive forever.
@@ -254,6 +259,13 @@ async fn handle_connection(
 
     send(&mut write, &resp).await?;
     Ok(())
+}
+
+fn protocol_mismatch(received: u32) -> Option<Response> {
+    (received != PROTOCOL_VERSION).then_some(Response::ProtocolMismatch {
+        expected: PROTOCOL_VERSION,
+        received,
+    })
 }
 
 async fn send<W: AsyncWriteExt + Unpin>(w: &mut W, resp: &Response) -> Result<()> {
@@ -858,6 +870,32 @@ mod tests {
             directory.display().to_string(),
             Duration::from_secs(60),
         )))
+    }
+
+    #[test]
+    fn current_protocol_is_accepted_and_mismatch_is_structured() {
+        let encoded = serde_json::to_string(&WireRequest::current(Request::Ping)).unwrap();
+        let current: WireRequest<Request> = serde_json::from_str(&encoded).unwrap();
+
+        assert_eq!(current.protocol_version, PROTOCOL_VERSION);
+        assert!(matches!(current.request, Request::Ping));
+        assert!(protocol_mismatch(current.protocol_version).is_none());
+        assert!(matches!(
+            protocol_mismatch(PROTOCOL_VERSION + 1),
+            Some(Response::ProtocolMismatch {
+                expected: PROTOCOL_VERSION,
+                received,
+            }) if received == PROTOCOL_VERSION + 1
+        ));
+
+        let legacy: WireRequest<Request> = serde_json::from_str(r#"{"op":"ping"}"#).unwrap();
+        assert!(matches!(
+            protocol_mismatch(legacy.protocol_version),
+            Some(Response::ProtocolMismatch {
+                expected: PROTOCOL_VERSION,
+                received: 0,
+            })
+        ));
     }
 
     #[tokio::test]

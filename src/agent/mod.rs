@@ -32,7 +32,8 @@
 //! Practical corollary: a code change to the agent (anything under this module,
 //! e.g. `AicClient` response handling) only takes effect after a real process
 //! restart — `aic session stop` then relaunch. `logout`/lock keeps the *old binary*
-//! resident and will not pick up the new code.
+//! resident and will not pick up the new code. The wire protocol version makes
+//! that upgrade mismatch diagnosable; it does not make versions interoperable.
 
 pub mod client;
 pub mod daemon;
@@ -45,6 +46,9 @@ use crate::config::ProjectConfig;
 
 pub use client::AgentClient;
 pub use protocol::{CachedTokenInfo, Request, Response, StatusInfo};
+
+/// CLI-to-agent wire protocol version. Bump this for incompatible changes.
+pub const PROTOCOL_VERSION: u32 = 1;
 
 pub fn socket_path() -> PathBuf {
     ProjectConfig::dir().join("agent.sock")
