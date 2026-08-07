@@ -73,6 +73,82 @@ pub async fn setup(tenant: &Tenant, realm: &str, operator: &ResolvedOperator) ->
     Ok(record.kid)
 }
 
+/// Remove a key from a previously read default issuer and return its new size.
+/// The caller reads and displays the key before invoking this write so a
+/// destructive command always shows the attribution it is about to revoke.
+pub async fn remove_key_from_issuer(
+    tenant: &str,
+    realm: &str,
+    kid: &str,
+    issuer: Value,
+) -> Result<usize> {
+    let jwk_set = spec::remove_from_jwk_set(spec::issuer_jwk_set(&issuer), kid)?;
+    let remaining = spec::parse_jwk_set(Some(&jwk_set))?
+        .get("keys")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let body = spec::issuer_body(issuer, DEFAULT_ISSUER, jwk_set)?;
+    api::upsert_issuer(tenant, realm, DEFAULT_ISSUER_ID, body).await?;
+    Ok(remaining)
+}
+
+/// Generate a replacement key and retire the currently stored key.
+pub async fn rotate(
+    tenant: &Tenant,
+    realm: &str,
+    operator: &ResolvedOperator,
+) -> Result<(String, String)> {
+    spec::ensure_not_production(tenant.theme)?;
+    let old_record = crate::jwtbearer::get_key(AgentClient::connect_or_spawn().await?, &tenant.name)
+        .await?
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "no Trusted JWT private key stored for tenant {}; run `aic jwt-bearer setup --realm {realm}`",
+                tenant.name
+            ))
+        })?;
+    if operator.source == NameSource::Placeholder {
+        return Err(Error::Config(
+            "operator name is required for jwt-bearer rotate; run `aic settings set operator.name <name>`".into(),
+        ));
+    }
+    let old_kid = old_record.kid.clone();
+    let new_record = generate_key(operator)?;
+    let new_kid = new_record.kid.clone();
+    let public = public_jwk(&new_record)?;
+
+    // These three steps are ordered so that every intermediate state leaves a
+    // usable install, which is why rotation publishes before it stores — the
+    // opposite of `setup` above. A failed publish changes nothing; a failed
+    // store leaves the old private key still local and still published; a
+    // failed removal leaves the new key working and an orphaned old public key
+    // that `key remove` can clean up. Storing first would instead produce a
+    // state where the only published key's private half has been discarded.
+    publish_public_jwk(&tenant.name, realm, &public).await?;
+    crate::jwtbearer::put_key(
+        AgentClient::connect_or_spawn().await?,
+        &tenant.name,
+        &new_record,
+    )
+    .await?;
+    remove_published_key(&tenant.name, realm, &old_kid).await?;
+
+    Ok((old_kid, new_kid))
+}
+
+async fn publish_public_jwk(tenant: &str, realm: &str, public_jwk: &Value) -> Result<()> {
+    let source = read_or_template(tenant, realm, DEFAULT_ISSUER_ID).await?;
+    let body = body_with_key(source, DEFAULT_ISSUER, public_jwk)?;
+    api::upsert_issuer(tenant, realm, DEFAULT_ISSUER_ID, body).await?;
+    Ok(())
+}
+
+async fn remove_published_key(tenant: &str, realm: &str, kid: &str) -> Result<()> {
+    let issuer = api::read_issuer(tenant, realm, DEFAULT_ISSUER_ID).await?;
+    remove_key_from_issuer(tenant, realm, kid, issuer).await?;
+    Ok(())
+}
+
 async fn publish_and_verify<Publish, PublishFuture, Verify, VerifyFuture>(
     kid: &str,
     mut publish: Publish,

@@ -211,6 +211,43 @@ findings). Each should name the guard that will eventually retire it.
   the bearer looked like consistency rather than a new exposure.
 - **Guard:** promoted to Standing check 6.
 
+### 2026-08-07 — the reviewer repeated the mistake he had just logged
+
+- **What:** one day after adding the standing check about experiment design, the
+  reviewer probed whether `key remove` actually revokes by relabelling the `kid`
+  on **the same RSA key material** and re-minting. It minted, which proved
+  nothing: AM falls back to trying every key in the set when the `kid` matches
+  none, so the same material verifies under any label. A second attempt with
+  genuinely fresh material also minted — but by then a third confounder (a ~20s
+  propagation delay on freshly created OAuth2 clients, which returns
+  `invalid_client`) was flipping results between runs, and the question was
+  abandoned as unresolved rather than answered.
+- **Why worth logging:** the check said "read the listed calls as an experiment
+  design". It did not say _apply that to your own probes before running them_.
+  Writing the rule down is not the same as internalising it, and the cost here
+  was roughly a dozen live probe rounds that settled nothing.
+- **Guard:** before a behavioural probe, state the hypothesis and what result
+  would falsify it. If varying the intended input also varies something else
+  (key material vs key _label_), the probe is not testing what it claims. And
+  when results stop being reproducible, stop and report the confounders — do not
+  keep adding cases.
+
+### 2026-08-07 — a helper that existed only to be tautologically tested
+
+- **What:** `ops::rotate_steps` wrapped `publish(); store(); remove();` behind
+  three generic parameter pairs, forcing six `.clone()`s at its one call site.
+  Its test asserted the three closures ran in the order they were passed — a
+  property of `await?`, not of the code. `rotate` could have passed them in any
+  order and the test would still pass, so the ordering the helper existed to
+  protect was exactly what went unverified. Inlined the three calls with the
+  reasoning in a comment; the sequence is now legible at the call site.
+- **Why missed:** not missed — the done-note advertised it as "cleanly expressed
+  through stubbed publish → store → remove steps", which reads as a testability
+  win. A test that names the invariant is not the same as a test that holds it.
+- **Guard:** when a prompt asks for an ordering guarantee, ask what the test
+  would have to intercept to catch a reordering. If the answer is "nothing that
+  exists", prefer a comment over an abstraction.
+
 ### 2026-08-07 — the right answer from an experiment that could not test it
 
 - **What:** `aic auth`'s error mapper hinted "supply --client-secret-stdin" for

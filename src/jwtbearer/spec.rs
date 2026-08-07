@@ -1,7 +1,8 @@
 //! TUI-free input types and pure Trusted JWT Issuer transforms.
 //!
-//! In particular, [`merge_jwk_set`] is deliberately independent of the HTTP
-//! layer so future key removal can share its parser and validation rules.
+//! In particular, [`merge_jwk_set`] and [`remove_from_jwk_set`] are deliberately
+//! independent of the HTTP layer so key management shares parser and
+//! validation rules.
 
 use jsonwebtoken::Header;
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,71 @@ pub fn parse_jwk_set(existing: Option<&str>) -> Result<Value> {
         ));
     }
     Ok(value)
+}
+
+/// Return the string-valued JWK set carried by an AM issuer read, including
+/// the inherited-read wrapper shape.
+pub fn issuer_jwk_set(issuer: &Value) -> Option<&str> {
+    issuer.get("jwkSet").and_then(Value::as_str).or_else(|| {
+        issuer
+            .get("jwkSet")
+            .and_then(|value| value.get("value"))
+            .and_then(Value::as_str)
+    })
+}
+
+/// Return the public JWK array from an AM issuer read, without adding local
+/// metadata. The result is safe for `--json`: it contains public halves only.
+pub fn jwk_set_keys(issuer: &Value) -> Result<Vec<Value>> {
+    let jwks = parse_jwk_set(issuer_jwk_set(issuer))?;
+    Ok(jwks
+        .get("keys")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default())
+}
+
+/// Find one public JWK by KID, reporting the set's actual KIDs on a miss.
+pub fn jwk_set_key(existing: Option<&str>, kid: &str) -> Result<Value> {
+    let jwks = parse_jwk_set(existing)?;
+    let keys = jwks.get("keys").and_then(Value::as_array).ok_or_else(|| {
+        Error::Config("Trusted JWT issuer jwkSet must contain a keys array".into())
+    })?;
+    keys.iter()
+        .find(|key| key.get("kid").and_then(Value::as_str) == Some(kid))
+        .cloned()
+        .ok_or_else(|| missing_kid_error(kid, keys))
+}
+
+/// Remove one public JWK by KID while retaining all other keys and members.
+pub fn remove_from_jwk_set(existing: Option<&str>, kid: &str) -> Result<String> {
+    let mut jwks = parse_jwk_set(existing)?;
+    let keys = jwks
+        .get_mut("keys")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            Error::Config("Trusted JWT issuer jwkSet must contain a keys array".into())
+        })?;
+    let index = keys
+        .iter()
+        .position(|key| key.get("kid").and_then(Value::as_str) == Some(kid))
+        .ok_or_else(|| missing_kid_error(kid, keys))?;
+    keys.remove(index);
+    Ok(serde_json::to_string(&jwks)?)
+}
+
+fn missing_kid_error(kid: &str, keys: &[Value]) -> Error {
+    let published_kids = keys
+        .iter()
+        .map(|key| {
+            key.get("kid")
+                .and_then(Value::as_str)
+                .unwrap_or("<missing kid>")
+        })
+        .collect::<Vec<_>>();
+    Error::Config(format!(
+        "Trusted JWT issuer jwkSet does not contain kid {kid:?}; published kids: {published_kids:?}"
+    ))
 }
 
 /// Add or replace one public JWK by its `kid`, preserving every other key and
@@ -112,19 +178,10 @@ pub fn import_private_jwk(jwk: Value) -> Result<crate::jwtbearer::KeyRecord> {
 
 /// Return whether an issuer's string-valued JWK set contains `kid`.
 pub fn jwk_set_contains(issuer: &Value, kid: &str) -> Result<bool> {
-    let jwk_set = issuer.get("jwkSet").and_then(Value::as_str).or_else(|| {
-        issuer
-            .get("jwkSet")
-            .and_then(|value| value.get("value"))
+    Ok(jwk_set_keys(issuer)?.iter().any(|key| {
+        key.get("kid")
             .and_then(Value::as_str)
-    });
-    let jwks = parse_jwk_set(jwk_set)?;
-    Ok(jwks["keys"].as_array().is_some_and(|keys| {
-        keys.iter().any(|key| {
-            key.get("kid")
-                .and_then(Value::as_str)
-                .is_some_and(|candidate| candidate == kid)
-        })
+            .is_some_and(|candidate| candidate == kid)
     }))
 }
 
@@ -441,6 +498,49 @@ mod tests {
         assert_eq!(merged["keys"].as_array().unwrap().len(), 2);
         assert_eq!(merged["keys"][0], json!({"kid":"same","new":true}));
         assert_eq!(merged["keys"][1], json!({"kid":"other","keep":true}));
+    }
+
+    #[test]
+    fn remove_from_jwk_set_handles_the_key_set_edges_without_key_generation() {
+        let cases = [
+            (
+                Some(
+                    r#"{"keys":[{"kid":"old","aic_owner":"owner"},{"kid":"keep","aic_host":"host"}]}"#,
+                ),
+                "old",
+                json!({"keys":[{"kid":"keep","aic_host":"host"}]}),
+            ),
+            (
+                Some(r#"{"keys":[{"kid":"only","aic_created":"created"}]}"#),
+                "only",
+                json!({"keys": []}),
+            ),
+            (Some(r#"{"keys":[]}"#), "missing", Value::Null),
+            (None, "missing", Value::Null),
+            (Some(""), "missing", Value::Null),
+        ];
+
+        for (existing, kid, expected) in cases {
+            let result = remove_from_jwk_set(existing, kid);
+            if expected.is_null() {
+                let error = result.unwrap_err();
+                assert!(error.to_string().contains("published kids"), "{error}");
+            } else {
+                let actual: Value = serde_json::from_str(&result.unwrap()).unwrap();
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn remove_from_jwk_set_preserves_unremoved_keys_and_attribution_members() {
+        let existing = r#"{"keys":[{"kid":"remove","aic_owner":"one","custom":{"x":1}},{"kid":"keep","aic_host":"host","aic_created":"created"}]}"#;
+        let removed = remove_from_jwk_set(Some(existing), "remove").unwrap();
+        let removed: Value = serde_json::from_str(&removed).unwrap();
+        assert_eq!(
+            removed["keys"][0],
+            json!({"kid":"keep","aic_host":"host","aic_created":"created"})
+        );
     }
 
     #[test]

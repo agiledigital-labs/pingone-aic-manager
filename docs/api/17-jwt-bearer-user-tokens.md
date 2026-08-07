@@ -210,12 +210,13 @@ the private key equivalent to "log in as anyone in this realm". Verified: with
 ## Current implementation
 
 The `src/jwtbearer/` vertical implements setup, named-issuer creation/show,
-and local key transfer commands. Setup creates or reuses one RSA key pair per
-local install, stores the private record in the agent vault, merges the public
-JWK into the realm's shared `jwkSet` by `kid`, and verifies that AM retained the
-key after the write. Issuer writes explicitly set `allowedSubjects: []`,
-`consentedScopesClaim: "scope"`, and `resourceOwnerIdentityClaim: "sub"` so
-they do not depend on template defaults.
+default-issuer key listing/removal/rotation, and local key transfer commands.
+Setup creates or reuses one RSA key pair per local install, stores the private
+record in the agent vault, merges the public JWK into the realm's shared
+`jwkSet` by `kid`, and verifies that AM retained the key after the write. Issuer
+writes explicitly set `allowedSubjects: []`, `consentedScopesClaim: "scope"`,
+and `resourceOwnerIdentityClaim: "sub"` so they do not depend on template
+defaults.
 
 - The private half is stored under the tenant name in the agent vault, while
   setup adds the public half to the realm's shared `jwkSet`. The read-modify-
@@ -239,18 +240,30 @@ they do not depend on template defaults.
   Requiring an explicit subject list would defeat the convenience the feature is
   for. The setup command refuses production-themed tenants because an empty
   `allowedSubjects` plus a client with the grant enabled is a realm-wide
-  capability. Minting a user token from the stored key, exporting a public JWKS,
-  and key rotation/removal remain future work; export must be an explicit
-  command, not a setup side effect.
+  capability. Minting a user token from the stored key and exporting a public
+  JWKS remain separate explicit commands; neither is a setup side effect.
 - `aic jwt-bearer key export` emits the stored private JWK as one standard JWK
   object, retaining `kid` and any `aic_*` attribution members. With `--out` it
-  creates a new mode-600 file and refuses to overwrite an existing path;
-  without it, JSON goes to stdout. `aic jwt-bearer key import` accepts only an
-  RSA private JWK with a non-empty `kid`, stores it in the same vault record,
-  and refuses to replace an existing record without `--force`. After import it
-  makes one best-effort read of the default issuer and warns if the imported
-  `kid` is not published; publication is intentionally not performed by this
-  local transfer command.
+  creates a new mode-600 file and refuses to overwrite an existing path; without
+  it, JSON goes to stdout. `aic jwt-bearer key import` accepts only an RSA
+  private JWK with a non-empty `kid`, stores it in the same vault record, and
+  refuses to replace an existing record without `--force`. After import it makes
+  one best-effort read of the default issuer and warns if the imported `kid` is
+  not published; publication is intentionally not performed by this local
+  transfer command.
+- `aic jwt-bearer key list` reads the default issuer's public `jwkSet`, shows
+  each key's `aic_owner`, `aic_host`, and `aic_created` attribution, and marks
+  the key whose private half is in the current tenant vault. `--json` emits the
+  public key array without the local marker or any private material.
+- `aic jwt-bearer key remove <kid> --force` removes one key from the default
+  issuer after displaying its attribution. It refuses an unknown `kid` and
+  reports the published KIDs, warns when the key is the local one, and permits
+  an empty resulting set.
+- `aic jwt-bearer key rotate` requires an existing local key and a
+  non-placeholder operator. It publishes a newly generated public key alongside
+  the old key, stores the new private record, then removes the old public key.
+  This ordering leaves the install usable if any individual step fails; a failed
+  final removal leaves an old public key for `key remove` to clean up.
 
 ## Planned shape
 
@@ -316,6 +329,22 @@ they do not depend on template defaults.
 
 ## Open questions
 
+- **Does removing a key from `jwkSet` revoke it promptly? Unresolved — assume
+  not.** Probing on 2026-08-07 confirmed the _write_ lands: after
+  `aic jwt-bearer key remove`, AM stores `jwkSet` as `{"keys":[]}` and
+  `key list` shows nothing. But an assertion signed with the removed key still
+  minted a token immediately afterwards, and follow-up probes gave
+  **inconsistent** results — including tokens minted from RSA material never
+  published to any issuer, on some runs but not others. At least three
+  confounders are in play and none was isolated: the issuer's own
+  `jwksCacheTimeout` (3600000 ms) and `jwkStoreCacheMissCacheTime` (60000 ms), a
+  propagation delay on freshly created OAuth2 clients (a client used within ~20s
+  of creation returns `invalid_client`), and AM's documented fallback of trying
+  every key in the set when the assertion's `kid` names none of them. Until
+  someone characterises this properly, **do not treat `key remove` as immediate
+  revocation** — rotate the affected clients' secrets too, or delete the issuer
+  outright. Deliberately no `## Verified against` entry: the calls were made but
+  they do not support a conclusion.
 - `resourceOwnerIdentityClaim` was left at `sub` throughout. Pointing it at a
   custom claim might let a username-keyed assertion resolve properly, which
   would remove the lookup — untested.

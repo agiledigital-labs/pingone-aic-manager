@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::Result;
 use crate::agent::AgentClient;
-use crate::cli::{print_json, read_password_line, realm_arg, tenant_config_for};
+use crate::cli::{print_json, print_table, read_password_line, realm_arg, tenant_config_for};
 use crate::config::{self, operator::NetworkAccess};
 use crate::jwtbearer::{self, ops, spec};
 
@@ -30,7 +30,7 @@ pub enum JwtBearerCommand {
         #[command(subcommand)]
         command: IssuerCommand,
     },
-    /// Transfer private keys between local vaults.
+    /// Manage default-issuer keys and transfer private keys between vaults.
     Key {
         #[command(subcommand)]
         command: KeyCommand,
@@ -39,6 +39,33 @@ pub enum JwtBearerCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum KeyCommand {
+    /// List the public signing keys published in the default issuer.
+    List {
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long, help = "Print public keys as JSON")]
+        json: bool,
+    },
+    /// Remove one public signing key from the default issuer.
+    Remove {
+        /// Published key id.
+        kid: String,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+    },
+    /// Replace this install's published signing key.
+    Rotate {
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+    },
     /// Export this tenant's private signing JWK.
     Export {
         #[arg(long, help = "Tenant to target")]
@@ -63,6 +90,8 @@ pub fn quiet_preflight(command: &JwtBearerCommand) -> bool {
     matches!(
         command,
         JwtBearerCommand::Key {
+            command: KeyCommand::List { json: true, .. }
+        } | JwtBearerCommand::Key {
             command: KeyCommand::Export { out: None, .. }
         }
     )
@@ -148,6 +177,118 @@ pub async fn run(command: JwtBearerCommand) -> Result<()> {
 
 async fn run_key(command: KeyCommand) -> Result<()> {
     match command {
+        KeyCommand::List {
+            realm,
+            tenant,
+            json,
+        } => {
+            let realm = realm_arg("jwt-bearer", realm)?;
+            let tenant = tenant_config_for(tenant)?;
+            spec::ensure_not_production(tenant.theme)?;
+            let issuer =
+                crate::jwtbearer::api::read_issuer(&tenant.name, &realm, ops::DEFAULT_ISSUER_ID)
+                    .await?;
+            let keys = spec::jwk_set_keys(&issuer)?;
+            if json {
+                return print_json(&keys);
+            }
+
+            let local_kid =
+                jwtbearer::get_key(AgentClient::connect_or_spawn().await?, &tenant.name)
+                    .await?
+                    .map(|record| record.kid);
+            let rows = keys
+                .iter()
+                .map(|key| {
+                    vec![
+                        key_string(key, "kid"),
+                        key_string(key, "aic_owner"),
+                        key_string(key, "aic_host"),
+                        key_string(key, "aic_created"),
+                        if local_kid.as_deref() == key.get("kid").and_then(Value::as_str) {
+                            "*".to_string()
+                        } else {
+                            String::new()
+                        },
+                    ]
+                })
+                .collect::<Vec<_>>();
+            print_table(&["KID", "OWNER", "HOST", "CREATED", "MINE"], &rows);
+            Ok(())
+        }
+        KeyCommand::Remove {
+            kid,
+            force,
+            realm,
+            tenant,
+        } => {
+            let realm = realm_arg("jwt-bearer", realm)?;
+            let tenant = tenant_config_for(tenant)?;
+            spec::ensure_not_production(tenant.theme)?;
+            // Resolve and describe the key before the --force gate, so a run
+            // without --force is a useful dry run: it rejects an unknown kid
+            // and names the owner. Printing the attribution only after the
+            // gate would show it when the decision has already been made.
+            let issuer =
+                crate::jwtbearer::api::read_issuer(&tenant.name, &realm, ops::DEFAULT_ISSUER_ID)
+                    .await?;
+            let public_jwk = spec::jwk_set_key(spec::issuer_jwk_set(&issuer), &kid)?;
+            println!(
+                "Trusted JWT key {kid:?} in {}/{} (owner: {}, host: {}, created: {})",
+                tenant.name,
+                realm,
+                key_string(&public_jwk, "aic_owner"),
+                key_string(&public_jwk, "aic_host"),
+                key_string(&public_jwk, "aic_created")
+            );
+
+            let local_kid =
+                jwtbearer::get_key(AgentClient::connect_or_spawn().await?, &tenant.name)
+                    .await?
+                    .map(|record| record.kid);
+            if local_kid.as_deref() == Some(kid.as_str()) {
+                eprintln!(
+                    "warning: this is your locally stored key; removing it stops `aic auth` working for tenant {}",
+                    tenant.name
+                );
+            }
+
+            if !force {
+                return Err(crate::Error::Config(
+                    "jwt-bearer key remove requires --force".into(),
+                ));
+            }
+
+            let remaining = ops::remove_key_from_issuer(&tenant.name, &realm, &kid, issuer).await?;
+            if remaining == 0 {
+                println!(
+                    "removed Trusted JWT key {kid:?}; it was the last key in the published set"
+                );
+            } else {
+                println!("removed Trusted JWT key {kid:?}; {remaining} published key(s) remain");
+            }
+            // Probing on 2026-08-07 found AM still minting from a removed key
+            // and could not pin down for how long; see the open question in
+            // `docs/api/17-jwt-bearer-user-tokens.md`. Say so rather than let
+            // a security-motivated removal read as instant revocation.
+            eprintln!(
+                "note: AM may keep accepting assertions signed with this key for some time; removal is not verified to be immediate revocation"
+            );
+            Ok(())
+        }
+        KeyCommand::Rotate { realm, tenant } => {
+            let realm = realm_arg("jwt-bearer", realm)?;
+            let tenant = tenant_config_for(tenant)?;
+            let settings = config::Settings::load()?.unwrap_or_default();
+            let operator =
+                config::operator::resolve(&settings, Some(&tenant), NetworkAccess::Skip).await;
+            let (old_kid, new_kid) = ops::rotate(&tenant, &realm, &operator).await?;
+            println!(
+                "rotated Trusted JWT key for tenant {} in realm {} (old kid {}, new kid {})",
+                tenant.name, realm, old_kid, new_kid
+            );
+            Ok(())
+        }
         KeyCommand::Export { tenant, out } => {
             let tenant = tenant_config_for(tenant)?;
             spec::ensure_not_production(tenant.theme)?;
@@ -212,6 +353,13 @@ async fn run_key(command: KeyCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn key_string(key: &Value, field: &str) -> String {
+    key.get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn no_stored_key_error(tenant: &str) -> crate::Error {
@@ -418,10 +566,27 @@ mod tests {
             Cli::try_parse_from(["aic", "jwt-bearer", "key", "import", "key.jwk", "--force"])
                 .unwrap();
         assert!(matches!(import.command, Some(Command::JwtBearer { .. })));
+
+        let list = Cli::try_parse_from(["aic", "jwt-bearer", "key", "list", "--json"]).unwrap();
+        assert!(matches!(list.command, Some(Command::JwtBearer { .. })));
+
+        let remove =
+            Cli::try_parse_from(["aic", "jwt-bearer", "key", "remove", "kid", "--force"]).unwrap();
+        assert!(matches!(remove.command, Some(Command::JwtBearer { .. })));
+
+        let rotate = Cli::try_parse_from(["aic", "jwt-bearer", "key", "rotate"]).unwrap();
+        assert!(matches!(rotate.command, Some(Command::JwtBearer { .. })));
     }
 
     #[test]
     fn stdout_export_suppresses_preflight_status_but_file_export_does_not() {
+        assert!(quiet_preflight(&JwtBearerCommand::Key {
+            command: KeyCommand::List {
+                realm: None,
+                tenant: None,
+                json: true,
+            },
+        }));
         assert!(quiet_preflight(&JwtBearerCommand::Key {
             command: KeyCommand::Export {
                 tenant: None,
