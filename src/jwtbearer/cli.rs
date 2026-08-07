@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-use std::io::IsTerminal;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -116,6 +115,9 @@ pub struct AuthOptions {
     /// Read the client secret from one line of stdin.
     #[arg(long)]
     pub client_secret_stdin: bool,
+    /// OAuth2 token-endpoint client authentication method.
+    #[arg(long, value_enum, default_value_t)]
+    pub client_auth: spec::ClientAuthMethod,
     /// Requested OAuth2 scope. Repeat for multiple scopes.
     #[arg(long)]
     pub scope: Vec<String>,
@@ -425,11 +427,12 @@ pub async fn run_auth(options: AuthOptions) -> Result<()> {
     let form = spec::token_request(
         &options.client_id,
         client_secret.as_deref(),
+        options.client_auth,
         &assertion,
         &options.scope,
     );
 
-    let response = crate::jwtbearer::api::mint_user_token(&tenant.name, &realm, &form)
+    let response = crate::jwtbearer::api::mint_user_token(&tenant, &realm, &form)
         .await
         .map_err(spec::map_token_error)?;
     let access_token = response
@@ -474,17 +477,7 @@ fn read_client_secret(from_stdin: bool) -> Result<Option<String>> {
     if from_stdin {
         return Ok(Some(read_password_line(std::io::stdin().lock())?));
     }
-    if crate::cli::prompting_disabled()
-        || !std::io::stderr().is_terminal()
-        || std::fs::File::open("/dev/tty").is_err()
-    {
-        return Err(crate::Error::Config(
-            "client secret is required; supply --client-secret-stdin".into(),
-        ));
-    }
-    rpassword::prompt_password("Client secret: ")
-        .map(Some)
-        .map_err(|error| crate::Error::Config(format!("read client secret from /dev/tty: {error}")))
+    Ok(None)
 }
 
 async fn run_issuer(command: IssuerCommand) -> Result<()> {
@@ -523,6 +516,7 @@ mod tests {
     use crate::cli::{Cli, Command, realm_arg};
 
     use super::{JwtBearerCommand, KeyCommand, quiet_preflight, write_private_jwk_file};
+    use crate::jwtbearer::spec::ClientAuthMethod;
 
     #[test]
     fn realm_arg_defaults_to_alpha_and_only_aic_realms_are_allowed() {
@@ -537,7 +531,41 @@ mod tests {
     #[test]
     fn auth_requires_exactly_one_subject_form() {
         let id = Cli::try_parse_from(["aic", "auth", "--as-id", "u", "--client-id", "c"]).unwrap();
-        assert!(matches!(id.command, Some(Command::Auth { .. })));
+        let Some(Command::Auth { options }) = id.command else {
+            panic!("expected auth command");
+        };
+        assert_eq!(options.client_auth, ClientAuthMethod::ClientSecretPost);
+
+        let post = Cli::try_parse_from([
+            "aic",
+            "auth",
+            "--as-id",
+            "u",
+            "--client-id",
+            "c",
+            "--client-auth",
+            "client-secret-basic",
+        ])
+        .unwrap();
+        let Some(Command::Auth { options }) = post.command else {
+            panic!("expected auth command");
+        };
+        // The non-default value, so this proves the flag is read rather than
+        // agreeing with the default by accident.
+        assert_eq!(options.client_auth, ClientAuthMethod::ClientSecretBasic);
+        assert!(
+            Cli::try_parse_from([
+                "aic",
+                "auth",
+                "--as-id",
+                "u",
+                "--client-id",
+                "c",
+                "--client-auth",
+                "private-key-jwt",
+            ])
+            .is_err()
+        );
 
         assert!(Cli::try_parse_from(["aic", "auth", "--client-id", "c"]).is_err());
         assert!(

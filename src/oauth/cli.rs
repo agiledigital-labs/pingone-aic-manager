@@ -53,7 +53,7 @@ pub struct CreateArgs {
     response_type: Vec<String>,
     /// advancedOAuth2ClientConfig.tokenEndpointAuthMethod (live-schema validated).
     #[arg(long, value_name = "METHOD")]
-    token_auth_method: Option<String>,
+    token_endpoint_auth_method: Option<String>,
     /// advancedOAuth2ClientConfig.subjectType (live-schema validated).
     #[arg(long, value_name = "TYPE")]
     subject_type: Option<String>,
@@ -473,7 +473,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 redirect_uris: options.redirect_uri,
                 grants: options.grant,
                 response_types: options.response_type,
-                token_auth_method: options.token_auth_method,
+                token_endpoint_auth_method: options.token_endpoint_auth_method,
                 subject_type: options.subject_type,
                 implied_consent: options.implied_consent.then_some(true),
                 access_token_lifetime: options.access_token_lifetime,
@@ -661,6 +661,8 @@ mod tests {
             "--scope",
             "profile",
             "--secret-stdin",
+            "--token-endpoint-auth-method",
+            "client_secret_post",
             "--access-token-lifetime",
             "0",
             "--force",
@@ -679,6 +681,10 @@ mod tests {
         assert_eq!(options.name.as_deref(), Some("Test client"));
         assert_eq!(options.scope, ["openid", "profile"]);
         assert!(options.secret_stdin);
+        assert_eq!(
+            options.token_endpoint_auth_method.as_deref(),
+            Some("client_secret_post")
+        );
         assert_eq!(options.access_token_lifetime, Some(0));
         assert!(options.force);
         assert!(options.yes);

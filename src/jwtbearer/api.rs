@@ -5,6 +5,8 @@ use std::path::is_separator;
 
 use serde_json::{Value, json};
 
+use crate::config::tenant::Tenant;
+use crate::jwtbearer::spec::TokenRequest;
 use crate::{Error, Result};
 
 const API_VERSION: &str = "protocol=2.1,resource=1.0";
@@ -45,8 +47,24 @@ pub async fn lookup_username(tenant: &str, realm: &str, username: &str) -> Resul
     crate::aic::api::get(tenant, &path).await
 }
 
-pub async fn mint_user_token(tenant: &str, realm: &str, body: &str) -> Result<Value> {
-    crate::aic::api::post_form(tenant, &token_path(realm), body).await
+pub async fn mint_user_token(
+    tenant: &Tenant,
+    realm: &str,
+    request: &TokenRequest,
+) -> Result<Value> {
+    // This token exchange deliberately bypasses the agent API proxy: its wire
+    // shape cannot carry an OAuth client's Authorization header, and the
+    // exchange neither needs nor may receive the service-account bearer. The
+    // private JWK is null because this form-only transport never calls bearer().
+    crate::aic::AicClient::new(tenant.clone(), Value::Null)
+        .write_form_with_authorization(
+            reqwest::Method::POST,
+            &token_path(realm),
+            &request.body,
+            false,
+            request.authorization.as_deref(),
+        )
+        .await
 }
 
 fn validate_issuer_id(id: &str) -> Result<()> {
