@@ -125,11 +125,20 @@ endpoint:
 
 ```
 client_id=<client>
-client_secret=<secret>          # required unless the client uses private_key_jwt
 grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
 assertion=<signed JWT>
 scope=openid profile fr:idm:*
 ```
+
+Client authentication defaults to `client_secret_post`: `aic auth` adds
+`client_secret=<secret>` to the form and sends no `Authorization` header. Use
+`--client-auth client-secret-basic` for a client whose
+`tokenEndpointAuthMethod` is `client_secret_basic` — AM's own template default —
+and it sends `Authorization: Basic base64(form_encode(client_id):form_encode(secret))`
+without duplicating the secret in the body. Omitting
+`--client-secret-stdin` sends neither credential under either method, for a
+public client. The flag is enum-valued so `private-key-jwt` can be added later;
+it is not implemented yet.
 
 Response is a normal token response: `access_token`, `id_token` (when `openid`
 is in scope), `scope`, `token_type`, and `expires_in: 3599` — **one hour**, not
@@ -198,14 +207,29 @@ the private key equivalent to "log in as anyone in this realm". Verified: with
 - **Client authentication is still required.** Omitting `client_secret` on a
   `client_secret_post` client fails with `invalid_client` "Client authentication
   failed". The assertion authenticates the _user_, not the client.
-- **A missing grant is indistinguishable from a bad secret.** Both fail with
+- **A missing grant and a bad secret are indistinguishable.** Both fail with
   `invalid_client` "Invalid authentication method for accessing this endpoint."
-  — verified 2026-08-07 by holding one variable at a time on a single client:
-  grant present + wrong secret, and grant absent + correct secret, produced
-  byte-identical descriptions, while grant present + correct secret minted a
-  token. Note this differs from the _omitted_ `client_secret` case above, which
-  says "Client authentication failed". So `aic auth` cannot tell the caller
-  which of the two is wrong and must name both.
+  The error mapper names both checks and preserves AM's own `error_description`.
+  Note this differs from the _omitted_ `client_secret` case above, which says
+  "Client authentication failed".
+- **AM appears to accept either client-auth method regardless of the client's
+  `tokenEndpointAuthMethod`.** Measured 2026-08-07 on two settled clients
+  differing only in that field, against the same published key: **all four**
+  method × client combinations minted. So a "mismatch" is not known to fail, and
+  `--client-auth` exists for explicitness and for future methods rather than to
+  work around an AM restriction. `aic auth` defaults to `client-secret-post` and
+  `aic oauth create` writes the matching value, so the pair agrees without a
+  flag; that deviates from AM's template default (`client_secret_basic`) on
+  purpose.
+
+  **Two earlier readings on this same day are retracted.** A run where a
+  default-Basic client was refused while a post-seeded client minted was taken
+  as proof that the method must match — it is not reproducible, and it was made
+  while the realm's JWKS cache was in a known-stale state, so elapsed time
+  cannot be separated from the auth method. A separate agent-run 2×2 reporting
+  both crossed pairings failing did not reproduce either. Treat the auth method
+  as *not* established to be load-bearing until someone probes it on a realm
+  with a known-good cache.
 
 ## Current implementation
 
@@ -265,14 +289,14 @@ defaults.
   This ordering leaves the install usable if any individual step fails; a failed
   final removal leaves an old public key for `key remove` to clean up.
 
-## Planned shape
+## CLI shape
 
 - aic auth --as-id <uuid> --client-id <id> or aic auth --as-username <name>
   --client-id <id> now resolves the subject, signs with the stored tenant key,
   exchanges at the tenant-relative realm token path, and supports repeatable
-  --scope, --realm, --tenant, --client-secret-stdin, and bare-token --token
-  output. Discovery's `issuer` remains the source of the audience claim; its
-  `token_endpoint` is not used as an outbound URL.
+  --scope, --realm, --tenant, --client-secret-stdin, enum-valued --client-auth,
+  and bare-token --token output. Discovery's `issuer` remains the source of the
+  audience claim; its `token_endpoint` is not used as an outbound URL.
 
 ## Verified against
 
@@ -318,6 +342,27 @@ defaults.
 - Subject used: the pre-existing sandbox `testuser`. No user was created or
   modified.
 
+### 2026-08-07 — client authentication method probe
+
+- `POST …/OAuth2Client?_action=schema` returned 200 and exposed
+  `tokenEndpointAuthMethod.enum` with `client_secret_post`,
+  `client_secret_basic`, `private_key_jwt`, `tls_client_auth`,
+  `self_signed_tls_client_auth`, and `none`.
+- Two 2×2 probes were run, by different operators, and **they disagree**. An
+  agent run created `test_auth_basic_0807_codex` / `test_auth_post_0807_codex`
+  and reported both crossed pairings failing. A reviewer re-ran the same design
+  (`test_m_basic` / `test_m_post`, same secret per client, same published key,
+  50-second settle, four
+  `POST /am/oauth2/realms/root/realms/alpha/access_token` calls) and got **all
+  four minting**, including both crossed pairings. Only the second run's raw
+  results were observed directly by the person writing this entry. The
+  disagreement is unexplained; the reviewer's run is the one reflected in the
+  Quirks section, and neither run should be cited as establishing that a
+  method mismatch fails.
+- Both clients were `DELETE`d, and a subsequent client list confirmed neither
+  id remained. Subject: the pre-existing sandbox `testuser`; no user or
+  published JWT key was created, modified, rotated, or removed.
+
 ## Source citations
 
 - Ping docs:
@@ -328,28 +373,6 @@ defaults.
 - Not covered by fr-config-manager.
 
 ## Open questions
-
-- **`tokenEndpointAuthMethod` must be `client_secret_post`, and that is a third
-  cause of the identical `invalid_client` message.** `aic auth` puts
-  `client_secret` in the form body, so it speaks `client_secret_post` only. AM's
-  OAuth2 client template defaults to **`client_secret_basic`**, which is
-  therefore what `aic oauth create` produces unless seeded otherwise. Such a
-  client fails with `invalid_client` "Invalid authentication method for
-  accessing this endpoint" — the same string a missing grant and a wrong secret
-  produce. Verified 2026-08-07 by creating two clients minutes apart against the
-  same published key: `client_secret_basic` refused, `client_secret_post`
-  (seeded via `oauth create --from`) minted.
-
-  **This retracts a claim made earlier the same day.** An episode where
-  `aic auth` failed after a `key remove` + republish was written up here as "the
-  JWKS cache cuts both ways". That is not established: every client used during
-  that episode was a default `client_secret_basic` one, so the auth method alone
-  accounts for it. What remains verified is only the one-directional observation
-  — a _removed_ key still minted. Why clients created earlier that day succeeded
-  on the same defaults is **unexplained**; a plausible but unverified reading is
-  that AM enforces the auth method only once a newly-created client has fully
-  propagated, which would also fit the ~20s propagation delay noted below. Do
-  not build on that until someone probes it.
 
 - **Does removing a key from `jwkSet` revoke it promptly? Unresolved — assume
   not.** Probing on 2026-08-07 confirmed the _write_ lands: after

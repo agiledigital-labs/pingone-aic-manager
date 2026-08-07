@@ -99,6 +99,20 @@ The 2026-08-06 template has 115 fields across six groups:
 - Many fields are wrapped in `{"inherited": true|false, "value": …}` to indicate
   override of provider defaults.
 
+### Create defaults
+
+`aic oauth create` writes
+`advancedOAuth2ClientConfig.tokenEndpointAuthMethod` explicitly as
+`client_secret_post`; it does not inherit the value from the live template,
+which defaults to `client_secret_basic`. The explicit value is chosen to match
+`aic auth`'s default so the two commands agree without a flag — not because AM
+requires the two to match (it was observed accepting either; see
+[17](17-jwt-bearer-user-tokens.md)). `--token-endpoint-auth-method <value>` overrides the
+create default and is checked against the live schema when that field exposes
+an enum. A `--from` seed that supplies the field wins over the create default;
+an explicit flag still overrides the seed, consistently with the other create
+flags.
+
 ## OIDC provider service shape (real, from sandbox)
 
 ```json
@@ -254,7 +268,18 @@ $SCRIPTS/verify-endpoint.sh \
 
 ## Verified against
 
-- Tenant: `<your-tenant>.forgeblocks.com`
+- Tenant: `<your-tenant>.forgeblocks.com`, realm `alpha`
+- Date: 2026-08-07
+- Calls: `POST …/realm-config/agents/OAuth2Client?_action=schema` returned 200;
+  `tokenEndpointAuthMethod.enum` contained `client_secret_post`,
+  `client_secret_basic`, `private_key_jwt`, `tls_client_auth`,
+  `self_signed_tls_client_auth`, and `none`. Two clients differing only in
+  `tokenEndpointAuthMethod` were created and used to probe `aic auth` in all
+  four method combinations, twice, by different operators — **the two runs
+  disagree** on whether a crossed pairing fails, and the reviewer's run had all
+  four minting. See [17](17-jwt-bearer-user-tokens.md) for the detail; do not
+  cite either run as establishing that the method must match. All probe clients
+  were deleted and a client-list read confirmed none remained.
 - Date: 2026-08-06
 - Calls: `POST …/realm-config/agents/OAuth2Client?_action=template` with `{}`
   returned 200 and the 115-field, six-group body/counts above; `POST

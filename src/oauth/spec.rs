@@ -20,7 +20,7 @@ pub struct CreateClientSpec {
     pub redirect_uris: Vec<String>,
     pub grants: Vec<String>,
     pub response_types: Vec<String>,
-    pub token_auth_method: Option<String>,
+    pub token_endpoint_auth_method: Option<String>,
     pub subject_type: Option<String>,
     pub implied_consent: Option<bool>,
     pub access_token_lifetime: Option<u64>,
@@ -56,6 +56,10 @@ pub fn build_create_body(
     }
 
     let has_seed = seed.is_some();
+    let seed_sets_token_endpoint_auth_method = seed.as_ref().is_some_and(|seed| {
+        seed.pointer("/advancedOAuth2ClientConfig/tokenEndpointAuthMethod")
+            .is_some()
+    });
     if let Some(seed) = seed {
         if !seed.is_object() {
             return Err("oauth client --from seed is not a JSON object".into());
@@ -132,12 +136,24 @@ pub fn build_create_body(
         "responseTypes",
         &spec.response_types,
     )?;
-    if let Some(method) = &spec.token_auth_method {
+    if let Some(method) = &spec.token_endpoint_auth_method {
         set_field(
             &mut template,
             "advancedOAuth2ClientConfig",
             "tokenEndpointAuthMethod",
             json!(method),
+        )?;
+    } else if !seed_sets_token_endpoint_auth_method {
+        set_field(
+            &mut template,
+            "advancedOAuth2ClientConfig",
+            "tokenEndpointAuthMethod",
+            // Deliberately not AM's template default (`client_secret_basic`).
+            // `aic auth` speaks `client_secret_post` unless told otherwise, and
+            // a client created here that AM would refuse to authenticate that
+            // way is a client this tool cannot use. Override with
+            // `--token-endpoint-auth-method client_secret_basic`.
+            json!("client_secret_post"),
         )?;
     }
     if let Some(subject_type) = &spec.subject_type {
@@ -519,7 +535,7 @@ mod tests {
             redirect_uris: vec!["https://example.test/callback".into()],
             grants: vec!["authorization_code".into()],
             response_types: vec!["code".into()],
-            token_auth_method: Some("none".into()),
+            token_endpoint_auth_method: Some("none".into()),
             subject_type: Some("pairwise".into()),
             implied_consent: Some(true),
             access_token_lifetime: Some(3600),
@@ -576,6 +592,33 @@ mod tests {
         assert_eq!(
             body["coreOAuth2ClientConfig"]["authorizationCodeLifetime"],
             120
+        );
+    }
+
+    #[test]
+    fn create_states_client_secret_post_instead_of_inheriting_the_template() {
+        let body = build_create_body(template(), None, &CreateClientSpec::default()).unwrap();
+
+        assert_eq!(
+            body["advancedOAuth2ClientConfig"]["tokenEndpointAuthMethod"],
+            "client_secret_post"
+        );
+    }
+
+    #[test]
+    fn seeded_token_endpoint_auth_method_wins_over_the_create_default() {
+        // Must seed a value that is NOT the create default, or the assertion
+        // passes without the seed being consulted at all.
+        let seed = json!({
+            "advancedOAuth2ClientConfig": {
+                "tokenEndpointAuthMethod": "client_secret_basic"
+            }
+        });
+        let body = build_create_body(template(), Some(seed), &CreateClientSpec::default()).unwrap();
+
+        assert_eq!(
+            body["advancedOAuth2ClientConfig"]["tokenEndpointAuthMethod"],
+            "client_secret_basic"
         );
     }
 

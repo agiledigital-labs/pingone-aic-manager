@@ -105,16 +105,21 @@ token on stdout.
 
 ### aic auth — mint a token as an end user
 
-    aic auth --as-id <uuid> --client-id <id> [--client-secret-stdin] [--scope S]...
-    aic auth --as-username <name> --client-id <id> [--scope S]...
+    aic auth --as-id <uuid> --client-id <id> [--client-secret-stdin] [--client-auth <method>] [--scope S]...
+    aic auth --as-username <name> --client-id <id> [--client-secret-stdin] [--client-auth <method>] [--scope S]...
     aic auth ... --token
 
 Exactly one of --as-id and --as-username is required. Usernames are resolved to
 their IDM managed-object UUID before signing. The client secret is read from
-stdin when --client-secret-stdin is supplied; otherwise an interactive command
-prompts on the terminal. Secrets are never accepted as argv or environment
-values. The command refuses production-themed tenants and requires a key from
-aic jwt-bearer setup.
+stdin only when --client-secret-stdin is supplied; omitting it sends a public-
+client request with no client credential. Secrets are never accepted as argv or
+environment values. `--client-auth` accepts `client-secret-post` (the default)
+and `client-secret-basic`. Set it to match the OAuth client's
+`tokenEndpointAuthMethod` if you want the request to be strictly conformant;
+AM was observed accepting either method regardless (see
+`docs/api/17-jwt-bearer-user-tokens.md`), so a mismatch is not known to fail. `private-key-jwt` is reserved for a future extension
+and is not accepted yet. The command refuses production-themed tenants and
+requires a key from aic jwt-bearer setup.
 
 Default output includes the user, client, granted scope, expiry, signing kid,
 and a redacted token. --token prints only the bare access token.
@@ -383,6 +388,14 @@ for a production-themed tenant. **`--force` replaces the client wholesale from
 the tenant template — it is not a merge**, so every field you don't pass returns
 to its tenant default. To change one setting on a client that already exists,
 use pull → edit → push instead.
+
+Create writes `tokenEndpointAuthMethod: client_secret_post` explicitly so the
+result works with `aic auth`'s default. That is deliberately **not** AM's own
+template default (`client_secret_basic`), nor the method RFC 6749 §2.3.1
+prefers — it is chosen so the two commands agree without a flag. Override it with
+`--token-endpoint-auth-method <value>`; the value is checked against the live
+tenant schema when the schema exposes an enum. A value supplied by `--from`
+wins over the create default, while an explicit flag overrides the seed.
 
 For less-common settings, pass an OAuth client JSON object with `--from`; flags
 override its values while missing fields retain the live tenant template.

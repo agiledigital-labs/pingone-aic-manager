@@ -4,6 +4,7 @@
 //! independent of the HTTP layer so key management shares parser and
 //! validation rules.
 
+use base64::Engine as _;
 use jsonwebtoken::Header;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -14,6 +15,30 @@ use crate::config::TenantTheme;
 use crate::{Error, Result};
 
 const SERVER_FIELDS: [&str; 4] = ["_id", "_rev", "_type", "_provider"];
+
+/// OAuth2 client authentication used at the token endpoint.
+///
+/// `private_key_jwt` can be added as another variant without changing the
+/// meaning of the `--client-auth` flag or the request-building boundary.
+/// The default is `client_secret_post`, which is **not** AM's own client
+/// template default (`client_secret_basic`) and not the method RFC 6749 §2.3.1
+/// prefers. It is chosen so `aic oauth create` and `aic auth` agree out of the
+/// box: `create` writes the matching method, and this default keeps `aic auth`
+/// behaving as it did before the flag existed. Pass
+/// `--client-auth client-secret-basic` for a client configured AM's way.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClientAuthMethod {
+    #[default]
+    ClientSecretPost,
+    ClientSecretBasic,
+}
+
+/// A complete token-endpoint request, including any client-owned credential.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TokenRequest {
+    pub body: String,
+    pub authorization: Option<String>,
+}
 
 /// Parse a string-valued AM `jwkSet`, treating null and empty values as an
 /// empty set. Malformed JSON or a malformed JWKS shape is reported so setup
@@ -312,20 +337,46 @@ pub fn sign_user_assertion(
 pub fn token_request(
     client_id: &str,
     client_secret: Option<&str>,
+    client_auth: ClientAuthMethod,
     assertion: &str,
     scopes: &[String],
-) -> String {
+) -> TokenRequest {
     let mut form = Serializer::new(String::new());
     form.append_pair("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
         .append_pair("client_id", client_id)
         .append_pair("assertion", assertion);
-    if let Some(secret) = client_secret {
+    if let (ClientAuthMethod::ClientSecretPost, Some(secret)) = (client_auth, client_secret) {
         form.append_pair("client_secret", secret);
     }
     if !scopes.is_empty() {
         form.append_pair("scope", &scopes.join(" "));
     }
-    form.finish()
+    let authorization = match (client_auth, client_secret) {
+        (ClientAuthMethod::ClientSecretBasic, Some(secret)) => {
+            let credential = format!("{}:{}", form_component(client_id), form_component(secret));
+            Some(format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(credential)
+            ))
+        }
+        _ => None,
+    };
+    TokenRequest {
+        body: form.finish(),
+        authorization,
+    }
+}
+
+fn form_component(value: &str) -> String {
+    // Serializer always emits the empty field name followed by `=`; removing
+    // that delimiter leaves exactly one application/x-www-form-urlencoded
+    // component, including `+` for spaces and UTF-8 percent encoding.
+    Serializer::new(String::new())
+        .append_pair("", value)
+        .finish()
+        .strip_prefix('=')
+        .expect("a form pair with an empty name always starts with '='")
+        .to_string()
 }
 
 pub fn username_lookup_path(realm: &str, username: &str) -> String {
@@ -386,7 +437,7 @@ pub fn map_token_error(error: Error) -> Error {
     let lower = description.to_ascii_lowercase();
     let message = if code == "invalid_client" {
         Some(
-            "AM rejected client authentication; supply --client-secret-stdin and verify the client allows the JWT-bearer grant with `aic oauth grant add <client-id> urn:ietf:params:oauth:grant-type:jwt-bearer`".to_string(),
+            "AM rejected client authentication; supply --client-secret-stdin, verify --client-auth matches the client's tokenEndpointAuthMethod, and verify the client allows the JWT-bearer grant with `aic oauth grant add <client-id> urn:ietf:params:oauth:grant-type:jwt-bearer`".to_string(),
         )
     } else if code == "unauthorized_client" || lower.contains("grant not allowed") {
         Some("AM rejected the grant; add urn:ietf:params:oauth:grant-type:jwt-bearer with `aic oauth grant add <client-id> urn:ietf:params:oauth:grant-type:jwt-bearer`".to_string())
@@ -636,17 +687,68 @@ mod tests {
     }
 
     #[test]
-    fn token_request_puts_scopes_in_the_form_not_the_assertion() {
-        let body = token_request(
+    fn client_secret_post_request_is_byte_identical_to_the_original_form() {
+        let request = token_request(
             "client",
             Some("secret"),
+            ClientAuthMethod::ClientSecretPost,
             "assertion",
             &["openid".into(), "profile".into()],
         );
-        assert!(body.contains("client_id=client"));
-        assert!(body.contains("client_secret=secret"));
-        assert!(body.contains("scope=openid+profile"));
-        assert!(!body.contains("scope%22"));
+        assert_eq!(
+            request.body,
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&client_id=client&assertion=assertion&client_secret=secret&scope=openid+profile"
+        );
+        assert_eq!(request.authorization, None);
+    }
+
+    #[test]
+    fn client_secret_basic_uses_an_authorization_header_only() {
+        let request = token_request(
+            "client",
+            Some("secret"),
+            ClientAuthMethod::ClientSecretBasic,
+            "assertion",
+            &[],
+        );
+
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Basic Y2xpZW50OnNlY3JldA==")
+        );
+        assert_eq!(
+            request.body,
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&client_id=client&assertion=assertion"
+        );
+        assert!(!request.body.contains("client_secret"));
+    }
+
+    #[test]
+    fn client_secret_basic_percent_encodes_colons_and_non_ascii_before_joining() {
+        let request = token_request(
+            "client:id",
+            Some("së:cret"),
+            ClientAuthMethod::ClientSecretBasic,
+            "assertion",
+            &[],
+        );
+
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Basic Y2xpZW50JTNBaWQ6cyVDMyVBQiUzQWNyZXQ=")
+        );
+    }
+
+    #[test]
+    fn public_client_request_sends_no_secret_under_either_method() {
+        for method in [
+            ClientAuthMethod::ClientSecretBasic,
+            ClientAuthMethod::ClientSecretPost,
+        ] {
+            let request = token_request("public", None, method, "assertion", &[]);
+            assert_eq!(request.authorization, None);
+            assert!(!request.body.contains("client_secret"));
+        }
     }
 
     #[test]
@@ -692,7 +794,7 @@ mod tests {
             ),
             (
                 r#"{"error":"invalid_client","error_description":"Client authentication failed"}"#,
-                "client-secret-stdin",
+                "--client-auth",
             ),
             (
                 r#"{"error":"unauthorized_client","error_description":"grant not allowed"}"#,

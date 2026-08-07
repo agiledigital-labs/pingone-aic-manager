@@ -8,9 +8,13 @@ use crate::config::tenant::{Tenant, TenantTheme};
 use crate::{Error, Result};
 
 /// Internal-only: the in-process AIC HTTP client used by the agent daemon.
-/// Frontends (TUI + CLI) **must** go through `aic::api` / feature API modules so
-/// every tenant call lands on the daemon's token cache + connection pool;
-/// `pub(crate)` is the type-level guard rail.
+/// Frontends (TUI + CLI) normally go through `aic::api` / feature API modules so
+/// tenant administration calls land on the daemon's token cache + connection
+/// pool. The narrow exception is the bearer-free user-token exchange in
+/// `jwtbearer::api`: it constructs this transport with no JWK so a client's own
+/// Basic credential can be sent without making the service-account bearer
+/// available to the request path. `pub(crate)` remains the type-level guard
+/// rail against use outside the crate.
 #[derive(Clone)]
 pub(crate) struct AicClient {
     pub tenant: Tenant,
@@ -100,10 +104,30 @@ impl AicClient {
         body: &str,
         confirmed_prod: bool,
     ) -> Result<serde_json::Value> {
+        self.write_form_with_authorization(method, path, body, confirmed_prod, None)
+            .await
+    }
+
+    /// Send a form body with an optional caller-owned Authorization value.
+    ///
+    /// This never consults the service-account token cache. The only accepted
+    /// credential is the value explicitly supplied by the token-exchange
+    /// caller, such as an OAuth2 client's Basic credential.
+    pub async fn write_form_with_authorization(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &str,
+        confirmed_prod: bool,
+        authorization: Option<&str>,
+    ) -> Result<serde_json::Value> {
         if self.tenant.theme == TenantTheme::Production && !confirmed_prod {
             return Err(Error::ProdConfirmRequired);
         }
-        let resp = self.form_request(method, path, body).send().await?;
+        let resp = self
+            .form_request(method, path, body, authorization)
+            .send()
+            .await?;
         self.check_response(resp).await
     }
 
@@ -112,16 +136,23 @@ impl AicClient {
         method: reqwest::Method,
         path: &str,
         body: &str,
+        authorization: Option<&str>,
     ) -> reqwest::RequestBuilder {
-        // OAuth2 token exchanges authenticate with the form's client
-        // credentials and assertion. Sending the service-account bearer here
-        // would expose a tenant credential to an endpoint that does not need it.
+        // OAuth2 token exchanges may authenticate with a client-owned
+        // credential passed explicitly here. Sending the service-account
+        // bearer would expose a more powerful tenant credential to an endpoint
+        // that neither needs nor accepts it.
         let url = self.url(path);
-        self.http
+        let request = self
+            .http
             .request(method, &url)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("Accept", "application/json")
-            .body(body.to_string())
+            .body(body.to_string());
+        match authorization {
+            Some(authorization) => request.header("Authorization", authorization),
+            None => request,
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -193,11 +224,45 @@ mod tests {
             serde_json::Value::Null,
         );
         let request = client
-            .form_request(reqwest::Method::POST, "/token", "grant_type=example")
+            .form_request(reqwest::Method::POST, "/token", "grant_type=example", None)
             .build()
             .unwrap();
 
         assert!(request.headers().get("authorization").is_none());
+        assert!(request.headers().get("accept-api-version").is_none());
+    }
+
+    #[test]
+    fn form_request_carries_explicit_basic_without_a_bearer() {
+        let client = AicClient::new(
+            tenant("https://tenant.example".into()),
+            serde_json::Value::Null,
+        );
+        let request = client
+            .form_request(
+                reqwest::Method::POST,
+                "/token",
+                "grant_type=example",
+                Some("Basic Y2xpZW50OnNlY3JldA=="),
+            )
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            request
+                .headers()
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Basic Y2xpZW50OnNlY3JldA=="
+        );
+        assert!(
+            !request.headers()["authorization"]
+                .to_str()
+                .unwrap()
+                .starts_with("Bearer ")
+        );
         assert!(request.headers().get("accept-api-version").is_none());
     }
 }
