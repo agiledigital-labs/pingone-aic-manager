@@ -85,7 +85,8 @@ impl FieldCaps {
     }
 }
 
-/// Ping-shipped realm objects carry a top-level `type`; custom objects don't.
+/// Ping-shipped realm objects carry top-level `"type": "Managed Object"`;
+/// custom objects don't.
 ///
 /// `meta` is *not* part of the test. Only the `*_user` objects carry it —
 /// `role`, `organization`, `assignment` and `application` have `type` and no
@@ -106,9 +107,9 @@ pub fn is_standard_object(object_def: &Value) -> bool {
 }
 
 /// Ping-provided objects cannot be renamed. Same discriminator as
-/// [`object_class`] — the presence of a top-level `type`.
+/// [`object_class`] — the verified top-level `type` marker value.
 pub fn is_ping_shipped_object(object_def: &Value) -> bool {
-    object_def.get("type").is_some()
+    object_def.get("type").and_then(Value::as_str) == Some("Managed Object")
 }
 
 /// Validates the identity used as an IDM managed-object path component.
@@ -1476,7 +1477,7 @@ mod tests {
 
     #[test]
     fn classification_uses_standard_markers_and_custom_prefix() {
-        let standard = json!({"name": "alpha_user", "type": "managed", "meta": {}, "schema": {"properties": {}}});
+        let standard = json!({"name": "alpha_user", "type": "Managed Object", "meta": {}, "schema": {"properties": {}}});
         let custom = json!({"name": "alpha_lock", "schema": {"properties": {}}});
 
         assert!(is_standard_object(&standard));
@@ -1491,7 +1492,8 @@ mod tests {
     /// gave their shipped fields rename/retype/delete rights.
     #[test]
     fn ping_shipped_objects_without_meta_are_still_standard() {
-        let role = json!({"name": "alpha_role", "type": "managed", "schema": {"properties": {}}});
+        let role =
+            json!({"name": "alpha_role", "type": "Managed Object", "schema": {"properties": {}}});
 
         assert_eq!(object_class(&role), ObjectClass::Standard);
         assert!(!is_custom_field(&role, "name"));
@@ -1511,7 +1513,7 @@ mod tests {
 
     #[test]
     fn field_capability_matches_tiers() {
-        let standard = json!({"type": "managed", "meta": {}});
+        let standard = json!({"type": "Managed Object", "meta": {}});
         let custom = json!({});
 
         let caps = field_capability(&standard, "givenName");
@@ -1547,7 +1549,7 @@ mod tests {
         assert!(!caps.rename_key);
         assert!(caps.delete);
 
-        let standard_object = json!({"type": "managed", "meta": {}});
+        let standard_object = json!({"type": "Managed Object", "meta": {}});
         let caps = field_capability_for_property(&standard_object, "manager", &relationship);
         assert_eq!(caps.tier, FieldTier::StandardFieldOnStandardObject);
         assert!(!caps.rename_key);
@@ -1556,7 +1558,7 @@ mod tests {
 
     #[test]
     fn normalize_property_key_rejects_invalid_characters() {
-        let standard = json!({"name": "alpha_user", "type": "managed", "meta": {}});
+        let standard = json!({"name": "alpha_user", "type": "Managed Object", "meta": {}});
         let custom = json!({"name": "alpha_lock"});
 
         assert!(normalize_new_property_key(&standard, "my field").is_err());
@@ -1566,7 +1568,7 @@ mod tests {
 
     #[test]
     fn normalize_property_key_preserves_prefix_rules() {
-        let standard = json!({"name": "alpha_user", "type": "managed", "meta": {}});
+        let standard = json!({"name": "alpha_user", "type": "Managed Object", "meta": {}});
         let custom = json!({"name": "alpha_lock"});
 
         assert_eq!(
@@ -1593,9 +1595,21 @@ mod tests {
     }
 
     #[test]
-    fn ping_shipped_guard_uses_type_without_meta() {
-        assert!(is_ping_shipped_object(&json!({"type": "managed"})));
+    fn ping_shipped_guard_uses_verified_type_value_without_meta() {
+        assert!(is_ping_shipped_object(&json!({"type": "Managed Object"})));
+        assert!(!is_ping_shipped_object(&json!({"type": "custom"})));
         assert!(!is_ping_shipped_object(&json!({"name": "test_object"})));
+    }
+
+    #[test]
+    fn unrelated_top_level_type_does_not_force_custom_property_prefix() {
+        let custom = json!({"name": "test_object", "type": "custom"});
+
+        assert_eq!(object_class(&custom), ObjectClass::Custom);
+        assert_eq!(normalize_new_property_key(&custom, "code").unwrap(), "code");
+        let draft = AddFieldState::new("sandbox".into(), "test_object".into(), custom);
+        assert_eq!(draft.key.value, "");
+        assert_eq!(draft.key.locked_prefix, "");
     }
 
     #[test]
