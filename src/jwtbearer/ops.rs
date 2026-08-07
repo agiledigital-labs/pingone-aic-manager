@@ -151,22 +151,25 @@ fn body_with_key(source: Value, issuer: &str, public_jwk: &Value) -> Result<Valu
 
 async fn key_is_present(tenant: &str, realm: &str, kid: &str) -> Result<bool> {
     let issuer = api::read_issuer(tenant, realm, DEFAULT_ISSUER_ID).await?;
-    let Some(jwk_set) = issuer.get("jwkSet").and_then(Value::as_str).or_else(|| {
-        issuer
-            .get("jwkSet")
-            .and_then(|value| value.get("value"))
-            .and_then(Value::as_str)
-    }) else {
-        return Ok(false);
+    spec::jwk_set_contains(&issuer, kid)
+}
+
+/// Check the default issuer once after a local key import. A missing issuer or
+/// an unreadable/malformed set is deliberately non-fatal: import transfers a
+/// local credential and must remain useful when the sender's publication is
+/// unavailable.
+pub async fn warn_if_key_not_published(tenant: &str, realm: &str, kid: &str) {
+    let Ok(issuer) = api::read_issuer(tenant, realm, DEFAULT_ISSUER_ID).await else {
+        return;
     };
-    let jwks = spec::parse_jwk_set(Some(jwk_set))?;
-    Ok(jwks["keys"].as_array().is_some_and(|keys| {
-        keys.iter().any(|key| {
-            key.get("kid")
-                .and_then(Value::as_str)
-                .is_some_and(|candidate| candidate == kid)
-        })
-    }))
+    let Ok(published) = spec::jwk_set_contains(&issuer, kid) else {
+        return;
+    };
+    if !published {
+        eprintln!(
+            "warning: imported kid {kid:?} is not published in the default Trusted JWT issuer for tenant {tenant} (realm {realm}); `aic auth` will fail until it is. Run `aic jwt-bearer setup --realm {realm}` to publish the key you just imported, or ask whoever sent it to publish theirs."
+        );
+    }
 }
 
 fn generate_key(operator: &ResolvedOperator) -> Result<KeyRecord> {

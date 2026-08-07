@@ -109,12 +109,12 @@ token on stdout.
     aic auth --as-username <name> --client-id <id> [--scope S]...
     aic auth ... --token
 
-Exactly one of --as-id and --as-username is required. Usernames are resolved
-to their IDM managed-object UUID before signing. The client secret is read
-from stdin when --client-secret-stdin is supplied; otherwise an interactive
-command prompts on the terminal. Secrets are never accepted as argv or
-environment values. The command refuses production-themed tenants and
-requires a key from aic jwt-bearer setup.
+Exactly one of --as-id and --as-username is required. Usernames are resolved to
+their IDM managed-object UUID before signing. The client secret is read from
+stdin when --client-secret-stdin is supplied; otherwise an interactive command
+prompts on the terminal. Secrets are never accepted as argv or environment
+values. The command refuses production-themed tenants and requires a key from
+aic jwt-bearer setup.
 
 Default output includes the user, client, granted scope, expiry, signing kid,
 and a redacted token. --token prints only the bare access token.
@@ -391,9 +391,9 @@ continue to use pull → edit → push.
 
 `grant add` and `grant remove` update only
 `advancedOAuth2ClientConfig.grantTypes` on an existing client. They are
-idempotent: an already-present grant or an absent grant reports no change.
-Grant values are checked against the tenant's live OAuth2 client schema when it
-is available; if the schema cannot be read, AM performs the validation. The
+idempotent: an already-present grant or an absent grant reports no change. Grant
+values are checked against the tenant's live OAuth2 client schema when it is
+available; if the schema cannot be read, AM performs the validation. The
 commands require `--yes` on production-themed tenants. Adding the JWT-bearer
 grant emits a security note because a Trusted JWT Issuer with empty
 `allowedSubjects` can then mint a token as any user in the realm.
@@ -408,6 +408,8 @@ grant emits a security note because a Trusted JWT Issuer with empty
 aic jwt-bearer setup [--realm alpha] [--tenant NAME]
 aic jwt-bearer issuer create <id> --issuer ISS --jwks-from FILE [--realm alpha] [--tenant NAME]
 aic jwt-bearer issuer show [<id>] [--realm alpha] [--tenant NAME]
+aic jwt-bearer key export [--tenant NAME] [--out FILE]
+aic jwt-bearer key import <FILE> [--realm alpha] [--tenant NAME] [--force]
 ```
 
 `setup` creates or updates the default lower-environment issuer, merges this
@@ -415,7 +417,12 @@ install's public key into its shared key set, and stores the private key in the
 per-tenant encrypted vault. It is idempotent. All JWT-bearer writes are refused
 on production-themed tenants; no confirmation flag overrides that refusal.
 `issuer create` imports an existing public JWKS under a named issuer, and
-`issuer show` prints one issuer or the realm's issuer list as JSON.
+`issuer show` prints one issuer or the realm's issuer list as JSON. `key export`
+writes the tenant's private signing JWK either to stdout or to a new mode-600
+`.jwk` file; it never overwrites an existing file. `key import` stores a private
+JWK in the tenant's local vault, refuses to replace an existing key unless
+`--force` is supplied, and warns when the imported `kid` is not in the default
+issuer's published key set.
 
 ---
 
