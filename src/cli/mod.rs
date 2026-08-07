@@ -250,6 +250,10 @@ pub async fn run(cli: Cli) -> Result<()> {
             Some(Command::Auth {
                 options: crate::jwtbearer::cli::AuthOptions { token: true, .. }
             })
+        ) || matches!(
+            cli.command.as_ref(),
+            Some(Command::JwtBearer { command })
+                if crate::jwtbearer::cli::quiet_preflight(command)
         );
         ensure_agent_unlocked_internal(false, !quiet).await?;
         prepare_operator().await?;

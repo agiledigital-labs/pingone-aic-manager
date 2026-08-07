@@ -70,6 +70,82 @@ pub fn merge_jwk_set(existing: Option<&str>, incoming: Value) -> Result<String> 
     Ok(serde_json::to_string(&jwks)?)
 }
 
+/// Convert the vault record to the portable private JWK shape used by export.
+/// The record wrapper is deliberately not part of the file format: JOSE
+/// consumers expect the key members at the top level.
+pub fn export_private_jwk(record: &crate::jwtbearer::KeyRecord) -> Result<Value> {
+    if record.kid.is_empty() {
+        return Err(Error::Config(
+            "stored Trusted JWT private key has an empty kid".into(),
+        ));
+    }
+    let mut jwk = record.private_jwk.clone();
+    validate_private_rsa_jwk(&jwk)?;
+    if let Some(jwk_kid) = jwk.get("kid").and_then(Value::as_str)
+        && jwk_kid != record.kid
+    {
+        return Err(Error::Config(
+            "stored Trusted JWT private JWK kid does not match its key record".into(),
+        ));
+    }
+    jwk.as_object_mut()
+        .ok_or_else(|| Error::Config("private JWK must be a JSON object".into()))?
+        .insert("kid".into(), Value::String(record.kid.clone()));
+    Ok(jwk)
+}
+
+/// Validate and convert one portable private JWK into the local vault record.
+/// Checking `d` here makes a public-only paste fail before it can be stored.
+pub fn import_private_jwk(jwk: Value) -> Result<crate::jwtbearer::KeyRecord> {
+    validate_private_rsa_jwk(&jwk)?;
+    let kid = jwk
+        .get("kid")
+        .and_then(Value::as_str)
+        .filter(|kid| !kid.is_empty())
+        .ok_or_else(|| Error::Config("private JWK must contain a non-empty kid".into()))?
+        .to_string();
+    Ok(crate::jwtbearer::KeyRecord {
+        kid,
+        private_jwk: jwk,
+    })
+}
+
+/// Return whether an issuer's string-valued JWK set contains `kid`.
+pub fn jwk_set_contains(issuer: &Value, kid: &str) -> Result<bool> {
+    let jwk_set = issuer.get("jwkSet").and_then(Value::as_str).or_else(|| {
+        issuer
+            .get("jwkSet")
+            .and_then(|value| value.get("value"))
+            .and_then(Value::as_str)
+    });
+    let jwks = parse_jwk_set(jwk_set)?;
+    Ok(jwks["keys"].as_array().is_some_and(|keys| {
+        keys.iter().any(|key| {
+            key.get("kid")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| candidate == kid)
+        })
+    }))
+}
+
+fn validate_private_rsa_jwk(jwk: &Value) -> Result<()> {
+    if jwk.get("kty").and_then(Value::as_str) != Some("RSA") {
+        return Err(Error::Config("JWK must be an RSA private key".into()));
+    }
+    for field in ["n", "e", "d"] {
+        if jwk
+            .get(field)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(Error::Config(format!(
+                "JWK must be an RSA private key; missing private member {field:?}"
+            )));
+        }
+    }
+    crate::aic::auth::jwk_to_encoding_key(jwk).map(|_| ())
+}
+
 /// Convert AM's inherited read wrappers and server fields into a plain PUT
 /// body, then apply the fields that are load-bearing for this feature.
 pub fn issuer_body(source: Value, issuer: &str, jwk_set: String) -> Result<Value> {
@@ -284,7 +360,68 @@ fn unwrap_inherited(value: Value) -> Value {
 mod tests {
     use serde_json::json;
 
+    use crate::jwtbearer::KeyRecord;
+
     use super::*;
+
+    fn stub_private_jwk() -> Value {
+        json!({
+            "kty": "RSA",
+            "n": "AKpuDplQxCLK-rAKU07dO7TzfBy7kEzc_dfqET0uBLRifyWGGIX4IphLDLoY4-BcNWAP6hLRRRIP_FkYu1m2MPPuO7pOaua8ZaCzfyjXWt77G0OZP493fXndGKam3sy-UTKgMIN5DfJ557CCPFFN3IEX5I8QzUye8CRCnuyXBP-h",
+            "e": "AQAB",
+            "d": "HBCThtut8KzMK0EIBuyXcGzH-1NHp-CcTHnW7OQvEiVGGr_COg1qZPm21s5SeBe3EmKMgRzE6vyG6YURFOzTkpLEMsjPTMUDXFIuKatyEu0xs6pSIiRRaQkauVheDbezVdd0w2FiZbcYhcfH4ShJZOLpH8u0H7sCkKtQehc0uyE",
+            "p": "ANpSI07iIr2jcZdzXDX5ul13A-x4Add0A07RGa-1VtPaXKEMHSvzEyXwSn0p-EH-LKUi9eB1puqd_Ii_1WV1OuM",
+            "q": "AMfX_9KCXu9iUYQrx3frtsGWkJyC8LjQBogeH2UNnBzrCJldEtijhz08W_Rtak--5SQMflEUYx2Ww8R4rR6czqs"
+        })
+    }
+
+    #[test]
+    fn private_jwk_export_import_round_trip_preserves_attribution() {
+        let record = KeyRecord {
+            kid: "portable-kid".into(),
+            private_jwk: {
+                let mut jwk = stub_private_jwk();
+                jwk["kid"] = json!("portable-kid");
+                jwk["aic_owner"] = json!("owner");
+                jwk["aic_host"] = json!("host");
+                jwk["aic_created"] = json!("created");
+                jwk
+            },
+        };
+        let exported = export_private_jwk(&record).unwrap();
+        assert_eq!(exported["kid"], "portable-kid");
+        assert_eq!(exported["aic_owner"], "owner");
+        assert_eq!(exported["aic_host"], "host");
+        assert_eq!(exported["aic_created"], "created");
+
+        let file_contents = serde_json::to_string(&exported).unwrap();
+        let imported = import_private_jwk(serde_json::from_str(&file_contents).unwrap()).unwrap();
+        assert_eq!(imported, record);
+    }
+
+    #[test]
+    fn private_jwk_validation_rejects_public_and_missing_kid_inputs() {
+        let mut public = stub_private_jwk();
+        public.as_object_mut().unwrap().remove("d");
+        let cases = [
+            (public, "RSA private key"),
+            (stub_private_jwk(), "non-empty kid"),
+            (json!({"kty": "EC", "kid": "wrong"}), "RSA private key"),
+        ];
+        for (jwk, expected) in cases {
+            let error = import_private_jwk(jwk).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn jwk_set_contains_checks_the_default_issuer_shape() {
+        let issuer = json!({
+            "jwkSet": {"value": "{\"keys\":[{\"kid\":\"portable-kid\"}]}"}
+        });
+        assert!(jwk_set_contains(&issuer, "portable-kid").unwrap());
+        assert!(!jwk_set_contains(&issuer, "other-kid").unwrap());
+    }
 
     #[test]
     fn merge_adds_a_key_without_dropping_existing_keys() {
@@ -444,14 +581,7 @@ mod tests {
 
     #[test]
     fn fixed_jwk_can_sign_an_assertion_without_runtime_key_generation() {
-        let jwk = json!({
-            "kty": "RSA",
-            "n": "AKpuDplQxCLK-rAKU07dO7TzfBy7kEzc_dfqET0uBLRifyWGGIX4IphLDLoY4-BcNWAP6hLRRRIP_FkYu1m2MPPuO7pOaua8ZaCzfyjXWt77G0OZP493fXndGKam3sy-UTKgMIN5DfJ557CCPFFN3IEX5I8QzUye8CRCnuyXBP-h",
-            "e": "AQAB",
-            "d": "HBCThtut8KzMK0EIBuyXcGzH-1NHp-CcTHnW7OQvEiVGGr_COg1qZPm21s5SeBe3EmKMgRzE6vyG6YURFOzTkpLEMsjPTMUDXFIuKatyEu0xs6pSIiRRaQkauVheDbezVdd0w2FiZbcYhcfH4ShJZOLpH8u0H7sCkKtQehc0uyE",
-            "p": "ANpSI07iIr2jcZdzXDX5ul13A-x4Add0A07RGa-1VtPaXKEMHSvzEyXwSn0p-EH-LKUi9eB1puqd_Ii_1WV1OuM",
-            "q": "AMfX_9KCXu9iUYQrx3frtsGWkJyC8LjQBogeH2UNnBzrCJldEtijhz08W_Rtak--5SQMflEUYx2Ww8R4rR6czqs"
-        });
+        let jwk = stub_private_jwk();
         let token = sign_user_assertion("aic-agent", "user-id", "audience", 100, "fixed-kid", &jwk)
             .unwrap();
         let header = jsonwebtoken::decode_header(&token).unwrap();

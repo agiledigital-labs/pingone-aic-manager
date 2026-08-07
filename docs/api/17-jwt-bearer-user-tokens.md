@@ -209,13 +209,13 @@ the private key equivalent to "log in as anyone in this realm". Verified: with
 
 ## Current implementation
 
-The `src/jwtbearer/` vertical implements setup and named-issuer creation/show
-commands. Setup creates or reuses one RSA key pair per local install, stores the
-private record in the agent vault, merges the public JWK into the realm's shared
-`jwkSet` by `kid`, and verifies that AM retained the key after the write. Issuer
-writes explicitly set `allowedSubjects: []`, `consentedScopesClaim: "scope"`,
-and `resourceOwnerIdentityClaim: "sub"` so they do not depend on template
-defaults.
+The `src/jwtbearer/` vertical implements setup, named-issuer creation/show,
+and local key transfer commands. Setup creates or reuses one RSA key pair per
+local install, stores the private record in the agent vault, merges the public
+JWK into the realm's shared `jwkSet` by `kid`, and verifies that AM retained the
+key after the write. Issuer writes explicitly set `allowedSubjects: []`,
+`consentedScopesClaim: "scope"`, and `resourceOwnerIdentityClaim: "sub"` so
+they do not depend on template defaults.
 
 - The private half is stored under the tenant name in the agent vault, while
   setup adds the public half to the realm's shared `jwkSet`. The read-modify-
@@ -242,6 +242,15 @@ defaults.
   capability. Minting a user token from the stored key, exporting a public JWKS,
   and key rotation/removal remain future work; export must be an explicit
   command, not a setup side effect.
+- `aic jwt-bearer key export` emits the stored private JWK as one standard JWK
+  object, retaining `kid` and any `aic_*` attribution members. With `--out` it
+  creates a new mode-600 file and refuses to overwrite an existing path;
+  without it, JSON goes to stdout. `aic jwt-bearer key import` accepts only an
+  RSA private JWK with a non-empty `kid`, stores it in the same vault record,
+  and refuses to replace an existing record without `--force`. After import it
+  makes one best-effort read of the default issuer and warns if the imported
+  `kid` is not published; publication is intentionally not performed by this
+  local transfer command.
 
 ## Planned shape
 
