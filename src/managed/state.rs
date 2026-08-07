@@ -85,17 +85,26 @@ impl FieldCaps {
     }
 }
 
-/// Ping-shipped realm objects carry top-level `"type": "Managed Object"`;
-/// custom objects don't.
+/// How much freedom this object's **fields** get. Distinct from
+/// [`is_ping_shipped_object`], which protects the **object** itself.
 ///
-/// `meta` is *not* part of the test. Only the `*_user` objects carry it —
-/// `role`, `organization`, `assignment` and `application` have `type` and no
-/// `meta` (verified 2026-07-27, `docs/api/10-managed-objects.md`). Requiring
-/// both markers classified those four as [`ObjectClass::Custom`], which handed
-/// their Ping-shipped fields the full custom-field rights: rename, retype and
-/// delete on things like `alpha_role.name`.
+/// The marker is `meta`, not `type`. Both are Ping-shipped signals, but they
+/// mark different things: all ten realm objects carry
+/// `"type": "Managed Object"`, while only `alpha_user` / `bravo_user` carry
+/// `meta` (verified 2026-08-07, `docs/api/10-managed-objects.md`). The `*_user`
+/// pair is where Ping constrains what you may add — the rest accept ordinary
+/// un-prefixed properties, confirmed against `alpha_organization` on
+/// 2026-08-07.
+///
+/// So `role`, `organization`, `assignment` and `application` classify as
+/// [`ObjectClass::Custom`]: their fields can be renamed, retyped and deleted,
+/// and additions need no `custom_` prefix. That is a deliberate trade — those
+/// objects carry Ping-shipped fields like `alpha_role.name` that this grants
+/// rights over — accepted because the alternative was forcing `custom_` names
+/// the server does not require. The object itself still cannot be renamed or
+/// deleted; that guard reads `type`.
 pub fn object_class(object_def: &Value) -> ObjectClass {
-    if is_ping_shipped_object(object_def) {
+    if object_def.get("meta").is_some() {
         ObjectClass::Standard
     } else {
         ObjectClass::Custom
@@ -106,8 +115,9 @@ pub fn is_standard_object(object_def: &Value) -> bool {
     object_class(object_def) == ObjectClass::Standard
 }
 
-/// Ping-provided objects cannot be renamed. Same discriminator as
-/// [`object_class`] — the verified top-level `type` marker value.
+/// Ping-provided objects cannot be renamed or deleted. Keyed on the top-level
+/// `type` marker value, so it covers all ten realm objects — a wider set than
+/// [`object_class`], which keys on `meta` to decide field freedom.
 pub fn is_ping_shipped_object(object_def: &Value) -> bool {
     object_def.get("type").and_then(Value::as_str) == Some("Managed Object")
 }
@@ -1488,25 +1498,44 @@ mod tests {
     }
 
     /// Only `*_user` carries `meta`; role/organization/assignment/application
-    /// have `type` alone. Keying on both markers classified them as custom and
-    /// gave their shipped fields rename/retype/delete rights.
+    /// carry `type` alone and accept ordinary un-prefixed properties (confirmed
+    /// against `alpha_organization`, 2026-08-07). Their fields are therefore
+    /// fully editable and need no `custom_` prefix — the object itself is still
+    /// protected, which is [`is_ping_shipped_object`]'s job, not this one's.
     #[test]
-    fn ping_shipped_objects_without_meta_are_still_standard() {
+    fn ping_objects_without_meta_get_custom_field_freedom_but_stay_unrenamable() {
         let role =
             json!({"name": "alpha_role", "type": "Managed Object", "schema": {"properties": {}}});
 
-        assert_eq!(object_class(&role), ObjectClass::Standard);
-        assert!(!is_custom_field(&role, "name"));
-        assert!(is_custom_field(&role, "custom_pet"));
+        assert_eq!(object_class(&role), ObjectClass::Custom);
+        assert_eq!(normalize_new_property_key(&role, "code").unwrap(), "code");
 
+        // Accepted trade: this includes Ping's own shipped fields.
         let caps = field_capability(&role, "name");
-        assert_eq!(caps.tier, FieldTier::StandardFieldOnStandardObject);
-        assert!(!caps.delete, "shipped role field must not be deletable");
-        assert!(!caps.rename_key, "shipped role field must not be renamable");
-        assert!(!caps.change_type, "shipped role field must not be retyped");
+        assert_eq!(caps.tier, FieldTier::FieldOnCustomObject);
+        assert!(caps.delete && caps.rename_key && caps.change_type);
 
-        // A genuinely custom field on the same object keeps full rights.
-        let caps = field_capability(&role, "custom_pet");
+        // The object may not be renamed or deleted regardless.
+        assert!(is_ping_shipped_object(&role));
+    }
+
+    /// The `*_user` pair is the one place Ping constrains additions, so it
+    /// keeps the forced prefix and the shipped/custom field split.
+    #[test]
+    fn user_objects_keep_the_forced_prefix_and_protected_shipped_fields() {
+        let user = json!({"name": "alpha_user", "type": "Managed Object", "meta": {}, "schema": {"properties": {}}});
+
+        assert_eq!(object_class(&user), ObjectClass::Standard);
+        assert_eq!(
+            normalize_new_property_key(&user, "code").unwrap(),
+            "custom_code"
+        );
+
+        let caps = field_capability(&user, "givenName");
+        assert_eq!(caps.tier, FieldTier::StandardFieldOnStandardObject);
+        assert!(!caps.delete && !caps.rename_key && !caps.change_type);
+
+        let caps = field_capability(&user, "custom_pet");
         assert_eq!(caps.tier, FieldTier::CustomFieldOnStandardObject);
         assert!(caps.delete && caps.rename_key && caps.change_type);
     }
