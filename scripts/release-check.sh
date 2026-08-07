@@ -87,6 +87,26 @@ cargo test --workspace >>"$LOG" 2>&1 || {
 }
 ok
 
+# Wall-clock budget on the unit suite. The grep guard in src/lib.rs catches
+# cryptographic keygen called DIRECTLY from a test module; it cannot see a test
+# that calls a production helper which generates a key one level down, which is
+# exactly how the 2026-08-06 instance got in (0.33s -> 8.31s). This catches the
+# transitive case, and anything else that quietly makes the suite slow.
+#
+# Budget is deliberately loose — ~10x the current ~0.3s — so it flags a step
+# change, not ordinary growth. Raise it when the suite legitimately outgrows it,
+# but read why it grew first.
+BUDGET_MS=3000
+slowest="$(awk '/^test result: ok/ {
+  for (i = 1; i <= NF; i++)
+    if ($i == "in") { gsub(/s$/, "", $(i + 1)); if ($(i + 1) + 0 > max) max = $(i + 1) + 0 }
+} END { printf "%d", max * 1000 }' "$LOG")"
+if [ "${slowest:-0}" -gt "$BUDGET_MS" ]; then
+  fail "unit suite took ${slowest}ms, over the ${BUDGET_MS}ms budget.
+  Usually cryptographic key generation reachable from a test — assert against a
+  stub instead, or gate the real thing behind #[ignore]. See REVIEW.md."
+fi
+
 version="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
 last_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 [ -n "$last_tag" ] || fail "no tags in this repo — cut the first one by hand"

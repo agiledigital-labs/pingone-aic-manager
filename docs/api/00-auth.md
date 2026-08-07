@@ -70,6 +70,35 @@ a JWK at account creation).
 | `fr:idc:esv:update`      | ESV write (no restart).                                          |
 | `fr:idc:esv:restart`     | Trigger startup/restart only.                                    |
 
+`SA_SCOPES` in `src/onboard/bootstrap.rs` is what onboarding actually grants:
+`fr:idm:*`, `fr:am:*`, `fr:idc:esv:*`, `fr:idc:cookie-domain:*`. Everything the
+tool does today fits inside those four.
+
+### Other `fr:idc:*` scopes a service account can hold
+
+A service account can be granted considerably more than we ask for. These were
+granted to an SA and **confirmed present in the minted token** via
+`GET /am/oauth2/realms/root/tokeninfo` (2026-06-24, during the `/keys`
+investigation in [08-logs.md](08-logs.md)):
+
+`analytics`, `telemetry`, `dataset`, `certificate`, `content-security-policy`,
+`custom-domain`, `promotion`, `release`, `sso-cookie`, `cookie-domain`, `esv` —
+each as `fr:idc:<name>:*`.
+
+Two caveats, both important before you reach for one:
+
+- **Holding a scope is not the same as it granting anything.** All that was
+  established is that the SA can carry them. What each authorises has not been
+  exercised, and the probe that granted them was proving a _negative_ — the log
+  `/keys` API stayed 403 with every one of them held, because it is gated to a
+  scope no service account can have.
+- **The count does not reconcile.** Both [08-logs.md](08-logs.md) and
+  [99-quirks-and-open-questions.md](99-quirks-and-open-questions.md) say "all 13
+  `fr:idc:*` scopes" but only ever name the 11 above. Either two were granted
+  and not written down, or 13 is wrong. Unresolved as of 2026-08-07 —
+  re-enumerate from the console's service-account scope picker before relying on
+  the number.
+
 Log API uses a **separate** `x-api-key`/`x-api-secret` pair generated in the
 admin console — not a bearer token. See [08-logs.md](08-logs.md).
 
