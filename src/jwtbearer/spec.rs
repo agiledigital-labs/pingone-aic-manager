@@ -205,6 +205,22 @@ fn validate_private_rsa_jwk(jwk: &Value) -> Result<()> {
 
 /// Convert AM's inherited read wrappers and server fields into a plain PUT
 /// body, then apply the fields that are load-bearing for this feature.
+/// How long AM may serve a cached copy of the issuer's `jwkSet`, in ms.
+///
+/// AM's template default is 3600000 (one hour), which is wrong for this
+/// feature. The cache is not just a read optimisation — it bounds how long a
+/// key that has been *removed* keeps minting tokens. Verified 2026-08-07: a
+/// removed key still minted immediately after the write landed
+/// (`docs/api/17-jwt-bearer-user-tokens.md`).
+///
+/// An hour of that is untenable for a capability that exists for fast iteration
+/// in lower environments and is refused outright on production. One minute
+/// bounds it to something a person will sit through, at the cost of an extra
+/// key-set read per minute per realm. AM accepted the shorter value on write
+/// (verified 2026-08-07); note that lowering it does **not** rescue an entry
+/// already cached under the old TTL.
+const JWKS_CACHE_TIMEOUT_MS: u64 = 60_000;
+
 pub fn issuer_body(source: Value, issuer: &str, jwk_set: String) -> Result<Value> {
     if issuer.trim().is_empty() {
         return Err(Error::Config("Trusted JWT issuer cannot be empty".into()));
@@ -228,6 +244,7 @@ pub fn issuer_body(source: Value, issuer: &str, jwk_set: String) -> Result<Value
         "resourceOwnerIdentityClaim".into(),
         Value::String("sub".into()),
     );
+    object.insert("jwksCacheTimeout".into(), json!(JWKS_CACHE_TIMEOUT_MS));
     Ok(source)
 }
 
@@ -581,6 +598,22 @@ mod tests {
         assert_eq!(body["consentedScopesClaim"], "scope");
         assert_eq!(body["resourceOwnerIdentityClaim"], "sub");
         assert_eq!(body["custom"]["aic_host"], "host");
+        assert_eq!(body["jwksCacheTimeout"], 60_000);
+    }
+
+    /// The write must overwrite AM's one-hour template default rather than
+    /// round-tripping whatever the existing object happens to carry — an issuer
+    /// created before this change should be corrected by the next `setup`.
+    #[test]
+    fn issuer_body_overrides_an_inherited_hour_long_cache_timeout() {
+        let body = issuer_body(
+            json!({"jwksCacheTimeout": {"inherited": false, "value": 3_600_000}}),
+            "aic-agent",
+            "{\"keys\":[]}".into(),
+        )
+        .unwrap();
+
+        assert_eq!(body["jwksCacheTimeout"], 60_000);
     }
 
     #[test]

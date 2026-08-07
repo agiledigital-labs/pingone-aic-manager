@@ -329,19 +329,28 @@ defaults.
 
 ## Open questions
 
-- **The JWKS cache cuts both ways, and that is now the leading explanation.**
-  Later on 2026-08-07, after a `key remove` followed by a `setup` that
-  republished the same key, `aic auth` kept failing `invalid_client` for over a
-  minute — while the issuer read back with the key present and `key list` marked
-  it as ours. So a _restore_ is no more immediate than a _removal_. Two
-  observations in opposite directions, both explained by AM serving a cached key
-  set for up to `jwksCacheTimeout` (3600000ms), make the cache a much better
-  explanation than the alternatives below. The TTL is still unmeasured, and the
-  practical consequence is bigger than the original question: **after any
-  `key remove` on a realm, expect `aic auth` there to be unreliable for up to an
-  hour, in whichever direction.** `scripts/experiment-jwt-key-revocation.sh`
-  measures it — read its header first, because running it causes exactly that
-  outage.
+- **`tokenEndpointAuthMethod` must be `client_secret_post`, and that is a third
+  cause of the identical `invalid_client` message.** `aic auth` puts
+  `client_secret` in the form body, so it speaks `client_secret_post` only. AM's
+  OAuth2 client template defaults to **`client_secret_basic`**, which is
+  therefore what `aic oauth create` produces unless seeded otherwise. Such a
+  client fails with `invalid_client` "Invalid authentication method for
+  accessing this endpoint" — the same string a missing grant and a wrong secret
+  produce. Verified 2026-08-07 by creating two clients minutes apart against the
+  same published key: `client_secret_basic` refused, `client_secret_post`
+  (seeded via `oauth create --from`) minted.
+
+  **This retracts a claim made earlier the same day.** An episode where
+  `aic auth` failed after a `key remove` + republish was written up here as "the
+  JWKS cache cuts both ways". That is not established: every client used during
+  that episode was a default `client_secret_basic` one, so the auth method alone
+  accounts for it. What remains verified is only the one-directional observation
+  — a _removed_ key still minted. Why clients created earlier that day succeeded
+  on the same defaults is **unexplained**; a plausible but unverified reading is
+  that AM enforces the auth method only once a newly-created client has fully
+  propagated, which would also fit the ~20s propagation delay noted below. Do
+  not build on that until someone probes it.
+
 - **Does removing a key from `jwkSet` revoke it promptly? Unresolved — assume
   not.** Probing on 2026-08-07 confirmed the _write_ lands: after
   `aic jwt-bearer key remove`, AM stores `jwkSet` as `{"keys":[]}` and

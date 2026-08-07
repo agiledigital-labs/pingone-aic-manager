@@ -50,17 +50,22 @@
 #   to exceed the 1h positive cache). Set TIMEOUT=300 for a smoke run that only
 #   proves the harness works.
 #
-# !! THIS SCRIPT TAKES JWT-BEARER AUTH OUT OF SERVICE FOR UP TO AN HOUR !!
-#   Observed 2026-08-07: the cache cuts BOTH ways. After this script removes the
-#   key and then restores it, `aic auth` kept failing with `invalid_client` for
-#   well over a minute even though the tenant config showed the key published
-#   again and `key list` marked it as ours. The most likely reading is that AM
-#   cached the empty key set at removal and serves that until jwksCacheTimeout
-#   (3600000ms) expires — the same mechanism that makes removal not revoke
-#   promptly, seen from the other side. It should self-heal within the hour.
-#   Do not run this while anyone needs `aic auth` on the target realm, and do
-#   not run it "just to check the harness" — the smoke run costs the same
-#   outage as the real one.
+# !! THIS SCRIPT REMOVES A LIVE SIGNING KEY FROM A SHARED ISSUER !!
+#   It restores the key on exit, but a removed key is not revoked promptly (that
+#   is the thing being measured), and there is no evidence either way on how
+#   quickly a restored one becomes usable again. Do not run it while anyone
+#   needs `aic auth` on the target realm.
+#
+#   A "quick smoke run" costs the same key removal as the real one. There is no
+#   cheap mode.
+#
+#   NOTE (2026-08-07): an earlier version of this header claimed the cache
+#   "cuts both ways", citing an episode where auth stayed broken after a
+#   restore. That was retracted — the clients in that episode were
+#   `client_secret_basic`, which `aic auth` cannot use at all. Keep that
+#   confound out of any run: create probe clients with
+#   `tokenEndpointAuthMethod: client_secret_post` (see the positive control
+#   below), or you will measure the wrong thing.
 #
 # Usage:
 #   scripts/experiment-jwt-key-revocation.sh
@@ -122,7 +127,14 @@ KID="$(python3 -c "import json;print(json.load(open('$WORK/key.jwk'))['kid'])")"
 note "    kid $KID"
 
 note "==> creating throwaway client with the jwt-bearer grant"
+# `aic auth` sends client_secret in the form body, so the client MUST be
+# client_secret_post. AM's template default is client_secret_basic, which fails
+# with the same `invalid_client` string a missing key produces — seed it
+# explicitly or this experiment measures client auth, not key revocation.
+printf '%s' '{"advancedOAuth2ClientConfig":{"tokenEndpointAuthMethod":"client_secret_post"}}' \
+  > "$WORK/seed.json"
 SECRET="$("$AIC" --no-prompt oauth create "$CLIENT" --realm "$REALM" \
+  --from "$WORK/seed.json" \
   --client-type Confidential --generate-secret \
   --scope openid --default-scope openid \
   --grant urn:ietf:params:oauth:grant-type:jwt-bearer 2>/dev/null \
