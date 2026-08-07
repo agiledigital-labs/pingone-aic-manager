@@ -67,12 +67,36 @@ interface IdmContext {
     // A java.util.Set, so membership is `.contains("fr:idm:*")` — `.includes`
     // and `.indexOf` do not exist on it, and neither does `.length`.
     scopes: JavaSet<StringLike>;
+    // AM's token-introspection record. Every member below was observed present
+    // with the type given, verified 2026-08-07 against a service-account token
+    // (docs/api/11). A user token carries the same keys; only the identity
+    // values differ, and those variants are not yet verified.
     rawInfo: {
-      // The same scopes, space-delimited. Prefer `scopes` above; split this
-      // only if you need the raw string.
+      active: boolean;
+      auditTrackingId: string;
+      authGrantId: string;
+      /** The OAuth2 client the token was issued to. `service-account` for an SA. */
+      client_id: string;
+      /** Epoch SECONDS, not millis. */
+      exp: number;
+      /** Seconds remaining at introspection time. */
+      expires_in: number;
+      /** AM's internal issuer URL (e.g. `https://am.fr-platform:443/am/oauth2`),
+       *  NOT the tenant base URL. Do not compare it against your tenant host. */
+      iss: string;
+      /** `/` for a root-realm token; a realm path otherwise. */
+      realm: string;
+      // The same scopes as `scopes` above, space-delimited. Prefer the set;
+      // split this only if you need the raw string.
       scope: string;
-      // CREDENTIAL — never return or log.
-      sessionToken?: string;
+      /** CREDENTIAL — never return or log. */
+      sessionToken: string;
+      sub: string;
+      subname: string;
+      token_type: string;
+      /** For a service-account token these three all hold the SA's UUID. */
+      user_id: string;
+      username: string;
       [key: string]: any;
     };
     // CREDENTIAL — the bearer itself. Never return or log.
