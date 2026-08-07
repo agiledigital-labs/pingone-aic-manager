@@ -18,7 +18,7 @@ tenant-global (`/openidm/...`), unlike realm-scoped AM scripts.
 ### Public read endpoints
 
 The endpoint **configuration** APIs above always require the service-account
-bearer token. The endpoint's *runtime URL* can, however, be intentionally made
+bearer token. The endpoint's _runtime URL_ can, however, be intentionally made
 available before authentication. IDM authorizes direct HTTP calls through the
 tenant's `config/access` rules. Add a narrowly-scoped rule such as this to the
 existing `configs` array (read the whole config, amend it, then PUT the complete
@@ -44,9 +44,9 @@ deployment. A browser app hosted on another origin also needs an AIC CORS
 configuration; the access rule alone does not grant cross-origin browser access.
 
 This behavior is documented by Ping's IDM authorization guide and is also the
-mechanism used in Christian Brindley's announcement-at-login example. It has
-not yet been re-exercised anonymously against this sandbox because no unlocked
-local agent was available during the 2026-08-05 documentation pass.
+mechanism used in Christian Brindley's announcement-at-login example. It has not
+yet been re-exercised anonymously against this sandbox because no unlocked local
+agent was available during the 2026-08-05 documentation pass.
 
 ### Authenticated user endpoints
 
@@ -139,8 +139,8 @@ wrong here; omit it for `/openidm`.)
   detection is content-based (see `04-scripts.md` "Conflict detection rule").
 - **No `name` field** — the human name is the `_id` suffix.
 - **`globals` is the endpoint global-bindings object.** A full-object PUT adding
-  `{"globals":{"endpointConfig":{...}}}` made `endpointConfig` available to
-  the script at runtime (verified 2026-08-06).
+  `{"globals":{"endpointConfig":{...}}}` made `endpointConfig` available to the
+  script at runtime (verified 2026-08-06).
 
 ## Examples
 
@@ -207,7 +207,12 @@ root), `additionalParameters` (a map of any non-`_` query params), `fields` (the
   service-account probe these contained `fr:am:*`, `fr:idc:esv:*`, `fr:idm:*`,
   and `fr:idc:cookie-domain:*`. `context.oauth2.scope`,
   `context.oauth2.accessToken`, and `context.oauth2.accessToken.info` were not
-  present.
+  present. **The workspace types model this** — `IdmContext.oauth2` in
+  `idm/types/common.d.ts` is optional, `scopes` is a `JavaSet`, and `token` /
+  `rawInfo.sessionToken` are commented as credentials. So `tsc` rejects
+  `scopes.includes(…)`, an unguarded `context.oauth2`, and the absent `.scope` /
+  `.accessToken` (they fall to the index signature, which
+  `noPropertyAccessFromIndexSignature` refuses on dot-access).
 - **Never return or log the full context.** `context.http.headers` includes the
   bearer `Authorization` header. Serializing `context.security` can also walk
   its inherited `parent` chain into `context.oauth2`, whose `token` and
@@ -290,7 +295,8 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
   requiring another). There is no SaaS-exposed path to add a `lib/` module in
   Identity Cloud (no filesystem access). To share code, inline it or call a
   shared endpoint over `openidm.action`/`httpClient`. For a complete AM + IDM
-  design, see [Sharing code between AM and IDM](../sharing-code-between-am-and-idm.md).
+  design, see
+  [Sharing code between AM and IDM](../sharing-code-between-am-and-idm.md).
 - **Scope:** `require`/`lib` resolution is a property of the IDM Rhino engine,
   so it is available to **every IDM script type**, not just custom endpoints —
   scripted endpoints, `invokeService:"script"` schedules, managed-object hooks
@@ -313,8 +319,8 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
   `identityServer.getProperty("esv.some.variable")` returns `null` when the
   ESV/property does not exist. Its optional second argument is the fallback:
   `identityServer.getProperty("esv.some.variable", "default")` returns
-  `"default"`. Live-verified 2026-07-22 with a temporary scripted endpoint;
-  use a fallback for optional ESVs or explicitly guard against `null`.
+  `"default"`. Live-verified 2026-07-22 with a temporary scripted endpoint; use
+  a fallback for optional ESVs or explicitly guard against `null`.
 - **List is unfiltered** — `/openidm/config?_queryFilter=true` returns _every_
   config object (85 in the sandbox); filter client-side for `endpoint/` ids.
 - **`PUT` is create-or-replace** — 201 on first write, 200 on replace.
@@ -470,15 +476,14 @@ Object shape (real example, `schedule/UpdateReviewList`):
   `null` without throwing; the same call with fallback
   `"aicedit-fallback-value"` returned that string. Endpoint deleted after the
   probe.
-- Authenticated endpoint POC (2026-08-06): deployed
-  `endpoint/user-token-poc` with exact-path read access for
-  `internal/role/openidm-authorized`. A valid tenant service-account token
-  returned 200 and a populated `context.security` (`component:
-  "managed/svcacct"`); no token returned 403 from the access layer; a malformed
-  bearer returned 401; and a valid token with the script's role allowlist set
-  to a nonexistent role returned the script's 403. Restored the intended
-  allowlist after the negative test. `/openidm/config/authentication` showed
-  `rsFilter.scopes: ["fr:idm:*"]` and subject mappings with default role
+- Authenticated endpoint POC (2026-08-06): deployed `endpoint/user-token-poc`
+  with exact-path read access for `internal/role/openidm-authorized`. A valid
+  tenant service-account token returned 200 and a populated `context.security`
+  (`component: "managed/svcacct"`); no token returned 403 from the access layer;
+  a malformed bearer returned 401; and a valid token with the script's role
+  allowlist set to a nonexistent role returned the script's 403. Restored the
+  intended allowlist after the negative test. `/openidm/config/authentication`
+  showed `rsFilter.scopes: ["fr:idm:*"]` and subject mappings with default role
   `internal/role/openidm-authorized`. A real end-user token has not yet been
   exercised.
 - Authenticated endpoint scope probe (2026-08-06): the OAuth2 context exposed
@@ -488,8 +493,8 @@ Object shape (real example, `schedule/UpdateReviewList`):
   space-delimited string. `context.oauth2.scope` and `accessToken` were absent.
   The first diagnostic serialized `context.security` directly and thereby
   followed its `parent` chain into OAuth2 credentials. The deployed diagnostic
-  was immediately replaced with an explicit safe-field projection and the
-  local agent was locked to clear its cached token. This confirms that neither
+  was immediately replaced with an explicit safe-field projection and the local
+  agent was locked to clear its cached token. This confirms that neither
   `context.security` nor the complete `context` is safe to serialize.
 
 ## Source citations
@@ -500,13 +505,17 @@ Object shape (real example, `schedule/UpdateReviewList`):
 - p1aic-script-editor: `src/resources/EndpointHandler.ts`,
   `src/schemas/endpoint.ts` (Zod schema covers scripted/table/jdbc + nested
   `source`).
-- Ping AIC: [Authorization and roles](https://backstage.forgerock.com/docs/idcloud/latest/idm-auth/authorization-and-roles.html)
+- Ping AIC:
+  [Authorization and roles](https://backstage.forgerock.com/docs/idcloud/latest/idm-auth/authorization-and-roles.html)
   (direct HTTP authorization, `config/access`, and `roles: "*"` rules).
-- Ping AIC: [Authentication through OAuth 2.0 and subject mappings](https://docs.pingidentity.com/pingoneaic/idm-auth/rsfilter-module.html)
+- Ping AIC:
+  [Authentication through OAuth 2.0 and subject mappings](https://docs.pingidentity.com/pingoneaic/idm-auth/rsfilter-module.html)
   (`rsFilter` token validation, required scopes, subject mapping and roles).
-- Ping AM API: [AccessTokenInfo](https://docs.pingidentity.com/pingam/7.4/_attachments/apidocs/org/forgerock/http/oauth2/AccessTokenInfo.html)
+- Ping AM API:
+  [AccessTokenInfo](https://docs.pingidentity.com/pingam/7.4/_attachments/apidocs/org/forgerock/http/oauth2/AccessTokenInfo.html)
   (`getScopes()` returns `Set<String>`).
-- Christian Brindley: [Making announcements at login](https://medium.com/@christian.brindley/pingone-advanced-identity-cloud-making-announcements-at-login-how-to-848b3b948fd1)
+- Christian Brindley:
+  [Making announcements at login](https://medium.com/@christian.brindley/pingone-advanced-identity-cloud-making-announcements-at-login-how-to-848b3b948fd1)
   (public `endpoint/announcement/*` read-rule example).
 
 ## Open questions

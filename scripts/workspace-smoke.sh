@@ -20,8 +20,8 @@ trap cleanup EXIT
 echo "==> building aic"
 cargo build --offline -q
 
-echo "==> aic script workspace init --tenant $TENANT"
-"$AIC_BIN" script workspace init --tenant "$TENANT" >/dev/null
+echo "==> aic workspace init --tenant $TENANT"
+"$AIC_BIN" workspace init --tenant "$TENANT" >/dev/null
 
 echo "==> writing known-clean sample scripts + leaf tsconfigs"
 mkdir -p "$WS/am/alpha/decision-node" "$WS/am/alpha/lib" "$WS/idm/endpoint"
@@ -59,6 +59,13 @@ JS
 cat > "$WS/idm/endpoint/myEndpoint.cjs" <<'JS'
 var users = openidm.query("managed/alpha_user", { _queryFilter: "true" });
 logger.info("endpoint {} found {}", request.method, users);
+
+// context.oauth2 is optional (absent for schedules and internal callers) and
+// its scopes are a java.util.Set, so membership is contains(), not includes().
+if (!context.oauth2 || !context.oauth2.scopes.contains("fr:idm:*")) {
+  throw { code: 403, message: "Missing required OAuth scope" };
+}
+logger.info("scope count {}", context.oauth2.scopes.size());
 JS
 
 echo "==> npm install"
