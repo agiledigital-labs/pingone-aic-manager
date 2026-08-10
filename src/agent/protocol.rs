@@ -92,6 +92,10 @@ pub enum Request {
         /// `protocol=2.0,resource=1.0`; IDM config endpoints set their own.
         #[serde(default)]
         api_version: Option<String>,
+        /// Optional optimistic-concurrency revision for verified conditional
+        /// write families. Most API calls leave this unset.
+        #[serde(default)]
+        if_match: Option<String>,
     },
     /// Tell the agent to clean up the socket and exit.
     Shutdown,

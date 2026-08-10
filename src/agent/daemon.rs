@@ -362,6 +362,7 @@ async fn handle(
             confirmed_prod,
             content_type,
             api_version,
+            if_match,
         } => {
             match do_api_call(
                 &tenant,
@@ -372,6 +373,7 @@ async fn handle(
                     confirmed_prod,
                     content_type,
                     api_version,
+                    if_match,
                 },
                 state,
             )
@@ -607,6 +609,7 @@ struct ApiCallOptions {
     confirmed_prod: bool,
     content_type: Option<String>,
     api_version: Option<String>,
+    if_match: Option<String>,
 }
 
 async fn do_api_call(
@@ -658,6 +661,7 @@ async fn do_api_call(
                     body.unwrap_or(serde_json::Value::Null),
                     options.confirmed_prod,
                     av,
+                    None,
                 )
                 .await?
         }
@@ -669,6 +673,7 @@ async fn do_api_call(
                     body.unwrap_or(serde_json::Value::Null),
                     options.confirmed_prod,
                     av,
+                    options.if_match.as_deref(),
                 )
                 .await?
         }
@@ -680,6 +685,7 @@ async fn do_api_call(
                     body.unwrap_or(serde_json::Value::Null),
                     options.confirmed_prod,
                     av,
+                    None,
                 )
                 .await?
         }
@@ -691,6 +697,7 @@ async fn do_api_call(
                     body.unwrap_or(serde_json::Value::Null),
                     options.confirmed_prod,
                     av,
+                    None,
                 )
                 .await?
         }
