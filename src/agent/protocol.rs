@@ -173,3 +173,43 @@ pub struct CachedTokenInfo {
     pub tenant: String,
     pub expires_at: i64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reason an *additive* protocol change still needs a `PROTOCOL_VERSION`
+    /// bump: serde ignores fields it does not know. An older daemon handed a
+    /// request carrying a field it was never compiled with does not complain —
+    /// it drops the field and does the work without it. For `if_match` that
+    /// means performing an unconditional write while the caller believes it is
+    /// protected by a revision precondition, which is worse than an error.
+    ///
+    /// If this test ever fails because unknown fields become an error, additive
+    /// changes stop needing a version bump and this constraint can be revisited.
+    #[test]
+    fn unknown_fields_are_silently_ignored_so_additive_changes_need_a_bump() {
+        let from_a_newer_client = serde_json::json!({
+            "op": "api_call",
+            "tenant": "sandbox",
+            "method": "PUT",
+            "path": "/openidm/internal/role/x",
+            "body": null,
+            "confirmed_prod": false,
+            "content_type": null,
+            "api_version": null,
+            "a_field_this_build_has_never_heard_of": "surprise",
+        });
+
+        let decoded: Request = serde_json::from_value(from_a_newer_client)
+            .expect("serde accepted the request despite the unknown field");
+
+        match decoded {
+            Request::ApiCall { if_match, .. } => assert!(
+                if_match.is_none(),
+                "a field this build does not know cannot populate anything"
+            ),
+            other => panic!("expected an api_call, got {other:?}"),
+        }
+    }
+}
