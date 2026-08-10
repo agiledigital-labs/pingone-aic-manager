@@ -49,6 +49,12 @@ Bump the **minor** (`0.3.0` → `0.4.0`) only for:
 - **any breaking change** — a removed or renamed command or flag, a changed
   default, or a previously-working operation that now refuses (e.g. the
   staging/production script-write guard in v0.3.0).
+- **a required agent restart** — any release that bumps `PROTOCOL_VERSION` in
+  `src/agent/mod.rs`, because every user must run `aic session stop` before the
+  new CLI will talk to their resident daemon. Grep the diff for it; it is easy
+  to miss in someone else's commit. The version number is how an operator knows
+  a restart is coming without reading the notes, so this is not negotiable even
+  when the rest of the release is small (policy set 2026-08-10).
 
 Never bump the major while pre-1.0.
 
