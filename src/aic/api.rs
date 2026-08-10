@@ -17,7 +17,7 @@ use crate::agent::{AgentClient, Request, Response};
 use crate::{Error, Result};
 
 pub async fn get(tenant: &str, path: &str) -> Result<serde_json::Value> {
-    call(tenant, "GET", path, None, false, None).await
+    call(tenant, "GET", path, None, false, None, None).await
 }
 
 pub async fn put(
@@ -26,7 +26,7 @@ pub async fn put(
     body: serde_json::Value,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    call(tenant, "PUT", path, Some(body), confirmed_prod, None).await
+    call(tenant, "PUT", path, Some(body), confirmed_prod, None, None).await
 }
 
 pub async fn post(
@@ -35,7 +35,7 @@ pub async fn post(
     body: serde_json::Value,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    call(tenant, "POST", path, Some(body), confirmed_prod, None).await
+    call(tenant, "POST", path, Some(body), confirmed_prod, None, None).await
 }
 
 /// `POST` a form-encoded body through the daemon-owned HTTP connection pool.
@@ -60,6 +60,7 @@ pub async fn post_versioned(
         Some(body),
         confirmed_prod,
         Some(api_version),
+        None,
     )
     .await
 }
@@ -70,11 +71,20 @@ pub async fn patch(
     body: serde_json::Value,
     confirmed_prod: bool,
 ) -> Result<serde_json::Value> {
-    call(tenant, "PATCH", path, Some(body), confirmed_prod, None).await
+    call(
+        tenant,
+        "PATCH",
+        path,
+        Some(body),
+        confirmed_prod,
+        None,
+        None,
+    )
+    .await
 }
 
 pub async fn delete(tenant: &str, path: &str, confirmed_prod: bool) -> Result<serde_json::Value> {
-    call(tenant, "DELETE", path, None, confirmed_prod, None).await
+    call(tenant, "DELETE", path, None, confirmed_prod, None, None).await
 }
 
 /// `GET` with an explicit `Accept-API-Version` (AM scripts need
@@ -84,7 +94,7 @@ pub async fn get_versioned(
     path: &str,
     api_version: &str,
 ) -> Result<serde_json::Value> {
-    call(tenant, "GET", path, None, false, Some(api_version)).await
+    call(tenant, "GET", path, None, false, Some(api_version), None).await
 }
 
 /// `PUT` with an explicit `Accept-API-Version`.
@@ -102,6 +112,28 @@ pub async fn put_versioned(
         Some(body),
         confirmed_prod,
         Some(api_version),
+        None,
+    )
+    .await
+}
+
+/// `PUT` with explicit API version and optimistic-concurrency revision.
+pub async fn put_versioned_if_match(
+    tenant: &str,
+    path: &str,
+    body: serde_json::Value,
+    confirmed_prod: bool,
+    api_version: &str,
+    revision: &str,
+) -> Result<serde_json::Value> {
+    call(
+        tenant,
+        "PUT",
+        path,
+        Some(body),
+        confirmed_prod,
+        Some(api_version),
+        Some(revision),
     )
     .await
 }
@@ -120,6 +152,7 @@ pub async fn delete_versioned(
         None,
         confirmed_prod,
         Some(api_version),
+        None,
     )
     .await
 }
@@ -131,6 +164,7 @@ async fn call(
     body: Option<serde_json::Value>,
     confirmed_prod: bool,
     api_version: Option<&str>,
+    if_match: Option<&str>,
 ) -> Result<serde_json::Value> {
     let agent = AgentClient::connect_or_spawn().await?;
     let resp = agent
@@ -142,6 +176,7 @@ async fn call(
             confirmed_prod,
             content_type: None,
             api_version: api_version.map(|s| s.to_string()),
+            if_match: if_match.map(str::to_owned),
         })
         .await?;
     match resp {
@@ -173,6 +208,7 @@ async fn call_form(
             confirmed_prod,
             content_type: Some("application/x-www-form-urlencoded".into()),
             api_version: None,
+            if_match: None,
         })
         .await?;
     match resp {

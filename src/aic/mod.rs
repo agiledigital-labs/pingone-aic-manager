@@ -78,23 +78,40 @@ impl AicClient {
         body: serde_json::Value,
         confirmed_prod: bool,
         api_version: Option<&str>,
+        if_match: Option<&str>,
     ) -> Result<serde_json::Value> {
         if self.tenant.theme == TenantTheme::Production && !confirmed_prod {
             return Err(Error::ProdConfirmRequired);
         }
         let token = self.bearer().await?;
-        let url = self.url(path);
         let resp = self
+            .json_request(method, path, body, &token, api_version, if_match)
+            .send()
+            .await?;
+        self.check_response(resp).await
+    }
+
+    fn json_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: serde_json::Value,
+        token: &str,
+        api_version: Option<&str>,
+        if_match: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let request = self
             .http
-            .request(method, &url)
+            .request(method, self.url(path))
             .header("Authorization", format!("Bearer {token}"))
             .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-        self.check_response(resp).await
+            .json(&body);
+        match if_match {
+            Some(revision) => request.header("If-Match", revision),
+            None => request,
+        }
     }
 
     pub async fn write_form(
@@ -264,5 +281,38 @@ mod tests {
                 .starts_with("Bearer ")
         );
         assert!(request.headers().get("accept-api-version").is_none());
+    }
+
+    #[test]
+    fn json_request_only_sends_if_match_when_supplied() {
+        let client = AicClient::new(
+            tenant("https://tenant.example".into()),
+            serde_json::Value::Null,
+        );
+        let plain = client
+            .json_request(
+                reqwest::Method::PUT,
+                "/resource",
+                serde_json::json!({}),
+                "token",
+                Some("resource=1.0"),
+                None,
+            )
+            .build()
+            .unwrap();
+        let conditional = client
+            .json_request(
+                reqwest::Method::PUT,
+                "/resource",
+                serde_json::json!({}),
+                "token",
+                Some("resource=1.0"),
+                Some("revision-1"),
+            )
+            .build()
+            .unwrap();
+
+        assert!(plain.headers().get("if-match").is_none());
+        assert_eq!(conditional.headers()["if-match"], "revision-1");
     }
 }
