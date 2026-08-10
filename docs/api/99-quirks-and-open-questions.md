@@ -452,6 +452,60 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
 
 ## Changelog
 
+- **2026-08-10** — Internal roles have a **non-round-trippable read**: a bare
+  `GET /openidm/internal/role/{id}` returns `temporalConstraints`, and `PUT`ting
+  that value back — including the empty array the read itself produced — returns
+  `403 "Policy validation failed"` naming the field as invalid on write. Isolated
+  against a positive control: `condition` may be written back (200), `_id` and
+  `_rev` may stay in the body (200), only `temporalConstraints` must be dropped
+  (403 when retained). Naive read-modify-write on this collection therefore fails
+  on the *first* write, not subtly later.
+
+  This corrects `18-internal-roles.md` for the third time in one day. The
+  preceding correction had just replaced "use `_fields`" with "do a bare `GET` so
+  you hold the whole object" — advice that is itself wrong for exactly this
+  reason. Found by an implementation agent probing the body shape before writing
+  the feature, not by review of the doc.
+
+
+- **2026-08-10 (same day, self-correction)** — `18-internal-roles.md` was
+  published hours earlier claiming internal roles have **no `_rev` and no
+  conditional-write support**. Both are wrong. Reads carry a `_rev`, and
+  `If-Match` is honoured: current revision → 200, superseded revision → **412**,
+  `If-Match: *` → 200. Internal roles are therefore a conditional-write family in
+  the `CLAUDE.md` §5 sense, and amend-and-write should send `If-Match`. The false
+  claim came from generalising `config/access` — which genuinely has no `_rev` —
+  onto internal roles a few paragraphs later in the same document, while probe
+  output showing `_rev` was on screen. It was caught by an implementation agent
+  that was told the doc was ground truth and stopped rather than coding around
+  the contradiction; that instruction is the only reason it surfaced before
+  shipping.
+
+  Two further schema/reality divergences found while correcting it: `privileges`
+  is returned on bare reads and bare list queries **despite**
+  `returnByDefault: false` (whereas `authzMembers` does honour the flag), and
+  `_fields=privileges` drops `name`/`description`, so feeding a projected read
+  into a full-replace `PUT` erases them.
+
+- **2026-08-10** — `GET /openidm/schema/internal/role` declares the privilege
+  access-flags key as **`accessflags`** (lowercase `f`); the API requires
+  **`accessFlags`**. A `PUT` using the schema's own spelling returns
+  `403 "Policy validation failed"` with a `REQUIRED` policy requirement, and the
+  role is **not** created (a follow-up `GET` 404s) — so this is loud rejection,
+  not silent field loss. The admin console sends `accessFlags`, which is what
+  round-trips. Trust the API over its published schema here. Full detail in
+  `18-internal-roles.md`.
+
+  Method note: the first read of this behaviour recorded it as "silently
+  dropped", because the probe discarded the `PUT` status and only inspected the
+  read-back. The correction came from re-running with the status visible. A
+  related batch of seven privilege-field probes initially returned a uniform 403
+  and was nearly written up as seven findings; adding a **positive control**
+  showed the shared confound. Both are the same lesson as the 2026-08-07
+  retractions: one observation is not a mechanism, and a batch without a control
+  is not evidence.
+
+
 - **2026-08-04** — Relationship `resourceCollection[].query` verified **required
   by the admin console** even though `config/managed` accepts an entry without
   it. A relationship created by `aic managed relationship set` on `test_from`
