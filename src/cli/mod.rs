@@ -134,6 +134,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::journey::cli::JourneyCommand,
     },
+    /// IDM internal roles with caller-chosen ids.
+    Role {
+        #[command(subcommand)]
+        command: crate::roles::cli::RoleCommand,
+    },
     /// Trusted JWT Issuer setup and inspection.
     JwtBearer {
         #[command(subcommand)]
@@ -224,6 +229,7 @@ impl Command {
             | Self::Sync { .. }
             | Self::Logs { .. }
             | Self::Journey { .. }
+            | Self::Role { .. }
             | Self::JwtBearer { .. }
             | Self::Auth { .. }
             | Self::Oauth { .. }
@@ -280,6 +286,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Sync { command }) => crate::mappings::cli::run(command).await,
         Some(Command::Logs { command }) => crate::logs::cli::run(command).await,
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
+        Some(Command::Role { command }) => crate::roles::cli::run(command).await,
         Some(Command::JwtBearer { command }) => crate::jwtbearer::cli::run(command).await,
         Some(Command::Auth { options }) => crate::jwtbearer::cli::run_auth(options).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
@@ -1448,6 +1455,7 @@ mod tests {
             (vec!["aic", "sync", "mappings"], true),
             (vec!["aic", "logs", "sources"], true),
             (vec!["aic", "journey", "list"], true),
+            (vec!["aic", "role", "list"], true),
             (vec!["aic", "jwt-bearer", "setup"], true),
             (
                 vec!["aic", "auth", "--as-id", "user", "--client-id", "client"],
@@ -1480,6 +1488,7 @@ mod tests {
                 | Command::Sync { .. }
                 | Command::Logs { .. }
                 | Command::Journey { .. }
+                | Command::Role { .. }
                 | Command::JwtBearer { .. }
                 | Command::Auth { .. }
                 | Command::Oauth { .. }

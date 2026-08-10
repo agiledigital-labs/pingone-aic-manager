@@ -363,6 +363,35 @@ aic journey node-template <nodeType> [--realm alpha]   # a starter node config (
 
 ---
 
+## `aic role` — IDM internal roles
+
+Internal roles are tenant-global. Their `_id`, rather than their display
+`name`, is what IDM authorization configuration references. Creating through
+this command makes the caller-chosen id the default name as well.
+
+```bash
+aic role list [--json]
+aic role show <id> [--json]
+aic role create <id> [--name <name>] [--description <text>]
+aic role delete <id> [--force]
+aic role privilege list <role-id> [--json]
+aic role privilege add <role-id> --path managed/alpha_user --permissions VIEW,UPDATE --attr mail:rw --attr userName:ro [--privilege-name <name>] [--actions action1,action2]
+aic role privilege rm <role-id> --path managed/alpha_user
+```
+
+`create` refuses an existing id because IDM's `PUT` is a destructive full
+replace; use `role privilege add` to amend privileges. `privilege add` validates
+the path and attribute names against the tenant's managed-object schema, then
+replaces an existing privilege with the same path or appends a new one. Each
+`--attr` uses `name:ro` or `name:rw`. Known permissions are `VIEW`, `CREATE`,
+`UPDATE`, `DELETE`, and `ACTION`; other values warn and proceed because AIC does
+not publish an authoritative enum. Privilege edits use the revision read with
+the role; a concurrent modification is reported and left untouched instead of
+being overwritten. Deletion prompts by default, while `--force` skips
+confirmation.
+
+---
+
 ## `aic oauth` — OAuth2 clients
 
 Realm-scoped. Clients pull/push as JSON under the workspace.
