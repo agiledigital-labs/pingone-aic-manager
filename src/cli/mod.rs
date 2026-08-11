@@ -139,6 +139,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::roles::cli::RoleCommand,
     },
+    /// IDM config/access authorization rules.
+    Access {
+        #[command(subcommand)]
+        command: crate::access::cli::AccessCommand,
+    },
     /// Trusted JWT Issuer setup and inspection.
     JwtBearer {
         #[command(subcommand)]
@@ -230,6 +235,7 @@ impl Command {
             | Self::Logs { .. }
             | Self::Journey { .. }
             | Self::Role { .. }
+            | Self::Access { .. }
             | Self::JwtBearer { .. }
             | Self::Auth { .. }
             | Self::Oauth { .. }
@@ -287,6 +293,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Logs { command }) => crate::logs::cli::run(command).await,
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
         Some(Command::Role { command }) => crate::roles::cli::run(command).await,
+        Some(Command::Access { command }) => crate::access::cli::run(command).await,
         Some(Command::JwtBearer { command }) => crate::jwtbearer::cli::run(command).await,
         Some(Command::Auth { options }) => crate::jwtbearer::cli::run_auth(options).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
@@ -1074,6 +1081,30 @@ pub(crate) fn tenant_config_for(tenant_arg: Option<String>) -> Result<crate::con
         .ok_or_else(|| Error::Config(format!("no tenant named '{name}' in config")))
 }
 
+/// Permission to write to one tenant: either it is not production, or the
+/// operator explicitly confirmed with `--yes`.
+#[must_use]
+pub(crate) struct WriteOk<'a> {
+    pub(crate) tenant: &'a str,
+    /// Forwarded to the API layer, which applies its own production gate.
+    pub(crate) confirmed_prod: bool,
+}
+
+/// Refuse an unconfirmed production write before any tenant fetch occurs.
+pub(crate) fn ensure_prod_confirmed(tenant: &str, yes: bool) -> Result<WriteOk<'_>> {
+    if tenant_config_for(Some(tenant.to_string()))?.theme == crate::config::TenantTheme::Production
+        && !yes
+    {
+        return Err(Error::Config(
+            "tenant is production — re-run with --yes to confirm the write".into(),
+        ));
+    }
+    Ok(WriteOk {
+        tenant,
+        confirmed_prod: yes,
+    })
+}
+
 /// Turn the agent's prod-confirm refusal into an actionable CLI message.
 pub(crate) fn prod_hint<T>(r: Result<T>) -> Result<T> {
     match r {
@@ -1456,6 +1487,7 @@ mod tests {
             (vec!["aic", "logs", "sources"], true),
             (vec!["aic", "journey", "list"], true),
             (vec!["aic", "role", "list"], true),
+            (vec!["aic", "access", "list"], true),
             (vec!["aic", "jwt-bearer", "setup"], true),
             (
                 vec!["aic", "auth", "--as-id", "user", "--client-id", "client"],
@@ -1489,6 +1521,7 @@ mod tests {
                 | Command::Logs { .. }
                 | Command::Journey { .. }
                 | Command::Role { .. }
+                | Command::Access { .. }
                 | Command::JwtBearer { .. }
                 | Command::Auth { .. }
                 | Command::Oauth { .. }
