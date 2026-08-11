@@ -36,6 +36,24 @@ findings). Each should name the guard that will eventually retire it.
   _Guard: none obvious; wants `scripts/verify-endpoint.sh` to work so the honest
   path is also the easy one._
 
+- **A write guard must be able to express the dangerous verb's outcome.** When a
+  whole-document write takes caller-supplied expectations, check that the set of
+  expressible conditions covers _removal_ and not only presence — a
+  presence-only guard is satisfied by a no-op `PUT`, so the verb that can lock
+  operators out is the one it fails to protect. Check too that the "expectations
+  must be non-empty" guard does not forbid a legal document state (an empty rule
+  list). _Guard: one test per verb asserting the confirmation fails against a
+  document where the write was silently discarded._
+
+- **Ask whether a test could fail if the code were wrong.** Seen twice now
+  (`ops::rotate_steps`' ordering test, 2026-08-07; `access::spec`'s
+  `actions_absent_and_empty_are_distinct_and_preserved`, 2026-08-11). Both name
+  the invariant in the test name and then assert a property of the language or
+  of the fixture literal instead of running the value through the code path that
+  is supposed to preserve it. _Guard: for each new test, name the edit to
+  production code that would turn it red; if there is none, the test is
+  documentation._
+
 - **No cryptographic key generation in the default test path.** An RSA keygen is
   seconds, not milliseconds; one of them took this suite from 0.33s to 8.31s
   (2026-08-06). Test the shape of a key record against a stub, and gate any
@@ -283,3 +301,43 @@ findings). Each should name the guard that will eventually retire it.
   discovery, it has `:443`") got generalised to a place it did not apply. When a
   doc says a value must come from a specific source, check _which_ consumer of
   that value the requirement attaches to.
+
+### 2026-08-11 — the read-back guard protected only the safe verbs
+
+- **What:** `access::api::put_access_confirmed` takes `expect_rules: &[Value]`
+  and confirms each is present after the `PUT`. `add` and `edit` are covered;
+  `rm` is not — the rules it expects to see are the ones that survive, and a
+  `PUT` the tenant silently discarded still shows all of them. The same
+  signature also rejects an empty expectation set, so removing the last rule (or
+  applying a backup with an empty `configs`) cannot go through the guarded path
+  at all. `managed::api::ConfigConfirm` already had `ObjectAbsent` and
+  `DocumentEquals`; the access version kept only the presence half of the
+  precedent it was pointed at.
+- **Why missed:** the spec's test list (`.ai/access-spec.md` §8) enumerated
+  transform cases and never asked for a case on the confirmation itself, so
+  neither the prompt nor the tests raised the question of what `rm` confirms.
+  The prompt described the guard purely as "confirm every rule in `expect_rules`
+  is present".
+- **Guard:** Standing check above; concretely, replace the rule list with an
+  `AccessConfirm` enum (or a single `DocumentEquals(intended)`, which the
+  verified byte-identical read-back makes sound) and add a per-verb test that
+  feeds the confirmation a document representing a discarded write.
+
+### 2026-08-11 — the core slice shipped without the seams its callers need
+
+- **What:** `src/access/{spec,ops}` are genuinely TUI-free, but three things
+  every caller needs have no home in them: building the `RoleIndex` from
+  `internal/role` + `config/authentication` (tenant I/O, so it belongs in
+  `api.rs` and nothing in the repo reads `config/authentication` yet), matching
+  an 8-char rule digest for `show <index-or-digest>`, and the `--if-digest`
+  precondition check. `cli.rs` will hand-roll all three and the later TUI tab
+  will hand-roll them again — the exact duplication the `spec`+`ops` split
+  exists to prevent.
+- **Why missed:** first sighting. The prompt listed the functions to write, and
+  the list was complete with respect to itself; nothing asked "what will the
+  next caller still have to write?". A spec that names the module seams should
+  also name each published operation's owner, including the ones only the CLI
+  slice will call.
+- **Guard:** when reviewing a "core, CLI later" slice, walk the CLI surface in
+  the spec (§7 here) verb by verb and ask which module each step lands in. Any
+  step with no owner is a finding at core-review time, not at CLI-review time.
