@@ -2,7 +2,9 @@
 
 use clap::Subcommand;
 
-use crate::cli::{print_json, print_table, prod_hint, tenant_for};
+use crate::cli::{
+    confirm_destructive, print_json, print_table, prod_hint, prompt_available, tenant_for,
+};
 use crate::config::{self, ProjectConfig, TenantTheme};
 use crate::scripts::{self as script, Namespace};
 use crate::{Error, Result};
@@ -1541,18 +1543,10 @@ fn select_synced(
 /// Interactive yes/no (default no). `Some(answer)` if asked; `None` if there's
 /// no terminal to prompt on (caller falls back to non-interactive behaviour).
 fn confirm_overwrite(prompt: &str) -> Result<Option<bool>> {
-    use inquire::{Confirm, error::InquireError};
-    if crate::cli::prompting_disabled() {
+    if !prompt_available() {
         return Ok(None);
     }
-    match Confirm::new(prompt).with_default(false).prompt() {
-        Ok(b) => Ok(Some(b)),
-        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
-            Ok(Some(false))
-        }
-        Err(InquireError::NotTTY) => Ok(None),
-        Err(e) => Err(Error::Config(format!("confirm: {e}"))),
-    }
+    confirm_destructive("script overwrite", prompt, "--force").map(Some)
 }
 
 async fn push_one(tenant: &str, ns: &Namespace, name: &str, force: bool, yes: bool) -> Result<()> {

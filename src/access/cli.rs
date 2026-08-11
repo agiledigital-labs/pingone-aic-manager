@@ -10,11 +10,12 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::access::ops::{self, Changes};
+use crate::access::ops::{self, ChangeBasis, Changes};
 use crate::access::spec::{self, RuleEdit, RuleSpec, RuleView, TouchedIndices, WarningScope};
 use crate::access::{api, spec::Findings};
 use crate::cli::{
-    WriteOk, ensure_prod_confirmed, print_json, print_table, prompting_disabled, tenant_for,
+    WriteOk, confirm_destructive, ensure_prod_confirmed, print_json, print_table, prompt_available,
+    tenant_for,
 };
 use crate::config::ProjectConfig;
 use crate::{Error, Result};
@@ -138,7 +139,16 @@ enum Amendment {
     Add(RuleSpec),
     Edit { index: usize, edit: RuleEdit },
     Remove(Vec<usize>),
-    Apply(PathBuf),
+    Apply(Value),
+}
+
+#[derive(Debug)]
+struct Plan {
+    backup: bool,
+    after: Value,
+    touched: TouchedIndices,
+    summary: Changes,
+    needs_confirm: bool,
 }
 
 pub async fn run(command: AccessCommand) -> Result<()> {
@@ -211,7 +221,13 @@ pub async fn run(command: AccessCommand) -> Result<()> {
         AccessCommand::Apply {
             file,
             write: options,
-        } => write(Amendment::Apply(file), options).await,
+        } => {
+            write(
+                Amendment::Apply(serde_json::from_slice(&fs::read(file)?)?),
+                options,
+            )
+            .await
+        }
     }
 }
 
@@ -228,22 +244,22 @@ async fn list(options: AccessListArgs) -> Result<()> {
     let duplicates_only = duplicates;
     let tenant = tenant_for(tenant_arg)?;
     let document = api::get_access(&tenant).await?;
-    let roles = api::role_index(&tenant).await.ok();
+    let roles = resolve_roles(&tenant).await;
     let findings = spec::validate_document(&document, roles.as_ref(), WarningScope::All);
     let warning_count = findings.warnings.len();
-    report_errors_only(findings, warnings)?;
+    report_read_findings(&findings, warnings)?;
     let rules = ops::rules(&document)?;
     let entries = rule_entries(rules)
         .into_iter()
         .filter(|entry| {
             role.as_deref()
-                .is_none_or(|role| comma_field_contains(entry.rule, "roles", role))
+                .is_none_or(|role| spec::comma_list_contains(entry.rule, "roles", role))
                 && pattern.as_deref().is_none_or(|pattern| {
                     entry.rule.get("pattern").and_then(Value::as_str) == Some(pattern)
                 })
                 && method
                     .as_deref()
-                    .is_none_or(|method| comma_field_contains(entry.rule, "methods", method))
+                    .is_none_or(|method| spec::comma_list_contains(entry.rule, "methods", method))
                 && (!duplicates_only || entry.duplicate)
         })
         .collect::<Vec<_>>();
@@ -269,9 +285,10 @@ async fn show(address: &str, tenant_arg: Option<String>, json_output: bool) -> R
     let tenant = tenant_for(tenant_arg)?;
     let document = api::get_access(&tenant).await?;
     let rules = ops::rules(&document)?;
+    let duplicates = ops::duplicate_flags(rules);
     let entries = spec::resolve_rule_address(rules, address)?
         .into_iter()
-        .map(|index| RuleEntry::new(index, &rules[index], duplicate_at(rules, index)))
+        .map(|index| RuleEntry::new(index, &rules[index], duplicates[index]))
         .collect::<Vec<_>>();
 
     if json_output {
@@ -296,114 +313,189 @@ async fn get(tenant_arg: Option<String>, out: Option<PathBuf>) -> Result<()> {
     };
     let mut bytes = serde_json::to_vec_pretty(&document)?;
     bytes.push(b'\n');
-    fs::write(&path, bytes)?;
+    ProjectConfig::write_gitignore()?;
+    write_private_file(&path, &bytes, false)?;
     println!("wrote config/access to {}", path.display());
     Ok(())
 }
 
 async fn write(amendment: Amendment, options: AccessWriteArgs) -> Result<()> {
-    let tenant = tenant_for(options.tenant)?;
-    let permission = ensure_prod_confirmed(&tenant, options.yes)?;
-    ensure_confirmation_available(options.yes, options.dry_run, prompting_disabled())?;
-    print_disjunction_warning(&amendment);
-
-    let before = api::get_access(&tenant).await?;
-    let backup = if options.dry_run || options.no_backup {
+    let tenant = tenant_for(options.tenant.clone())?;
+    let permission = if options.dry_run {
         None
     } else {
+        Some(ensure_prod_confirmed(&tenant, options.yes)?)
+    };
+    ensure_confirmation_available(&options)?;
+
+    let before = api::get_access(&tenant).await?;
+    let plan = plan(&before, amendment, &options)?;
+    let backup = if plan.backup {
         let path = backup_document(&tenant, &before, Utc::now())?;
         println!("backup: {}", path.display());
         Some(path)
+    } else {
+        None
     };
 
     spec::check_digest(options.if_digest.as_deref(), &before)?;
-    let (after, touched) = apply_amendment(&before, amendment)?;
-    let roles = api::role_index(&tenant).await.ok();
-    let warning_scope = touched
-        .as_ref()
-        .map_or(WarningScope::All, WarningScope::Touched);
-    report_findings(spec::validate_document(
-        &after,
-        roles.as_ref(),
-        warning_scope,
-    ))?;
+    let roles = resolve_roles(&tenant).await;
+    report_write_findings(
+        spec::validate_document(
+            &plan.after,
+            roles.as_ref(),
+            WarningScope::Touched(&plan.touched),
+        ),
+        &plan.touched,
+    )?;
 
-    let summary = ops::changes(&before, &after, touched.as_ref());
-    println!("{}", render_changes(&summary));
-    if summary.changed.is_empty() {
+    println!("{}", render_changes(&plan.summary));
+    print_disjunction_warning(&plan.summary);
+    if plan.summary.changed.is_empty() {
         println!("config/access is unchanged");
         return Ok(());
     }
-    if options.dry_run {
+    let Some(permission) = permission else {
+        debug_assert!(options.dry_run);
         return Ok(());
-    }
-    if !options.yes && !confirm_write(&tenant)? {
+    };
+    if plan.needs_confirm
+        && !confirm_destructive(
+            "config/access changes",
+            &format!("Write these config/access changes to tenant {tenant:?}?"),
+            "--yes",
+        )?
+    {
         return Err(Error::Config("config/access was not changed".into()));
     }
 
-    write_confirmed(&permission, after)
+    write_confirmed(permission, plan.after)
         .await
         .map_err(|error| confirmed_write_error(error, backup.as_deref()))?;
     println!("updated config/access on tenant {tenant}");
     Ok(())
 }
 
-fn apply_amendment(
-    before: &Value,
-    amendment: Amendment,
-) -> Result<(Value, Option<TouchedIndices>)> {
-    match amendment {
+fn plan(before: &Value, amendment: Amendment, options: &AccessWriteArgs) -> Result<Plan> {
+    let (after, exact_touched) = match amendment {
         Amendment::Add(rule) => {
-            ops::append(before, rule).map(|result| (result.document, Some(result.touched)))
+            let transformed = ops::append(before, rule)?;
+            (transformed.document, Some(transformed.touched))
         }
-        Amendment::Edit { index, edit } => ops::replace_at(before, index, edit)
-            .map(|result| (result.document, Some(result.touched))),
+        Amendment::Edit { index, edit } => {
+            let transformed = ops::replace_at(before, index, edit)?;
+            (transformed.document, Some(transformed.touched))
+        }
         Amendment::Remove(indices) => {
-            ops::remove_at(before, &indices).map(|result| (result.document, Some(result.touched)))
+            let transformed = ops::remove_at(before, &indices)?;
+            (transformed.document, Some(transformed.touched))
         }
-        Amendment::Apply(path) => Ok((serde_json::from_slice(&fs::read(path)?)?, None)),
+        Amendment::Apply(mut document) => {
+            normalize_apply_id(&mut document)?;
+            (document, None)
+        }
+    };
+    let summary = match exact_touched.as_ref() {
+        Some(touched) => ops::changes(before, &after, ChangeBasis::Touched(touched)),
+        None => ops::changes(before, &after, ChangeBasis::Multiset),
+    };
+    let touched = summary.touched.clone();
+    let needs_confirm = !summary.changed.is_empty() && !options.dry_run && !options.yes;
+    Ok(Plan {
+        backup: !options.dry_run && !options.no_backup,
+        after,
+        touched,
+        summary,
+        needs_confirm,
+    })
+}
+
+fn normalize_apply_id(document: &mut Value) -> Result<()> {
+    let Some(object) = document.as_object_mut() else {
+        return Ok(());
+    };
+    match object.get("_id") {
+        None => {
+            object.insert("_id".into(), Value::String("access".into()));
+            Ok(())
+        }
+        Some(Value::String(id)) if id == "access" => Ok(()),
+        Some(other) => Err(Error::Config(format!(
+            "config/access `_id` must be \"access\", got {other}"
+        ))),
     }
 }
 
-fn print_disjunction_warning(amendment: &Amendment) {
-    match amendment {
-        Amendment::Add(_) => {
-            eprintln!("Rules are OR-ed: this can only grant access, never restrict it.");
+async fn resolve_roles(tenant: &str) -> Option<spec::RoleIndex> {
+    match api::role_index(tenant).await {
+        Ok(roles) => Some(roles),
+        Err(error) => {
+            eprintln!(
+                "warning: could not resolve roles ({error}); role references were not checked"
+            );
+            None
         }
-        Amendment::Edit { .. } | Amendment::Remove(_) => eprintln!(
+    }
+}
+
+fn print_disjunction_warning(summary: &Changes) {
+    if summary.changed.iter().any(|change| change.before.is_some()) {
+        eprintln!(
             "Rules are OR-ed, so narrowing or removing a rule is the only way to revoke access — this can lock operators out."
-        ),
-        Amendment::Apply(_) => {}
+        );
+    } else if !summary.changed.is_empty() {
+        eprintln!("Rules are OR-ed: this can only grant access, never restrict it.");
     }
 }
 
-fn report_findings(findings: Findings) -> Result<()> {
-    report_errors_only(findings, true)
-}
-
-/// Errors always speak; warnings only when `spell_out_warnings`.
-///
-/// A read verb over a document it did not author has to count rather than
-/// enumerate — see [`AccessListArgs::warnings`]. Write verbs pass `true`, because
-/// their warnings are already scoped to the rules they touched.
-fn report_errors_only(findings: Findings, spell_out_warnings: bool) -> Result<()> {
-    if spell_out_warnings {
-        for warning in &findings.warnings {
-            eprintln!("warning: {}", render_finding(warning));
-        }
+fn report_write_findings(findings: Findings, touched: &TouchedIndices) -> Result<()> {
+    for warning in &findings.warnings {
+        eprintln!("warning: {}", render_finding(warning));
     }
     if findings.errors.is_empty() {
         return Ok(());
     }
+    let has_untouched_rule_error = findings.errors.iter().any(|finding| {
+        finding
+            .index
+            .is_some_and(|index| !touched.after().contains(&index))
+    });
     let messages = findings
         .errors
         .into_iter()
         .map(|finding| format!("- {}", render_finding(&finding)))
         .collect::<Vec<_>>()
         .join("\n");
+    let escape = if has_untouched_rule_error {
+        "\nUntouched invalid rules are still fatal. Run `aic access list` for their indices and digests, then repair them with `aic access edit`, remove them with `aic access rm`, or replace the document with `aic access apply`."
+    } else {
+        ""
+    };
     Err(Error::Config(format!(
-        "config/access validation failed:\n{messages}"
+        "config/access validation failed:\n{messages}{escape}"
     )))
+}
+
+/// Reads report malformed foreign rules but remain usable for recovery.
+fn report_read_findings(findings: &Findings, spell_out_warnings: bool) -> Result<()> {
+    if spell_out_warnings {
+        for warning in &findings.warnings {
+            eprintln!("warning: {}", render_finding(warning));
+        }
+    }
+    for error in &findings.errors {
+        eprintln!("error: {}", render_finding(error));
+    }
+    if findings
+        .errors
+        .iter()
+        .any(|finding| finding.index.is_none())
+    {
+        return Err(Error::Config(
+            "config/access document shape is invalid; rules cannot be rendered safely".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn render_finding(finding: &spec::Finding) -> String {
@@ -413,37 +505,18 @@ fn render_finding(finding: &spec::Finding) -> String {
     )
 }
 
-fn ensure_confirmation_available(yes: bool, dry_run: bool, disabled: bool) -> Result<()> {
-    if !yes && !dry_run && disabled {
+fn ensure_confirmation_available(options: &AccessWriteArgs) -> Result<()> {
+    if !options.yes && !options.dry_run && !prompt_available() {
         return Err(Error::Config(
-            "config/access confirmation disabled by --no-prompt; pass --yes to write".into(),
+            "config/access changes require confirmation; pass --yes when no terminal is available"
+                .into(),
         ));
     }
     Ok(())
 }
 
-fn confirm_write(tenant: &str) -> Result<bool> {
-    use inquire::{Confirm, error::InquireError};
-    match Confirm::new(&format!(
-        "Write these config/access changes to tenant {tenant:?}?"
-    ))
-    .with_default(false)
-    .prompt()
-    {
-        Ok(answer) => Ok(answer),
-        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(false),
-        Err(InquireError::NotTTY) => Err(Error::Config(
-            "config/access changes require confirmation; pass --yes when no terminal is available"
-                .into(),
-        )),
-        Err(error) => Err(Error::Config(format!(
-            "confirm config/access changes: {error}"
-        ))),
-    }
-}
-
 async fn write_confirmed(
-    permission: &WriteOk<'_>,
+    permission: WriteOk<'_>,
     after: Value,
 ) -> std::result::Result<(), api::ConfirmedWriteError> {
     api::put_access_confirmed(permission.tenant, after, permission.confirmed_prod).await
@@ -485,15 +558,27 @@ fn compact_json(value: &Value) -> String {
 }
 
 fn backup_document(tenant: &str, document: &Value, now: DateTime<Utc>) -> Result<PathBuf> {
-    ProjectConfig::write_gitignore()?;
-    let path = ProjectConfig::dir()
-        .join("backups")
-        .join(backup_filename(tenant, now));
-    write_backup(&path, document)?;
+    let path = ProjectConfig::dir().join("backups").join(backup_filename(
+        tenant,
+        now,
+        uuid::Uuid::new_v4(),
+    ));
+    let write = || -> Result<()> {
+        ProjectConfig::write_gitignore()?;
+        let mut bytes = serde_json::to_vec_pretty(document)?;
+        bytes.push(b'\n');
+        write_private_file(&path, &bytes, true)
+    };
+    write().map_err(|error| {
+        Error::Config(format!(
+            "could not create config/access backup {}: {error}; nothing was written to the tenant; pass --no-backup to proceed without a backup",
+            path.display()
+        ))
+    })?;
     Ok(path)
 }
 
-fn backup_filename(tenant: &str, now: DateTime<Utc>) -> String {
+fn backup_filename(tenant: &str, now: DateTime<Utc>, nonce: uuid::Uuid) -> String {
     let tenant = tenant
         .chars()
         .map(|character| {
@@ -504,20 +589,25 @@ fn backup_filename(tenant: &str, now: DateTime<Utc>) -> String {
             }
         })
         .collect::<String>();
-    format!("access-{tenant}-{}.json", now.format("%Y%m%dT%H%M%SZ"))
+    format!(
+        "access-{tenant}-{}-{nonce}.json",
+        now.format("%Y%m%dT%H%M%SZ")
+    )
 }
 
-fn write_backup(path: &Path, document: &Value) -> Result<()> {
+fn write_private_file(path: &Path, bytes: &[u8], exclusive: bool) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    serde_json::to_writer_pretty(&mut file, document)?;
-    file.write_all(b"\n")?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).mode(0o600);
+    if exclusive {
+        options.create_new(true);
+    } else {
+        options.create(true).truncate(true);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
@@ -555,24 +645,12 @@ impl<'a> RuleEntry<'a> {
 }
 
 fn rule_entries(rules: &[Value]) -> Vec<RuleEntry<'_>> {
+    let duplicates = ops::duplicate_flags(rules);
     rules
         .iter()
         .enumerate()
-        .map(|(index, rule)| RuleEntry::new(index, rule, duplicate_at(rules, index)))
+        .map(|(index, rule)| RuleEntry::new(index, rule, duplicates[index]))
         .collect()
-}
-
-fn duplicate_at(rules: &[Value], index: usize) -> bool {
-    rules
-        .iter()
-        .enumerate()
-        .any(|(other, rule)| other != index && rule == &rules[index])
-}
-
-fn comma_field_contains(rule: &Value, field: &str, needle: &str) -> bool {
-    rule.get(field)
-        .and_then(Value::as_str)
-        .is_some_and(|value| value.split(',').map(str::trim).any(|item| item == needle))
 }
 
 fn print_rule_table(entries: &[RuleEntry<'_>]) {
@@ -602,27 +680,109 @@ mod tests {
 
     use super::*;
 
+    fn options(yes: bool, dry_run: bool, no_backup: bool) -> AccessWriteArgs {
+        AccessWriteArgs {
+            if_digest: None,
+            yes,
+            dry_run,
+            no_backup,
+            tenant: None,
+        }
+    }
+
     #[test]
-    fn no_prompt_without_yes_is_refused() {
-        let error = ensure_confirmation_available(false, false, true).unwrap_err();
+    fn confirmation_gate_is_wired_to_the_full_prompt_predicate() {
+        let source = include_str!("cli.rs");
         assert!(
-            matches!(error, Error::Config(message) if message.contains("--no-prompt") && message.contains("--yes"))
+            source.contains("!options.yes && !options.dry_run && !prompt_available()"),
+            "the access pre-fetch gate must use prompt_available()"
         );
-        assert!(ensure_confirmation_available(false, true, true).is_ok());
-        assert!(ensure_confirmation_available(true, false, true).is_ok());
+        assert!(
+            !source.contains(&["prompting", "_disabled"].concat()),
+            "the weaker --no-prompt-only predicate must not be wired into access"
+        );
     }
 
     #[test]
     fn out_of_range_index_names_the_valid_range() {
-        let error = apply_amendment(
+        let error = plan(
             &crate::access::six_rule_fixture(),
             Amendment::Edit {
                 index: 6,
                 edit: RuleEdit::default(),
             },
+            &options(true, false, false),
         )
         .unwrap_err();
         assert!(matches!(error, Error::Config(message) if message.contains("0..=5")));
+    }
+
+    #[test]
+    fn plans_make_backup_confirmation_and_write_decisions_explicit() {
+        let before = crate::access::six_rule_fixture();
+        for (name, amendment, options, backup, changed, needs_confirm) in [
+            (
+                "dry run",
+                Amendment::Remove(vec![1]),
+                options(false, true, false),
+                false,
+                true,
+                false,
+            ),
+            (
+                "interactive write",
+                Amendment::Remove(vec![1]),
+                options(false, false, false),
+                true,
+                true,
+                true,
+            ),
+            (
+                "yes write without backup",
+                Amendment::Remove(vec![1]),
+                options(true, false, true),
+                false,
+                true,
+                false,
+            ),
+            (
+                "unchanged apply",
+                Amendment::Apply(before.clone()),
+                options(true, false, false),
+                true,
+                false,
+                false,
+            ),
+        ] {
+            let plan = plan(&before, amendment, &options).unwrap();
+            assert_eq!(plan.backup, backup, "{name}");
+            assert_eq!(!plan.summary.changed.is_empty(), changed, "{name}");
+            assert_eq!(plan.needs_confirm, needs_confirm, "{name}");
+        }
+    }
+
+    #[test]
+    fn apply_normalises_or_rejects_the_document_id() {
+        let before = crate::access::six_rule_fixture();
+        let mut missing = before.clone();
+        missing.as_object_mut().unwrap().remove("_id");
+        let planned = plan(
+            &before,
+            Amendment::Apply(missing),
+            &options(true, true, false),
+        )
+        .unwrap();
+        assert_eq!(planned.after["_id"], "access");
+
+        let mut wrong = before.clone();
+        wrong["_id"] = json!("authentication");
+        let error = plan(
+            &before,
+            Amendment::Apply(wrong),
+            &options(true, true, false),
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::Config(message) if message.contains("must be \"access\"")));
     }
 
     #[test]
@@ -646,6 +806,7 @@ mod tests {
                 },
             ],
             unchanged: 7,
+            touched: TouchedIndices::default(),
             positions_approximate: false,
         };
 
@@ -676,12 +837,21 @@ mod tests {
     #[test]
     fn backup_filename_is_utc_and_writer_sets_mode_0600() {
         let now = Utc.with_ymd_and_hms(2026, 8, 11, 4, 5, 6).unwrap();
-        let filename = backup_filename("sandbox", now);
-        assert_eq!(filename, "access-sandbox-20260811T040506Z.json");
+        let first_nonce = uuid::Uuid::from_u128(1);
+        let second_nonce = uuid::Uuid::from_u128(2);
+        let filename = backup_filename("sandbox", now, first_nonce);
+        assert_eq!(
+            filename,
+            "access-sandbox-20260811T040506Z-00000000-0000-0000-0000-000000000001.json"
+        );
+        assert_ne!(filename, backup_filename("sandbox", now, second_nonce));
 
         let dir = std::env::temp_dir().join(format!("aic-access-test-{}", uuid::Uuid::new_v4()));
         let path = dir.join(filename);
-        write_backup(&path, &json!({"_id": "access", "configs": []})).unwrap();
+        let mut bytes =
+            serde_json::to_vec_pretty(&json!({"_id": "access", "configs": []})).unwrap();
+        bytes.push(b'\n');
+        write_private_file(&path, &bytes, true).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

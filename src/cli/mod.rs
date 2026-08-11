@@ -796,13 +796,33 @@ fn should_prompt(no_prompt: bool, stdin_tty: bool, stderr_tty: bool, tty_openabl
     !no_prompt && stdin_tty && stderr_tty && tty_openable
 }
 
-fn prompt_available() -> bool {
+pub(crate) fn prompt_available() -> bool {
     should_prompt(
         prompting_disabled(),
         std::io::stdin().is_terminal(),
         std::io::stderr().is_terminal(),
         std::fs::File::open("/dev/tty").is_ok(),
     )
+}
+
+/// Ask for confirmation of a destructive action, failing fast when prompting
+/// is unavailable. Callers name the explicit flag that bypasses the prompt.
+pub(crate) fn confirm_destructive(subject: &str, prompt: &str, escape_flag: &str) -> Result<bool> {
+    use inquire::{Confirm, error::InquireError};
+
+    if !prompt_available() {
+        return Err(Error::Config(format!(
+            "{subject} requires confirmation; pass {escape_flag} when no terminal is available"
+        )));
+    }
+    match Confirm::new(prompt).with_default(false).prompt() {
+        Ok(answer) => Ok(answer),
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(false),
+        Err(InquireError::NotTTY) => Err(Error::Config(format!(
+            "{subject} requires confirmation; pass {escape_flag} when no terminal is available"
+        ))),
+        Err(error) => Err(Error::Config(format!("confirm {subject}: {error}"))),
+    }
 }
 
 fn ensure_prompt_available() -> Result<()> {
@@ -1243,6 +1263,8 @@ pub(crate) fn redact(token: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use super::*;
 
     fn row(cells: &[&str]) -> Vec<String> {
@@ -1398,6 +1420,45 @@ mod tests {
         assert!(!should_prompt(false, false, true, true));
         assert!(!should_prompt(false, true, false, true));
         assert!(!should_prompt(false, true, true, false));
+    }
+
+    #[test]
+    fn repo_hygiene_has_no_feature_local_destructive_prompts() {
+        fn rust_sources(dir: &Path) -> Vec<PathBuf> {
+            let mut found = Vec::new();
+            for entry in std::fs::read_dir(dir).expect("read source directory") {
+                let path = entry.expect("read source entry").path();
+                if path.is_dir() {
+                    found.extend(rust_sources(&path));
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    found.push(path);
+                }
+            }
+            found
+        }
+
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offences = Vec::new();
+        for path in rust_sources(&src) {
+            let relative = path.strip_prefix(&src).expect("source below src root");
+            if relative.starts_with("cli") || relative.starts_with("tui") {
+                continue;
+            }
+            for (line, source) in std::fs::read_to_string(&path)
+                .expect("read Rust source")
+                .lines()
+                .enumerate()
+            {
+                if source.contains("Confirm::new") {
+                    offences.push(format!("{}:{}", path.display(), line + 1));
+                }
+            }
+        }
+        assert!(
+            offences.is_empty(),
+            "Confirm::new must be centralized under src/cli or src/tui:\n{}",
+            offences.join("\n")
+        );
     }
 
     #[test]

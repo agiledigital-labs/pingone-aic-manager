@@ -430,11 +430,27 @@ Before a write, the fetched document is saved with mode 0600 at
 backup. Writes prompt after showing the summary unless `--yes` is supplied;
 global `--no-prompt` therefore requires `--yes` for a real write.
 
+The backup is taken **first**, before validation and before the prompt — so a
+refused validation or a declined confirmation still leaves a backup file behind.
+That is deliberate: the backup exists to survive a write that goes wrong, not to
+record that one happened. Backups are never pruned; delete them yourself.
+
+**`aic access` writes are not in the undo log.** Unlike `aic managed`, which
+tells you to undo from the TUI history overlay, the undo log is TUI-only — the
+backup file is the entire safety net here, which is why it is taken before
+anything else and why its path is printed.
+
 `aic access get --out access.json`, edit the file, then
 `aic access apply access.json` is the guarded hand-edit workflow. Restore a
 backup through the same path:
-`aic access apply .aic/backups/access-<tenant>-<UTC>.json` validates,
-summarizes, backs up the current document, and then restores the saved one.
+`aic access apply .aic/backups/access-<tenant>-<UTC>.json` backs up the current
+document, validates, summarizes, and then restores the saved one.
+
+`--role`, `--pattern` and `--method` are **exact** matches, not globs or
+substrings: `--pattern managed/alpha_user` finds nothing on a tenant whose rules
+say `managed/alpha_user/*`. `--role` and `--method` match one entry of the
+comma-separated list, so `--method read` finds a rule whose `methods` is
+`read,query`.
 
 ---
 
