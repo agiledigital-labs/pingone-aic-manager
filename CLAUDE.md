@@ -103,7 +103,9 @@ bytes) locally. Before pushing a local change:
 
 Scripts have **no `_rev`** anyway (verified 2026-05-17 — see
 `docs/api/04-scripts.md`), so this is the only viable algorithm. The same rule
-applies to ESV variables (also no `_rev`).
+applies to ESV variables and to `config/access` (both also have no `_rev` —
+`docs/api/19-config-access.md`), where the snapshot is of the **whole document**
+because the API has no per-rule endpoint.
 
 For resources that DO have `_rev`, use content snapshots for the same "revert
 detection" reason. Only send `If-Match: <_rev>` for API families verified to
@@ -158,6 +160,13 @@ rule or a doc row.
 - **Don't send `-encrypted` fields back on OAuth2 client `PUT`.** They contain
   cluster-local AES-wrapped values; round-tripping corrupts secrets. Strip any
   key ending in `-encrypted` from the body. (`docs/api/05-oauth2-oidc.md`.)
+- **Don't rebuild a `config/access` rule from typed fields.** `actions` is
+  **optional** — six of the sandbox's 65 rules omit the key — so a round-trip
+  through a struct hands them an `actions` they never had, rewriting rules
+  nobody asked you to touch. Mutate the parsed `Value` in place
+  (`src/access/ops.rs`). And remember the rules are a **disjunction**: appending
+  can only grant, so any narrowing has to edit or remove the rule that grants
+  (`docs/api/19-config-access.md`).
 - **Don't trust `creationDate` / `lastModifiedDate` types are consistent.**
   Scripts use epoch-ms ints; ESVs use ISO-8601 strings. Don't assume.
 - **Don't try to create new realms.** AIC only allows `alpha` + `bravo` + root.
@@ -209,6 +218,7 @@ worked example.
 | IDM sync mappings (browse `config/sync` mappings, reconcile)                                                                           | `src/mappings/` (TUI-only; the Mappings tab) — script pull/push for embedded mapping scripts is `aic script … sync/<mapping>.<slotpath>` via `src/scripts/sync_mapping.rs`                                                                                                        | `docs/api/16-sync-mappings.md`                               |
 | Journeys (auth trees: list/pull/push/delete, node-type introspection)                                                                  | `src/journey/` (CLI only — no TUI tab yet)                                                                                                                                                                                                                                        | `docs/api/09-journeys.md`                                    |
 | IDM internal roles (caller-chosen ids, role CRUD, managed-object privileges)                                                           | `src/roles/` (CLI only — no TUI tab)                                                                                                                                                                                                                                              | `docs/api/18-internal-roles.md`                              |
+| IDM authorization rules (`config/access`: list/add/edit/rm/apply)                                                                      | `src/access/` (CLI only — no TUI tab yet) — `spec.rs` holds the input specs, structural validation and the rule/document digests that address a rule; `ops.rs` the in-place `Value` transforms that both `cli.rs` and a future tab call                                                | `docs/api/19-config-access.md`                               |
 | Trusted JWT Issuer setup (per-tenant signing key, issuer CRUD/show)                                                                    | `src/jwtbearer/` (CLI only — no TUI tab yet)                                                                                                                                                                                                                                      | `docs/api/17-jwt-bearer-user-tokens.md`                      |
 | Script sync (pull/push/sync/watch/diff)                                                                                                | `src/scripts/` (one module per `Kind`: `am`, `idm`, `schedule`, `managed_hooks`, `sync_mapping`)                                                                                                                                                                                  | `docs/api/04-scripts.md`, `11`, `12`, `13`, `16`             |
 | Script workspace templates (lint/types)                                                                                                | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs`                                                                                                                                                                                                      | `docs/api/12-script-bindings-matrix.md`                      |
