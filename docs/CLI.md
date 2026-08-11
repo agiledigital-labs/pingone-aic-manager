@@ -115,11 +115,12 @@ stdin only when --client-secret-stdin is supplied; omitting it sends a public-
 client request with no client credential. Secrets are never accepted as argv or
 environment values. `--client-auth` accepts `client-secret-post` (the default)
 and `client-secret-basic`. Set it to match the OAuth client's
-`tokenEndpointAuthMethod` if you want the request to be strictly conformant;
-AM was observed accepting either method regardless (see
-`docs/api/17-jwt-bearer-user-tokens.md`), so a mismatch is not known to fail. `private-key-jwt` is reserved for a future extension
-and is not accepted yet. The command refuses production-themed tenants and
-requires a key from aic jwt-bearer setup.
+`tokenEndpointAuthMethod` if you want the request to be strictly conformant; AM
+was observed accepting either method regardless (see
+`docs/api/17-jwt-bearer-user-tokens.md`), so a mismatch is not known to fail.
+`private-key-jwt` is reserved for a future extension and is not accepted yet.
+The command refuses production-themed tenants and requires a key from aic
+jwt-bearer setup.
 
 Default output includes the user, client, granted scope, expiry, signing kid,
 and a redacted token. --token prints only the bare access token.
@@ -365,9 +366,9 @@ aic journey node-template <nodeType> [--realm alpha]   # a starter node config (
 
 ## `aic role` — IDM internal roles
 
-Internal roles are tenant-global. Their `_id`, rather than their display
-`name`, is what IDM authorization configuration references. Creating through
-this command makes the caller-chosen id the default name as well.
+Internal roles are tenant-global. Their `_id`, rather than their display `name`,
+is what IDM authorization configuration references. Creating through this
+command makes the caller-chosen id the default name as well.
 
 ```bash
 aic role list [--json]
@@ -420,11 +421,11 @@ use pull → edit → push instead.
 
 Create writes `tokenEndpointAuthMethod: client_secret_post` explicitly so the
 result works with `aic auth`'s default. That is deliberately **not** AM's own
-template default (`client_secret_basic`), nor the method RFC 6749 §2.3.1
-prefers — it is chosen so the two commands agree without a flag. Override it with
+template default (`client_secret_basic`), nor the method RFC 6749 §2.3.1 prefers
+— it is chosen so the two commands agree without a flag. Override it with
 `--token-endpoint-auth-method <value>`; the value is checked against the live
-tenant schema when the schema exposes an enum. A value supplied by `--from`
-wins over the create default, while an explicit flag overrides the seed.
+tenant schema when the schema exposes an enum. A value supplied by `--from` wins
+over the create default, while an explicit flag overrides the seed.
 
 For less-common settings, pass an OAuth client JSON object with `--from`; flags
 override its values while missing fields retain the live tenant template.
@@ -539,6 +540,7 @@ aic script sync [<ref>] [--resolve local|remote] # reconcile: push local-only, p
 aic script watch                                # auto-push each .cjs you save (Ctrl-C to stop)
 aic script status [<ref>]                       # in sync / modified / remote / conflict
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
+aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```
 
 - `create`, `copy`, and `delete` apply only to standalone AM scripts, IDM
@@ -573,6 +575,35 @@ aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
   (`aic script diff bravo/Foo | delta`). Default compares local vs tenant;
   `--local-vs-snapshot` shows your edits since the last pull,
   `--snapshot-vs-remote` shows tenant drift since you pulled.
+
+- **`who`** answers "who last touched this, and when?" — the recurring question
+  when a script changed and nobody remembers doing it. It resolves AM's
+  principal DNs (`id=<uuid>,ou=user,ou=am-config`) to names, so the output reads
+  `by David Balmain` rather than a DN.
+
+  Four answers are honest rather than failures, and each is worded distinctly:
+
+  - **`unknown (AM recorded no author)`** — AM stores the _string_ `"null"` for
+    scripts it shipped or imported. Over half the scripts on a mature tenant
+    look like this, and the author being unknown says nothing about the date,
+    which is often present.
+  - **`service account "<name>"`** — including every write `aic` itself makes. A
+    follow-up line says so explicitly: a service account is a shared credential,
+    so it identifies the credential and never which operator used it.
+  - **`dsameuser (AM-internal account — not readable)`** — AM's own principal;
+    the lookup is refused with 403 by design.
+  - **`<id> (deleted principal)`** — the account that made the change is gone.
+
+  **Only AM scripts record authorship at all.** IDM config objects (`endpoint/`,
+  `schedule/`, `managed/`, `sync/`) store neither an author nor a revision, so
+  `who` says so and points at the logs instead of guessing.
+
+- **`who --history`** lists earlier writers from the `am-access` logs, since the
+  fields only ever name the _latest_ one. It needs log API keys (see
+  `aic logs`). `--minutes` defaults to 60 and is capped at **1440 — a server
+  limit, not ours**: the log API rejects any query spanning more than a day.
+  Events are retained about 30 days, so anything older is still there but needs
+  the window placed further back rather than widened.
 
 > After upgrading the binary, restart the agent (`aic session stop` then
 > `aic session login`) so it loads new `Accept-API-Version` headers used by

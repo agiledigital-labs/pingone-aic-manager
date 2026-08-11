@@ -20,6 +20,7 @@
 //! changes workspace state that the Scripts tab displays.
 
 pub mod am;
+pub mod authorship;
 pub mod cli;
 pub mod idm;
 pub mod managed_hooks;
@@ -102,6 +103,18 @@ impl Kind {
     /// than a script slot embedded in a shared config document.
     pub fn standalone(self) -> bool {
         matches!(self, Kind::Am | Kind::IdmEndpoint | Kind::IdmSchedule)
+    }
+
+    /// Whether the store records who last wrote the script.
+    ///
+    /// **Only AM does.** Verified 2026-08-10 three ways (a whole-collection key
+    /// scan, individual reads, and a recursive scalar-path search): every IDM
+    /// config object — `config/endpoint`, `config/schedule`, `config/managed`,
+    /// `config/sync` — carries no authorship field and no `_rev` at all. There
+    /// is no fallback to invent, so `aic script who` says so plainly and points
+    /// at the log route instead of guessing. See `docs/api/04-scripts.md`.
+    pub fn has_authorship(self) -> bool {
+        matches!(self, Kind::Am)
     }
 
     /// Build a fresh wire config and its matching remote identity.
