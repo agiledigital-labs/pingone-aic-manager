@@ -218,7 +218,7 @@ worked example.
 | IDM sync mappings (browse `config/sync` mappings, reconcile)                                                                           | `src/mappings/` (TUI-only; the Mappings tab) — script pull/push for embedded mapping scripts is `aic script … sync/<mapping>.<slotpath>` via `src/scripts/sync_mapping.rs`                                                                                                        | `docs/api/16-sync-mappings.md`                               |
 | Journeys (auth trees: list/pull/push/delete, node-type introspection)                                                                  | `src/journey/` (CLI only — no TUI tab yet)                                                                                                                                                                                                                                        | `docs/api/09-journeys.md`                                    |
 | IDM internal roles (caller-chosen ids, role CRUD, managed-object privileges)                                                           | `src/roles/` (CLI only — no TUI tab)                                                                                                                                                                                                                                              | `docs/api/18-internal-roles.md`                              |
-| IDM authorization rules (`config/access`: list/add/edit/rm/apply)                                                                      | `src/access/` (CLI only — no TUI tab yet) — `spec.rs` holds the input specs, structural validation and the rule/document digests that address a rule; `ops.rs` the in-place `Value` transforms that both `cli.rs` and a future tab call                                                | `docs/api/19-config-access.md`                               |
+| IDM authorization rules (`config/access`: list/add/edit/rm/apply)                                                                      | `src/access/` (CLI only — no TUI tab yet) — `spec.rs` holds the input specs, structural validation and the rule/document digests that address a rule; `ops.rs` the in-place `Value` transforms that both `cli.rs` and a future tab call                                           | `docs/api/19-config-access.md`                               |
 | Trusted JWT Issuer setup (per-tenant signing key, issuer CRUD/show)                                                                    | `src/jwtbearer/` (CLI only — no TUI tab yet)                                                                                                                                                                                                                                      | `docs/api/17-jwt-bearer-user-tokens.md`                      |
 | Script sync (pull/push/sync/watch/diff)                                                                                                | `src/scripts/` (one module per `Kind`: `am`, `idm`, `schedule`, `managed_hooks`, `sync_mapping`)                                                                                                                                                                                  | `docs/api/04-scripts.md`, `11`, `12`, `13`, `16`             |
 | Script workspace templates (lint/types)                                                                                                | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs`                                                                                                                                                                                                      | `docs/api/12-script-bindings-matrix.md`                      |
@@ -240,16 +240,36 @@ worked example.
 1. Verify + document the API first (§2); new `docs/api/` file if needed.
 2. Create `src/<feature>/` with the standard seams; state hangs off `App` as one
    field; `screen.rs` owns a nested `Mode` + `Event` enum.
-3. Register exactly one arm in each global: `app::InputMode::<Feature>(Mode)`,
-   `app::event::AppEvent::<Feature>(Event)`, `app::keymap::dispatch`,
-   `app::draw::draw`, `cli::Command` (+ a variant in `app::mod::View` and its
-   refresh arm in `app::selector::refresh` if it's a tab — note it's
-   `enum View`, not `enum Tab`).
+3. Register the feature in `src/app/`. A CLI-only feature is one arm in
+   `cli::Command` and nothing else. **A tab is not one arm per global** — this
+   step used to claim it was, and it is the single most misleading line in this
+   file; corrected 2026-08-11 after it sent an agent looking for a six-arm
+   footprint that does not exist. Adding a tab means ~20 arms across five files,
+   because `keymap.rs` dispatches each list operation through its own exhaustive
+   `match` on `View`. `src/mappings/` is the smallest complete example; the
+   compiler finds all of these for you, so add the `View` variant first and
+   follow the errors.
+
+   | File                  | Sites                                                                                                                                                                                                 |
+   | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `app/mod.rs`          | `InputMode::<Feature>(Mode)`; the `View` variant; `View::all()`; `View::label()`; the `App` state field (+ init and tenant-switch reset); the `AppEvent` arm in `apply_event`; the `refresh_view` arm |
+   | `app/event.rs`        | `AppEvent::<Feature>(Event)`                                                                                                                                                                          |
+   | `app/draw.rs`         | the `InputMode` modal group; the active-view draw branch                                                                                                                                              |
+   | `app/keymap.rs`       | `dispatch`, `footer_hints`, and one arm each in `row_count`, `current_selection`, `set_selection`, `filter_active`, `clear_filter`, `primary`, `delete`, `new_item`, `search_mode`                    |
+   | `app/prod_confirm.rs` | only if the feature has tenant-write prod actions                                                                                                                                                     |
+
+   Correspondingly, `<feature>/screen.rs` must publish `Mode`, `Event`,
+   `apply_event`, `handle_key`, `footer_hints`, `help_lines`, `refresh`,
+   `row_count`, `current_selection`, `select`, `filter_active`, `clear_filter`,
+   `primary`, `delete`, `new_item`. A read-only tab still has to publish
+   `delete`/`new_item`; leave them as empty no-ops, as `mappings/screen.rs`
+   does.
+
 4. Add the routing row above and a `mod.rs` header linking the API doc.
 5. If you added or changed a subcommand, update `docs/CLI.md`. Feature-internal
    changes (new modal, new background op) must touch only the feature directory
    — if you find yourself editing `src/app/` for one, the design is being
-   violated.
+   violated. Registering a _new_ tab (step 3) is the standing exception.
 
 ## 10. When unsure
 
