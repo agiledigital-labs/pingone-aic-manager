@@ -20,10 +20,6 @@ pub const KNOWN_METHODS: [&str; 9] = [
 pub struct RoleIndex(HashSet<String>);
 
 impl RoleIndex {
-    pub fn empty() -> Self {
-        Self(HashSet::new())
-    }
-
     pub(super) fn from_roles(roles: impl IntoIterator<Item = String>) -> Self {
         Self(roles.into_iter().collect())
     }
@@ -67,6 +63,10 @@ impl TouchedIndices {
             before: indices,
             after: BTreeSet::new(),
         }
+    }
+
+    pub(super) fn from_sets(before: BTreeSet<usize>, after: BTreeSet<usize>) -> Self {
+        Self { before, after }
     }
 
     pub fn before(&self) -> &BTreeSet<usize> {
@@ -179,6 +179,13 @@ impl Findings {
         });
     }
 
+    fn warning_at(&mut self, index: usize, message: impl Into<String>) {
+        self.warnings.push(Finding {
+            index: Some(index),
+            message: message.into(),
+        });
+    }
+
     fn extend_rule(&mut self, mut other: Self, index: usize, include_warnings: bool) {
         for finding in &mut other.errors {
             finding.index = Some(index);
@@ -248,11 +255,9 @@ pub fn validate_document(
         return findings;
     };
 
-    if matches!(scope, WarningScope::All) {
-        for key in object.keys() {
-            if key != "_id" && key != "configs" {
-                findings.warning(format!("unrecognised top-level config/access key {key:?}"));
-            }
+    for key in object.keys() {
+        if key != "_id" && key != "configs" {
+            findings.warning(format!("unrecognised top-level config/access key {key:?}"));
         }
     }
 
@@ -265,24 +270,17 @@ pub fn validate_document(
         return findings;
     }
 
+    let duplicates = crate::access::ops::duplicate_flags(rules);
     for (index, rule) in rules.iter().enumerate() {
         let include_warnings = scope.includes(index);
         findings.extend_rule(validate_rule(rule, known_roles), index, include_warnings);
-        let is_duplicate = if matches!(scope, WarningScope::All) {
-            rules[..index].contains(rule)
-        } else {
-            rules
-                .iter()
-                .enumerate()
-                .any(|(other, candidate)| other != index && candidate == rule)
-        };
-        if include_warnings && is_duplicate {
-            findings.warning("access rule is byte-identical to another rule; duplicates are legal");
-            findings
-                .warnings
-                .last_mut()
-                .expect("warning inserted")
-                .index = Some(index);
+        let duplicate_warning = duplicates[index]
+            && (!matches!(scope, WarningScope::All) || rules[..index].contains(rule));
+        if include_warnings && duplicate_warning {
+            findings.warning_at(
+                index,
+                "access rule is byte-identical to another rule; duplicates are legal",
+            );
         }
     }
     findings
@@ -294,7 +292,6 @@ pub fn resolve_rule_address(rules: &[Value], address: &str) -> Result<BTreeSet<u
         if index < rules.len() {
             return Ok(BTreeSet::from([index]));
         }
-        return Err(index_error(index, rules.len()));
     }
 
     let matches = rules
@@ -393,15 +390,23 @@ fn role_form(role: &str) -> bool {
             .is_some_and(|id| !id.is_empty())
 }
 
-fn index_error(index: usize, len: usize) -> Error {
+pub fn comma_list_contains(rule: &Value, field: &str, needle: &str) -> bool {
+    string_field(rule, field)
+        .is_some_and(|value| value.split(',').map(str::trim).any(|item| item == needle))
+}
+
+pub(super) fn ensure_index(index: usize, len: usize) -> Result<()> {
+    if index < len {
+        return Ok(());
+    }
     let range = if len == 0 {
         "no indices are valid because `configs` is empty".to_string()
     } else {
         format!("the valid range is 0..={}", len - 1)
     };
-    Error::Config(format!(
+    Err(Error::Config(format!(
         "access rule index {index} is out of range; {range}"
-    ))
+    )))
 }
 
 fn invalid_role_message(role: &str) -> String {
@@ -455,7 +460,8 @@ mod tests {
     fn methods_are_advisory_and_table_driven() {
         for (methods, warns) in [("read", false), ("frobnicate", true)] {
             let rule = json!({"pattern": "managed/x", "roles": "*", "methods": methods});
-            let findings = validate_rule(&rule, Some(&RoleIndex::empty()));
+            let empty = RoleIndex::from_roles(std::iter::empty());
+            let findings = validate_rule(&rule, Some(&empty));
             assert!(findings.errors.is_empty(), "{findings:?}");
             assert_eq!(
                 findings.warnings.is_empty(),
@@ -591,7 +597,8 @@ mod tests {
             "methods": "read",
             "customAuthz": "false"
         });
-        let findings = validate_rule(&rule, Some(&RoleIndex::empty()));
+        let empty = RoleIndex::from_roles(std::iter::empty());
+        let findings = validate_rule(&rule, Some(&empty));
 
         assert!(findings.errors.is_empty());
         assert_eq!(findings.warnings.len(), 2);
@@ -654,7 +661,8 @@ mod tests {
             None,
             WarningScope::Touched(&transformed.touched),
         );
-        assert!(findings.warnings.is_empty(), "{findings:?}");
+        assert_eq!(findings.warnings.len(), 1, "{findings:?}");
+        assert!(findings.warnings[0].index.is_none());
 
         let mut malformed = transformed.document;
         malformed["configs"][2]["pattern"] = json!("");
@@ -669,7 +677,7 @@ mod tests {
                 .iter()
                 .any(|finding| finding.index == Some(2) && finding.message.contains("pattern"))
         );
-        assert!(findings.warnings.is_empty(), "{findings:?}");
+        assert_eq!(findings.warnings.len(), 1, "{findings:?}");
     }
 
     #[test]
@@ -693,6 +701,28 @@ mod tests {
         assert!(
             matches!(error, Error::Config(message) if message.contains("deadbeef") && message.contains(&expected))
         );
+    }
+
+    #[test]
+    fn numeric_out_of_range_addresses_can_resolve_as_digests() {
+        let numeric_rule = (0_u64..)
+            .map(|seed| json!({"seed": seed}))
+            .find(|rule| short_digest(rule).bytes().all(|byte| byte.is_ascii_digit()))
+            .expect("find an all-numeric short digest");
+        let address = short_digest(&numeric_rule);
+        let rules = vec![numeric_rule];
+
+        assert_eq!(
+            resolve_rule_address(&rules, &address).unwrap(),
+            BTreeSet::from([0])
+        );
+    }
+
+    #[test]
+    fn comma_list_matching_is_shared_and_exact() {
+        let rule = json!({"roles": "internal/role/a, internal/role/b"});
+        assert!(comma_list_contains(&rule, "roles", "internal/role/b"));
+        assert!(!comma_list_contains(&rule, "roles", "role/b"));
     }
 
     #[test]

@@ -20,8 +20,17 @@ pub struct RuleChange {
 pub struct Changes {
     pub changed: Vec<RuleChange>,
     pub unchanged: usize,
+    pub touched: TouchedIndices,
     /// True when an apply diff could only recover approximate source positions.
     pub positions_approximate: bool,
+}
+
+/// How changed rules should be paired when producing a summary.
+pub enum ChangeBasis<'a> {
+    /// A built-in transform knows its exact original and resulting indices.
+    Touched(&'a TouchedIndices),
+    /// A hand-edited document must be matched by content.
+    Multiset,
 }
 
 /// A transformed document and the exact original/result indices it touched.
@@ -55,7 +64,7 @@ pub fn append(doc: &Value, spec: RuleSpec) -> Result<Transformed> {
 /// Mutate only supplied fields on the rule at `index`.
 pub fn replace_at(doc: &Value, index: usize, edit: RuleEdit) -> Result<Transformed> {
     let len = rules(doc)?.len();
-    ensure_index(index, len)?;
+    crate::access::spec::ensure_index(index, len)?;
     reject_conflicting_optional_edits(&edit)?;
 
     let mut amended = doc.clone();
@@ -90,7 +99,7 @@ pub fn replace_at(doc: &Value, index: usize, edit: RuleEdit) -> Result<Transform
 pub fn remove_at(doc: &Value, indices: &[usize]) -> Result<Transformed> {
     let len = rules(doc)?.len();
     for &index in indices {
-        ensure_index(index, len)?;
+        crate::access::spec::ensure_index(index, len)?;
     }
 
     let mut amended = doc.clone();
@@ -105,11 +114,8 @@ pub fn remove_at(doc: &Value, indices: &[usize]) -> Result<Transformed> {
     })
 }
 
-/// Compare rule arrays, using exact transform indices when available.
-///
-/// `touched = None` is the apply path: exact-equal rules are matched as a
-/// multiset and the remaining additions/removals carry approximate positions.
-pub fn changes(before: &Value, after: &Value, touched: Option<&TouchedIndices>) -> Changes {
+/// Compare rule arrays using exact transform indices or content matching.
+pub fn changes(before: &Value, after: &Value, basis: ChangeBasis<'_>) -> Changes {
     let before = before
         .get("configs")
         .and_then(Value::as_array)
@@ -121,14 +127,17 @@ pub fn changes(before: &Value, after: &Value, touched: Option<&TouchedIndices>) 
         .map(Vec::as_slice)
         .unwrap_or_default();
 
-    match touched {
-        Some(touched) => touched_changes(before, after, touched),
-        None => multiset_changes(before, after),
+    match basis {
+        ChangeBasis::Touched(touched) => touched_changes(before, after, touched),
+        ChangeBasis::Multiset => multiset_changes(before, after),
     }
 }
 
 fn touched_changes(before: &[Value], after: &[Value], touched: &TouchedIndices) -> Changes {
-    let mut summary = Changes::default();
+    let mut summary = Changes {
+        touched: touched.clone(),
+        ..Changes::default()
+    };
     for &index in touched.before().intersection(touched.after()) {
         let old = before.get(index);
         let new = after.get(index);
@@ -196,11 +205,38 @@ fn multiset_changes(before: &[Value], after: &[Value]) -> Changes {
         })
         .collect::<Vec<_>>();
     changed.extend(added);
+    let touched_before = changed
+        .iter()
+        .filter(|change| change.before.is_some())
+        .map(|change| change.index)
+        .collect();
+    let touched_after = changed
+        .iter()
+        .filter(|change| change.after.is_some())
+        .map(|change| change.index)
+        .collect();
     Changes {
         changed,
         unchanged,
-        positions_approximate: true,
+        touched: TouchedIndices::from_sets(touched_before, touched_after),
+        positions_approximate: duplicate_flags(before)
+            .into_iter()
+            .any(|duplicate| duplicate),
     }
+}
+
+/// Mark every rule that is byte-identical to at least one other rule.
+pub fn duplicate_flags(rules: &[Value]) -> Vec<bool> {
+    rules
+        .iter()
+        .enumerate()
+        .map(|(index, rule)| {
+            rules
+                .iter()
+                .enumerate()
+                .any(|(other, candidate)| other != index && candidate == rule)
+        })
+        .collect()
 }
 
 fn rules_mut(doc: &mut Value) -> Result<&mut Vec<Value>> {
@@ -214,20 +250,6 @@ fn rules_mut(doc: &mut Value) -> Result<&mut Vec<Value>> {
         .get_mut("configs")
         .and_then(Value::as_array_mut)
         .expect("checked configs array above"))
-}
-
-fn ensure_index(index: usize, len: usize) -> Result<()> {
-    if index < len {
-        return Ok(());
-    }
-    let valid = if len == 0 {
-        "no indices are valid because `configs` is empty".to_string()
-    } else {
-        format!("the valid range is 0..={}", len - 1)
-    };
-    Err(Error::Config(format!(
-        "access rule index {index} is out of range; {valid}"
-    )))
 }
 
 fn reject_conflicting_optional_edits(edit: &RuleEdit) -> Result<()> {
@@ -404,7 +426,15 @@ mod tests {
                 5,
             ),
             (
-                "remove addressed duplicate",
+                "remove first addressed duplicate",
+                remove_at(&before, &[4]).unwrap(),
+                4,
+                true,
+                false,
+                5,
+            ),
+            (
+                "remove second addressed duplicate",
                 remove_at(&before, &[5]).unwrap(),
                 5,
                 true,
@@ -414,7 +444,11 @@ mod tests {
         ];
 
         for (name, transformed, index, has_before, has_after, unchanged) in cases {
-            let summary = changes(&before, &transformed.document, Some(&transformed.touched));
+            let summary = changes(
+                &before,
+                &transformed.document,
+                ChangeBasis::Touched(&transformed.touched),
+            );
             assert_eq!(summary.changed.len(), 1, "{name}: {summary:?}");
             assert_eq!(summary.changed[0].index, index, "{name}");
             assert_eq!(summary.changed[0].before.is_some(), has_before, "{name}");
@@ -435,7 +469,7 @@ mod tests {
             "methods": "read"
         }));
 
-        let summary = changes(&before, &after, None);
+        let summary = changes(&before, &after, ChangeBasis::Multiset);
         assert_eq!(summary.unchanged, 5);
         assert_eq!(summary.changed.len(), 2);
         assert!(
@@ -450,6 +484,23 @@ mod tests {
                 && change.after == Some(after["configs"][5].clone()))
         );
         assert!(summary.positions_approximate);
+        assert_eq!(summary.touched.before(), &BTreeSet::from([1]));
+        assert_eq!(summary.touched.after(), &BTreeSet::from([5]));
+    }
+
+    #[test]
+    fn apply_positions_are_exact_when_the_source_has_no_duplicates() {
+        let before = json!({
+            "configs": [
+                {"pattern": "a", "roles": "*", "methods": "read"},
+                {"pattern": "b", "roles": "*", "methods": "read"}
+            ]
+        });
+        let mut after = before.clone();
+        after["configs"][1]["methods"] = json!("read,query");
+
+        let summary = changes(&before, &after, ChangeBasis::Multiset);
+        assert!(!summary.positions_approximate);
     }
 
     #[test]

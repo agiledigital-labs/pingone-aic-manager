@@ -14,7 +14,7 @@ pub async fn get_access(tenant: &str) -> Result<Value> {
 }
 
 /// Read the authentication config used to resolve synthetic role references.
-pub async fn get_authentication(tenant: &str) -> Result<Value> {
+async fn get_authentication(tenant: &str) -> Result<Value> {
     crate::aic::api::get(tenant, AUTHENTICATION_PATH).await
 }
 
@@ -55,7 +55,7 @@ fn extend_role_index(index: &mut crate::access::spec::RoleIndex, roles: Option<&
 }
 
 /// Replace the complete access-control document.
-pub async fn put_access(tenant: &str, body: Value, confirmed_prod: bool) -> Result<Value> {
+async fn put_access(tenant: &str, body: Value, confirmed_prod: bool) -> Result<Value> {
     crate::aic::api::put(tenant, ACCESS_PATH, body, confirmed_prod).await
 }
 
@@ -74,7 +74,7 @@ pub enum ConfirmedWriteError {
 /// `docs/api/99-quirks-and-open-questions.md`); it has not been established for
 /// `config/access`. This guard therefore spends the one-read-back budget on an
 /// immediate whole-document comparison. It does not retry the write.
-pub async fn put_access_confirmed(
+pub(super) async fn put_access_confirmed(
     tenant: &str,
     body: Value,
     confirmed_prod: bool,

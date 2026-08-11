@@ -3,7 +3,7 @@
 use clap::Subcommand;
 use serde_json::{Value, json};
 
-use crate::cli::{print_json, print_table, prompting_disabled, tenant_for};
+use crate::cli::{confirm_destructive, print_json, print_table, tenant_for};
 use crate::managed;
 use crate::roles::{api, spec};
 use crate::{Error, Result};
@@ -314,24 +314,11 @@ fn validate_id(id: &str) -> Result<()> {
 }
 
 fn confirm_delete(id: &str) -> Result<bool> {
-    if prompting_disabled() {
-        return Err(Error::Config(
-            "role deletion confirmation disabled by --no-prompt; pass --force to delete".into(),
-        ));
-    }
-    use inquire::{Confirm, error::InquireError};
-    match Confirm::new(&format!("Delete internal role {id:?}?"))
-        .with_default(false)
-        .prompt()
-    {
-        Ok(answer) => Ok(answer),
-        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(false),
-        Err(InquireError::NotTTY) => Err(Error::Config(
-            "role deletion requires confirmation; pass --force when no terminal is available"
-                .into(),
-        )),
-        Err(error) => Err(Error::Config(format!("confirm role deletion: {error}"))),
-    }
+    confirm_destructive(
+        "role deletion",
+        &format!("Delete internal role {id:?}?"),
+        "--force",
+    )
 }
 
 fn role_privileges(role: &Value) -> Result<&Vec<Value>> {
