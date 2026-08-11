@@ -74,8 +74,16 @@ All realm-scoped AM URLs use `/realms/root/realms/{realm}`:
 /am/json/realms/root/realms/alpha/scripts?_queryFilter=true
 ```
 
-Never use `/realms/alpha` (short form) — it 404s. ESVs, logs, and IDM managed
-config have no realm in the path. Full table in
+Use that form everywhere — it is the project **convention**, so cache keys,
+audit path matching and diffs all have one spelling. It is not a hard
+requirement: `/am/json/alpha/...` and `/am/json/realms/alpha/...` also work (all
+three return 200 and resolve the same realm — verified 2026-08-10; this file
+previously claimed the short forms 404, which was wrong). Corollary: **never
+match an audit log's `http.request.path` on a realm-path prefix** — other
+clients use the short form and `am-access` records the URL as sent. Match on the
+resource id.
+
+ESVs, logs, and IDM managed config have no realm in the path. Full table in
 `docs/api/01-realms-and-paths.md`.
 
 ## 5. Conflict-detection rule (for the script-sync feature)
@@ -200,7 +208,7 @@ worked example.
 | ESV secret mappings (AM secret label → ESV secret)                                                                                     | `src/secretmap/` (surfaced as the ESVs tab's "ESV secret mappings" sub-view; sandbox/development only)                                                                                                                                                                            | `docs/api/15-secret-mappings.md`                             |
 | IDM sync mappings (browse `config/sync` mappings, reconcile)                                                                           | `src/mappings/` (TUI-only; the Mappings tab) — script pull/push for embedded mapping scripts is `aic script … sync/<mapping>.<slotpath>` via `src/scripts/sync_mapping.rs`                                                                                                        | `docs/api/16-sync-mappings.md`                               |
 | Journeys (auth trees: list/pull/push/delete, node-type introspection)                                                                  | `src/journey/` (CLI only — no TUI tab yet)                                                                                                                                                                                                                                        | `docs/api/09-journeys.md`                                    |
-| IDM internal roles (caller-chosen ids, role CRUD, managed-object privileges)                                                         | `src/roles/` (CLI only — no TUI tab)                                                                                                                                                                                                                                              | `docs/api/18-internal-roles.md`                              |
+| IDM internal roles (caller-chosen ids, role CRUD, managed-object privileges)                                                           | `src/roles/` (CLI only — no TUI tab)                                                                                                                                                                                                                                              | `docs/api/18-internal-roles.md`                              |
 | Trusted JWT Issuer setup (per-tenant signing key, issuer CRUD/show)                                                                    | `src/jwtbearer/` (CLI only — no TUI tab yet)                                                                                                                                                                                                                                      | `docs/api/17-jwt-bearer-user-tokens.md`                      |
 | Script sync (pull/push/sync/watch/diff)                                                                                                | `src/scripts/` (one module per `Kind`: `am`, `idm`, `schedule`, `managed_hooks`, `sync_mapping`)                                                                                                                                                                                  | `docs/api/04-scripts.md`, `11`, `12`, `13`, `16`             |
 | Script workspace templates (lint/types)                                                                                                | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs`                                                                                                                                                                                                      | `docs/api/12-script-bindings-matrix.md`                      |

@@ -6,8 +6,8 @@ Implemented in: `src/logs/`
 
 ## Purpose
 
-Fetch tenant audit + debug logs from AM and IDM. Stretch goal of pingone-aic-manager ("log
-sync with compression + search") is built on this.
+Fetch tenant audit + debug logs from AM and IDM. Stretch goal of
+pingone-aic-manager ("log sync with compression + search") is built on this.
 
 ## Authentication
 
@@ -70,8 +70,8 @@ NOT a service-account token. Mint one via the same `idmAdminClient` PKCE flow
 onboarding already uses (`session_to_bearer`, scope `openid fr:idm:*` — no extra
 scope needed). With that token, `GET`/`POST create`/`DELETE` all succeed
 (200/200/204). An SA bearer 403s on `/keys` no matter the scope (see auth
-section). So pingone-aic-manager can auto-mint keys only while it holds an admin session
-(onboarding); otherwise paste console-created keys.
+section). So pingone-aic-manager can auto-mint keys only while it holds an admin
+session (onboarding); otherwise paste console-created keys.
 
 ## Query params (`/monitoring/logs`)
 
@@ -108,6 +108,49 @@ section). So pingone-aic-manager can auto-mint keys only while it holds an admin
 ```
 
 `payload` may also be a raw string for non-JSON sources.
+
+### Who-did-it fields differ between AM and IDM (verified 2026-08-10)
+
+Both `am-access` and `idm-access` answer "who changed this", but not with the
+same shape — do not write one parser for both.
+
+|                     | `am-access`                                    | `idm-access`                                     |
+| ------------------- | ---------------------------------------------- | ------------------------------------------------ |
+| `payload.eventName` | `AM-ACCESS-ATTEMPT` / `AM-ACCESS-OUTCOME`      | the literal `"access"`                           |
+| `payload.component` | present (e.g. `"Script"`)                      | **absent**                                       |
+| `payload.userId`    | **full DN** — `id=<uuid>,ou=user,ou=am-config` | **bare uuid**                                    |
+| `payload.roles`     | absent                                         | present (`["internal/role/openidm-svcacct", …]`) |
+| `payload.realm`     | present (`"/alpha"`)                           | absent                                           |
+
+The AM `userId` is character-for-character the resource's own `lastModifiedBy`
+(verified for AM scripts — see `04-scripts.md`), so one resolver serves the
+audit log and the object metadata. Resolve either form via
+`GET /am/json/realms/root/users/{id}`, extracting the `id=` RDN for AM and using
+the uuid verbatim for IDM.
+
+**Every audited write appears more than once. Two separate de-duplications are
+needed:**
+
+1. **Attempt + outcome.** AM emits `AM-ACCESS-ATTEMPT` (no `response.status`)
+   then `AM-ACCESS-OUTCOME` (`SUCCESSFUL`/`FAILED`). Always filter
+   `/payload/eventName eq "AM-ACCESS-OUTCOME"`.
+2. **A phantom failed `CREATE` in front of every `UPDATE`.** A `PUT` to an
+   existing resource is logged as `CREATE`/`FAILED`/`statusCode 412` **and**
+   `UPDATE`/`SUCCESSFUL`, in the same millisecond, under **one `transactionId`**
+   — the server tries create, gets "already exist", then updates. Observed on
+   both `am-access` (AM scripts) and `idm-access` (`/openidm/config/*`). Filter
+   `/payload/response/status eq "SUCCESSFUL"` or a history view invents failures
+   that never happened.
+
+`/openidm/config/*` writes land in **`idm-access`**, not `idm-config`: a 24 h
+`/payload/objectId sw "config"` query on `idm-config` returned zero events while
+`/payload/http/request/path co "openidm/config"` on `idm-access` returned 66.
+
+The `co` (contains) predicate works server-side on `/payload/http/request/path`,
+so filtering to one resource needs no client-side pass. Match on the **resource
+id**, not a path prefix: the record stores the absolute URL exactly as the
+client sent it, and clients differ in which realm path form they use
+(`docs/api/01-realms-and-paths.md`).
 
 ### API key (creation response)
 
@@ -154,7 +197,13 @@ curl -sS "$TENANT_BASE_URL/monitoring/logs/sources" \
 
 - **Headers are lowercase** in the docs (`x-api-key`, not `X-API-Key`). HTTP is
   case-insensitive but be consistent for grep-ability.
-- **`beginTime`/`endTime` window ≤ 24h.** Bigger windows return 400.
+- **`beginTime`/`endTime` window ≤ 24h.** Bigger windows return 400, naming the
+  span you asked for:
+  `13.89 days worth of data requested (…) Please limit the scope of your query to within a day: Cannot request more than one days worth of logs`
+  (verified 2026-08-10). **The 24h cap is per query, not the retention limit** —
+  events stay queryable for roughly 30 days, so reaching an older one means
+  _moving_ a ≤24h window back, never widening it. Anything offering a "history"
+  over these logs has to paginate in day-sized steps.
 - **`/tail` first call** returns the last ~15s; subsequent calls with the
   returned `pagedResultsCookie` continue from where the last call left off. This
   is the streaming pattern.
@@ -269,7 +318,8 @@ user explicitly syncs `--source idm-core` or `--source am-core`.
 
 ## Verified against
 
-- Tenant: `tenant.example.com` (the pingone-aic-manager sandbox)
+- Tenant: `tenant.example.com` (the pingone-aic-manager
+  sandbox)
 - Date: 2026-06-30 (journey join key re-corrected 2026-07-01 — full
   `trackingIds[0]`, not the stripped base or tree `_id`)
 - Calls:
@@ -303,6 +353,45 @@ user explicitly syncs `--source idm-core` or `--source am-core`.
     See the join-key note above. The sandbox tenant itself has only
     module/service-account logins (no tree/node events) in the synced window, so
     journey extraction is verified against this prod capture, not the sandbox.
+
+### Who-did-it fields and duplicate events — 2026-08-10
+
+Tenant `tenant.example.com`, all calls made live by the
+verifying agent via `aic logs query` (the stored api-key pair; the
+service-account bearer cannot reach `/monitoring/logs`, so `verify-endpoint.sh`
+is not usable here). The `am-access` events were generated by a throwaway
+`test_aic_who` script create → update → delete cycle; see `04-scripts.md` for
+that side of the audit trail.
+
+- `aic logs sources` → **200** (api-key pair present and valid).
+- `/payload/component eq "Script" and /payload/eventName eq "AM-ACCESS-OUTCOME" and /payload/request/operation eq "UPDATE"`,
+  `--source am-access` → **1 event**; `payload.userId` =
+  `id=ad604d54-…,ou=user,ou=am-config`, identical to the script's
+  `lastModifiedBy`.
+- `/payload/component eq "Script"` alone over the same window → **58 events**.
+  The `eventName × operation × status` cross-tab: 14 `ATTEMPT|QUERY`, 12
+  `ATTEMPT|READ`, 2 `ATTEMPT|CREATE`, 1 `ATTEMPT|UPDATE` (all with no
+  `response.status`), against 14 `OUTCOME|QUERY|SUCCESSFUL`, 10
+  `OUTCOME|READ|SUCCESSFUL`, 2 `OUTCOME|READ|FAILED`, 1
+  `OUTCOME|CREATE|SUCCESSFUL`, 1 `OUTCOME|CREATE|FAILED`, 1
+  `OUTCOME|UPDATE|SUCCESSFUL`.
+- The `CREATE|FAILED` event carries `statusCode: "412"`,
+  `detail.reason: "Script with UUID … already exist in realm /alpha"` and the
+  **same `transactionId`** as the `UPDATE|SUCCESSFUL` 30 ms later — one `PUT`,
+  two logged operations. The genuine create has a non-null
+  `response.detail.revision`; the update's is `null`.
+- Adding `and /payload/http/request/path co "<script-id>"` → **14 events**, all
+  for that id: server-side `co` on the path confirmed. Re-run after the delete
+  returned the `DELETE|SUCCESSFUL` event. The same window contains
+  `http.request.path` values in three realm-path spellings
+  (`/am/json/alpha/scripts`, `/am/json/realms/alpha/scripts`,
+  `/am/json/realms/root/realms/alpha/scripts`) for the same collection.
+- `/payload/objectId sw "config"`, `--source idm-config`, 24 h → **0 events**;
+  `/payload/http/request/path co "openidm/config"`, `--source idm-access`, 24 h
+  → **66 events** (39 `READ|GET|SUCCESSFUL`, 11 `UPDATE|PUT|SUCCESSFUL`, 11
+  `CREATE|PUT|FAILED`, …). Their payload keys are
+  `_id, client, eventName, http, level, request, response, roles, server, source, timestamp, topic, transactionId, userId`
+  — `eventName: "access"`, no `component`, `userId` a bare uuid, plus `roles`.
 
 ## Source citations
 

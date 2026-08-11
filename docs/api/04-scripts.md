@@ -174,9 +174,296 @@ advertise `GROOVY` in `languages`.
   `"This operation is not available in PingOne Advanced Identity Cloud."` —
   they're read-protected, so un-pullable. **No field in the list record marks
   them as internal** (verified 2026-06-03 — `default`,
-  `createdBy`/`lastModifiedBy` null, `creationDate`, `context` all overlap
-  normal scripts); the only reliable signal is the name prefix. `aic` hides them
-  from the list.
+  `createdBy`/`lastModifiedBy` (the literal string `"null"`, see "Authorship and
+  change history"), `creationDate`, `context` all overlap normal scripts); the
+  only reliable signal is the name prefix. `aic` hides them from the list.
+
+## Authorship and change history
+
+Answers "who last edited this script, and when?". Verified live 2026-08-10 on
+the sandbox — realm `alpha` (121 scripts) and `bravo` (284), plus a throwaway
+`test_aic_who` create/update/delete cycle. See the dated block under "Verified
+against" for the call list.
+
+### The four fields
+
+Present on **every** AM script record, in both the collection query and a single
+read, with no variation in the key set (121/121 in alpha, 284/284 in bravo):
+
+| Field              | JSON type | Notes                                                         |
+| ------------------ | --------- | ------------------------------------------------------------- |
+| `createdBy`        | string    | Principal DN. **Never JSON `null`** — see the sentinel below. |
+| `creationDate`     | number    | Epoch **milliseconds**. `0` means unknown.                    |
+| `lastModifiedBy`   | string    | Principal DN, same shapes as `createdBy`.                     |
+| `lastModifiedDate` | number    | Epoch milliseconds. `0` means unknown.                        |
+
+**The `"null"` string sentinel — the single most important trap here.** When AM
+has no authorship to report it does **not** send JSON `null` and does not omit
+the key: it sends the four-character string `"null"`, with the date fields set
+to `0`.
+
+```json
+{
+  "_id": "ed925ac8-…",
+  "name": "extractSecret",
+  "description": "null",
+  "createdBy": "null",
+  "creationDate": 0,
+  "lastModifiedBy": "null",
+  "lastModifiedDate": 0
+}
+```
+
+An `Option<String>` deserialises this to `Some("null")`, so any code that tests
+for absence will happily print `null` as if it were a DN. Test for the literal
+string. Counts across both realms (405 records): `createdBy == "null"` in
+**277**, `lastModifiedBy == "null"` in **184**.
+
+`"null"` is not a marker of product-default scripts — it spans both
+(`default: true` 38, `default: false` 42 in alpha alone). It most likely marks
+config that arrived by import/promotion rather than through an authenticated
+write.
+
+Sentinel and zero date travel together, with one exception worth knowing: the
+two `ForgeRock Internal: …` scripts carry `createdBy: "null"` with a **real**
+`creationDate` of `1433147666269` (2015-06-01, ForgeRock's own build stamp) and
+`lastModifiedDate: 0`. So treat "author unknown" (`"null"`) and "date unknown"
+(`0`) as independent tests, not one derived from the other.
+
+Beware the same stringification on `description`: it is a genuine nullable (JSON
+`null` in 11 alpha records) **and** carries `"null"` as a string in 19 others.
+Two different "empty" representations on one field.
+
+### `_fields` projection works
+
+Both the collection and the single read honour `_fields`, and `_id` comes back
+whether or not you ask for it:
+
+```
+GET /am/json/realms/root/realms/alpha/scripts
+      ?_queryFilter=true
+      &_fields=_id,name,createdBy,creationDate,lastModifiedBy,lastModifiedDate
+Accept-API-Version: protocol=2.0,resource=1.0
+```
+
+This is the right call for a who-changed listing: it omits the base64 `script`
+bodies, which dominate the response size.
+
+### DN shapes that actually occur
+
+Pooling `createdBy` and `lastModifiedBy` over all 405 scripts in alpha + bravo
+gives 810 values, **15 distinct**, in four groups:
+
+| Shape                                                | Distinct | Occurrences | What it is                           |
+| ---------------------------------------------------- | -------- | ----------- | ------------------------------------ |
+| `"null"`                                             | 1        | 461         | Unknown author (sentinel, see above) |
+| `id=<uuid>,ou=user,ou=am-config`                     | 12       | 307         | Tenant admin **or** service account  |
+| `id=amadmin,ou=user,ou=am-config`                    | 1        | 4           | AM's built-in super-admin            |
+| `id=dsameuser,ou=user,dc=openam,dc=forgerock,dc=org` | 1        | 38          | AM's internal product account        |
+
+Note what is **not** in that list: no realm-identity DN (nothing under
+`o=alpha,ou=identities`), and no bare id. Every value is a `id=…,ou=user,…` DN.
+The id-extraction rule is therefore just "take the `id=` RDN".
+
+### Resolving a DN to a human name
+
+**One endpoint does the job:**
+
+```
+GET /am/json/realms/root/users/{id}
+      ?_fields=username,cn,givenName,sn,mail,universalid,objectClass
+```
+
+Sending `Accept-API-Version: protocol=2.1,resource=3.0` works; the header is not
+enforced on this endpoint — the default `resource=1.0` and even a nonsense
+`resource=4.0` also returned 200, so do not use version negotiation as a signal.
+
+`universalid` in the response is exactly the DN you started from, which is what
+makes this the right resolver rather than a guess.
+
+Results for the 14 ids above:
+
+| id          | Code    | What comes back                                                          |
+| ----------- | ------- | ------------------------------------------------------------------------ |
+| 10 uuid ids | **200** | 6 human admins + 4 service accounts (see discrimination below)           |
+| `amadmin`   | **200** | `username=amadmin`, `cn=["amAdmin"]`                                     |
+| `dsameuser` | **403** | `"Permission to perform the read operation denied"` — exists, unreadable |
+| 2 uuid ids  | **404** | `"Resource cannot be found."` — deleted principal                        |
+
+**Positive control (without which the 403/404s are uninterpretable):**
+`GET /am/json/realms/root/users/amadmin` → **200**, returning
+`universalid: ["id=amadmin,ou=user,ou=am-config"]` — the very DN shape under
+test — while `GET /am/json/realms/root/users/zzz-not-a-real-id-zzz` → **404
+"Resource cannot be found."** The endpoint is live and the id extraction is
+right; the failures are properties of the principals, not of the call.
+
+**Telling a human admin from a service account.** Both live at the same path
+with the same DN shape:
+
+|                         | Human tenant admin                                         | Service account       |
+| ----------------------- | ---------------------------------------------------------- | --------------------- |
+| `username`              | the admin's email                                          | **the uuid itself**   |
+| `cn`                    | email, repeated twice in one string (unusable for display) | the SA's display name |
+| `givenName`/`sn`/`mail` | populated                                                  | absent                |
+| `dn`                    | `fr-idm-uuid=<uuid>,ou=people,o=root,ou=identities`        | absent                |
+| `objectClass`           | includes `fraas-admin`, `fr-idm-managed-user-explicit`     | absent                |
+
+So: `username == <the uuid>` ⇒ service account, display `cn`. Otherwise display
+`givenName + " " + sn` and fall back to `mail`/`username` — **not** `cn`, which
+for humans is the email concatenated with itself (`"dsbalmain@… dsbalmain@…"`).
+
+**Endpoints that do _not_ resolve these DNs:**
+
+- `GET /openidm/managed/alpha_user/{id}` — **404** for every DN observed
+  (`"No Such Entry: The search base entry 'fr-idm-uuid=…,ou=user,o=alpha,o=root,ou=identities' does not exist"`).
+  Correct: these are admin/config-store principals, not realm identities.
+  Positive control: the same call on a genuine managed user id returns **200**
+  with `userName`/`givenName`/`sn`/`mail`. Keep it only as a fallback for a DN
+  shape that does not currently occur — do **not** send the AM
+  `Accept-API-Version` header on it (`protocol=2.1,resource=3.0` turns the
+  control's 200 into a 404).
+- `GET /openidm/managed/svcacct/{id}` — resolves **only the caller's own**
+  service account (200 for the id in our own bearer, **403 "Access denied"** for
+  other SAs). Not a general resolver.
+  `GET /openidm/managed/svcacct?_queryFilter=true` is **403** as well.
+- `GET /am/json/realms/root/users?_queryFilter=true` — **403 "This operation is
+  not available in PingOne Advanced Identity Cloud."** You can read a root user
+  by id but you cannot enumerate them, so a resolver must be lookup-by-id with a
+  cache, never a prefetch.
+
+### What `aic`'s own writes look like
+
+`aic script create` then `aic script push` on `alpha/test_aic_who`, read back
+each time:
+
+```
+after create:  createdBy = lastModifiedBy = id=ad604d54-…,ou=user,ou=am-config
+               creationDate = lastModifiedDate = 1786339741975
+after push:    createdBy/creationDate unchanged
+               lastModifiedDate = 1786339765012
+```
+
+That DN is the **service account** in the current context (matches
+`aic whoami`'s `sa:`), and it resolves to
+`cn: ["DaveBalmain-fr-config-manager"]` — an SA-shaped record with
+`username == uuid` and no `givenName`/`sn`. So every write `aic` makes is
+stamped with the credential, never with the operator: it is by far the most
+common `lastModifiedBy` in this tenant (120 of 405 records).
+
+**The CLI must therefore say "changed by the service account `<name>`", not
+render the DN, and must not imply a person.** The audit trail cannot even
+separate two concurrent `aic` processes sharing one SA — during this
+verification another agent's writes to `/openidm/config/access` appeared under
+the identical `userId`, indistinguishable from ours except by path.
+
+`src/config/operator.rs` holds the operator identity locally; a "who changed
+this" view can name the local operator for changes it made itself, but must not
+attribute a remote change to them.
+
+### Which script kinds have authorship at all
+
+`aic script` spans five `Kind`s. **Only AM scripts carry authorship.**
+
+| `Kind`           | Underlying object                     | Authorship fields               |
+| ---------------- | ------------------------------------- | ------------------------------- |
+| `Am`             | `/am/json{realm}/scripts/{id}`        | **Yes** — the four fields above |
+| `Idm`            | `/openidm/config/endpoint/{name}`     | **No**                          |
+| `Schedule`       | `/openidm/config/schedule/{name}`     | **No**                          |
+| `IdmManagedHook` | `/openidm/config/managed` (whole doc) | **No**                          |
+| `IdmSyncMapping` | `/openidm/config/sync` (whole doc)    | **No**                          |
+
+**IDM config objects carry no authorship and no `_rev`.** Verified three ways:
+`GET /openidm/config?_queryFilter=true` returns 68 elements whose key sets are
+`_id` plus the object's own content and nothing else; individual reads of
+`config/endpoint/idr` (`_id, description, globalsObject, source, type`) and
+`config/schedule/test_sign_in` show no authorship key; and a recursive scan of
+every scalar path in `config/managed` and `config/sync` finds no
+`createdBy`/`lastModifiedBy`/`creationDate`/`_rev` anywhere (the only matches on
+a case-insensitive `author` search are managed-object properties literally named
+`authoritative`).
+
+For these four kinds the honest CLI answer is **"this kind of script has no
+authorship metadata"** — with the log query below offered as the only route to
+who-and-when.
+
+### Change history from the audit log
+
+`/monitoring/logs` needs the `x-api-key`/`x-api-secret` pair, so
+`verify-endpoint.sh` cannot drive it — `aic logs query` can, and it follows
+`pagedResultsCookie` across pages (`src/logs/api.rs`), so it does not share the
+single-page limitation of the `who-changed` prototype.
+
+```bash
+aic logs query \
+  '/payload/component eq "Script"
+   and /payload/eventName eq "AM-ACCESS-OUTCOME"
+   and /payload/http/request/path co "<script-id>"' \
+  --source am-access --begin 2026-08-10T05:28:00Z --end 2026-08-10T05:34:00Z
+```
+
+The `co` (contains) predicate on `/payload/http/request/path` **works
+server-side** — no client-side filtering needed. Matching on the script id
+rather than a path prefix also matters because the audit record stores the
+**absolute URL exactly as the client sent it**, and different clients use
+different realm path forms (`/am/json/alpha/scripts/…` and
+`/am/json/realms/root/realms/alpha/scripts/…` both appear in one window).
+
+Event shape for a script write:
+
+```json
+{
+  "payload": {
+    "component": "Script",
+    "eventName": "AM-ACCESS-OUTCOME",
+    "realm": "/alpha",
+    "request": { "operation": "UPDATE", "protocol": "CREST" },
+    "response": {
+      "status": "SUCCESSFUL",
+      "statusCode": "",
+      "detail": { "revision": null },
+      "elapsedTime": 43
+    },
+    "http": {
+      "request": {
+        "method": "PUT",
+        "path": "https://<tenant>/am/json/realms/root/realms/alpha/scripts/38532136-…"
+      }
+    },
+    "timestamp": "2026-08-10T05:29:25.035Z",
+    "transactionId": "274c2091-…/0/1",
+    "userId": "id=ad604d54-…,ou=user,ou=am-config"
+  }
+}
+```
+
+- **`payload.userId` is the full DN, identical to `lastModifiedBy`** — not a
+  bare id. The same resolver serves both.
+- The full `test_aic_who` lifecycle showed up: `CREATE`/`SUCCESSFUL`,
+  `UPDATE`/`SUCCESSFUL`, `DELETE`/`SUCCESSFUL`, all with that `userId`.
+- **Every event is emitted twice**: an `AM-ACCESS-ATTEMPT` with
+  `response.status` absent, then an `AM-ACCESS-OUTCOME` with
+  `SUCCESSFUL`/`FAILED`. Always filter `eventName eq "AM-ACCESS-OUTCOME"`.
+- **A `PUT` update also logs a phantom `CREATE`/`FAILED`.** AM tries create
+  first, gets `412 "Script with UUID … already exist in realm /alpha"`, then
+  does the update — so one `aic script push` produces
+  `CREATE`/`FAILED`/`statusCode 412` _and_ `UPDATE`/`SUCCESSFUL` in the same
+  millisecond, **sharing one `transactionId`**. Filter
+  `response/status eq "SUCCESSFUL"`, or a history view will report failures that
+  never happened. A genuine create is `CREATE`/`SUCCESSFUL` (and carries a
+  non-null `response.detail.revision`, where the update's is `null`).
+- The 30-day server-side retention in `08-logs.md` bounds how far back this can
+  see; the field-based `lastModifiedBy` has no such limit.
+
+**IDM config writes are auditable too, but on a different source and shape.**
+`/openidm/config/*` writes appear in **`idm-access`**, not `idm-config`
+(`/payload/objectId sw "config"` on `idm-config` returned zero events over 24
+h). There, `payload.eventName` is the literal `"access"`, there is **no
+`component` field**, and `payload.userId` is a **bare uuid** with no DN wrapper
+— plus a `payload.roles` array (`["internal/role/openidm-svcacct", …]`). Do not
+apply the `id=…,ou=user` extraction to IDM events; feed the bare uuid to the
+resolver directly. The same create-then-update double event occurs
+(`CREATE`/`FAILED` `PUT` followed by `UPDATE`/`SUCCESSFUL` `PUT`, 11 pairs
+observed).
 
 ## Conflict detection rule (for two-way sync)
 
@@ -306,6 +593,115 @@ re-listed (`test_aic*` → empty):
   `"evaluatorVersion": "1.0"`, contradicting the previous "defaults to 2.0"
   claim. Recorded in `99-quirks-and-open-questions.md`.
 - `DELETE` of all three → **200** each.
+
+### Authorship, DN resolution, and audit history — 2026-08-10
+
+Tenant `tenant.example.com` (context `sandbox`). All
+calls below were made live by the verifying agent — reads via
+`scripts/verify-endpoint.sh` (service-account bearer from the running agent),
+log queries via `aic logs query` (stored api-key pair). One throwaway script,
+`test_aic_who`, was created and deleted; both realms were re-listed afterwards
+(`test_aic*` → empty) and the local workspace file removed.
+
+Fields and shapes:
+
+- `GET …/realms/alpha/scripts?_queryFilter=true` → **200**, 121 results; every
+  record's key set is identical and includes all four authorship keys, typed
+  `string`/`number`/`string`/`number`.
+- `GET …/realms/bravo/scripts?_queryFilter=true&_fields=…` → **200**, 284
+  results; same, 568/568 `createdBy`+`lastModifiedBy` values of type `string`
+  (zero JSON `null`s in either realm).
+- `GET …/realms/alpha/scripts?_queryFilter=name+eq+"extractSecret"` and
+  `GET …/realms/alpha/scripts/ed925ac8-…` → **200**, both showing
+  `"createdBy": "null"` **quoted** on the wire, with `creationDate: 0` and
+  `"description": "null"`.
+- `_fields=_id,name,createdBy,creationDate,lastModifiedBy,lastModifiedDate` on
+  the collection (with `_pageSize=3`) → **200**, projection honoured, `_id`
+  always present; the same on a single read → **200**.
+- `GET /am/json/realms/root/scripts?_queryFilter=true` → **403 "This operation
+  is not available in PingOne Advanced Identity Cloud."** (no global script
+  list).
+
+Resolution, with controls:
+
+- Control, resolver live: `GET /am/json/realms/root/users/amadmin` → **200**,
+  `universalid: ["id=amadmin,ou=user,ou=am-config"]`. Negative baseline:
+  `…/users/zzz-not-a-real-id-zzz` → **404 "Resource cannot be found."**
+- All 14 distinct principal ids tried against `…/realms/root/users/{id}`: **10
+  uuids → 200** (6 human admins with `givenName`/`sn`/`mail`; 4 service accounts
+  with `username == uuid` and `cn` = SA name), `amadmin` → **200**, `dsameuser`
+  → **403 "Permission to perform the read operation denied"**, 2 uuids →
+  **404**. That is 11 × 200, 1 × 403, 2 × 404.
+- Same read with `Accept-API-Version` `protocol=2.1,resource=3.0`,
+  `protocol=2.0,resource=1.0`, and `protocol=2.1,resource=4.0` → **200** in all
+  three cases (header not enforced).
+- `GET /am/json/realms/root/users?_queryFilter=true` → **403** (cannot
+  enumerate).
+- Control, IDM resolver live:
+  `GET /openidm/managed/alpha_user?_queryFilter=true&_pageSize=2` → **200**, and
+  `GET /openidm/managed/alpha_user/985bf175-…` → **200** with
+  `userName`/`givenName`/`sn`/`mail`. The **same** single read with
+  `Accept-API-Version: protocol=2.1,resource=3.0` → **404**, so the header must
+  be omitted on IDM.
+- `GET /openidm/managed/alpha_user/{id}` for 5 of the script DNs (including
+  `dsameuser`) → **404 "No Such Entry: …
+  'fr-idm-uuid=…,ou=user,o=alpha,o=root,ou=identities' does not exist"**.
+- `GET /openidm/managed/svcacct/{own-sa-id}` → **200** (`name`
+  `DaveBalmain-fr-config-manager`); the same for two other SA ids → **403
+  "Access denied"**; `GET /openidm/managed/svcacct?_queryFilter=true` → **403**.
+
+`aic`'s own write:
+
+- `aic script create alpha/test_aic_who --context AUTHENTICATION_TREE_DECISION_NODE --language JAVASCRIPT --evaluator-version 2.0 --from … --yes`,
+  then `GET …/scripts?_queryFilter=name+eq+"test_aic_who"&_fields=…` → **200**
+  with `createdBy = lastModifiedBy = id=ad604d54-…,ou=user,ou=am-config` (the
+  `sa:` in `aic whoami`) and `creationDate = lastModifiedDate = 1786339741975`.
+- `aic script push alpha/test_aic_who --yes`, then
+  `GET …/scripts/38532136-…?_fields=…` → **200**, `creationDate` unchanged,
+  `lastModifiedDate = 1786339765012`.
+- `aic script delete alpha/test_aic_who --yes` → refused
+  (`script delete requires --force`); with `--force --yes` → deleted;
+  `GET …/scripts/38532136-…` → **404 "Script with UUID … could not be found in
+  realm /alpha"**; realm re-list → no `test_aic*` in alpha or bravo.
+
+Other script kinds:
+
+- `GET /openidm/config?_queryFilter=true` → **200**, 68 elements; the distinct
+  key sets are `_id` + content only, with no `createdBy`/`lastModifiedBy`/
+  `creationDate`/`_rev` in any of them.
+- `GET /openidm/config/endpoint/idr` → **200**
+  (`_id, description, globalsObject, source, type`);
+  `GET /openidm/config/schedule/test_sign_in` → **200** (17 keys, none
+  authorship); `GET /openidm/config/managed` → **200** (`_id, objects`);
+  `GET /openidm/config/sync` → **200** (`_id, mappings`). A recursive
+  scalar-path scan of the last two matched only properties named
+  `authoritative`.
+
+Audit history:
+
+- `aic logs sources` → **200** (log api-key pair is present and valid on this
+  tenant).
+- `aic logs query '/payload/component eq "Script" and /payload/eventName eq "AM-ACCESS-OUTCOME" and /payload/request/operation eq "UPDATE"' --source am-access`
+  over the write window → **1 event**, the `test_aic_who` `PUT`, with
+  `payload.userId` equal to the `lastModifiedBy` DN character for character.
+- Same window, `/payload/component eq "Script"` only → **58 events**; the
+  `eventName × operation × status` cross-tab established the
+  `AM-ACCESS-ATTEMPT`/`AM-ACCESS-OUTCOME` pairing and the phantom
+  `CREATE`/`FAILED`/`412` that accompanies every `UPDATE`/`SUCCESSFUL` on the
+  same `transactionId`.
+- Same filter with `and /payload/http/request/path co "38532136-…"` → **14
+  events**, all for that script — server-side `co` on the path confirmed. After
+  the delete, the same query → the `DELETE`/`SUCCESSFUL` event.
+- `aic logs query '/payload/objectId sw "config"' --source idm-config` → **0
+  events** over 24 h;
+  `aic logs query '/payload/http/request/path co "openidm/config"' --source idm-access`
+  → **66 events**, including 11 `UPDATE`/`PUT`/`SUCCESSFUL` on
+  `/openidm/config/access` with `eventName: "access"`, no `component`, and
+  `userId` as a **bare uuid**. Those writes were **not** made by this
+  verification — they came from a concurrent process on the same service account
+  (the same window also shows 26 `GET /openidm/managed/svcacct` queries that
+  this verification never issued), which is itself the evidence that the SA DN
+  cannot distinguish concurrent writers.
 
 ## Source citations
 

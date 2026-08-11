@@ -452,34 +452,67 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
 
 ## Changelog
 
+- **2026-08-10** — **The short realm path forms do NOT 404.**
+  `01-realms-and-paths.md` had said since 2026-05-17 "Do **not** use the short
+  form `/realms/alpha` — it 404s", and `CLAUDE.md` §4 repeated it. Verified
+  live: `/am/json/alpha/scripts`, `/am/json/realms/alpha/scripts` and the
+  canonical `/am/json/realms/root/realms/alpha/scripts` **all** return 200 with
+  an identical 121 results, and realm resolution is genuine (a bravo-only script
+  id is 404 under the alpha short form, 200 under bravo; a nonexistent realm
+  404s with a form-specific message, which is the control proving 200 is not a
+  catch-all). The long form stays the project convention — one canonical
+  spelling — but the stated reason was false, and code that treated the short
+  form as broken was defending against nothing. The practical bite:
+  `~/w/aic/who-changed` has been using `/am/json/$realm/scripts` successfully
+  all along, and `am-access` audit records store `http.request.path` **as
+  sent**, so a single window contains both spellings for one resource. Match
+  audit paths on the resource id, never on a realm-path prefix. Documented in
+  `01-realms-and-paths.md` and `04-scripts.md`.
+
+- **2026-08-10** — **AM scripts report "no author" as the literal string
+  `"null"`, not JSON `null`.** `04-scripts.md` described
+  `createdBy`/`lastModifiedBy` as "null" on product-internal scripts, which read
+  as JSON null. It is not: the wire value is the four-character string `"null"`,
+  with `creationDate`/`lastModifiedDate` set to `0`. Across 405 scripts in
+  alpha + bravo, **zero** JSON nulls appear in either field — all 810 values are
+  typed `string` — and `"null"` accounts for 277 `createdBy` and 184
+  `lastModifiedBy` values. `Option<String>` therefore yields `Some("null")` and
+  any absence test passes it straight through to the display layer as if it were
+  a DN. Two further wrinkles: the sentinel is **not** confined to product
+  defaults (38 `default: true` and 42 `default: false` in alpha alone carry it),
+  and it does not always coincide with a zero date — the two
+  `ForgeRock Internal: …` scripts pair `createdBy: "null"` with a real 2015
+  `creationDate`, so "author unknown" and "date unknown" are independent tests.
+  Same field, third representation: on `description`, `"null"` (19 records) and
+  genuine JSON `null` (11) both occur. Documented in `04-scripts.md`.
+
 - **2026-08-10** — Internal roles have a **non-round-trippable read**: a bare
   `GET /openidm/internal/role/{id}` returns `temporalConstraints`, and `PUT`ting
   that value back — including the empty array the read itself produced — returns
-  `403 "Policy validation failed"` naming the field as invalid on write. Isolated
-  against a positive control: `condition` may be written back (200), `_id` and
-  `_rev` may stay in the body (200), only `temporalConstraints` must be dropped
-  (403 when retained). Naive read-modify-write on this collection therefore fails
-  on the *first* write, not subtly later.
+  `403 "Policy validation failed"` naming the field as invalid on write.
+  Isolated against a positive control: `condition` may be written back (200),
+  `_id` and `_rev` may stay in the body (200), only `temporalConstraints` must
+  be dropped (403 when retained). Naive read-modify-write on this collection
+  therefore fails on the _first_ write, not subtly later.
 
   This corrects `18-internal-roles.md` for the third time in one day. The
-  preceding correction had just replaced "use `_fields`" with "do a bare `GET` so
-  you hold the whole object" — advice that is itself wrong for exactly this
+  preceding correction had just replaced "use `_fields`" with "do a bare `GET`
+  so you hold the whole object" — advice that is itself wrong for exactly this
   reason. Found by an implementation agent probing the body shape before writing
   the feature, not by review of the doc.
-
 
 - **2026-08-10 (same day, self-correction)** — `18-internal-roles.md` was
   published hours earlier claiming internal roles have **no `_rev` and no
   conditional-write support**. Both are wrong. Reads carry a `_rev`, and
   `If-Match` is honoured: current revision → 200, superseded revision → **412**,
-  `If-Match: *` → 200. Internal roles are therefore a conditional-write family in
-  the `CLAUDE.md` §5 sense, and amend-and-write should send `If-Match`. The false
-  claim came from generalising `config/access` — which genuinely has no `_rev` —
-  onto internal roles a few paragraphs later in the same document, while probe
-  output showing `_rev` was on screen. It was caught by an implementation agent
-  that was told the doc was ground truth and stopped rather than coding around
-  the contradiction; that instruction is the only reason it surfaced before
-  shipping.
+  `If-Match: *` → 200. Internal roles are therefore a conditional-write family
+  in the `CLAUDE.md` §5 sense, and amend-and-write should send `If-Match`. The
+  false claim came from generalising `config/access` — which genuinely has no
+  `_rev` — onto internal roles a few paragraphs later in the same document,
+  while probe output showing `_rev` was on screen. It was caught by an
+  implementation agent that was told the doc was ground truth and stopped rather
+  than coding around the contradiction; that instruction is the only reason it
+  surfaced before shipping.
 
   Two further schema/reality divergences found while correcting it: `privileges`
   is returned on bare reads and bare list queries **despite**
@@ -504,7 +537,6 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   showed the shared confound. Both are the same lesson as the 2026-08-07
   retractions: one observation is not a mechanism, and a batch without a control
   is not evidence.
-
 
 - **2026-08-04** — Relationship `resourceCollection[].query` verified **required
   by the admin console** even though `config/managed` accepts an entry without
