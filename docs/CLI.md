@@ -393,6 +393,51 @@ confirmation.
 
 ---
 
+## `aic access` — IDM authorization rules
+
+`config/access` is a tenant-global, ordered array of grant rules. Rules are
+OR-ed: adding a rule can only grant access, while narrowing or removing an
+existing grant can revoke access and lock operators out.
+
+```bash
+aic access list [--json] [--role R] [--pattern P] [--method M] [--duplicates] [--warnings]
+aic access show <index-or-digest> [--json]
+aic access get [--out FILE]
+aic access add --pattern P --roles R --methods M [--actions A] [--custom-authz S] [--exclude-patterns S] [write flags]
+aic access edit <index> [--pattern P] [--roles R] [--methods M] [--actions A] [--custom-authz S] [--exclude-patterns S] [--clear-actions] [--clear-custom-authz] [--clear-exclude-patterns] [write flags]
+aic access rm <index>... [write flags]
+aic access apply <file> [write flags]
+```
+
+All commands accept `--tenant <name>`. The write flags are `--if-digest <hex>`,
+`--yes`, `--dry-run`, and `--no-backup`. `list` prints the whole-document digest
+used by `--if-digest`; a write with a stale digest is refused. It also prints
+each rule's 0-based index and 8-character rule digest. Writes use the index
+because duplicate rules are legal—several byte-identical entries make “replace
+this entry” ambiguous by content. `show` may use either address; a digest that
+identifies duplicates shows every matching entry, and `list --duplicates`
+filters to all members of duplicate groups.
+
+`list` validates the whole document but **counts** its warnings rather than
+printing them — the sandbox's own 65 rules produce 28, so spelling them out
+buries the table and trains you to ignore the line that matters. `--warnings`
+spells them out. Write verbs are the opposite: their warnings are already scoped
+to the rules the command touched, so those always print.
+
+Before a write, the fetched document is saved with mode 0600 at
+`.aic/backups/access-<tenant>-<UTC>.json` unless `--no-backup` is supplied.
+`--dry-run` prints the rule-level change summary without writing or creating a
+backup. Writes prompt after showing the summary unless `--yes` is supplied;
+global `--no-prompt` therefore requires `--yes` for a real write.
+
+`aic access get --out access.json`, edit the file, then
+`aic access apply access.json` is the guarded hand-edit workflow. Restore a
+backup through the same path:
+`aic access apply .aic/backups/access-<tenant>-<UTC>.json` validates,
+summarizes, backs up the current document, and then restores the saved one.
+
+---
+
 ## `aic oauth` — OAuth2 clients
 
 Realm-scoped. Clients pull/push as JSON under the workspace.

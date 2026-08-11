@@ -5,8 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::Result;
-use crate::cli::{print_json, print_table, tenant_config_for, tenant_for};
-use crate::config::TenantTheme;
+use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, print_table, tenant_for};
 use crate::managed::{api, ops, spec, state};
 use crate::undo::{DiskLog, UndoLog};
 
@@ -838,34 +837,6 @@ fn refuse_shipped(object: &Value, action: &str) -> Result<()> {
 fn confirmation(message: &str) {
     eprintln!("{message}; undo it from the TUI history overlay");
 }
-/// Permission to write to one tenant: either it isn't production, or `--yes` was
-/// given. Only [`ensure_prod_confirmed`] constructs one and only [`put_managed`]
-/// consumes one, so a command cannot reach the tenant without having passed the
-/// check — the guard is duplicated across nine call sites and nothing else would
-/// notice a tenth that forgot it.
-#[must_use]
-struct WriteOk<'a> {
-    tenant: &'a str,
-    /// Whether the user explicitly confirmed. Forwarded to the API layer, which
-    /// applies its own production gate.
-    confirmed_prod: bool,
-}
-
-/// Refuse an unconfirmed production write. Called *before* fetching the document
-/// or recording undo, so a refusal leaves no undo entry for a write that never
-/// happened.
-fn ensure_prod_confirmed(tenant: &str, yes: bool) -> Result<WriteOk<'_>> {
-    if tenant_config_for(Some(tenant.to_string()))?.theme == TenantTheme::Production && !yes {
-        return Err(crate::Error::Config(
-            "tenant is production — re-run with --yes to confirm the write".into(),
-        ));
-    }
-    Ok(WriteOk {
-        tenant,
-        confirmed_prod: yes,
-    })
-}
-
 /// The only path from a mutated document to the tenant.
 async fn put_managed(ok: &WriteOk<'_>, doc: Value, expect: &[api::ConfigConfirm]) -> Result<()> {
     api::replace_managed_confirmed(ok.tenant, doc, expect, ok.confirmed_prod).await
