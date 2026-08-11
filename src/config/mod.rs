@@ -615,6 +615,7 @@ impl ProjectConfig {
              # Machine-local, per-person settings — not project content.\n\
              settings.toml\n\
              local-config/\n\
+             backups/\n\
              *.log\n",
         );
         content
@@ -792,6 +793,9 @@ mod tests {
         // A shared settings.toml silently assigns one teammate's operator name
         // to everyone else using the project.
         assert!(content.lines().any(|line| line == "settings.toml"));
+        // Every tenant snapshot written below ProjectConfig::dir() is private
+        // project state; a write_gitignore() call alone does not cover it.
+        assert!(content.lines().any(|line| line == "backups/"));
         // Both known stems must resolve back from their wire `kind`.
         assert_eq!(VaultArtifact::from_kind("keys"), Some(VaultArtifact::Jwks));
         assert_eq!(
