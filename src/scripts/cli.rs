@@ -99,6 +99,34 @@ pub enum ScriptCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
+    /// Show who created and last modified a script, and when.
+    ///
+    /// Resolves AM's principal DNs to names. Only AM scripts record this —
+    /// every IDM config object (`endpoint/`, `schedule/`, `managed/`, `sync/`)
+    /// carries no authorship at all, and `who` says so rather than guessing.
+    /// The fields only ever name the *latest* writer; `--history` lists earlier
+    /// ones from the log API.
+    Who {
+        #[arg(
+            help = "<namespace>/<name> (e.g. alpha/Email OTP), or a bare name in a workspace subdir"
+        )]
+        reference: String,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(
+            long,
+            help = "Also list recent successful updates from the log API (30-day server retention)"
+        )]
+        history: bool,
+        #[arg(
+            long,
+            default_value_t = 60,
+            help = "History lookback in minutes (max 1440)"
+        )]
+        minutes: u32,
+        #[arg(long, help = "Print as JSON")]
+        json: bool,
+    },
     /// Bidirectionally sync the workspace with the tenant: push local-only
     /// changes, pull remote-only changes, and resolve conflicts (both changed).
     /// Scope with an optional <ref>; default reconciles everything synced.
@@ -485,6 +513,17 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             }
             Ok(())
         }
+        ScriptCommand::Who {
+            reference,
+            tenant,
+            history,
+            minutes,
+            json,
+        } => {
+            let t = tenant_for(tenant)?;
+            let (ns, name) = parse_one(&reference)?;
+            who(&t, &ns, &name, history, minutes, json).await
+        }
         ScriptCommand::Sync {
             reference,
             resolve,
@@ -736,6 +775,218 @@ async fn generate_sync_mapping_types(tenant: &str) -> usize {
         }
     }
     written
+}
+
+/// `aic script who` — who created and last modified a script.
+///
+/// Two calls for the fields (list to find the wire id, then a read), plus at
+/// most one principal lookup per distinct author. `--history` adds the log
+/// query, which is a different API with its own credentials.
+async fn who(
+    tenant: &str,
+    ns: &Namespace,
+    name: &str,
+    history: bool,
+    minutes: u32,
+    json: bool,
+) -> Result<()> {
+    use script::authorship::{self as auth, Authorship, PrincipalCache};
+
+    let full = script::full_name(ns.kind, ns.realm.as_deref(), name);
+
+    // Only AM records this. Saying so beats inventing a fallback — verified
+    // 2026-08-10 that IDM config objects carry no authorship and no `_rev`.
+    if !ns.kind.has_authorship() {
+        if json {
+            return print_json(&serde_json::json!({
+                "script": full,
+                "kind": ns.kind.as_str(),
+                "hasAuthorship": false,
+            }));
+        }
+        println!("{full}");
+        println!("  no authorship recorded — IDM config objects store neither an author");
+        println!("  nor a revision, so there is nothing to attribute this write to.");
+        println!("  The logs are the only route:");
+        println!("      aic logs range --source idm-access …");
+        return Ok(());
+    }
+
+    let refs = ns.kind.list(tenant, ns.realm_arg()).await?;
+    let sref = refs
+        .iter()
+        .find(|r| r.name == name)
+        .ok_or_else(|| Error::Config(format!("no script named {name:?} in {}", ns.realm_arg())))?;
+    let remote = ns.kind.fetch(tenant, ns.realm_arg(), &sref.id).await?;
+    let a = Authorship::from_config(&remote.raw_config);
+
+    // One lookup per distinct principal: created and modified are usually the
+    // same account, and the cache makes that one request rather than two.
+    let mut cache = PrincipalCache::default();
+    let created = cache.resolve(tenant, &a.created.by).await;
+    let modified = cache.resolve(tenant, &a.modified.by).await;
+
+    let events = if history {
+        Some(update_history(tenant, &sref.id, minutes, &mut cache).await?)
+    } else {
+        None
+    };
+
+    if json {
+        let mut out = serde_json::json!({
+            "script": full,
+            "kind": ns.kind.as_str(),
+            "id": sref.id,
+            "hasAuthorship": true,
+            "created": author_json(&a.created, created.as_ref()),
+            "modified": author_json(&a.modified, modified.as_ref()),
+        });
+        if let Some(events) = &events {
+            out["history"] = serde_json::json!(
+                events
+                    .iter()
+                    .map(|e| serde_json::json!({ "at": e.at, "by": e.by }))
+                    .collect::<Vec<_>>()
+            );
+        }
+        return print_json(&out);
+    }
+
+    println!("{full}");
+    println!(
+        "  last modified  {}  by {}",
+        auth::format_local(a.modified.at),
+        auth::describe_author(&a.modified.by, modified.as_ref())
+    );
+    println!(
+        "  created        {}  by {}",
+        auth::format_local(a.created.at),
+        auth::describe_author(&a.created.by, created.as_ref())
+    );
+    // Said once, not per line: `aic`'s own pushes all land on the shared SA, so
+    // without this the output reads as though a person made the change.
+    if auth::is_service_account(modified.as_ref()) || auth::is_service_account(created.as_ref()) {
+        println!(
+            "  note: a service account is a shared credential — it does not identify\n        \
+             which operator ran the write."
+        );
+    }
+
+    if let Some(events) = events {
+        println!();
+        println!("  successful updates in the last {minutes} min (log retention is 30 days):");
+        if events.is_empty() {
+            println!("    none");
+        }
+        for e in events {
+            println!("    {}  {}", e.at, e.by);
+        }
+    }
+    Ok(())
+}
+
+/// The log API's own per-query span limit.
+///
+/// 1440 is the **server's** number, not a client-side courtesy: a wider span is
+/// rejected with `400 … "Cannot request more than one days worth of logs"`
+/// (verified 2026-08-10 with a 13.89-day window; also `docs/api/08-logs.md`).
+/// Retention is much longer — about 30 days — so the cap is on the *window*, not
+/// on how far back events live. Checked locally so the operator gets that
+/// distinction rather than the server's phrasing.
+const MAX_HISTORY_MINUTES: u32 = 24 * 60;
+
+fn validate_minutes(minutes: u32) -> Result<()> {
+    if (1..=MAX_HISTORY_MINUTES).contains(&minutes) {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "--minutes must be between 1 and {MAX_HISTORY_MINUTES}: the log API refuses a \
+         query spanning more than one day. Older events are retained (about 30 days) \
+         but need a narrower window placed further back."
+    )))
+}
+
+/// One `am-access` update event, already resolved to a name.
+struct UpdateEvent {
+    at: String,
+    by: String,
+}
+
+/// Recent **successful** script updates from `am-access`.
+///
+/// Two filters are load-bearing, both verified 2026-08-10:
+/// `AM-ACCESS-OUTCOME` (attempt and outcome are logged as a pair), and
+/// `status eq "SUCCESSFUL"` — because every `PUT` update *also* logs a phantom
+/// `CREATE`/`FAILED`/412 "already exist" event sharing one `transactionId` with
+/// the real `UPDATE`. Without both, the history shows failures that never
+/// happened. `userId` here is the full DN, identical to `lastModifiedBy`, so it
+/// feeds the same resolver and the same cache.
+async fn update_history(
+    tenant: &str,
+    script_id: &str,
+    minutes: u32,
+    cache: &mut script::authorship::PrincipalCache,
+) -> Result<Vec<UpdateEvent>> {
+    use script::authorship::{self as auth, Author};
+
+    validate_minutes(minutes)?;
+    let end = chrono::Utc::now();
+    let begin = end - chrono::Duration::minutes(minutes as i64);
+    let stamp = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    // Matches on the resource id, never a path prefix: `am-access` records the
+    // URL exactly as the client sent it, and the realm segment has three
+    // interchangeable spellings (CLAUDE.md §4).
+    let filter = format!(
+        "/payload/component eq \"Script\" \
+         and /payload/eventName eq \"AM-ACCESS-OUTCOME\" \
+         and /payload/response/status eq \"SUCCESSFUL\" \
+         and /payload/request/operation eq \"UPDATE\" \
+         and /payload/http/request/path co \"{script_id}\""
+    );
+    let params = vec![
+        ("source".to_string(), "am-access".to_string()),
+        ("beginTime".to_string(), stamp(begin)),
+        ("endTime".to_string(), stamp(end)),
+        ("_queryFilter".to_string(), filter),
+    ];
+
+    let context = crate::logs::ops::fetch_context(Some(tenant.to_string())).await?;
+    let rows =
+        crate::logs::api::fetch_all(&context.client, &context.base_url, &context.key, &params)
+            .await?;
+
+    let mut events = Vec::new();
+    for row in rows {
+        let payload = row.get("payload").unwrap_or(&row);
+        let at = payload
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let author = Author::parse(payload.get("userId"));
+        let identity = cache.resolve(tenant, &author).await;
+        events.push(UpdateEvent {
+            at,
+            by: auth::describe_author(&author, identity.as_ref()),
+        });
+    }
+    Ok(events)
+}
+
+/// A `Change` as JSON, with the machine-readable author kind alongside the
+/// display string so a consumer never has to parse prose.
+fn author_json(
+    change: &script::authorship::Change,
+    resolved: Option<&script::authorship::Identity>,
+) -> serde_json::Value {
+    use script::authorship as auth;
+    serde_json::json!({
+        "by": auth::describe_author(&change.by, resolved),
+        "kind": auth::author_kind(&change.by, resolved),
+        "principalId": change.by.principal_id(),
+        "at": auth::format_iso(change.at),
+    })
 }
 
 /// One unit of script-sync work: a namespace and which scripts within it.
@@ -1504,6 +1755,27 @@ mod tests {
     use super::*;
     use clap::Parser;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn history_window_is_capped_at_the_servers_one_day_limit() {
+        // The boundary itself, from both sides: 1440 is accepted because the
+        // server accepts exactly one day, and 1441 is refused *locally* so the
+        // operator is told the window moved rather than being handed the log
+        // API's own "13.89 days worth of data requested" phrasing.
+        assert!(validate_minutes(1).is_ok());
+        assert!(validate_minutes(60).is_ok());
+        assert!(validate_minutes(MAX_HISTORY_MINUTES).is_ok());
+
+        let err = validate_minutes(MAX_HISTORY_MINUTES + 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("1440"), "{err}");
+        // The retention-vs-window distinction is the actionable part of the
+        // message: the events are still there, the query just cannot span to them.
+        assert!(err.contains("30 days"), "{err}");
+        // Zero is not "no limit".
+        assert!(validate_minutes(0).is_err());
+    }
 
     #[test]
     fn fatal_watch_errors_stop_the_loop() {
