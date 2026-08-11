@@ -15,12 +15,17 @@ findings). Each should name the guard that will eventually retire it.
   serve a prompt (network reads, tenant resolution, agent round-trips) is pure
   waste repeated forever. _Guard: none yet — wants a test asserting the
   non-interactive path makes no `aic::api` call._
-- **Machine-local state added to `.aic/settings.toml` must be covered by
-  `ProjectConfig::write_gitignore`.** `.aic/` is ignored in _this_ repo but not
-  in user projects, where `config.toml` is deliberately shareable — anything
-  per-person or per-machine that lands beside it will be committed and then
-  silently applied to the whole team. _Guard: extend
-  `gitignore_covers_every_artifact_stem` to assert `settings.toml`._
+- **Anything new written under `ProjectConfig::dir()` must appear in
+  `gitignore_content()` — not merely be preceded by a `write_gitignore()`
+  call.** `.aic/` is ignored in _this_ repo but not in user projects, where
+  `config.toml` is deliberately shareable — anything per-person, per-machine or
+  per-tenant that lands beside it will be committed and then silently applied to
+  the whole team. Seen twice: `settings.toml` (2026-08-06) and `.aic/backups/`
+  (2026-08-11, where the code did call `write_gitignore()` and the content it
+  writes still covered nothing). _Guard: `gitignore_covers_every_artifact_stem`
+  iterates `VaultArtifact::ALL`, so each non-artifact path needs its own
+  assertion — `settings.toml` and `backups/` both have one now. Any future
+  writer under `ProjectConfig::dir()` must add a third._
 - **A `## Verified against` entry must record calls that support its
   conclusion.** Not merely calls that were made — check that the experiment
   described could actually distinguish the outcomes it claims to distinguish. An
@@ -45,14 +50,19 @@ findings). Each should name the guard that will eventually retire it.
   list). _Guard: one test per verb asserting the confirmation fails against a
   document where the write was silently discarded._
 
-- **Ask whether a test could fail if the code were wrong.** Seen twice now
+- **Ask whether a test could fail if the code were wrong.** Seen three times now
   (`ops::rotate_steps`' ordering test, 2026-08-07; `access::spec`'s
-  `actions_absent_and_empty_are_distinct_and_preserved`, 2026-08-11). Both name
-  the invariant in the test name and then assert a property of the language or
-  of the fixture literal instead of running the value through the code path that
-  is supposed to preserve it. _Guard: for each new test, name the edit to
-  production code that would turn it red; if there is none, the test is
-  documentation._
+  `actions_absent_and_empty_are_distinct_and_preserved`, 2026-08-11;
+  `access::ops`' "remove addressed duplicate" row, 2026-08-11). The first two
+  name the invariant in the test name and then assert a property of the language
+  or of the fixture literal. The third is subtler and worth its own clause:
+  **when a fix replaces a guessing algorithm, the regression test must use an
+  input on which guess and truth differ.** Removing index 5 of a duplicate pair
+  and removing index 4 yield the identical document, so the alignment-based
+  derivation the fix deleted returns the right answer for index 5 and the wrong
+  one for index 4 — and the test picked 5. _Guard: for each new test, name the
+  edit to production code that would turn it red; for a regression test, state
+  the wrong answer the old code gave for that exact input._
 
 - **No cryptographic key generation in the default test path.** An RSA keygen is
   seconds, not milliseconds; one of them took this suite from 0.33s to 8.31s
@@ -70,6 +80,37 @@ findings). Each should name the guard that will eventually retire it.
   that resolves the finding would have been. _Guard: none automatable; this is a
   review judgement._
 
+- **A confirmation prompt must gate on `prompt_available()`, not
+  `prompting_disabled()`.** `prompting_disabled()` only reads the `--no-prompt`
+  flag. inquire's `NotTTY` is not a substitute: crossterm's `tty_fd` falls back
+  to opening `/dev/tty` when stdin is not a terminal, so a command whose stdin
+  is a pipe but which has a controlling terminal enables raw mode and **blocks
+  on a keypress** — invisibly, if stderr is redirected.
+  `should_prompt(no_prompt, stdin_tty, stderr_tty, tty_openable)` in
+  `src/cli/mod.rs` is the repo's correct, table-tested predicate. _Guard: one
+  lifted `cli::confirm_destructive(...)` helper plus a `repo_hygiene` grep test
+  (same shape as `no_direct_key_generation_under_cfg_test`) asserting no
+  `Confirm::new` outside `src/cli/` and `src/tui/`. Three copies exist today —
+  `scripts/cli.rs`, `roles/cli.rs`, `access/cli.rs`._
+
+- **`--dry-run` must remove the write capability, not branch around the write.**
+  An `if dry_run { return Ok(()) }` placed before the write is an ordering
+  convention that any later edit can invalidate, and it also drags the
+  production `--yes` gate onto a command that writes nothing — which teaches
+  operators to type `--dry-run --yes` on prod, one deleted word away from an
+  unprompted write. _Guard: make the permission token (`WriteOk`) an `Option`
+  that is `None` in dry-run, so the write path is unreachable by construction
+  rather than by statement order._
+
+- **After a CLI slice over a shared `spec`/`ops`, audit `cli.rs`'s private
+  helpers.** Each one is either presentation (stays) or a property of the
+  document (belongs in `ops`/`spec`, because the tab needs it too). Seen twice:
+  the core slice missing `RoleIndex`/digest-address/`--if-digest` (2026-08-11),
+  then the CLI slice keeping duplicate detection and the comma-list field
+  predicate in `cli.rs` while `spec::validate_document` computed duplicates
+  twice more (2026-08-11). _Guard: none automatable; ask of each private fn in a
+  feature's `cli.rs` whether a TUI tab would need it._
+
 - **Send the smallest credential that works.** Before a new transport helper
   attaches the service-account bearer, ask whether the call authenticates some
   other way — OAuth2 token endpoints authenticate by client credentials in the
@@ -80,6 +121,53 @@ findings). Each should name the guard that will eventually retire it.
   `AicClient::url`._
 
 ## Findings log
+
+### 2026-08-11 — `write_gitignore()` was called; the gitignore covered nothing
+
+- **What:** `access::cli::backup_document` writes a tenant's whole authorization
+  document to `.aic/backups/access-<tenant>-<UTC>.json` at mode 0600, and does
+  call `ProjectConfig::write_gitignore()` first — but `gitignore_content()`
+  emits only the vault stems, `wraps.toml`, `settings.toml`, `local-config/` and
+  `*.log`. No `backups/`. In a user project, where `.aic/config.toml` is
+  deliberately committable, `git add .aic` commits every backup.
+- **Why missed:** the spec (`.ai/access-spec.md` §5.2) said "mode 0600, after
+  `ProjectConfig::write_gitignore()`", and both the implementer and the review
+  checked for the call. Standing check 2 named `settings.toml` specifically, so
+  it read as satisfied. `.gitignore:39` ignores `.aic/` wholesale in this repo,
+  so nothing local could surface it.
+- **Guard:** standing check 2 broadened above; concretely, one assertion per
+  non-artifact path under `ProjectConfig::dir()` in
+  `gitignore_covers_every_artifact_stem`.
+
+### 2026-08-11 — the prod gate fired on `--dry-run`
+
+- **What:** `access::cli::write` calls `ensure_prod_confirmed` before it
+  branches on `--dry-run`, so previewing a change on a production tenant
+  requires `--yes` — the flag whose whole purpose is to skip the confirmation.
+  The habit that builds (`--dry-run --yes`) is one deleted word from an
+  unprompted prod write.
+- **Why missed:** first sighting. The spec ordered the prod gate "before any
+  fetch" and the review checked the order; nobody asked whether the gate applies
+  to a verb that performs no write. A dry run is not a write, but it was
+  implemented as a write that returns early.
+- **Guard:** standing check above — represent dry-run as the absence of a
+  `WriteOk`, which makes both the gate and the write inapplicable by
+  construction.
+
+### 2026-08-11 — a guard lifted into `cli` while a sibling guard stayed triplicated
+
+- **What:** the slice correctly lifted `WriteOk`/`ensure_prod_confirmed` from
+  `managed/cli.rs` to `cli/mod.rs`, then wrote a third near-verbatim copy of the
+  inquire confirm helper (`scripts/cli.rs`, `roles/cli.rs`, `access/cli.rs`) —
+  and all three gate on `prompting_disabled()` rather than the repo's
+  table-tested `prompt_available()`, which is the one that catches the
+  stdin-piped-but-`/dev/tty`-openable hang.
+- **Why missed:** the prompt named the guard to lift (`WriteOk`) and the copy
+  that got made was of the code immediately adjacent to it in the most recent
+  sibling feature (`roles`, shipped one commit earlier). Copying the newest
+  neighbour propagates its defects at the speed the codebase grows.
+- **Guard:** standing checks above; the automatable half is the `repo_hygiene`
+  grep test banning `Confirm::new` outside `src/cli/` and `src/tui/`.
 
 ### 2026-08-06 — operator identity slice
 
