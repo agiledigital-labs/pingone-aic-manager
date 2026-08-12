@@ -177,6 +177,24 @@ type RecordResult<T> = [T] extends [never] ? any : T;
 // draft `object`, which has neither yet.
 type StoredRecord<T> = T & { _id: string; _rev: string };
 
+// Parameters a managed-object query honours. `_queryFilter` stays required —
+// IDM rejects a query without one. `_fields`, `_sortKeys` and the paging cursor
+// are all exercised against the live tenant in `docs/api/10-managed-objects.md`;
+// note that offset paging is deliberately not named, because deep offsets can
+// skip or duplicate records and the cursor is the supported walk.
+//
+// The index signature is deliberate. An exact object type here is precisely why
+// `_fields` was a type error rather than a supported parameter, and a misspelled
+// `_queryFilter` is still caught by the required key.
+interface QueryParams {
+  _queryFilter: string;
+  _fields?: string;
+  _sortKeys?: string;
+  _pageSize?: number;
+  _pagedResultsCookie?: string | null;
+  [param: string]: string | number | null | undefined;
+}
+
 interface OpenIdm {
   read<R extends `${ManagedName}/${string}` | (string & {})>(
     path: R,
@@ -193,7 +211,7 @@ interface OpenIdm {
   ): [ManagedRecordOf<R>] extends [never] ? any : ManagedRecordOf<R> | null;
   query<R extends ManagedName | (string & {})>(
     path: R,
-    params: { _queryFilter: string }
+    params: QueryParams
   ): [ManagedCollectionOf<R>] extends [never]
     ? any
     : QueryResult<ManagedCollectionOf<R>>;
