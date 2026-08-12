@@ -418,11 +418,19 @@ this entry” ambiguous by content. `show` may use either address; a digest that
 identifies duplicates shows every matching entry, and `list --duplicates`
 filters to all members of duplicate groups.
 
+`list` prints one indented block per rule, headed by its index and rule digest,
+rather than one row per rule. A key the rule omits gets **no line**, so an
+absent `actions` is visually distinct from `actions: ""` — six of the sandbox's
+65 rules legitimately omit the key, and a single-row table rendered both as
+blank. `customAuthz` is clipped to one line; use `aic access show <address>` or
+`--json` for the body. Role paths print in full, so they paste straight back
+into `--roles`.
+
 `list` validates the whole document but **counts** its warnings rather than
 printing them — the sandbox's own 65 rules produce 28, so spelling them out
-buries the table and trains you to ignore the line that matters. `--warnings`
-spells them out. Write verbs are the opposite: their warnings are already scoped
-to the rules the command touched, so those always print.
+buries the rule blocks and trains you to ignore the line that matters.
+`--warnings` spells them out. Write verbs are the opposite: their warnings are
+already scoped to the rules the command touched, so those always print.
 
 Before a write, the fetched document is saved with mode 0600 at
 `.aic/backups/access-<tenant>-<UTC>.json` unless `--no-backup` is supplied.
