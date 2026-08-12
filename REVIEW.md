@@ -139,6 +139,28 @@ findings). Each should name the guard that will eventually retire it.
   _Guard: assert on `WireRequest::current(...)` with `protocol_version` in the
   expected literal, so the shape pin and the version check are one test._
 
+- **Lifting a shared line is not the same as removing the duplication.** When a
+  finding says "lift X into the shared module and use it from both", check what
+  stayed behind. If each caller now holds an identical wrapper around the lifted
+  primitive, the duplication moved up a level and _grew_ — the shared home got
+  the easy arithmetic and each feature kept the invariant. Ask which **type**
+  should own the invariant, not which function should own the expression. Seen
+  2026-08-12: `list_chrome::clamp_detail_scroll` (one line, shared) against a
+  24-line `Cell`-plus-three-methods block copied verbatim into `access::State`
+  and `oauth::State`. Count the call sites before believing "both" — there were
+  three (`secretmap`), and the third was dead. _Guard: none automatable; a grep
+  for identical method bodies across `src/*/state.rs` is conceivable._
+
+- **A glyph, flag or column legend must be reachable from the mode that renders
+  it.** `tui/keybind_help.rs::lines_for` routes `InputMode::Normal` to
+  `normal_lines`, which renders `normal_binds` plus one hardcoded `View::Esvs`
+  block and **never** consults a feature's `help_lines`. Anything a feature puts
+  in `help_lines(SomeMode)` is invisible while browsing — and `?` inside a
+  search mode is typed into the query rather than opening help, so a search-mode
+  legend hides behind `/` then `F1`. _Guard: a test asserting every glyph a
+  view's table can render appears in `keybind_help::lines_for` for that view
+  under `InputMode::Normal`._
+
 ## Findings log
 
 ### 2026-08-11 — `write_gitignore()` was called; the gitignore covered nothing
@@ -508,3 +530,34 @@ findings). Each should name the guard that will eventually retire it.
   `#[serde(flatten)]` field one level up. Implementer and brief-author were both
   looking at the right mechanism in the wrong place.
 - **Guard:** the standing check above.
+
+### 2026-08-12 — the clamp was reviewed; the keybind was never registered
+
+- **What:** a review filed a finding against
+  `access::State::clamp_detail_scroll`'s over-scroll behaviour — "five `^D`
+  presses leave `detail_scroll == 50`". On the Access tab that could not happen:
+  `normal_binds`' chain read `else if oauth_view && n > 0`, `access_view`
+  appeared nowhere else in it, and `dispatch_normal` resolves acts from that
+  same table, so `^D`/`^U` were unbound and the whole clamp was dead code. The
+  real defect was a missing registration, not a wrong bound.
+- **Why missed:** §9 of `CLAUDE.md` warns that `normal_binds` is the one site
+  the compiler cannot check, and the reviewer read that as "check the hints are
+  listed" rather than "check the action is reachable". A dead code path is
+  exactly what lets you verify arithmetic in isolation and feel finished.
+- **Guard:** for any new view-specific `Act`, a table test over
+  `(View, KeyEvent) -> Option<Act>` asserting `dispatch_normal` resolves it.
+  That catches both directions — an unbound act, and an act bound on the wrong
+  view.
+
+### 2026-08-12 — 544 tests, two reviews, and a feature nothing could reach
+
+- **What:** the same slice shipped a `FLAGS` column whose legend lived in
+  `help_lines(Mode::Search)`, unreachable from the normal mode that renders the
+  glyphs. Combined with the entry above: two separate user-facing paths in one
+  feature were unreachable while every gate was green.
+- **Why missed:** fmt, clippy `-D warnings`, 544 tests and two human reviews all
+  test the **code**; none tests the **wiring**. Reachability has no gate here.
+- **Guard:** for any change adding a user-facing action or symbol, trace the
+  path from keystroke or CLI argument to the new code and name the registration
+  site in the review. Proposed as a `review-craft` principle, not just a repo
+  check.
