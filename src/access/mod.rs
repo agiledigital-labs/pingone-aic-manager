@@ -1,14 +1,25 @@
-//! IDM `config/access` API, validation, and pure document transforms.
+//! IDM `config/access` API, CLI, read-only TUI browser, validation, and pure
+//! document transforms.
 //!
 //! Endpoint shapes and safety constraints are documented in
 //! `docs/api/19-config-access.md`. The document has no `_rev`, so callers must
 //! use content snapshots as their write precondition. Its `configs` rules are
 //! a disjunction: appending a rule can grant access, but can never revoke it.
+//!
+//! File map:
+//! - [`api`] = whole-document HTTP wrappers.
+//! - [`spec`] / [`ops`] = tenant-free projections, validation, digests, and
+//!   in-place document transforms shared by CLI and TUI callers.
+//! - [`screen`] / [`view`] / [`state`] = the browse-only TUI tab.
+//! - [`cli`] = guarded `aic access` read and write commands.
 
 pub mod api;
 pub mod cli;
 pub mod ops;
+pub mod screen;
 pub mod spec;
+pub mod state;
+pub mod view;
 
 #[cfg(test)]
 pub(crate) fn six_rule_fixture() -> serde_json::Value {

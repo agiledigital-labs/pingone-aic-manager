@@ -245,6 +245,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     let esv_view_active = app.active_view == View::Esvs;
     let managed_view = app.active_view == View::Managed;
     let mappings_view = app.active_view == View::Mappings;
+    let access_view = app.active_view == View::Access;
     let idmstore_view = app.active_view == View::IdmStore;
     let oauth_view = app.active_view == View::Oauth;
     let mappings_allowed = mappings_allowed(app);
@@ -441,7 +442,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     if managed_view {
         out.push(hint(&[Trigger::Ctrl('n')], "^N", "new object", NewObject));
     }
-    if managed_view || mappings_view || idmstore_view || oauth_view || mappings {
+    if managed_view || mappings_view || access_view || idmstore_view || oauth_view || mappings {
         out.push(hint(&[Trigger::Ctrl('r')], "^R", "refresh", Refresh));
     }
 
@@ -520,6 +521,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         InputMode::Esv(_) => crate::esv::screen::footer_hints(app),
         InputMode::Managed(_) => crate::managed::screen::footer_hints(app),
         InputMode::Mappings(_) => crate::mappings::screen::footer_hints(app),
+        InputMode::Access(_) => crate::access::screen::footer_hints(app),
         InputMode::IdmStore(_) => crate::idmstore::screen::footer_hints(app),
         InputMode::Oauth(_) => crate::oauth::screen::footer_hints(app),
         InputMode::Selector => Vec::new(),
@@ -554,6 +556,7 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::Scripts(mode) => crate::scripts::screen::handle_key(app, key, mode),
         InputMode::Managed(mode) => crate::managed::screen::handle_key(app, key, mode),
         InputMode::Mappings(mode) => crate::mappings::screen::handle_key(app, key, mode),
+        InputMode::Access(mode) => crate::access::screen::handle_key(app, key, mode),
         InputMode::IdmStore(mode) => crate::idmstore::screen::handle_key(app, key, mode),
         InputMode::Oauth(mode) => crate::oauth::screen::handle_key(app, key, mode),
         InputMode::Secretmap(mode) => crate::secretmap::screen::handle_key(app, key, mode),
@@ -681,6 +684,7 @@ fn row_count(app: &App) -> usize {
         View::Scripts => crate::scripts::screen::row_count(app),
         View::Managed => crate::managed::screen::row_count(app),
         View::Mappings => crate::mappings::screen::row_count(app),
+        View::Access => crate::access::screen::row_count(app),
         View::IdmStore => crate::idmstore::screen::row_count(app),
         View::Oauth => crate::oauth::screen::row_count(app),
         View::Esvs => match crate::esv::screen::current_view(app) {
@@ -696,6 +700,7 @@ fn current_selection(app: &App) -> usize {
         View::Scripts => crate::scripts::screen::current_selection(app),
         View::Managed => crate::managed::screen::current_selection(app),
         View::Mappings => crate::mappings::screen::current_selection(app),
+        View::Access => crate::access::screen::current_selection(app),
         View::IdmStore => crate::idmstore::screen::current_selection(app),
         View::Oauth => crate::oauth::screen::current_selection(app),
         View::Esvs => match crate::esv::screen::current_view(app) {
@@ -712,6 +717,7 @@ fn set_selection(app: &mut App, idx: usize) {
         View::Scripts => crate::scripts::screen::set_selection(app, clamped),
         View::Managed => crate::managed::screen::set_selection(app, clamped),
         View::Mappings => crate::mappings::screen::select(app, clamped),
+        View::Access => crate::access::screen::select(app, clamped),
         View::IdmStore => crate::idmstore::screen::select(app, clamped),
         View::Oauth => crate::oauth::screen::select(app, clamped),
         View::Esvs => match crate::esv::screen::current_view(app) {
@@ -738,6 +744,7 @@ fn filter_active(app: &App) -> bool {
         View::Scripts => crate::scripts::screen::filter_active(app),
         View::Managed => crate::managed::screen::filter_active(app),
         View::Mappings => crate::mappings::screen::filter_active(app),
+        View::Access => crate::access::screen::filter_active(app),
         View::IdmStore => crate::idmstore::screen::filter_active(app),
         View::Oauth => crate::oauth::screen::filter_active(app),
         View::Esvs => match crate::esv::screen::current_view(app) {
@@ -753,6 +760,7 @@ fn clear_filter(app: &mut App) {
         View::Scripts => crate::scripts::screen::clear_filter(app),
         View::Managed => crate::managed::screen::clear_filter(app),
         View::Mappings => crate::mappings::screen::clear_filter(app),
+        View::Access => crate::access::screen::clear_filter(app),
         View::IdmStore => crate::idmstore::screen::clear_filter(app),
         View::Oauth => crate::oauth::screen::clear_filter(app),
         View::Esvs => match crate::esv::screen::current_view(app) {
@@ -768,6 +776,7 @@ fn primary(app: &mut App) {
         View::Scripts => crate::scripts::screen::primary(app),
         View::Managed => crate::managed::screen::primary(app),
         View::Mappings => crate::mappings::screen::primary(app),
+        View::Access => crate::access::screen::primary(app),
         View::IdmStore => crate::idmstore::screen::primary(app),
         View::Oauth => crate::oauth::screen::primary(app),
         View::Esvs => match crate::esv::screen::current_view(app) {
@@ -783,6 +792,7 @@ fn delete(app: &mut App) {
         View::Scripts => crate::scripts::screen::delete(app),
         View::Managed => crate::managed::screen::delete(app),
         View::Mappings => crate::mappings::screen::delete(app),
+        View::Access => crate::access::screen::delete(app),
         View::IdmStore => crate::idmstore::screen::delete(app),
         View::Oauth => crate::oauth::screen::delete(app),
         View::Esvs => match crate::esv::screen::current_view(app) {
@@ -798,6 +808,7 @@ fn new_item(app: &mut App) {
         View::Scripts => crate::scripts::screen::new_item(app),
         View::Managed => crate::managed::screen::new_item(app),
         View::Mappings => crate::mappings::screen::new_item(app),
+        View::Access => crate::access::screen::new_item(app),
         View::IdmStore => crate::idmstore::screen::new_item(app),
         View::Oauth => crate::oauth::screen::new_item(app),
         View::Esvs => match crate::esv::screen::current_view(app) {
@@ -813,6 +824,7 @@ fn search_mode(view: View) -> InputMode {
         View::Scripts => InputMode::Scripts(crate::scripts::screen::Mode::Search),
         View::Managed => InputMode::Managed(crate::managed::screen::Mode::Search),
         View::Mappings => InputMode::Mappings(crate::mappings::screen::Mode::Search),
+        View::Access => InputMode::Access(crate::access::screen::Mode::Search),
         View::IdmStore => InputMode::IdmStore(crate::idmstore::screen::Mode::Search),
         View::Oauth => InputMode::Oauth(crate::oauth::screen::Mode::Search),
         View::Esvs => InputMode::Esv(EsvMode::Search),

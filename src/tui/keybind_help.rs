@@ -76,6 +76,9 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
         InputMode::Mappings(mode) => {
             feature_lines(crate::mappings::screen::help_lines(mode), &mut lines)
         }
+        InputMode::Access(mode) => {
+            feature_lines(crate::access::screen::help_lines(mode), &mut lines)
+        }
         InputMode::IdmStore(mode) => {
             feature_lines(crate::idmstore::screen::help_lines(mode), &mut lines)
         }
