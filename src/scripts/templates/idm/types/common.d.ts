@@ -170,11 +170,26 @@ type ContentArg<T> = [T] extends [never] ? object : Partial<T>;
 
 type RecordResult<T> = [T] extends [never] ? any : T;
 
+// A record handed back by the store always carries `_id` and `_rev`: a managed
+// object instance is "`_id` and `_rev` plus its declared properties"
+// (docs/api/10-managed-objects.md). The generated managed interfaces still
+// leave both optional, because the same interface types the onCreate hook's
+// draft `object`, which has neither yet.
+type StoredRecord<T> = T & { _id: string; _rev: string };
+
 interface OpenIdm {
   read<R extends `${ManagedName}/${string}` | (string & {})>(
     path: R,
-    params?: Record<string, string> | null,
-    fields?: FieldsArg<ManagedRecordOf<R>, R>
+    params?: Record<string, string> | null
+  ): [ManagedRecordOf<R>] extends [never]
+    ? any
+    : StoredRecord<ManagedRecordOf<R>> | null;
+  // Restricting the returned fields drops the `_id`/`_rev` guarantee: we have
+  // not verified that IDM still includes them, so this form keeps them optional.
+  read<R extends `${ManagedName}/${string}` | (string & {})>(
+    path: R,
+    params: Record<string, string> | null | undefined,
+    fields: FieldsArg<ManagedRecordOf<R>, R>
   ): [ManagedRecordOf<R>] extends [never] ? any : ManagedRecordOf<R> | null;
   query<R extends ManagedName | (string & {})>(
     path: R,
