@@ -120,6 +120,25 @@ findings). Each should name the guard that will eventually retire it.
   `tenant.base_url`. _Guard: none yet — wants an origin assertion in
   `AicClient::url`._
 
+- **A shared row projection must return values, not display strings.** When one
+  `cells()`-style projection feeds both an auto-width CLI table and a
+  fixed-percentage TUI table, the two have opposite width models: the wide one
+  wants the word `dup`, the narrow one has room for one character, and the
+  shared literal loses. Keep booleans and `Option`s on the shared summary and
+  let each surface choose its glyph. _Guard: assert no marker literal is
+  reachable from the shared projection; per-column minimum-content assertions
+  rather than exact-width arrays._
+
+- **A wire-format pin must serialise the type that is actually written to the
+  socket.** `Request` travels inside `WireRequest<T>` via `#[serde(flatten)]`,
+  and flattening is where the shape can change without any field changing — an
+  internally-tagged _newtype_ variant reaches the flat map through serde's
+  `TaggedSerializer`, a _struct_ variant does not. A test that serialises the
+  inner enum proves nothing about the composition, and the failure mode is
+  `to_vec` returning `Err` for every daemon call with a fully green suite.
+  _Guard: assert on `WireRequest::current(...)` with `protocol_version` in the
+  expected literal, so the shape pin and the version check are one test._
+
 ## Findings log
 
 ### 2026-08-11 — `write_gitignore()` was called; the gitignore covered nothing
@@ -429,3 +448,63 @@ findings). Each should name the guard that will eventually retire it.
 - **Guard:** when reviewing a "core, CLI later" slice, walk the CLI surface in
   the spec (§7 here) verb by verb and ask which module each step lands in. Any
   step with no owner is a finding at core-review time, not at CLI-review time.
+
+### 2026-08-12 — the duplication ran the other way
+
+- **What:** the Access tab's `state::RuleRow::new` was character-for-character
+  `cli::RuleEntry::new`, and the column header array was duplicated verbatim
+  between `cli::print_rule_table` and `view::draw_table`. The shared primitives
+  (`spec::RuleView`, `short_digest`, `ops::duplicate_flags`) were used correctly
+  by both; what got rebuilt was the layer above them.
+- **Why missed:** the standing check above asks of each private fn in a
+  feature's `cli.rs` whether a TUI tab would need it — and it had been applied,
+  twice. This is the inverse direction: the **tab** rebuilt a helper the CLI
+  already had. The commit message then claimed the projection "come[s] from the
+  existing `spec`/`ops` seams, which needed no new helper", which was true of
+  the primitives and false of the projection.
+- **Guard:** make the check symmetric — when adding the second surface over an
+  existing feature, diff the new surface's row/summary construction against the
+  existing one before writing it. Also: a commit message asserting that no new
+  abstraction was needed is a claim to verify, not a note to skim.
+
+### 2026-08-12 — the fix for silent clipping pinned a mangled marker
+
+- **What:** D1's fix made every table column a `Percentage` and added ellipsis
+  truncation. At 80 columns the 5% `DUP` column then rendered the literal
+  `"dup"` as `d…` and its header `DUP` as `D…` — and a new test asserted `"d…"`
+  as intended behaviour, so the regression shipped pinned.
+- **Why missed:** the brief specified the constraint _kind_ (all `Percentage`)
+  and the truncation helper, but never asked which cell contents must survive
+  the narrowest column. Exact-width assertions record what the code does; they
+  cannot express what the operator must still be able to read.
+- **Guard:** per-column minimum-content assertions against named constants
+  (`FLAGS` fits two glyphs, `#` fits two digits for 65 rules) instead of pinning
+  width arrays the operator intends to tune by eye.
+
+### 2026-08-12 — the sentinel fix redefined the haystack as the display cells
+
+- **What:** D7 removed an `"<absent>"` sentinel from the fuzzy-search haystack,
+  then rebuilt the haystack as the shared `cells()` output — admitting the
+  marker literals `"dup"` and `"yes"` as undocumented match terms, and
+  perturbing scores for unrelated queries. Net: one display string removed, two
+  added.
+- **Why missed:** the fix was specified as "omit the field when `None`", which
+  it did. Nothing said the haystack must be built from _values_, so reusing the
+  projection that had just been lifted looked like concept reuse.
+- **Guard:** assert that no marker literal or glyph is a match term. Search
+  semantics defined by display formatting change silently when a glyph changes.
+
+### 2026-08-12 — the wire pin tested one level below the wire
+
+- **What:** three literal-JSON tests were added specifically to prove
+  `Request::ApiCall` still serialises to today's object after becoming a newtype
+  variant. All three serialised a bare `Request`; the socket carries
+  `WireRequest<Request>` with `#[serde(flatten)]`. The only pre-existing
+  `WireRequest` test uses `Ping`, a unit variant, which exercises none of the
+  relevant serde machinery. Had the composition not worked, `to_vec` would have
+  returned `Err` on every daemon call and all 528 tests would still have passed.
+- **Why missed:** the brief named the risk correctly — "serde flattens a newtype
+  variant" — but described the flattening done by the _enum tag_, not the
+  `#[serde(flatten)]` field one level up. Implementer and brief-author were both
+  looking at the right mechanism in the wrong place.
+- **Guard:** the standing check above.
