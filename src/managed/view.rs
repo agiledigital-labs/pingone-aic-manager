@@ -610,7 +610,7 @@ fn property_line(
         let prefix_width =
             name.chars().count() + property_type.chars().count() + 4 + usize::from(required);
         let available = max_width.saturating_sub(prefix_width + 3);
-        let metadata = truncate_metadata(&values, available);
+        let metadata = crate::tui::list_chrome::truncate_metadata(&values, available);
         spans.push(Span::styled(
             format!(" ({metadata})"),
             if selected {
@@ -621,16 +621,6 @@ fn property_line(
         ));
     }
     Line::from(spans)
-}
-
-fn truncate_metadata(value: &str, max_width: usize) -> String {
-    if value.chars().count() <= max_width {
-        return value.to_string();
-    }
-    if max_width <= 1 {
-        return "…".to_string();
-    }
-    format!("{}…", value.chars().take(max_width - 1).collect::<String>())
 }
 
 fn hook_lines(summary: &ObjectSummary) -> Vec<Line<'static>> {

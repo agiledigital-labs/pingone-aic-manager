@@ -150,6 +150,50 @@ impl RuleView {
     }
 }
 
+/// Shared read projection of one access rule.
+///
+/// The raw [`Value`] deliberately stays with each caller: the CLI borrows it
+/// for stable `--json` output, while the TUI owns it for the detail pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleSummary {
+    pub index: usize,
+    pub digest: String,
+    pub duplicate: bool,
+    pub pattern: String,
+    pub methods: String,
+    pub roles: String,
+    pub actions: Option<String>,
+    pub custom_authz: Option<String>,
+    pub exclude_patterns: Option<String>,
+}
+
+impl RuleSummary {
+    fn new(index: usize, rule: &Value, duplicate: bool) -> Self {
+        let view = RuleView::from_value(rule);
+        Self {
+            index,
+            digest: short_digest(rule),
+            duplicate,
+            pattern: view.pattern,
+            methods: view.methods,
+            roles: view.roles,
+            actions: view.actions,
+            custom_authz: view.custom_authz,
+            exclude_patterns: view.exclude_patterns,
+        }
+    }
+}
+
+/// Project all rules and mark every member of each duplicate group.
+pub fn rule_summaries(rules: &[Value]) -> Vec<RuleSummary> {
+    let duplicates = crate::access::ops::duplicate_flags(rules);
+    rules
+        .iter()
+        .enumerate()
+        .map(|(index, rule)| RuleSummary::new(index, rule, duplicates[index]))
+        .collect()
+}
+
 /// One structural validation diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
@@ -429,6 +473,25 @@ mod tests {
                 .into_iter()
                 .map(str::to_string),
         )
+    }
+
+    #[test]
+    fn shared_projection_preserves_values_for_cli_and_tui_presentations() {
+        // Reintroducing either caller's former projection, or replacing an
+        // absent value with a display default, makes these fields fail.
+        let fixture = crate::access::six_rule_fixture();
+        let summaries = rule_summaries(fixture["configs"].as_array().unwrap());
+
+        assert_eq!(summaries[0].index, 0);
+        assert_eq!(summaries[0].digest, "ab516c84");
+        assert_eq!(summaries[0].pattern, "managed/alpha_user/*");
+        assert_eq!(summaries[0].methods, "read,query");
+        assert_eq!(summaries[0].roles, "internal/role/user-reader");
+        assert_eq!(summaries[0].actions, None);
+        assert_eq!(summaries[1].actions.as_deref(), Some("*"));
+        assert_eq!(summaries[1].custom_authz.as_deref(), Some("ownDataOnly()"));
+        assert!(summaries[4].duplicate);
+        assert!(summaries[5].duplicate);
     }
 
     #[test]
