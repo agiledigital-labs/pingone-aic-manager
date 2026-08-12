@@ -63,6 +63,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         | InputMode::Scripts(_)
         | InputMode::Managed(_)
         | InputMode::Mappings(_)
+        | InputMode::Access(_)
         | InputMode::IdmStore(_)
         | InputMode::Oauth(_)
         | InputMode::Secretmap(_) => {}
@@ -214,6 +215,8 @@ fn draw_body(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         crate::managed::view::draw_body(f, app, area);
     } else if app.active_view == crate::app::View::Mappings {
         crate::mappings::view::draw_body(f, app, area);
+    } else if app.active_view == crate::app::View::Access {
+        crate::access::view::draw_body(f, app, area);
     } else if app.active_view == crate::app::View::IdmStore {
         crate::idmstore::view::draw_body(f, app, area);
     } else if app.active_view == crate::app::View::Oauth {

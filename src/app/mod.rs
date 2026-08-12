@@ -34,6 +34,7 @@ pub enum InputMode {
     Scripts(crate::scripts::screen::Mode),
     Managed(crate::managed::screen::Mode),
     Mappings(crate::mappings::screen::Mode),
+    Access(crate::access::screen::Mode),
     IdmStore(crate::idmstore::screen::Mode),
     Oauth(crate::oauth::screen::Mode),
     Secretmap(crate::secretmap::screen::Mode),
@@ -51,6 +52,7 @@ pub enum View {
     Scripts,
     Managed,
     Mappings,
+    Access,
     IdmStore,
     Oauth,
 }
@@ -62,6 +64,7 @@ impl View {
             View::Scripts,
             View::Managed,
             View::Mappings,
+            View::Access,
             View::IdmStore,
             View::Oauth,
         ]
@@ -73,6 +76,7 @@ impl View {
             View::Scripts => "Scripts",
             View::Managed => "Managed",
             View::Mappings => "Mappings",
+            View::Access => "Access",
             View::IdmStore => "Query",
             View::Oauth => "OAuth",
         }
@@ -164,6 +168,10 @@ pub struct App {
     /// See `crate::mappings::screen`.
     pub mappings: crate::mappings::state::State,
 
+    /// Access view state — per-tenant raw `config/access` rule document.
+    /// See `crate::access::screen`.
+    pub access: crate::access::state::State,
+
     /// Query view state — local IDM managed-object record store.
     /// See `crate::idmstore::screen`.
     pub idmstore: crate::idmstore::state::State,
@@ -239,6 +247,7 @@ impl App {
             scripts: crate::scripts::screen::State::new(),
             managed: crate::managed::state::State::new(),
             mappings: crate::mappings::state::State::new(),
+            access: crate::access::state::State::new(),
             idmstore: crate::idmstore::state::State::new(),
             oauth: crate::oauth::state::State::new(),
             secretmap: crate::secretmap::state::State::new(),
@@ -376,6 +385,7 @@ impl App {
         self.scripts.reset_view();
         self.managed.reset_view();
         self.mappings.reset_view();
+        self.access.reset_view();
         self.idmstore.reset_view();
         self.oauth.reset_view();
         self.secretmap.reset_view();
@@ -520,6 +530,7 @@ impl App {
             AppEvent::Scripts(event) => crate::scripts::screen::apply_event(self, event),
             AppEvent::Managed(event) => crate::managed::screen::apply_event(self, event),
             AppEvent::Mappings(event) => crate::mappings::screen::apply_event(self, event),
+            AppEvent::Access(event) => crate::access::screen::apply_event(self, event),
             AppEvent::IdmStore(event) => crate::idmstore::screen::apply_event(self, event),
             AppEvent::Oauth(event) => crate::oauth::screen::apply_event(self, event),
             AppEvent::Secretmap(event) => crate::secretmap::screen::apply_event(self, event),
@@ -630,6 +641,7 @@ pub fn refresh_view(app: &mut App, view: View, force: bool) {
         View::Scripts => crate::scripts::screen::refresh(app, force),
         View::Managed => crate::managed::screen::refresh(app, force),
         View::Mappings => crate::mappings::screen::refresh(app, force),
+        View::Access => crate::access::screen::refresh(app, force),
         View::IdmStore => crate::idmstore::screen::refresh(app, force),
         View::Oauth => crate::oauth::screen::refresh(app, force),
     }
