@@ -161,6 +161,16 @@ findings). Each should name the guard that will eventually retire it.
   view's table can render appears in `keybind_help::lines_for` for that view
   under `InputMode::Normal`._
 
+- **For every user-facing action a change adds, name the registration site.**
+  `normal_binds` gates view hints on an `app.active_view == View::X` **bool**,
+  not an exhaustive match, and `dispatch_normal` resolves acts from that same
+  table — so an unlisted hint is an unreachable action, and omitting it compiles
+  clean. Trace keystroke → `Act` → handler and say where each hop lives; the
+  same applies to a CLI flag reaching its transform. Seen twice on one slice
+  (2026-08-12). _Guard: blocked — the table test this wants cannot be written
+  until `App` is constructible in tests; see 2026-08-13. Now also a
+  `review-craft` principle, so it is prompted for in every repo, not just here._
+
 ## Findings log
 
 ### 2026-08-11 — `write_gitignore()` was called; the gitignore covered nothing
@@ -561,3 +571,42 @@ findings). Each should name the guard that will eventually retire it.
   path from keystroke or CLI argument to the new code and name the registration
   site in the review. Proposed as a `review-craft` principle, not just a repo
   check.
+
+### 2026-08-13 — the reachability guard is blocked on `App` not being constructible
+
+- **What:** the guard proposed the day before — a table test over
+  `(View, KeyEvent) -> Option<Act>` driving `dispatch_normal` — cannot be
+  written today. `normal_binds` and `dispatch_normal` both take `&App`, and
+  `App::new()` loads `ProjectConfig`, `Settings`, `WrapsFile` and the undo
+  `DiskLog`, then sweeps it for expiry. There is no `Default`, no test
+  constructor, and `src/app/keymap.rs` has no `mod tests` at all — which is why
+  the one file `CLAUDE.md` §9 says the compiler cannot check for you is also the
+  one file with no tests.
+- **Why missed:** the guard was proposed from the shape of the functions without
+  checking that their argument could be built. A guard that cannot be
+  implemented reads identically to one nobody has got round to.
+- **Guard:** the structural prerequisite is a `#[cfg(test)] fn App::for_test()`
+  that skips every disk load — empty config, empty settings, an in-memory
+  `UndoLog` (the trait is already boxed, so this is cheap). Until that exists,
+  reachability stays a review judgement, and the honest statement is that it is
+  unguarded rather than pending. Slice 5b was checked by hand: every new Access
+  key sits in the `access_view` branch of `normal_binds`, with `^N` outside the
+  `n > 0` guard so a rule can be created into an empty list.
+
+### 2026-08-13 — a limit that is too small looks exactly like a working scroll
+
+- **What:** `secretmap/view.rs` rendered its detail pane with
+  `Wrap { trim: false }` but passed `lines.len()` to `DetailScroll::clamp`, so
+  the limit was computed against unwrapped rows and the pane stopped short of
+  its own content. Nothing failed, because a too-small scroll limit is
+  indistinguishable from having reached the end.
+- **Why missed:** the review that moved `wrap_lines` into `list_chrome` noted
+  the under-count and called fixing it optional. It was the only caller of the
+  shared clamp whose height was wrong, so "optional" left the shared type with a
+  precondition one of its three callers violated.
+- **Guard:** applied — `list_chrome::wrapped_height` measures what the widget
+  will produce, and its doc comment states which of the two shapes a caller is,
+  since `lines.len()` is correct for a pane that pre-wraps and wrong for one
+  that lets the widget wrap. Generally: **when a shared type takes a measurement
+  it cannot verify, name the two ways of producing it.** A silent wrong answer
+  needs the naming more than a loud one does.
