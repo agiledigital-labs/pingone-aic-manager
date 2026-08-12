@@ -1,5 +1,6 @@
 //! `aic access` parser and guarded `config/access` command implementation.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -11,11 +12,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::access::ops::{self, ChangeBasis, Changes};
-use crate::access::spec::{self, RuleEdit, RuleSpec, RuleView, TouchedIndices, WarningScope};
+use crate::access::spec::{self, RuleEdit, RuleSpec, RuleSummary, TouchedIndices, WarningScope};
 use crate::access::{api, spec::Findings};
 use crate::cli::{
-    WriteOk, confirm_destructive, ensure_prod_confirmed, print_json, print_table, prompt_available,
-    tenant_for,
+    WriteOk, confirm_destructive, ensure_prod_confirmed, print_json, prompt_available, tenant_for,
 };
 use crate::config::ProjectConfig;
 use crate::{Error, Result};
@@ -249,29 +249,43 @@ async fn list(options: AccessListArgs) -> Result<()> {
     let warning_count = findings.warnings.len();
     report_read_findings(&findings, warnings)?;
     let rules = ops::rules(&document)?;
-    let entries = rule_entries(rules)
-        .into_iter()
-        .filter(|entry| {
+    let summaries = spec::rule_summaries(rules);
+    let selected = summaries
+        .iter()
+        .zip(rules)
+        .filter(|(summary, rule)| {
             role.as_deref()
-                .is_none_or(|role| spec::comma_list_contains(entry.rule, "roles", role))
+                .is_none_or(|role| spec::comma_list_contains(rule, "roles", role))
                 && pattern.as_deref().is_none_or(|pattern| {
-                    entry.rule.get("pattern").and_then(Value::as_str) == Some(pattern)
+                    rule.get("pattern").and_then(Value::as_str) == Some(pattern)
                 })
                 && method
                     .as_deref()
-                    .is_none_or(|method| spec::comma_list_contains(entry.rule, "methods", method))
-                && (!duplicates_only || entry.duplicate)
+                    .is_none_or(|method| spec::comma_list_contains(rule, "methods", method))
+                && (!duplicates_only || summary.duplicate)
         })
         .collect::<Vec<_>>();
 
     if json_output {
+        let entries = selected
+            .iter()
+            .map(|(summary, rule)| RuleEntry::new(summary, rule))
+            .collect();
         print_json(&ListOutput {
             digest: spec::digest(&document),
             rules: entries,
         })
     } else {
         println!("document digest: {}", spec::digest(&document));
-        print_rule_table(&entries);
+        if !selected.is_empty() {
+            println!();
+            print!(
+                "{}",
+                render_rule_blocks(selected.iter().map(|(summary, _)| *summary))
+            );
+            println!();
+            println!("Full rule bodies: aic access show <address> or aic access list --json");
+        }
         if warning_count > 0 && !warnings {
             eprintln!(
                 "{warning_count} warning(s) about existing rules; re-run with --warnings to read them"
@@ -285,10 +299,10 @@ async fn show(address: &str, tenant_arg: Option<String>, json_output: bool) -> R
     let tenant = tenant_for(tenant_arg)?;
     let document = api::get_access(&tenant).await?;
     let rules = ops::rules(&document)?;
-    let duplicates = ops::duplicate_flags(rules);
+    let summaries = spec::rule_summaries(rules);
     let entries = spec::resolve_rule_address(rules, address)?
         .into_iter()
-        .map(|index| RuleEntry::new(index, &rules[index], duplicates[index]))
+        .map(|index| RuleEntry::new(&summaries[index], &rules[index]))
         .collect::<Vec<_>>();
 
     if json_output {
@@ -630,47 +644,60 @@ struct RuleEntry<'a> {
 }
 
 impl<'a> RuleEntry<'a> {
-    fn new(index: usize, rule: &'a Value, duplicate: bool) -> Self {
-        let view = RuleView::from_value(rule);
+    fn new(summary: &RuleSummary, rule: &'a Value) -> Self {
         Self {
-            index,
-            digest: spec::short_digest(rule),
-            duplicate,
-            pattern: view.pattern,
-            methods: view.methods,
-            roles: view.roles,
+            index: summary.index,
+            digest: summary.digest.clone(),
+            duplicate: summary.duplicate,
+            pattern: summary.pattern.clone(),
+            methods: summary.methods.clone(),
+            roles: summary.roles.clone(),
             rule,
         }
     }
 }
 
-fn rule_entries(rules: &[Value]) -> Vec<RuleEntry<'_>> {
-    let duplicates = ops::duplicate_flags(rules);
-    rules
-        .iter()
-        .enumerate()
-        .map(|(index, rule)| RuleEntry::new(index, rule, duplicates[index]))
-        .collect()
+const CUSTOM_AUTHZ_LIST_CLIP: usize = 100;
+
+fn render_rule_blocks<'a>(summaries: impl IntoIterator<Item = &'a RuleSummary>) -> String {
+    let mut output = String::new();
+    for (position, summary) in summaries.into_iter().enumerate() {
+        if position > 0 {
+            output.push('\n');
+        }
+        let duplicate = if summary.duplicate { "   dup" } else { "" };
+        writeln!(
+            output,
+            "#{}   {}{}",
+            summary.index, summary.digest, duplicate
+        )
+        .expect("write access-rule block to String");
+        push_rule_field(&mut output, "pattern", &summary.pattern);
+        push_rule_field(&mut output, "roles", &summary.roles);
+        push_rule_field(&mut output, "methods", &summary.methods);
+        if let Some(actions) = &summary.actions {
+            push_rule_field(&mut output, "actions", actions);
+        }
+        if let Some(custom_authz) = &summary.custom_authz {
+            push_rule_field(
+                &mut output,
+                "customAuthz",
+                &crate::cli::clip(custom_authz, CUSTOM_AUTHZ_LIST_CLIP),
+            );
+        }
+        if let Some(exclude_patterns) = &summary.exclude_patterns {
+            push_rule_field(&mut output, "excludePatterns", exclude_patterns);
+        }
+    }
+    output
 }
 
-fn print_rule_table(entries: &[RuleEntry<'_>]) {
-    let rows = entries
-        .iter()
-        .map(|entry| {
-            vec![
-                entry.index.to_string(),
-                entry.digest.clone(),
-                entry.pattern.clone(),
-                entry.methods.clone(),
-                entry.roles.clone(),
-                if entry.duplicate { "dup" } else { "" }.to_string(),
-            ]
-        })
-        .collect::<Vec<_>>();
-    print_table(
-        &["#", "DIGEST", "PATTERN", "METHODS", "ROLES", "DUP"],
-        &rows,
-    );
+fn push_rule_field(output: &mut String, label: &str, value: &str) {
+    if value.is_empty() {
+        writeln!(output, "  {label}").expect("write access-rule field to String");
+    } else {
+        writeln!(output, "  {label:<16} {value}").expect("write access-rule field to String");
+    }
 }
 
 #[cfg(test)]
@@ -688,6 +715,89 @@ mod tests {
             no_backup,
             tenant: None,
         }
+    }
+
+    #[test]
+    fn list_json_rule_keys_remain_backward_compatible() {
+        // Adding shared-summary fields through serde flattening, or renaming
+        // the thin wrapper's legacy keys, makes this compatibility set fail.
+        let fixture = crate::access::six_rule_fixture();
+        let rules = fixture["configs"].as_array().unwrap();
+        let summaries = spec::rule_summaries(rules);
+        let value = serde_json::to_value(RuleEntry::new(&summaries[0], &rules[0])).unwrap();
+        let keys = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            keys,
+            [
+                "digest",
+                "duplicate",
+                "index",
+                "methods",
+                "pattern",
+                "roles",
+                "rule"
+            ]
+        );
+    }
+
+    #[test]
+    fn list_blocks_distinguish_absent_and_present_empty_fields() {
+        // Defaulting an absent actions key, or suppressing a present empty
+        // value, makes the corresponding line-presence assertion fail.
+        let fixture = crate::access::six_rule_fixture();
+        let rules = fixture["configs"].as_array().unwrap();
+        let mut summaries = spec::rule_summaries(rules);
+
+        let absent = render_rule_blocks([&summaries[0]]);
+        assert!(!absent.lines().any(|line| line.trim() == "actions"));
+
+        summaries[0].actions = Some(String::new());
+        let present_empty = render_rule_blocks([&summaries[0]]);
+        assert!(present_empty.lines().any(|line| line == "  actions"));
+    }
+
+    #[test]
+    fn list_blocks_keep_full_role_paths_and_render_all_optional_values() {
+        // Stripping roles in the shared projection, or overlooking an optional
+        // summary field in the block renderer, makes this output fail.
+        let fixture = crate::access::six_rule_fixture();
+        let rules = fixture["configs"].as_array().unwrap();
+        let summaries = spec::rule_summaries(rules);
+        let rendered = render_rule_blocks([&summaries[1], &summaries[2]]);
+
+        assert!(rendered.contains("roles            internal/role/user-owner"));
+        assert!(rendered.contains("actions          *"));
+        assert!(rendered.contains("customAuthz      ownDataOnly()"));
+        assert!(rendered.contains("excludePatterns  endpoint/report/private/*"));
+        assert_eq!(rendered.matches("\n\n#").count(), 1);
+    }
+
+    #[test]
+    fn list_blocks_clip_custom_authz_with_the_shared_cli_helper() {
+        // Printing raw multiline scripts or introducing a local truncation
+        // policy makes the collapsed, ellipsized line fail.
+        let summary = RuleSummary {
+            index: 0,
+            digest: "01234567".into(),
+            duplicate: false,
+            pattern: "endpoint/x".into(),
+            methods: "read".into(),
+            roles: "*".into(),
+            actions: None,
+            custom_authz: Some(format!("first line\n{}", "x".repeat(100))),
+            exclude_patterns: None,
+        };
+
+        let rendered = render_rule_blocks([&summary]);
+        assert!(rendered.contains("customAuthz      first line "));
+        assert!(rendered.contains("...\n"));
+        assert!(!rendered.contains("first line\n"));
     }
 
     #[test]

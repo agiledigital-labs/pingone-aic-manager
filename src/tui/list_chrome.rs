@@ -1,5 +1,6 @@
-//! Shared chrome for the searchable tenant-list views (ESV variables,
-//! secrets, scripts): the `/query` + count header row and the scroll clamp.
+//! Shared chrome and layout math for searchable tenant-list views, including
+//! ESVs, scripts, managed objects, Access, and OAuth. Besides the `/query` +
+//! count row, this owns list/detail scroll clamps and metadata truncation.
 //! Pure rendering/math — no feature knowledge.
 
 use ratatui::{
@@ -93,4 +94,43 @@ pub fn clamp_scroll(prev: usize, selected: usize, height: usize, n: usize) -> us
         scroll = selected + 1 - height;
     }
     scroll
+}
+
+/// Clamp a detail-pane offset to the last fully reachable rendered row.
+pub fn clamp_detail_scroll(scroll: usize, rendered_height: usize, viewport_height: usize) -> usize {
+    scroll.min(rendered_height.saturating_sub(viewport_height))
+}
+
+/// Truncate text to a character budget and make the loss visible.
+pub fn truncate_metadata(value: &str, max_width: usize) -> String {
+    if value.chars().count() <= max_width {
+        return value.to_string();
+    }
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+    format!("{}…", value.chars().take(max_width - 1).collect::<String>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncation_uses_an_ellipsis_at_every_clipped_width() {
+        // Replacing the ellipsis with a silent character cut makes each
+        // clipped case fail.
+        assert_eq!(truncate_metadata("abcdef", 4), "abc…");
+        assert_eq!(truncate_metadata("abcdef", 1), "…");
+        assert_eq!(truncate_metadata("abcdef", 0), "…");
+        assert_eq!(truncate_metadata("abc", 3), "abc");
+    }
+
+    #[test]
+    fn detail_scroll_never_passes_the_rendered_bottom() {
+        // Returning the requested offset directly makes both over-scroll
+        // cases fail, including content shorter than its viewport.
+        assert_eq!(clamp_detail_scroll(50, 30, 10), 20);
+        assert_eq!(clamp_detail_scroll(50, 8, 10), 0);
+    }
 }

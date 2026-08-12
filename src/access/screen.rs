@@ -50,6 +50,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
 pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
     match mode {
         Mode::Search => Some(vec![
+            ("FLAGS", "A = customAuthz; D = duplicate"),
             ("Type", "edit search query"),
             ("Backspace", "delete character"),
             ("Enter", "keep filter and return to list"),
@@ -96,6 +97,10 @@ pub fn current_selection(app: &App) -> usize {
 pub fn select(app: &mut App, index: usize) {
     let count = row_count(app);
     app.access.select(index, count);
+}
+
+pub fn scroll_detail(app: &mut App, delta: isize) {
+    app.access.scroll_detail(delta);
 }
 
 pub fn filter_active(app: &App) -> bool {
@@ -165,6 +170,7 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
     if app.access.query.handle_key(&key) && app.access.query.value() != before {
         app.access.selected = 0;
         app.access.scroll = 0;
+        app.access.reset_detail_scroll();
     }
 }
 

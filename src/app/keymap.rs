@@ -424,8 +424,10 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             "pull scripts",
             PullMappingScripts,
         ));
-    } else if oauth_view && n > 0 {
-        out.push(hint(&[Trigger::ENTER], "Enter", "inspect", Primary));
+    } else if (access_view || oauth_view) && n > 0 {
+        if oauth_view {
+            out.push(hint(&[Trigger::ENTER], "Enter", "inspect", Primary));
+        }
         out.push(hint(
             &[Trigger::Ctrl('d')],
             "^D",
@@ -634,8 +636,16 @@ async fn run_normal(app: &mut App, act: Act) {
         }
         PrevField => crate::managed::screen::move_property(app, -1),
         NextField => crate::managed::screen::move_property(app, 1),
-        DetailScrollDown => crate::oauth::screen::scroll_detail(app, 10),
-        DetailScrollUp => crate::oauth::screen::scroll_detail(app, -10),
+        DetailScrollDown => match app.active_view {
+            View::Access => crate::access::screen::scroll_detail(app, 10),
+            View::Oauth => crate::oauth::screen::scroll_detail(app, 10),
+            _ => {}
+        },
+        DetailScrollUp => match app.active_view {
+            View::Access => crate::access::screen::scroll_detail(app, -10),
+            View::Oauth => crate::oauth::screen::scroll_detail(app, -10),
+            _ => {}
+        },
         RealmToggle => {
             app.current_realm = match app.current_realm {
                 Realm::Alpha => Realm::Bravo,

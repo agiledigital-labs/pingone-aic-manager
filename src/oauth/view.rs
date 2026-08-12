@@ -191,8 +191,7 @@ fn draw_detail(f: &mut Frame, app: &App, tenant: &str, matches: &[ClientMatch], 
 
     let lines = render_client_lines(client, &item.id);
     let height = inner.height as usize;
-    let max_scroll = lines.len().saturating_sub(height);
-    let scroll = app.oauth.detail_scroll.min(max_scroll);
+    let scroll = app.oauth.clamp_detail_scroll(lines.len(), height);
     f.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
 }
 
