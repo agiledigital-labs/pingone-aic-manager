@@ -1,8 +1,8 @@
 # pingone-aic-manager — TUI design rules
 
-These are the agreed visual + interaction rules for `pingone-aic-manager`. Apply them
-whenever building or reviewing UI code. They were arrived at by reviewing two
-existing Ratatui apps the maintainer wrote (`tally`, `kbsr`) and a short
+These are the agreed visual + interaction rules for `pingone-aic-manager`. Apply
+them whenever building or reviewing UI code. They were arrived at by reviewing
+two existing Ratatui apps the maintainer wrote (`tally`, `kbsr`) and a short
 design conversation that pinned down env chrome, issue surfacing, and
 keybindings. Don't redebate these unless the maintainer explicitly revisits.
 
@@ -21,13 +21,35 @@ keybindings. Don't redebate these unless the maintainer explicitly revisits.
 - `Ctrl-P` opens the function selector in fuzzy-search mode. Typing filters
   immediately; arrows navigate, Enter opens, and Esc cancels.
 
+## Terminal size
+
+- **80 columns is the supported minimum width.** Everything must remain legible
+  and unambiguous at 80; below that, degradation is allowed to be ugly. Layout
+  that only works wider than 80 is a defect, and a test that only passes wider
+  than 80 is testing the wrong width.
+- Consequences worth knowing before you lay out a table:
+  - Prefer `Percentage` constraints summing to exactly 100 over a mix that
+    includes `Length`. Ratatui's solver satisfies `Length` first, so an
+    over-subscribed mixed set starves the percentage columns to nothing and
+    clips them **without an ellipsis**. All-percentage degrades proportionally.
+  - Truncate through `tui::list_chrome::truncate_metadata` so a clipped value
+    says so. A cell built as a styled `Line` bypasses that helper and gets
+    ratatui's silent clip instead — if a column is styled per-glyph, check its
+    header and its content both still fit at 80.
+  - `tui::modal_chrome::CONTENT_WIDTH` is also 80, so at the minimum width a
+    modal is exactly as wide as the screen. That is intended: 80 is the design
+    width, and wider terminals get margin rather than a wider modal.
+- Height has no stated minimum. Panes that can overflow scroll instead
+  (`tui::list_chrome::DetailScroll`), which is the general answer to a short
+  viewport.
+
 ## Within-view layout
 
-- **Yazi-style miller** for rich content views (Scripts, OAuth2, SAML): list
-  on the left (~30%), detail/editor on the right. Always visible. Enter
-  focuses the right pane.
-- For simple list+short-detail views (ESVs), tally's list-top + fixed-detail-strip
-  pattern is fine.
+- **Yazi-style miller** for rich content views (Scripts, OAuth2, SAML): list on
+  the left (~30%), detail/editor on the right. Always visible. Enter focuses the
+  right pane.
+- For simple list+short-detail views (ESVs), tally's list-top +
+  fixed-detail-strip pattern is fine.
 
 ## Header chrome (right-aligned)
 
@@ -41,15 +63,14 @@ keybindings. Don't redebate these unless the maintainer explicitly revisits.
   - **staging (also UAT)** → yellow
   - **production** → red + `⚠`
 - Out-of-the-box environments: dev, staging, prod. Sandbox is the next
-  most-commonly-added. Extra environments (e.g. predev, UAT) pick one of
-  the four themes.
+  most-commonly-added. Extra environments (e.g. predev, UAT) pick one of the
+  four themes.
 
 ## Issue surfacing
 
-- **Inline strip** at the top of the relevant pane for actionable state
-  (e.g. yellow strip "⚠ restart pending — 3 ESVs changed [a] apply" in
-  the ESV pane; red strip "push conflict — remote drifted" in the Scripts
-  pane).
+- **Inline strip** at the top of the relevant pane for actionable state (e.g.
+  yellow strip "⚠ restart pending — 3 ESVs changed [a] apply" in the ESV pane;
+  red strip "push conflict — remote drifted" in the Scripts pane).
 - **Top-right toast overlay** for transient events (token refreshed, push
   succeeded, fetched 47 scripts). Auto-dismiss; stack vertically.
 
@@ -77,9 +98,9 @@ keybindings. Don't redebate these unless the maintainer explicitly revisits.
 
 ## Modals
 
-- Used sparingly: env picker, confirm-destructive, push-conflict resolver,
-  error reporter. Rendered with `Clear` + black bg; border + title only when
-  the modal is a _choice_ (env picker, conflict resolver) or an _error_.
+- Used sparingly: env picker, confirm-destructive, push-conflict resolver, error
+  reporter. Rendered with `Clear` + black bg; border + title only when the modal
+  is a _choice_ (env picker, conflict resolver) or an _error_.
 
 ## Prod-write confirm
 
@@ -90,13 +111,13 @@ You're writing to PROD — Are you sure?
   [y] yes   [n] cancel   [Esc] cancel
 ```
 
-This is implemented as a single guard around the `AicClient` write methods
-so it's automatic across all views — not per-call boilerplate.
+This is implemented as a single guard around the `AicClient` write methods so
+it's automatic across all views — not per-call boilerplate.
 
 ## Reference apps (on the maintainer's machine)
 
 - `~/w/tally` — multi-tab personal finance TUI. Closest overall structural
-  match. Has the patterns to port (App state, InputMode dispatch, per-tab
-  state isolation, `FilteredList<T>`, scroll-centered selection).
-- `~/w/kbsr` — single-focus spaced-repetition TUI. Patterns to borrow for
-  the env-picker modal centering and minimal/dim hint bar.
+  match. Has the patterns to port (App state, InputMode dispatch, per-tab state
+  isolation, `FilteredList<T>`, scroll-centered selection).
+- `~/w/kbsr` — single-focus spaced-repetition TUI. Patterns to borrow for the
+  env-picker modal centering and minimal/dim hint bar.

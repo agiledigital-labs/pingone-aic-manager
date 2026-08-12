@@ -496,8 +496,14 @@ mod tests {
     #[test]
     fn narrow_table_preserves_required_index_and_flag_content() {
         // Squeezing either leading percentage below its actual content need
-        // makes two-digit indices or the AD flag pair clip at 80 columns.
-        let [table_area, _, _] = Layout::horizontal(BODY_COLUMNS).areas(Rect::new(0, 0, 80, 1));
+        // makes two-digit indices or the FLAGS header clip at the minimum
+        // supported width.
+        let [table_area, _, _] = Layout::horizontal(BODY_COLUMNS).areas(Rect::new(
+            0,
+            0,
+            crate::tui::MIN_TERMINAL_WIDTH,
+            1,
+        ));
         let widths = rendered_column_widths(table_area.width);
         assert!(
             widths[0] >= INDEX_MIN_CONTENT_WIDTH,
@@ -510,8 +516,10 @@ mod tests {
     }
 
     #[test]
-    fn eighty_column_table_layout_is_pinned() {
-        let lines = render_test_table(80);
+    fn minimum_width_table_layout_is_pinned() {
+        // Pinned at the supported floor, which is where the percentages are
+        // tightest. Moving the floor is expected to fail here and be re-pinned.
+        let lines = render_test_table(crate::tui::MIN_TERMINAL_WIDTH);
         assert_eq!(
             lines[0].trim_end(),
             "#   FLAGS  PATTERN     METHODS   ROLES"
@@ -523,7 +531,7 @@ mod tests {
     fn rendered_table_keeps_the_ellipsis_at_the_column_edge() {
         // Desynchronising our width calculation from Ratatui's actual Table
         // layout removes the exact "ellipsis, spacing, M" boundary.
-        for width in [80, 120] {
+        for width in [crate::tui::MIN_TERMINAL_WIDTH, 120] {
             let lines = render_test_table(width);
             assert!(lines[0].contains("#"), "{width}: {:?}", lines[0]);
             assert!(lines[0].contains("FLAGS"), "{width}: {:?}", lines[0]);
