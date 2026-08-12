@@ -150,6 +150,7 @@ aic idm query "SELECT userName FROM obj_alpha_user WHERE accountStatus='active'"
 aic script pull bravo/MyNode     # sync scripts to a typed local workspace, then edit + push
 aic oauth list                   # OAuth2 clients
 aic journey list                 # authentication trees
+aic access list                  # IDM authorization rules (add/edit/rm/apply)
 ```
 
 Mutations to a production-themed tenant require `--yes`; `--tenant <name>`
@@ -163,9 +164,10 @@ examples: [docs/CLI.md](docs/CLI.md).**
 Run `aic` with no arguments. On first launch the agent starts locked and you'll
 see the **Unlock** screen (unless you set up with no master password). Press
 **`Ctrl-P`** to open the **function selector** — a fuzzy-searchable modal that
-switches between the feature views (ESVs, Scripts, Managed, Mappings, OAuth,
-Query). Within a view, `/` searches, `R` refreshes, and `?` shows the keymap.
-Design rules live in [docs/DESIGN.md](docs/DESIGN.md).
+switches between the feature views (ESVs, Scripts, Managed, Mappings, Access,
+Query, OAuth). Within a view, `/` searches, `Ctrl-R` refreshes, and `?` shows
+the keymap. Access is browse-only for now — editing authorization rules is
+`aic access`. Design rules live in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## The agent
 
