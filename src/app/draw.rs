@@ -12,6 +12,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
+use crate::access::screen::Mode as AccessMode;
 use crate::app::{App, InputMode};
 use crate::esv::screen::Mode as EsvMode;
 use crate::managed::screen::Mode as ManagedMode;
@@ -57,6 +58,12 @@ pub fn draw(f: &mut Frame, app: &App) {
             toast::draw(f, app);
             return;
         }
+        InputMode::Access(mode @ (AccessMode::Create | AccessMode::Edit)) => {
+            crate::access::view::draw_form_modal(f, app, mode);
+            draw_keybind_help(f, app);
+            toast::draw(f, app);
+            return;
+        }
         InputMode::Normal
         | InputMode::Esv(_)
         | InputMode::Secrets(_)
@@ -75,6 +82,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             app.input_mode,
             InputMode::Esv(EsvMode::RestartConfirm | EsvMode::DeleteConfirm)
                 | InputMode::Managed(ManagedMode::DeleteFieldConfirm)
+                | InputMode::Access(AccessMode::DeleteConfirm)
                 | InputMode::Secretmap(SecretmapMode::DeleteConfirm)
                 | InputMode::Secrets(
                     SecretsMode::AddVersion
@@ -165,6 +173,9 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Remove mapping {id}?\n\nCurrent alias: {alias}\nThis can be undone from the undo log."
             );
             popup_confirm::draw(f, "Remove secret mapping?", &message);
+        }
+        InputMode::Access(AccessMode::DeleteConfirm) => {
+            crate::access::view::draw_delete_confirm(f, app);
         }
         _ => {}
     }

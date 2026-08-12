@@ -15,6 +15,7 @@ pub enum PendingProdAction {
     Secretmap(crate::secretmap::ops::ProdAction),
     Scripts(crate::scripts::screen::ProdAction),
     Mappings(crate::mappings::ops::ProdAction),
+    Access(crate::access::ops::ProdAction),
     Onboard(crate::onboard::screen::ProdAction),
 }
 
@@ -57,6 +58,9 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                     PendingProdAction::Mappings(action) => {
                         crate::mappings::ops::execute_prod_action(app, action)
                     }
+                    PendingProdAction::Access(action) => {
+                        crate::access::ops::execute_prod_action(app, action)
+                    }
                 }
             }
         }
@@ -80,6 +84,9 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                 }
                 Some(PendingProdAction::Mappings(action)) => {
                     crate::mappings::ops::resume_mode(app, &action)
+                }
+                Some(PendingProdAction::Access(action)) => {
+                    crate::access::ops::resume_mode(app, &action)
                 }
                 Some(PendingProdAction::Onboard(action)) => {
                     crate::onboard::screen::resume_mode(app, &action)
@@ -141,6 +148,7 @@ fn pending_description(action: &PendingProdAction) -> Option<String> {
     match action {
         PendingProdAction::Scripts(action) => crate::scripts::screen::describe_prod_action(action),
         PendingProdAction::Mappings(action) => crate::mappings::ops::describe_prod_action(action),
+        PendingProdAction::Access(action) => crate::access::ops::describe_prod_action(action),
         _ => None,
     }
 }

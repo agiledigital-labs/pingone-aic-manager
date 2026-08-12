@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::access::{ops, spec};
 use crate::tui::list_chrome::DetailScroll;
-use crate::tui::widgets::LineEditor;
+use crate::tui::widgets::{LineEditor, TextField};
 
 #[derive(Debug)]
 pub enum LoadState {
@@ -27,6 +27,8 @@ pub struct RuleRow {
 pub struct Document {
     pub digest: String,
     pub rows: Vec<RuleRow>,
+    /// Untouched whole document used as the write precondition and undo body.
+    pub value: Value,
 }
 
 impl Document {
@@ -43,7 +45,271 @@ impl Document {
         Ok(Self {
             digest: spec::digest(&value),
             rows,
+            value,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormFocus {
+    Pattern,
+    Roles,
+    Methods,
+    Actions,
+    CustomAuthz,
+    ExcludePatterns,
+    Save,
+}
+
+impl FormFocus {
+    const ORDER: [Self; 7] = [
+        Self::Pattern,
+        Self::Roles,
+        Self::Methods,
+        Self::Actions,
+        Self::CustomAuthz,
+        Self::ExcludePatterns,
+        Self::Save,
+    ];
+
+    pub fn next(self) -> Self {
+        let index = Self::ORDER
+            .iter()
+            .position(|focus| *focus == self)
+            .unwrap_or(0);
+        Self::ORDER[(index + 1) % Self::ORDER.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let index = Self::ORDER
+            .iter()
+            .position(|focus| *focus == self)
+            .unwrap_or(0);
+        Self::ORDER[(index + Self::ORDER.len() - 1) % Self::ORDER.len()]
+    }
+
+    pub fn optional(self) -> bool {
+        matches!(
+            self,
+            Self::Actions | Self::CustomAuthz | Self::ExcludePatterns
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionalEdit {
+    Unchanged,
+    Set,
+    Clear,
+}
+
+impl OptionalEdit {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unchanged => "keep",
+            Self::Set => "set",
+            Self::Clear => "clear",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OptionalField {
+    pub input: TextField,
+    pub edit: OptionalEdit,
+}
+
+impl OptionalField {
+    fn create(label: &str) -> Self {
+        Self {
+            input: TextField::single_line(label),
+            edit: OptionalEdit::Set,
+        }
+    }
+
+    fn edit(label: &str, value: Option<&str>) -> Self {
+        Self {
+            input: TextField::single_line(label).with_initial(value.unwrap_or_default()),
+            edit: OptionalEdit::Unchanged,
+        }
+    }
+
+    pub fn set_clear(&mut self) {
+        self.edit = OptionalEdit::Clear;
+    }
+
+    pub fn set_unchanged(&mut self) {
+        self.edit = OptionalEdit::Unchanged;
+    }
+
+    pub fn handle_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        let before = self.input.value.clone();
+        let handled = self.input.handle_key(key);
+        if handled && self.input.value != before {
+            self.edit = OptionalEdit::Set;
+        }
+        handled
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormKind {
+    Create,
+    Edit { index: usize },
+}
+
+#[derive(Debug, Clone)]
+pub struct RuleFormState {
+    pub tenant: String,
+    pub original_document: Value,
+    pub original_digest: String,
+    pub original_rule_digest: Option<String>,
+    pub kind: FormKind,
+    pub pattern: TextField,
+    pattern_seed: String,
+    pub roles: TextField,
+    roles_seed: String,
+    pub methods: TextField,
+    methods_seed: String,
+    pub actions: OptionalField,
+    pub custom_authz: OptionalField,
+    pub exclude_patterns: OptionalField,
+    pub focused: FormFocus,
+    pub confirming: bool,
+    pub error: Option<String>,
+}
+
+impl RuleFormState {
+    pub fn create(tenant: String, document: &Document) -> Self {
+        Self {
+            tenant,
+            original_document: document.value.clone(),
+            original_digest: document.digest.clone(),
+            original_rule_digest: None,
+            kind: FormKind::Create,
+            pattern: TextField::single_line("Pattern"),
+            pattern_seed: String::new(),
+            roles: TextField::single_line("Roles (full internal/role/<id> paths)"),
+            roles_seed: String::new(),
+            methods: TextField::single_line("Methods"),
+            methods_seed: String::new(),
+            actions: OptionalField::create("Actions (optional)"),
+            custom_authz: OptionalField::create("customAuthz (optional)"),
+            exclude_patterns: OptionalField::create("excludePatterns (optional)"),
+            focused: FormFocus::Pattern,
+            confirming: false,
+            error: None,
+        }
+    }
+
+    pub fn edit(tenant: String, document: &Document, row: &RuleRow) -> Self {
+        Self {
+            tenant,
+            original_document: document.value.clone(),
+            original_digest: document.digest.clone(),
+            original_rule_digest: Some(spec::digest(&row.raw)),
+            kind: FormKind::Edit {
+                index: row.summary.index,
+            },
+            pattern: TextField::single_line("Pattern").with_initial(&row.summary.pattern),
+            pattern_seed: row.summary.pattern.clone(),
+            roles: TextField::single_line("Roles (full internal/role/<id> paths)")
+                .with_initial(&row.summary.roles),
+            roles_seed: row.summary.roles.clone(),
+            methods: TextField::single_line("Methods").with_initial(&row.summary.methods),
+            methods_seed: row.summary.methods.clone(),
+            actions: OptionalField::edit("Actions (optional)", row.summary.actions.as_deref()),
+            custom_authz: OptionalField::edit(
+                "customAuthz (optional)",
+                row.summary.custom_authz.as_deref(),
+            ),
+            exclude_patterns: OptionalField::edit(
+                "excludePatterns (optional)",
+                row.summary.exclude_patterns.as_deref(),
+            ),
+            focused: FormFocus::Pattern,
+            confirming: false,
+            error: None,
+        }
+    }
+
+    pub fn amendment(&self) -> spec::Amendment {
+        match self.kind {
+            FormKind::Create => spec::Amendment::Add(spec::RuleSpec {
+                pattern: self.pattern.value.clone(),
+                roles: self.roles.value.clone(),
+                methods: self.methods.value.clone(),
+                actions: nonempty(&self.actions.input.value),
+                custom_authz: nonempty(&self.custom_authz.input.value),
+                exclude_patterns: nonempty(&self.exclude_patterns.input.value),
+            }),
+            FormKind::Edit { index } => spec::Amendment::Edit {
+                index,
+                edit: spec::RuleEdit {
+                    pattern: changed(&self.pattern, &self.pattern_seed),
+                    roles: changed(&self.roles, &self.roles_seed),
+                    methods: changed(&self.methods, &self.methods_seed),
+                    actions: optional_value(&self.actions),
+                    custom_authz: optional_value(&self.custom_authz),
+                    exclude_patterns: optional_value(&self.exclude_patterns),
+                    clear_actions: self.actions.edit == OptionalEdit::Clear,
+                    clear_custom_authz: self.custom_authz.edit == OptionalEdit::Clear,
+                    clear_exclude_patterns: self.exclude_patterns.edit == OptionalEdit::Clear,
+                },
+            },
+        }
+    }
+
+    pub fn optional_mut(&mut self) -> Option<&mut OptionalField> {
+        match self.focused {
+            FormFocus::Actions => Some(&mut self.actions),
+            FormFocus::CustomAuthz => Some(&mut self.custom_authz),
+            FormFocus::ExcludePatterns => Some(&mut self.exclude_patterns),
+            _ => None,
+        }
+    }
+}
+
+fn changed(field: &TextField, seed: &str) -> Option<String> {
+    (field.value != seed).then(|| field.value.clone())
+}
+
+fn optional_value(field: &OptionalField) -> Option<String> {
+    (field.edit == OptionalEdit::Set).then(|| field.input.value.clone())
+}
+
+fn nonempty(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+#[derive(Debug, Clone)]
+pub struct DeleteState {
+    pub tenant: String,
+    pub original_document: Value,
+    pub original_digest: String,
+    pub index: usize,
+    pub rule_digest: String,
+    confirmed: bool,
+}
+
+impl DeleteState {
+    pub fn new(tenant: String, document: &Document, row: &RuleRow) -> Self {
+        Self {
+            tenant,
+            original_document: document.value.clone(),
+            original_digest: document.digest.clone(),
+            index: row.summary.index,
+            rule_digest: spec::digest(&row.raw),
+            confirmed: false,
+        }
+    }
+
+    pub fn confirm(&mut self) {
+        self.confirmed = true;
+    }
+
+    pub fn confirmed(&self) -> bool {
+        self.confirmed
     }
 }
 
@@ -77,6 +343,9 @@ pub struct State {
     pub selected: usize,
     pub scroll: usize,
     pub detail_scroll: DetailScroll,
+    pub form: Option<RuleFormState>,
+    pub pending_delete: Option<DeleteState>,
+    pub in_flight_writes: HashSet<String>,
 }
 
 impl State {
@@ -88,6 +357,9 @@ impl State {
             selected: 0,
             scroll: 0,
             detail_scroll: DetailScroll::default(),
+            form: None,
+            pending_delete: None,
+            in_flight_writes: HashSet::new(),
         }
     }
 
@@ -251,6 +523,7 @@ mod tests {
             LoadState::Loaded(Document {
                 digest: "document".into(),
                 rows: vec![row(None)],
+                value: json!({"_id": "access", "configs": []}),
             }),
         );
 
@@ -262,6 +535,7 @@ mod tests {
             LoadState::Loaded(Document {
                 digest: "document".into(),
                 rows: vec![row(Some("approve-report".into()))],
+                value: json!({"_id": "access", "configs": []}),
             }),
         );
         state.query.set("approve-report");
@@ -295,6 +569,7 @@ mod tests {
                     },
                     raw: json!({"pattern": "x", "roles": "*", "methods": "q"}),
                 }],
+                value: json!({"_id": "access", "configs": []}),
             }),
         );
 
@@ -322,6 +597,50 @@ mod tests {
             let matches = state.matches(Some("sandbox"));
             assert_eq!(matches.len(), 1, "query {query:?}");
             assert_eq!(matches[0].row.summary.index, 0, "query {query:?}");
+        }
+    }
+
+    #[test]
+    fn edit_form_maps_optional_fields_to_keep_set_and_clear() {
+        // Defaulting an edit field to Set, or representing Clear as an empty
+        // value, makes the corresponding table row fail.
+        let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
+        let row = document.rows[1].clone();
+
+        for field in ["actions", "customAuthz", "excludePatterns"] {
+            for (name, change, expected_value, expected_clear) in [
+                ("untouched", OptionalEdit::Unchanged, None, false),
+                ("set", OptionalEdit::Set, Some("changed"), false),
+                ("clear", OptionalEdit::Clear, None, true),
+            ] {
+                let mut form = RuleFormState::edit("sandbox".into(), &document, &row);
+                let optional = match field {
+                    "actions" => &mut form.actions,
+                    "customAuthz" => &mut form.custom_authz,
+                    "excludePatterns" => &mut form.exclude_patterns,
+                    _ => unreachable!(),
+                };
+                optional.edit = change;
+                if change == OptionalEdit::Set {
+                    optional.input.set("changed");
+                }
+                let spec::Amendment::Edit { edit, .. } = form.amendment() else {
+                    panic!("edit form returned a non-edit amendment");
+                };
+                let (value, clear) = match field {
+                    "actions" => (edit.actions.as_deref(), edit.clear_actions),
+                    "customAuthz" => (edit.custom_authz.as_deref(), edit.clear_custom_authz),
+                    "excludePatterns" => (
+                        edit.exclude_patterns.as_deref(),
+                        edit.clear_exclude_patterns,
+                    ),
+                    _ => unreachable!(),
+                };
+                assert_eq!(value, expected_value, "{field} {name}");
+                assert_eq!(clear, expected_clear, "{field} {name}");
+                assert_eq!(edit.pattern, None, "{field} {name}: untouched pattern");
+                assert_eq!(edit.roles, None, "{field} {name}: untouched role path");
+            }
         }
     }
 }

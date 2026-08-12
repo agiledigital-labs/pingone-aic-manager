@@ -424,10 +424,38 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             "pull scripts",
             PullMappingScripts,
         ));
-    } else if (access_view || oauth_view) && n > 0 {
-        if oauth_view {
-            out.push(hint(&[Trigger::ENTER], "Enter", "inspect", Primary));
+    } else if access_view {
+        if n > 0 {
+            out.push(hint(&[Trigger::ENTER], "Enter", "edit", Primary));
+            out.push(hint(
+                &[Trigger::Char('d'), Trigger::Code(KeyCode::Delete)],
+                "d",
+                "delete",
+                Delete,
+            ));
+            out.push(hint(
+                &[Trigger::Ctrl('d')],
+                "^D",
+                "scroll detail down",
+                DetailScrollDown,
+            ));
+            out.push(hint(
+                &[Trigger::Ctrl('u')],
+                "^U",
+                "scroll detail up",
+                DetailScrollUp,
+            ));
         }
+        out.push(hint(&[Trigger::Ctrl('n')], "^N", "new rule", NewItem));
+        out.push(hint(&[Trigger::Ctrl('z')], "^Z", "undo", Undo));
+        out.push(hint(
+            &[Trigger::Ctrl('y')],
+            "^Y",
+            "undo history",
+            UndoHistory,
+        ));
+    } else if oauth_view && n > 0 {
+        out.push(hint(&[Trigger::ENTER], "Enter", "inspect", Primary));
         out.push(hint(
             &[Trigger::Ctrl('d')],
             "^D",
@@ -620,7 +648,9 @@ async fn run_normal(app: &mut App, act: Act) {
             crate::app::refresh_view(app, app.active_view, true);
         }
         Undo => {
-            if app.active_view == View::Managed {
+            if app.active_view == View::Access {
+                crate::access::ops::request_latest_undo(app);
+            } else if app.active_view == View::Managed {
                 crate::managed::ops::request_latest_undo(app);
             } else if app.active_view == View::Esvs
                 && crate::esv::screen::current_view(app) == EsvView::Mappings

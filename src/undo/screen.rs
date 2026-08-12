@@ -53,6 +53,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             let secretmap = op
                 .as_ref()
                 .is_some_and(|op| matches!(op, UndoOp::SecretMappingReplace { .. }));
+            let access = op
+                .as_ref()
+                .is_some_and(|op| matches!(op, UndoOp::AccessConfigReplace { .. }));
             if secretmap
                 && !app
                     .active_tenant()
@@ -67,12 +70,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             if is_prod {
                 app.prod_confirm.pending = Some(if managed {
                     PendingProdAction::Managed(crate::managed::ops::ProdAction::Undo(summary.id))
+                } else if access {
+                    PendingProdAction::Access(crate::access::ops::ProdAction::Undo(summary.id))
                 } else {
                     PendingProdAction::Esv(crate::esv::screen::ProdAction::Undo(summary.id))
                 });
                 app.input_mode = InputMode::ProdConfirm;
             } else if managed {
                 crate::managed::ops::execute_undo(app, summary.id, false);
+            } else if access {
+                crate::access::ops::execute_undo(app, summary.id, false);
             } else if secretmap {
                 crate::secretmap::ops::execute_undo(app, summary.id, false);
             } else {

@@ -1,4 +1,4 @@
-//! IDM `config/access` API, CLI, read-only TUI browser, validation, and pure
+//! IDM `config/access` API, CLI/TUI editor, validation, and pure
 //! document transforms.
 //!
 //! Endpoint shapes and safety constraints are documented in
@@ -10,7 +10,7 @@
 //! - [`api`] = whole-document HTTP wrappers.
 //! - [`spec`] / [`ops`] = tenant-free projections, validation, digests, and
 //!   in-place document transforms shared by CLI and TUI callers.
-//! - [`screen`] / [`view`] / [`state`] = the browse-only TUI tab.
+//! - [`screen`] / [`view`] / [`state`] = the editable TUI tab.
 //! - [`cli`] = guarded `aic access` read and write commands.
 
 pub mod api;
