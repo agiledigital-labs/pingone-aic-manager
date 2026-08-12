@@ -45,7 +45,7 @@ use std::path::PathBuf;
 use crate::config::ProjectConfig;
 
 pub use client::AgentClient;
-pub use protocol::{CachedTokenInfo, Request, Response, StatusInfo};
+pub use protocol::{ApiCallRequest, CachedTokenInfo, Request, Response, StatusInfo};
 
 /// CLI-to-agent wire protocol version. Bump this for incompatible changes.
 pub const PROTOCOL_VERSION: u32 = 2;

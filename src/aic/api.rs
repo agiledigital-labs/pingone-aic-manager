@@ -32,7 +32,7 @@
 //! best-effort service-account-name lookup; keeping that read here means
 //! operator resolution never creates a second bearer or transport path.
 
-use crate::agent::{AgentClient, Request, Response};
+use crate::agent::{AgentClient, ApiCallRequest, Request, Response};
 use crate::{Error, Result};
 
 /// The content type the daemon uses — together with a `POST` method — to
@@ -255,7 +255,7 @@ impl<'a> ApiCall<'a> {
     /// [`Self::send`] so tests can pin the wrapper-to-envelope mapping
     /// without a live agent.
     fn envelope(self) -> Request {
-        Request::ApiCall {
+        Request::ApiCall(ApiCallRequest {
             tenant: self.tenant.to_string(),
             method: self.method.to_string(),
             path: self.path.to_string(),
@@ -264,7 +264,7 @@ impl<'a> ApiCall<'a> {
             content_type: self.content_type.map(str::to_owned),
             api_version: self.api_version.map(str::to_owned),
             if_match: self.if_match.map(str::to_owned),
-        }
+        })
     }
 
     pub async fn send(self) -> Result<serde_json::Value> {
@@ -287,68 +287,34 @@ impl<'a> ApiCall<'a> {
 mod tests {
     use super::*;
 
-    /// The envelope fields, flattened into something comparable. `Request`
-    /// deliberately derives no `PartialEq`, and the whole point of these
-    /// tests is field-by-field equality against a literal expectation.
-    #[derive(Debug, PartialEq)]
-    struct Envelope {
-        tenant: String,
-        method: String,
-        path: String,
-        body: Option<serde_json::Value>,
-        confirmed_prod: bool,
-        content_type: Option<String>,
-        api_version: Option<String>,
-        if_match: Option<String>,
-    }
-
-    impl Envelope {
-        fn of(call: ApiCall<'_>) -> Self {
-            match call.envelope() {
-                Request::ApiCall {
-                    tenant,
-                    method,
-                    path,
-                    body,
-                    confirmed_prod,
-                    content_type,
-                    api_version,
-                    if_match,
-                } => Self {
-                    tenant,
-                    method,
-                    path,
-                    body,
-                    confirmed_prod,
-                    content_type,
-                    api_version,
-                    if_match,
-                },
-                other => panic!("expected an api_call envelope, got {other:?}"),
-            }
-        }
-
-        /// Every field absent — what a bare `GET` should produce, and the
-        /// baseline each wrapper's expectation is written as a diff against.
-        fn bare(method: &str) -> Self {
-            Self {
-                tenant: TENANT.into(),
-                method: method.into(),
-                path: PATH.into(),
-                body: None,
-                confirmed_prod: false,
-                content_type: None,
-                api_version: None,
-                if_match: None,
-            }
-        }
-    }
-
     const TENANT: &str = "sandbox";
     const PATH: &str = "/openidm/managed/alpha_user/x";
 
     fn body() -> serde_json::Value {
         serde_json::json!({"givenName": "Ada"})
+    }
+
+    /// Peel the `ApiCallRequest` out of a builder's wire envelope.
+    fn wire_of(call: ApiCall<'_>) -> ApiCallRequest {
+        match call.envelope() {
+            Request::ApiCall(req) => req,
+            other => panic!("expected an api_call envelope, got {other:?}"),
+        }
+    }
+
+    /// Every field absent — what a bare `GET` should produce, and the
+    /// baseline each wrapper's expectation is written as a diff against.
+    fn bare(method: &str) -> ApiCallRequest {
+        ApiCallRequest {
+            tenant: TENANT.into(),
+            method: method.into(),
+            path: PATH.into(),
+            body: None,
+            confirmed_prod: false,
+            content_type: None,
+            api_version: None,
+            if_match: None,
+        }
     }
 
     /// A defaulted `ApiCall` must opt into nothing. Each of these fields is
@@ -358,10 +324,7 @@ mod tests {
     /// "absent unless asked for" is the property worth pinning.
     #[test]
     fn a_new_call_opts_into_nothing() {
-        assert_eq!(
-            Envelope::of(ApiCall::new(TENANT, "GET", PATH)),
-            Envelope::bare("GET")
-        );
+        assert_eq!(wire_of(ApiCall::new(TENANT, "GET", PATH)), bare("GET"));
     }
 
     /// The wrappers are the compatibility surface: their signatures are
@@ -372,21 +335,17 @@ mod tests {
     /// per-field assertion would miss.
     #[test]
     fn each_wrapper_maps_onto_its_envelope() {
-        let cases: Vec<(&str, ApiCall<'_>, Envelope)> = vec![
-            (
-                "get",
-                ApiCall::new(TENANT, "GET", PATH),
-                Envelope::bare("GET"),
-            ),
+        let cases: Vec<(&str, ApiCall<'_>, ApiCallRequest)> = vec![
+            ("get", ApiCall::new(TENANT, "GET", PATH), bare("GET")),
             (
                 "put",
                 ApiCall::new(TENANT, "PUT", PATH)
                     .body(body())
                     .confirmed_prod(true),
-                Envelope {
+                ApiCallRequest {
                     body: Some(body()),
                     confirmed_prod: true,
-                    ..Envelope::bare("PUT")
+                    ..bare("PUT")
                 },
             ),
             (
@@ -394,21 +353,21 @@ mod tests {
                 ApiCall::new(TENANT, "POST", PATH)
                     .body(body())
                     .confirmed_prod(false),
-                Envelope {
+                ApiCallRequest {
                     body: Some(body()),
-                    ..Envelope::bare("POST")
+                    ..bare("POST")
                 },
             ),
             (
                 "post_form",
                 ApiCall::new(TENANT, "POST", PATH)
                     .form_body("grant_type=example&scope=fr%3Aidm%3A*"),
-                Envelope {
+                ApiCallRequest {
                     body: Some(serde_json::Value::String(
                         "grant_type=example&scope=fr%3Aidm%3A*".into(),
                     )),
                     content_type: Some("application/x-www-form-urlencoded".into()),
-                    ..Envelope::bare("POST")
+                    ..bare("POST")
                 },
             ),
             (
@@ -417,11 +376,11 @@ mod tests {
                     .body(body())
                     .confirmed_prod(true)
                     .api_version("protocol=2.0,resource=1.0"),
-                Envelope {
+                ApiCallRequest {
                     body: Some(body()),
                     confirmed_prod: true,
                     api_version: Some("protocol=2.0,resource=1.0".into()),
-                    ..Envelope::bare("POST")
+                    ..bare("POST")
                 },
             ),
             (
@@ -429,26 +388,26 @@ mod tests {
                 ApiCall::new(TENANT, "PATCH", PATH)
                     .body(body())
                     .confirmed_prod(true),
-                Envelope {
+                ApiCallRequest {
                     body: Some(body()),
                     confirmed_prod: true,
-                    ..Envelope::bare("PATCH")
+                    ..bare("PATCH")
                 },
             ),
             (
                 "delete",
                 ApiCall::new(TENANT, "DELETE", PATH).confirmed_prod(true),
-                Envelope {
+                ApiCallRequest {
                     confirmed_prod: true,
-                    ..Envelope::bare("DELETE")
+                    ..bare("DELETE")
                 },
             ),
             (
                 "get_versioned",
                 ApiCall::new(TENANT, "GET", PATH).api_version("resource=2.0"),
-                Envelope {
+                ApiCallRequest {
                     api_version: Some("resource=2.0".into()),
-                    ..Envelope::bare("GET")
+                    ..bare("GET")
                 },
             ),
             (
@@ -457,11 +416,11 @@ mod tests {
                     .body(body())
                     .confirmed_prod(true)
                     .api_version("resource=2.0"),
-                Envelope {
+                ApiCallRequest {
                     body: Some(body()),
                     confirmed_prod: true,
                     api_version: Some("resource=2.0".into()),
-                    ..Envelope::bare("PUT")
+                    ..bare("PUT")
                 },
             ),
             (
@@ -471,12 +430,12 @@ mod tests {
                     .confirmed_prod(true)
                     .api_version("resource=2.0")
                     .if_match("00000000-1"),
-                Envelope {
+                ApiCallRequest {
                     body: Some(body()),
                     confirmed_prod: true,
                     api_version: Some("resource=2.0".into()),
                     if_match: Some("00000000-1".into()),
-                    ..Envelope::bare("PUT")
+                    ..bare("PUT")
                 },
             ),
             (
@@ -484,16 +443,16 @@ mod tests {
                 ApiCall::new(TENANT, "DELETE", PATH)
                     .confirmed_prod(true)
                     .api_version("resource=2.0"),
-                Envelope {
+                ApiCallRequest {
                     confirmed_prod: true,
                     api_version: Some("resource=2.0".into()),
-                    ..Envelope::bare("DELETE")
+                    ..bare("DELETE")
                 },
             ),
         ];
 
         for (wrapper, call, expected) in cases {
-            assert_eq!(Envelope::of(call), expected, "{wrapper} envelope drifted");
+            assert_eq!(wire_of(call), expected, "{wrapper} envelope drifted");
         }
     }
 
@@ -504,18 +463,18 @@ mod tests {
     /// string rather than an object.
     #[test]
     fn form_body_produces_the_daemons_no_bearer_discriminator() {
-        let envelope = Envelope::of(
+        let wire = wire_of(
             ApiCall::new(TENANT, "POST", "/am/oauth2/access_token")
                 .form_body("grant_type=client_credentials"),
         );
 
-        assert_eq!(envelope.method, "POST");
+        assert_eq!(wire.method, "POST");
         assert_eq!(
-            envelope.content_type.as_deref(),
+            wire.content_type.as_deref(),
             Some("application/x-www-form-urlencoded")
         );
         assert_eq!(
-            envelope.body.as_ref().and_then(serde_json::Value::as_str),
+            wire.body.as_ref().and_then(serde_json::Value::as_str),
             Some("grant_type=client_credentials")
         );
     }
@@ -526,13 +485,13 @@ mod tests {
     /// keep routing to the form transport and drop the bearer.
     #[test]
     fn a_json_body_clears_an_earlier_form_content_type() {
-        let envelope = Envelope::of(
+        let wire = wire_of(
             ApiCall::new(TENANT, "POST", PATH)
                 .form_body("grant_type=example")
                 .body(body()),
         );
 
-        assert_eq!(envelope.content_type, None);
-        assert_eq!(envelope.body, Some(body()));
+        assert_eq!(wire.content_type, None);
+        assert_eq!(wire.body, Some(body()));
     }
 }

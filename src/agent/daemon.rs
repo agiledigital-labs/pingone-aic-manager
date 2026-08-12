@@ -16,7 +16,9 @@ use crate::aic::AicClient;
 use crate::config::{self, ProjectConfig, VaultArtifact, crypto::Dek};
 use crate::{Error, Result};
 
-use super::protocol::{CachedTokenInfo, Request, Response, StatusInfo, WireRequest};
+use super::protocol::{
+    ApiCallRequest, CachedTokenInfo, Request, Response, StatusInfo, WireRequest,
+};
 use super::{PROTOCOL_VERSION, log_path, pid_path, socket_path};
 
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
@@ -354,40 +356,15 @@ async fn handle(
                 },
             }
         }
-        Request::ApiCall {
-            tenant,
-            method,
-            path,
-            body,
-            confirmed_prod,
-            content_type,
-            api_version,
-            if_match,
-        } => {
-            match do_api_call(
-                &tenant,
-                &method,
-                &path,
-                body,
-                ApiCallOptions {
-                    confirmed_prod,
-                    content_type,
-                    api_version,
-                    if_match,
-                },
-                state,
-            )
-            .await
-            {
-                Ok(Some(value)) => Response::Json { value },
-                Ok(None) => Response::Locked,
-                Err(Error::ProdConfirmRequired) => Response::ProdConfirmRequired,
-                Err(Error::Api { status, body }) => Response::ApiError { status, body },
-                Err(e) => Response::Error {
-                    message: e.to_string(),
-                },
-            }
-        }
+        Request::ApiCall(call) => match do_api_call(call, state).await {
+            Ok(Some(value)) => Response::Json { value },
+            Ok(None) => Response::Locked,
+            Err(Error::ProdConfirmRequired) => Response::ProdConfirmRequired,
+            Err(Error::Api { status, body }) => Response::ApiError { status, body },
+            Err(e) => Response::Error {
+                message: e.to_string(),
+            },
+        },
         Request::Shutdown => {
             shutdown.notify_waiters();
             Response::Ok
@@ -605,19 +582,8 @@ fn save_secret_map(
 /// Proxy a tenant-scoped HTTP call to AIC. Returns `Ok(None)` when the
 /// agent is locked so the caller can answer with `Response::Locked`.
 /// Connection pooling happens automatically via the per-tenant AicClient.
-struct ApiCallOptions {
-    confirmed_prod: bool,
-    content_type: Option<String>,
-    api_version: Option<String>,
-    if_match: Option<String>,
-}
-
 async fn do_api_call(
-    tenant: &str,
-    method: &str,
-    path: &str,
-    body: Option<serde_json::Value>,
-    options: ApiCallOptions,
+    call: ApiCallRequest,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<Option<serde_json::Value>> {
     if !state.read().await.is_unlocked() {
@@ -633,33 +599,39 @@ async fn do_api_call(
     // would also block every later reader and wedge the daemon.
     let (unlocked, cached_client) = {
         let s = state.read().await;
-        (s.is_unlocked(), s.clients.get(tenant).cloned())
+        (s.is_unlocked(), s.clients.get(&call.tenant).cloned())
     };
     if !unlocked {
         return Ok(None);
     }
     let client = match cached_client {
         Some(c) => c,
-        None => build_client(tenant, state.clone()).await?,
+        None => build_client(&call.tenant, state.clone()).await?,
     };
-    let av = options.api_version.as_deref();
-    let value = match method {
-        "GET" => client.get(path, av).await?,
-        "POST" if options.content_type.as_deref() == Some("application/x-www-form-urlencoded") => {
-            let body = body
+    let av = call.api_version.as_deref();
+    let value = match call.method.as_str() {
+        "GET" => client.get(&call.path, av).await?,
+        "POST" if call.content_type.as_deref() == Some("application/x-www-form-urlencoded") => {
+            let body = call
+                .body
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .ok_or_else(|| Error::Config("form request body must be a JSON string".into()))?;
             client
-                .write_form(reqwest::Method::POST, path, &body, options.confirmed_prod)
+                .write_form(
+                    reqwest::Method::POST,
+                    &call.path,
+                    &body,
+                    call.confirmed_prod,
+                )
                 .await?
         }
         "POST" => {
             client
                 .write(
                     reqwest::Method::POST,
-                    path,
-                    body.unwrap_or(serde_json::Value::Null),
-                    options.confirmed_prod,
+                    &call.path,
+                    call.body.unwrap_or(serde_json::Value::Null),
+                    call.confirmed_prod,
                     av,
                     None,
                 )
@@ -669,11 +641,11 @@ async fn do_api_call(
             client
                 .write(
                     reqwest::Method::PUT,
-                    path,
-                    body.unwrap_or(serde_json::Value::Null),
-                    options.confirmed_prod,
+                    &call.path,
+                    call.body.unwrap_or(serde_json::Value::Null),
+                    call.confirmed_prod,
                     av,
-                    options.if_match.as_deref(),
+                    call.if_match.as_deref(),
                 )
                 .await?
         }
@@ -681,9 +653,9 @@ async fn do_api_call(
             client
                 .write(
                     reqwest::Method::PATCH,
-                    path,
-                    body.unwrap_or(serde_json::Value::Null),
-                    options.confirmed_prod,
+                    &call.path,
+                    call.body.unwrap_or(serde_json::Value::Null),
+                    call.confirmed_prod,
                     av,
                     None,
                 )
@@ -693,9 +665,9 @@ async fn do_api_call(
             client
                 .write(
                     reqwest::Method::DELETE,
-                    path,
-                    body.unwrap_or(serde_json::Value::Null),
-                    options.confirmed_prod,
+                    &call.path,
+                    call.body.unwrap_or(serde_json::Value::Null),
+                    call.confirmed_prod,
                     av,
                     None,
                 )
