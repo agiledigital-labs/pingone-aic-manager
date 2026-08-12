@@ -1,11 +1,11 @@
 //! Access-tab state: per-tenant raw rule documents, search, and selection.
 
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
 use crate::access::{ops, spec};
+use crate::tui::list_chrome::DetailScroll;
 use crate::tui::widgets::LineEditor;
 
 #[derive(Debug)]
@@ -76,8 +76,7 @@ pub struct State {
     pub query: LineEditor,
     pub selected: usize,
     pub scroll: usize,
-    pub detail_scroll: usize,
-    detail_scroll_limit: Cell<usize>,
+    pub detail_scroll: DetailScroll,
 }
 
 impl State {
@@ -88,8 +87,7 @@ impl State {
             query: LineEditor::new(),
             selected: 0,
             scroll: 0,
-            detail_scroll: 0,
-            detail_scroll_limit: Cell::new(0),
+            detail_scroll: DetailScroll::default(),
         }
     }
 
@@ -97,7 +95,7 @@ impl State {
         self.query.clear();
         self.selected = 0;
         self.scroll = 0;
-        self.reset_detail_scroll();
+        self.detail_scroll.reset();
     }
 
     pub fn clamp_selection(&mut self, count: usize) {
@@ -117,34 +115,8 @@ impl State {
         let selected = index.min(count.saturating_sub(1));
         if self.selected != selected {
             self.selected = selected;
-            self.reset_detail_scroll();
+            self.detail_scroll.reset();
         }
-    }
-
-    pub fn scroll_detail(&mut self, delta: isize) {
-        let limit = self.detail_scroll_limit.get();
-        let current = self.detail_scroll.min(limit);
-        let requested = if delta.is_negative() {
-            current.saturating_sub(delta.unsigned_abs())
-        } else {
-            current.saturating_add(delta as usize)
-        };
-        self.detail_scroll = requested.min(limit);
-    }
-
-    pub fn clamp_detail_scroll(&self, rendered_height: usize, viewport_height: usize) -> usize {
-        let limit = crate::tui::list_chrome::clamp_detail_scroll(
-            usize::MAX,
-            rendered_height,
-            viewport_height,
-        );
-        self.detail_scroll_limit.set(limit);
-        self.detail_scroll.min(limit)
-    }
-
-    pub fn reset_detail_scroll(&mut self) {
-        self.detail_scroll = 0;
-        self.detail_scroll_limit.set(0);
     }
 
     pub fn document(&self, tenant: &str) -> Option<&Document> {
@@ -302,6 +274,8 @@ mod tests {
     fn marker_literals_and_glyphs_are_not_search_terms() {
         // Adding presentation markers to the value-field haystack makes at
         // least one of these otherwise absent queries match the duplicate.
+        // Digest and customAuthz are legitimate search fields, so keep their
+        // fixture values marker-free or this test stops isolating presentation.
         let mut state = State::new();
         state.data.insert(
             "sandbox".into(),
@@ -349,26 +323,5 @@ mod tests {
             assert_eq!(matches.len(), 1, "query {query:?}");
             assert_eq!(matches[0].row.summary.index, 0, "query {query:?}");
         }
-    }
-
-    #[test]
-    fn detail_scroll_clamps_to_the_last_rendered_height_and_resets() {
-        // Dropping the state-side limit lets repeated scroll-down actions
-        // accumulate beyond the five rendered rows available for scrolling.
-        let mut state = State::new();
-        assert_eq!(state.clamp_detail_scroll(15, 10), 0);
-        state.detail_scroll = 50;
-        state.scroll_detail(-10);
-        assert_eq!(state.detail_scroll, 0);
-        for _ in 0..5 {
-            state.scroll_detail(10);
-        }
-        assert_eq!(state.detail_scroll, 5);
-
-        state.scroll_detail(-10);
-        assert_eq!(state.detail_scroll, 0);
-        state.scroll_detail(10);
-        state.select(1, 3);
-        assert_eq!(state.detail_scroll, 0);
     }
 }

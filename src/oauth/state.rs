@@ -1,11 +1,11 @@
 //! OAuth2 TUI state: alpha-realm client list, search/filter selection, and
 //! lazily fetched read-only detail cache.
 
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
+use crate::tui::list_chrome::DetailScroll;
 use crate::tui::widgets::LineEditor;
 
 /// OAuth TUI is scoped to alpha for this first read-only tab.
@@ -35,8 +35,7 @@ pub struct State {
     pub query: LineEditor,
     pub selected: usize,
     pub scroll: usize,
-    pub detail_scroll: usize,
-    detail_scroll_limit: Cell<usize>,
+    pub detail_scroll: DetailScroll,
     pub detail_cache: HashMap<String, Value>,
     pub detail_loading: HashSet<String>,
     pub detail_failed: HashMap<String, String>,
@@ -51,7 +50,7 @@ impl State {
         self.query.clear();
         self.selected = 0;
         self.scroll = 0;
-        self.reset_detail_scroll();
+        self.detail_scroll.reset();
     }
 
     pub fn clamp_selection(&mut self, n: usize) {
@@ -63,34 +62,8 @@ impl State {
     pub fn select(&mut self, idx: usize) {
         if self.selected != idx {
             self.selected = idx;
-            self.reset_detail_scroll();
+            self.detail_scroll.reset();
         }
-    }
-
-    pub fn scroll_detail(&mut self, delta: isize) {
-        let limit = self.detail_scroll_limit.get();
-        let current = self.detail_scroll.min(limit);
-        let requested = if delta.is_negative() {
-            current.saturating_sub(delta.unsigned_abs())
-        } else {
-            current.saturating_add(delta as usize)
-        };
-        self.detail_scroll = requested.min(limit);
-    }
-
-    pub fn clamp_detail_scroll(&self, rendered_height: usize, viewport_height: usize) -> usize {
-        let limit = crate::tui::list_chrome::clamp_detail_scroll(
-            usize::MAX,
-            rendered_height,
-            viewport_height,
-        );
-        self.detail_scroll_limit.set(limit);
-        self.detail_scroll.min(limit)
-    }
-
-    pub fn reset_detail_scroll(&mut self) {
-        self.detail_scroll = 0;
-        self.detail_scroll_limit.set(0);
     }
 
     pub fn detail_key(tenant: &str, id: &str) -> String {
@@ -109,7 +82,7 @@ impl State {
         self.detail_loading.retain(|key| !key.starts_with(&prefix));
         self.detail_failed
             .retain(|key, _| !key.starts_with(&prefix));
-        self.reset_detail_scroll();
+        self.detail_scroll.reset();
     }
 
     pub fn matches(&self, tenant: Option<&str>) -> Vec<ClientMatch> {
@@ -211,30 +184,14 @@ mod tests {
         state.query.set("o");
         state.selected = 1;
         state.scroll = 3;
-        state.detail_scroll = 8;
+        state.detail_scroll.clamp(18, 10);
+        state.detail_scroll.scroll(8);
 
         state.reset_view();
 
         assert!(state.query.is_empty());
         assert_eq!(state.selected, 0);
         assert_eq!(state.scroll, 0);
-        assert_eq!(state.detail_scroll, 0);
-    }
-
-    #[test]
-    fn detail_scroll_clamps_to_the_last_rendered_height() {
-        // Restoring render-only clamping lets repeated actions accumulate well
-        // past the bottom and makes the first scroll-up appear unresponsive.
-        let mut state = State::new();
-        assert_eq!(state.clamp_detail_scroll(15, 10), 0);
-        state.detail_scroll = 50;
-        state.scroll_detail(-10);
-        assert_eq!(state.detail_scroll, 0);
-        for _ in 0..5 {
-            state.scroll_detail(10);
-        }
-        assert_eq!(state.detail_scroll, 5);
-        state.scroll_detail(-10);
-        assert_eq!(state.detail_scroll, 0);
+        assert_eq!(state.detail_scroll.offset(), 0);
     }
 }

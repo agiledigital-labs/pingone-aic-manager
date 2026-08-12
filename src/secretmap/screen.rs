@@ -284,17 +284,6 @@ pub fn new_item(app: &mut App) {
     start_add(app);
 }
 
-pub fn scroll_detail(app: &mut App, delta: isize) {
-    if delta.is_negative() {
-        app.secretmap.detail_scroll = app
-            .secretmap
-            .detail_scroll
-            .saturating_sub(delta.unsigned_abs());
-    } else {
-        app.secretmap.detail_scroll = app.secretmap.detail_scroll.saturating_add(delta as usize);
-    }
-}
-
 pub fn start_alias_picker(app: &mut App) {
     if !is_available(app) {
         return;
@@ -398,7 +387,7 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
     if app.secretmap.query.handle_key(&key) && app.secretmap.query.value() != before {
         app.secretmap.selected = 0;
         app.secretmap.scroll = 0;
-        app.secretmap.detail_scroll = 0;
+        app.secretmap.detail_scroll.reset();
     }
 }
 

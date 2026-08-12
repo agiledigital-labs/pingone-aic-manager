@@ -11,6 +11,42 @@ use ratatui::{
     widgets::Paragraph,
 };
 
+/// Scroll state for a detail pane whose rendered height is known only during
+/// drawing. The last rendered limit is retained so key actions cannot build up
+/// an unreachable offset between frames.
+#[derive(Debug, Default)]
+pub struct DetailScroll {
+    offset: usize,
+    limit: std::cell::Cell<usize>,
+}
+
+impl DetailScroll {
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn scroll(&mut self, delta: isize) {
+        let current = self.offset.min(self.limit.get());
+        let requested = if delta.is_negative() {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current.saturating_add(delta as usize)
+        };
+        self.offset = requested.min(self.limit.get());
+    }
+
+    pub fn clamp(&self, rendered_height: usize, viewport_height: usize) -> usize {
+        let limit = rendered_height.saturating_sub(viewport_height);
+        self.limit.set(limit);
+        self.offset.min(limit)
+    }
+
+    pub fn reset(&mut self) {
+        self.offset = 0;
+        self.limit.set(0);
+    }
+}
+
 /// Shared `/query` + right-aligned count header for the tenant list views
 /// (variables and secrets), so both halves of the ESVs tab render the search
 /// row identically. `area` must be a 1-row rect.
@@ -96,9 +132,68 @@ pub fn clamp_scroll(prev: usize, selected: usize, height: usize, n: usize) -> us
     scroll
 }
 
-/// Clamp a detail-pane offset to the last fully reachable rendered row.
-pub fn clamp_detail_scroll(scroll: usize, rendered_height: usize, viewport_height: usize) -> usize {
-    scroll.min(rendered_height.saturating_sub(viewport_height))
+/// Wrap text to a character width, preferring whitespace boundaries while
+/// still breaking tokens that exceed the available width. Continuation rows
+/// retain the source line's leading indentation.
+pub fn wrap_lines(text: &str, width: u16) -> Vec<String> {
+    let width = usize::from(width);
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let indent = text
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .collect::<String>();
+    let continuation_indent = if indent.chars().count() < width {
+        indent
+    } else {
+        String::new()
+    };
+    let mut wrapped = Vec::new();
+    let mut remaining = text.to_string();
+
+    while remaining.chars().count() > width {
+        let hard_end = remaining
+            .char_indices()
+            .nth(width)
+            .map_or(remaining.len(), |(index, _)| index);
+        let chunk = &remaining[..hard_end];
+        let boundary_is_whitespace = remaining[hard_end..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace);
+        let word_break = (!boundary_is_whitespace)
+            .then(|| {
+                chunk
+                    .char_indices()
+                    .rev()
+                    .find(|(index, character)| {
+                        character.is_whitespace()
+                            && chunk[..*index]
+                                .chars()
+                                .any(|character| !character.is_whitespace())
+                    })
+                    .map(|(index, character)| (index, character.len_utf8()))
+            })
+            .flatten();
+
+        let (line, rest) = if boundary_is_whitespace {
+            (chunk, &remaining[hard_end..])
+        } else if let Some((index, whitespace_len)) = word_break {
+            (&remaining[..index], &remaining[index + whitespace_len..])
+        } else {
+            (chunk, &remaining[hard_end..])
+        };
+        wrapped.push(line.to_string());
+        remaining = format!(
+            "{}{}",
+            continuation_indent,
+            rest.trim_start_matches(char::is_whitespace)
+        );
+    }
+    wrapped.push(remaining);
+    wrapped
 }
 
 /// Truncate text to a character budget and make the loss visible.
@@ -127,10 +222,37 @@ mod tests {
     }
 
     #[test]
-    fn detail_scroll_never_passes_the_rendered_bottom() {
-        // Returning the requested offset directly makes both over-scroll
-        // cases fail, including content shorter than its viewport.
-        assert_eq!(clamp_detail_scroll(50, 30, 10), 20);
-        assert_eq!(clamp_detail_scroll(50, 8, 10), 0);
+    fn detail_scroll_reclamps_before_delta_and_reset_clears_both_halves() {
+        let mut scroll = DetailScroll::default();
+        assert_eq!(scroll.clamp(15, 10), 0);
+        for _ in 0..5 {
+            scroll.scroll(10);
+        }
+        assert_eq!(scroll.offset(), 5);
+
+        // A shorter redraw leaves the stored offset stale until the next key
+        // action, which must re-clamp before applying its delta.
+        assert_eq!(scroll.clamp(8, 10), 0);
+        scroll.scroll(-10);
+        assert_eq!(scroll.offset(), 0);
+
+        scroll.clamp(15, 10);
+        scroll.scroll(10);
+        scroll.reset();
+        scroll.scroll(10);
+        assert_eq!(scroll.offset(), 0);
+    }
+
+    #[test]
+    fn wrapping_prefers_whitespace_breaks_and_preserves_indent() {
+        assert_eq!(wrap_lines("alpha beta gamma", 10), ["alpha beta", "gamma"]);
+        assert_eq!(
+            wrap_lines("  alpha beta gamma", 10),
+            ["  alpha", "  beta", "  gamma"]
+        );
+        assert_eq!(
+            wrap_lines("  abcdefghijkl", 7),
+            ["  abcde", "  fghij", "  kl"]
+        );
     }
 }

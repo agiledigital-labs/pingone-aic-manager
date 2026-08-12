@@ -281,10 +281,12 @@ async fn list(options: AccessListArgs) -> Result<()> {
             println!();
             print!(
                 "{}",
-                render_rule_blocks(selected.iter().map(|(summary, _)| *summary))
+                render_rule_blocks(selected.iter().map(|(summary, rule)| (*summary, *rule)),)
             );
             println!();
             println!("Full rule bodies: aic access show <address> or aic access list --json");
+        } else {
+            println!("No rules matched the supplied filters.");
         }
         if warning_count > 0 && !warnings {
             eprintln!(
@@ -659,33 +661,44 @@ impl<'a> RuleEntry<'a> {
 
 const CUSTOM_AUTHZ_LIST_CLIP: usize = 100;
 
-fn render_rule_blocks<'a>(summaries: impl IntoIterator<Item = &'a RuleSummary>) -> String {
+fn render_rule_blocks<'a>(rules: impl IntoIterator<Item = (&'a RuleSummary, &'a Value)>) -> String {
     let mut output = String::new();
-    for (position, summary) in summaries.into_iter().enumerate() {
+    for (position, (summary, rule)) in rules.into_iter().enumerate() {
         if position > 0 {
             output.push('\n');
         }
         let duplicate = if summary.duplicate { "   dup" } else { "" };
-        writeln!(
+        let _ = writeln!(
             output,
             "#{}   {}{}",
             summary.index, summary.digest, duplicate
-        )
-        .expect("write access-rule block to String");
-        push_rule_field(&mut output, "pattern", &summary.pattern);
-        push_rule_field(&mut output, "roles", &summary.roles);
-        push_rule_field(&mut output, "methods", &summary.methods);
-        if let Some(actions) = &summary.actions {
+        );
+        if rule.get("pattern").is_some() {
+            push_rule_field(&mut output, "pattern", &summary.pattern);
+        }
+        if rule.get("roles").is_some() {
+            push_rule_field(&mut output, "roles", &summary.roles);
+        }
+        if rule.get("methods").is_some() {
+            push_rule_field(&mut output, "methods", &summary.methods);
+        }
+        if let Some(actions) = &summary.actions
+            && rule.get("actions").is_some()
+        {
             push_rule_field(&mut output, "actions", actions);
         }
-        if let Some(custom_authz) = &summary.custom_authz {
+        if let Some(custom_authz) = &summary.custom_authz
+            && rule.get("customAuthz").is_some()
+        {
             push_rule_field(
                 &mut output,
                 "customAuthz",
                 &crate::cli::clip(custom_authz, CUSTOM_AUTHZ_LIST_CLIP),
             );
         }
-        if let Some(exclude_patterns) = &summary.exclude_patterns {
+        if let Some(exclude_patterns) = &summary.exclude_patterns
+            && rule.get("excludePatterns").is_some()
+        {
             push_rule_field(&mut output, "excludePatterns", exclude_patterns);
         }
     }
@@ -694,9 +707,9 @@ fn render_rule_blocks<'a>(summaries: impl IntoIterator<Item = &'a RuleSummary>) 
 
 fn push_rule_field(output: &mut String, label: &str, value: &str) {
     if value.is_empty() {
-        writeln!(output, "  {label}").expect("write access-rule field to String");
+        let _ = writeln!(output, "  {label}");
     } else {
-        writeln!(output, "  {label:<16} {value}").expect("write access-rule field to String");
+        let _ = writeln!(output, "  {label:<16} {value}");
     }
 }
 
@@ -744,6 +757,7 @@ mod tests {
                 "rule"
             ]
         );
+        assert_eq!(value["roles"], "internal/role/user-reader");
     }
 
     #[test]
@@ -752,14 +766,31 @@ mod tests {
         // value, makes the corresponding line-presence assertion fail.
         let fixture = crate::access::six_rule_fixture();
         let rules = fixture["configs"].as_array().unwrap();
-        let mut summaries = spec::rule_summaries(rules);
+        let summaries = spec::rule_summaries(rules);
 
-        let absent = render_rule_blocks([&summaries[0]]);
+        let absent = render_rule_blocks([(&summaries[0], &rules[0])]);
         assert!(!absent.lines().any(|line| line.trim() == "actions"));
 
-        summaries[0].actions = Some(String::new());
-        let present_empty = render_rule_blocks([&summaries[0]]);
+        let present_empty_rule = json!({
+            "pattern": "managed/user/*",
+            "roles": "internal/role/user-reader",
+            "methods": "read",
+            "actions": ""
+        });
+        let present_empty_summary = spec::rule_summaries(std::slice::from_ref(&present_empty_rule))
+            .into_iter()
+            .next()
+            .unwrap();
+        let present_empty = render_rule_blocks([(&present_empty_summary, &present_empty_rule)]);
         assert!(present_empty.lines().any(|line| line == "  actions"));
+
+        let missing_pattern = json!({"roles": "*", "methods": "read"});
+        let missing_pattern_summary = spec::rule_summaries(std::slice::from_ref(&missing_pattern))
+            .into_iter()
+            .next()
+            .unwrap();
+        let missing = render_rule_blocks([(&missing_pattern_summary, &missing_pattern)]);
+        assert!(!missing.lines().any(|line| line.trim() == "pattern"));
     }
 
     #[test]
@@ -769,7 +800,7 @@ mod tests {
         let fixture = crate::access::six_rule_fixture();
         let rules = fixture["configs"].as_array().unwrap();
         let summaries = spec::rule_summaries(rules);
-        let rendered = render_rule_blocks([&summaries[1], &summaries[2]]);
+        let rendered = render_rule_blocks([(&summaries[1], &rules[1]), (&summaries[2], &rules[2])]);
 
         assert!(rendered.contains("roles            internal/role/user-owner"));
         assert!(rendered.contains("actions          *"));
@@ -794,7 +825,13 @@ mod tests {
             exclude_patterns: None,
         };
 
-        let rendered = render_rule_blocks([&summary]);
+        let rule = json!({
+            "pattern": "endpoint/x",
+            "methods": "read",
+            "roles": "*",
+            "customAuthz": summary.custom_authz.clone().unwrap()
+        });
+        let rendered = render_rule_blocks([(&summary, &rule)]);
         assert!(rendered.contains("customAuthz      first line "));
         assert!(rendered.contains("...\n"));
         assert!(!rendered.contains("first line\n"));

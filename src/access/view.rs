@@ -236,63 +236,20 @@ fn draw_detail(f: &mut Frame, app: &App, matches: &[RuleMatch], area: Rect) {
     ];
     lines.extend(
         ordered_rule_json_lines(&rule.raw)
-            .flat_map(|line| wrap_detail_line(&line, area.width))
+            .flat_map(|line| crate::tui::list_chrome::wrap_lines(&line, area.width))
             .map(Line::from),
     );
     let rendered_height = lines.len();
     let scroll = app
         .access
-        .clamp_detail_scroll(rendered_height, usize::from(area.height));
+        .detail_scroll
+        .clamp(rendered_height, usize::from(area.height));
     f.render_widget(
         Paragraph::new(lines)
             .style(Style::default().fg(Color::White))
             .scroll((scroll as u16, 0)),
         area,
     );
-}
-
-fn wrap_detail_line(line: &str, width: u16) -> Vec<String> {
-    let width = usize::from(width);
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut wrapped = Vec::new();
-    let mut remaining = line;
-    while remaining.chars().count() > width {
-        let hard_end = remaining
-            .char_indices()
-            .nth(width)
-            .map_or(remaining.len(), |(index, _)| index);
-        let chunk = &remaining[..hard_end];
-        if remaining[hard_end..]
-            .chars()
-            .next()
-            .is_some_and(char::is_whitespace)
-        {
-            wrapped.push(chunk.to_string());
-            remaining = remaining[hard_end..].trim_start_matches(char::is_whitespace);
-            continue;
-        }
-        let word_break = chunk
-            .char_indices()
-            .rev()
-            .find(|(index, character)| {
-                character.is_whitespace()
-                    && chunk[..*index]
-                        .chars()
-                        .any(|character| !character.is_whitespace())
-            })
-            .map(|(index, character)| (index, character.len_utf8()));
-        if let Some((index, whitespace_len)) = word_break {
-            wrapped.push(chunk[..index].to_string());
-            remaining = remaining[index + whitespace_len..].trim_start_matches(char::is_whitespace);
-        } else {
-            wrapped.push(chunk.to_string());
-            remaining = &remaining[hard_end..];
-        }
-    }
-    wrapped.push(remaining.to_string());
-    wrapped
 }
 
 fn ordered_rule_json_lines(rule: &serde_json::Value) -> impl Iterator<Item = String> {
@@ -351,7 +308,7 @@ mod tests {
     use super::*;
 
     const INDEX_MIN_CONTENT_WIDTH: u16 = 2;
-    const FLAGS_MIN_CONTENT_WIDTH: u16 = 2;
+    const FLAGS_HEADER_MIN_CONTENT_WIDTH: u16 = 5;
 
     fn render_test_table(width: u16) -> Vec<String> {
         let backend = TestBackend::new(width, 2);
@@ -405,9 +362,19 @@ mod tests {
             "index width {widths:?}"
         );
         assert!(
-            widths[1] >= FLAGS_MIN_CONTENT_WIDTH,
+            widths[1] >= FLAGS_HEADER_MIN_CONTENT_WIDTH,
             "flags width {widths:?}"
         );
+    }
+
+    #[test]
+    fn eighty_column_table_layout_is_pinned() {
+        let lines = render_test_table(80);
+        assert_eq!(
+            lines[0].trim_end(),
+            "#   FLAGS  PATTERN     METHODS   ROLES"
+        );
+        assert_eq!(lines[1].trim_end(), "65  AD     pattern-se… M         x,*");
     }
 
     #[test]
@@ -445,20 +412,6 @@ mod tests {
         assert_eq!(flags.spans[0].style.fg, Some(Color::Magenta));
         assert_eq!(flags.spans[1].content.as_ref(), "D");
         assert_eq!(flags.spans[1].style.fg, Some(Color::Yellow));
-    }
-
-    #[test]
-    fn detail_wrap_prefers_whitespace_but_still_breaks_long_tokens() {
-        // Returning to fixed chunks splits the second word; refusing hard
-        // breaks lets the long token exceed the detail pane.
-        assert_eq!(
-            wrap_detail_line("alpha beta gamma", 10),
-            ["alpha beta", "gamma"]
-        );
-        assert_eq!(
-            wrap_detail_line("abcdefghijkl", 5),
-            ["abcde", "fghij", "kl"]
-        );
     }
 
     #[test]

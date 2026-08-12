@@ -12,6 +12,11 @@ pub enum Mode {
     Search,
 }
 
+pub const FLAGS_LEGEND: [(&str, &str); 2] = [
+    ("A", "grant is gated by a customAuthz script"),
+    ("D", "rule is byte-identical to another rule"),
+];
+
 #[derive(Debug)]
 pub enum Event {
     Loaded {
@@ -50,7 +55,8 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
 pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
     match mode {
         Mode::Search => Some(vec![
-            ("FLAGS", "A = customAuthz; D = duplicate"),
+            FLAGS_LEGEND[0],
+            FLAGS_LEGEND[1],
             ("Type", "edit search query"),
             ("Backspace", "delete character"),
             ("Enter", "keep filter and return to list"),
@@ -100,7 +106,7 @@ pub fn select(app: &mut App, index: usize) {
 }
 
 pub fn scroll_detail(app: &mut App, delta: isize) {
-    app.access.scroll_detail(delta);
+    app.access.detail_scroll.scroll(delta);
 }
 
 pub fn filter_active(app: &App) -> bool {
@@ -170,7 +176,7 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
     if app.access.query.handle_key(&key) && app.access.query.value() != before {
         app.access.selected = 0;
         app.access.scroll = 0;
-        app.access.reset_detail_scroll();
+        app.access.detail_scroll.reset();
     }
 }
 
