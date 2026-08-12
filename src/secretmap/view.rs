@@ -242,8 +242,7 @@ fn draw_detail(f: &mut Frame, app: &App, matches: &[MappingMatch], area: Rect) {
     ];
 
     let height = inner.height as usize;
-    let max_scroll = lines.len().saturating_sub(height);
-    let scroll = app.secretmap.detail_scroll.min(max_scroll);
+    let scroll = app.secretmap.detail_scroll.clamp(lines.len(), height);
     f.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })

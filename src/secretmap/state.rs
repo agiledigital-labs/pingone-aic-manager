@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{Value, json};
 
 use crate::secretmap::{api, labels};
+use crate::tui::list_chrome::DetailScroll;
 use crate::tui::widgets::LineEditor;
 
 /// Secret mappings are scoped to alpha for the first TUI tab.
@@ -109,7 +110,7 @@ pub struct State {
     pub query: LineEditor,
     pub selected: usize,
     pub scroll: usize,
-    pub detail_scroll: usize,
+    pub detail_scroll: DetailScroll,
     pub picking_label: Option<PickLabelState>,
     pub editing: Option<EditAliasState>,
     pub pending_delete: Option<DeleteMappingState>,
@@ -132,7 +133,7 @@ impl State {
         self.query.clear();
         self.selected = 0;
         self.scroll = 0;
-        self.detail_scroll = 0;
+        self.detail_scroll.reset();
         self.picking_label = None;
         self.editing = None;
         self.pending_delete = None;
@@ -147,7 +148,7 @@ impl State {
     pub fn select(&mut self, idx: usize) {
         if self.selected != idx {
             self.selected = idx;
-            self.detail_scroll = 0;
+            self.detail_scroll.reset();
         }
     }
 
@@ -434,7 +435,8 @@ mod tests {
         state.query.set("am");
         state.selected = 1;
         state.scroll = 3;
-        state.detail_scroll = 9;
+        state.detail_scroll.clamp(19, 10);
+        state.detail_scroll.scroll(9);
         state.picking_label = Some(PickLabelState::new("sandbox".into()));
         state.editing = Some(EditAliasState::new(
             "sandbox".into(),
@@ -456,7 +458,7 @@ mod tests {
         assert!(state.query.is_empty());
         assert_eq!(state.selected, 0);
         assert_eq!(state.scroll, 0);
-        assert_eq!(state.detail_scroll, 0);
+        assert_eq!(state.detail_scroll.offset(), 0);
         assert!(state.picking_label.is_none());
         assert!(state.editing.is_none());
         assert!(state.pending_delete.is_none());

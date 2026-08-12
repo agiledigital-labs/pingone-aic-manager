@@ -166,7 +166,7 @@ pub fn load_selected(app: &mut App) {
 }
 
 pub fn scroll_detail(app: &mut App, delta: isize) {
-    app.oauth.scroll_detail(delta);
+    app.oauth.detail_scroll.scroll(delta);
 }
 
 pub fn clear_filter(app: &mut App) {
@@ -234,7 +234,7 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
     if app.oauth.query.handle_key(&key) && app.oauth.query.value() != before {
         app.oauth.selected = 0;
         app.oauth.scroll = 0;
-        app.oauth.reset_detail_scroll();
+        app.oauth.detail_scroll.reset();
         load_selected(app);
     }
 }

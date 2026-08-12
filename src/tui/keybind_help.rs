@@ -183,6 +183,12 @@ fn normal_lines(app: &App, lines: &mut Vec<Line<'static>>) {
             );
         }
     }
+    if app.active_view == crate::app::View::Access {
+        group(lines, "Rule flags");
+        for (glyph, desc) in crate::access::screen::FLAGS_LEGEND {
+            bind(lines, glyph, desc);
+        }
+    }
     bind(lines, "q / ^C", "quit");
     bind(lines, "F1/?", "show keybinds");
 }
