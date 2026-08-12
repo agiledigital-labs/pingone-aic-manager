@@ -244,11 +244,16 @@ worked example.
    `cli::Command` and nothing else. **A tab is not one arm per global** — this
    step used to claim it was, and it is the single most misleading line in this
    file; corrected 2026-08-11 after it sent an agent looking for a six-arm
-   footprint that does not exist. Adding a tab means ~20 arms across five files,
+   footprint that does not exist. Adding a tab means ~20 arms across six files,
    because `keymap.rs` dispatches each list operation through its own exhaustive
    `match` on `View`. `src/mappings/` is the smallest complete example; the
    compiler finds all of these for you, so add the `View` variant first and
    follow the errors.
+
+   Note the sixth file is outside `src/app/`: `src/tui/keybind_help.rs` matches
+   exhaustively on `InputMode`, so a new `InputMode` variant needs an arm there
+   too. That row was missing until 2026-08-12, when it blocked a second agent
+   working from an allow-list that named only the `src/app/` files.
 
    | File                  | Sites                                                                                                                                                                                                 |
    | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -257,6 +262,7 @@ worked example.
    | `app/draw.rs`         | the `InputMode` modal group; the active-view draw branch                                                                                                                                              |
    | `app/keymap.rs`       | `dispatch`, `footer_hints`, and one arm each in `row_count`, `current_selection`, `set_selection`, `filter_active`, `clear_filter`, `primary`, `delete`, `new_item`, `search_mode`                    |
    | `app/prod_confirm.rs` | only if the feature has tenant-write prod actions                                                                                                                                                     |
+   | `tui/keybind_help.rs` | the `InputMode` arm routing to the feature's `screen::help_lines` — **not** under `src/app/`                                                                                                          |
 
    Correspondingly, `<feature>/screen.rs` must publish `Mode`, `Event`,
    `apply_event`, `handle_key`, `footer_hints`, `help_lines`, `refresh`,
