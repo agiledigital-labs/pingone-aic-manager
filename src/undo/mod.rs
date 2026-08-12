@@ -138,6 +138,12 @@ pub enum UndoOp {
         tenant: String,
         body: serde_json::Value,
     },
+    /// Undo of a `config/access` rule change, restoring the complete prior
+    /// document after checking the live document still equals the write result.
+    AccessConfigReplace {
+        tenant: String,
+        body: serde_json::Value,
+    },
     /// Undo of an AM secret-label mapping edit. The executor lives in
     /// `secretmap::ops` because restoring a prior alias needs the same
     /// mapping-family conflict check as the write path.
@@ -159,6 +165,7 @@ impl UndoOp {
             | UndoOp::SecretSetDescription { tenant, .. }
             | UndoOp::ManagedObjectReplace { tenant, .. }
             | UndoOp::ManagedConfigReplace { tenant, .. }
+            | UndoOp::AccessConfigReplace { tenant, .. }
             | UndoOp::SecretMappingReplace { tenant, .. } => tenant,
         }
     }
@@ -172,6 +179,7 @@ impl UndoOp {
             | UndoOp::SecretSetDescription { id, .. } => Some(id),
             UndoOp::ManagedObjectReplace { object_name, .. } => Some(object_name),
             UndoOp::ManagedConfigReplace { .. } => None,
+            UndoOp::AccessConfigReplace { .. } => None,
             UndoOp::SecretMappingReplace { secret_id, .. } => Some(secret_id),
         }
     }

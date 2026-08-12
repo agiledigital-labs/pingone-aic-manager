@@ -11,8 +11,10 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::access::ops::{self, ChangeBasis, Changes};
-use crate::access::spec::{self, RuleEdit, RuleSpec, RuleSummary, TouchedIndices, WarningScope};
+use crate::access::ops::{self, Changes};
+use crate::access::spec::{
+    self, Amendment, RuleEdit, RuleSpec, RuleSummary, TouchedIndices, WarningScope,
+};
 use crate::access::{api, spec::Findings};
 use crate::cli::{
     WriteOk, confirm_destructive, ensure_prod_confirmed, print_json, prompt_available, tenant_for,
@@ -133,13 +135,6 @@ pub struct AccessWriteArgs {
     no_backup: bool,
     #[arg(long)]
     tenant: Option<String>,
-}
-
-enum Amendment {
-    Add(RuleSpec),
-    Edit { index: usize, edit: RuleEdit },
-    Remove(Vec<usize>),
-    Apply(Value),
 }
 
 #[derive(Debug)]
@@ -393,53 +388,15 @@ async fn write(amendment: Amendment, options: AccessWriteArgs) -> Result<()> {
 }
 
 fn plan(before: &Value, amendment: Amendment, options: &AccessWriteArgs) -> Result<Plan> {
-    let (after, exact_touched) = match amendment {
-        Amendment::Add(rule) => {
-            let transformed = ops::append(before, rule)?;
-            (transformed.document, Some(transformed.touched))
-        }
-        Amendment::Edit { index, edit } => {
-            let transformed = ops::replace_at(before, index, edit)?;
-            (transformed.document, Some(transformed.touched))
-        }
-        Amendment::Remove(indices) => {
-            let transformed = ops::remove_at(before, &indices)?;
-            (transformed.document, Some(transformed.touched))
-        }
-        Amendment::Apply(mut document) => {
-            normalize_apply_id(&mut document)?;
-            (document, None)
-        }
-    };
-    let summary = match exact_touched.as_ref() {
-        Some(touched) => ops::changes(before, &after, ChangeBasis::Touched(touched)),
-        None => ops::changes(before, &after, ChangeBasis::Multiset),
-    };
-    let touched = summary.touched.clone();
-    let needs_confirm = !summary.changed.is_empty() && !options.dry_run && !options.yes;
+    let amended = ops::amend(before, amendment)?;
+    let needs_confirm = !amended.summary.changed.is_empty() && !options.dry_run && !options.yes;
     Ok(Plan {
         backup: !options.dry_run && !options.no_backup,
-        after,
-        touched,
-        summary,
+        after: amended.after,
+        touched: amended.touched,
+        summary: amended.summary,
         needs_confirm,
     })
-}
-
-fn normalize_apply_id(document: &mut Value) -> Result<()> {
-    let Some(object) = document.as_object_mut() else {
-        return Ok(());
-    };
-    match object.get("_id") {
-        None => {
-            object.insert("_id".into(), Value::String("access".into()));
-            Ok(())
-        }
-        Some(Value::String(id)) if id == "access" => Ok(()),
-        Some(other) => Err(Error::Config(format!(
-            "config/access `_id` must be \"access\", got {other}"
-        ))),
-    }
 }
 
 async fn resolve_roles(tenant: &str) -> Option<spec::RoleIndex> {

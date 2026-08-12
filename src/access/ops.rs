@@ -4,8 +4,64 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
-use crate::access::spec::{RuleEdit, RuleSpec, TouchedIndices};
+use crate::access::api;
+use crate::access::spec::{Amendment, RuleEdit, RuleSpec, TouchedIndices};
+use crate::access::state::{DeleteState, Document, FormKind, RuleFormState};
+use crate::app::event::{AppEvent, ToastKind};
+use crate::app::prod_confirm::PendingProdAction;
+use crate::app::{App, InputMode};
+use crate::config::tenant::TenantTheme;
+use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
 use crate::{Error, Result};
+
+#[derive(Debug, Clone)]
+pub enum ProdAction {
+    Write(Box<WriteRequest>),
+    Undo(UndoId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeMode {
+    Create,
+    Edit,
+    DeleteConfirm,
+}
+
+impl ResumeMode {
+    fn input_mode(self) -> InputMode {
+        let mode = match self {
+            Self::Create => crate::access::screen::Mode::Create,
+            Self::Edit => crate::access::screen::Mode::Edit,
+            Self::DeleteConfirm => crate::access::screen::Mode::DeleteConfirm,
+        };
+        InputMode::Access(mode)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WriteRequest {
+    pub tenant: String,
+    pub expected_document_digest: String,
+    pub previous_document: Value,
+    pub amendment: Amendment,
+    pub expected_rule: Option<(usize, String)>,
+    pub after: Value,
+    pub description: String,
+    pub resume_mode: ResumeMode,
+}
+
+#[derive(Debug)]
+pub enum WriteFailure {
+    Stale(String),
+    NotWritten(String),
+    AcceptedButUnconfirmed(String),
+}
+
+#[derive(Debug)]
+pub enum UndoFailure {
+    Conflict(String),
+    Failed(String),
+}
 
 /// One changed rule at its document index.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +94,45 @@ pub enum ChangeBasis<'a> {
 pub struct Transformed {
     pub document: Value,
     pub touched: TouchedIndices,
+}
+
+/// A completed pure amendment plus its exact rule-level change summary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Amended {
+    pub after: Value,
+    pub touched: TouchedIndices,
+    pub summary: Changes,
+}
+
+/// Apply one CLI/TUI amendment without tenant I/O or caller policy.
+pub fn amend(before: &Value, amendment: Amendment) -> Result<Amended> {
+    let (after, exact_touched) = match amendment {
+        Amendment::Add(rule) => {
+            let transformed = append(before, rule)?;
+            (transformed.document, Some(transformed.touched))
+        }
+        Amendment::Edit { index, edit } => {
+            let transformed = replace_at(before, index, edit)?;
+            (transformed.document, Some(transformed.touched))
+        }
+        Amendment::Remove(indices) => {
+            let transformed = remove_at(before, &indices)?;
+            (transformed.document, Some(transformed.touched))
+        }
+        Amendment::Apply(mut document) => {
+            normalize_apply_id(&mut document)?;
+            (document, None)
+        }
+    };
+    let summary = match exact_touched.as_ref() {
+        Some(touched) => changes(before, &after, ChangeBasis::Touched(touched)),
+        None => changes(before, &after, ChangeBasis::Multiset),
+    };
+    Ok(Amended {
+        after,
+        touched: summary.touched.clone(),
+        summary,
+    })
 }
 
 /// The `configs` array of an access document.
@@ -296,11 +391,463 @@ fn new_rule_value(spec: RuleSpec) -> Value {
     Value::Object(rule)
 }
 
+fn normalize_apply_id(document: &mut Value) -> Result<()> {
+    let Some(object) = document.as_object_mut() else {
+        return Ok(());
+    };
+    match object.get("_id") {
+        None => {
+            object.insert("_id".into(), Value::String("access".into()));
+            Ok(())
+        }
+        Some(Value::String(id)) if id == "access" => Ok(()),
+        Some(other) => Err(Error::Config(format!(
+            "config/access `_id` must be \"access\", got {other}"
+        ))),
+    }
+}
+
+pub fn request_from_form(form: &RuleFormState) -> Result<WriteRequest> {
+    let amendment = form.amendment();
+    let amended = amend(&form.original_document, amendment.clone())?;
+    validate_amended(&amended)?;
+    if amended.summary.changed.is_empty() {
+        return Err(Error::Config("access rule is unchanged".into()));
+    }
+    let (expected_rule, description, resume_mode) = match form.kind {
+        FormKind::Create => (
+            None,
+            "Remove newly created access rule".into(),
+            ResumeMode::Create,
+        ),
+        FormKind::Edit { index } => (
+            form.original_rule_digest
+                .clone()
+                .map(|digest| (index, digest)),
+            format!("Revert access rule #{index}"),
+            ResumeMode::Edit,
+        ),
+    };
+    Ok(WriteRequest {
+        tenant: form.tenant.clone(),
+        expected_document_digest: form.original_digest.clone(),
+        previous_document: form.original_document.clone(),
+        amendment,
+        expected_rule,
+        after: amended.after,
+        description,
+        resume_mode,
+    })
+}
+
+pub fn request_from_delete(delete: &DeleteState) -> Result<WriteRequest> {
+    if !delete.confirmed() {
+        return Err(Error::Config(
+            "access rule deletion requires confirmation".into(),
+        ));
+    }
+    let amendment = Amendment::Remove(vec![delete.index]);
+    let amended = amend(&delete.original_document, amendment.clone())?;
+    validate_amended(&amended)?;
+    Ok(WriteRequest {
+        tenant: delete.tenant.clone(),
+        expected_document_digest: delete.original_digest.clone(),
+        previous_document: delete.original_document.clone(),
+        amendment,
+        expected_rule: Some((delete.index, delete.rule_digest.clone())),
+        after: amended.after,
+        description: format!("Restore access rule #{}", delete.index),
+        resume_mode: ResumeMode::DeleteConfirm,
+    })
+}
+
+fn validate_amended(amended: &Amended) -> Result<()> {
+    let findings = crate::access::spec::validate_document(
+        &amended.after,
+        None,
+        crate::access::spec::WarningScope::Touched(&amended.touched),
+    );
+    if findings.errors.is_empty() {
+        return Ok(());
+    }
+    let messages = findings
+        .errors
+        .into_iter()
+        .map(|finding| {
+            finding.index.map_or(finding.message.clone(), |index| {
+                format!("rule #{index}: {}", finding.message)
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(Error::Config(format!(
+        "config/access validation failed: {messages}"
+    )))
+}
+
+pub fn submit_write(app: &mut App, request: WriteRequest) {
+    if app
+        .active_tenant()
+        .is_some_and(|tenant| tenant.theme == TenantTheme::Production)
+    {
+        if let Some(form) = app.access.form.as_mut() {
+            form.confirming = false;
+        }
+        app.prod_confirm.pending = Some(PendingProdAction::Access(ProdAction::Write(Box::new(
+            request,
+        ))));
+        app.input_mode = InputMode::ProdConfirm;
+        return;
+    }
+    execute_write(app, request, false);
+}
+
+pub fn execute_write(app: &mut App, request: WriteRequest, confirmed_prod: bool) {
+    if app.access.in_flight_writes.contains(&request.tenant) {
+        app.push_toast(ToastKind::Info, "An Access write is already in progress");
+        return;
+    }
+    let undo_id = match record_write_undo(app.undo.as_mut(), &request) {
+        Ok(id) => id,
+        Err(error) => {
+            set_draft_error(app, request.resume_mode, format!("Save cancelled: {error}"));
+            return;
+        }
+    };
+    app.access.in_flight_writes.insert(request.tenant.clone());
+    app.input_mode = InputMode::Normal;
+
+    let tenant = request.tenant.clone();
+    let after = request.after.clone();
+    let resume_mode = request.resume_mode;
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result = write_request(&request, confirmed_prod).await;
+        let _ = tx.send(AppEvent::Access(
+            crate::access::screen::Event::WriteResult {
+                tenant,
+                after,
+                undo_id,
+                resume_mode,
+                result,
+            },
+        ));
+    });
+}
+
+pub(crate) fn record_write_undo(
+    undo: &mut dyn crate::undo::UndoLog,
+    request: &WriteRequest,
+) -> Result<UndoId> {
+    undo.record(UndoEntry::pending(
+        request.tenant.clone(),
+        "access",
+        request.description.clone(),
+        Sensitivity::TenantConfig,
+        Capability::Undoable,
+        Some(UndoOp::AccessConfigReplace {
+            tenant: request.tenant.clone(),
+            body: request.previous_document.clone(),
+        }),
+        ConflictCheck::ContentEqualsAfter {
+            body: request.after.clone(),
+        },
+    ))
+}
+
+async fn write_request(
+    request: &WriteRequest,
+    confirmed_prod: bool,
+) -> std::result::Result<(), WriteFailure> {
+    let live = api::get_access(&request.tenant)
+        .await
+        .map_err(|error| WriteFailure::NotWritten(error.to_string()))?;
+    let amended = prepare_live_write(request, &live)?;
+    api::put_access_confirmed(&request.tenant, amended.after, confirmed_prod)
+        .await
+        .map_err(|error| match error {
+            api::ConfirmedWriteError::NotWritten(error) => {
+                WriteFailure::NotWritten(error.to_string())
+            }
+            api::ConfirmedWriteError::AcceptedButUnconfirmed(message) => {
+                WriteFailure::AcceptedButUnconfirmed(message)
+            }
+        })
+}
+
+pub(crate) fn prepare_live_write(
+    request: &WriteRequest,
+    live: &Value,
+) -> std::result::Result<Amended, WriteFailure> {
+    crate::access::spec::check_digest(Some(&request.expected_document_digest), live)
+        .map_err(|error| WriteFailure::Stale(error.to_string()))?;
+    if let Some((index, expected_digest)) = &request.expected_rule {
+        let rules = rules(live).map_err(|error| WriteFailure::Stale(error.to_string()))?;
+        let Some(rule) = rules.get(*index) else {
+            return Err(WriteFailure::Stale(format!(
+                "selected access rule #{index} no longer exists; nothing was written"
+            )));
+        };
+        let actual = crate::access::spec::digest(rule);
+        if actual != *expected_digest {
+            return Err(WriteFailure::Stale(format!(
+                "selected access rule #{index} changed from digest {expected_digest} to {actual}; nothing was written"
+            )));
+        }
+    }
+    amend(live, request.amendment.clone())
+        .map_err(|error| WriteFailure::NotWritten(error.to_string()))
+}
+
+pub fn apply_write_result(
+    app: &mut App,
+    tenant: String,
+    after: Value,
+    undo_id: UndoId,
+    resume_mode: ResumeMode,
+    result: std::result::Result<(), WriteFailure>,
+) {
+    app.access.in_flight_writes.remove(&tenant);
+    match result {
+        Ok(()) => {
+            match Document::from_value(after) {
+                Ok(document) => {
+                    app.access.data.insert(
+                        tenant.clone(),
+                        crate::access::state::LoadState::Loaded(document),
+                    );
+                }
+                Err(error) => {
+                    app.access.data.remove(&tenant);
+                    app.push_toast(
+                        ToastKind::Error,
+                        format!("Access saved, but its local view failed: {error}"),
+                    );
+                }
+            }
+            app.access.form = None;
+            app.access.pending_delete = None;
+            app.input_mode = InputMode::Normal;
+            let count = crate::access::screen::row_count(app);
+            app.access.clamp_selection(count);
+            app.push_toast(
+                ToastKind::Success,
+                "Access rules updated. Press ^Z to undo.",
+            );
+        }
+        Err(WriteFailure::Stale(message)) => {
+            mark_failed_undo(app, undo_id);
+            set_draft_error(
+                app,
+                resume_mode,
+                format!("{message}. {}", retained_guidance(resume_mode)),
+            );
+            app.push_toast(ToastKind::Warning, "Access write blocked by remote changes");
+        }
+        Err(WriteFailure::NotWritten(message)) => {
+            mark_failed_undo(app, undo_id);
+            set_draft_error(app, resume_mode, format!("Access save failed: {message}"));
+            app.push_toast(ToastKind::Error, "Access write failed; edit preserved");
+        }
+        Err(WriteFailure::AcceptedButUnconfirmed(message)) => {
+            app.access.data.remove(&tenant);
+            set_draft_error(
+                app,
+                resume_mode,
+                format!("{message}. {}", retained_guidance(resume_mode)),
+            );
+            app.push_toast(
+                ToastKind::Error,
+                "Access write was accepted but could not be confirmed",
+            );
+        }
+    }
+}
+
+fn retained_guidance(mode: ResumeMode) -> &'static str {
+    match mode {
+        ResumeMode::Create | ResumeMode::Edit => {
+            "Your edit is preserved in this form; cancel when ready, then refresh before retrying."
+        }
+        ResumeMode::DeleteConfirm => {
+            "The selected index and rule digest remain in the confirmation; cancel, then refresh before retrying."
+        }
+    }
+}
+
+fn set_draft_error(app: &mut App, resume_mode: ResumeMode, message: String) {
+    if let Some(form) = app.access.form.as_mut() {
+        form.confirming = false;
+        form.error = Some(message.clone());
+    } else {
+        app.push_toast(ToastKind::Error, message);
+    }
+    app.input_mode = resume_mode.input_mode();
+}
+
+fn mark_failed_undo(app: &mut App, undo_id: UndoId) {
+    if let Err(error) = app.undo.mark_applied(undo_id, EntryStatus::AppliedFailure) {
+        app.push_toast(
+            ToastKind::Error,
+            format!("Failed to retire Access undo entry: {error}"),
+        );
+    }
+}
+
+pub fn request_latest_undo(app: &mut App) {
+    let Some(tenant) = app.active_tenant() else {
+        return;
+    };
+    let undo_id = app
+        .undo
+        .list(100)
+        .into_iter()
+        .filter(|summary| summary.tenant == tenant.name && summary.status == EntryStatus::Pending)
+        .find_map(|summary| {
+            let entry = app.undo.load(summary.id).ok()?;
+            matches!(entry.op, Some(UndoOp::AccessConfigReplace { .. })).then_some(summary.id)
+        });
+    let Some(undo_id) = undo_id else {
+        app.push_toast(ToastKind::Info, "No Access undo for this tenant");
+        return;
+    };
+    if tenant.theme == TenantTheme::Production {
+        app.prod_confirm.pending = Some(PendingProdAction::Access(ProdAction::Undo(undo_id)));
+        app.input_mode = InputMode::ProdConfirm;
+    } else {
+        execute_undo(app, undo_id, false);
+    }
+}
+
+pub fn execute_undo(app: &mut App, undo_id: UndoId, confirmed_prod: bool) {
+    let entry = match app.undo.load(undo_id) {
+        Ok(entry) if entry.status == EntryStatus::Pending => entry,
+        Ok(_) => {
+            app.push_toast(ToastKind::Info, "Undo entry is no longer pending");
+            return;
+        }
+        Err(error) => {
+            app.push_toast(ToastKind::Error, format!("Undo failed: {error}"));
+            return;
+        }
+    };
+    if !matches!(entry.op, Some(UndoOp::AccessConfigReplace { .. })) {
+        app.push_toast(ToastKind::Info, "Undo entry is not an Access change");
+        return;
+    }
+    let tenant = entry.tenant.clone();
+    let tx = app.events.tx.clone();
+    tokio::spawn(async move {
+        let result = apply_undo_entry(entry, confirmed_prod).await;
+        let _ = tx.send(AppEvent::Access(crate::access::screen::Event::UndoResult {
+            tenant,
+            undo_id,
+            result,
+        }));
+    });
+}
+
+async fn apply_undo_entry(
+    entry: UndoEntry,
+    confirmed_prod: bool,
+) -> std::result::Result<Value, UndoFailure> {
+    let expected = match entry.conflict_check {
+        ConflictCheck::ContentEqualsAfter { body }
+        | ConflictCheck::ContentEqualsBefore { body } => body,
+        _ => {
+            return Err(UndoFailure::Failed(
+                "Access undo has no whole-document conflict snapshot".into(),
+            ));
+        }
+    };
+    let Some(UndoOp::AccessConfigReplace { tenant, body }) = entry.op else {
+        return Err(UndoFailure::Failed(
+            "undo entry is not an Access operation".into(),
+        ));
+    };
+    let live = api::get_access(&tenant)
+        .await
+        .map_err(|error| UndoFailure::Failed(error.to_string()))?;
+    if live != expected {
+        return Err(UndoFailure::Conflict(
+            "config/access changed since this edit; nothing was written".into(),
+        ));
+    }
+    api::put_access_confirmed(&tenant, body.clone(), confirmed_prod)
+        .await
+        .map_err(|error| match error {
+            api::ConfirmedWriteError::NotWritten(error) => UndoFailure::Failed(error.to_string()),
+            api::ConfirmedWriteError::AcceptedButUnconfirmed(message) => {
+                UndoFailure::Failed(message)
+            }
+        })?;
+    Ok(body)
+}
+
+pub fn apply_undo_result(
+    app: &mut App,
+    tenant: String,
+    undo_id: UndoId,
+    result: std::result::Result<Value, UndoFailure>,
+) {
+    match result {
+        Ok(document) => {
+            if let Err(error) = app.undo.mark_applied(undo_id, EntryStatus::AppliedSuccess) {
+                app.push_toast(
+                    ToastKind::Error,
+                    format!("Undo applied but log update failed: {error}"),
+                );
+            }
+            if let Ok(document) = Document::from_value(document) {
+                app.access
+                    .data
+                    .insert(tenant, crate::access::state::LoadState::Loaded(document));
+            }
+            app.push_toast(ToastKind::Success, "Access change undone");
+        }
+        Err(UndoFailure::Conflict(message)) => {
+            let _ = app.undo.mark_applied(undo_id, EntryStatus::AppliedConflict);
+            app.push_toast(ToastKind::Warning, format!("Undo conflict: {message}"));
+        }
+        Err(UndoFailure::Failed(message)) => {
+            let _ = app.undo.mark_applied(undo_id, EntryStatus::AppliedFailure);
+            app.push_toast(ToastKind::Error, format!("Undo failed: {message}"));
+        }
+    }
+}
+
+pub fn execute_prod_action(app: &mut App, action: ProdAction) {
+    match action {
+        ProdAction::Write(request) => execute_write(app, *request, true),
+        ProdAction::Undo(undo_id) => execute_undo(app, undo_id, true),
+    }
+}
+
+pub fn resume_mode(_app: &App, action: &ProdAction) -> InputMode {
+    match action {
+        ProdAction::Write(request) => request.resume_mode.input_mode(),
+        ProdAction::Undo(_) => InputMode::Normal,
+    }
+}
+
+pub fn describe_prod_action(action: &ProdAction) -> Option<String> {
+    match action {
+        ProdAction::Write(_) => {
+            Some("replace the complete config/access authorization document".into())
+        }
+        ProdAction::Undo(_) => {
+            Some("restore a prior complete config/access authorization document".into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use crate::access::spec::{digest, short_digest};
+    use crate::access::state::{DeleteState, Document, RuleFormState};
+    use crate::undo::{ConflictCheck, MemoryLog, UndoLog, UndoOp};
 
     use super::*;
 
@@ -511,5 +1058,58 @@ mod tests {
             matches!(error, Error::Config(ref message) if message.contains("0..=5")),
             "{error}"
         );
+    }
+
+    #[test]
+    fn write_undo_restores_the_prior_document_and_checks_the_result() {
+        // Recording only a rule subtree, or omitting the optimistic post-write
+        // snapshot, makes the whole-document assertions fail.
+        let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
+        let mut form = RuleFormState::edit("sandbox".into(), &document, &document.rows[1]);
+        form.methods.set("read");
+        let request = request_from_form(&form).unwrap();
+        let mut undo = MemoryLog::new();
+        let id = record_write_undo(&mut undo, &request).unwrap();
+        let entry = undo.load(id).unwrap();
+
+        assert!(matches!(
+            entry.op,
+            Some(UndoOp::AccessConfigReplace { ref tenant, ref body })
+                if tenant == "sandbox" && body == &document.value
+        ));
+        assert!(matches!(
+            entry.conflict_check,
+            ConflictCheck::ContentEqualsAfter { ref body } if body == &request.after
+        ));
+    }
+
+    #[test]
+    fn delete_request_is_unavailable_until_the_confirmation_step() {
+        // Letting request_from_delete ignore DeleteState::confirmed makes the
+        // first assertion fail and permits a key path to schedule a write early.
+        let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
+        let mut delete = DeleteState::new("sandbox".into(), &document, &document.rows[4]);
+
+        assert!(request_from_delete(&delete).is_err());
+        delete.confirm();
+        let request = request_from_delete(&delete).unwrap();
+        assert!(matches!(request.amendment, Amendment::Remove(ref indices) if indices == &[4]));
+    }
+
+    #[test]
+    fn stale_document_digest_blocks_before_the_write_body_is_prepared() {
+        // Removing check_digest from prepare_live_write makes this return an
+        // amended document that the async path would send to the tenant.
+        let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
+        let mut form = RuleFormState::edit("sandbox".into(), &document, &document.rows[1]);
+        form.methods.set("read");
+        let request = request_from_form(&form).unwrap();
+        let mut live = document.value.clone();
+        live["configs"][0]["methods"] = json!("read");
+
+        assert!(matches!(
+            prepare_live_write(&request, &live),
+            Err(WriteFailure::Stale(message)) if message.contains("nothing was written")
+        ));
     }
 }

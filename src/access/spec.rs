@@ -119,6 +119,19 @@ pub struct RuleEdit {
     pub clear_exclude_patterns: bool,
 }
 
+/// One tenant-free amendment to the complete access document.
+///
+/// `Apply` remains here even though the TUI never constructs it: the CLI's
+/// file workflow still needs the same pure amendment decision and change
+/// summary as the interactive add/edit/remove paths.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Amendment {
+    Add(RuleSpec),
+    Edit { index: usize, edit: RuleEdit },
+    Remove(Vec<usize>),
+    Apply(Value),
+}
+
 /// Read-only projection of a raw rule for display and validation.
 ///
 /// This type deliberately has no conversion back into [`Value`]. Transforms

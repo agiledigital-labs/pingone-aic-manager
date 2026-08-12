@@ -815,6 +815,11 @@ async fn apply_undo_entry(
             "secret-mapping undo must be applied from the ESV Mappings view or undo history".into(),
         ));
     }
+    if matches!(op, UndoOp::AccessConfigReplace { .. }) {
+        return Err(UndoFailure::Failed(
+            "Access undo must be applied from the Access tab or undo history".into(),
+        ));
+    }
     check_undo_conflict(&op, &entry.conflict_check).await?;
 
     match op {
@@ -882,6 +887,7 @@ async fn apply_undo_entry(
         UndoOp::ManagedObjectReplace { .. } => unreachable!("handled before conflict check"),
         UndoOp::ManagedConfigReplace { .. } => unreachable!("handled before conflict check"),
         UndoOp::SecretMappingReplace { .. } => unreachable!("handled before conflict check"),
+        UndoOp::AccessConfigReplace { .. } => unreachable!("handled before conflict check"),
     }
 }
 

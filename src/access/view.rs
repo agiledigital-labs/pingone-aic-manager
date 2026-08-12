@@ -1,15 +1,15 @@
-//! Browse-only access-rule table and raw selected-rule JSON detail.
+//! Access-rule table/detail plus create, edit, and delete-confirm rendering.
 
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Cell, Paragraph, Row, Table},
+    widgets::{Cell, Clear, Paragraph, Row, Table, Wrap},
 };
 
 use crate::access::screen::Mode;
-use crate::access::state::{LoadState, RuleMatch, RuleRow};
+use crate::access::state::{FormFocus, FormKind, LoadState, OptionalField, RuleMatch, RuleRow};
 use crate::app::{App, InputMode};
 
 const BODY_COLUMNS: [Constraint; 3] = [
@@ -28,6 +28,148 @@ const DETAIL_KEYS: [&str; 6] = [
     "customAuthz",
     "excludePatterns",
 ];
+
+pub fn draw_form_modal(f: &mut Frame, app: &App, mode: Mode) {
+    let Some(form) = app.access.form.as_ref() else {
+        return;
+    };
+    f.render_widget(Clear, f.area());
+    let (title, status) = match form.kind {
+        FormKind::Create => (
+            "Create access rule",
+            "Append one grant to config/access".to_string(),
+        ),
+        FormKind::Edit { index } => (
+            "Edit access rule",
+            format!(
+                "Rule #{index} · {} · untouched fields remain byte-identical",
+                form.original_rule_digest
+                    .as_deref()
+                    .unwrap_or_default()
+                    .get(..8)
+                    .unwrap_or_default()
+            ),
+        ),
+    };
+    let hints = if mode == Mode::Edit {
+        vec![
+            ("Tab", "navigate"),
+            ("^S", "review"),
+            ("^X/^U", "clear/keep optional"),
+            ("Esc", "cancel"),
+        ]
+    } else {
+        vec![("Tab", "navigate"), ("^S", "review"), ("Esc", "cancel")]
+    };
+    let body = crate::tui::modal_chrome::Modal {
+        title,
+        status: Some(&status),
+        hints: &hints,
+        body_height: 17,
+    }
+    .draw(f, f.area());
+
+    let rows = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Min(1),
+    ])
+    .split(body);
+    form.pattern
+        .draw(f, rows[0], form.focused == FormFocus::Pattern);
+    form.roles
+        .draw(f, rows[1], form.focused == FormFocus::Roles);
+    form.methods
+        .draw(f, rows[2], form.focused == FormFocus::Methods);
+    draw_optional_field(
+        f,
+        rows[3],
+        &form.actions,
+        form.focused == FormFocus::Actions,
+        mode,
+    );
+    draw_optional_field(
+        f,
+        rows[4],
+        &form.custom_authz,
+        form.focused == FormFocus::CustomAuthz,
+        mode,
+    );
+    draw_optional_field(
+        f,
+        rows[5],
+        &form.exclude_patterns,
+        form.focused == FormFocus::ExcludePatterns,
+        mode,
+    );
+    if let Some(error) = &form.error {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                error.clone(),
+                Style::default().fg(Color::Yellow),
+            ))
+            .wrap(Wrap { trim: false }),
+            rows[6],
+        );
+    }
+    draw_save_button(f, rows[7], form.focused == FormFocus::Save);
+
+    if form.confirming {
+        let message = match form.kind {
+            FormKind::Create => {
+                "Rules are OR-ed: creating this rule can only grant access, never restrict it.\n\nWrite this rule to the tenant?"
+            }
+            FormKind::Edit { .. } => {
+                "Rules are OR-ed: editing or deleting a granting rule is the only way to revoke access. This can lock operators out, including you.\n\nWrite this edit to the tenant?"
+            }
+        };
+        crate::tui::popup_confirm::draw(f, "Write config/access?", message);
+    }
+}
+
+fn draw_optional_field(
+    f: &mut Frame,
+    area: Rect,
+    field: &OptionalField,
+    focused: bool,
+    mode: Mode,
+) {
+    let mut input = field.input.clone();
+    if mode == Mode::Edit {
+        input.label = format!("{}  [{}]", input.label, field.edit.label());
+    }
+    input.draw(f, area, focused);
+}
+
+fn draw_save_button(f: &mut Frame, area: Rect, focused: bool) {
+    let style = if focused {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+    f.render_widget(Paragraph::new(Span::styled(" Review & save ", style)), area);
+}
+
+pub fn draw_delete_confirm(f: &mut Frame, app: &App) {
+    let Some(delete) = app.access.pending_delete.as_ref() else {
+        return;
+    };
+    let digest = delete.rule_digest.get(..8).unwrap_or(&delete.rule_digest);
+    let message = format!(
+        "Delete rule #{} ({digest})?\n\nRules are OR-ed: editing or deleting a granting rule is the only way to revoke access. This can lock operators out, including you.\n\nThe prior whole document is recorded for undo.",
+        delete.index
+    );
+    crate::tui::popup_confirm::draw(f, "Delete access rule?", &message);
+}
 
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) else {
