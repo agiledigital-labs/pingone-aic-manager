@@ -196,6 +196,30 @@ pub fn wrap_lines(text: &str, width: u16) -> Vec<String> {
     wrapped
 }
 
+/// Rows a paragraph will occupy after ratatui wraps it, for panes rendered
+/// with `.wrap(…)`.
+///
+/// [`DetailScroll::clamp`] wants the *rendered* height, so a wrapping pane that
+/// passes `lines.len()` under-counts and caps its own scroll short of the
+/// content — with nothing failing, because a too-small limit still looks like a
+/// working scroll. Panes that pre-wrap through [`wrap_lines`] have already
+/// materialised the rows and should keep passing `lines.len()`; this is for the
+/// ones that let the widget wrap, because they style spans within a line and so
+/// cannot flatten to `String`s first.
+pub fn wrapped_height(lines: &[Line<'_>], width: u16) -> usize {
+    lines
+        .iter()
+        .map(|line| {
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            wrap_lines(&text, width).len().max(1)
+        })
+        .sum()
+}
+
 /// Truncate text to a character budget and make the loss visible.
 pub fn truncate_metadata(value: &str, max_width: usize) -> String {
     if value.chars().count() <= max_width {
@@ -219,6 +243,25 @@ mod tests {
         assert_eq!(truncate_metadata("abcdef", 1), "…");
         assert_eq!(truncate_metadata("abcdef", 0), "…");
         assert_eq!(truncate_metadata("abc", 3), "abc");
+    }
+
+    #[test]
+    fn wrapped_height_counts_rows_not_lines() {
+        let lines = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("Alias      "),
+                Span::raw("a-long-alias-value that will not fit"),
+            ]),
+        ];
+
+        // Returning `lines.len()` — the bug this exists to prevent — fails here.
+        assert!(wrapped_height(&lines, 20) > lines.len());
+        // Wide enough for everything: one row per line, the blank one included.
+        assert_eq!(wrapped_height(&lines, 120), lines.len());
+        // A zero-width rect mid-resize must not report zero rows, or the clamp
+        // takes a limit of 0 and silently discards the operator's offset.
+        assert_eq!(wrapped_height(&lines, 0), lines.len());
     }
 
     #[test]
