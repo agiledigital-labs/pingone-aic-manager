@@ -264,6 +264,10 @@ pub fn select(app: &mut App, idx: usize) {
     app.secretmap.select(idx);
 }
 
+pub fn scroll_detail(app: &mut App, delta: isize) {
+    app.secretmap.detail_scroll.scroll(delta);
+}
+
 pub fn clear_filter(app: &mut App) {
     app.secretmap.reset_view();
 }

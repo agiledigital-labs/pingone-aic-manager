@@ -367,6 +367,25 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         } else {
             out.push(hint(&[Trigger::Char('a')], "a", "add", NewItem));
         }
+        if mappings && n > 0 {
+            // Help-only, unlike Access and OAuth, which advertise these in the
+            // footer because their detail pane *is* the content. Here the pane
+            // is a strip beside a list, the ESVs footer is the busiest in the
+            // app, and pane scrolling is movement — which DESIGN.md puts in the
+            // popover rather than every footer.
+            out.push(help_only(
+                &[Trigger::Ctrl('d')],
+                "^D",
+                "scroll detail down",
+                DetailScrollDown,
+            ));
+            out.push(help_only(
+                &[Trigger::Ctrl('u')],
+                "^U",
+                "scroll detail up",
+                DetailScrollUp,
+            ));
+        }
         out.push(hint(&[Trigger::Ctrl('z')], "^Z", "undo", Undo));
         out.push(hint(
             &[Trigger::Ctrl('y')],
@@ -666,16 +685,8 @@ async fn run_normal(app: &mut App, act: Act) {
         }
         PrevField => crate::managed::screen::move_property(app, -1),
         NextField => crate::managed::screen::move_property(app, 1),
-        DetailScrollDown => match app.active_view {
-            View::Access => crate::access::screen::scroll_detail(app, 10),
-            View::Oauth => crate::oauth::screen::scroll_detail(app, 10),
-            _ => {}
-        },
-        DetailScrollUp => match app.active_view {
-            View::Access => crate::access::screen::scroll_detail(app, -10),
-            View::Oauth => crate::oauth::screen::scroll_detail(app, -10),
-            _ => {}
-        },
+        DetailScrollDown => scroll_active_detail(app, 10),
+        DetailScrollUp => scroll_active_detail(app, -10),
         RealmToggle => {
             app.current_realm = match app.current_realm {
                 Realm::Alpha => Realm::Bravo,
@@ -695,6 +706,20 @@ async fn run_normal(app: &mut App, act: Act) {
         AuthSettings => crate::vault::settings::open(app),
         Lock => crate::vault::unlock::lock_and_quit(app).await,
         Relock => crate::vault::unlock::open_relock(app),
+    }
+}
+
+/// Route a detail-pane scroll to whichever pane is on screen. One function for
+/// both directions, so a pane cannot be wired up for `^D` and forgotten for
+/// `^U` — the delta is the only thing that differs.
+fn scroll_active_detail(app: &mut App, delta: isize) {
+    match app.active_view {
+        View::Access => crate::access::screen::scroll_detail(app, delta),
+        View::Oauth => crate::oauth::screen::scroll_detail(app, delta),
+        View::Esvs if crate::esv::screen::current_view(app) == EsvView::Mappings => {
+            crate::secretmap::screen::scroll_detail(app, delta)
+        }
+        _ => {}
     }
 }
 
