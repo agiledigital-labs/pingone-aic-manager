@@ -289,6 +289,16 @@ pub trait UndoLog: Send {
     /// Mark every still-`Pending` entry older than `UNDO_TTL_SECS` as
     /// `Expired`, persisting the change. Returns how many were expired.
     fn expire_stale(&mut self, now: DateTime<Utc>) -> Result<usize>;
+    /// Drop every entry that names `tenant`. Tenant deletion is not itself
+    /// undoable; this is a purge, not a recorded undo. Returns how many
+    /// entries were removed.
+    fn forget_tenant(&mut self, tenant: &str) -> Result<usize>;
+}
+
+fn forget_in_place(entries: &mut Vec<UndoEntry>, tenant: &str) -> usize {
+    let before = entries.len();
+    entries.retain(|entry| entry.tenant != tenant);
+    before - entries.len()
 }
 
 fn expire_in_place(entries: &mut [UndoEntry], now: DateTime<Utc>) -> usize {
@@ -346,6 +356,10 @@ impl UndoLog for MemoryLog {
 
     fn expire_stale(&mut self, now: DateTime<Utc>) -> Result<usize> {
         Ok(expire_in_place(&mut self.entries, now))
+    }
+
+    fn forget_tenant(&mut self, tenant: &str) -> Result<usize> {
+        Ok(forget_in_place(&mut self.entries, tenant))
     }
 }
 
@@ -448,6 +462,14 @@ impl UndoLog for DiskLog {
         }
         Ok(count)
     }
+
+    fn forget_tenant(&mut self, tenant: &str) -> Result<usize> {
+        let count = forget_in_place(&mut self.entries, tenant);
+        if count > 0 {
+            self.rewrite()?;
+        }
+        Ok(count)
+    }
 }
 
 fn load_entries(path: &Path) -> Result<Vec<UndoEntry>> {
@@ -509,14 +531,18 @@ mod tests {
     use super::*;
 
     fn entry(description: &str) -> UndoEntry {
+        entry_for("sandbox", description)
+    }
+
+    fn entry_for(tenant: &str, description: &str) -> UndoEntry {
         UndoEntry::pending(
-            "sandbox".to_string(),
+            tenant.to_string(),
             "esv",
             description,
             Sensitivity::PublicMetadata,
             Capability::Undoable,
             Some(UndoOp::EsvVariableDelete {
-                tenant: "sandbox".to_string(),
+                tenant: tenant.to_string(),
                 id: "esv-test".to_string(),
                 recorded_body: serde_json::json!({ "_id": "esv-test" }),
             }),
@@ -633,6 +659,35 @@ mod tests {
         let id = log.record(secret).unwrap();
         assert!(!path.exists() || fs::read_to_string(&path).unwrap().is_empty());
         assert_eq!(log.load(id).unwrap().sensitivity, Sensitivity::SecretValue);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn forget_tenant_removes_only_the_named_tenant_on_memory_log() {
+        let mut log = MemoryLog::new();
+        let keep = log.record(entry_for("uat", "keep")).unwrap();
+        log.record(entry_for("UAT", "drop")).unwrap();
+        log.record(entry_for("UAT", "drop-too")).unwrap();
+
+        assert_eq!(log.forget_tenant("UAT").unwrap(), 2);
+        assert_eq!(log.list(10).len(), 1);
+        assert_eq!(log.load(keep).unwrap().tenant, "uat");
+        assert_eq!(log.forget_tenant("UAT").unwrap(), 0);
+    }
+
+    #[test]
+    fn forget_tenant_removes_only_the_named_tenant_on_disk_log() {
+        let path = std::env::temp_dir().join(format!("aic-undo-{}.log", uuid::Uuid::new_v4()));
+        let mut log = DiskLog::load(path.clone()).unwrap();
+        log.record(entry_for("uat", "keep")).unwrap();
+        log.record(entry_for("UAT", "drop")).unwrap();
+
+        assert_eq!(log.forget_tenant("UAT").unwrap(), 1);
+        let reloaded = DiskLog::load(path.clone()).unwrap();
+        let listed = reloaded.list(10);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].tenant, "uat");
 
         let _ = fs::remove_file(path);
     }

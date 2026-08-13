@@ -187,6 +187,12 @@ pub enum CtxCommand {
     Current,
     /// Switch to a different tenant.
     Use { tenant: String },
+    /// Remove a tenant entry and the local artifacts the planner offers.
+    Rm {
+        tenant: String,
+        #[command(flatten)]
+        options: crate::offboard::cli::RmOptions,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -242,13 +248,20 @@ impl Command {
             | Self::Secretmap { .. }
             | Self::Workspace { .. }
             | Self::Script { .. } => true,
+            // `ctx` is the one group that splits. `list`/`current`/`use` are
+            // config reads that must keep working against a locked agent —
+            // `ctx use` is how you pick a tenant *before* unlocking — but
+            // `ctx rm` reads three vault artifacts and withdraws a signing key
+            // from the tenant, so it needs the same preflight as any write.
+            // Without this it skips the unlock and fails deeper in, on
+            // whatever error a locked daemon happens to return.
+            Self::Ctx { command } => matches!(command, CtxCommand::Rm { .. }),
             Self::Agent { .. }
             | Self::Login { .. }
             | Self::Logout
             | Self::Stop
             | Self::Status
             | Self::Session { .. }
-            | Self::Ctx { .. }
             | Self::Settings { .. } => false,
         }
     }
@@ -1003,6 +1016,9 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
             config::write_current_context(&tenant)?;
             println!("context switched to {tenant}");
         }
+        CtxCommand::Rm { tenant, options } => {
+            return crate::offboard::cli::run(tenant, options).await;
+        }
     }
     Ok(())
 }
@@ -1390,6 +1406,33 @@ mod tests {
     }
 
     #[test]
+    fn ctx_rm_parses_delete_keys_without_assuming_a_default() {
+        let cli = Cli::try_parse_from([
+            "aic",
+            "ctx",
+            "rm",
+            "UAT",
+            "--delete-keys",
+            "--dry-run",
+            "--json",
+            "--yes",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Ctx {
+                command: CtxCommand::Rm { tenant, options },
+            }) => {
+                assert_eq!(tenant, "UAT");
+                assert!(options.delete_keys);
+                assert!(options.dry_run);
+                assert!(options.json);
+                assert!(options.yes);
+            }
+            other => panic!("expected ctx rm, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn no_prompt_parses_globally_and_survives_default_injection() {
         let cli = Cli::try_parse_from(["aic", "esv", "list", "--no-prompt"]).unwrap();
         assert!(cli.no_prompt);
@@ -1539,6 +1582,11 @@ mod tests {
             (vec!["aic", "status"], false),
             (vec!["aic", "session", "status"], false),
             (vec!["aic", "ctx", "current"], false),
+            (vec!["aic", "ctx", "use", "sandbox"], false),
+            // The one subcommand-sensitive row: `ctx rm` reads the vault and
+            // touches the tenant, so classifying the whole `ctx` group as
+            // false (as it was) sends it past the unlock preflight.
+            (vec!["aic", "ctx", "rm", "UAT"], true),
             (vec!["aic", "settings", "list"], false),
             (vec!["aic", "whoami"], true),
             (vec!["aic", "esv", "list"], true),

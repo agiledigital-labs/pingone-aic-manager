@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use crate::agent::AgentClient;
 use crate::cli::{print_table, tenant_for};
-use crate::config::ProjectConfig;
+use crate::config::{CredentialSource, ProjectConfig};
 #[cfg(feature = "logs-store")]
 use crate::logs::db::store_path;
 use crate::logs::{api, ops};
@@ -390,6 +390,7 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
                 api_key_secret,
             };
             crate::logs::put_log_key(agent, &tenant, &pair).await?;
+            persist_log_key_provenance(&tenant, CredentialSource::External)?;
             println!("stored log API key {api_key_id} for tenant {tenant}");
             verify_stored_key(&tenant).await;
             Ok(())
@@ -446,6 +447,7 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
 
             let agent = AgentClient::connect_or_spawn().await?;
             crate::logs::put_log_key(agent, &tenant, &pair).await?;
+            persist_log_key_provenance(&tenant, CredentialSource::Created)?;
             println!("created log key {name} ({api_key_id}) for tenant {tenant}");
             verify_stored_key(&tenant).await;
             Ok(())
@@ -467,6 +469,18 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn persist_log_key_provenance(tenant: &str, source: CredentialSource) -> Result<()> {
+    let mut cfg =
+        ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
+    let Some(entry) = cfg.tenants.iter_mut().find(|entry| entry.name == tenant) else {
+        return Err(Error::Config(format!(
+            "no tenant named '{tenant}' in config"
+        )));
+    };
+    entry.provenance.log_key = Some(source);
+    cfg.save()
 }
 
 fn configured_tenant_base_url(tenant_arg: Option<String>) -> Result<(String, String)> {
