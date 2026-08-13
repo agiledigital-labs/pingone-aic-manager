@@ -171,6 +171,37 @@ findings). Each should name the guard that will eventually retire it.
   until `App` is constructible in tests; see 2026-08-13. Now also a
   `review-craft` principle, so it is prompted for in every repo, not just here._
 
+- **A routing table keyed on an enum variant must either be exhaustive or be
+  owned by the enum.** `UndoOp` is dispatched to its executor by **five**
+  independent hand-written chains — `keymap::run_normal`'s `Undo` arm,
+  `undo/screen.rs`'s `if managed / else if access / else Esv`, each feature's
+  `execute_undo` type check, `esv::ops::apply_undo_entry`'s reject-guards, and
+  `esv::ops::request_latest_undo`'s _absent_ filter. None is exhaustive, so
+  adding a variant compiles clean with four of the five updated, and the fifth
+  routes the new op to the ESV executor. _Guard:
+  `impl UndoOp { fn executor(&self) -> UndoExecutor }` as one exhaustive match,
+  with every chain deriving from it; then the compiler finds the fifth site._
+
+- **An async result handler must not set `input_mode`.** Every other feature
+  mutates `input_mode` only in a synchronous, key-driven path and lets the
+  background result speak through a toast. `access::ops` sets it from
+  `apply_write_result`/`set_draft_error`, so a write that completes while the
+  operator has the selector, tenant picker or undo history open silently
+  replaces their modal. _Guard: assert in review that a feature's
+  `apply__*result`touches no`input_mode`; a `repo_hygiene`grep
+  for`input_mode =`inside a function named`apply*__result` is conceivable._
+
+- **When a second surface is added over an existing CLI, walk the CLI's safety
+  defaults, not only its verbs.** Verb parity is easy to check and easy to
+  advertise; the defaults that surround the verb are not. `aic access` writes a
+  0600 backup before every write and validates against a live `RoleIndex`; the
+  new Access tab does neither, so the surface the README now recommends is the
+  weaker one. The pre-existing check about auditing `cli.rs`'s private helpers
+  finds both (`backup_document`, `resolve_roles`) — it just has to be applied to
+  the _new_ surface's absence rather than the old surface's duplication. _Guard:
+  none automatable; enumerate the CLI's write-path steps and tick off each one
+  against the tab._
+
 ## Findings log
 
 ### 2026-08-11 — `write_gitignore()` was called; the gitignore covered nothing
@@ -610,3 +641,82 @@ findings). Each should name the guard that will eventually retire it.
   that lets the widget wrap. Generally: **when a shared type takes a measurement
   it cannot verify, name the two ways of producing it.** A silent wrong answer
   needs the naming more than a loud one does.
+
+### 2026-08-13 — `^Z` on the wrong tab burns the Access undo entry
+
+- **What:** slice 5b added `UndoOp::AccessConfigReplace` and, with it, a third
+  reject-guard in `esv::ops::apply_undo_entry` returning
+  `UndoFailure::Failed("Access undo must be applied from the Access tab…")`. But
+  `esv::ops::apply_undo_result` treats `Failed` as a real failure and calls
+  `mark_applied(id, AppliedFailure)`. `esv::ops::request_latest_undo` uses
+  `latest_pending(tenant)`, which filters on tenant/status/capability and
+  **not** on op kind — so the sequence "edit an Access rule → Ctrl-P → ESVs →
+  `^Z`" retires the Access entry. `access::ops::request_latest_undo` and the
+  history overlay both require `Pending`, so the change becomes permanently
+  un-undoable — moments after a toast that says "Press ^Z to undo." The same
+  hole exists for `ManagedObjectReplace` and `SecretMappingReplace`; this slice
+  widened it to the document that can lock operators out.
+- **Why missed:** the guard reads as defensive, and it is — the mistake is
+  downstream, in the shared handler that cannot tell "this executor does not own
+  this op" from "the tenant refused the write". Reviewing the guard in the file
+  it was added to never brings the retirement policy into view. The reachability
+  check that was applied to slice 5b's _keys_ was not applied to its _undo
+  entry_: `^Z` is registered on three views and only one of them filters.
+- **Guard:** two, both wanted. Narrow: `request_latest_undo` must filter by op
+  kind, as `access`/`managed`/`secretmap` already do — then the reject-guard is
+  unreachable rather than load-bearing. Structural: the new standing check above
+  (`UndoOp::executor()`), plus a routing rejection must not be expressible as
+  `UndoFailure::Failed`. A test is cheap once either lands: record an
+  `AccessConfigReplace` entry in a `MemoryLog`, run the ESV undo path, assert
+  the entry is still `Pending`.
+
+### 2026-08-13 — verb parity advertised, safety defaults dropped
+
+- **What:** the Access tab reached verb parity with `aic access add/edit/rm` and
+  the README was updated to say so — but the tab writes no backup (the CLI
+  writes `.aic/backups/access-<tenant>-<UTC>.json` unless `--no-backup`) and
+  validates with `known_roles: None`, discarding every warning the CLI prints:
+  unknown role reference, unrecognised method, byte-identical duplicate,
+  "customAuthz can only deny". A typo'd method now creates a silently dead rule
+  from the surface the README recommends. `docs/CLI.md` still says "the undo log
+  is TUI-only — the backup file is the entire safety net here", which was a
+  complete statement when the TUI could not write and is now half of one from
+  either side.
+- **Why missed:** first sighting of this direction. The existing check ("audit
+  `cli.rs`'s private helpers — each is presentation or a property of the
+  document") finds both `backup_document` and `resolve_roles` immediately; it
+  was read as a check on the _old_ surface duplicating, not on the _new_ surface
+  omitting. The commit message and the doc updates both frame the slice as verb
+  parity, which is the axis on which it is complete.
+- **Guard:** standing check above. Note that lifting `backup_document` into
+  `ops`/`api` needs no gitignore work — `backups/` is already covered since
+  2026-08-11.
+
+### 2026-08-13 — the invariant went into a free function again, one day later
+
+- **What:** the 2026-08-12 lesson was "ask which **type** should own the
+  invariant, not which function should own the expression", filed against a
+  one-line shared `clamp_detail_scroll` with a 24-line wrapper copied into two
+  callers. The `wrapped_height` fix the next day put the measurement in a new
+  `pub fn` in `list_chrome` for exactly one caller, leaving
+  `DetailScroll::clamp` still accepting an unverifiable `usize` and still
+  documenting its precondition in prose. Separately, the doc comment claims the
+  function returns "rows a paragraph will occupy after ratatui wraps it", but it
+  measures with our `wrap_lines`, which re-indents continuations where ratatui
+  does not — so the two disagree for any indented line, in the over-counting
+  direction.
+- **Why worth logging:** the fix is an improvement and the entry above records
+  it as such. What recurred is the shape: a precondition a caller can get wrong
+  was answered with a helper plus documentation rather than with an API that
+  cannot be called wrongly.
+  `DetailScroll::clamp_wrapping(&[Line], width, viewport)` removes the choice;
+  `ratatui`'s own `Paragraph::line_count` (0.30, behind
+  `unstable-rendered-line-info`) removes the approximation.
+- **Guard:** **applied** in `c5d33e1` — `wrapped_height` is private and reached
+  only through `DetailScroll::clamp_wrapping(&[Line], width, viewport)`, so a
+  wrapping caller cannot supply the measurement or pair it with the wrong
+  viewport, and the doc comment now states that the height is an estimate and
+  which direction it errs. `ratatui`'s `Paragraph::line_count` (0.30, behind
+  `unstable-rendered-line-info`) would remove the approximation entirely; not
+  worth an unstable feature today. Generally: when a review's own fix lands in
+  the same category as the finding it closes, say so in the commit.
