@@ -428,13 +428,6 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
             "next field",
             NextField,
         ));
-        out.push(hint(&[Trigger::Ctrl('z')], "^Z", "undo", Undo));
-        out.push(hint(
-            &[Trigger::Ctrl('y')],
-            "^Y",
-            "undo history",
-            UndoHistory,
-        ));
     } else if mappings_view && n > 0 {
         out.push(hint(&[Trigger::Char('r')], "r", "reconcile", ReconMapping));
         out.push(hint(
@@ -494,6 +487,16 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     }
     if managed_view {
         out.push(hint(&[Trigger::Ctrl('n')], "^N", "new object", NewObject));
+        // Outside the `n > 0` guard above, as ESVs and Access are: deleting the
+        // last field empties the list, and gating undo on a non-empty list makes
+        // it unreachable at exactly the moment it is wanted.
+        out.push(hint(&[Trigger::Ctrl('z')], "^Z", "undo", Undo));
+        out.push(hint(
+            &[Trigger::Ctrl('y')],
+            "^Y",
+            "undo history",
+            UndoHistory,
+        ));
     }
     if managed_view || mappings_view || access_view || idmstore_view || oauth_view || mappings {
         out.push(hint(&[Trigger::Ctrl('r')], "^R", "refresh", Refresh));
@@ -1342,6 +1345,24 @@ mod tests {
             ("no empty access detail up", ctrl('u'), None),
         ] {
             add(name, Access, Variables, false, key, expected);
+        }
+
+        // Undo must survive its own list going empty, on every tab that has
+        // one. Returning ^Z/^Y to a `n > 0` branch — where Managed kept them
+        // until this table found it — makes these rows red, and costs the
+        // operator the undo for the deletion that emptied the list.
+        for (name, view, esv_view) in [
+            ("undo after emptying variables", Esvs, Variables),
+            ("undo after emptying secrets", Esvs, Secrets),
+            ("undo after emptying secret mappings", Esvs, EsvMappings),
+            (
+                "undo after deleting the last managed field",
+                Managed,
+                Variables,
+            ),
+        ] {
+            add(name, view, esv_view, false, ctrl('z'), Some(Undo));
+            add(name, view, esv_view, false, ctrl('y'), Some(UndoHistory));
         }
 
         for case in &cases {
