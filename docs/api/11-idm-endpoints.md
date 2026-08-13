@@ -173,15 +173,16 @@ endpoint takes a few seconds to register (first calls 404 until it does).
 
 `request.method` is the CREST verb, mapped from the HTTP call:
 
-| HTTP call                                         | `request.method` | Method-specific fields (beyond the common set)                                                                                                         |
-| ------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /endpoint/x`                                 | `read`           | —                                                                                                                                                      |
-| `GET /endpoint/x?_queryFilter=…` or `?_queryId=…` | `query`          | `queryFilter`, `queryId`, `queryExpression` (string\|null), `pageSize`, `pagedResultsOffset` (number), `pagedResultsCookie` (string\|null), `sortKeys` |
-| `POST /endpoint/x?_action=create`                 | `create`         | `newResourceId` (string\|null), `content`                                                                                                              |
-| `POST /endpoint/x?_action=NAME`                   | `action`         | `action` (the action name), `content`                                                                                                                  |
-| `PUT /endpoint/x/id`                              | `update`         | `revision` (string\|null), `content`                                                                                                                   |
-| `PATCH /endpoint/x/id`                            | `patch`          | `revision` (string\|null), `patchOperations`                                                                                                           |
-| `DELETE /endpoint/x/id`                           | `delete`         | `revision` (string\|null)                                                                                                                              |
+| HTTP call                                             | `request.method` | Method-specific fields (beyond the common set)                                                                                                         |
+| ----------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /endpoint/x`                                     | `read`           | —                                                                                                                                                      |
+| `GET /endpoint/x?_queryFilter=…` or `?_queryId=…`     | `query`          | `queryFilter`, `queryId`, `queryExpression` (string\|null), `pageSize`, `pagedResultsOffset` (number), `pagedResultsCookie` (string\|null), `sortKeys` |
+| `POST /endpoint/x?_action=create`                     | `create`         | `newResourceId` (string\|null), `content`                                                                                                              |
+| `POST /endpoint/x?_action=NAME`                       | `action`         | `action` (the action name), `content`                                                                                                                  |
+| `PUT /endpoint/x/id` **with `If-Match`**              | `update`         | `revision` (string\|null), `content`; `resourcePath` = `id`                                                                                            |
+| `PUT /endpoint/x/id` **without a conditional header** | `create`         | `newResourceId` = `id`, `content`; `resourcePath` = **`""`**. HTTP 201.                                                                                |
+| `PATCH /endpoint/x/id`                                | `patch`          | `revision` (string\|null), `patchOperations`                                                                                                           |
+| `DELETE /endpoint/x/id`                               | `delete`         | `revision` (string\|null)                                                                                                                              |
 
 Common to every method: `method`, `resourcePath` (string; `""` at the endpoint
 root), `additionalParameters` (a map of any non-`_` query params), `fields` (the
@@ -193,6 +194,15 @@ root), `additionalParameters` (a map of any non-`_` query params), `fields` (the
   `add`/`remove`/`replace`/`increment`/`move`/`copy`/`transform`, `field` is a
   JSON pointer (`/foo`). This is the strict body that has blocked mocking other
   PATCH APIs — the request must be CREST patch ops, not an arbitrary JSON body.
+- **A bare `PUT /endpoint/x/{id}` is a CREST _create_, not an update** (probed
+  2026-08-13; this table previously said `update` unconditionally, which was
+  wrong). Without `If-Match` (or with `If-None-Match: *`) CREST routes it as
+  create-with-client-supplied-id: `request.method` is `create`, `newResourceId`
+  holds the id, `resourcePath` is **empty**, and the response is HTTP 201. With
+  `If-Match: *` — or any revision — it is an `update` with `resourcePath` set to
+  the id and HTTP 200. An endpoint that routes on `resourcePath` therefore sees
+  a header-less `PUT .../{id}` arrive at its ROOT create handler. See
+  `docs/api/99-quirks-and-open-questions.md` Q16.
 - **`content`** is the request body for create/update/action.
 - **`context`** is the CREST call chain. The originating HTTP request is at
   `context.http`: `{ method, path, headers (map), parameters (map) }`. Identity
@@ -319,7 +329,10 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
   Identity Cloud (no filesystem access). To share code, inline it or call a
   shared endpoint over `openidm.action`/`httpClient`. For a complete AM + IDM
   design, see
-  [Sharing code between AM and IDM](../sharing-code-between-am-and-idm.md).
+  [Sharing code between AM and IDM](../sharing-code-between-am-and-idm.md). For
+  the **build-time** answer — endpoints authored as TypeScript modules and
+  bundled into one self-contained ES5 file per endpoint — see
+  [TypeScript custom endpoints](../typescript-endpoints.md).
 - **Scope:** `require`/`lib` resolution is a property of the IDM Rhino engine,
   so it is available to **every IDM script type**, not just custom endpoints —
   scripted endpoints, `invokeService:"script"` schedules, managed-object hooks
@@ -333,6 +346,13 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
 
 ## Quirks
 
+- **IDM HTML-escapes every string in a thrown error object** before it reaches
+  the caller (verified 2026-08-13). Throwing
+  `{ code: 400, message: "must be <= 100" }` arrives as
+  `"must be &lt;&#61; 100"`; `"` becomes `&#34;`, `'` becomes `&#39;`, and a
+  backtick becomes `&#96;`. Nested `detail` strings are escaped too. Write error
+  messages in plain words — `must be at most 100`, `Unknown action: explode` —
+  or the caller reads entities.
 - **`source` is plain text, not base64** (the opposite of AM scripts). Don't
   base64-encode on write.
 - **No `_rev`** — content-based conflict detection only.
@@ -561,6 +581,24 @@ Object shape (real example, `schedule/UpdateReviewList`):
   was immediately replaced with an explicit safe-field projection and the local
   agent was locked to clear its cached token. This confirms that neither
   `context.security` nor the complete `context` is safe to serialize.
+- Bundled TypeScript endpoints (2026-08-13): throwaway
+  `endpoint/aicdemo-a1-claude-widgets` (8 routes) and
+  `endpoint/aicdemo-a1-claude-reports` (3 routes) — esbuild+Babel ES5 bundles of
+  ~45 KB and ~39 KB — created (`PUT` 201), exercised across every CREST method
+  (`query`, `read`, `create`, `update`, `patch`, `delete`, two named actions)
+  plus multi-segment sub-paths (`daily/{date}`, `widget/{id}/summary`) and the
+  failure cases (bad path param 400, out-of-range int 400, unknown enum 400,
+  unknown body field 400, empty patch-op list 400, unknown widget 404, unmatched
+  sub-path 404, unknown action 404, unsupported method 405, malformed
+  `x-request-id` 400, missing scope 403), then deleted (`DELETE` 200; `GET` on
+  both the config and runtime URLs → 404). Three behaviours established by that
+  run: a header-less `PUT .../{id}` is a `create` (table above); thrown error
+  strings are HTML-escaped (Quirks); and a thrown
+  `{ code, reason, message, detail }` is returned verbatim as the HTTP error
+  body with `code` as the status. `context.oauth2.scopes.contains(...)` was
+  checked in **both** directions — the service-account token was refused a scope
+  it does not hold (403) and admitted for `fr:idm:*`, which it does (200) — so
+  the 403 is a real scope check rather than a broken call.
 - `rawInfo` key/type inventory (2026-08-07): throwaway
   `endpoint/aicedit-rawinfo-probe` created (`PUT` 201), called with a
   service-account bearer (200), and deleted (`DELETE` 200, `GET` after → 404).

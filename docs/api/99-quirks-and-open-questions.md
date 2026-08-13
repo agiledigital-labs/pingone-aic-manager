@@ -306,6 +306,34 @@ new things are learned.
   nextgen-common.d.ts) and to `render_openidm_overloads` (Engine::Idm), and bump
   `TEMPLATES_VERSION`.
 
+### Q16. A bare `PUT /endpoint/x/{id}` is a create, not an update (resolved 2026-08-13)
+
+`11-idm-endpoints.md`'s runtime-binding table said, since 2026-06-04, that
+`PUT /endpoint/x/id` gives `request.method === "update"` with a `revision`
+field. Live probing on 2026-08-13 with a routing endpoint
+(`endpoint/aicdemo-a1-claude-widgets`, since deleted) showed the header-less
+case is a CREST **create**:
+
+| Call                                     | `request.method` | `resourcePath` | HTTP |
+| ---------------------------------------- | ---------------- | -------------- | ---- |
+| `PUT .../w-abcd` (no conditional header) | `create`         | `""`           | 201  |
+| `PUT .../w-abcd` `If-None-Match: *`      | `create`         | `""`           | 201  |
+| `PUT .../w-abcd` `If-Match: *`           | `update`         | `w-abcd`       | 200  |
+| `PUT .../w-abcd` `If-Match: 0`           | `update`         | `w-abcd`       | 200  |
+
+That is standard CREST create-with-client-supplied-id: the id moves out of
+`resourcePath` and into `newResourceId`. The practical consequence for any
+endpoint that routes on `resourcePath` is that a header-less `PUT .../{id}`
+lands on the endpoint's **root** create handler, not on its `/{id}` update
+handler — which is silent unless the two return different shapes. The table in
+`11-idm-endpoints.md` is corrected.
+
+The control that this is real rather than a routing artefact: the same endpoint
+under `If-Match: *` returned the update handler's output for the same URL and
+body, and the create output carried `newResourceId` as the record `_id`.
+
+---
+
 ---
 
 ## Contradictions discovered during research (for future-Claude awareness)
@@ -472,6 +500,15 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
 ---
 
 ## Changelog
+
+- **2026-08-13** — **A header-less `PUT /endpoint/x/{id}` is a CREST create.**
+  See Q16. `11-idm-endpoints.md`'s per-method table had claimed `update`
+  unconditionally since 2026-06-04. Also new that day: IDM **HTML-escapes every
+  string in a thrown error object** on its way to the caller (`<`, `>`, `"`,
+  `'`, `=`, and backticks all become entities, in `message` and in nested
+  `detail` alike), so endpoint error messages must be written in plain words.
+  Both found while live-verifying the bundled TypeScript endpoint framework
+  (`docs/typescript-endpoints.md`).
 
 - **2026-08-10** — **The short realm path forms do NOT 404.**
   `01-realms-and-paths.md` had said since 2026-05-17 "Do **not** use the short

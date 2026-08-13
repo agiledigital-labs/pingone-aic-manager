@@ -633,9 +633,38 @@ Scaffold and refresh the local **typed workspace** at `./workspace/<tenant>/`
 your editor gets full IntelliSense on script bodies.
 
 ```bash
-aic workspace init                            # scaffold the tenant tree (both realms + idm)
+aic workspace init                            # scaffold the tenant tree (both realms + idm + typescript)
 aic workspace update                          # refresh bundled types/config to the latest
 ```
+
+Both commands also regenerate the tenant-derived types: ambient
+`idm/types/managed/*.d.ts` for the `.cjs` scripts, and the module-form
+`typescript/src/generated/managed.ts` for the TypeScript endpoint project.
+
+`update` refreshes every managed file and **adds the TypeScript project to a
+workspace that predates it**, seeding its example endpoints once. It never
+overwrites your own endpoints or shared modules, and `typescript/package.json`
+is merged rather than replaced — the framework's toolchain entries are
+refreshed, any dependency you added is kept.
+
+### The TypeScript endpoint project
+
+`workspace/<tenant>/typescript/` lets you write custom endpoints as ordinary
+TypeScript modules with typed routing and validation, and bundles each one into
+a self-contained ES5 file in `idm/endpoint/`. IDM has no module system, so this
+is the only way to share code between two endpoints without an `openidm.action`
+hop. Full design: `docs/typescript-endpoints.md`.
+
+```bash
+cd workspace/<tenant>/typescript
+npm install
+npm run check          # type-check + lint + test + build
+npm run watch          # rebuild on save — pair with `aic script watch`
+```
+
+The build writes `idm/endpoint/<name>.cjs`, an OpenAPI 3.1 document per endpoint
+under `typescript/openapi/`, and an ownership manifest that `aic script watch`
+reads (below).
 
 ## `aic script` — typed script workspace sync
 
@@ -669,7 +698,7 @@ aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--force]               # pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--yes]       # push local edits; no ref → fuzzy picker
 aic script sync [<ref>] [--resolve local|remote] # reconcile: push local-only, pull remote-only
-aic script watch                                # auto-push each .cjs you save (Ctrl-C to stop)
+aic script watch                                # auto-push each .cjs you save (Ctrl-C to stop; also creates generated endpoints)
 aic script status [<ref>]                       # in sync / modified / remote / conflict
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
@@ -684,6 +713,12 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   complete source config, and both create/copy pull the server's canonical form
   into the workspace. `create` refuses legacy (`evaluatorVersion: "1.0"`)
   scripts.
+- `watch` normally pushes only **tracked** scripts, and silently skips an
+  untracked file. The one exception is an endpoint the TypeScript project
+  declares it owns in `typescript/.aic-ts-manifest.json`: that has no snapshot
+  precisely because it has never existed remotely, so watch **creates** it on
+  the tenant (honouring the same prod guard as a push) and every later save
+  takes the ordinary tracked path. Hand-written `.cjs` files are unaffected.
 - `delete` requires `--force` and retains the local `.cjs` file while removing
   its snapshot/manifest entry. All three lifecycle writes require an initialized
   workspace.
