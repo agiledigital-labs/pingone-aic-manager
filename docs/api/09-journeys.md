@@ -289,6 +289,100 @@ $SCRIPTS/verify-endpoint.sh \
   --header "Accept-API-Version: protocol=2.0,resource=1.0"
 ```
 
+## Origin-based redirect (hosted UI → custom UI)
+
+Verified 2026-08-13 on the sandbox: a journey **can** detect that it was started
+from the hosted login UI and bounce the browser to a custom UI.
+
+Hosted login on this tenant is the `@forgerock/platform-login` SPA. `/`
+301s to `/login/`; `/login/` and `/am/XUI/` serve the same HTML. The SPA POSTs
+`/am/json/realms/root/realms/{realm}/authenticate`. That request carries the
+browser `Origin` / `Referer`, which a next-gen scripted decision can read.
+
+### What the script sees
+
+`requestHeaders` is a case-insensitive multimap. `String(requestHeaders)` dumps
+every key; `requestHeaders.get("origin")` / `.get("referer")` return a Java
+list (use `.get(0)`). `keySet()` is blocked by the next-gen Java allow-list.
+
+When the client sends the headers, both arrive verbatim:
+
+| Client `Origin` | `requestHeaders.get("origin").get(0)` |
+|---|---|
+| _(omitted — curl / native SDK)_ | `null` |
+| `https://tenant.example.com` | same (hosted UI) |
+| `https://journeys.example.com` | same (custom UI; already in CORS) |
+| `https://evil.example.com` | same (AM does **not** filter Origin) |
+
+`Host` is always the tenant hostname and cannot distinguish the two UIs.
+Hosted pages send `referrer-policy: origin`, so do not rely on the Referer
+_path_ (`/login` vs `/am/XUI`).
+
+### Emitting the bounce
+
+`callbacksBuilder.redirectCallback(url, {}, "GET")` returns this callback on
+`POST …/authenticate`:
+
+```json
+{
+  "type": "RedirectCallback",
+  "output": [
+    { "name": "redirectUrl", "value": "https://custom.example/login" },
+    { "name": "redirectMethod", "value": "GET" },
+    { "name": "trackingCookie", "value": false },
+    { "name": "redirectData", "value": {} }
+  ]
+}
+```
+
+The hosted login SPA handles that type: `handleRedirectCallback` reads
+`redirectUrl` and calls `location.assign` (GET) or auto-submits a form (POST).
+Verified by reading the live `/login/js/*.js` chunks.
+
+An origin-gated first node, invoked three ways against `AIC-Rhino-Let-Probe`:
+
+| `Origin` | Result |
+|---|---|
+| custom UI origin | `HiddenValueCallback` only — journey continues |
+| tenant origin | `RedirectCallback` + hidden — hosted UI would navigate away |
+| omitted | `HiddenValueCallback` only — do **not** bounce API/SDK callers |
+
+Sketch:
+
+```javascript
+var values = requestHeaders.get("origin");
+var origin = values ? String(values.get(0)) : "";
+var hosted = origin === "https://tenant.example.com";
+if (hosted) {
+  callbacksBuilder.redirectCallback(
+    "https://journeys.example.com/login",
+    {},
+    "GET"
+  );
+}
+outcome = hosted ? "redirect" : "continue";
+```
+
+After the bounce the custom UI starts a **new** authenticate. Its `Origin` is
+the custom host, so the same node must not redirect again.
+
+### Related, not substitutes
+
+- **`RequestHeaderNode`** (`allowedHeaders`) can copy `origin` into shared
+  state if you would rather keep the test out of the first script.
+- **`SetSuccessUrlNode` / `SetFailureUrlNode`** fire only at journey end, not
+  on first paint.
+- **Theme `journeyFooterScriptTag`** (see `#user-theme-script-container` in
+  `/login/` HTML) runs only inside hosted pages, so it can redirect without
+  reading Origin — but it applies to every journey that uses that theme unless
+  the script itself inspects the journey name in the URL.
+- **`platformSettings.loginUrl`** in `/openidm/config/ui/configuration` is
+  empty on this tenant and is the end-user-app login override, not a per-journey
+  bounce.
+- Custom UI origins still need a CORS configuration. The sandbox already has
+  `SSPWebPortal`, `Omni-Test`, and `customer-web-portal` configs covering
+  several of ours.
+
 ## Quirks
 
 - **Tree ID is the name**, not a UUID. Renaming = delete + create (no in-place
@@ -321,6 +415,14 @@ $SCRIPTS/verify-endpoint.sh \
   content-derived `_rev`; `DELETE …/trees/test_push_probe` returned 200 and
   follow-up `GET` returned 404. Throwaway `test_push_probe` tree and node were
   cleaned up.
+- Date: 2026-08-13
+- Calls: next-gen scripted decision on `AIC-Rhino-Let-Probe` dumped
+  `requestHeaders` / `requestParameters` (Origin and Referer arrive when the
+  client sends them; `Host` is always the tenant). `callbacksBuilder.redirectCallback`
+  returned a `RedirectCallback` on `POST …/authenticate`. An origin-gated script
+  redirected only when `Origin` was the tenant. Hosted `/login/` JS chunks
+  contain `handleRedirectCallback` → `location.assign`. Probe script restored
+  afterwards.
 
 ## Source citations
 
