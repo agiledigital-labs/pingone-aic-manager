@@ -166,8 +166,9 @@ see the **Unlock** screen (unless you set up with no master password). Press
 **`Ctrl-P`** to open the **function selector** — a fuzzy-searchable modal that
 switches between the feature views (ESVs, Scripts, Managed, Mappings, Access,
 Query, OAuth). Within a view, `/` searches, `Ctrl-R` refreshes, and `?` shows
-the keymap. Applying a whole authorization-rule document from a file is still
-`aic access apply`; everything else about rules can be done from the Access tab.
+the keymap. Adding, editing and deleting individual authorization rules can be
+done from the Access tab; `aic access` remains the surface for applying a whole
+document from a file, addressing rules by digest, and removing several at once.
 Design rules live in [docs/DESIGN.md](docs/DESIGN.md), which also states the
 supported minimum terminal width.
 

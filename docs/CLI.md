@@ -448,6 +448,10 @@ tells you to undo from the TUI history overlay, the undo log is TUI-only — the
 backup file is the entire safety net here, which is why it is taken before
 anything else and why its path is printed.
 
+Access-tab writes get **both**: a mode-0600 backup before the `PUT`, same as
+here, and an undo entry that appears in the history overlay. The tab has no
+`--no-backup` equivalent, so a failed backup blocks the write there too.
+
 `aic access get --out access.json`, edit the file, then
 `aic access apply access.json` is the guarded hand-edit workflow. Restore a
 backup through the same path:
