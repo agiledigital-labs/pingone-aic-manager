@@ -75,15 +75,15 @@ session (onboarding); otherwise paste console-created keys.
 
 ## Query params (`/monitoring/logs`)
 
-| Param                 | Type                              | Notes                                                                                                                                                           |
-| --------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `source`              | string (comma-separated)          | Required. e.g. `am-access`, `idm-everything`.                                                                                                                   |
-| `beginTime`           | ISO 8601 (`2026-05-17T10:00:00Z`) | ≤24h before `endTime`.                                                                                                                                          |
-| `endTime`             | ISO 8601                          | Required if `beginTime` set.                                                                                                                                    |
-| `transactionId`       | string                            | **Direct top-level param** — `&transactionId=<id>` filters to one transaction. This is the working path (verified via the `gt`-style call), not `_queryFilter`. |
-| `_queryFilter`        | CREST filter                      | e.g. `payload/transactionId eq "abc"`. Avoid array indexing. Prefer the `transactionId` param above for the common case.                                        |
-| `_pageSize`           | int                               | Default 1000, max 1000.                                                                                                                                         |
-| `_pagedResultsCookie` | opaque                            | From previous page.                                                                                                                                             |
+| Param                 | Type                              | Notes                                                                                                                                                                                           |
+| --------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `source`              | string (comma-separated)          | Required. e.g. `am-access`, `idm-everything`.                                                                                                                                                   |
+| `beginTime`           | ISO 8601 (`2026-05-17T10:00:00Z`) | ≤24h before `endTime`.                                                                                                                                                                          |
+| `endTime`             | ISO 8601                          | Required if `beginTime` set.                                                                                                                                                                    |
+| `transactionId`       | string                            | **Direct top-level param** — `&transactionId=<id>` filters to one transaction. This is the working path (verified via the `gt`-style call), not `_queryFilter`.                                 |
+| `_queryFilter`        | CREST filter                      | Barely usable — `payload/transactionId eq "abc"` works; most other `payload/*` fields return **500**. No array indexing. Prefer the `transactionId` param, then filter client-side. See Quirks. |
+| `_pageSize`           | int                               | Default 1000, max 1000.                                                                                                                                                                         |
+| `_pagedResultsCookie` | opaque                            | From previous page.                                                                                                                                                                             |
 
 ## Object shapes
 
@@ -209,6 +209,23 @@ curl -sS "$TENANT_BASE_URL/monitoring/logs/sources" \
   is the streaming pattern.
 - **Don't filter by array index** (`payload/things[0]/foo`) — server rejects.
   Filter by field equality only.
+- **`_queryFilter` on most `payload/*` fields returns
+  `500 Internal server error`**, not a 4xx. Verified 2026-08-12 on `am-core`:
+  both `payload/message co "…"` and `payload/logger eq "…"` 500, and the same
+  filter 500s on a 20-second window as on a 6-hour one — so it is the filter
+  that is rejected, not the range. Only `payload/transactionId` is known to
+  work, and the `transactionId` top-level param is the better route to it
+  anyway. **Plan for client-side filtering**: fetch the window, then match in
+  code. `am-core` is verbose enough (~1,000 events in 20s on UAT, with
+  `idm-core` adding ~8,400) that this matters for any feature that greps logs by
+  logger or message.
+- **`aic logs tx` is an exact match on the full transaction id**, including the
+  `-request-N/M` suffix — it is not a prefix match. Sub-requests AM makes while
+  serving a request (notably the SAML `/am/AuthConsumer` POST) carry a
+  _different_ root id and will not be returned. To follow one user action across
+  transactions, `aic logs range` a few seconds either side and group by
+  `payload.transactionId`. See `06-saml.md` → "Diagnosing a rejected assertion"
+  for a worked example.
 - **`transactionId` appears twice** in payload (top-level and inside `mdc`).
   They should match; use the top-level one.
 
