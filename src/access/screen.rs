@@ -4,9 +4,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 
 use crate::access::ops;
-use crate::access::state::{Document, LoadState, RoleIndexState};
+use crate::access::state::{Document, LoadState, RoleIndexState, RuleFormState};
 use crate::app::event::{AppEvent, ToastKind};
-use crate::app::{App, InputMode, View};
+use crate::app::{App, InputMode};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -83,16 +83,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
 }
 
 pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    match app.input_mode {
-        InputMode::Normal if app.active_view == View::Access => vec![("^R", "refresh")],
-        InputMode::Access(Mode::Search) => vec![
+    let InputMode::Access(mode) = app.input_mode else {
+        return Vec::new();
+    };
+    match mode {
+        Mode::Search => vec![
             ("↑/↓", "navigate"),
             ("Enter", "keep filter"),
             ("Esc", "clear + exit"),
         ],
-        InputMode::Access(Mode::Create | Mode::Edit) => Vec::new(),
-        InputMode::Access(Mode::DeleteConfirm) => Vec::new(),
-        _ => Vec::new(),
+        Mode::Create | Mode::Edit | Mode::DeleteConfirm => Vec::new(),
     }
 }
 
@@ -339,7 +339,11 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_form_key(app: &mut App, key: KeyEvent, mode: Mode) {
-    let confirming = app.access.form.as_ref().is_some_and(|form| form.confirming);
+    let confirming = app
+        .access
+        .form
+        .as_ref()
+        .is_some_and(RuleFormState::confirming);
     if confirming {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -348,7 +352,7 @@ fn handle_form_key(app: &mut App, key: KeyEvent, mode: Mode) {
                     Some(Ok(request)) => ops::submit_write(app, request),
                     Some(Err(error)) => {
                         if let Some(form) = app.access.form.as_mut() {
-                            form.confirming = false;
+                            form.unreview();
                             form.error = Some(error.to_string());
                         }
                     }
@@ -357,7 +361,7 @@ fn handle_form_key(app: &mut App, key: KeyEvent, mode: Mode) {
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                 if let Some(form) = app.access.form.as_mut() {
-                    form.confirming = false;
+                    form.unreview();
                 }
             }
             _ => {}
@@ -459,13 +463,16 @@ fn review_form(app: &mut App) {
         return;
     };
     form.set_role_validation(known_roles, note);
+    form.review();
     match ops::request_from_form(form) {
         Ok(request) => {
             form.error = None;
             form.review_warnings = request.warnings;
-            form.confirming = true;
         }
-        Err(error) => form.error = Some(error.to_string()),
+        Err(error) => {
+            form.unreview();
+            form.error = Some(error.to_string());
+        }
     }
 }
 

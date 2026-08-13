@@ -379,7 +379,9 @@ pub fn check_digest(expected: Option<&str>, document: &Value) -> Result<()> {
         Ok(())
     } else {
         Err(Error::Config(format!(
-            "config/access changed since document digest {expected}; the live digest is {actual}; nothing was written"
+            "config/access changed since document digest {}; the live digest is {}; nothing was written",
+            short(expected),
+            short(&actual)
         )))
     }
 }
@@ -433,7 +435,12 @@ fn write_canonical_json(value: &Value, output: &mut String) {
 
 /// Eight-character digest used when displaying a rule.
 pub fn short_digest(value: &Value) -> String {
-    digest(value)[..8].to_string()
+    short(&digest(value)).to_string()
+}
+
+/// At most eight characters of a stored digest, for compact display.
+pub fn short(digest: &str) -> &str {
+    digest.get(..8).unwrap_or(digest)
 }
 
 fn string_field<'a>(rule: &'a Value, key: &str) -> Option<&'a str> {
@@ -548,89 +555,85 @@ mod tests {
     }
 
     #[test]
-    fn optional_actions_edits_preserve_absence_and_every_other_key() {
-        let fixture = crate::access::six_rule_fixture();
-        let cases = [
-            ("absent unchanged", 0, RuleEdit::default(), None),
-            (
-                "absent set empty",
-                0,
-                RuleEdit {
-                    actions: Some(String::new()),
-                    ..RuleEdit::default()
-                },
-                Some(""),
-            ),
-            ("present unchanged", 1, RuleEdit::default(), Some("*")),
-            (
-                "present set empty",
-                1,
-                RuleEdit {
-                    actions: Some(String::new()),
-                    ..RuleEdit::default()
-                },
-                Some(""),
-            ),
-            (
-                "present cleared",
-                1,
-                RuleEdit {
-                    clear_actions: true,
-                    ..RuleEdit::default()
-                },
-                None,
-            ),
+    fn optional_edits_conserve_every_unnamed_key() {
+        // Misrouting an optional RuleEdit field, collapsing set-empty, or
+        // rebuilding a rule in replace_at makes at least one matrix row fail.
+        type ApplyEdit = fn(&mut RuleEdit, Option<String>, bool);
+        #[derive(Clone, Copy, Debug)]
+        enum Change {
+            Unchanged,
+            SetValue,
+            SetEmpty,
+            Clear,
+        }
+        let fields: [(&str, ApplyEdit); 3] = [
+            ("actions", |edit, value, clear| {
+                edit.actions = value;
+                edit.clear_actions = clear;
+            }),
+            ("customAuthz", |edit, value, clear| {
+                edit.custom_authz = value;
+                edit.clear_custom_authz = clear;
+            }),
+            ("excludePatterns", |edit, value, clear| {
+                edit.exclude_patterns = value;
+                edit.clear_exclude_patterns = clear;
+            }),
+        ];
+        let changes = [
+            (Change::Unchanged, None, false),
+            (Change::SetValue, Some("changed"), false),
+            (Change::SetEmpty, Some(""), false),
+            (Change::Clear, None, true),
         ];
 
-        for (name, index, edit, expected_actions) in cases {
-            let before_rule = fixture["configs"][index].as_object().unwrap();
-            let transformed = ops::replace_at(&fixture, index, edit).unwrap();
-            let after_rule = transformed.document["configs"][index].as_object().unwrap();
-            assert_eq!(
-                after_rule.get("actions").and_then(Value::as_str),
-                expected_actions,
-                "{name}"
-            );
+        for (field, apply_edit) in fields {
+            for present in [false, true] {
+                for (change, value, clear) in changes {
+                    let mut fixture = crate::access::six_rule_fixture();
+                    let before_rule = fixture["configs"][0].as_object_mut().unwrap();
+                    if present {
+                        before_rule.insert(field.into(), Value::String("original".into()));
+                    } else {
+                        before_rule.remove(field);
+                    }
+                    let before_rule = before_rule.clone();
+                    let mut edit = RuleEdit::default();
+                    apply_edit(&mut edit, value.map(str::to_string), clear);
 
-            let mut before_without_actions = before_rule.clone();
-            let mut after_without_actions = after_rule.clone();
-            before_without_actions.remove("actions");
-            after_without_actions.remove("actions");
-            assert_eq!(before_without_actions, after_without_actions, "{name}");
+                    let transformed = ops::replace_at(&fixture, 0, edit).unwrap();
+                    let after_rule = transformed.document["configs"][0].as_object().unwrap();
+                    let expected = match (change, present) {
+                        (Change::Unchanged, true) => Some("original"),
+                        (Change::SetValue, _) => Some("changed"),
+                        (Change::SetEmpty, _) => Some(""),
+                        (Change::Unchanged | Change::Clear, _) => None,
+                    };
+                    let case = format!(
+                        "{field} {} {change:?}",
+                        if present { "present" } else { "absent" }
+                    );
+                    assert_eq!(
+                        after_rule.get(field).and_then(Value::as_str),
+                        expected,
+                        "{case}"
+                    );
+
+                    let mut before_without_target = before_rule;
+                    let mut after_without_target = after_rule.clone();
+                    before_without_target.remove(field);
+                    after_without_target.remove(field);
+                    assert_eq!(before_without_target, after_without_target, "{case}");
+                }
+            }
         }
+    }
 
-        for (name, index, field, edit) in [
-            (
-                "clear customAuthz",
-                1,
-                "customAuthz",
-                RuleEdit {
-                    clear_custom_authz: true,
-                    ..RuleEdit::default()
-                },
-            ),
-            (
-                "clear excludePatterns",
-                2,
-                "excludePatterns",
-                RuleEdit {
-                    clear_exclude_patterns: true,
-                    ..RuleEdit::default()
-                },
-            ),
-        ] {
-            let before_rule = fixture["configs"][index].as_object().unwrap();
-            let transformed = ops::replace_at(&fixture, index, edit).unwrap();
-            let after_rule = transformed.document["configs"][index].as_object().unwrap();
-            assert!(!after_rule.contains_key(field), "{name}");
-
-            let mut before_without_field = before_rule.clone();
-            let mut after_without_field = after_rule.clone();
-            before_without_field.remove(field);
-            after_without_field.remove(field);
-            assert_eq!(before_without_field, after_without_field, "{name}");
-        }
-
+    #[test]
+    fn optional_edits_reject_set_and_clear_together() {
+        // Removing reject_conflicting_optional_edits permits each invalid
+        // RuleEdit below to silently clear a value it also tries to set.
+        let fixture = crate::access::six_rule_fixture();
         for (name, edit) in [
             (
                 "actions",
@@ -758,6 +761,8 @@ mod tests {
 
     #[test]
     fn rule_addresses_and_document_preconditions_are_shared_helpers() {
+        // Returning full digests from check_digest, or changing address
+        // resolution away from the shared digest helpers, breaks this test.
         let fixture = crate::access::six_rule_fixture();
         let rules = fixture["configs"].as_array().unwrap();
         assert_eq!(
@@ -775,7 +780,7 @@ mod tests {
         assert!(check_digest(Some(&expected.to_uppercase()), &fixture).is_ok());
         let error = check_digest(Some("deadbeef"), &fixture).unwrap_err();
         assert!(
-            matches!(error, Error::Config(message) if message.contains("deadbeef") && message.contains(&expected))
+            matches!(error, Error::Config(message) if message.contains("deadbeef") && message.contains(short(&expected)) && !message.contains(&expected))
         );
     }
 
