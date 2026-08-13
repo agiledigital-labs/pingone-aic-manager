@@ -157,6 +157,27 @@ new things are learned.
   requires an admin-user bearer; the SA bearer gets 403 regardless of scopes.
 - **Documented in:** `08-logs.md`.
 
+### Q15. Can a log API key delete itself? (2026-08-13)
+
+- **Question:** `DELETE /keys/{id}` needs an admin-user bearer (`08-logs.md`,
+  verified 2026-06-24). If the api-key **pair** were accepted on its own
+  `/keys/{id}`, tenant offboarding could revoke a log key without an admin
+  session. Worth knowing before anyone builds around the admin requirement.
+- **Status: not established.** The probe ran, and the control failed, so the
+  result is void: `DELETE /keys/00000000-0000-0000-0000-000000000000` with the
+  stored sandbox pair returned **400 Bad Request**, but the positive control
+  `GET /monitoring/logs/sources` with that same pair returned **401**. The
+  credential was not authenticating at all, so the 400 says nothing about
+  whether the pair is permitted on `/keys`. Recorded here rather than in
+  `08-logs.md` precisely because it is not a finding.
+- **To settle it:** store a known-good pair (`aic logs key set`), confirm
+  `aic logs sources` → 200 as the control, mint a throwaway key, then try to
+  delete **that** key with the pair. A 401/403 answers the question; a 404 on a
+  nonexistent id after a green control answers it too.
+- **Incidental:** the sandbox's stored `api_key_id` and the `API_KEY_SECRET` in
+  `.envrc` no longer agree (or the key was rotated in the console) — that 401 is
+  a live config problem, not a quirk.
+
 ### Q14. `config/managed` reads appeared to go backwards (2026-08-05)
 
 - **Observed:** During CLI verification of `--default`, two throwaway objects
