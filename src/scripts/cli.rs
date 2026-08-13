@@ -1374,16 +1374,37 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
         {
             collect_cjs(&mut changed, ev);
         }
+        // Re-read each round: the save that woke us may have been the
+        // TypeScript build emitting a brand-new endpoint plus its manifest.
+        let declared = script::ts_project::declared_endpoints(tenant);
         for path in changed {
             let Some((ns, name)) = workspace_path_ref(&tree, &path) else {
                 continue;
             };
-            // Only push tracked scripts (`Missing` = not synced).
+            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
+            // Only push tracked scripts (`Missing` = not synced) — except a
+            // generated endpoint the TypeScript project declares it owns, which
+            // has no snapshot precisely because it has never existed remotely.
             match script::sync::local_state(tenant, ns.kind, ns.realm_arg(), &name) {
-                Ok(LocalState::Missing) | Err(_) => continue,
+                Ok(LocalState::Missing) => {
+                    if ns.kind != script::Kind::IdmEndpoint || !declared.contains(&name) {
+                        continue;
+                    }
+                    match create_generated(tenant, &ns, &name, &path, yes).await {
+                        Ok(()) => {
+                            println!("{}", watch_green(&format!("+ created {full}")));
+                        }
+                        Err(e) if is_fatal_watch_error(&e) => {
+                            eprintln!("! watch stopped: {e}");
+                            return Err(e);
+                        }
+                        Err(e) => eprintln!("{}", watch_red(&format!("! {full}: {e}"))),
+                    }
+                    continue;
+                }
+                Err(_) => continue,
                 Ok(_) => {}
             }
-            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
             let push = script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes);
             tokio::pin!(push);
             let result = tokio::select! {
@@ -1475,6 +1496,35 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Create an endpoint that exists only as a build artefact.
+///
+/// `aic script watch` otherwise skips any untracked file, which made a
+/// generated endpoint impossible to deploy: it has no snapshot until it exists
+/// remotely, and it cannot exist remotely until something pushes it. The
+/// TypeScript project's manifest breaks the cycle by declaring the file as
+/// intentionally owned rather than stray. `sync::create` carries the same prod
+/// guard as a push and pulls the server's copy straight back, so the next save
+/// takes the ordinary tracked path.
+async fn create_generated(
+    tenant: &str,
+    ns: &Namespace,
+    name: &str,
+    path: &std::path::Path,
+    yes: bool,
+) -> Result<()> {
+    let source =
+        std::fs::read(path).map_err(|e| Error::Config(format!("read {}: {e}", path.display())))?;
+    let new_script = ns
+        .kind
+        .new_script(name, &source, &script::NewScriptOpts::default())?;
+    let create = script::sync::create(tenant, ns.realm_arg(), &new_script, yes);
+    tokio::pin!(create);
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => Err(Error::Config("stopped watching.".into())),
+        result = &mut create => prod_hint(result).map(|_| ()),
+    }
 }
 
 fn is_fatal_watch_error(error: &Error) -> bool {
