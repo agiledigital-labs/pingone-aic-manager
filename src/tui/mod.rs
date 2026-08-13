@@ -20,18 +20,19 @@ pub mod theme;
 pub mod toast;
 pub mod widgets;
 
-/// The narrowest terminal the TUI supports. Everything must stay legible and
-/// unambiguous here; narrower than this, degradation is allowed to be ugly.
+/// The narrowest terminal the TUI supports: everything must stay legible and
+/// unambiguous here, and narrower than this degradation is allowed to be ugly.
 ///
-/// Layout tests should render at this width rather than a literal, so the floor
-/// moves in one place. See `docs/DESIGN.md` for the consequences that follow
-/// from it — chiefly that a table of `Percentage` constraints degrades
-/// proportionally where a set mixing in `Length` starves its percentage columns
-/// and clips them with no ellipsis.
+/// **Nothing checks this at runtime.** It is the width layout tests should
+/// render at, so the floor lives in one place instead of as a literal in each
+/// assertion; the policy itself is stated in `docs/DESIGN.md`, along with the
+/// consequences that follow from it — chiefly that a table of `Percentage`
+/// constraints degrades proportionally where a set mixing in `Length` starves
+/// its percentage columns and clips them with no ellipsis.
 ///
 /// Deliberately distinct from [`modal_chrome::CONTENT_WIDTH`], which happens to
-/// share the value: that one is how wide a modal wants to be, and it is capped
-/// by the screen rather than by this.
+/// share the value: that one is how wide a modal wants to be, and is capped by
+/// the screen rather than by this.
 pub const MIN_TERMINAL_WIDTH: u16 = 80;
 
 /// True when `key` is the universal save chord. Accepts a shifted `S` so a

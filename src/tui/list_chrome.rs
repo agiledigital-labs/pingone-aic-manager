@@ -35,10 +35,30 @@ impl DetailScroll {
         self.offset = requested.min(self.limit.get());
     }
 
+    /// Clamp for a pane that has already materialised its rows — one `Line` per
+    /// rendered row, drawn **without** `Paragraph::wrap`. Passing `lines.len()`
+    /// for a pane that does wrap under-counts, and a too-small limit is
+    /// invisible: the pane just stops early and looks like it reached the end.
+    /// Use [`Self::clamp_wrapping`] there instead.
     pub fn clamp(&self, rendered_height: usize, viewport_height: usize) -> usize {
         let limit = rendered_height.saturating_sub(viewport_height);
         self.limit.set(limit);
         self.offset.min(limit)
+    }
+
+    /// Clamp for a pane that lets the widget wrap, because it styles spans
+    /// within a line and so cannot pre-wrap to `String`s. Takes the lines
+    /// rather than a height so the caller cannot supply the wrong measurement.
+    ///
+    /// The height is an estimate: it wraps through [`wrap_lines`], which
+    /// re-applies a line's leading indentation to continuation rows where
+    /// ratatui's own wrapper does not. For an indented line it therefore
+    /// over-counts, which lets the scroll run a little past the content into
+    /// blank rows rather than stopping short of it. Ratatui 0.30 can answer this
+    /// exactly via `Paragraph::line_count`, but only behind its
+    /// `unstable-rendered-line-info` feature.
+    pub fn clamp_wrapping(&self, lines: &[Line<'_>], width: u16, viewport_height: usize) -> usize {
+        self.clamp(wrapped_height(lines, width), viewport_height)
     }
 
     pub fn reset(&mut self) {
@@ -196,17 +216,12 @@ pub fn wrap_lines(text: &str, width: u16) -> Vec<String> {
     wrapped
 }
 
-/// Rows a paragraph will occupy after ratatui wraps it, for panes rendered
-/// with `.wrap(…)`.
-///
-/// [`DetailScroll::clamp`] wants the *rendered* height, so a wrapping pane that
-/// passes `lines.len()` under-counts and caps its own scroll short of the
-/// content — with nothing failing, because a too-small limit still looks like a
-/// working scroll. Panes that pre-wrap through [`wrap_lines`] have already
-/// materialised the rows and should keep passing `lines.len()`; this is for the
-/// ones that let the widget wrap, because they style spans within a line and so
-/// cannot flatten to `String`s first.
-pub fn wrapped_height(lines: &[Line<'_>], width: u16) -> usize {
+/// Estimated rows a wrapping paragraph will occupy. Private because
+/// [`DetailScroll::clamp_wrapping`] is the only sound way to consume it — the
+/// number exists to be handed straight to the clamp, and a caller holding it
+/// separately is a caller who can pair it with the wrong viewport. See that
+/// method for where the estimate diverges from ratatui.
+fn wrapped_height(lines: &[Line<'_>], width: u16) -> usize {
     lines
         .iter()
         .map(|line| {
@@ -262,6 +277,20 @@ mod tests {
         // A zero-width rect mid-resize must not report zero rows, or the clamp
         // takes a limit of 0 and silently discards the operator's offset.
         assert_eq!(wrapped_height(&lines, 0), lines.len());
+
+        // And the public path: wrapped content taller than the viewport leaves
+        // rows to reach.
+        let mut scroll = DetailScroll::default();
+        scroll.clamp_wrapping(&lines, 20, 2);
+        scroll.scroll(10);
+        assert_eq!(scroll.offset(), wrapped_height(&lines, 20) - 2);
+
+        // Measuring the unwrapped count against the same viewport pins the pane
+        // at the top — the defect, expressed as the contrast.
+        let mut naive = DetailScroll::default();
+        naive.clamp(lines.len(), 2);
+        naive.scroll(10);
+        assert_eq!(naive.offset(), 0);
     }
 
     #[test]
