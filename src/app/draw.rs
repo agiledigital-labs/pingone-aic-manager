@@ -40,6 +40,12 @@ pub fn draw(f: &mut Frame, app: &App) {
             toast::draw(f, app);
             return;
         }
+        InputMode::Offboard(mode) => {
+            crate::offboard::view::draw(f, app, mode);
+            draw_keybind_help(f, app);
+            toast::draw(f, app);
+            return;
+        }
         InputMode::Selector => {
             selector::draw(f, app);
             draw_keybind_help(f, app);

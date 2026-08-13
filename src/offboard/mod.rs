@@ -18,7 +18,10 @@
 //! - [`ops`] = probe + execute. The only network call is unpublishing the
 //!   local Trusted JWT kid.
 //! - [`cli`] = `aic ctx rm`.
+//! - [`screen`] / [`view`] = the env-picker delete modal (`T` then `d`).
 
 pub mod cli;
 pub mod ops;
+pub mod screen;
 pub mod spec;
+pub mod view;

@@ -604,6 +604,7 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::Vault(mode) => crate::vault::screen::handle_key(app, key, mode).await?,
         InputMode::Onboard(mode) => crate::onboard::screen::handle_key(app, key, mode).await?,
         InputMode::EnvPicker => app.handle_env_picker_key(key),
+        InputMode::Offboard(mode) => crate::offboard::screen::handle_key(app, key, mode),
         InputMode::Selector => crate::app::selector::handle_key(app, key),
         InputMode::ProdConfirm => crate::app::prod_confirm::handle_key(app, key).await?,
         InputMode::UndoHistory => crate::undo::screen::handle_key(app, key),

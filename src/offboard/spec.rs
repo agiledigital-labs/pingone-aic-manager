@@ -62,6 +62,24 @@ impl TargetKind {
         }
     }
 
+    /// Extra line under a checkbox so a tick cannot be read as a remote
+    /// delete. [`TargetKind::ServiceAccountJwk`] and [`TargetKind::LogApiKey`]
+    /// have no remote delete at all; the issuer row is the one that does.
+    pub fn consequence(self) -> Option<&'static str> {
+        match self {
+            TargetKind::ServiceAccountJwk => {
+                Some("local JWK only; remote account stays — delete it in the console")
+            }
+            TargetKind::LogApiKey => {
+                Some("local pair only; remote key stays — delete it in the console")
+            }
+            TargetKind::IssuerSigningKey => {
+                Some("unpublishes this install's kid from the shared issuer")
+            }
+            _ => None,
+        }
+    }
+
     /// Targets that vanish when this one is purged. [`TargetKind::Workspace`]
     /// is a directory that *contains* [`TargetKind::SyncState`]; both
     /// surfaces must go through [`DeletePlan::resolve_purge`] rather than
@@ -221,7 +239,8 @@ impl ResolvedPurge {
 }
 
 /// Discriminating identifier for a credential target, if the inventory has
-/// one. Path targets have none — the tenant name is the address.
+/// one. Path targets have none — the tenant name is the address. Prefer
+/// [`row_id`] when a surface needs to show the path as well.
 pub fn identifier<'a>(
     kind: TargetKind,
     tenant: &'a Tenant,
@@ -237,6 +256,55 @@ pub fn identifier<'a>(
         | TargetKind::SyncState
         | TargetKind::UndoLog => None,
     }
+}
+
+/// Discriminating text for one plan row: credential id, or the relative
+/// path the stores use. I/O-free — the paths follow the same naming as
+/// [`crate::offboard::ops::Layout`] without touching the filesystem.
+pub fn row_id(kind: TargetKind, tenant: &Tenant, inventory: &Inventory) -> Option<String> {
+    if let Some(id) = identifier(kind, tenant, inventory) {
+        return Some(id.to_string());
+    }
+    match kind {
+        TargetKind::LogsDatabase => Some(format!("logs/{}.duckdb", tenant_file_name(&tenant.name))),
+        TargetKind::IdmStore => Some(format!(
+            "idmstore/{}.sqlite",
+            tenant_file_name(&tenant.name)
+        )),
+        TargetKind::Workspace => Some(format!("workspace/{}/", tenant.name)),
+        TargetKind::SyncState => Some(format!("workspace/{}/.aic-sync/", tenant.name)),
+        TargetKind::UndoLog => Some("undo.log".into()),
+        TargetKind::ServiceAccountJwk | TargetKind::LogApiKey | TargetKind::IssuerSigningKey => {
+            None
+        }
+    }
+}
+
+/// Heading both surfaces print before the leftover remote identities.
+pub const CONSOLE_CLEANUP_HEADING: &str =
+    "Console cleanup — aic cannot delete these; remove them in the AIC admin console:";
+
+pub fn console_cleanup_sa_line(id: &str) -> String {
+    format!(
+        "service account  {id}  (Identity Cloud admin console; a service-account bearer gets 403)"
+    )
+}
+
+pub fn console_cleanup_log_key_line(id: &str) -> String {
+    format!("log API key      {id}  (Tenant Settings → Log API Keys)")
+}
+
+pub fn console_cleanup_none_line() -> &'static str {
+    "(nothing — a surviving tenant still holds every remote identity)"
+}
+
+/// Wording used when the remote issuer edit failed and the kid is still
+/// published. The TUI toast and the CLI report must not invent a second
+/// story — the local key is gone, the tenant still trusts the kid.
+pub fn console_cleanup_issuer_line(kid: &str, error: &str) -> String {
+    format!(
+        "issuer kid       {kid}  (unpublish failed: {error}; remove it from the default Trusted JWT Issuer in the console)"
+    )
 }
 
 /// What exists locally for the tenant being removed.
@@ -808,6 +876,18 @@ mod tests {
         assert_eq!(
             identifier(TargetKind::Workspace, &departing, &inventory),
             None
+        );
+        assert_eq!(
+            row_id(TargetKind::ServiceAccountJwk, &departing, &inventory).as_deref(),
+            Some(DUP_SA)
+        );
+        assert_eq!(
+            row_id(TargetKind::Workspace, &departing, &inventory).as_deref(),
+            Some("workspace/UAT/")
+        );
+        assert_eq!(
+            row_id(TargetKind::LogsDatabase, &departing, &inventory).as_deref(),
+            Some("logs/UAT.duckdb")
         );
     }
 }

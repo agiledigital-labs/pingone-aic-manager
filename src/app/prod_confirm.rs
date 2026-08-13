@@ -17,6 +17,7 @@ pub enum PendingProdAction {
     Mappings(crate::mappings::ops::ProdAction),
     Access(crate::access::ops::ProdAction),
     Onboard(crate::onboard::screen::ProdAction),
+    Offboard(crate::offboard::screen::ProdAction),
 }
 
 #[derive(Debug, Default)]
@@ -61,6 +62,9 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                     PendingProdAction::Access(action) => {
                         crate::access::ops::execute_prod_action(app, action)
                     }
+                    PendingProdAction::Offboard(action) => {
+                        crate::offboard::screen::execute_prod_action(app, action)
+                    }
                 }
             }
         }
@@ -91,6 +95,9 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> crate::Result<()> {
                 Some(PendingProdAction::Onboard(action)) => {
                     crate::onboard::screen::resume_mode(app, &action)
                 }
+                Some(PendingProdAction::Offboard(action)) => {
+                    crate::offboard::screen::resume_mode(app, &action)
+                }
                 _ => InputMode::Normal,
             };
             app.push_toast(ToastKind::Info, "Prod write cancelled");
@@ -113,7 +120,7 @@ pub fn draw(f: &mut ratatui::Frame, app: &App) {
         .prod_confirm
         .pending
         .as_ref()
-        .and_then(pending_description);
+        .and_then(|action| pending_description(app, action));
     let body_height = if description.is_some() { 5 } else { 3 };
     let body = crate::tui::modal_chrome::Modal {
         title: "\u{26a0} PRODUCTION WRITE",
@@ -144,11 +151,14 @@ pub fn draw(f: &mut ratatui::Frame, app: &App) {
     f.render_widget(Paragraph::new(text), body);
 }
 
-fn pending_description(action: &PendingProdAction) -> Option<String> {
+fn pending_description(app: &App, action: &PendingProdAction) -> Option<String> {
     match action {
         PendingProdAction::Scripts(action) => crate::scripts::screen::describe_prod_action(action),
         PendingProdAction::Mappings(action) => crate::mappings::ops::describe_prod_action(action),
         PendingProdAction::Access(action) => crate::access::ops::describe_prod_action(action),
+        PendingProdAction::Offboard(action) => {
+            crate::offboard::screen::describe_prod_action(app, action)
+        }
         _ => None,
     }
 }
