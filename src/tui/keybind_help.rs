@@ -101,6 +101,9 @@ fn lines_for(app: &App) -> Vec<Line<'static>> {
         InputMode::Vault(VaultMode::Unlock | VaultMode::Relock) => unlock_lines(app, &mut lines),
         InputMode::Onboard(mode) => onboard_lines(app, mode, &mut lines),
         InputMode::EnvPicker => env_picker_lines(app, &mut lines),
+        InputMode::Offboard(mode) => {
+            feature_lines(crate::offboard::screen::help_lines(mode), &mut lines)
+        }
         InputMode::Selector => selector_lines(&mut lines),
         InputMode::ProdConfirm => confirm_lines(
             &mut lines,
@@ -283,14 +286,10 @@ fn onboard_lines(app: &App, mode: OnboardMode, lines: &mut Vec<Line<'static>>) {
     }
 }
 
-fn env_picker_lines(app: &App, lines: &mut Vec<Line<'static>>) {
+fn env_picker_lines(_app: &App, lines: &mut Vec<Line<'static>>) {
     group(lines, "Switch Tenant");
-    bind(lines, "Enter", "switch to selected tenant");
-    bind(lines, "Esc", "cancel");
-    group(lines, "Movement");
-    bind(lines, "↑/↓", "move selection");
-    if let Some(range) = number_range(app.tenants.len()) {
-        bind(lines, range, "switch to numbered tenant");
+    for (key, desc) in crate::app::env_picker::HINTS {
+        bind(lines, *key, *desc);
     }
     bind(lines, "F1/?", "show keybinds");
 }

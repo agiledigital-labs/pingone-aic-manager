@@ -26,6 +26,7 @@ pub enum InputMode {
     Vault(crate::vault::screen::Mode),
     Onboard(crate::onboard::screen::Mode),
     EnvPicker,
+    Offboard(crate::offboard::screen::Mode),
     Selector,
     ProdConfirm,
     UndoHistory,
@@ -183,6 +184,9 @@ pub struct App {
     /// Secret-mapping sub-view state — per-tenant alpha mapping list + alias picker.
     /// See `crate::secretmap::screen`.
     pub secretmap: crate::secretmap::state::State,
+
+    /// Env-picker delete-tenant modal. See `crate::offboard`.
+    pub offboard: crate::offboard::screen::State,
 }
 
 impl App {
@@ -294,6 +298,7 @@ impl App {
             idmstore: crate::idmstore::state::State::new(),
             oauth: crate::oauth::state::State::new(),
             secretmap: crate::secretmap::state::State::new(),
+            offboard: crate::offboard::screen::State::new(),
         }
     }
 
@@ -577,6 +582,7 @@ impl App {
             AppEvent::IdmStore(event) => crate::idmstore::screen::apply_event(self, event),
             AppEvent::Oauth(event) => crate::oauth::screen::apply_event(self, event),
             AppEvent::Secretmap(event) => crate::secretmap::screen::apply_event(self, event),
+            AppEvent::Offboard(event) => crate::offboard::screen::apply_event(self, event),
         }
         Ok(())
     }
@@ -643,6 +649,7 @@ impl App {
                     | InputMode::Vault(crate::vault::screen::Mode::Settings)
                     | InputMode::Onboard(crate::onboard::screen::Mode::Menu)
                     | InputMode::EnvPicker
+                    | InputMode::Offboard(_)
             )
     }
 
@@ -650,6 +657,9 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Delete => {
+                crate::offboard::screen::open_from_picker(self);
             }
             KeyCode::Char('j') | KeyCode::Down if self.env_picker_idx + 1 < self.tenants.len() => {
                 self.env_picker_idx += 1;

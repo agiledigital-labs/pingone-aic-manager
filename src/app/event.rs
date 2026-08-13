@@ -23,6 +23,7 @@ pub enum AppEvent {
     IdmStore(crate::idmstore::screen::Event),
     Oauth(crate::oauth::screen::Event),
     Secretmap(crate::secretmap::screen::Event),
+    Offboard(crate::offboard::screen::Event),
     Toast(ToastKind, String),
 }
 
