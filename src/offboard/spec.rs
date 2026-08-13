@@ -4,10 +4,12 @@
 //! [`plan`]; they must not re-decide what is safe. The planner never touches
 //! the filesystem.
 
+use std::collections::HashSet;
+
 use crate::config::{CredentialSource, Tenant, tenant_file_name};
 
 /// Local artifact that offboarding can remove.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetKind {
     /// The private JWK in the vault. The service *account* itself cannot be
     /// deleted by `aic` at all — an SA bearer gets 403 on
@@ -46,6 +48,30 @@ impl TargetKind {
         TargetKind::SyncState,
         TargetKind::UndoLog,
     ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TargetKind::ServiceAccountJwk => "service-account JWK",
+            TargetKind::LogApiKey => "log API key",
+            TargetKind::IssuerSigningKey => "issuer signing key",
+            TargetKind::LogsDatabase => "logs database",
+            TargetKind::IdmStore => "IDM store",
+            TargetKind::Workspace => "workspace",
+            TargetKind::SyncState => "sync state",
+            TargetKind::UndoLog => "undo log",
+        }
+    }
+
+    /// Targets that vanish when this one is purged. [`TargetKind::Workspace`]
+    /// is a directory that *contains* [`TargetKind::SyncState`]; both
+    /// surfaces must go through [`DeletePlan::resolve_purge`] rather than
+    /// each noticing the nesting.
+    pub fn implies(self) -> &'static [TargetKind] {
+        match self {
+            TargetKind::Workspace => &[TargetKind::SyncState],
+            _ => &[],
+        }
+    }
 }
 
 /// What the planner decided for one target.
@@ -89,6 +115,26 @@ pub struct DeletePlan {
     pub manual: ManualCleanup,
 }
 
+/// How a surface should present one target, given selections so far.
+///
+/// [`PromptAction::Implied`] exists so the CLI and TUI do not each special-case
+/// "workspace contains sync state": once [`TargetKind::Workspace`] is accepted,
+/// sync is no longer an independent choice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptAction<'a> {
+    Absent,
+    Refused {
+        reason: &'a str,
+    },
+    /// Present, but a selected ancestor already takes it.
+    Implied {
+        by: TargetKind,
+    },
+    Ask {
+        default_on: bool,
+    },
+}
+
 impl DeletePlan {
     /// Decision for `kind`. Every plan contains each [`TargetKind`] once.
     pub fn decision(&self, kind: TargetKind) -> &TargetDecision {
@@ -98,6 +144,98 @@ impl DeletePlan {
             .find(|target| target.kind == kind)
             .expect("DeletePlan always includes every TargetKind")
             .decision
+    }
+
+    /// What the user should be asked about `kind`, given `accepted` so far.
+    ///
+    /// Prompting walks [`TargetKind::ALL`] in order, so workspace is decided
+    /// before sync state. A surface that presents checkboxes at once still
+    /// goes through [`Self::resolve_purge`] after the user ticks, which is
+    /// what actually applies the implication.
+    pub fn prompt_for<'a>(
+        &'a self,
+        kind: TargetKind,
+        accepted: &HashSet<TargetKind>,
+    ) -> PromptAction<'a> {
+        match self.decision(kind) {
+            TargetDecision::Absent => PromptAction::Absent,
+            TargetDecision::Refused { reason } => PromptAction::Refused { reason },
+            TargetDecision::Offered { default_on } => {
+                if let Some(by) = accepted
+                    .iter()
+                    .copied()
+                    .find(|selected| selected.implies().contains(&kind))
+                {
+                    PromptAction::Implied { by }
+                } else {
+                    PromptAction::Ask {
+                        default_on: *default_on,
+                    }
+                }
+            }
+        }
+    }
+
+    /// The set that will actually be purged.
+    ///
+    /// Drops anything that is not [`TargetDecision::Offered`] — a force flag
+    /// must not override a refusal — and adds implied children of accepted
+    /// parents so a selected workspace cannot leave sync state reported as
+    /// kept.
+    pub fn resolve_purge(&self, requested: impl IntoIterator<Item = TargetKind>) -> ResolvedPurge {
+        let mut purge = HashSet::new();
+        for kind in requested {
+            if !matches!(self.decision(kind), TargetDecision::Offered { .. }) {
+                continue;
+            }
+            purge.insert(kind);
+            for implied in kind.implies() {
+                if matches!(self.decision(*implied), TargetDecision::Offered { .. }) {
+                    purge.insert(*implied);
+                }
+            }
+        }
+        ResolvedPurge(purge)
+    }
+}
+
+/// A purge set that has been through the guard.
+///
+/// The field is private and [`DeletePlan::resolve_purge`] is the only
+/// constructor, so `offboard::ops::execute` cannot be handed a set holding a
+/// refused target — not by the CLI, not by the TUI, not by whatever surface
+/// comes next. The guard is the whole point of this feature, and there are
+/// already two callers; making the bypass unrepresentable is cheaper than
+/// trusting each of them to remember.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolvedPurge(HashSet<TargetKind>);
+
+impl ResolvedPurge {
+    pub fn contains(&self, kind: &TargetKind) -> bool {
+        self.0.contains(kind)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Discriminating identifier for a credential target, if the inventory has
+/// one. Path targets have none — the tenant name is the address.
+pub fn identifier<'a>(
+    kind: TargetKind,
+    tenant: &'a Tenant,
+    inventory: &'a Inventory,
+) -> Option<&'a str> {
+    match kind {
+        TargetKind::ServiceAccountJwk => nonempty(tenant.sa_id.as_deref()),
+        TargetKind::LogApiKey => nonempty(inventory.log_api_key_id.as_deref()),
+        TargetKind::IssuerSigningKey => nonempty(inventory.issuer_kid.as_deref()),
+        TargetKind::LogsDatabase
+        | TargetKind::IdmStore
+        | TargetKind::Workspace
+        | TargetKind::SyncState
+        | TargetKind::UndoLog => None,
     }
 }
 
@@ -588,5 +726,88 @@ mod tests {
         departing.provenance.service_account = Some(CredentialSource::External);
         let plan = plan(&departing, &present(), &[]);
         assert_eq!(plan.decision(TargetKind::ServiceAccountJwk), &offered_off());
+    }
+
+    #[test]
+    fn resolve_purge_drops_refusals_and_implies_sync_from_workspace() {
+        // A force flag that unioned the requested set onto the plan would
+        // delete a shared log key. Collapsing the implication into the CLI
+        // would leave slice C to forget it and report sync as kept.
+        let departing = tenant("UAT", UAT_URL, Some(DUP_SA));
+        let keep = survivor("uat", UAT_URL, Some(UAT_SA), Some(SHARED_LOG_KEY), None);
+        let plan = plan(&departing, &present(), &[keep]);
+
+        let requested = [
+            TargetKind::ServiceAccountJwk,
+            TargetKind::LogApiKey,
+            TargetKind::Workspace,
+        ];
+        let purge = plan.resolve_purge(requested);
+
+        assert!(purge.contains(&TargetKind::ServiceAccountJwk));
+        assert!(
+            !purge.contains(&TargetKind::LogApiKey),
+            "refused target must stay out of the purge set"
+        );
+        assert!(purge.contains(&TargetKind::Workspace));
+        assert!(
+            purge.contains(&TargetKind::SyncState),
+            "workspace purge must take the nested sync state"
+        );
+        assert!(!purge.contains(&TargetKind::LogsDatabase));
+    }
+
+    #[test]
+    fn resolve_purge_can_drop_sync_while_keeping_the_workspace() {
+        let plan = plan(&tenant("UAT", UAT_URL, Some(DUP_SA)), &present(), &[]);
+        let purge = plan.resolve_purge([TargetKind::SyncState]);
+        assert!(purge.contains(&TargetKind::SyncState));
+        assert!(!purge.contains(&TargetKind::Workspace));
+    }
+
+    #[test]
+    fn prompt_for_hides_sync_once_the_workspace_is_accepted() {
+        let plan = plan(&tenant("UAT", UAT_URL, Some(DUP_SA)), &present(), &[]);
+        assert_eq!(
+            plan.prompt_for(TargetKind::SyncState, &HashSet::new()),
+            PromptAction::Ask { default_on: true }
+        );
+        assert_eq!(
+            plan.prompt_for(
+                TargetKind::SyncState,
+                &HashSet::from([TargetKind::Workspace])
+            ),
+            PromptAction::Implied {
+                by: TargetKind::Workspace
+            }
+        );
+        assert_eq!(
+            plan.prompt_for(TargetKind::LogApiKey, &HashSet::new()),
+            PromptAction::Ask { default_on: true }
+        );
+    }
+
+    #[test]
+    fn identifier_names_the_credential_not_the_tenant() {
+        // Two entries on one AIC tenant are told apart by sa_id / api_key_id /
+        // kid. Showing only the tenant name makes the two UAT rows identical.
+        let departing = tenant("UAT", UAT_URL, Some(DUP_SA));
+        let inventory = present();
+        assert_eq!(
+            identifier(TargetKind::ServiceAccountJwk, &departing, &inventory),
+            Some(DUP_SA)
+        );
+        assert_eq!(
+            identifier(TargetKind::LogApiKey, &departing, &inventory),
+            Some(SHARED_LOG_KEY)
+        );
+        assert_eq!(
+            identifier(TargetKind::IssuerSigningKey, &departing, &inventory),
+            Some("kid-uat")
+        );
+        assert_eq!(
+            identifier(TargetKind::Workspace, &departing, &inventory),
+            None
+        );
     }
 }

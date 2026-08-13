@@ -7,14 +7,18 @@
 //! install's kid from the shared Trusted JWT issuer
 //! ([`crate::jwtbearer::ops::remove_key_from_issuer`]).
 //!
-//! This slice is the pure planner. Slice B (CLI) and slice C (TUI) populate
-//! [`spec::Inventory`] from disk and drive [`spec::plan`]; they must not
-//! re-decide what is safe. Two tenant entries can point at one AIC tenant and
-//! share individual credentials even when `sa_id`s differ, so every local
-//! purge is refused when a survivor still depends on the same resource
-//! identity.
+//! Slice B (CLI) and slice C (TUI) populate [`spec::Inventory`] from disk
+//! and drive [`spec::plan`]; they must not re-decide what is safe. Two
+//! tenant entries can point at one AIC tenant and share individual
+//! credentials even when `sa_id`s differ, so every local purge is refused
+//! when a survivor still depends on the same resource identity.
 //!
 //! File map:
 //! - [`spec`] = input types and the sharing guard. No I/O.
+//! - [`ops`] = probe + execute. The only network call is unpublishing the
+//!   local Trusted JWT kid.
+//! - [`cli`] = `aic ctx rm`.
 
+pub mod cli;
+pub mod ops;
 pub mod spec;
