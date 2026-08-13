@@ -18,6 +18,11 @@
 //! Mappings reuse the sync-mapping engine via `Kind::IdmSyncMapping`, and the
 //! Mappings tab invalidates the per-tenant scripts cache after pull/reconcile
 //! changes workspace state that the Scripts tab displays.
+//!
+//! IDM endpoints have a second authoring route: `ts_project` + the embedded
+//! `templates/typescript/` project let them be written as TypeScript modules
+//! and bundled into one ES5 `idm/endpoint/<name>.cjs` per endpoint, which the
+//! engine above then syncs unchanged. See `docs/typescript-endpoints.md`.
 
 pub mod am;
 pub mod authorship;
@@ -30,6 +35,7 @@ pub mod screen;
 pub mod sync;
 pub mod sync_mapping;
 pub mod sync_types;
+pub mod ts_project;
 pub mod view;
 pub mod workspace;
 

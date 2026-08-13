@@ -11,12 +11,13 @@ use crate::Result;
 use crate::app::App;
 use crate::app::event::ToastKind;
 use crate::config::ProjectConfig;
+use crate::scripts::ts_project::PROJECT_DIR;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 50;
+pub const TEMPLATES_VERSION: u32 = 51;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -175,7 +176,100 @@ const MANAGED: &[(&str, &str)] = &[
         "tools/eslint-openidm-query-filter.mjs",
         include_str!("templates/tools/eslint-openidm-query-filter.mjs"),
     ),
+    // The TypeScript endpoint project. Its framework + build pipeline are
+    // managed; the endpoints and shared modules under `typescript/src/` are
+    // user files (see TS_USER). Design: `docs/typescript-endpoints.md`.
+    (
+        "typescript/README.md",
+        include_str!("templates/typescript/README.md"),
+    ),
+    (
+        "typescript/tsconfig.json",
+        include_str!("templates/typescript/tsconfig.json"),
+    ),
+    (
+        "typescript/tsconfig.tests.json",
+        include_str!("templates/typescript/tsconfig.tests.json"),
+    ),
+    (
+        "typescript/eslint.config.js",
+        include_str!("templates/typescript/eslint.config.js"),
+    ),
+    (
+        "typescript/framework/index.ts",
+        include_str!("templates/typescript/framework/index.ts"),
+    ),
+    (
+        "typescript/framework/types.ts",
+        include_str!("templates/typescript/framework/types.ts"),
+    ),
+    (
+        "typescript/framework/idm-globals.d.ts",
+        include_str!("templates/typescript/framework/idm-globals.d.ts"),
+    ),
+    (
+        "typescript/framework/validate.ts",
+        include_str!("templates/typescript/framework/validate.ts"),
+    ),
+    (
+        "typescript/framework/errors.ts",
+        include_str!("templates/typescript/framework/errors.ts"),
+    ),
+    (
+        "typescript/framework/logging.ts",
+        include_str!("templates/typescript/framework/logging.ts"),
+    ),
+    (
+        "typescript/framework/router.ts",
+        include_str!("templates/typescript/framework/router.ts"),
+    ),
+    (
+        "typescript/framework/openapi.ts",
+        include_str!("templates/typescript/framework/openapi.ts"),
+    ),
+    (
+        "typescript/tools/build.mjs",
+        include_str!("templates/typescript/tools/build.mjs"),
+    ),
+    (
+        "typescript/tools/idm-runtime-bans.mjs",
+        include_str!("templates/typescript/tools/idm-runtime-bans.mjs"),
+    ),
+    (
+        "typescript/tests/harness.ts",
+        include_str!("templates/typescript/tests/harness.ts"),
+    ),
+    (
+        "typescript/tests/validate.test.ts",
+        include_str!("templates/typescript/tests/validate.test.ts"),
+    ),
+    (
+        "typescript/tests/router.test.ts",
+        include_str!("templates/typescript/tests/router.test.ts"),
+    ),
+    (
+        "typescript/tests/errors.test.ts",
+        include_str!("templates/typescript/tests/errors.test.ts"),
+    ),
+    (
+        "typescript/tests/logging.test.ts",
+        include_str!("templates/typescript/tests/logging.test.ts"),
+    ),
+    (
+        "typescript/tests/openapi.test.ts",
+        include_str!("templates/typescript/tests/openapi.test.ts"),
+    ),
+    (
+        "typescript/tests/runtime-bans.test.mjs",
+        include_str!("templates/typescript/tests/runtime-bans.test.mjs"),
+    ),
 ];
+
+/// The TypeScript project's `package.json`. Neither managed nor user: the
+/// framework's own toolchain entries are refreshed on update (a stale esbuild
+/// or Babel is exactly the breakage `TEMPLATES_VERSION` exists to prevent),
+/// while anything the user added survives. See [`merge_package_json`].
+const TS_PACKAGE_JSON: &str = include_str!("templates/typescript/package.json");
 
 /// Files this tool managed under older template versions that are now obsolete
 /// and must be **deleted** from existing workspaces on update. Only ever list
@@ -203,9 +297,43 @@ const USER: &[(&str, &str)] = &[
     ),
 ];
 
+/// User files inside the TypeScript project. Seeded when the project tree is
+/// first created — including on an `update` that introduces it to an existing
+/// workspace — and never touched again.
+///
+/// The `aicdemo-*` endpoints are a worked example, not infrastructure: they
+/// exercise every routing and validation feature against fixture data and are
+/// meant to be deleted once you have your own.
+const TS_USER: &[(&str, &str)] = &[
+    (
+        "typescript/src/shared/widget-key.ts",
+        include_str!("templates/typescript/src/shared/widget-key.ts"),
+    ),
+    (
+        "typescript/src/shared/audit.ts",
+        include_str!("templates/typescript/src/shared/audit.ts"),
+    ),
+    (
+        "typescript/src/shared/fixtures.ts",
+        include_str!("templates/typescript/src/shared/fixtures.ts"),
+    ),
+    (
+        "typescript/src/endpoints/aicdemo-a1-claude-widgets.ts",
+        include_str!("templates/typescript/src/endpoints/aicdemo-a1-claude-widgets.ts"),
+    ),
+    (
+        "typescript/src/endpoints/aicdemo-a1-claude-reports.ts",
+        include_str!("templates/typescript/src/endpoints/aicdemo-a1-claude-reports.ts"),
+    ),
+    (
+        "typescript/tests/demo-endpoints.test.ts",
+        include_str!("templates/typescript/tests/demo-endpoints.test.ts"),
+    ),
+];
+
 /// Our own `.gitignore` (the p1-sync one references `.p1-sync/`). Ignores build
 /// output and our sync state; keeps the source dirs tracked.
-const GITIGNORE: &str = "node_modules/\ndist/\ncoverage/\n.aic-sync/\nidm/types/managed/\nidm/types/sync/\nam/types/managed/\n*.log\n.DS_Store\n";
+const GITIGNORE: &str = "node_modules/\ndist/\ncoverage/\n.aic-sync/\nidm/types/managed/\nidm/types/sync/\nam/types/managed/\ntypescript/src/generated/\n*.log\n.DS_Store\n";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WorkspaceState {
@@ -288,6 +416,68 @@ fn record_version(tenant: &str) -> Result<()> {
     Ok(())
 }
 
+/// Merge the framework's `package.json` into whatever is already on disk.
+///
+/// Neither "always overwrite" nor "seed once" is right here. Overwriting drops
+/// a dependency the user's own endpoints need; seeding once strands the build
+/// pipeline on the esbuild/Babel versions of whenever the workspace was
+/// created, and the two-step build is precisely a place where a stale
+/// toolchain fails confusingly. So the framework owns its own keys and the
+/// user keeps everything else: per-key, the template wins where it has an
+/// opinion, and the user's extra scripts and dependencies ride along.
+fn merge_package_json(existing: &str, template: &str) -> Result<String> {
+    use serde_json::{Map, Value};
+
+    let template: Value = serde_json::from_str(template)?;
+    let Ok(Value::Object(mut merged)) = serde_json::from_str::<Value>(existing) else {
+        // Unparseable (or not an object): the user has no structure worth
+        // preserving, so take the template rather than refusing to scaffold.
+        return Ok(format!("{}\n", serde_json::to_string_pretty(&template)?));
+    };
+    let Value::Object(template) = template else {
+        return Ok(existing.to_string());
+    };
+
+    for (key, value) in template {
+        // The user's `name`/`version`/`description` are theirs to set.
+        let user_owned = matches!(key.as_str(), "name" | "version" | "description");
+        if user_owned && merged.contains_key(&key) {
+            continue;
+        }
+        // Object-valued sections (scripts, devDependencies) merge key-by-key:
+        // the template wins where it has an opinion, extras ride along.
+        if let (Some(Value::Object(mine)), Value::Object(theirs)) = (merged.get(&key), &value) {
+            let mut combined: Map<String, Value> = mine.clone();
+            for (inner_key, inner_value) in theirs {
+                combined.insert(inner_key.clone(), inner_value.clone());
+            }
+            merged.insert(key, Value::Object(combined));
+            continue;
+        }
+        merged.insert(key, value);
+    }
+    Ok(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&Value::Object(merged))?
+    ))
+}
+
+/// Write the TypeScript project's `package.json`, merging with any existing one.
+fn write_ts_package_json(tree: &Path, report: &mut WorkspaceReport) -> Result<()> {
+    let path = tree.join(PROJECT_DIR).join("package.json");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(existing) => merge_package_json(&existing, TS_PACKAGE_JSON)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => TS_PACKAGE_JSON.to_string(),
+        Err(error) => return Err(error.into()),
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, contents)?;
+    report.written.push(path);
+    Ok(())
+}
+
 fn write_if(path: &Path, contents: &str, overwrite: bool) -> Result<bool> {
     if path.exists() && !overwrite {
         return Ok(false);
@@ -335,6 +525,11 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
         ..Default::default()
     };
 
+    // An update that first introduces the TypeScript project still has to seed
+    // its user files — otherwise an existing workspace gets a framework with no
+    // `src/` to build, and `npm run build` reports "nothing to build" forever.
+    let typescript_is_new = !tree.join(PROJECT_DIR).join("src").exists();
+
     // AM script folders are created per type on pull (each gets its own leaf
     // `tsconfig.json` then — see `am::extra_files`), so we only scaffold the
     // shared `am/` defs here. IDM folders are fixed, so create them up front.
@@ -344,6 +539,9 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
     std::fs::create_dir_all(tree.join("idm").join("schedule"))?;
     std::fs::create_dir_all(tree.join("idm").join("sync"))?;
     std::fs::create_dir_all(tree.join("tests"))?;
+    for sub in ["src/endpoints", "src/shared", "src/generated", "tests"] {
+        std::fs::create_dir_all(tree.join(PROJECT_DIR).join(sub))?;
+    }
 
     // Managed shared files (always (re)written).
     for (rel, contents) in MANAGED {
@@ -361,6 +559,15 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
             }
         }
     }
+    if !is_update || typescript_is_new {
+        for (rel, contents) in TS_USER {
+            let path = tree.join(rel);
+            if write_if(&path, contents, false)? {
+                report.written.push(path);
+            }
+        }
+    }
+    write_ts_package_json(tree, &mut report)?;
     // `.gitignore` is managed (always refreshed).
     let gi = tree.join(".gitignore");
     if write_if(&gi, GITIGNORE, true)? {
@@ -546,10 +753,115 @@ mod tests {
     }
 
     #[test]
+    fn typescript_project_ships_its_framework_managed_and_its_endpoints_user() {
+        // The framework must be refreshable (a stale router is a silent bug);
+        // the endpoints must not be (they are the user's code).
+        for rel in [
+            "typescript/framework/router.ts",
+            "typescript/framework/validate.ts",
+            "typescript/framework/openapi.ts",
+            "typescript/tools/build.mjs",
+            "typescript/tools/idm-runtime-bans.mjs",
+            "typescript/tsconfig.json",
+            "typescript/eslint.config.js",
+        ] {
+            assert!(MANAGED.iter().any(|(r, _)| *r == rel), "not managed: {rel}");
+        }
+        for rel in [
+            "typescript/src/shared/widget-key.ts",
+            "typescript/src/endpoints/aicdemo-a1-claude-widgets.ts",
+        ] {
+            assert!(TS_USER.iter().any(|(r, _)| *r == rel), "not seeded: {rel}");
+            assert!(
+                !MANAGED.iter().any(|(r, _)| *r == rel),
+                "user file also managed: {rel}"
+            );
+        }
+        // `package.json` is neither — it is merged (see merge_package_json).
+        assert!(
+            !MANAGED
+                .iter()
+                .chain(TS_USER)
+                .any(|(r, _)| *r == "typescript/package.json")
+        );
+    }
+
+    #[test]
+    fn typescript_tsconfig_pins_the_idm_runtime_lib_set() {
+        // Same rule as the `.cjs` workspace: widening these makes code that
+        // cannot run on IDM type-check. Reflect in particular is absent.
+        let config = MANAGED
+            .iter()
+            .find(|(rel, _)| *rel == "typescript/tsconfig.json")
+            .unwrap()
+            .1;
+        for lib in ["ES5", "ES2015.Core", "ES2015.Collection", "ES2015.Promise"] {
+            assert!(config.contains(&format!("\"{lib}\"")), "missing lib: {lib}");
+        }
+        assert!(!config.contains("ES2015.Reflect"));
+        assert!(!config.contains("ES2015.Proxy"));
+        assert!(config.contains("\"strict\": true"));
+    }
+
+    #[test]
+    fn idm_lint_reads_the_typescript_ownership_manifest() {
+        // Generated bundles must escape `prettier/prettier` yet still be held
+        // to the runtime bans — both halves come from the manifest.
+        let config = MANAGED
+            .iter()
+            .find(|(rel, _)| *rel == "idm/eslint.config.js")
+            .unwrap()
+            .1;
+        assert!(config.contains("../typescript/.aic-ts-manifest.json"));
+        assert!(config.contains("ignores: generated"));
+        assert!(config.contains("files: generated"));
+    }
+
+    #[test]
+    fn merge_keeps_user_dependencies_and_refreshes_framework_ones() {
+        let existing = r#"{
+          "name": "my-endpoints",
+          "version": "3.0.0",
+          "type": "module",
+          "scripts": { "build": "stale", "deploy": "./deploy.sh" },
+          "devDependencies": { "esbuild": "0.0.1", "zod": "^3.0.0" },
+          "dependencies": { "left-pad": "1.0.0" }
+        }"#;
+        let merged = merge_package_json(existing, TS_PACKAGE_JSON).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+
+        // The user's identity survives.
+        assert_eq!(value["name"], "my-endpoints");
+        assert_eq!(value["version"], "3.0.0");
+        // Their own scripts and dependencies survive.
+        assert_eq!(value["scripts"]["deploy"], "./deploy.sh");
+        assert_eq!(value["devDependencies"]["zod"], "^3.0.0");
+        assert_eq!(value["dependencies"]["left-pad"], "1.0.0");
+        // The framework's own entries are refreshed, not left stale.
+        assert_eq!(value["scripts"]["build"], "node tools/build.mjs");
+        assert_ne!(value["devDependencies"]["esbuild"], "0.0.1");
+        assert!(value["devDependencies"]["@babel/preset-env"].is_string());
+    }
+
+    #[test]
+    fn merge_falls_back_to_the_template_when_the_file_is_unusable() {
+        for broken in ["{ not json", "[]", "\"a string\""] {
+            let merged = merge_package_json(broken, TS_PACKAGE_JSON).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+            assert_eq!(value["name"], "aic-typescript-endpoints");
+        }
+    }
+
+    #[test]
     fn generated_tenant_types_are_gitignored() {
         assert!(GITIGNORE.lines().any(|line| line == "idm/types/managed/"));
         assert!(GITIGNORE.lines().any(|line| line == "idm/types/sync/"));
         assert!(GITIGNORE.lines().any(|line| line == "am/types/managed/"));
+        assert!(
+            GITIGNORE
+                .lines()
+                .any(|line| line == "typescript/src/generated/")
+        );
     }
 
     #[test]
@@ -587,6 +899,56 @@ mod tests {
         assert!(tree.join("am/eslint.config.js").exists());
         // User files seeded on init.
         assert!(tree.join("package.json").exists());
+        // The TypeScript project: framework, tooling, and a seeded example.
+        assert!(tree.join("typescript/framework/router.ts").exists());
+        assert!(tree.join("typescript/tools/build.mjs").exists());
+        assert!(tree.join("typescript/package.json").exists());
+        assert!(tree.join("typescript/src/generated").is_dir());
+        assert!(
+            tree.join("typescript/src/endpoints/aicdemo-a1-claude-widgets.ts")
+                .exists()
+        );
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_seeds_the_typescript_project_into_an_older_workspace() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        // Simulate a workspace scaffolded before the TypeScript project existed.
+        std::fs::remove_dir_all(tree.join("typescript")).unwrap();
+
+        scaffold_at(&tree, true).unwrap();
+        assert!(tree.join("typescript/framework/router.ts").exists());
+        assert!(
+            tree.join("typescript/src/endpoints/aicdemo-a1-claude-widgets.ts")
+                .exists(),
+            "an update that introduces the project must seed its user files too"
+        );
+
+        // A second update leaves the user's edits alone.
+        let endpoint = tree.join("typescript/src/endpoints/aicdemo-a1-claude-widgets.ts");
+        std::fs::write(&endpoint, "// mine now\n").unwrap();
+        scaffold_at(&tree, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&endpoint).unwrap(), "// mine now\n");
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_refreshes_the_framework_but_not_the_users_endpoints() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let framework = tree.join("typescript/framework/router.ts");
+        let mine = tree.join("typescript/src/shared/widget-key.ts");
+        std::fs::write(&framework, "// stale\n").unwrap();
+        std::fs::write(&mine, "// mine\n").unwrap();
+
+        scaffold_at(&tree, true).unwrap();
+
+        assert_ne!(std::fs::read_to_string(&framework).unwrap(), "// stale\n");
+        assert_eq!(std::fs::read_to_string(&mine).unwrap(), "// mine\n");
 
         std::fs::remove_dir_all(&tree).ok();
     }
