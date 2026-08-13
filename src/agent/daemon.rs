@@ -807,6 +807,7 @@ mod tests {
             theme: TenantTheme::Sandbox,
             sa_id: Some("service-account".into()),
             scopes: Vec::new(),
+            provenance: crate::config::Provenance::default(),
         }
     }
 

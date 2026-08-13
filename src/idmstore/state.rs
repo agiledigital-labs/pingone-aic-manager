@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::config::ProjectConfig;
+use crate::config::{ProjectConfig, tenant_file_name};
 
 #[derive(Debug, Default)]
 pub struct State;
@@ -65,17 +65,4 @@ pub fn store_dir() -> PathBuf {
 
 pub fn store_path(tenant: &str) -> PathBuf {
     store_dir().join(format!("{}.sqlite", tenant_file_name(tenant)))
-}
-
-fn tenant_file_name(tenant: &str) -> String {
-    tenant
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }

@@ -155,6 +155,15 @@ curl -sS "$TENANT_BASE_URL/am/oauth2/access_token" \
   `GET /am/oauth2/realms/root/userinfo` and `/tokeninfo` with the SA bearer
   (200, SA UUID as `sub`/`subname`); `GET /openidm/managed/svcacct/{sa_id}`
   (200) and `GET /openidm/managed/teammember/{sa_id}` (403).
+- Date: 2026-08-13 (service-account deletion, SA bearer only)
+- Calls: `DELETE /openidm/managed/svcacct/00000000-0000-0000-0000-000000000000`
+  → **403** (nonexistent id chosen deliberately: a 403 there is the access layer
+  refusing the method, and no object could have been destroyed by the probe);
+  `DELETE /am/json/realms/root/realms/alpha/realm-config/agents/TrustedJwtIssuer/aic-probe-does-not-exist`
+  → **404** `{"code":404,"reason":"Not Found"}`, the same probe shape showing
+  permission passes on the issuer route. Both on the SA bearer from
+  `aic whoami --token`. Self-deletion of a **live** SA was not probed: the only
+  discriminating call destroys the credential the project runs on.
 
 ## Resolving the onboarding admin's username (verified 2026-06-25)
 
@@ -221,6 +230,26 @@ Consequences:
   teammember route really is admin-bearer-only.
 - `dsameuser` and `amadmin` also appear as principals on stock content. Neither
   resolves to a person; treat them as "the platform".
+
+## Deleting a service account (verified 2026-08-13)
+
+**A service-account bearer cannot delete a service account.**
+`DELETE /openidm/managed/svcacct/{id}` returns **403**, and it does so for an id
+that does not exist — so the refusal comes from the access layer before any
+object lookup, not from the object being someone else's. Read-your-own
+(`GET /openidm/managed/svcacct/{sa_id}` → 200, above) is a narrow exception and
+does not extend to writes.
+
+Consequence for tenant offboarding: removing an SA is **admin-bearer work**, the
+same plane as `/keys` (`docs/api/08-logs.md`) — mint one via the
+`idmAdminClient` PKCE flow `session_to_bearer` uses, or delete it in the
+console. `aic ctx rm` therefore reports the `sa_id` for console cleanup rather
+than deleting the account itself; only the local private JWK is in its reach.
+
+By contrast a Trusted JWT Issuer **is** deletable on the SA bearer:
+`DELETE /am/json{realm-path}/realm-config/agents/TrustedJwtIssuer/{id}` on a
+nonexistent id returns **404**, so permission passes and only the object was
+missing (`docs/api/17-jwt-bearer-user-tokens.md` has the successful-delete row).
 
 ## Source citations
 

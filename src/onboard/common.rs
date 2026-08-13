@@ -9,7 +9,7 @@ use crate::app::event::{AppEvent, ToastKind};
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
 use crate::config::ProjectConfig;
-use crate::config::tenant::{Tenant, TenantTheme};
+use crate::config::tenant::{CredentialSource, Provenance, Tenant, TenantTheme};
 use crate::logs::LogKeyPair;
 
 use super::OnboardPath;
@@ -146,6 +146,14 @@ pub(crate) fn handle_sa_created(
         theme,
         sa_id: Some(sa_id),
         scopes,
+        provenance: Provenance {
+            service_account: Some(CredentialSource::Created),
+            // Only if one was actually minted. This path completes with
+            // `log_key: None` when minting was skipped or failed, and claiming
+            // `Created` there would let a log key the user later pastes in
+            // inherit a provenance that defaults it to purge on offboarding.
+            log_key: log_key.as_ref().map(|_| CredentialSource::Created),
+        },
     };
 
     // Clear in-flight forms.
@@ -259,6 +267,7 @@ mod tests {
             theme: TenantTheme::Sandbox,
             sa_id: Some("service-account-id".into()),
             scopes: vec!["fr:am:*".into()],
+            provenance: Provenance::default(),
         }];
 
         assert!(tenant_name_exists(&tenants, "sandbox"));

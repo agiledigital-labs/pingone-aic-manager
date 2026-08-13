@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::event::ToastKind;
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
-use crate::config::tenant::{Tenant, TenantTheme};
+use crate::config::tenant::{CredentialSource, Provenance, Tenant, TenantTheme};
 use crate::tui::is_save_chord;
 use crate::tui::widgets::text_field::{TextField, fields};
 
@@ -139,6 +139,10 @@ impl PasteForm {
             theme: self.theme,
             sa_id: Some(self.sa_id.trimmed().to_string()),
             scopes,
+            provenance: Provenance {
+                service_account: Some(CredentialSource::External),
+                log_key: None,
+            },
         }
     }
 }

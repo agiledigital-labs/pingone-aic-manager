@@ -40,7 +40,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
-pub use tenant::{Tenant, TenantTheme};
+pub use tenant::{CredentialSource, Provenance, Tenant, TenantTheme, tenant_file_name};
 
 /// An encrypted per-tenant artifact stored as a `<stem>.enc` / `<stem>.plain`
 /// pair in `.aic/`. The registry ([`VaultArtifact::ALL`]) drives gitignore
@@ -820,11 +820,17 @@ scopes = []
 
         let config: ProjectConfig = toml::from_str(input).unwrap();
         assert_eq!(config.tenants[0].sa_id, None);
+        assert!(config.tenants[0].provenance.is_unknown());
 
         let serialized = toml::to_string(&config).unwrap();
         assert!(!serialized.contains("sa_id"));
+        assert!(
+            !serialized.contains("provenance"),
+            "legacy configs must not grow an empty provenance table: {serialized}"
+        );
         let reparsed: ProjectConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(reparsed.tenants[0].sa_id, None);
+        assert!(reparsed.tenants[0].provenance.is_unknown());
     }
 
     #[test]
@@ -846,12 +852,67 @@ scopes = ["fr:idm:*"]
             config.tenants[0].sa_id.as_deref(),
             Some("service-account-id")
         );
+        assert!(config.tenants[0].provenance.is_unknown());
 
         let serialized = toml::to_string(&config).unwrap();
+        assert!(
+            !serialized.contains("provenance"),
+            "unknown provenance must stay omitted: {serialized}"
+        );
         let reparsed: ProjectConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(
             reparsed.tenants[0].sa_id.as_deref(),
             Some("service-account-id")
         );
+        assert!(reparsed.tenants[0].provenance.is_unknown());
+    }
+
+    #[test]
+    fn provenance_block_round_trips_after_every_scalar() {
+        // Moving `provenance` above `scopes` (or dropping skip_serializing_if)
+        // either loses the array on write or injects an empty table into every
+        // existing config.toml.
+        let input = r#"
+project = "test"
+default_tenant = "sandbox"
+
+[[tenant]]
+name = "sandbox"
+base_url = "https://sandbox.example"
+theme = "sandbox"
+sa_id = "service-account-id"
+scopes = ["fr:idm:*"]
+
+[tenant.provenance]
+service_account = "created"
+log_key = "external"
+"#;
+
+        let config: ProjectConfig = toml::from_str(input).unwrap();
+        assert_eq!(
+            config.tenants[0].provenance.service_account,
+            Some(CredentialSource::Created)
+        );
+        assert_eq!(
+            config.tenants[0].provenance.log_key,
+            Some(CredentialSource::External)
+        );
+
+        let serialized = toml::to_string(&config).unwrap();
+        let scopes = serialized
+            .find("scopes")
+            .expect("scopes stays a scalar in the tenant table");
+        let provenance = serialized
+            .find("[tenant.provenance]")
+            .expect("provenance emits as a nested table");
+        assert!(
+            provenance > scopes,
+            "nested provenance table must follow every scalar:\n{serialized}"
+        );
+        assert!(serialized.contains("service_account = \"created\""));
+        assert!(serialized.contains("log_key = \"external\""));
+
+        let reparsed: ProjectConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.tenants[0].provenance, config.tenants[0].provenance);
     }
 }

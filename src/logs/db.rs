@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 pub type Result<T> = std::result::Result<T, DbError>;
 
-use crate::config::ProjectConfig;
+use crate::config::{ProjectConfig, tenant_file_name};
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
@@ -125,19 +125,6 @@ pub fn open_store(tenant: &str) -> crate::Result<Connection> {
         )));
     }
     Ok(open(path)?)
-}
-
-fn tenant_file_name(tenant: &str) -> String {
-    tenant
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 // ── schema init ──────────────────────────────────────────────────────────
