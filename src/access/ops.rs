@@ -70,6 +70,11 @@ pub enum WriteFailure {
 pub enum UndoFailure {
     Conflict(String),
     Failed(String),
+    /// The tenant accepted the undo's `PUT` but the read-back could not confirm
+    /// it. Distinct from `Failed` for the same reason `WriteFailure` draws the
+    /// distinction: the write may well have landed, so the entry must stay
+    /// retryable rather than be retired.
+    AcceptedButUnconfirmed(String),
 }
 
 /// One changed rule at its document index.
@@ -905,7 +910,7 @@ async fn apply_undo_entry(
         .map_err(|error| match error {
             api::ConfirmedWriteError::NotWritten(error) => UndoFailure::Failed(error.to_string()),
             api::ConfirmedWriteError::AcceptedButUnconfirmed(message) => {
-                UndoFailure::Failed(message)
+                UndoFailure::AcceptedButUnconfirmed(message)
             }
         })?;
     Ok(body)
@@ -924,20 +929,38 @@ pub(crate) fn undo_precondition(
     }
 }
 
+/// Which terminal status a landed undo attempt earns, or `None` to leave the
+/// entry `Pending`.
+///
+/// The mirror of [`undo_disposition`] for the undo's own write, and it draws the
+/// line in the same place: only an outcome that establishes the tenant was *not*
+/// changed may retire the entry. `AppliedFailure` is not a neutral "it didn't
+/// work" marker — it is the operator's last copy of the prior document going out
+/// of reach, so an unconfirmed write, which may have landed, has to stay
+/// retryable. A wrongly-retired entry is indistinguishable from one the operator
+/// used.
+pub(crate) fn undo_result_disposition(
+    result: &std::result::Result<Value, UndoFailure>,
+) -> Option<EntryStatus> {
+    match result {
+        Ok(_) => Some(EntryStatus::AppliedSuccess),
+        Err(UndoFailure::Conflict(_)) => Some(EntryStatus::AppliedConflict),
+        Err(UndoFailure::Failed(_)) => Some(EntryStatus::AppliedFailure),
+        Err(UndoFailure::AcceptedButUnconfirmed(_)) => None,
+    }
+}
+
 pub fn apply_undo_result(
     app: &mut App,
     tenant: String,
     undo_id: UndoId,
     result: std::result::Result<Value, UndoFailure>,
 ) {
+    if let Some(status) = undo_result_disposition(&result) {
+        mark_undo(app, undo_id, status);
+    }
     match result {
         Ok(document) => {
-            if let Err(error) = app.undo.mark_applied(undo_id, EntryStatus::AppliedSuccess) {
-                app.push_toast(
-                    ToastKind::Error,
-                    format!("Undo applied but log update failed: {error}"),
-                );
-            }
             if let Ok(document) = Document::from_value(document) {
                 app.access
                     .data
@@ -946,12 +969,20 @@ pub fn apply_undo_result(
             app.push_toast(ToastKind::Success, "Access change undone");
         }
         Err(UndoFailure::Conflict(message)) => {
-            let _ = app.undo.mark_applied(undo_id, EntryStatus::AppliedConflict);
             app.push_toast(ToastKind::Warning, format!("Undo conflict: {message}"));
         }
         Err(UndoFailure::Failed(message)) => {
-            let _ = app.undo.mark_applied(undo_id, EntryStatus::AppliedFailure);
             app.push_toast(ToastKind::Error, format!("Undo failed: {message}"));
+        }
+        Err(UndoFailure::AcceptedButUnconfirmed(message)) => {
+            // The cached document is now of unknown accuracy, exactly as on the
+            // forward path: drop it so the next draw refetches rather than
+            // showing rules that may no longer be live.
+            app.access.data.remove(&tenant);
+            app.push_toast(
+                ToastKind::Error,
+                format!("{message}. The undo may have been applied; refresh, then retry if needed"),
+            );
         }
     }
 }
@@ -1365,6 +1396,40 @@ mod tests {
 
         for (name, result, expected) in cases {
             assert_eq!(undo_disposition(&result), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn undo_results_only_retire_an_entry_that_cannot_have_landed() {
+        // Mapping the undo's own AcceptedButUnconfirmed back onto Failed — as it
+        // was until 2026-08-13 — retires the entry on the one outcome where the
+        // tenant state is unknown, and the operator's only copy of the prior
+        // document stops being offered. That row is the point of this table.
+        let cases = [
+            (
+                "success",
+                Ok(Value::Null),
+                Some(EntryStatus::AppliedSuccess),
+            ),
+            (
+                "conflict",
+                Err(UndoFailure::Conflict("drifted".into())),
+                Some(EntryStatus::AppliedConflict),
+            ),
+            (
+                "failed",
+                Err(UndoFailure::Failed("nothing was written".into())),
+                Some(EntryStatus::AppliedFailure),
+            ),
+            (
+                "accepted but unconfirmed",
+                Err(UndoFailure::AcceptedButUnconfirmed("unknown".into())),
+                None,
+            ),
+        ];
+
+        for (name, result, expected) in cases {
+            assert_eq!(undo_result_disposition(&result), expected, "{name}");
         }
     }
 
