@@ -34,6 +34,10 @@ pub fn draw_form_modal(f: &mut Frame, app: &App, mode: Mode) {
         return;
     };
     f.render_widget(Clear, f.area());
+    if form.confirming {
+        draw_review_modal(f, form);
+        return;
+    }
     let (title, status) = match form.kind {
         FormKind::Create => (
             "Create access rule",
@@ -119,18 +123,61 @@ pub fn draw_form_modal(f: &mut Frame, app: &App, mode: Mode) {
         );
     }
     draw_save_button(f, rows[7], form.focused == FormFocus::Save);
+}
 
-    if form.confirming {
-        let message = match form.kind {
-            FormKind::Create => {
-                "Rules are OR-ed: creating this rule can only grant access, never restrict it.\n\nWrite this rule to the tenant?"
-            }
-            FormKind::Edit { .. } => {
-                "Rules are OR-ed: editing or deleting a granting rule is the only way to revoke access. This can lock operators out, including you.\n\nWrite this edit to the tenant?"
-            }
-        };
-        crate::tui::popup_confirm::draw(f, "Write config/access?", message);
+fn draw_review_modal(f: &mut Frame, form: &crate::access::state::RuleFormState) {
+    let disjunction = match form.kind {
+        FormKind::Create => {
+            "Rules are OR-ed: creating this rule can only grant access, never restrict it."
+        }
+        FormKind::Edit { .. } => {
+            "Rules are OR-ed: editing or deleting a granting rule is the only way to revoke access. This can lock operators out, including you."
+        }
+    };
+    let body_height = 9_u16
+        .saturating_add(form.review_warnings.len().saturating_mul(2) as u16)
+        .saturating_add(u16::from(form.role_check_note.is_some()));
+    let body = crate::tui::modal_chrome::Modal {
+        title: "Review config/access write",
+        status: Some("Warnings are advisory; validation errors block before this step"),
+        hints: &[("y", "write"), ("n/Esc", "return to form")],
+        body_height,
     }
+    .draw(f, f.area());
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            disjunction,
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(""),
+    ];
+    if let Some(note) = &form.role_check_note {
+        lines.push(Line::from(Span::styled(
+            note.clone(),
+            Style::default().fg(Color::Yellow),
+        )));
+        lines.push(Line::from(""));
+    }
+    if form.review_warnings.is_empty() {
+        lines.push(Line::from("Validation found no warnings."));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Validation warnings:",
+            Style::default().fg(Color::Yellow),
+        )));
+        lines.extend(
+            form.review_warnings
+                .iter()
+                .map(|warning| Line::from(format!("• {warning}"))),
+        );
+    }
+    lines.extend([
+        Line::from(""),
+        Line::from("A mode-0600 backup will be created before the write."),
+        Line::from("Write this change to the tenant?"),
+    ]);
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
 }
 
 fn draw_optional_field(

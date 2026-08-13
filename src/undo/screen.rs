@@ -6,7 +6,40 @@ use crate::app::event::ToastKind;
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
-use crate::undo::{EntryStatus, UndoOp, UndoSummary};
+use crate::undo::{EntryStatus, UndoExecutor, UndoSummary};
+
+pub fn request_latest(app: &mut App, executor: UndoExecutor) {
+    match executor {
+        UndoExecutor::Esv => crate::esv::ops::request_latest_undo(app),
+        UndoExecutor::Managed => crate::managed::ops::request_latest_undo(app),
+        UndoExecutor::SecretMapping => crate::secretmap::ops::request_latest_undo(app),
+        UndoExecutor::Access => crate::access::ops::request_latest_undo(app),
+    }
+}
+
+fn execute(app: &mut App, executor: UndoExecutor, undo_id: crate::undo::UndoId) {
+    match executor {
+        UndoExecutor::Esv => crate::esv::ops::execute_undo(app, undo_id, false),
+        UndoExecutor::Managed => crate::managed::ops::execute_undo(app, undo_id, false),
+        UndoExecutor::SecretMapping => crate::secretmap::ops::execute_undo(app, undo_id, false),
+        UndoExecutor::Access => crate::access::ops::execute_undo(app, undo_id, false),
+    }
+}
+
+fn pending_prod_action(executor: UndoExecutor, undo_id: crate::undo::UndoId) -> PendingProdAction {
+    match executor {
+        UndoExecutor::Esv => PendingProdAction::Esv(crate::esv::screen::ProdAction::Undo(undo_id)),
+        UndoExecutor::Managed => {
+            PendingProdAction::Managed(crate::managed::ops::ProdAction::Undo(undo_id))
+        }
+        UndoExecutor::SecretMapping => {
+            PendingProdAction::Secretmap(crate::secretmap::ops::ProdAction::Undo(undo_id))
+        }
+        UndoExecutor::Access => {
+            PendingProdAction::Access(crate::access::ops::ProdAction::Undo(undo_id))
+        }
+    }
+}
 
 pub fn summaries(app: &App) -> Vec<UndoSummary> {
     let Some(tenant) = app.active_tenant() else {
@@ -43,20 +76,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             let is_prod = app
                 .active_tenant()
                 .is_some_and(|tenant| tenant.theme == TenantTheme::Production);
-            let op = app.undo.load(summary.id).ok().and_then(|entry| entry.op);
-            let managed = op.as_ref().is_some_and(|op| {
-                matches!(
-                    op,
-                    UndoOp::ManagedObjectReplace { .. } | UndoOp::ManagedConfigReplace { .. }
-                )
-            });
-            let secretmap = op
-                .as_ref()
-                .is_some_and(|op| matches!(op, UndoOp::SecretMappingReplace { .. }));
-            let access = op
-                .as_ref()
-                .is_some_and(|op| matches!(op, UndoOp::AccessConfigReplace { .. }));
-            if secretmap
+            let executor = match app.undo.load(summary.id) {
+                Ok(entry) => match entry.op {
+                    Some(op) => op.executor(),
+                    None => {
+                        app.push_toast(ToastKind::Warning, "This change cannot be undone");
+                        return;
+                    }
+                },
+                Err(error) => {
+                    app.push_toast(ToastKind::Error, format!("Undo failed: {error}"));
+                    return;
+                }
+            };
+            if executor == UndoExecutor::SecretMapping
                 && !app
                     .active_tenant()
                     .is_some_and(|tenant| tenant.allows_secret_mappings())
@@ -68,22 +101,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 return;
             }
             if is_prod {
-                app.prod_confirm.pending = Some(if managed {
-                    PendingProdAction::Managed(crate::managed::ops::ProdAction::Undo(summary.id))
-                } else if access {
-                    PendingProdAction::Access(crate::access::ops::ProdAction::Undo(summary.id))
-                } else {
-                    PendingProdAction::Esv(crate::esv::screen::ProdAction::Undo(summary.id))
-                });
+                app.prod_confirm.pending = Some(pending_prod_action(executor, summary.id));
                 app.input_mode = InputMode::ProdConfirm;
-            } else if managed {
-                crate::managed::ops::execute_undo(app, summary.id, false);
-            } else if access {
-                crate::access::ops::execute_undo(app, summary.id, false);
-            } else if secretmap {
-                crate::secretmap::ops::execute_undo(app, summary.id, false);
             } else {
-                crate::esv::ops::execute_undo(app, summary.id, false);
+                execute(app, executor, summary.id);
             }
         }
         _ => {}

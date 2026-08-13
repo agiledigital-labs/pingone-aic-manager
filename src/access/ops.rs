@@ -1,7 +1,12 @@
 //! Pure, tenant-free transforms over the raw `config/access` document.
 
 use std::collections::BTreeSet;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 
 use crate::access::api;
@@ -10,8 +15,11 @@ use crate::access::state::{DeleteState, Document, FormKind, RuleFormState};
 use crate::app::event::{AppEvent, ToastKind};
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
+use crate::config::ProjectConfig;
 use crate::config::tenant::TenantTheme;
-use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
+use crate::undo::{
+    Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoExecutor, UndoId, UndoOp,
+};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone)]
@@ -48,6 +56,7 @@ pub struct WriteRequest {
     pub after: Value,
     pub description: String,
     pub resume_mode: ResumeMode,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -410,7 +419,7 @@ fn normalize_apply_id(document: &mut Value) -> Result<()> {
 pub fn request_from_form(form: &RuleFormState) -> Result<WriteRequest> {
     let amendment = form.amendment();
     let amended = amend(&form.original_document, amendment.clone())?;
-    validate_amended(&amended)?;
+    let warnings = validate_amended(&amended, form.known_roles.as_ref())?;
     if amended.summary.changed.is_empty() {
         return Err(Error::Config("access rule is unchanged".into()));
     }
@@ -437,6 +446,7 @@ pub fn request_from_form(form: &RuleFormState) -> Result<WriteRequest> {
         after: amended.after,
         description,
         resume_mode,
+        warnings,
     })
 }
 
@@ -448,7 +458,7 @@ pub fn request_from_delete(delete: &DeleteState) -> Result<WriteRequest> {
     }
     let amendment = Amendment::Remove(vec![delete.index]);
     let amended = amend(&delete.original_document, amendment.clone())?;
-    validate_amended(&amended)?;
+    let warnings = validate_amended(&amended, None)?;
     Ok(WriteRequest {
         tenant: delete.tenant.clone(),
         expected_document_digest: delete.original_digest.clone(),
@@ -458,17 +468,29 @@ pub fn request_from_delete(delete: &DeleteState) -> Result<WriteRequest> {
         after: amended.after,
         description: format!("Restore access rule #{}", delete.index),
         resume_mode: ResumeMode::DeleteConfirm,
+        warnings,
     })
 }
 
-fn validate_amended(amended: &Amended) -> Result<()> {
+fn validate_amended(
+    amended: &Amended,
+    known_roles: Option<&crate::access::spec::RoleIndex>,
+) -> Result<Vec<String>> {
     let findings = crate::access::spec::validate_document(
         &amended.after,
-        None,
+        known_roles,
         crate::access::spec::WarningScope::Touched(&amended.touched),
     );
     if findings.errors.is_empty() {
-        return Ok(());
+        return Ok(findings
+            .warnings
+            .into_iter()
+            .map(|finding| {
+                finding.index.map_or(finding.message.clone(), |index| {
+                    format!("rule #{index}: {}", finding.message)
+                })
+            })
+            .collect());
     }
     let messages = findings
         .errors
@@ -563,6 +585,8 @@ async fn write_request(
         .await
         .map_err(|error| WriteFailure::NotWritten(error.to_string()))?;
     let amended = prepare_live_write(request, &live)?;
+    backup_document(&request.tenant, &live, Utc::now())
+        .map_err(|error| WriteFailure::NotWritten(error.to_string()))?;
     api::put_access_confirmed(&request.tenant, amended.after, confirmed_prod)
         .await
         .map_err(|error| match error {
@@ -573,6 +597,73 @@ async fn write_request(
                 WriteFailure::AcceptedButUnconfirmed(message)
             }
         })
+}
+
+pub(crate) fn backup_document(
+    tenant: &str,
+    document: &Value,
+    now: DateTime<Utc>,
+) -> Result<PathBuf> {
+    let path = ProjectConfig::dir().join("backups").join(backup_filename(
+        tenant,
+        now,
+        uuid::Uuid::new_v4(),
+    ));
+    let write = || -> Result<()> {
+        ProjectConfig::write_gitignore()?;
+        let mut bytes = serde_json::to_vec_pretty(document)?;
+        bytes.push(b'\n');
+        write_private_file(&path, &bytes, true)
+    };
+    write().map_err(|error| {
+        Error::Config(format!(
+            "could not create config/access backup {}: {error}; nothing was written to the tenant",
+            path.display()
+        ))
+    })?;
+    Ok(path)
+}
+
+fn backup_filename(tenant: &str, now: DateTime<Utc>, nonce: uuid::Uuid) -> String {
+    let tenant = tenant
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!(
+        "access-{tenant}-{}-{nonce}.json",
+        now.format("%Y%m%dT%H%M%SZ")
+    )
+}
+
+/// Write `bytes` at mode 0600, creating parents. `exclusive` refuses an existing
+/// path, which is what a backup wants — a nonce in the filename plus
+/// `create_new` means a backup can never overwrite an earlier one. `aic access
+/// get --out` passes false, because overwriting the file you named is the point.
+///
+/// The one writer for this feature. It arrived as two — a backup-shaped copy
+/// here and `cli.rs`'s general one — which is the duplication `REVIEW.md`'s
+/// standing check about auditing `cli.rs` privates exists to catch.
+pub(crate) fn write_private_file(path: &Path, bytes: &[u8], exclusive: bool) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).mode(0o600);
+    if exclusive {
+        options.create_new(true);
+    } else {
+        options.create(true).truncate(true);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    Ok(())
 }
 
 pub(crate) fn prepare_live_write(
@@ -608,6 +699,9 @@ pub fn apply_write_result(
     result: std::result::Result<(), WriteFailure>,
 ) {
     app.access.in_flight_writes.remove(&tenant);
+    if let Some(status) = undo_disposition(&result) {
+        mark_undo(app, undo_id, status);
+    }
     match result {
         Ok(()) => {
             match Document::from_value(after) {
@@ -636,7 +730,6 @@ pub fn apply_write_result(
             );
         }
         Err(WriteFailure::Stale(message)) => {
-            mark_failed_undo(app, undo_id);
             set_draft_error(
                 app,
                 resume_mode,
@@ -645,9 +738,8 @@ pub fn apply_write_result(
             app.push_toast(ToastKind::Warning, "Access write blocked by remote changes");
         }
         Err(WriteFailure::NotWritten(message)) => {
-            mark_failed_undo(app, undo_id);
             set_draft_error(app, resume_mode, format!("Access save failed: {message}"));
-            app.push_toast(ToastKind::Error, "Access write failed; edit preserved");
+            app.push_toast(ToastKind::Error, "Access write failed; nothing was written");
         }
         Err(WriteFailure::AcceptedButUnconfirmed(message)) => {
             app.access.data.remove(&tenant);
@@ -660,6 +752,17 @@ pub fn apply_write_result(
                 ToastKind::Error,
                 "Access write was accepted but could not be confirmed",
             );
+        }
+    }
+}
+
+pub(crate) fn undo_disposition(
+    result: &std::result::Result<(), WriteFailure>,
+) -> Option<EntryStatus> {
+    match result {
+        Ok(()) | Err(WriteFailure::AcceptedButUnconfirmed(_)) => None,
+        Err(WriteFailure::Stale(_) | WriteFailure::NotWritten(_)) => {
+            Some(EntryStatus::AppliedFailure)
         }
     }
 }
@@ -685,8 +788,8 @@ fn set_draft_error(app: &mut App, resume_mode: ResumeMode, message: String) {
     app.input_mode = resume_mode.input_mode();
 }
 
-fn mark_failed_undo(app: &mut App, undo_id: UndoId) {
-    if let Err(error) = app.undo.mark_applied(undo_id, EntryStatus::AppliedFailure) {
+fn mark_undo(app: &mut App, undo_id: UndoId, status: EntryStatus) {
+    if let Err(error) = app.undo.mark_applied(undo_id, status) {
         app.push_toast(
             ToastKind::Error,
             format!("Failed to retire Access undo entry: {error}"),
@@ -700,13 +803,8 @@ pub fn request_latest_undo(app: &mut App) {
     };
     let undo_id = app
         .undo
-        .list(100)
-        .into_iter()
-        .filter(|summary| summary.tenant == tenant.name && summary.status == EntryStatus::Pending)
-        .find_map(|summary| {
-            let entry = app.undo.load(summary.id).ok()?;
-            matches!(entry.op, Some(UndoOp::AccessConfigReplace { .. })).then_some(summary.id)
-        });
+        .latest_pending(&tenant.name, UndoExecutor::Access)
+        .map(|summary| summary.id);
     let Some(undo_id) = undo_id else {
         app.push_toast(ToastKind::Info, "No Access undo for this tenant");
         return;
@@ -731,7 +829,11 @@ pub fn execute_undo(app: &mut App, undo_id: UndoId, confirmed_prod: bool) {
             return;
         }
     };
-    if !matches!(entry.op, Some(UndoOp::AccessConfigReplace { .. })) {
+    if !entry
+        .op
+        .as_ref()
+        .is_some_and(|op| op.executor() == UndoExecutor::Access)
+    {
         app.push_toast(ToastKind::Info, "Undo entry is not an Access change");
         return;
     }
@@ -768,11 +870,7 @@ async fn apply_undo_entry(
     let live = api::get_access(&tenant)
         .await
         .map_err(|error| UndoFailure::Failed(error.to_string()))?;
-    if live != expected {
-        return Err(UndoFailure::Conflict(
-            "config/access changed since this edit; nothing was written".into(),
-        ));
-    }
+    undo_precondition(&live, &expected)?;
     api::put_access_confirmed(&tenant, body.clone(), confirmed_prod)
         .await
         .map_err(|error| match error {
@@ -782,6 +880,19 @@ async fn apply_undo_entry(
             }
         })?;
     Ok(body)
+}
+
+pub(crate) fn undo_precondition(
+    live: &Value,
+    expected: &Value,
+) -> std::result::Result<(), UndoFailure> {
+    if live == expected {
+        Ok(())
+    } else {
+        Err(UndoFailure::Conflict(
+            "config/access changed since this edit; nothing was written".into(),
+        ))
+    }
 }
 
 pub fn apply_undo_result(
@@ -843,6 +954,7 @@ pub fn describe_prod_action(action: &ProdAction) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
     use serde_json::json;
 
     use crate::access::spec::{digest, short_digest};
@@ -860,6 +972,15 @@ mod tests {
             custom_authz: None,
             exclude_patterns: None,
         }
+    }
+
+    fn create_form() -> RuleFormState {
+        let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
+        let mut form = RuleFormState::create("sandbox".into(), &document);
+        form.pattern.set("endpoint/new/*");
+        form.roles.set("internal/role/new-reader");
+        form.methods.set("read");
+        form
     }
 
     #[test]
@@ -1081,6 +1202,159 @@ mod tests {
             entry.conflict_check,
             ConflictCheck::ContentEqualsAfter { ref body } if body == &request.after
         ));
+    }
+
+    #[test]
+    fn create_form_omits_empty_optional_keys() {
+        // Making create fields serialize their empty strings as Some makes
+        // this add actions/customAuthz/excludePatterns keys to the new rule.
+        let form = create_form();
+        let Amendment::Add(rule) = form.amendment() else {
+            panic!("create form returned a non-add amendment");
+        };
+
+        assert_eq!(rule.actions, None);
+        assert_eq!(rule.custom_authz, None);
+        assert_eq!(rule.exclude_patterns, None);
+    }
+
+    #[test]
+    fn create_request_has_no_expected_rule_precondition() {
+        // Reusing the edit request branch for FormKind::Create makes the new
+        // append depend on an unrelated indexed rule and fails this assertion.
+        let request = request_from_form(&create_form()).unwrap();
+
+        assert_eq!(request.expected_rule, None);
+        assert!(matches!(request.amendment, Amendment::Add(_)));
+    }
+
+    #[test]
+    fn unchanged_edit_is_rejected_before_write_submission() {
+        // Removing the changed.is_empty() rejection lets an untouched edit
+        // create a backup and schedule a whole-document PUT.
+        let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
+        let form = RuleFormState::edit("sandbox".into(), &document, &document.rows[0]);
+
+        assert!(
+            matches!(request_from_form(&form), Err(Error::Config(message)) if message == "access rule is unchanged")
+        );
+    }
+
+    #[test]
+    fn touched_validation_warnings_are_returned_for_review() {
+        // Passing None for known_roles or discarding Findings::warnings makes
+        // at least one of the advisory checks disappear from the review.
+        let mut form = create_form();
+        form.methods.set("reed");
+        form.custom_authz.input.set("false");
+        form.known_roles = Some(crate::access::spec::RoleIndex::from_roles(
+            std::iter::empty(),
+        ));
+        let request = request_from_form(&form).unwrap();
+
+        assert!(
+            request
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("absent from internal roles"))
+        );
+        assert!(
+            request
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("unrecognised access method"))
+        );
+        assert!(
+            request
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("customAuthz can only deny"))
+        );
+
+        let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
+        let duplicate = &document.rows[4].summary;
+        let mut duplicate_form = RuleFormState::create("sandbox".into(), &document);
+        duplicate_form.pattern.set(&duplicate.pattern);
+        duplicate_form.roles.set(&duplicate.roles);
+        duplicate_form.methods.set(&duplicate.methods);
+        duplicate_form.actions.input.set("*");
+        let request = request_from_form(&duplicate_form).unwrap();
+        assert!(
+            request
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("byte-identical"))
+        );
+    }
+
+    #[test]
+    fn undo_precondition_compares_the_complete_document() {
+        // Comparing only the selected rule or removing undo_precondition lets
+        // the changed-methods row pass and permits a whole-document clobber.
+        let expected = crate::access::six_rule_fixture();
+        let mut changed = expected.clone();
+        changed["configs"][2]["methods"] = json!("read,query");
+
+        assert!(undo_precondition(&expected, &expected).is_ok());
+        assert!(matches!(
+            undo_precondition(&changed, &expected),
+            Err(UndoFailure::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn write_results_choose_the_safe_undo_disposition() {
+        // Changing either failure grouping, especially retiring an accepted
+        // but unconfirmed write, makes the corresponding table row fail.
+        let cases = [
+            ("success", Ok(()), None),
+            (
+                "stale",
+                Err(WriteFailure::Stale("stale".into())),
+                Some(EntryStatus::AppliedFailure),
+            ),
+            (
+                "not written",
+                Err(WriteFailure::NotWritten("failed".into())),
+                Some(EntryStatus::AppliedFailure),
+            ),
+            (
+                "accepted but unconfirmed",
+                Err(WriteFailure::AcceptedButUnconfirmed("unknown".into())),
+                None,
+            ),
+        ];
+
+        for (name, result, expected) in cases {
+            assert_eq!(undo_disposition(&result), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn backup_filename_is_utc_and_writer_sets_mode_0600() {
+        // Dropping the UTC timestamp/nonce or the explicit backup file mode
+        // makes the naming or permission assertion fail.
+        let now = Utc.with_ymd_and_hms(2026, 8, 11, 4, 5, 6).unwrap();
+        let first_nonce = uuid::Uuid::from_u128(1);
+        let second_nonce = uuid::Uuid::from_u128(2);
+        let filename = backup_filename("sand/box", now, first_nonce);
+        assert_eq!(
+            filename,
+            "access-sand_box-20260811T040506Z-00000000-0000-0000-0000-000000000001.json"
+        );
+        assert_ne!(filename, backup_filename("sand/box", now, second_nonce));
+
+        let dir = std::env::temp_dir().join(format!("aic-access-test-{}", uuid::Uuid::new_v4()));
+        let path = dir.join(filename);
+        let mut bytes =
+            serde_json::to_vec_pretty(&json!({"_id": "access", "configs": []})).unwrap();
+        bytes.push(b'\n');
+        write_private_file(&path, &bytes, true).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved, json!({"_id": "access", "configs": []}));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
