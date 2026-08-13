@@ -267,8 +267,17 @@ worked example.
    `normal_binds` is the one site the compiler will **not** find for you: it
    gates view-specific hints (`^R` refresh, `^N` new) behind an
    `app.active_view == View::<Feature>` bool rather than an exhaustive `match`,
-   so omitting it compiles clean and silently costs the tab its keybinds. Check
-   it by hand.
+   so omitting it compiles clean and silently costs the tab its keybinds.
+
+   The **reachability table** in `keymap.rs`'s `mod tests` is the gate for this,
+   added 2026-08-13 after two user-facing paths shipped unreachable past every
+   other gate. Add a row group for the new view: it asserts both an act missing
+   where it belongs and an act bound where it does not, over `View::all()`, the
+   three `EsvView` sub-views, and populated versus empty lists. `App::for_test`
+   builds the app it needs with no disk, environment or network access. Two
+   conventions it encodes, both learned the hard way: put an action about the
+   list's _history_ (`^Z`, `^Y`) and creation from empty (`^N`) **outside** the
+   `n > 0` guard, and keep selection-dependent actions inside it.
 
    Correspondingly, `<feature>/screen.rs` must publish `Mode`, `Event`,
    `apply_event`, `handle_key`, `footer_hints`, `help_lines`, `refresh`,

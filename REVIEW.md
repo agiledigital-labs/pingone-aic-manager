@@ -167,9 +167,19 @@ findings). Each should name the guard that will eventually retire it.
   table — so an unlisted hint is an unreachable action, and omitting it compiles
   clean. Trace keystroke → `Act` → handler and say where each hop lives; the
   same applies to a CLI flag reaching its transform. Seen twice on one slice
-  (2026-08-12). _Guard: blocked — the table test this wants cannot be written
-  until `App` is constructible in tests; see 2026-08-13. Now also a
-  `review-craft` principle, so it is prompted for in every repo, not just here._
+  (2026-08-12). _Guard: **applied** in `2032700` — `App::for_test` unblocked it,
+  and `keymap.rs`'s table over `(View, KeyEvent) -> Option<Act>` now asserts
+  both directions for every view. It found a third instance the same day
+  (`0d75f96`). Also a `review-craft` principle, so it is prompted for in every
+  repo._
+
+- **A selection guard is the wrong home for an action about the selection's
+  absence.** Managed registered `^Z`/`^Y` inside its `n > 0` branch, so deleting
+  the last field left no way to undo the deletion that emptied the list. The
+  guard reads as obviously right — an action needing a selected row must not be
+  advertised without one — which is why undo slipped inside it on one tab and
+  not the other two. When reviewing a `n > 0` block, ask of each binding whether
+  it acts on the selection or on the list's history (2026-08-13).
 
 - **A routing table keyed on an enum variant must either be exhaustive or be
   owned by the enum.** `UndoOp` is dispatched to its executor by **five**
@@ -623,6 +633,19 @@ findings). Each should name the guard that will eventually retire it.
   unguarded rather than pending. Slice 5b was checked by hand: every new Access
   key sits in the `access_view` branch of `normal_binds`, with `^N` outside the
   `n > 0` guard so a rule can be created into an empty list.
+- **Resolved the same day** in `2032700`. `App::for_test` shares `from_parts`
+  with `App::new`, so the two cannot drift into different initial states, and
+  the table now covers every `View::all()` variant, all three ESV sub-views, and
+  populated versus empty lists. Two things worth keeping from how it went:
+  - **The test had to call the production lookup, not a copy of it.**
+    `dispatch_normal` had its own inlined `find` over `normal_binds`; the slice
+    repointed it at the `Bind::resolve` the test calls. A table asserting
+    against a reimplemented lookup proves the reimplementation, which is the
+    failure mode this whole entry is about, one level up.
+  - **The guard paid for itself immediately**, finding Managed's undo bindings
+    gated on a non-empty list (`0d75f96`). A guard's first run is the cheapest
+    time it will ever find anything; writing it and not reading its output
+    carefully wastes the only free hit.
 
 ### 2026-08-13 — a limit that is too small looks exactly like a working scroll
 
