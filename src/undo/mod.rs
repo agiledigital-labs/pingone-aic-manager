@@ -83,6 +83,14 @@ pub enum ConflictCheck {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UndoExecutor {
+    Esv,
+    Managed,
+    SecretMapping,
+    Access,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UndoOp {
     EsvVariableRestore {
@@ -156,6 +164,21 @@ pub enum UndoOp {
 }
 
 impl UndoOp {
+    pub fn executor(&self) -> UndoExecutor {
+        match self {
+            UndoOp::EsvVariableRestore { .. }
+            | UndoOp::EsvVariableDelete { .. }
+            | UndoOp::EsvVariableUpdateTo { .. }
+            | UndoOp::SecretDelete { .. }
+            | UndoOp::SecretSetDescription { .. } => UndoExecutor::Esv,
+            UndoOp::ManagedObjectReplace { .. } | UndoOp::ManagedConfigReplace { .. } => {
+                UndoExecutor::Managed
+            }
+            UndoOp::SecretMappingReplace { .. } => UndoExecutor::SecretMapping,
+            UndoOp::AccessConfigReplace { .. } => UndoExecutor::Access,
+        }
+    }
+
     pub fn tenant(&self) -> &str {
         match self {
             UndoOp::EsvVariableRestore { tenant, .. }
@@ -262,7 +285,7 @@ pub trait UndoLog: Send {
     fn list(&self, limit: usize) -> Vec<UndoSummary>;
     fn load(&self, id: UndoId) -> Result<UndoEntry>;
     fn mark_applied(&mut self, id: UndoId, status: EntryStatus) -> Result<()>;
-    fn latest_pending(&self, tenant: &str) -> Option<UndoSummary>;
+    fn latest_pending(&self, tenant: &str, executor: UndoExecutor) -> Option<UndoSummary>;
     /// Mark every still-`Pending` entry older than `UNDO_TTL_SECS` as
     /// `Expired`, persisting the change. Returns how many were expired.
     fn expire_stale(&mut self, now: DateTime<Utc>) -> Result<usize>;
@@ -317,8 +340,8 @@ impl UndoLog for MemoryLog {
         Err(Error::Config(format!("undo entry not found: {id}")))
     }
 
-    fn latest_pending(&self, tenant: &str) -> Option<UndoSummary> {
-        latest_pending_summary(&self.entries, tenant, Utc::now())
+    fn latest_pending(&self, tenant: &str, executor: UndoExecutor) -> Option<UndoSummary> {
+        latest_pending_summary(&self.entries, tenant, executor, Utc::now())
     }
 
     fn expire_stale(&mut self, now: DateTime<Utc>) -> Result<usize> {
@@ -414,8 +437,8 @@ impl UndoLog for DiskLog {
         Err(Error::Config(format!("undo entry not found: {id}")))
     }
 
-    fn latest_pending(&self, tenant: &str) -> Option<UndoSummary> {
-        latest_pending_summary(&self.entries, tenant, Utc::now())
+    fn latest_pending(&self, tenant: &str, executor: UndoExecutor) -> Option<UndoSummary> {
+        latest_pending_summary(&self.entries, tenant, executor, Utc::now())
     }
 
     fn expire_stale(&mut self, now: DateTime<Utc>) -> Result<usize> {
@@ -459,6 +482,7 @@ fn summaries(entries: &[UndoEntry], limit: usize) -> Vec<UndoSummary> {
 fn latest_pending_summary(
     entries: &[UndoEntry],
     tenant: &str,
+    executor: UndoExecutor,
     now: DateTime<Utc>,
 ) -> Option<UndoSummary> {
     entries
@@ -471,7 +495,10 @@ fn latest_pending_summary(
                     entry.capability,
                     Capability::Undoable | Capability::BestEffort
                 )
-                && entry.op.is_some()
+                && entry
+                    .op
+                    .as_ref()
+                    .is_some_and(|op| op.executor() == executor)
         })
         .max_by_key(|entry| entry.created_at)
         .map(UndoSummary::from)
@@ -516,7 +543,10 @@ mod tests {
             log.load(second).unwrap().status,
             EntryStatus::AppliedSuccess
         );
-        assert_eq!(log.latest_pending("sandbox").unwrap().id, first);
+        assert_eq!(
+            log.latest_pending("sandbox", UndoExecutor::Esv).unwrap().id,
+            first
+        );
     }
 
     #[test]
@@ -536,7 +566,10 @@ mod tests {
         assert_eq!(log.load(old).unwrap().status, EntryStatus::Expired);
         assert_eq!(log.load(fresh).unwrap().status, EntryStatus::Pending);
         // The expired entry must not be offered as the latest undo.
-        assert_eq!(log.latest_pending("sandbox").unwrap().id, fresh);
+        assert_eq!(
+            log.latest_pending("sandbox", UndoExecutor::Esv).unwrap().id,
+            fresh
+        );
         // Idempotent: a second sweep retires nothing new.
         assert_eq!(log.expire_stale(now).unwrap(), 0);
     }
@@ -552,7 +585,42 @@ mod tests {
             .created_at = Utc::now() - chrono::Duration::seconds(UNDO_TTL_SECS + 1);
         // Even though the status is still Pending (no sweep yet), an aged
         // entry is not offered for undo.
-        assert!(log.latest_pending("sandbox").is_none());
+        assert!(log.latest_pending("sandbox", UndoExecutor::Esv).is_none());
+    }
+
+    #[test]
+    fn latest_pending_is_scoped_to_the_requested_executor() {
+        // Removing the executor predicate from latest_pending_summary makes
+        // the newer Access entry hide the ESV entry and recreates the ^Z trap.
+        let mut log = MemoryLog::new();
+        let esv_id = log.record(entry("esv")).unwrap();
+        let access_id = log
+            .record(UndoEntry::pending(
+                "sandbox".into(),
+                "access",
+                "access",
+                Sensitivity::TenantConfig,
+                Capability::Undoable,
+                Some(UndoOp::AccessConfigReplace {
+                    tenant: "sandbox".into(),
+                    body: serde_json::json!({"_id": "access", "configs": []}),
+                }),
+                ConflictCheck::ContentEqualsAfter {
+                    body: serde_json::json!({"_id": "access", "configs": []}),
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(
+            log.latest_pending("sandbox", UndoExecutor::Esv).unwrap().id,
+            esv_id
+        );
+        assert_eq!(
+            log.latest_pending("sandbox", UndoExecutor::Access)
+                .unwrap()
+                .id,
+            access_id
+        );
     }
 
     #[test]

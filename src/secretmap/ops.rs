@@ -9,18 +9,22 @@ use crate::app::{App, InputMode};
 use crate::secretmap::api;
 use crate::secretmap::screen::Event;
 use crate::secretmap::state::{LoadState, REALM, State, mapping_snapshot};
-use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
+use crate::undo::{
+    Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoExecutor, UndoId, UndoOp,
+};
 
 #[derive(Debug)]
 pub enum ProdAction {
     Replace(AliasReplacePlan),
     Delete(MappingDeletePlan),
+    Undo(UndoId),
 }
 
 pub fn execute_prod_action(app: &mut App, action: ProdAction) {
     match action {
         ProdAction::Replace(plan) => execute_write_plan(app, plan, true),
         ProdAction::Delete(plan) => execute_remove_plan(app, plan, true),
+        ProdAction::Undo(undo_id) => execute_undo(app, undo_id, true),
     }
 }
 
@@ -595,20 +599,8 @@ pub fn request_latest_undo(app: &mut App) {
 
 fn latest_pending_secretmap_undo(app: &App, tenant: &str) -> Option<UndoId> {
     app.undo
-        .list(100)
-        .into_iter()
-        .filter(|summary| {
-            summary.tenant == tenant
-                && summary.status == EntryStatus::Pending
-                && matches!(
-                    summary.capability,
-                    Capability::Undoable | Capability::BestEffort
-                )
-        })
-        .find_map(|summary| {
-            let entry = app.undo.load(summary.id).ok()?;
-            matches!(entry.op, Some(UndoOp::SecretMappingReplace { .. })).then_some(summary.id)
-        })
+        .latest_pending(tenant, UndoExecutor::SecretMapping)
+        .map(|summary| summary.id)
 }
 
 pub fn execute_undo(app: &mut App, undo_id: UndoId, confirmed_prod: bool) {
@@ -627,7 +619,11 @@ pub fn execute_undo(app: &mut App, undo_id: UndoId, confirmed_prod: bool) {
         app.push_toast(ToastKind::Warning, "This change cannot be undone");
         return;
     }
-    if !matches!(entry.op, Some(UndoOp::SecretMappingReplace { .. })) {
+    if !entry
+        .op
+        .as_ref()
+        .is_some_and(|op| op.executor() == UndoExecutor::SecretMapping)
+    {
         app.push_toast(ToastKind::Info, "Undo entry is not a secret-mapping change");
         return;
     }

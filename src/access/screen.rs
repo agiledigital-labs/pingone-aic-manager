@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 
 use crate::access::ops;
-use crate::access::state::{Document, LoadState};
+use crate::access::state::{Document, LoadState, RoleIndexState};
 use crate::app::event::{AppEvent, ToastKind};
 use crate::app::{App, InputMode, View};
 
@@ -27,6 +27,10 @@ pub enum Event {
         tenant: String,
         result: std::result::Result<Value, String>,
     },
+    RolesLoaded {
+        tenant: String,
+        result: std::result::Result<crate::access::spec::RoleIndex, String>,
+    },
     WriteResult {
         tenant: String,
         after: Value,
@@ -46,6 +50,14 @@ pub fn apply_event(app: &mut App, event: Event) {
         Event::Loaded { tenant, result } => {
             app.access.refreshing.remove(&tenant);
             apply_refresh(app, tenant, result);
+        }
+        Event::RolesLoaded { tenant, result } => {
+            app.access.role_refreshing.remove(&tenant);
+            let state = match result {
+                Ok(index) => RoleIndexState::Loaded(index),
+                Err(error) => RoleIndexState::Failed(error),
+            };
+            app.access.role_indices.insert(tenant, state);
         }
         Event::WriteResult {
             tenant,
@@ -141,12 +153,30 @@ pub fn refresh(app: &mut App, force: bool) {
     app.access.data.insert(tenant.clone(), LoadState::Loading);
     app.access.refreshing.insert(tenant.clone());
     let tx = app.events.tx.clone();
+    let document_tenant = tenant.clone();
     tokio::spawn(async move {
-        let result = crate::access::api::get_access(&tenant)
+        let result = crate::access::api::get_access(&document_tenant)
             .await
             .map_err(|error| error.to_string());
-        let _ = tx.send(AppEvent::Access(Event::Loaded { tenant, result }));
+        let _ = tx.send(AppEvent::Access(Event::Loaded {
+            tenant: document_tenant,
+            result,
+        }));
     });
+
+    if !app.access.role_refreshing.contains(&tenant) {
+        app.access
+            .role_indices
+            .insert(tenant.clone(), RoleIndexState::Loading);
+        app.access.role_refreshing.insert(tenant.clone());
+        let tx = app.events.tx.clone();
+        tokio::spawn(async move {
+            let result = crate::access::api::role_index(&tenant)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = tx.send(AppEvent::Access(Event::RolesLoaded { tenant, result }));
+        });
+    }
 }
 
 pub fn row_count(app: &App) -> usize {
@@ -199,9 +229,10 @@ fn start_create(app: &mut App) {
     let Some(document) = app.access.document(&tenant) else {
         return;
     };
-    app.access.form = Some(crate::access::state::RuleFormState::create(
-        tenant, document,
-    ));
+    let mut form = crate::access::state::RuleFormState::create(tenant.clone(), document);
+    let (known_roles, note) = app.access.role_validation(&tenant);
+    form.set_role_validation(known_roles, note);
+    app.access.form = Some(form);
     app.input_mode = InputMode::Access(Mode::Create);
 }
 
@@ -221,9 +252,10 @@ fn start_edit(app: &mut App) {
     let Some(document) = app.access.document(&tenant) else {
         return;
     };
-    app.access.form = Some(crate::access::state::RuleFormState::edit(
-        tenant, document, &row,
-    ));
+    let mut form = crate::access::state::RuleFormState::edit(tenant.clone(), document, &row);
+    let (known_roles, note) = app.access.role_validation(&tenant);
+    form.set_role_validation(known_roles, note);
+    app.access.form = Some(form);
     app.input_mode = InputMode::Access(Mode::Edit);
 }
 
@@ -419,12 +451,18 @@ fn handle_form_key(app: &mut App, key: KeyEvent, mode: Mode) {
 }
 
 fn review_form(app: &mut App) {
+    let Some(tenant) = app.access.form.as_ref().map(|form| form.tenant.clone()) else {
+        return;
+    };
+    let (known_roles, note) = app.access.role_validation(&tenant);
     let Some(form) = app.access.form.as_mut() else {
         return;
     };
+    form.set_role_validation(known_roles, note);
     match ops::request_from_form(form) {
-        Ok(_) => {
+        Ok(request) => {
             form.error = None;
+            form.review_warnings = request.warnings;
             form.confirming = true;
         }
         Err(error) => form.error = Some(error.to_string()),

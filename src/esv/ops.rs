@@ -18,7 +18,9 @@ use crate::esv::state::{
     RECENT_WRITE_TTL, RefreshOutcome, SaveOutcome, SavePlan, UndoApplied, UndoFailure, UndoOutcome,
     can_request_restart, id_of, is_applying, pending_count, queued_count,
 };
-use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
+use crate::undo::{
+    Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoExecutor, UndoId, UndoOp,
+};
 
 struct SaveRequest {
     tenant_name: String,
@@ -696,7 +698,7 @@ pub fn request_latest_undo(app: &mut App) {
         return;
     };
     let tenant_name = tenant.name.clone();
-    let Some(summary) = app.undo.latest_pending(&tenant_name) else {
+    let Some(summary) = app.undo.latest_pending(&tenant_name, UndoExecutor::Esv) else {
         app.push_toast(ToastKind::Info, "Nothing to undo for this tenant");
         return;
     };
@@ -726,6 +728,14 @@ pub fn execute_undo(app: &mut App, undo_id: UndoId, confirmed_prod: bool) {
     }
     if entry.op.is_none() || entry.capability == Capability::Irreversible {
         app.push_toast(ToastKind::Warning, "This change cannot be undone");
+        return;
+    }
+    if !entry
+        .op
+        .as_ref()
+        .is_some_and(|op| op.executor() == UndoExecutor::Esv)
+    {
+        app.push_toast(ToastKind::Info, "Undo entry is not an ESV or secret change");
         return;
     }
 
@@ -802,24 +812,6 @@ async fn apply_undo_entry(
         .op
         .clone()
         .ok_or_else(|| UndoFailure::Failed("undo entry has no operation".into()))?;
-    if matches!(
-        op,
-        UndoOp::ManagedObjectReplace { .. } | UndoOp::ManagedConfigReplace { .. }
-    ) {
-        return Err(UndoFailure::Failed(
-            "managed-object undo must be applied from the Managed tab or undo history".into(),
-        ));
-    }
-    if matches!(op, UndoOp::SecretMappingReplace { .. }) {
-        return Err(UndoFailure::Failed(
-            "secret-mapping undo must be applied from the ESV Mappings view or undo history".into(),
-        ));
-    }
-    if matches!(op, UndoOp::AccessConfigReplace { .. }) {
-        return Err(UndoFailure::Failed(
-            "Access undo must be applied from the Access tab or undo history".into(),
-        ));
-    }
     check_undo_conflict(&op, &entry.conflict_check).await?;
 
     match op {

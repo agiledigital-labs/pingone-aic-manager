@@ -2,11 +2,9 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use clap::{Args, Subcommand};
 use serde::Serialize;
 use serde_json::Value;
@@ -325,7 +323,7 @@ async fn get(tenant_arg: Option<String>, out: Option<PathBuf>) -> Result<()> {
     let mut bytes = serde_json::to_vec_pretty(&document)?;
     bytes.push(b'\n');
     ProjectConfig::write_gitignore()?;
-    write_private_file(&path, &bytes, false)?;
+    crate::access::ops::write_private_file(&path, &bytes, false)?;
     println!("wrote config/access to {}", path.display());
     Ok(())
 }
@@ -342,7 +340,11 @@ async fn write(amendment: Amendment, options: AccessWriteArgs) -> Result<()> {
     let before = api::get_access(&tenant).await?;
     let plan = plan(&before, amendment, &options)?;
     let backup = if plan.backup {
-        let path = backup_document(&tenant, &before, Utc::now())?;
+        let path = ops::backup_document(&tenant, &before, Utc::now()).map_err(|error| {
+            Error::Config(format!(
+                "{error}; pass --no-backup to proceed without a backup"
+            ))
+        })?;
         println!("backup: {}", path.display());
         Some(path)
     } else {
@@ -530,61 +532,6 @@ fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).expect("serialize serde_json::Value")
 }
 
-fn backup_document(tenant: &str, document: &Value, now: DateTime<Utc>) -> Result<PathBuf> {
-    let path = ProjectConfig::dir().join("backups").join(backup_filename(
-        tenant,
-        now,
-        uuid::Uuid::new_v4(),
-    ));
-    let write = || -> Result<()> {
-        ProjectConfig::write_gitignore()?;
-        let mut bytes = serde_json::to_vec_pretty(document)?;
-        bytes.push(b'\n');
-        write_private_file(&path, &bytes, true)
-    };
-    write().map_err(|error| {
-        Error::Config(format!(
-            "could not create config/access backup {}: {error}; nothing was written to the tenant; pass --no-backup to proceed without a backup",
-            path.display()
-        ))
-    })?;
-    Ok(path)
-}
-
-fn backup_filename(tenant: &str, now: DateTime<Utc>, nonce: uuid::Uuid) -> String {
-    let tenant = tenant
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    format!(
-        "access-{tenant}-{}-{nonce}.json",
-        now.format("%Y%m%dT%H%M%SZ")
-    )
-}
-
-fn write_private_file(path: &Path, bytes: &[u8], exclusive: bool) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut options = fs::OpenOptions::new();
-    options.write(true).mode(0o600);
-    if exclusive {
-        options.create_new(true);
-    } else {
-        options.create(true).truncate(true);
-    }
-    let mut file = options.open(path)?;
-    file.write_all(bytes)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
 #[derive(Serialize)]
 struct ListOutput<'a> {
     digest: String,
@@ -672,7 +619,8 @@ fn push_rule_field(output: &mut String, label: &str, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
+    use std::os::unix::fs::PermissionsExt;
+
     use serde_json::json;
 
     use super::*;
@@ -939,23 +887,16 @@ mod tests {
     }
 
     #[test]
-    fn backup_filename_is_utc_and_writer_sets_mode_0600() {
-        let now = Utc.with_ymd_and_hms(2026, 8, 11, 4, 5, 6).unwrap();
-        let first_nonce = uuid::Uuid::from_u128(1);
-        let second_nonce = uuid::Uuid::from_u128(2);
-        let filename = backup_filename("sandbox", now, first_nonce);
-        assert_eq!(
-            filename,
-            "access-sandbox-20260811T040506Z-00000000-0000-0000-0000-000000000001.json"
-        );
-        assert_ne!(filename, backup_filename("sandbox", now, second_nonce));
-
+    fn get_output_writer_sets_mode_0600() {
+        // Removing the mode from write_private_file makes this expose a saved
+        // raw access document with the process umask's broader permissions.
+        let filename = "access-sandbox.json";
         let dir = std::env::temp_dir().join(format!("aic-access-test-{}", uuid::Uuid::new_v4()));
         let path = dir.join(filename);
         let mut bytes =
             serde_json::to_vec_pretty(&json!({"_id": "access", "configs": []})).unwrap();
         bytes.push(b'\n');
-        write_private_file(&path, &bytes, true).unwrap();
+        crate::access::ops::write_private_file(&path, &bytes, true).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

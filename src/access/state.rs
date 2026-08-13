@@ -15,6 +15,13 @@ pub enum LoadState {
     Failed(String),
 }
 
+#[derive(Debug)]
+pub enum RoleIndexState {
+    Loading,
+    Loaded(spec::RoleIndex),
+    Failed(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct RuleRow {
     pub summary: spec::RuleSummary,
@@ -177,6 +184,9 @@ pub struct RuleFormState {
     pub focused: FormFocus,
     pub confirming: bool,
     pub error: Option<String>,
+    pub known_roles: Option<spec::RoleIndex>,
+    pub role_check_note: Option<String>,
+    pub review_warnings: Vec<String>,
 }
 
 impl RuleFormState {
@@ -199,6 +209,9 @@ impl RuleFormState {
             focused: FormFocus::Pattern,
             confirming: false,
             error: None,
+            known_roles: None,
+            role_check_note: None,
+            review_warnings: Vec::new(),
         }
     }
 
@@ -230,7 +243,19 @@ impl RuleFormState {
             focused: FormFocus::Pattern,
             confirming: false,
             error: None,
+            known_roles: None,
+            role_check_note: None,
+            review_warnings: Vec::new(),
         }
+    }
+
+    pub fn set_role_validation(
+        &mut self,
+        known_roles: Option<spec::RoleIndex>,
+        note: Option<String>,
+    ) {
+        self.known_roles = known_roles;
+        self.role_check_note = note;
     }
 
     pub fn amendment(&self) -> spec::Amendment {
@@ -339,6 +364,8 @@ pub struct RuleMatch {
 pub struct State {
     pub data: HashMap<String, LoadState>,
     pub refreshing: HashSet<String>,
+    pub role_indices: HashMap<String, RoleIndexState>,
+    pub role_refreshing: HashSet<String>,
     pub query: LineEditor,
     pub selected: usize,
     pub scroll: usize,
@@ -353,6 +380,8 @@ impl State {
         Self {
             data: HashMap::new(),
             refreshing: HashSet::new(),
+            role_indices: HashMap::new(),
+            role_refreshing: HashSet::new(),
             query: LineEditor::new(),
             selected: 0,
             scroll: 0,
@@ -395,6 +424,25 @@ impl State {
         match self.data.get(tenant) {
             Some(LoadState::Loaded(document)) => Some(document),
             _ => None,
+        }
+    }
+
+    pub fn role_validation(&self, tenant: &str) -> (Option<spec::RoleIndex>, Option<String>) {
+        match self.role_indices.get(tenant) {
+            Some(RoleIndexState::Loaded(index)) => (Some(index.clone()), None),
+            Some(RoleIndexState::Failed(error)) => (
+                None,
+                Some(format!(
+                    "Role references were not checked because the role index could not be loaded: {error}"
+                )),
+            ),
+            Some(RoleIndexState::Loading) | None => (
+                None,
+                Some(
+                    "Role references were not checked because the role index is still loading"
+                        .into(),
+                ),
+            ),
         }
     }
 
@@ -642,5 +690,23 @@ mod tests {
                 assert_eq!(edit.roles, None, "{field} {name}: untouched role path");
             }
         }
+    }
+
+    #[test]
+    fn failed_role_index_becomes_an_explicit_unchecked_note() {
+        // Treating a fetch failure as an empty successful index, or silently
+        // as None, makes the review lose this operator-facing caveat.
+        let mut state = State::new();
+        state.role_indices.insert(
+            "sandbox".into(),
+            RoleIndexState::Failed("authentication read failed".into()),
+        );
+
+        let (index, note) = state.role_validation("sandbox");
+        assert!(index.is_none());
+        assert!(
+            note.is_some_and(|note| note.contains("Role references were not checked")
+                && note.contains("authentication read failed"))
+        );
     }
 }

@@ -30,7 +30,9 @@ use crate::managed::state::{
     ParsedRelationship, PreviousRelationship, RefProperty, RelationshipSpec, RenameFieldState,
     RenameObjectState, ReverseCardinality, State,
 };
-use crate::undo::{Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoId, UndoOp};
+use crate::undo::{
+    Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoExecutor, UndoId, UndoOp,
+};
 
 #[derive(Debug)]
 pub struct ObjectReplacePlan {
@@ -1700,24 +1702,8 @@ pub fn request_latest_undo(app: &mut App) {
 
 fn latest_pending_managed_undo(app: &App, tenant: &str) -> Option<UndoId> {
     app.undo
-        .list(100)
-        .into_iter()
-        .filter(|summary| {
-            summary.tenant == tenant
-                && summary.status == EntryStatus::Pending
-                && matches!(
-                    summary.capability,
-                    Capability::Undoable | Capability::BestEffort
-                )
-        })
-        .find_map(|summary| {
-            let entry = app.undo.load(summary.id).ok()?;
-            matches!(
-                entry.op,
-                Some(UndoOp::ManagedObjectReplace { .. } | UndoOp::ManagedConfigReplace { .. })
-            )
-            .then_some(summary.id)
-        })
+        .latest_pending(tenant, UndoExecutor::Managed)
+        .map(|summary| summary.id)
 }
 
 pub fn execute_undo(app: &mut App, undo_id: UndoId, confirmed_prod: bool) {
@@ -1736,10 +1722,11 @@ pub fn execute_undo(app: &mut App, undo_id: UndoId, confirmed_prod: bool) {
         app.push_toast(ToastKind::Warning, "This change cannot be undone");
         return;
     }
-    if !matches!(
-        entry.op,
-        Some(UndoOp::ManagedObjectReplace { .. } | UndoOp::ManagedConfigReplace { .. })
-    ) {
+    if !entry
+        .op
+        .as_ref()
+        .is_some_and(|op| op.executor() == UndoExecutor::Managed)
+    {
         app.push_toast(ToastKind::Info, "Undo entry is not a managed-object change");
         return;
     }

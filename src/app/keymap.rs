@@ -667,17 +667,18 @@ async fn run_normal(app: &mut App, act: Act) {
             crate::app::refresh_view(app, app.active_view, true);
         }
         Undo => {
-            if app.active_view == View::Access {
-                crate::access::ops::request_latest_undo(app);
+            let executor = if app.active_view == View::Access {
+                crate::undo::UndoExecutor::Access
             } else if app.active_view == View::Managed {
-                crate::managed::ops::request_latest_undo(app);
+                crate::undo::UndoExecutor::Managed
             } else if app.active_view == View::Esvs
                 && crate::esv::screen::current_view(app) == EsvView::Mappings
             {
-                crate::secretmap::ops::request_latest_undo(app);
+                crate::undo::UndoExecutor::SecretMapping
             } else {
-                crate::esv::ops::request_latest_undo(app);
-            }
+                crate::undo::UndoExecutor::Esv
+            };
+            crate::undo::screen::request_latest(app, executor);
         }
         UndoHistory => {
             app.undo_history_idx = 0;
