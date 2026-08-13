@@ -763,6 +763,86 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   narrowing needs the affected records migrated first. Full table in
   `10-managed-objects.md` → "Enum constraints".
 
+- **2026-08-12** — **SAML circle-of-trust membership is stored in two places and
+  the REST API exposes only one.** AM records "entity E is in CoT C" both in the
+  CoT document's `trustedProviders` (what
+  `realm-config/federation/circlesoftrust` returns) and in a `cotlist` attribute
+  inside each entity's _extended_ metadata (never returned by
+  `realm-config/saml2/{location}/{id64}`). **The runtime trust check reads the
+  second one**: `SAML2Utils` resolves the hosted entity's `cotlist`, then looks
+  up each named CoT _by name_ — it does not scan CoTs for the entity. So an
+  entity with an empty `cotlist` rejects every assertion from its peer while the
+  REST API reports a fully healthy CoT listing both parties.
+
+  Found diagnosing a UAT `bravo` failure where `ClientBLogin` failed 15/15 with
+  `Issuer in Response is invalid` while the structurally identical `ClientALogin`
+  succeeded. Every REST-visible input matched: both entities present, entity IDs
+  byte-identical to the assertion's `Issuer` (trailing slash and all), CoT
+  `active` and listing both providers, SP and IdP documents diffed against the
+  working pair and identical but for names. The fault was only visible in
+  `am-core` debug logs, as an **absence**: the working ACS transaction resolves
+  a CoT by name (`componentName = LIBCOT`, `configName = client-a`, `COTUtils`
+  checking each provider); the failing one goes straight from reading the SP's
+  entity config to `Issuer in Response is not valid` with no `LIBCOT` lookup at
+  all — i.e. there was no CoT _name_ to resolve.
+
+  Lessons worth keeping. **(1)** When every visible input matches and the
+  outputs differ, the discriminating state is somewhere the API does not show
+  you — go to the runtime logs rather than re-reading the same config harder.
+  **(2)** The diagnosis was a _missing_ log line, which no amount of grepping
+  for errors would have surfaced; it needed a known-good control captured under
+  the same conditions (same tenant, realm, hour) and a line-by-line diff of the
+  two traces. Finding that control cost one cheap query against the low-volume
+  `am-authentication` source. **(3)** The tree-level error
+  (`Saml2Node: AuthConsumer endpoint reported error code samlVerify …`,
+  URL-encoded) is second-hand: the real verification runs in the browser's POST
+  to `/am/AuthConsumer/…`, a separate transaction that `aic logs tx` will not
+  reach and that `am-access` does not audit at all.
+
+  Consequence for this project: **never present REST `trustedProviders` as the
+  authoritative CoT membership**, and treat `PUT` on a CoT as unsafe until
+  someone verifies it syncs the entity-side `cotlist` — writing one side and not
+  the other manufactures exactly this failure. Same hazard on `importEntity`,
+  which can drop a `cotlist` added after the entity was first imported.
+  Documented in `06-saml.md`, which also carries the corrected object shapes
+  (the pre-existing `serviceProvider: null` / `attributeQueryProvider` shape was
+  library-research inference and is wrong) and the log signature for each case.
+
+- **2026-08-12** — Logs API `_queryFilter` is barely usable:
+  `payload/message co "…"` and `payload/logger eq "…"` both return **500
+  Internal server error**, on a 20-second window as readily as a 6-hour one, so
+  it is the filter and not the range being rejected. Only
+  `payload/transactionId` is known to work. Any feature that selects log events
+  by logger, level or message content must fetch the window and filter
+  client-side. `08-logs.md` updated.
+
+- **2026-08-12 (later)** — Follow-up to the CoT finding above:
+  `SAML2Utils.verifyResponse` checks **`InResponseTo` against the CTS before it
+  checks issuer trust**, and the ordering matters more than it sounds. After the
+  `client-b` CoT was recreated, the next login still failed — but at the _earlier_
+  gate, with `CTS: Token did not exist` /
+  `InResponseTo attribute in Response is invalid`. The trust check was never
+  reached, so the run says nothing about whether the fix worked. **A later gate
+  cannot be confirmed by a run that fails at an earlier one**; the log just
+  stops sooner and reads as "still broken".
+
+  Cause of the second failure: the test **replayed a captured `AuthnRequest`**.
+  AM stores an `AuthnRequestInfo` in the CTS when it issues a request and
+  requires it at verification time; it is short-lived. Replaying yesterday's
+  request gets a freshly minted, correctly signed `Response` from the IdP that
+  echoes the _old_ request ID — the ID in the failing log was 7½ hours old and
+  traceable to the previous day's capture. **A SAML capture is not a reusable
+  test fixture**; federation changes must be tested with a fresh login. The tell
+  is an `InResponseTo` you can find in an older capture.
+
+  Second-order trap: a gate-2 failure also breaks the error path
+  (`Saml2Proxy: getUrlWithError: Unable to determine AuthURL`), because the
+  redirect target comes from the same missing per-request state. So the browser
+  never returns to the tree, **no tree execution is recorded at all**, and the
+  SDK's retry loop stops. The symptom change — "it stopped looping" — is not
+  evidence of progress. Check which gate the ACS transaction reached. Gate table
+  in `06-saml.md`.
+
 - **2026-08-15** — OAuth2 client template vs schema, and PUT raw vs GET
   wrapped. The live `?_action=template` body still has 115 fields in six
   groups, but `?_action=schema` omits
