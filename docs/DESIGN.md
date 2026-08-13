@@ -32,6 +32,10 @@ keybindings. Don't redebate these unless the maintainer explicitly revisits.
     includes `Length`. Ratatui's solver satisfies `Length` first, so an
     over-subscribed mixed set starves the percentage columns to nothing and
     clips them **without an ellipsis**. All-percentage degrades proportionally.
+    This is about **table column** sets, where a starved column silently loses
+    content. A small fixed gutter between panes is fine — `access/view.rs`'s
+    `BODY_COLUMNS` is `[Percentage(62), Length(2), Percentage(38)]`, over-
+    subscribed by those two columns on purpose.
   - Truncate through `tui::list_chrome::truncate_metadata` so a clipped value
     says so. A cell built as a styled `Line` bypasses that helper and gets
     ratatui's silent clip instead — if a column is styled per-glyph, check its
@@ -39,9 +43,18 @@ keybindings. Don't redebate these unless the maintainer explicitly revisits.
   - `tui::modal_chrome::CONTENT_WIDTH` is also 80, so at the minimum width a
     modal is exactly as wide as the screen. That is intended: 80 is the design
     width, and wider terminals get margin rather than a wider modal.
-- Height has no stated minimum. Panes that can overflow scroll instead
-  (`tui::list_chrome::DetailScroll`), which is the general answer to a short
-  viewport.
+- Height has no stated minimum, and the two kinds of overflow behave
+  differently:
+  - **Detail panes scroll** (`tui::list_chrome::DetailScroll`), which is the
+    general answer to a short viewport. Use `clamp_wrapping` when the pane lets
+    the widget wrap and `clamp` when it has pre-wrapped its own rows — a height
+    measured the wrong way gives a too-small limit, and a pane that stops short
+    of its content looks exactly like one that reached the end.
+  - **Modals are clipped, not scrolled.** `modal_chrome` sizes a modal to its
+    content and then clamps to the screen, so the last rows simply vanish on a
+    short terminal. Keep a modal's committing control and its error line
+    **above** its optional rows, or the two things the operator needs on a
+    cramped screen are the two that disappear.
 
 ## Within-view layout
 
