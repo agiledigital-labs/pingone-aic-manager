@@ -241,12 +241,13 @@ fn draw_detail(f: &mut Frame, app: &App, matches: &[MappingMatch], area: Rect) {
         ]),
     ];
 
-    let height = inner.height as usize;
     // The pane wraps rather than pre-wrapping, because the alias and secretId
-    // rows style label and value differently within one line. So the rendered
-    // height is not `lines.len()`.
-    let rendered = crate::tui::list_chrome::wrapped_height(&lines, inner.width);
-    let scroll = app.secretmap.detail_scroll.clamp(rendered, height);
+    // rows style label and value differently within one line — so the rendered
+    // height is not `lines.len()` and the clamp must measure it.
+    let scroll =
+        app.secretmap
+            .detail_scroll
+            .clamp_wrapping(&lines, inner.width, usize::from(inner.height));
     f.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })

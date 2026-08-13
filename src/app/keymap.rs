@@ -713,13 +713,17 @@ async fn run_normal(app: &mut App, act: Act) {
 /// both directions, so a pane cannot be wired up for `^D` and forgotten for
 /// `^U` — the delta is the only thing that differs.
 fn scroll_active_detail(app: &mut App, delta: isize) {
+    // Exhaustive, like the list-operation helpers below and unlike a guard with
+    // a `_` fallback: a new `View` or `EsvView` with a scrollable detail pane
+    // should be a compile error here, not a silently unbound key.
     match app.active_view {
         View::Access => crate::access::screen::scroll_detail(app, delta),
         View::Oauth => crate::oauth::screen::scroll_detail(app, delta),
-        View::Esvs if crate::esv::screen::current_view(app) == EsvView::Mappings => {
-            crate::secretmap::screen::scroll_detail(app, delta)
-        }
-        _ => {}
+        View::Scripts | View::Managed | View::Mappings | View::IdmStore => {}
+        View::Esvs => match crate::esv::screen::current_view(app) {
+            EsvView::Mappings => crate::secretmap::screen::scroll_detail(app, delta),
+            EsvView::Variables | EsvView::Secrets => {}
+        },
     }
 }
 
