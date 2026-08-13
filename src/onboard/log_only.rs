@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::event::{AppEvent, ToastKind};
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode};
-use crate::config::tenant::{Tenant, TenantTheme};
+use crate::config::tenant::{CredentialSource, Provenance, Tenant, TenantTheme};
 use crate::logs::LogKeyPair;
 use crate::tui::is_save_chord;
 use crate::tui::widgets::text_field::{TextField, fields};
@@ -251,6 +251,10 @@ pub fn handle_created(
         theme,
         sa_id: None,
         scopes: Vec::new(),
+        provenance: Provenance {
+            service_account: None,
+            log_key: Some(CredentialSource::Created),
+        },
     };
 
     if tenant.theme == TenantTheme::Production {

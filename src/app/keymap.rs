@@ -942,6 +942,7 @@ mod tests {
             theme: TenantTheme::Sandbox,
             sa_id: None,
             scopes: Vec::new(),
+            provenance: crate::config::Provenance::default(),
         }
     }
 

@@ -200,6 +200,7 @@ mod tests {
             theme: TenantTheme::Sandbox,
             sa_id: None,
             scopes: Vec::new(),
+            provenance: crate::config::Provenance::default(),
         };
 
         let error = mint_token(&reqwest::Client::new(), &tenant, &serde_json::Value::Null)

@@ -14,6 +14,7 @@ pub mod logs;
 pub mod managed;
 pub mod mappings;
 pub mod oauth;
+pub mod offboard;
 pub mod onboard;
 pub mod roles;
 pub mod scripts;

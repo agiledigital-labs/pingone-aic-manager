@@ -8,7 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::event::ToastKind;
 use crate::app::{App, InputMode};
-use crate::config::tenant::{Tenant, TenantTheme};
+use crate::config::tenant::{CredentialSource, Provenance, Tenant, TenantTheme};
 use crate::logs::LogKeyPair;
 
 use super::common::{
@@ -444,6 +444,10 @@ async fn import_env_creds(app: &mut App) -> crate::Result<()> {
         theme: TenantTheme::Sandbox,
         sa_id: Some(sa_id),
         scopes,
+        provenance: Provenance {
+            service_account: Some(CredentialSource::External),
+            log_key: None,
+        },
     };
 
     match persist_tenant_overwriting(app, tenant, Some(jwk), None) {
