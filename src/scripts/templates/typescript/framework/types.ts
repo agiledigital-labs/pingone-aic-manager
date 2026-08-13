@@ -132,9 +132,27 @@ export type CrestResource = { _id?: string; _rev?: string } & Record<
  */
 export interface CrestQueryResult<T = CrestResource> {
   result: T[];
-  resultCount?: number;
-  pagedResultsCookie?: string | null;
-  totalPagedResults?: number;
-  remainingPagedResults?: number;
-  totalPagedResultsPolicy?: string;
+  resultCount: number;
+  pagedResultsCookie: string | null;
+  totalPagedResults: number;
+  remainingPagedResults: number;
+  totalPagedResultsPolicy: string;
+}
+
+/** Overrides for the paging metadata filled by {@link queryResult}. */
+export type QueryResultOptions = Partial<Omit<CrestQueryResult<never>, "result">>;
+
+/** Build the complete response shape IDM requires from every query handler. */
+export function queryResult<T>(
+  rows: T[],
+  options: QueryResultOptions = {}
+): CrestQueryResult<T> {
+  return {
+    result: rows,
+    resultCount: options.resultCount ?? rows.length,
+    pagedResultsCookie: options.pagedResultsCookie ?? null,
+    totalPagedResults: options.totalPagedResults ?? rows.length,
+    remainingPagedResults: options.remainingPagedResults ?? 0,
+    totalPagedResultsPolicy: options.totalPagedResultsPolicy ?? "EXACT",
+  };
 }

@@ -60,9 +60,10 @@ and leaves everything else alone.
    (`constantSuper`, `noClassCalls`, `setClassMethods`,
    `superIsCallableConstructor`, `noDocumentAll`).
 4. The **generated** file is linted against IDM's runtime bans (below).
-5. Only if every endpoint clears every step is anything written to disk, so a
-   broken build cannot leave a half-updated `.cjs` for `aic script watch` to
-   push.
+5. Only if every endpoint clears every step is anything written to disk.
+   Bundles and the ownership manifest publish by same-directory atomic rename,
+   so `aic script watch` can observe the complete old or new file but never a
+   partial write.
 
 The emitted file ends with the expression statement `__aicMain.default();`
 because an endpoint's HTTP response body is the script's completion value.
@@ -91,21 +92,24 @@ it, and `typescript/eslint.config.js` rejects both `extends Error` and an
 
 ## Runtime bans, checked on the generated file
 
-Three constructs make an endpoint fail to **register** — an un-routable 404, not
-a misbehaviour — so they are build failures, not warnings:
+Three syntax constructs make an endpoint fail to **register** — an un-routable
+404, not a misbehaviour — and two absent globals fail at runtime, so all five
+are build failures:
 
 | Ban                                       | Why                                          |
 | ----------------------------------------- | -------------------------------------------- |
 | default parameter values                  | the IDM engine fails to compile the function |
 | `const` in a `for`/`for-in`/`for-of` init | same                                         |
 | trailing comma in a **parameter** list    | same (a trailing comma in a _call_ is fine)  |
+| bare `Reflect` reference                  | the global is absent on IDM                  |
+| bare `Proxy` reference                    | the global is absent on IDM                  |
 
 The hand-written `.cjs` endpoints get these from `idm/eslint.config.js`. A
 bundle cannot go through that config — it would also have to satisfy
 `prettier/prettier`, which is meaningless for generated output — so
-`tools/idm-runtime-bans.mjs` re-implements the same three checks over the
-emitted file with `@babel/parser` (the trailing-comma one from the token stream,
-since the AST does not record it).
+`tools/idm-runtime-bans.mjs` checks all five over the emitted file with
+`@babel/parser` (the trailing-comma one from the token stream, since the AST
+does not record it).
 
 ## Keeping generated files out of the hand-written gates
 

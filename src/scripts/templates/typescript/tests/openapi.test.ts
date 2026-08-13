@@ -4,7 +4,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { defineEndpoint, route, toOpenApi, v } from "../framework/index.ts";
+import {
+  defineEndpoint,
+  queryResult,
+  route,
+  toOpenApi,
+  v,
+} from "../framework/index.ts";
 
 const endpoint = defineEndpoint({
   name: "widgets",
@@ -16,7 +22,7 @@ const endpoint = defineEndpoint({
       method: "query",
       path: "/",
       query: { limit: v.withDefault(v.integer({ min: 1, max: 100 }), 20) },
-      handler: () => ({ result: [] }),
+      handler: () => queryResult([]),
     }),
     route({
       method: "create",
@@ -55,147 +61,108 @@ const endpoint = defineEndpoint({
 const document = toOpenApi(endpoint.definition, {
   serverUrl: "https://t.example",
 });
-const paths = document["paths"] as Record<string, Record<string, never>>;
+const paths = document["paths"] as Record<string, Record<string, unknown>>;
 const base = "/openidm/endpoint/widgets";
 
 function operation(key: string, method: string): Record<string, unknown> {
-  const item = paths[key];
-  assert.ok(item !== undefined, "no path key " + key);
-  const op = (item as unknown as Record<string, unknown>)[method];
-  assert.ok(op !== undefined, "no " + method + " on " + key);
-  return op as Record<string, unknown>;
+  const value = paths[key]?.[method];
+  assert.ok(value !== undefined, "no " + method + " on " + key);
+  return value as Record<string, unknown>;
 }
 
-test("the document declares OpenAPI 3.1 and the 2020-12 dialect", () => {
-  assert.equal(document["openapi"], "3.1.0");
-  assert.equal(
-    document["jsonSchemaDialect"],
-    "https://json-schema.org/draft/2020-12/schema"
-  );
-  assert.deepEqual(document["servers"], [{ url: "https://t.example" }]);
-  assert.deepEqual(document["info"], { title: "Widgets", version: "2.1.0" });
-});
+function parameter(key: string, method: string, name: string) {
+  const parameters = operation(key, method)["parameters"] as
+    Record<string, unknown>[] | undefined;
+  const value = parameters?.find((candidate) => candidate["name"] === name);
+  assert.ok(value !== undefined, "no parameter " + name);
+  return value;
+}
 
-test("every action gets its own colon-suffixed path key", () => {
-  assert.deepEqual(Object.keys(paths).sort(), [
-    base,
-    base + "/{id}",
-    base + "/{id}:retire",
-    base + ":bulkImport",
-  ]);
-});
+const rootGet = operation(base, "get");
+const rootPost = operation(base, "post");
+const itemGet = operation(base + "/{id}", "get");
+const retirePost = operation(base + "/{id}:retire", "post");
+const bulkAction = parameter(base + ":bulkImport", "post", "_action");
+const id = parameter(base + "/{id}", "get", "id");
+const expand = parameter(base + "/{id}", "get", "expand");
 
-test("a non-colliding non-action route keeps the real path", () => {
-  assert.equal(operation(base, "get")["x-crest-synthetic-path-key"], undefined);
-  assert.equal(operation(base, "post")["x-crest-method"], "create");
-});
+type ShapeCase = readonly [name: string, actual: unknown, expected: unknown];
+const shapeCases: ShapeCase[] = [
+  ["document version", document["openapi"], "3.1.0"],
+  ["JSON Schema dialect", document["jsonSchemaDialect"], "https://json-schema.org/draft/2020-12/schema"],
+  ["server URL", document["servers"], [{ url: "https://t.example" }]],
+  ["document info", document["info"], { title: "Widgets", version: "2.1.0" }],
+  ["stable RPC path keys", Object.keys(paths).sort(), [base, base + "/{id}", base + "/{id}:retire", base + ":bulkImport"]],
+  ["ordinary route is not synthetic", rootGet["x-crest-synthetic-path-key"], undefined],
+  ["root POST remains create", rootPost["x-crest-method"], "create"],
+  ["synthetic action metadata", [retirePost["x-crest-synthetic-path-key"], retirePost["x-crest-action"], retirePost["x-crest-path"]], [true, "retire", base + "/{id}"]],
+  ["action discriminator", [bulkAction["in"], bulkAction["required"], bulkAction["schema"]], ["query", true, { type: "string", enum: ["bulkImport"] }]],
+  ["create discriminator", parameter(base, "post", "_action")["schema"], { type: "string", enum: ["create"] }],
+  ["query discriminator", parameter(base, "get", "_queryFilter")["required"], true],
+  ["path parameter", [id["in"], id["required"]], ["path", true]],
+  ["CSV query parameter", [expand["required"], expand["style"], expand["explode"]], [false, "form", false]],
+  ["required scopes", [retirePost["x-required-scopes"], retirePost["security"]], [["demo:write"], [{ oauth2: ["demo:write"] }]]],
+  ["unscoped route", itemGet["security"], undefined],
+  ["declared body schema", rootPost["requestBody"], {
+    required: true,
+    content: { "application/json": { schema: {
+      type: "object",
+      properties: { name: { type: "string", maxLength: 64 } },
+      additionalProperties: false,
+      required: ["name"],
+    } } },
+  }],
+];
 
-test("a synthetic key records the real path to call", () => {
-  const retire = operation(base + "/{id}:retire", "post");
-  assert.equal(retire["x-crest-synthetic-path-key"], true);
-  assert.equal(retire["x-crest-action"], "retire");
-  assert.equal(retire["x-crest-path"], base + "/{id}");
-});
-
-test("an action operation pins _action with a single-value enum", () => {
-  const parameters = operation(base + ":bulkImport", "post")["parameters"] as {
-    name: string;
-    in: string;
-    required: boolean;
-    schema: { enum?: string[] };
-  }[];
-  const action = parameters.find((parameter) => parameter.name === "_action");
-  assert.ok(action !== undefined);
-  assert.equal(action.in, "query");
-  assert.equal(action.required, true);
-  assert.deepEqual(action.schema.enum, ["bulkImport"]);
-});
-
-test("create is also pinned, because it too is a POST with ?_action=", () => {
-  const parameters = operation(base, "post")["parameters"] as {
-    name: string;
-    schema: { enum?: string[] };
-  }[];
-  assert.deepEqual(
-    parameters.find((parameter) => parameter.name === "_action")?.schema.enum,
-    ["create"]
-  );
-});
-
-test("a query operation requires _queryFilter", () => {
-  const parameters = operation(base, "get")["parameters"] as {
-    name: string;
-    required: boolean;
-  }[];
-  assert.equal(
-    parameters.find((parameter) => parameter.name === "_queryFilter")?.required,
-    true
-  );
-});
-
-test("path params are required, optional query params are not", () => {
-  const parameters = operation(base + "/{id}", "get")["parameters"] as {
-    name: string;
-    in: string;
-    required: boolean;
-    style?: string;
-    explode?: boolean;
-  }[];
-  const id = parameters.find((parameter) => parameter.name === "id");
-  assert.equal(id?.in, "path");
-  assert.equal(id?.required, true);
-  const expand = parameters.find((parameter) => parameter.name === "expand");
-  assert.equal(expand?.required, false);
-  // A comma-separated list must not be serialised as repeated params.
-  assert.equal(expand?.style, "form");
-  assert.equal(expand?.explode, false);
-});
+for (const [name, actual, expected] of shapeCases) {
+  test("OpenAPI shape: " + name, () => assert.deepEqual(actual, expected));
+}
 
 test("the endpoint-wide header appears on every operation", () => {
   for (const [key, methods] of Object.entries(paths)) {
     for (const method of Object.keys(methods)) {
-      const parameters = operation(key, method)["parameters"] as {
-        name: string;
-        in: string;
-      }[];
-      assert.ok(
-        parameters.some(
-          (parameter) =>
-            parameter.name === "x-request-id" && parameter.in === "header"
-        ),
-        key + " " + method
-      );
+      assert.equal(parameter(key, method, "x-request-id")["in"], "header");
     }
   }
 });
 
-test("required scopes reach both the extension and the security requirement", () => {
-  const retire = operation(base + "/{id}:retire", "post");
-  assert.deepEqual(retire["x-required-scopes"], ["demo:write"]);
-  assert.deepEqual(retire["security"], [{ bearerAuth: ["demo:write"] }]);
-});
-
-test("a route without scopes carries no per-operation security override", () => {
-  assert.equal(operation(base + "/{id}", "get")["security"], undefined);
-});
-
-test("the declared body schema is the request body", () => {
-  const body = operation(base, "post")["requestBody"] as {
-    required: boolean;
-    content: { "application/json": { schema: { required: string[] } } };
+test("non-empty security scopes only reference an OAuth-capable scheme", () => {
+  const components = document["components"] as {
+    securitySchemes: Record<string, Record<string, unknown>>;
   };
-  assert.equal(body.required, true);
-  assert.deepEqual(body.content["application/json"].schema.required, ["name"]);
+  for (const methods of Object.values(paths)) {
+    for (const value of Object.values(methods)) {
+      const security = (value as Record<string, unknown>)["security"] as
+        Record<string, string[]>[] | undefined;
+      for (const requirement of security ?? []) {
+        for (const [name, scopes] of Object.entries(requirement)) {
+          if (scopes.length > 0) {
+            assert.ok(
+              ["oauth2", "openIdConnect"].includes(
+                String(components.securitySchemes[name]?.["type"])
+              )
+            );
+          }
+        }
+      }
+    }
+  }
+  const oauth2 = components.securitySchemes["oauth2"] as {
+    flows: { clientCredentials: { scopes: Record<string, string> } };
+  };
+  assert.deepEqual(oauth2.flows.clientCredentials.scopes, {
+    "demo:write": "Required by one or more endpoint routes.",
+  });
 });
 
-test("every operation documents the CREST error shape", () => {
+test("every operation documents CREST errors and its success schema", () => {
   const responses = operation(base + "/{id}", "get")["responses"] as Record<
     string,
-    { content: { "application/json": { schema: { $ref?: string } } } }
+    { content: { "application/json": { schema: Record<string, unknown> } } }
   >;
   for (const status of ["400", "401", "403", "404", "405", "500"]) {
     assert.equal(
-      responses[status]?.content["application/json"].schema.$ref,
+      responses[status]?.content["application/json"].schema["$ref"],
       "#/components/schemas/CrestError"
     );
   }
@@ -205,12 +172,11 @@ test("every operation documents the CREST error shape", () => {
 });
 
 test("operation ids are unique and stable", () => {
-  const ids: string[] = [];
-  for (const [key, methods] of Object.entries(paths)) {
-    for (const method of Object.keys(methods)) {
-      ids.push(operation(key, method)["operationId"] as string);
-    }
-  }
+  const ids = Object.entries(paths).flatMap(([key, methods]) =>
+    Object.keys(methods).map(
+      (method) => operation(key, method)["operationId"] as string
+    )
+  );
   assert.equal(new Set(ids).size, ids.length);
   assert.ok(ids.includes("widgets_action_retire_id"));
 });

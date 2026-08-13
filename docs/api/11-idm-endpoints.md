@@ -276,6 +276,14 @@ type-checkable (a script isn't a typed function), but `idm/types/endpoint.d.ts`
 exposes `IdmQueryResult` / `IdmResource` aliases to annotate with
 `/** @type {…} */`.
 
+IDM normalizes both query envelopes and thrown CREST faults. In a 2026-08-13
+follow-up probe, a script-thrown `{ code, message, detail }` reached HTTP as
+`{ code, reason, message, detail }`: IDM synthesized `reason` from the status;
+the script did not need to supply it. The same run returned every required
+query paging field, but IDM normalized `remainingPagedResults` to `-1` in the
+HTTP response rather than preserving the script's computed value. Treat that
+field as CREST-owned metadata, not an application counter.
+
 ## Requireable bundled libraries (`require('lib/<name>')`)
 
 IDM scripts can `require()` a small, **fixed set of bundled CommonJS
@@ -593,9 +601,11 @@ Object shape (real example, `schedule/UpdateReviewList`):
   `x-request-id` 400, missing scope 403), then deleted (`DELETE` 200; `GET` on
   both the config and runtime URLs → 404). Three behaviours established by that
   run: a header-less `PUT .../{id}` is a `create` (table above); thrown error
-  strings are HTML-escaped (Quirks); and a thrown
-  `{ code, reason, message, detail }` is returned verbatim as the HTTP error
-  body with `code` as the status. `context.oauth2.scopes.contains(...)` was
+  strings are HTML-escaped (Quirks); and a follow-up fault-projection probe
+  established that IDM adds `reason` to a script-thrown
+  `{ code, message, detail }` rather than returning the thrown object verbatim.
+  The follow-up query probe returned a complete paging envelope and showed IDM
+  normalizing `remainingPagedResults` to `-1`. `context.oauth2.scopes.contains(...)` was
   checked in **both** directions — the service-account token was refused a scope
   it does not hold (403) and admitted for `fr:idm:*`, which it does (200) — so
   the 403 is a real scope check rather than a broken call.

@@ -16,12 +16,20 @@ import {
   conflict,
   defineEndpoint,
   notFound,
+  queryResult,
   route,
   v,
 } from "../../framework/index.ts";
 import { audit } from "../shared/audit.ts";
 import { findWidget, WIDGETS, type Widget } from "../shared/fixtures.ts";
-import { widgetId, widgetKey, widgetStatus } from "../shared/widget-key.ts";
+import {
+  IMPORT_RESPONSE,
+  WIDGET_QUERY_RESPONSE,
+  WIDGET_RESPONSE,
+  widgetId,
+  widgetKey,
+  widgetStatus,
+} from "../shared/widget-key.ts";
 
 /** Scope required for anything that mutates a widget's lifecycle. */
 const WRITE_SCOPE = "aicdemo:widgets:write";
@@ -46,61 +54,50 @@ function requireWidget(id: string): Widget {
 export default defineEndpoint({
   name: "aicdemo-a1-claude-widgets",
   summary: "Widgets (demo)",
-  description:
-    "Demonstrates the TypeScript endpoint framework: typed routing, typed " +
-    "validation, shared modules, scope gating and CREST error mapping.",
   // Validated on every route; also the log correlation id when present.
   headers: { "x-request-id": v.optional(v.uuid()) },
   routes: [
     route({
       method: "query",
       path: "/",
-      summary: "List widgets",
       query: {
         status: v.optional(widgetStatus()),
         limit: v.withDefault(v.integer({ min: 1, max: 100 }), 20),
         offset: v.withDefault(v.integer({ min: 0 }), 0),
         tags: v.optional(v.csv(v.string({ minLength: 1 }))),
       },
+      response: WIDGET_QUERY_RESPONSE,
       handler: ({ query, log }) => {
         const wanted = query.tags;
-        const filtered = WIDGETS.filter((widget) => {
-          if (query.status !== undefined && widget.status !== query.status) {
-            return false;
-          }
-          if (wanted === undefined) {
-            return true;
-          }
-          return wanted.every((tag) => widget.tags.indexOf(tag) >= 0);
-        });
+        const filtered = WIDGETS.filter(
+          (widget) =>
+            (query.status === undefined || widget.status === query.status) &&
+            (wanted === undefined ||
+              wanted.every((tag) => widget.tags.indexOf(tag) >= 0))
+        );
         const page = filtered.slice(query.offset, query.offset + query.limit);
         log.debug("listed widgets", {
           matched: filtered.length,
           returned: page.length,
         });
-        // A `query` handler MUST return this shape — the return type enforces it.
-        return {
-          result: page,
-          resultCount: page.length,
-          pagedResultsCookie: null,
+        return queryResult(page, {
           totalPagedResults: filtered.length,
           remainingPagedResults: Math.max(
             filtered.length - (query.offset + page.length),
             0
           ),
-          totalPagedResultsPolicy: "EXACT",
-        };
+        });
       },
     }),
 
     route({
       method: "read",
       path: "/{widgetId}",
-      summary: "Read one widget",
       params: widgetIdParams,
       query: {
         expand: v.optional(v.csv(v.enumOf(["owner", "history"]))),
       },
+      response: WIDGET_RESPONSE,
       handler: ({ params, query }) => {
         const widget = requireWidget(params.widgetId);
         const expand = query.expand ?? [];
@@ -119,8 +116,8 @@ export default defineEndpoint({
     route({
       method: "create",
       path: "/",
-      summary: "Create a widget",
       body: widgetBody,
+      response: WIDGET_RESPONSE,
       handler: ({ body, newResourceId, context, log }) => {
         const created = {
           // A bare `PUT .../{id}` arrives here as a create carrying the id.
@@ -144,37 +141,27 @@ export default defineEndpoint({
     route({
       method: "update",
       path: "/{widgetId}",
-      summary: "Replace a widget",
       params: widgetIdParams,
       body: widgetBody,
-      handler: ({ params, body, context, log }) => {
+      response: WIDGET_RESPONSE,
+      handler: ({ params, body }) => {
         const widget = requireWidget(params.widgetId);
-        const updated = {
+        return {
           ...widget,
           ...body,
           metadata: body.metadata ?? {},
         };
-        audit(log, context, {
-          action: "widget.replaced",
-          subject: widgetKey(widget._id),
-        });
-        return updated;
       },
     }),
 
     route({
       method: "patch",
       path: "/{widgetId}",
-      summary: "Patch a widget",
       params: widgetIdParams,
       patches: v.patchOperations({ minItems: 1, maxItems: 20 }),
-      handler: ({ params, patchOperations, context, log }) => {
+      response: WIDGET_RESPONSE,
+      handler: ({ params, patchOperations }) => {
         const widget = requireWidget(params.widgetId);
-        audit(log, context, {
-          action: "widget.patched",
-          subject: widgetKey(widget._id),
-          fields: { operations: patchOperations.length },
-        });
         return { ...widget, _patchOperations: patchOperations.length };
       },
     }),
@@ -182,26 +169,19 @@ export default defineEndpoint({
     route({
       method: "delete",
       path: "/{widgetId}",
-      summary: "Delete a widget",
       params: widgetIdParams,
-      handler: ({ params, context, log }) => {
-        const widget = requireWidget(params.widgetId);
-        audit(log, context, {
-          action: "widget.deleted",
-          subject: widgetKey(widget._id),
-        });
-        return widget;
-      },
+      response: WIDGET_RESPONSE,
+      handler: ({ params }) => requireWidget(params.widgetId),
     }),
 
     route({
       method: "action",
       action: "retire",
       path: "/{widgetId}",
-      summary: "Retire a widget",
       scopes: [WRITE_SCOPE],
       params: widgetIdParams,
       body: v.object({ reason: v.string({ minLength: 1, maxLength: 200 }) }),
+      response: WIDGET_RESPONSE,
       handler: ({ params, body, context, log }) => {
         const widget = requireWidget(params.widgetId);
         if (widget.status === "retired") {
@@ -220,12 +200,12 @@ export default defineEndpoint({
       method: "action",
       action: "bulkImport",
       path: "/",
-      summary: "Import many widgets at once",
       scopes: [WRITE_SCOPE],
       body: v.object({
         items: v.list(widgetBody, { minItems: 1, maxItems: 50 }),
       }),
-      handler: ({ body, context, log }) => {
+      response: IMPORT_RESPONSE,
+      handler: ({ body, log }) => {
         const names = body.items.map((item) => item.name);
         const unique: string[] = [];
         for (const name of names) {
@@ -234,10 +214,7 @@ export default defineEndpoint({
           }
           unique.push(name);
         }
-        audit(log, context, {
-          action: "widget.bulkImported",
-          fields: { count: body.items.length },
-        });
+        log.info("widget.bulkImported", { count: body.items.length });
         return { imported: body.items.length, names: unique };
       },
     }),

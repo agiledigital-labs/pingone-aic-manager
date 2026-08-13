@@ -59,3 +59,13 @@ test("violations are reported with their line numbers, in order", () => {
     ]
   );
 });
+
+test("bare Reflect and Proxy references are rejected", () => {
+  assert.deepEqual(rules("Reflect.get(target, key);"), [
+    "no-unsupported-global",
+  ]);
+  assert.deepEqual(rules("new Proxy(target, handler);"), [
+    "no-unsupported-global",
+  ]);
+  assert.deepEqual(rules("helpers.Reflect.get(target, key);"), []);
+});
