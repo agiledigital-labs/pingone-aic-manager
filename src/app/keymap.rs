@@ -48,7 +48,7 @@ impl Trigger {
 
 /// What a Normal-mode binding does. Kept as a plain enum so dispatch is one
 /// `match` and the same binding list feeds the hint renderers.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Act {
     Quit,
     Functions,
@@ -447,7 +447,11 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
         if n > 0 {
             out.push(hint(&[Trigger::ENTER], "Enter", "edit", Primary));
             out.push(hint(
-                &[Trigger::Char('d'), Trigger::Code(KeyCode::Delete)],
+                &[
+                    Trigger::Char('d'),
+                    Trigger::Char('D'),
+                    Trigger::Code(KeyCode::Delete),
+                ],
                 "d",
                 "delete",
                 Delete,
@@ -616,10 +620,7 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
 /// Dispatch a Normal-mode key through the table. Returns without effect if no
 /// binding matches.
 pub async fn dispatch_normal(app: &mut App, key: KeyEvent) -> crate::Result<()> {
-    let act = normal_binds(app)
-        .iter()
-        .find(|bind| bind.triggers.iter().any(|t| t.matches(&key)))
-        .map(|bind| bind.act);
+    let act = Bind::resolve(&normal_binds(app), &key);
     if let Some(act) = act {
         run_normal(app, act).await;
     }
@@ -898,5 +899,474 @@ fn search_mode(view: View) -> InputMode {
         View::IdmStore => InputMode::IdmStore(crate::idmstore::screen::Mode::Search),
         View::Oauth => InputMode::Oauth(crate::oauth::screen::Mode::Search),
         View::Esvs => InputMode::Esv(EsvMode::Search),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use serde_json::json;
+
+    use super::{Act, Bind, normal_binds};
+    use crate::access::state::{Document, LoadState as AccessLoadState};
+    use crate::app::{App, View};
+    use crate::config::tenant::{Tenant, TenantTheme};
+    use crate::esv::state::{EsvView, LoadState as EsvLoadState};
+    use crate::managed::state::LoadState as ManagedLoadState;
+    use crate::mappings::api::MappingSummary;
+    use crate::mappings::state::LoadState as MappingsLoadState;
+    use crate::oauth::state::LoadState as OauthLoadState;
+    use crate::scripts::Kind;
+    use crate::scripts::screen::LoadState as ScriptsLoadState;
+    use crate::scripts::sync::{Candidate, LocalState};
+    use crate::secretmap::api::Mapping as SecretMapping;
+    use crate::secretmap::state::LoadState as SecretmapLoadState;
+
+    #[derive(Clone, Copy)]
+    struct Case {
+        name: &'static str,
+        view: View,
+        esv_view: EsvView,
+        populated: bool,
+        key: KeyEvent,
+        expected: Option<Act>,
+    }
+
+    fn tenant() -> Tenant {
+        Tenant {
+            name: "test".into(),
+            base_url: "https://test.invalid".into(),
+            theme: TenantTheme::Sandbox,
+            sa_id: None,
+            scopes: Vec::new(),
+        }
+    }
+
+    fn app_for(case: Case) -> App {
+        let mut app = App::for_test(vec![tenant()], case.view);
+        app.esv.view = case.esv_view;
+        if !case.populated {
+            return app;
+        }
+
+        let tenant = "test".to_string();
+        match (case.view, case.esv_view) {
+            (View::Esvs, EsvView::Variables) => {
+                app.esv.list.data.insert(
+                    tenant,
+                    EsvLoadState::Loaded(vec![json!({"_id": "esv-one"})]),
+                );
+            }
+            (View::Esvs, EsvView::Secrets) => {
+                app.secret.list.data.insert(
+                    tenant,
+                    EsvLoadState::Loaded(vec![json!({"_id": "esv-secret-one"})]),
+                );
+            }
+            (View::Esvs, EsvView::Mappings) => {
+                app.secretmap.data.insert(
+                    tenant,
+                    SecretmapLoadState::Loaded(vec![SecretMapping {
+                        secret_id: "scripted-decision-node".into(),
+                        alias: Some("esv-secret-one".into()),
+                    }]),
+                );
+            }
+            (View::Scripts, _) => {
+                app.scripts.data.insert(
+                    tenant,
+                    ScriptsLoadState::Loaded(vec![Candidate {
+                        kind: Kind::Am,
+                        realm: Some("alpha".into()),
+                        name: "script-one".into(),
+                        local: LocalState::Clean,
+                        is_default: false,
+                        context: None,
+                        evaluator_version: None,
+                    }]),
+                );
+            }
+            (View::Managed, _) => {
+                app.managed.data.insert(
+                    tenant,
+                    ManagedLoadState::Loaded(json!({
+                        "_id": "managed",
+                        "objects": [{
+                            "name": "alpha_user",
+                            "schema": {"properties": {"mail": {"type": "string"}}}
+                        }]
+                    })),
+                );
+            }
+            (View::Mappings, _) => {
+                app.mappings.data.insert(
+                    tenant,
+                    MappingsLoadState::Loaded(vec![MappingSummary {
+                        name: "users".into(),
+                        source: "system/ldap/account".into(),
+                        target: "managed/alpha_user".into(),
+                        inline_script_count: 0,
+                        queued_sync: None,
+                    }]),
+                );
+            }
+            (View::Access, _) => {
+                app.access.data.insert(
+                    tenant,
+                    AccessLoadState::Loaded(
+                        Document::from_value(crate::access::six_rule_fixture()).unwrap(),
+                    ),
+                );
+            }
+            (View::Oauth, _) => {
+                app.oauth
+                    .data
+                    .insert(tenant, OauthLoadState::Loaded(vec!["client-one".into()]));
+            }
+            // The IDM-store screen currently reports no list rows, so it has
+            // no populated fixture to install.
+            (View::IdmStore, _) => {}
+        }
+        app
+    }
+
+    fn char_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn code(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn normal_bind_reachability_matches_each_view() {
+        use Act::*;
+        use EsvView::{Mappings as EsvMappings, Secrets, Variables};
+        use View::*;
+
+        let mut cases = Vec::new();
+        let mut add = |name, view, esv_view, populated, key, expected| {
+            cases.push(Case {
+                name,
+                view,
+                esv_view,
+                populated,
+                key,
+                expected,
+            });
+        };
+
+        // Removing or moving a view's primary/create/delete pushes in
+        // `normal_binds` makes these rows red. Uppercase D on Access is pinned
+        // alongside the existing d and Delete triggers.
+        add(
+            "variable edit",
+            Esvs,
+            Variables,
+            true,
+            code(KeyCode::Enter),
+            Some(Primary),
+        );
+        add(
+            "variable delete",
+            Esvs,
+            Variables,
+            true,
+            char_key('d'),
+            Some(Delete),
+        );
+        add(
+            "variable create",
+            Esvs,
+            Variables,
+            true,
+            ctrl('n'),
+            Some(NewItem),
+        );
+        add(
+            "secret versions",
+            Esvs,
+            Secrets,
+            true,
+            code(KeyCode::Enter),
+            Some(Primary),
+        );
+        add(
+            "secret delete",
+            Esvs,
+            Secrets,
+            true,
+            char_key('D'),
+            Some(Delete),
+        );
+        add(
+            "secret create",
+            Esvs,
+            Secrets,
+            true,
+            ctrl('n'),
+            Some(NewItem),
+        );
+        add(
+            "secret mapping edit",
+            Esvs,
+            EsvMappings,
+            true,
+            char_key('e'),
+            Some(Primary),
+        );
+        add(
+            "secret mapping delete",
+            Esvs,
+            EsvMappings,
+            true,
+            char_key('d'),
+            Some(Delete),
+        );
+        add(
+            "secret mapping add",
+            Esvs,
+            EsvMappings,
+            true,
+            char_key('a'),
+            Some(NewItem),
+        );
+        add(
+            "managed edit field",
+            Managed,
+            Variables,
+            true,
+            code(KeyCode::Enter),
+            Some(Primary),
+        );
+        add(
+            "managed add field",
+            Managed,
+            Variables,
+            true,
+            char_key('a'),
+            Some(NewItem),
+        );
+        add(
+            "managed delete field",
+            Managed,
+            Variables,
+            true,
+            char_key('d'),
+            Some(Delete),
+        );
+        add(
+            "access edit",
+            Access,
+            Variables,
+            true,
+            code(KeyCode::Enter),
+            Some(Primary),
+        );
+        add(
+            "access delete d",
+            Access,
+            Variables,
+            true,
+            char_key('d'),
+            Some(Delete),
+        );
+        add(
+            "access delete D",
+            Access,
+            Variables,
+            true,
+            char_key('D'),
+            Some(Delete),
+        );
+        add(
+            "access Delete",
+            Access,
+            Variables,
+            true,
+            code(KeyCode::Delete),
+            Some(Delete),
+        );
+        add(
+            "oauth inspect",
+            Oauth,
+            Variables,
+            true,
+            code(KeyCode::Enter),
+            Some(Primary),
+        );
+        add(
+            "mappings has no primary",
+            Mappings,
+            Variables,
+            true,
+            code(KeyCode::Enter),
+            None,
+        );
+        add(
+            "scripts has no delete",
+            Scripts,
+            Variables,
+            true,
+            char_key('d'),
+            None,
+        );
+        add(
+            "oauth has no delete",
+            Oauth,
+            Variables,
+            true,
+            char_key('d'),
+            None,
+        );
+
+        // Deleting a view's ^Z/^Y pushes, or widening their view guard onto a
+        // read-only/non-undoable tab, makes this group red.
+        for (name, view, esv_view) in [
+            ("variables", Esvs, Variables),
+            ("secrets", Esvs, Secrets),
+            ("secret mappings", Esvs, EsvMappings),
+            ("managed", Managed, Variables),
+            ("access", Access, Variables),
+        ] {
+            add(name, view, esv_view, true, ctrl('z'), Some(Undo));
+            add(name, view, esv_view, true, ctrl('y'), Some(UndoHistory));
+        }
+        for (name, view) in [
+            ("scripts cannot undo", Scripts),
+            ("sync mappings cannot undo", Mappings),
+            ("query cannot undo", IdmStore),
+            ("oauth cannot undo", Oauth),
+        ] {
+            add(name, view, Variables, true, ctrl('z'), None);
+            add(name, view, Variables, true, ctrl('y'), None);
+        }
+
+        // Headline regression guard: deleting the ^D/^U pushes from the
+        // `access_view` branch of `normal_binds` must fail this test, because
+        // that is the defect it exists to prevent. Moving detail scrolling to
+        // a view without a detail pane makes the negative rows red.
+        for (name, view, esv_view) in [
+            ("secret mapping", Esvs, EsvMappings),
+            ("access", Access, Variables),
+            ("oauth", Oauth, Variables),
+        ] {
+            add(
+                name,
+                view,
+                esv_view,
+                true,
+                ctrl('d'),
+                Some(DetailScrollDown),
+            );
+            add(name, view, esv_view, true, ctrl('u'), Some(DetailScrollUp));
+        }
+        for (name, view, esv_view) in [
+            ("variables have no detail scroll", Esvs, Variables),
+            ("secrets have no detail scroll", Esvs, Secrets),
+            ("scripts have no detail scroll", Scripts, Variables),
+            ("managed has no detail scroll", Managed, Variables),
+            ("sync mappings have no detail scroll", Mappings, Variables),
+            ("query has no detail scroll", IdmStore, Variables),
+        ] {
+            add(name, view, esv_view, true, ctrl('d'), None);
+            add(name, view, esv_view, true, ctrl('u'), None);
+        }
+
+        // Removing ^R from a refreshable view, or adding it to a view whose
+        // refresh lifecycle uses another action, makes these rows red.
+        for (name, view, esv_view) in [
+            ("secret mappings refresh", Esvs, EsvMappings),
+            ("managed refresh", Managed, Variables),
+            ("sync mappings refresh", Mappings, Variables),
+            ("access refresh", Access, Variables),
+            ("query refresh", IdmStore, Variables),
+            ("oauth refresh", Oauth, Variables),
+        ] {
+            add(name, view, esv_view, true, ctrl('r'), Some(Refresh));
+        }
+        for (name, view, esv_view) in [
+            ("variables do not expose refresh", Esvs, Variables),
+            ("secrets do not expose refresh", Esvs, Secrets),
+            ("scripts do not expose refresh", Scripts, Variables),
+        ] {
+            add(name, view, esv_view, true, ctrl('r'), None);
+        }
+
+        // Removing any managed-only push, or letting one escape the managed
+        // view guard, makes this group red.
+        for (name, key, expected) in [
+            ("rename field", char_key('r'), RenameField),
+            ("rename object", char_key('R'), RenameObject),
+            ("delete object", char_key('D'), DeleteObject),
+            ("add hook", char_key('h'), AddHook),
+            ("previous field", char_key('['), PrevField),
+            ("next field", char_key(']'), NextField),
+            ("new object", ctrl('n'), NewObject),
+        ] {
+            add(name, Managed, Variables, true, key, Some(expected));
+        }
+        add(
+            "access has no rename object",
+            Access,
+            Variables,
+            true,
+            char_key('R'),
+            None,
+        );
+        add(
+            "oauth has no new object",
+            Oauth,
+            Variables,
+            true,
+            ctrl('n'),
+            None,
+        );
+
+        // Access deliberately leaves ^N, ^Z, ^Y, and ^R outside `n > 0`, but
+        // selection-dependent edit/delete/detail actions stay inside it.
+        for (name, key, expected) in [
+            ("create first access rule", ctrl('n'), Some(NewItem)),
+            ("undo deletion of last access rule", ctrl('z'), Some(Undo)),
+            ("empty access undo history", ctrl('y'), Some(UndoHistory)),
+            ("refresh empty access", ctrl('r'), Some(Refresh)),
+            ("no empty access edit", code(KeyCode::Enter), None),
+            ("no empty access delete d", char_key('d'), None),
+            ("no empty access delete D", char_key('D'), None),
+            ("no empty access Delete", code(KeyCode::Delete), None),
+            ("no empty access detail down", ctrl('d'), None),
+            ("no empty access detail up", ctrl('u'), None),
+        ] {
+            add(name, Access, Variables, false, key, expected);
+        }
+
+        for case in &cases {
+            let app = app_for(*case);
+            let actual = Bind::resolve(&normal_binds(&app), &case.key);
+            assert_eq!(
+                actual, case.expected,
+                "{}: {:?}/{:?}, populated={}, key={:?}",
+                case.name, case.view, case.esv_view, case.populated, case.key
+            );
+        }
+
+        for view in View::all() {
+            assert!(
+                cases.iter().any(|case| case.view == *view),
+                "reachability table omitted {view:?}"
+            );
+        }
+        for esv_view in [Variables, Secrets, EsvMappings] {
+            assert!(
+                cases
+                    .iter()
+                    .any(|case| case.view == Esvs && case.esv_view == esv_view),
+                "reachability table omitted ESV sub-view {esv_view:?}"
+            );
+        }
     }
 }

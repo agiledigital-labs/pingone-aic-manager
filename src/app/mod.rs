@@ -216,17 +216,60 @@ impl App {
             tracing::warn!("undo expire-stale sweep failed: {e}");
         }
 
-        Ok(Self {
+        Ok(Self::from_parts(
+            config,
+            settings,
+            wraps,
+            tenants,
+            active_tenant_idx,
+            View::Esvs,
+            has_env_creds,
+            undo,
+        ))
+    }
+
+    /// Build a fully in-memory app for unit tests.
+    ///
+    /// Unlike [`App::new`], this does not load configuration, inspect the
+    /// process environment, initialise persistent storage, or sweep the undo
+    /// log. Keep it test-only: separating runtime loading from construction is
+    /// a wider design decision than the unit tests need.
+    #[cfg(test)]
+    pub fn for_test(tenants: Vec<Tenant>, active_view: View) -> Self {
+        Self::from_parts(
+            None,
+            None,
+            WrapsFile::default(),
+            tenants,
+            0,
+            active_view,
+            false,
+            Box::new(crate::undo::MemoryLog::new()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_parts(
+        config: Option<ProjectConfig>,
+        settings: Option<Settings>,
+        wraps: WrapsFile,
+        tenants: Vec<Tenant>,
+        active_tenant_idx: usize,
+        active_view: View,
+        has_env_creds: bool,
+        undo: Box<dyn crate::undo::UndoLog>,
+    ) -> Self {
+        Self {
             events: EventHandler::new(),
             config,
             settings,
             input_mode: InputMode::Normal,
-            active_view: View::Esvs,
+            active_view,
             current_realm: Realm::Alpha,
             tenants,
             active_tenant_idx,
             env_picker_idx: active_tenant_idx,
-            selector: selector::State::new(View::Esvs),
+            selector: selector::State::new(active_view),
             undo_history_idx: 0,
             toasts: VecDeque::new(),
             should_quit: false,
@@ -251,7 +294,7 @@ impl App {
             idmstore: crate::idmstore::state::State::new(),
             oauth: crate::oauth::state::State::new(),
             secretmap: crate::secretmap::state::State::new(),
-        })
+        }
     }
 
     /// Pick the initial mode from on-disk state:
