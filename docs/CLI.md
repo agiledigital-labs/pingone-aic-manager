@@ -95,6 +95,7 @@ binary deliberately does not read passwords from environment variables.
 | `aic ctx list [--json]`        | List tenants defined in `.aic/config.toml`.                                                                    |
 | `aic ctx current`              | Print the active context.                                                                                      |
 | `aic ctx use <tenant>`         | Switch the active context.                                                                                     |
+| `aic ctx rm <tenant>`          | Remove a tenant entry and the local artifacts belonging to it. See below.                                      |
 | `aic whoami [--tenant <name>]` | Mint and print token info plus the local operator name and host for a context.                                 |
 | `aic whoami --token`           | Print **only** the bearer token (for scripting, e.g. `curl -H "Authorization: Bearer $(aic whoami --token)"`). |
 
@@ -102,6 +103,64 @@ The normal `whoami` output includes `operator: <name> on <host>`. When the name
 has not been saved yet, the line says it is unset and points to
 `aic settings set operator.name <name>`. `--token` remains exactly one bare
 token on stdout.
+
+Unlike the other `ctx` verbs, `rm` needs an unlocked agent: it reads the vault
+to find out what the tenant owns, and withdraws a signing key from the tenant
+itself.
+
+#### `aic ctx rm` — remove a tenant
+
+| Flag            | Effect                                                                                     |
+| --------------- | ------------------------------------------------------------------------------------------ |
+| `--dry-run`     | Print the plan and exit, changing nothing.                                                 |
+| `--json`        | Print the plan as JSON and exit, changing nothing.                                         |
+| `--delete-keys` | Accept every offered artifact and skip all prompts, including the typed-name confirmation. |
+| `--yes`         | Confirm a write to a production-themed tenant.                                             |
+
+The command prints a plan first, then asks `[Y/n]` per artifact, then requires
+the tenant name typed back. Each row is one of four states:
+
+- **offered**, defaulting to on — or to **off** when the credential's recorded
+  provenance says you supplied it rather than `aic` minting it;
+- **absent** — nothing stored, so no choice is offered;
+- **refused** — a _surviving_ tenant entry still needs it. `--delete-keys`
+  forces past a prompt, **never** past a refusal;
+- **implied** — the workspace directory contains the sync state, so accepting
+  the workspace takes it regardless.
+
+Refusal is matched on resource identity, not on the tenant name: the same
+`sa_id`, the same log `api_key_id`, the same signing kid on the same `base_url`,
+or a colliding sanitised store filename. Two entries can point at one AIC tenant
+and share some credentials while differing in others, which is why the plan
+prints those identifiers — with two similar entries they are the only way to
+tell which one you are about to remove.
+
+**Two things `aic` cannot delete, and will report instead.** The service account
+and the log API key both need an admin-user bearer; a service-account bearer
+gets 403 on `DELETE /openidm/managed/svcacct/{id}` and on `DELETE /keys/{id}`
+(`docs/api/00-auth.md`, `docs/api/08-logs.md`). So purging those removes the
+local credential only, and the run ends by naming the `sa_id` and `api_key_id`
+to delete in the AIC console. That is the expected end of a successful run, not
+an error.
+
+The Trusted JWT Issuer is different: the issuer is **shared**, holding one
+signing key per install, so `rm` withdraws only this install's kid and never
+deletes the issuer. If that remote step fails the local purge still completes
+and the kid is reported — it stays trusted by the tenant until you remove it in
+the console.
+
+A pre-delete backup is written to
+`.aic/backups/tenant-<name>-<YYYYMMDD>T<HHMMSS>Z.json` at mode 0600. It holds
+the config entry and the identifiers, and **no secret material** — the vault may
+be encrypted, and a plaintext private key beside it would defeat that. The
+backup makes an accidental deletion reconstructible (you can re-onboard with the
+same values), not reversible. If you want to keep the credentials themselves,
+export them before deleting: once the entry is gone, no command can name the
+tenant to reach its vault entries.
+
+Execution removes the `[[tenant]]` entry **last**. If anything before it fails,
+the entry stays and the whole removal can be retried; the command exits non-zero
+and says so.
 
 ### aic auth — mint a token as an end user
 
