@@ -123,37 +123,37 @@ impl OptionalEdit {
 #[derive(Debug, Clone)]
 pub struct OptionalField {
     pub input: TextField,
-    pub edit: OptionalEdit,
+    pub edit: Option<OptionalEdit>,
 }
 
 impl OptionalField {
     fn create(label: &str) -> Self {
         Self {
             input: TextField::single_line(label),
-            edit: OptionalEdit::Set,
+            edit: None,
         }
     }
 
     fn edit(label: &str, value: Option<&str>) -> Self {
         Self {
             input: TextField::single_line(label).with_initial(value.unwrap_or_default()),
-            edit: OptionalEdit::Unchanged,
+            edit: Some(OptionalEdit::Unchanged),
         }
     }
 
     pub fn set_clear(&mut self) {
-        self.edit = OptionalEdit::Clear;
+        self.edit = Some(OptionalEdit::Clear);
     }
 
     pub fn set_unchanged(&mut self) {
-        self.edit = OptionalEdit::Unchanged;
+        self.edit = Some(OptionalEdit::Unchanged);
     }
 
     pub fn handle_key(&mut self, key: &crossterm::event::KeyEvent) -> bool {
         let before = self.input.value.clone();
         let handled = self.input.handle_key(key);
-        if handled && self.input.value != before {
-            self.edit = OptionalEdit::Set;
+        if handled && self.input.value != before && self.edit.is_some() {
+            self.edit = Some(OptionalEdit::Set);
         }
         handled
     }
@@ -182,7 +182,7 @@ pub struct RuleFormState {
     pub custom_authz: OptionalField,
     pub exclude_patterns: OptionalField,
     pub focused: FormFocus,
-    pub confirming: bool,
+    confirming: bool,
     pub error: Option<String>,
     pub known_roles: Option<spec::RoleIndex>,
     pub role_check_note: Option<String>,
@@ -260,6 +260,7 @@ impl RuleFormState {
 
     pub fn amendment(&self) -> spec::Amendment {
         match self.kind {
+            // Create treats an empty optional input as absent.
             FormKind::Create => spec::Amendment::Add(spec::RuleSpec {
                 pattern: self.pattern.value.clone(),
                 roles: self.roles.value.clone(),
@@ -268,6 +269,7 @@ impl RuleFormState {
                 custom_authz: nonempty(&self.custom_authz.input.value),
                 exclude_patterns: nonempty(&self.exclude_patterns.input.value),
             }),
+            // Edit preserves an explicitly set empty string as a present value.
             FormKind::Edit { index } => spec::Amendment::Edit {
                 index,
                 edit: spec::RuleEdit {
@@ -277,9 +279,9 @@ impl RuleFormState {
                     actions: optional_value(&self.actions),
                     custom_authz: optional_value(&self.custom_authz),
                     exclude_patterns: optional_value(&self.exclude_patterns),
-                    clear_actions: self.actions.edit == OptionalEdit::Clear,
-                    clear_custom_authz: self.custom_authz.edit == OptionalEdit::Clear,
-                    clear_exclude_patterns: self.exclude_patterns.edit == OptionalEdit::Clear,
+                    clear_actions: self.actions.edit == Some(OptionalEdit::Clear),
+                    clear_custom_authz: self.custom_authz.edit == Some(OptionalEdit::Clear),
+                    clear_exclude_patterns: self.exclude_patterns.edit == Some(OptionalEdit::Clear),
                 },
             },
         }
@@ -293,6 +295,18 @@ impl RuleFormState {
             _ => None,
         }
     }
+
+    pub fn review(&mut self) {
+        self.confirming = true;
+    }
+
+    pub fn unreview(&mut self) {
+        self.confirming = false;
+    }
+
+    pub fn confirming(&self) -> bool {
+        self.confirming
+    }
 }
 
 fn changed(field: &TextField, seed: &str) -> Option<String> {
@@ -300,7 +314,7 @@ fn changed(field: &TextField, seed: &str) -> Option<String> {
 }
 
 fn optional_value(field: &OptionalField) -> Option<String> {
-    (field.edit == OptionalEdit::Set).then(|| field.input.value.clone())
+    (field.edit == Some(OptionalEdit::Set)).then(|| field.input.value.clone())
 }
 
 fn nonempty(value: &str) -> Option<String> {
@@ -324,7 +338,7 @@ impl DeleteState {
             original_document: document.value.clone(),
             original_digest: document.digest.clone(),
             index: row.summary.index,
-            rule_digest: spec::digest(&row.raw),
+            rule_digest: row.summary.digest.clone(),
             confirmed: false,
         }
     }
@@ -397,6 +411,8 @@ impl State {
         self.selected = 0;
         self.scroll = 0;
         self.detail_scroll.reset();
+        self.form = None;
+        self.pending_delete = None;
     }
 
     pub fn clamp_selection(&mut self, count: usize) {
@@ -499,6 +515,38 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    type FormOptional = for<'a> fn(&'a mut RuleFormState) -> &'a mut OptionalField;
+    type EditOptional = for<'a> fn(&'a spec::RuleEdit) -> (Option<&'a str>, bool);
+
+    struct OptionalAccessors {
+        name: &'static str,
+        form: FormOptional,
+        edit: EditOptional,
+    }
+
+    const OPTIONAL_ACCESSORS: [OptionalAccessors; 3] = [
+        OptionalAccessors {
+            name: "actions",
+            form: |form| &mut form.actions,
+            edit: |edit| (edit.actions.as_deref(), edit.clear_actions),
+        },
+        OptionalAccessors {
+            name: "customAuthz",
+            form: |form| &mut form.custom_authz,
+            edit: |edit| (edit.custom_authz.as_deref(), edit.clear_custom_authz),
+        },
+        OptionalAccessors {
+            name: "excludePatterns",
+            form: |form| &mut form.exclude_patterns,
+            edit: |edit| {
+                (
+                    edit.exclude_patterns.as_deref(),
+                    edit.clear_exclude_patterns,
+                )
+            },
+        },
+    ];
 
     #[test]
     fn projection_preserves_absent_actions() {
@@ -650,46 +698,67 @@ mod tests {
 
     #[test]
     fn edit_form_maps_optional_fields_to_keep_set_and_clear() {
-        // Defaulting an edit field to Set, or representing Clear as an empty
-        // value, makes the corresponding table row fail.
+        // Miswiring any RuleFormState optional field to its RuleEdit value or
+        // clear flag makes that accessor's table row fail.
         let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
         let row = document.rows[1].clone();
 
-        for field in ["actions", "customAuthz", "excludePatterns"] {
-            for (name, change, expected_value, expected_clear) in [
-                ("untouched", OptionalEdit::Unchanged, None, false),
-                ("set", OptionalEdit::Set, Some("changed"), false),
-                ("clear", OptionalEdit::Clear, None, true),
+        for accessors in OPTIONAL_ACCESSORS {
+            for (name, change, input, expected_value, expected_clear) in [
+                ("untouched", OptionalEdit::Unchanged, "", None, false),
+                (
+                    "set value",
+                    OptionalEdit::Set,
+                    "changed",
+                    Some("changed"),
+                    false,
+                ),
+                ("set empty", OptionalEdit::Set, "", Some(""), false),
+                ("clear", OptionalEdit::Clear, "", None, true),
             ] {
                 let mut form = RuleFormState::edit("sandbox".into(), &document, &row);
-                let optional = match field {
-                    "actions" => &mut form.actions,
-                    "customAuthz" => &mut form.custom_authz,
-                    "excludePatterns" => &mut form.exclude_patterns,
-                    _ => unreachable!(),
-                };
-                optional.edit = change;
+                let optional = (accessors.form)(&mut form);
+                optional.edit = Some(change);
                 if change == OptionalEdit::Set {
-                    optional.input.set("changed");
+                    optional.input.set(input);
                 }
                 let spec::Amendment::Edit { edit, .. } = form.amendment() else {
                     panic!("edit form returned a non-edit amendment");
                 };
-                let (value, clear) = match field {
-                    "actions" => (edit.actions.as_deref(), edit.clear_actions),
-                    "customAuthz" => (edit.custom_authz.as_deref(), edit.clear_custom_authz),
-                    "excludePatterns" => (
-                        edit.exclude_patterns.as_deref(),
-                        edit.clear_exclude_patterns,
-                    ),
-                    _ => unreachable!(),
-                };
-                assert_eq!(value, expected_value, "{field} {name}");
-                assert_eq!(clear, expected_clear, "{field} {name}");
-                assert_eq!(edit.pattern, None, "{field} {name}: untouched pattern");
-                assert_eq!(edit.roles, None, "{field} {name}: untouched role path");
+                let (value, clear) = (accessors.edit)(&edit);
+                assert_eq!(value, expected_value, "{} {name}", accessors.name);
+                assert_eq!(clear, expected_clear, "{} {name}", accessors.name);
+                assert_eq!(
+                    edit.pattern, None,
+                    "{} {name}: untouched pattern",
+                    accessors.name
+                );
+                assert_eq!(
+                    edit.roles, None,
+                    "{} {name}: untouched role path",
+                    accessors.name
+                );
             }
         }
+    }
+
+    #[test]
+    fn reset_view_discards_tenant_bound_write_drafts() {
+        // Removing either reset assignment leaves the old tenant's form or
+        // delete confirmation available after State::reset_view.
+        let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
+        let mut state = State::new();
+        state.form = Some(RuleFormState::create("tenant-a".into(), &document));
+        state.pending_delete = Some(DeleteState::new(
+            "tenant-a".into(),
+            &document,
+            &document.rows[0],
+        ));
+
+        state.reset_view();
+
+        assert!(state.form.is_none());
+        assert!(state.pending_delete.is_none());
     }
 
     #[test]

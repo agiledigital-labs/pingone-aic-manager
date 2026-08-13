@@ -34,11 +34,11 @@ pub fn draw_form_modal(f: &mut Frame, app: &App, mode: Mode) {
         return;
     };
     f.render_widget(Clear, f.area());
-    if form.confirming {
+    if form.confirming() {
         draw_review_modal(f, form);
         return;
     }
-    let (title, status) = match form.kind {
+    let (title, default_status) = match form.kind {
         FormKind::Create => (
             "Create access rule",
             "Append one grant to config/access".to_string(),
@@ -47,14 +47,13 @@ pub fn draw_form_modal(f: &mut Frame, app: &App, mode: Mode) {
             "Edit access rule",
             format!(
                 "Rule #{index} · {} · untouched fields remain byte-identical",
-                form.original_rule_digest
-                    .as_deref()
-                    .unwrap_or_default()
-                    .get(..8)
-                    .unwrap_or_default()
+                crate::access::spec::short(
+                    form.original_rule_digest.as_deref().unwrap_or_default()
+                )
             ),
         ),
     };
+    let status = form.error.as_deref().unwrap_or(&default_status);
     let hints = if mode == Mode::Edit {
         vec![
             ("Tab", "navigate"),
@@ -65,16 +64,17 @@ pub fn draw_form_modal(f: &mut Frame, app: &App, mode: Mode) {
     } else {
         vec![("Tab", "navigate"), ("^S", "review"), ("Esc", "cancel")]
     };
+    // Six fields + the save row are two rows each, followed by flexible space.
+    const BODY: u16 = 7 * 2 + 1;
     let body = crate::tui::modal_chrome::Modal {
         title,
-        status: Some(&status),
+        status: Some(status),
         hints: &hints,
-        body_height: 17,
+        body_height: BODY,
     }
     .draw(f, f.area());
 
     let rows = Layout::vertical([
-        Constraint::Length(2),
         Constraint::Length(2),
         Constraint::Length(2),
         Constraint::Length(2),
@@ -112,17 +112,7 @@ pub fn draw_form_modal(f: &mut Frame, app: &App, mode: Mode) {
         form.focused == FormFocus::ExcludePatterns,
         mode,
     );
-    if let Some(error) = &form.error {
-        f.render_widget(
-            Paragraph::new(Span::styled(
-                error.clone(),
-                Style::default().fg(Color::Yellow),
-            ))
-            .wrap(Wrap { trim: false }),
-            rows[6],
-        );
-    }
-    draw_save_button(f, rows[7], form.focused == FormFocus::Save);
+    draw_save_button(f, rows[6], form.focused == FormFocus::Save);
 }
 
 fn draw_review_modal(f: &mut Frame, form: &crate::access::state::RuleFormState) {
@@ -188,8 +178,10 @@ fn draw_optional_field(
     mode: Mode,
 ) {
     let mut input = field.input.clone();
-    if mode == Mode::Edit {
-        input.label = format!("{}  [{}]", input.label, field.edit.label());
+    if mode == Mode::Edit
+        && let Some(edit) = field.edit
+    {
+        input.label = format!("{}  [{}]", input.label, edit.label());
     }
     input.draw(f, area, focused);
 }
@@ -210,7 +202,7 @@ pub fn draw_delete_confirm(f: &mut Frame, app: &App) {
     let Some(delete) = app.access.pending_delete.as_ref() else {
         return;
     };
-    let digest = delete.rule_digest.get(..8).unwrap_or(&delete.rule_digest);
+    let digest = crate::access::spec::short(&delete.rule_digest);
     let message = format!(
         "Delete rule #{} ({digest})?\n\nRules are OR-ed: editing or deleting a granting rule is the only way to revoke access. This can lock operators out, including you.\n\nThe prior whole document is recorded for undo.",
         delete.index
@@ -412,7 +404,7 @@ fn draw_detail(f: &mut Frame, app: &App, matches: &[RuleMatch], area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                rule.summary.digest.clone(),
+                crate::access::spec::short(&rule.summary.digest).to_string(),
                 Style::default().fg(Color::Cyan),
             ),
             if rule.summary.duplicate {

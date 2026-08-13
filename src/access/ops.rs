@@ -14,7 +14,7 @@ use crate::access::spec::{Amendment, RuleEdit, RuleSpec, TouchedIndices};
 use crate::access::state::{DeleteState, Document, FormKind, RuleFormState};
 use crate::app::event::{AppEvent, ToastKind};
 use crate::app::prod_confirm::PendingProdAction;
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, View};
 use crate::config::ProjectConfig;
 use crate::config::tenant::TenantTheme;
 use crate::undo::{
@@ -417,6 +417,11 @@ fn normalize_apply_id(document: &mut Value) -> Result<()> {
 }
 
 pub fn request_from_form(form: &RuleFormState) -> Result<WriteRequest> {
+    if !form.confirming() {
+        return Err(Error::Config(
+            "access rule write requires confirmation".into(),
+        ));
+    }
     let amendment = form.amendment();
     let amended = amend(&form.original_document, amendment.clone())?;
     let warnings = validate_amended(&amended, form.known_roles.as_ref())?;
@@ -459,12 +464,16 @@ pub fn request_from_delete(delete: &DeleteState) -> Result<WriteRequest> {
     let amendment = Amendment::Remove(vec![delete.index]);
     let amended = amend(&delete.original_document, amendment.clone())?;
     let warnings = validate_amended(&amended, None)?;
+    let expected_rule = rules(&delete.original_document)?
+        .get(delete.index)
+        .map(crate::access::spec::digest)
+        .ok_or_else(|| Error::Config(format!("access rule #{} no longer exists", delete.index)))?;
     Ok(WriteRequest {
         tenant: delete.tenant.clone(),
         expected_document_digest: delete.original_digest.clone(),
         previous_document: delete.original_document.clone(),
         amendment,
-        expected_rule: Some((delete.index, delete.rule_digest.clone())),
+        expected_rule: Some((delete.index, expected_rule)),
         after: amended.after,
         description: format!("Restore access rule #{}", delete.index),
         resume_mode: ResumeMode::DeleteConfirm,
@@ -513,7 +522,7 @@ pub fn submit_write(app: &mut App, request: WriteRequest) {
         .is_some_and(|tenant| tenant.theme == TenantTheme::Production)
     {
         if let Some(form) = app.access.form.as_mut() {
-            form.confirming = false;
+            form.unreview();
         }
         app.prod_confirm.pending = Some(PendingProdAction::Access(ProdAction::Write(Box::new(
             request,
@@ -682,7 +691,9 @@ pub(crate) fn prepare_live_write(
         let actual = crate::access::spec::digest(rule);
         if actual != *expected_digest {
             return Err(WriteFailure::Stale(format!(
-                "selected access rule #{index} changed from digest {expected_digest} to {actual}; nothing was written"
+                "selected access rule #{index} changed from digest {} to {}; nothing was written",
+                crate::access::spec::short(expected_digest),
+                crate::access::spec::short(&actual)
             )));
         }
     }
@@ -698,6 +709,7 @@ pub fn apply_write_result(
     resume_mode: ResumeMode,
     result: std::result::Result<(), WriteFailure>,
 ) {
+    let may_restore_input_mode = write_mode_is_current(app, resume_mode);
     app.access.in_flight_writes.remove(&tenant);
     if let Some(status) = undo_disposition(&result) {
         mark_undo(app, undo_id, status);
@@ -721,7 +733,9 @@ pub fn apply_write_result(
             }
             app.access.form = None;
             app.access.pending_delete = None;
-            app.input_mode = InputMode::Normal;
+            if may_restore_input_mode {
+                app.input_mode = InputMode::Normal;
+            }
             let count = crate::access::screen::row_count(app);
             app.access.clamp_selection(count);
             app.push_toast(
@@ -780,12 +794,27 @@ fn retained_guidance(mode: ResumeMode) -> &'static str {
 
 fn set_draft_error(app: &mut App, resume_mode: ResumeMode, message: String) {
     if let Some(form) = app.access.form.as_mut() {
-        form.confirming = false;
+        form.unreview();
         form.error = Some(message.clone());
     } else {
         app.push_toast(ToastKind::Error, message);
     }
-    app.input_mode = resume_mode.input_mode();
+    if write_mode_is_current(app, resume_mode) {
+        app.input_mode = resume_mode.input_mode();
+    }
+}
+
+/// May a landing write result put the operator back into this tab's own mode?
+///
+/// Only if they are still *in* this tab and have not opened something else. Both
+/// halves are load-bearing, and for the same reason: `draw.rs` routes the form
+/// modal on `input_mode` alone and returns, so a stale restore does not overlay
+/// the Access tab — it replaces whatever the operator is actually looking at.
+/// The mode test alone is not enough, because switching view leaves
+/// `input_mode` at `Normal` while `access.form` stays populated.
+fn write_mode_is_current(app: &App, resume_mode: ResumeMode) -> bool {
+    app.active_view == View::Access
+        && (app.input_mode == InputMode::Normal || app.input_mode == resume_mode.input_mode())
 }
 
 fn mark_undo(app: &mut App, undo_id: UndoId, status: EntryStatus) {
@@ -1188,6 +1217,7 @@ mod tests {
         let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
         let mut form = RuleFormState::edit("sandbox".into(), &document, &document.rows[1]);
         form.methods.set("read");
+        form.review();
         let request = request_from_form(&form).unwrap();
         let mut undo = MemoryLog::new();
         let id = record_write_undo(&mut undo, &request).unwrap();
@@ -1206,9 +1236,12 @@ mod tests {
 
     #[test]
     fn create_form_omits_empty_optional_keys() {
-        // Making create fields serialize their empty strings as Some makes
-        // this add actions/customAuthz/excludePatterns keys to the new rule.
+        // Giving create-only fields edit state or serializing their empty
+        // strings as Some breaks these state and amendment assertions.
         let form = create_form();
+        assert_eq!(form.actions.edit, None);
+        assert_eq!(form.custom_authz.edit, None);
+        assert_eq!(form.exclude_patterns.edit, None);
         let Amendment::Add(rule) = form.amendment() else {
             panic!("create form returned a non-add amendment");
         };
@@ -1222,7 +1255,9 @@ mod tests {
     fn create_request_has_no_expected_rule_precondition() {
         // Reusing the edit request branch for FormKind::Create makes the new
         // append depend on an unrelated indexed rule and fails this assertion.
-        let request = request_from_form(&create_form()).unwrap();
+        let mut form = create_form();
+        form.review();
+        let request = request_from_form(&form).unwrap();
 
         assert_eq!(request.expected_rule, None);
         assert!(matches!(request.amendment, Amendment::Add(_)));
@@ -1233,7 +1268,8 @@ mod tests {
         // Removing the changed.is_empty() rejection lets an untouched edit
         // create a backup and schedule a whole-document PUT.
         let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
-        let form = RuleFormState::edit("sandbox".into(), &document, &document.rows[0]);
+        let mut form = RuleFormState::edit("sandbox".into(), &document, &document.rows[0]);
+        form.review();
 
         assert!(
             matches!(request_from_form(&form), Err(Error::Config(message)) if message == "access rule is unchanged")
@@ -1250,6 +1286,7 @@ mod tests {
         form.known_roles = Some(crate::access::spec::RoleIndex::from_roles(
             std::iter::empty(),
         ));
+        form.review();
         let request = request_from_form(&form).unwrap();
 
         assert!(
@@ -1278,6 +1315,7 @@ mod tests {
         duplicate_form.roles.set(&duplicate.roles);
         duplicate_form.methods.set(&duplicate.methods);
         duplicate_form.actions.input.set("*");
+        duplicate_form.review();
         let request = request_from_form(&duplicate_form).unwrap();
         assert!(
             request
@@ -1368,6 +1406,63 @@ mod tests {
         delete.confirm();
         let request = request_from_delete(&delete).unwrap();
         assert!(matches!(request.amendment, Amendment::Remove(ref indices) if indices == &[4]));
+        assert_eq!(delete.rule_digest.len(), 8);
+        assert_eq!(request.expected_rule.unwrap().1.len(), 64);
+    }
+
+    #[test]
+    fn form_request_is_unavailable_until_the_review_step() {
+        // Removing the confirmation check from request_from_form makes the
+        // first call produce a write request before the operator reviews it.
+        let mut form = create_form();
+
+        assert!(request_from_form(&form).is_err());
+        form.review();
+        assert!(request_from_form(&form).is_ok());
+        form.unreview();
+        assert!(request_from_form(&form).is_err());
+    }
+
+    #[test]
+    fn write_results_only_restore_the_mode_the_write_released() {
+        // Broadening write_mode_is_current makes an async Access result steal
+        // whatever the operator moved on to. Dropping either half of the
+        // condition turns one table red: the mode half admits the unrelated
+        // modals, the view half admits every non-Access tab — and a tab switch
+        // leaves `input_mode` at `Normal` with `access.form` still populated,
+        // so that leg is reachable without opening anything.
+        let app_in = |view: View, input_mode: InputMode| {
+            let mut app = App::for_test(Vec::new(), view);
+            app.input_mode = input_mode;
+            app
+        };
+
+        for mode in [
+            InputMode::Normal,
+            InputMode::Access(crate::access::screen::Mode::Create),
+        ] {
+            assert!(write_mode_is_current(
+                &app_in(View::Access, mode),
+                ResumeMode::Create
+            ));
+        }
+        for mode in [
+            InputMode::Selector,
+            InputMode::EnvPicker,
+            InputMode::UndoHistory,
+            InputMode::Access(crate::access::screen::Mode::Edit),
+        ] {
+            assert!(!write_mode_is_current(
+                &app_in(View::Access, mode),
+                ResumeMode::Create
+            ));
+        }
+        for view in View::all().iter().filter(|view| **view != View::Access) {
+            assert!(
+                !write_mode_is_current(&app_in(*view, InputMode::Normal), ResumeMode::Create),
+                "a landing Access write would replace the {view:?} tab"
+            );
+        }
     }
 
     #[test]
@@ -1377,6 +1472,7 @@ mod tests {
         let document = Document::from_value(crate::access::six_rule_fixture()).unwrap();
         let mut form = RuleFormState::edit("sandbox".into(), &document, &document.rows[1]);
         form.methods.set("read");
+        form.review();
         let request = request_from_form(&form).unwrap();
         let mut live = document.value.clone();
         live["configs"][0]["methods"] = json!("read");
