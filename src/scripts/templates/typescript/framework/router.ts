@@ -15,6 +15,7 @@ import {
   methodNotAllowed,
   notFound,
   toCrestFault,
+  toCrestResponse,
   type CrestFault,
 } from "./errors.ts";
 import {
@@ -457,6 +458,8 @@ export function defineEndpoint(spec: EndpointSpec): EndpointMain {
       const captured = matched.captured ?? {};
       const routed = requestLog.child({ route: routeLabel(route) });
 
+      // Authorize before validation: validation detail would disclose the
+      // request schema to a caller that does not hold the route's scope.
       const denied = checkScopes(route.scopes, context);
       if (denied !== null) {
         routed.warn("scope check failed", { required: route.scopes });
@@ -523,7 +526,7 @@ export function defineEndpoint(spec: EndpointSpec): EndpointMain {
       } else if (fault.code >= 500) {
         requestLog.error("request failed", { code: fault.code });
       }
-      throw fault;
+      throw toCrestResponse(fault);
     }
   };
 

@@ -31,8 +31,10 @@ export {
   notFound,
   reasonFor,
   toCrestFault,
+  toCrestResponse,
   unauthorized,
   FAULT_TAG,
+  type CrestErrorResponse,
   type CrestFault,
 } from "./errors.ts";
 
@@ -48,6 +50,7 @@ export {
 export {
   assignPathKeys,
   operationId,
+  queryResultSchema,
   routeUrl,
   toOpenApi,
   type OpenApiOptions,
@@ -55,6 +58,7 @@ export {
 
 export type {
   CrestMethod,
+  QueryResultOptions,
   CrestQueryResult,
   CrestRequest,
   CrestRequestBase,
@@ -64,6 +68,8 @@ export type {
   JavaSet,
   PatchOperation,
 } from "./types.ts";
+
+export { queryResult } from "./types.ts";
 
 export type {
   Infer,

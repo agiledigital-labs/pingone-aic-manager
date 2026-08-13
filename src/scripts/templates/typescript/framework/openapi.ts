@@ -6,10 +6,9 @@
 // collide on one (path, method) key, which OpenAPI cannot express.
 //
 // The approach taken here: keep ONE OpenAPI operation per declared route, and
-// disambiguate by appending a `:<discriminator>` SUFFIX to the path key when —
-// and only when — a collision actually occurs (`/{widgetId}:retire`). The
-// colon-suffixed RPC form is the Google AIP-136 convention, so it reads
-// naturally, and every synthetic operation carries the machine-readable truth:
+// disambiguate with a `:<discriminator>` suffix (`/{widgetId}:retire`). Actions
+// always use that stable RPC form; a colliding query moves to `:query`. Every
+// synthetic operation carries the machine-readable truth:
 //
 //   x-crest-method  the CREST verb (`action`, `query`, …)
 //   x-crest-action  the `?_action=` name, for action routes
@@ -41,11 +40,10 @@ const CREST_ERROR_SCHEMA: JsonSchema = {
   description: "A CREST error response.",
   properties: {
     code: { type: "integer" },
-    reason: { type: "string" },
     message: { type: "string" },
     detail: {},
   },
-  required: ["code", "reason", "message"],
+  required: ["code", "message", "detail"],
 };
 
 const HTTP_METHOD: Record<string, string> = {
@@ -196,7 +194,7 @@ function operationFor(
   }
   if (route.scopes.length > 0) {
     operation["x-required-scopes"] = route.scopes.slice();
-    operation["security"] = [{ bearerAuth: route.scopes.slice() }];
+    operation["security"] = [{ oauth2: route.scopes.slice() }];
   }
   const bodySchema =
     route.method === "patch" ? route.patches?.schema : route.body?.schema;
@@ -217,6 +215,22 @@ function errorResponse(description: string): Record<string, unknown> {
         schema: { $ref: "#/components/schemas/CrestError" },
       },
     },
+  };
+}
+
+/** JSON Schema for the complete paging envelope IDM requires from queries. */
+export function queryResultSchema(item: JsonSchema): JsonSchema {
+  const paging: Record<string, JsonSchema> = {
+    resultCount: { type: "integer" },
+    pagedResultsCookie: { type: ["string", "null"] },
+    totalPagedResults: { type: "integer" },
+    remainingPagedResults: { type: "integer" },
+    totalPagedResultsPolicy: { type: "string" },
+  };
+  return {
+    type: "object",
+    properties: { result: { type: "array", items: item }, ...paging },
+    required: ["result", ...Object.keys(paging)],
   };
 }
 
@@ -265,6 +279,13 @@ export function toOpenApi(
     info["description"] = definition.description;
   }
 
+  const scopes: Record<string, string> = {};
+  for (const route of definition.routes) {
+    for (const scope of route.scopes) {
+      scopes[scope] = "Required by one or more endpoint routes.";
+    }
+  }
+
   const document: Record<string, unknown> = {
     openapi: "3.1.0",
     jsonSchemaDialect: "https://json-schema.org/draft/2020-12/schema",
@@ -273,10 +294,18 @@ export function toOpenApi(
     components: {
       schemas: { CrestError: CREST_ERROR_SCHEMA },
       securitySchemes: {
-        bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
+        oauth2: {
+          type: "oauth2",
+          flows: {
+            clientCredentials: {
+              tokenUrl: "/am/oauth2/access_token",
+              scopes,
+            },
+          },
+        },
       },
     },
-    security: [{ bearerAuth: [] }],
+    security: [{ oauth2: [] }],
   };
   if (options.serverUrl !== undefined) {
     document["servers"] = [{ url: options.serverUrl }];

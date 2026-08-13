@@ -12,28 +12,32 @@ import {
   badRequest,
   defineEndpoint,
   notFound,
+  queryResult,
   route,
   v,
 } from "../../framework/index.ts";
 import { audit } from "../shared/audit.ts";
 import { WIDGETS, findWidget } from "../shared/fixtures.ts";
-import { widgetId, widgetKey } from "../shared/widget-key.ts";
+import {
+  DAILY_RESPONSE,
+  REPORT_QUERY_RESPONSE,
+  SUMMARY_RESPONSE,
+  widgetId,
+  widgetKey,
+} from "../shared/widget-key.ts";
 
 const GROUPINGS = ["day", "status"] as const;
 
 export default defineEndpoint({
   name: "aicdemo-a1-claude-reports",
   summary: "Widget reports (demo)",
-  description:
-    "Reads its widget vocabulary from the same shared module as the widgets " +
-    "endpoint, so an id that is valid in one is valid in the other.",
   headers: { "x-request-id": v.optional(v.uuid()) },
   routes: [
     route({
       method: "read",
       path: "/daily/{date}",
-      summary: "One day's widget activity",
       params: { date: v.isoDate("Report day, YYYY-MM-DD.") },
+      response: DAILY_RESPONSE,
       handler: ({ params, context, log }) => {
         audit(log, context, {
           action: "report.daily.read",
@@ -52,8 +56,8 @@ export default defineEndpoint({
     route({
       method: "read",
       path: "/widget/{widgetId}/summary",
-      summary: "Lifetime summary for one widget",
       params: { widgetId: widgetId() },
+      response: SUMMARY_RESPONSE,
       handler: ({ params, log }) => {
         const widget = findWidget(params.widgetId);
         if (widget === undefined) {
@@ -75,12 +79,12 @@ export default defineEndpoint({
     route({
       method: "query",
       path: "/",
-      summary: "Aggregate widget counts over a date range",
       query: {
         from: v.isoDate("Inclusive start date."),
         to: v.isoDate("Inclusive end date."),
         groupBy: v.withDefault(v.enumOf(GROUPINGS), "day"),
       },
+      response: REPORT_QUERY_RESPONSE,
       handler: ({ query, log }) => {
         if (query.from > query.to) {
           // Lexicographic comparison is exact for YYYY-MM-DD.
@@ -98,13 +102,7 @@ export default defineEndpoint({
                 { _id: query.from, bucket: query.from, count: 2 },
                 { _id: query.to, bucket: query.to, count: 1 },
               ];
-        return {
-          result: rows,
-          resultCount: rows.length,
-          pagedResultsCookie: null,
-          totalPagedResults: rows.length,
-          totalPagedResultsPolicy: "EXACT",
-        };
+        return queryResult(rows);
       },
     }),
   ],

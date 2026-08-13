@@ -5,8 +5,8 @@
 // bundle cannot go through that config — it would also have to satisfy
 // `prettier/prettier` and `tsc`, neither of which is meaningful for generated
 // output — so the same three bans are re-implemented here over the emitted
-// file. Each one makes the endpoint fail to REGISTER (an un-routable 404), not
-// merely misbehave, so shipping one is expensive to diagnose.
+// file. The syntax rules make the endpoint fail to REGISTER; bare `Reflect`
+// and `Proxy` references fail when executed because neither global exists.
 //
 // Sources: docs/api/11-idm-endpoints.md "Quirks", verified 2026-06-10.
 //
@@ -40,6 +40,19 @@ export function findRuntimeBanViolations(code) {
   const at = (node) => (node.loc ? node.loc.start.line : 0);
 
   traverse(ast, {
+    ReferencedIdentifier(path) {
+      const name = path.node.name;
+      if (
+        (name === "Reflect" || name === "Proxy") &&
+        path.scope.getBinding(name) === undefined
+      ) {
+        violations.push({
+          line: at(path.node),
+          rule: "no-unsupported-global",
+          message: "`" + name + "` is undefined on the IDM script engine",
+        });
+      }
+    },
     enter(path) {
       const node = path.node;
 

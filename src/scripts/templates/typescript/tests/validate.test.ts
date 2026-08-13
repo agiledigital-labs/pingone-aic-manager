@@ -3,157 +3,139 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { v, type Issue } from "../framework/index.ts";
+import { v, type Issue, type Validator } from "../framework/index.ts";
 
-function run<T>(
-  validator: { parse(i: unknown, p: string, s: Issue[]): T },
-  input: unknown
-) {
+function run<T>(validator: Validator<T>, input: unknown) {
   const issues: Issue[] = [];
   const value = validator.parse(input, "x", issues);
   return { value, issues };
 }
 
-test("string enforces length and pattern", () => {
-  const validator = v.string({
-    minLength: 2,
-    maxLength: 4,
-    pattern: /^[a-z]+$/,
+const boundedString = v.string({
+  minLength: 2,
+  maxLength: 4,
+  pattern: /^[a-z]+$/,
+});
+const boundedInteger = v.integer({ min: 1, max: 100 });
+const bool = v.boolean();
+const optionalString = v.optional(v.string());
+const defaultInteger = v.withDefault(v.integer({ min: 0 }), 20);
+const commaList = v.csv(v.string({ minLength: 1 }));
+const boundedList = v.list(v.string(), { minItems: 1, maxItems: 2 });
+const fixedObject = v.object({
+  name: v.string({ minLength: 1 }),
+  note: v.optional(v.string()),
+});
+
+type Expected = { value?: unknown; messages?: string[]; paths?: string[] };
+type ParseCase = readonly [name: string, validator: Validator<unknown>, input: unknown, expected: Expected];
+
+function accepted(
+  name: string,
+  validator: Validator<unknown>,
+  input: unknown,
+  value: unknown
+): ParseCase {
+  return [name, validator, input, { value }];
+}
+
+function rejected(
+  name: string,
+  validator: Validator<unknown>,
+  input: unknown,
+  message: string,
+  path?: string
+): ParseCase {
+  return [name, validator, input, {
+    messages: [message],
+    ...(path === undefined ? {} : { paths: [path] }),
+  }];
+}
+
+const describedPattern = v.string({
+  pattern: /^w-/,
+  patternDescription: "start with w-",
+});
+const csvEnum = v.csv(v.enumOf(["owner", "history"]));
+const shortRecord = v.record(v.string({ maxLength: 2 }));
+const INTEGER = "expected an integer";
+const OBJECT = { name: "a", note: undefined };
+
+const parseCases: ParseCase[] = [
+  accepted("string: valid", boundedString, "abc", "abc"),
+  rejected("string: minimum", boundedString, "a", "must be at least 2 characters"),
+  rejected("string: maximum", boundedString, "abcde", "must be at most 4 characters"),
+  rejected("string: pattern", boundedString, "AB", "must match /^[a-z]+$/"),
+  rejected("string: wrong type", boundedString, 7, "expected a string"),
+  rejected("string: described pattern", describedPattern, "nope", "must start with w-"),
+  accepted("integer: string coercion", boundedInteger, "42", 42),
+  accepted("integer: native number", boundedInteger, 42, 42),
+  rejected("integer: fraction", boundedInteger, "1.5", INTEGER),
+  rejected("integer: blank", boundedInteger, "", INTEGER),
+  rejected("integer: non-numeric", boundedInteger, "nope", INTEGER),
+  rejected("integer: minimum", boundedInteger, "0", "must be at least 1"),
+  rejected("integer: maximum", boundedInteger, "101", "must be at most 100"),
+  accepted("number: fraction", v.number(), "1.5", 1.5),
+  accepted("boolean: true string", bool, "true", true),
+  accepted("boolean: false string", bool, "false", false),
+  accepted("boolean: native", bool, true, true),
+  rejected("boolean: invalid string", bool, "yes", "expected true or false"),
+  accepted("optional: undefined", optionalString, undefined, undefined),
+  accepted("optional: null", optionalString, null, undefined),
+  accepted("optional: empty", optionalString, "", undefined),
+  accepted("optional: present", optionalString, "x", "x"),
+  accepted("default: absent", defaultInteger, undefined, 20),
+  accepted("default: present", defaultInteger, "3", 3),
+  accepted("csv: split and trim", commaList, "a, b ,,c", ["a", "b", "c"]),
+  accepted("csv: empty", commaList, "", []),
+  accepted("csv: array", commaList, ["a", "b"], ["a", "b"]),
+  rejected("csv: item index", csvEnum, "owner,nope", "must be one of: owner, history", "x[1]"),
+  rejected("list: minimum", boundedList, [], "must have at least 1 items"),
+  rejected("list: maximum", boundedList, ["a", "b", "c"], "must have at most 2 items"),
+  rejected("list: wrong type", boundedList, "a", "expected an array"),
+  accepted("object: declared fields", fixedObject, { name: "a" }, OBJECT),
+  accepted("object: explicit undefined", fixedObject, OBJECT, OBJECT),
+  rejected("object: required field", fixedObject, {}, "is required", "x.name"),
+  rejected("object: unknown field", fixedObject, { name: "a", extra: 1 }, "is not a known field"),
+  rejected("object: wrong type", fixedObject, [], "expected an object"),
+  rejected("record: value path", shortRecord, { a: "xyz" }, "must be at most 2 characters", "x.a"),
+  rejected("patch: operation name", v.patchOperations(), [{ operation: "frobnicate", field: "/x" }], "must be one of: add, remove, replace, increment, move, copy, transform"),
+  rejected("UUID: pattern", v.uuid(), "not-a-uuid", "must be a UUID"),
+  rejected("ISO date: pattern", v.isoDate(), "2026-13", "must be a date in YYYY-MM-DD form"),
+];
+
+for (const [name, validator, input, expected] of parseCases) {
+  test(name, () => {
+    const parsed = run(validator, input);
+    if ("value" in expected) {
+      assert.deepEqual(parsed.value, expected.value);
+    }
+    if (expected.messages !== undefined) {
+      assert.deepEqual(
+        parsed.issues.map((issue) => issue.message),
+        expected.messages
+      );
+    }
+    if (expected.paths !== undefined) {
+      assert.deepEqual(
+        parsed.issues.map((issue) => issue.path),
+        expected.paths
+      );
+    }
+    if (expected.messages === undefined && expected.paths === undefined) {
+      assert.deepEqual(parsed.issues, []);
+    }
   });
-  assert.deepEqual(run(validator, "abc").issues, []);
-  assert.equal(
-    run(validator, "a").issues[0]?.message,
-    "must be at least 2 characters"
-  );
-  assert.equal(
-    run(validator, "abcde").issues[0]?.message,
-    "must be at most 4 characters"
-  );
-  assert.match(String(run(validator, "AB").issues[0]?.message), /^must match/);
-  assert.equal(run(validator, 7).issues[0]?.message, "expected a string");
-});
+}
 
-test("string reports a human pattern description when given one", () => {
-  const validator = v.string({
-    pattern: /^w-/,
-    patternDescription: "start with w-",
-  });
-  assert.equal(run(validator, "nope").issues[0]?.message, "must start with w-");
-});
-
-test("integer coerces from the string a query param actually delivers", () => {
-  const validator = v.integer({ min: 1, max: 100 });
-  assert.equal(run(validator, "42").value, 42);
-  assert.equal(run(validator, 42).value, 42);
-  assert.deepEqual(run(validator, "42").issues, []);
-});
-
-test("integer rejects fractions, blanks and out-of-range values", () => {
-  const validator = v.integer({ min: 1, max: 100 });
-  assert.equal(run(validator, "1.5").issues[0]?.message, "expected an integer");
-  assert.equal(run(validator, "").issues[0]?.message, "expected an integer");
-  assert.equal(
-    run(validator, "nope").issues[0]?.message,
-    "expected an integer"
-  );
-  assert.equal(
-    run(validator, "0").issues[0]?.message,
-    "must be at least 1"
-  );
-  assert.equal(
-    run(validator, "101").issues[0]?.message,
-    "must be at most 100"
-  );
-});
-
-test("number accepts fractions where integer does not", () => {
-  assert.equal(run(v.number(), "1.5").value, 1.5);
-  assert.deepEqual(run(v.number(), "1.5").issues, []);
-});
-
-test("boolean coerces the string forms", () => {
-  assert.equal(run(v.boolean(), "true").value, true);
-  assert.equal(run(v.boolean(), "false").value, false);
-  assert.equal(run(v.boolean(), true).value, true);
-  assert.equal(run(v.boolean(), "yes").issues.length, 1);
-});
-
-test("enumOf narrows to the literal union and lists the alternatives", () => {
+test("enumOf preserves its literal union", () => {
   const validator = v.enumOf(["active", "retired", "draft"]);
   const parsed = run(validator, "retired");
-  // Type-level: `parsed.value` is "active" | "retired" | "draft", not string.
   const narrowed: "active" | "retired" | "draft" = parsed.value;
   assert.equal(narrowed, "retired");
-  assert.equal(
-    run(validator, "nope").issues[0]?.message,
-    "must be one of: active, retired, draft"
-  );
-  assert.deepEqual(validator.schema["enum"], ["active", "retired", "draft"]);
 });
 
-test("optional turns absent, null and empty string into undefined", () => {
-  const validator = v.optional(v.string());
-  assert.equal(run(validator, undefined).value, undefined);
-  assert.equal(run(validator, null).value, undefined);
-  assert.equal(run(validator, "").value, undefined);
-  assert.equal(run(validator, "x").value, "x");
-  assert.equal(validator.isOptional, true);
-});
-
-test("withDefault substitutes but stays required-typed", () => {
-  const validator = v.withDefault(v.integer({ min: 0 }), 20);
-  assert.equal(run(validator, undefined).value, 20);
-  assert.equal(run(validator, "3").value, 3);
-  assert.equal(validator.schema["default"], 20);
-});
-
-test("csv splits, trims and drops empty segments", () => {
-  const validator = v.csv(v.string({ minLength: 1 }));
-  assert.deepEqual(run(validator, "a, b ,,c").value, ["a", "b", "c"]);
-  assert.deepEqual(run(validator, "").value, []);
-  assert.deepEqual(run(validator, ["a", "b"]).value, ["a", "b"]);
-});
-
-test("csv validates each element and reports its index", () => {
-  const validator = v.csv(v.enumOf(["owner", "history"]));
-  const parsed = run(validator, "owner,nope");
-  assert.equal(parsed.issues.length, 1);
-  assert.equal(parsed.issues[0]?.path, "x[1]");
-});
-
-test("list enforces item bounds", () => {
-  const validator = v.list(v.string(), { minItems: 1, maxItems: 2 });
-  assert.equal(
-    run(validator, []).issues[0]?.message,
-    "must have at least 1 items"
-  );
-  assert.equal(
-    run(validator, ["a", "b", "c"]).issues[0]?.message,
-    "must have at most 2 items"
-  );
-  assert.equal(run(validator, "a").issues[0]?.message, "expected an array");
-});
-
-test("object requires declared keys and rejects unknown ones", () => {
-  const validator = v.object({
-    name: v.string({ minLength: 1 }),
-    note: v.optional(v.string()),
-  });
-  assert.deepEqual(run(validator, { name: "a" }).issues, []);
-  assert.deepEqual(run(validator, { name: "a", note: undefined }).value, {
-    name: "a",
-    note: undefined,
-  });
-  assert.equal(run(validator, {}).issues[0]?.path, "x.name");
-  assert.equal(run(validator, {}).issues[0]?.message, "is required");
-  assert.equal(
-    run(validator, { name: "a", extra: 1 }).issues[0]?.message,
-    "is not a known field"
-  );
-  assert.equal(run(validator, []).issues[0]?.message, "expected an object");
-});
-
-test("object collects every failure rather than stopping at the first", () => {
+test("object collects every failure", () => {
   const validator = v.object({
     name: v.string({ minLength: 3 }),
     count: v.integer({ min: 1 }),
@@ -161,64 +143,51 @@ test("object collects every failure rather than stopping at the first", () => {
   assert.equal(run(validator, { name: "a", count: 0 }).issues.length, 2);
 });
 
-test("object schema lists exactly the required members", () => {
-  const validator = v.object({
-    name: v.string(),
-    note: v.optional(v.string()),
-    limit: v.withDefault(v.integer(), 5),
-  });
-  assert.deepEqual(validator.schema["required"], ["name"]);
-  assert.equal(validator.schema["additionalProperties"], false);
-});
-
-test("record validates every value under an open key set", () => {
-  const validator = v.record(v.string({ maxLength: 2 }));
-  assert.deepEqual(run(validator, { a: "x", b: "y" }).value, {
+test("record returns every valid member", () => {
+  assert.deepEqual(run(v.record(v.string()), { a: "x", b: "y" }).value, {
     a: "x",
     b: "y",
   });
-  assert.equal(run(validator, { a: "xyz" }).issues[0]?.path, "x.a");
 });
 
-test("patchOperations accepts the index-keyed object IDM mirrors a Java list as", () => {
-  const validator = v.patchOperations({ minItems: 1 });
-  const indexed = {
+test("patch operations accept IDM's index-keyed Java-list mirror", () => {
+  const parsed = run(v.patchOperations({ minItems: 1 }), {
     "0": { operation: "replace", field: "/name", value: "n" },
     "1": { operation: "remove", field: "/tags" },
-  };
-  const parsed = run(validator, indexed);
+  });
   assert.deepEqual(parsed.issues, []);
-  assert.equal(parsed.value.length, 2);
-  assert.equal(parsed.value[0]?.operation, "replace");
-  assert.equal(parsed.value[1]?.field, "/tags");
-});
-
-test("patchOperations rejects an unknown operation name", () => {
-  const parsed = run(v.patchOperations(), [
-    { operation: "frobnicate", field: "/x" },
-  ]);
-  assert.equal(parsed.issues.length, 1);
-  assert.match(String(parsed.issues[0]?.message), /must be one of/);
-});
-
-test("uuid and isoDate carry their patterns into the schema", () => {
   assert.deepEqual(
-    run(v.uuid(), "not-a-uuid").issues[0]?.message,
-    "must be a UUID"
+    parsed.value.map(({ operation, field }) => ({ operation, field })),
+    [
+      { operation: "replace", field: "/name" },
+      { operation: "remove", field: "/tags" },
+    ]
   );
-  assert.deepEqual(
-    run(v.isoDate(), "2026-13").issues[0]?.message,
-    "must be a date in YYYY-MM-DD form"
-  );
-  assert.equal(typeof v.uuid().schema["pattern"], "string");
 });
 
-test("parseShape reports a missing required member under its location", () => {
+const schemaCases: readonly (readonly [string, unknown, unknown])[] = [
+  ["enum schema lists its alternatives", v.enumOf(["a", "b"]).schema["enum"], ["a", "b"]],
+  ["optional marks itself optional", optionalString.isOptional, true],
+  ["default reaches JSON Schema", defaultInteger.schema["default"], 20],
+  ["object schema lists only required members", v.object({
+      name: v.string(),
+      note: optionalString,
+      limit: defaultInteger,
+    }).schema["required"], ["name"]],
+  ["object schema rejects extra members", fixedObject.schema["additionalProperties"], false],
+  ["UUID schema carries a pattern", typeof v.uuid().schema["pattern"], "string"],
+];
+
+for (const [name, actual, expected] of schemaCases) {
+  test(name, () => assert.deepEqual(actual, expected));
+}
+
+test("parseShape locates a missing required member", () => {
   const issues: Issue[] = [];
   const parsed = v.parseShape(
     { limit: v.integer(), cursor: v.optional(v.string()) },
     "query",
-    (key) => (({ cursor: "abc" }) as Record<string, string>)[key],
+    (key) => ({ cursor: "abc" })[key as "cursor"],
     issues
   );
   assert.equal(issues[0]?.path, "query.limit");

@@ -8,7 +8,12 @@
 //
 // User file — seeded once, yours to change.
 
-import { v, type Validator } from "../../framework/index.ts";
+import {
+  queryResultSchema,
+  v,
+  type JsonSchema,
+  type Validator,
+} from "../../framework/index.ts";
 
 /** Widget ids are `w-` plus 4..12 lowercase alphanumerics. */
 export const WIDGET_ID_PATTERN = /^w-[a-z0-9]{4,12}$/;
@@ -40,3 +45,33 @@ export function widgetKey(id: string): string {
 export function isWidgetId(value: string): boolean {
   return WIDGET_ID_PATTERN.test(value);
 }
+
+export const WIDGET_RESPONSE: JsonSchema = v.object(
+  {
+    _id: widgetId(),
+    name: v.string(),
+    status: widgetStatus(),
+    tags: v.list(v.string()),
+    metadata: v.record(v.string()),
+    owner: v.optional(v.string()),
+    ownerDetail: v.optional(v.unknownValue()),
+    history: v.optional(v.list(v.unknownValue())),
+    retiredReason: v.optional(v.string()),
+    _patchOperations: v.optional(v.integer()),
+  },
+  { description: "A widget resource." }
+).schema;
+
+export const WIDGET_QUERY_RESPONSE = queryResultSchema(WIDGET_RESPONSE);
+export const IMPORT_RESPONSE = v.object({ imported: v.integer(), names: v.list(v.string()) }).schema;
+export const DAILY_RESPONSE = v.object({
+  _id: v.string(), date: v.isoDate(), created: v.integer(),
+  retired: v.integer(), active: v.integer(),
+}).schema;
+export const SUMMARY_RESPONSE = v.object({
+  _id: v.string(), widgetId: widgetId(), status: widgetStatus(),
+  tagCount: v.integer(), events: v.integer(),
+}).schema;
+export const REPORT_QUERY_RESPONSE = queryResultSchema(
+  v.object({ _id: v.string(), bucket: v.string(), count: v.integer() }).schema
+);

@@ -7,22 +7,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isFault, type CrestFault } from "../framework/index.ts";
 import reports from "../src/endpoints/aicdemo-a1-claude-reports.ts";
 import widgets from "../src/endpoints/aicdemo-a1-claude-widgets.ts";
-import { callContext, crestRequest } from "./harness.ts";
+import { callContext, crestErrorFrom, crestRequest } from "./harness.ts";
 
 const WRITE = ["aicdemo:widgets:write"];
-
-function faultFrom(run: () => unknown): CrestFault {
-  try {
-    run();
-  } catch (thrown) {
-    assert.ok(isFault(thrown), "expected a CREST fault, got " + String(thrown));
-    return thrown;
-  }
-  throw new Error("expected a throw");
-}
 
 test("query returns a CREST query result and honours status + paging", () => {
   const all = widgets.dispatch(crestRequest("query"), callContext()) as {
@@ -65,7 +54,7 @@ test("tags are a comma-separated AND filter", () => {
 
 test("limit above its declared maximum is a 400", () => {
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       widgets.dispatch(
         crestRequest("query", { query: { limit: "1000" } }),
         callContext()
@@ -95,7 +84,7 @@ test("read expands only what was asked for", () => {
 
 test("a widget id that fails the shared pattern is a 400", () => {
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       widgets.dispatch(
         crestRequest("read", { resourcePath: "nope" }),
         callContext()
@@ -107,7 +96,7 @@ test("a widget id that fails the shared pattern is a 400", () => {
 
 test("a well-formed id that does not exist is a 404", () => {
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       widgets.dispatch(
         crestRequest("read", { resourcePath: "w-zzzz" }),
         callContext()
@@ -127,7 +116,7 @@ test("create validates the whole body", () => {
   assert.equal(created.name, "New");
   assert.deepEqual(created.metadata, {});
 
-  const fault = faultFrom(() =>
+  const fault = crestErrorFrom(() =>
     widgets.dispatch(
       crestRequest("create", {
         content: { name: "", status: "nope", tags: "x" },
@@ -141,7 +130,7 @@ test("create validates the whole body", () => {
 
 test("retire needs the write scope and refuses an already-retired widget", () => {
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       widgets.dispatch(
         crestRequest("action", {
           resourcePath: "w-abcd",
@@ -166,7 +155,7 @@ test("retire needs the write scope and refuses an already-retired widget", () =>
   assert.equal(retired.retiredReason, "obsolete");
 
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       widgets.dispatch(
         crestRequest("action", {
           resourcePath: "w-zz9plural",
@@ -192,7 +181,7 @@ test("bulkImport bounds the batch and rejects duplicate names", () => {
   assert.equal(imported.imported, 2);
 
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       widgets.dispatch(
         crestRequest("action", {
           action: "bulkImport",
@@ -209,7 +198,7 @@ test("bulkImport bounds the batch and rejects duplicate names", () => {
     name: "n" + index,
   }));
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       widgets.dispatch(
         crestRequest("action", {
           action: "bulkImport",
@@ -230,7 +219,7 @@ test("reports routes a literal-then-capture path", () => {
   assert.equal(daily.date, "2026-08-13");
 
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       reports.dispatch(
         crestRequest("read", { resourcePath: "daily/13-08-2026" }),
         callContext()
@@ -252,7 +241,7 @@ test("reports routes a capture in the middle of three segments", () => {
 test("reports rejects an id the SHARED widget module considers invalid", () => {
   // Same validator as the widgets endpoint — one definition, two endpoints.
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       reports.dispatch(
         crestRequest("read", { resourcePath: "widget/NOPE/summary" }),
         callContext()
@@ -287,7 +276,7 @@ test("reports groups by status when asked, by day by default", () => {
 
 test("reports refuses an inverted date range and a missing one", () => {
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       reports.dispatch(
         crestRequest("query", {
           query: { from: "2026-08-09", to: "2026-08-01" },
@@ -298,7 +287,7 @@ test("reports refuses an inverted date range and a missing one", () => {
     400
   );
   assert.equal(
-    faultFrom(() =>
+    crestErrorFrom(() =>
       reports.dispatch(crestRequest("query", { query: {} }), callContext())
     ).code,
     400
@@ -308,7 +297,7 @@ test("reports refuses an inverted date range and a missing one", () => {
 test("both endpoints reject an unknown sub-path with a 404", () => {
   for (const endpoint of [widgets, reports]) {
     assert.equal(
-      faultFrom(() =>
+      crestErrorFrom(() =>
         endpoint.dispatch(
           crestRequest("read", { resourcePath: "no/such/route/here" }),
           callContext()

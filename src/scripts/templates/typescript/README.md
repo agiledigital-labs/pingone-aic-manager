@@ -79,6 +79,8 @@ Nothing in the handler is annotated: the types come from the validators. Change
   validators coerce. A failure is a CREST 400 listing every issue — never a 500.
 - **Errors**: throw `badRequest`/`notFound`/`forbidden`/… from the framework.
   Anything else thrown becomes an opaque 500 and the real cause goes to the log.
+- **Queries**: return `queryResult(rows, options)`. It fills every paging field
+  IDM requires; omitting one from a hand-built result is a type error.
 - **Logging**: `log` is pre-bound to the endpoint, the route and the correlation
   id (the `x-request-id` header when the caller sent one). Never log `context`.
 
@@ -99,10 +101,11 @@ esbuild cannot target ES5 at all, and Babel cannot bundle. So:
 3. Babel `@babel/preset-env` (`targets: { ie: "11" }`) downlevels it to ES5.
    Babel 8 removed `loose`; the equivalent shape comes from `assumptions`.
 4. The output is linted against IDM's **runtime** bans — default parameters,
-   `const` in a loop initializer, a trailing comma in a parameter list. Each of
-   those stops the endpoint registering at all, so they are build failures.
-5. Only if every endpoint passes every step is anything written. A broken build
-   leaves the previous `.cjs` in place rather than pushing a half-built one.
+   `const` in a loop initializer, a trailing comma in a parameter list, and
+   references to the absent `Reflect` or `Proxy` globals.
+5. Only if every endpoint passes every step is anything written. Bundles and
+   the ownership manifest publish by same-directory atomic rename, so watchers
+   see the complete old or new file, never a partial write.
 
 The emitted file ends with `__aicMain.default();` because an endpoint's HTTP
 response body is the script's completion value.

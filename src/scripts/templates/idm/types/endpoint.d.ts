@@ -72,9 +72,9 @@ type IdmResource = { _id?: string; _rev?: string; [key: string]: any };
 /** The structure a `query` handler must return. */
 type IdmQueryResult = {
   result: IdmResource[];
-  resultCount?: number;
-  pagedResultsCookie?: string | null;
-  totalPagedResults?: number;
-  remainingPagedResults?: number;
-  totalPagedResultsPolicy?: string;
+  resultCount: number;
+  pagedResultsCookie: string | null;
+  totalPagedResults: number;
+  remainingPagedResults: number;
+  totalPagedResultsPolicy: string;
 };

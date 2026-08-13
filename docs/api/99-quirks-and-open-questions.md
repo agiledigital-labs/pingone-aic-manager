@@ -901,6 +901,16 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   evidence of progress. Check which gate the ACS transaction reached. Gate table
   in `06-saml.md`.
 
+- **2026-08-13** — IDM does not return a thrown CREST error object verbatim.
+  A refinement probe threw only `{ code, message, detail }`; the HTTP response
+  contained `{ code, reason, message, detail }`, with IDM synthesizing the
+  standard `reason` from `code`. This corrects the earlier claim in
+  `11-idm-endpoints.md` that all four fields had to be supplied by the script.
+  The same probe returned a complete query paging envelope and observed IDM
+  normalize `remainingPagedResults` to `-1` rather than preserve the script's
+  computed value. Both `aicdemo-a1-claude-*` endpoint configs were deleted and
+  their config and runtime URLs confirmed 404 after the probe.
+
 - **2026-08-15** — OAuth2 client template vs schema, and PUT raw vs GET
   wrapped. The live `?_action=template` body still has 115 fields in six
   groups, but `?_action=schema` omits

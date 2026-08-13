@@ -5,24 +5,20 @@ import { test } from "node:test";
 
 import {
   defineEndpoint,
-  isFault,
   parsePath,
+  queryResult,
   route,
   splitResourcePath,
   v,
-  type CrestFault,
+  type CrestRequest,
+  type IdmCallContext,
 } from "../framework/index.ts";
-import { callContext, crestRequest, recordingLogger } from "./harness.ts";
-
-function faultFrom(run: () => unknown): CrestFault {
-  try {
-    run();
-  } catch (thrown) {
-    assert.ok(isFault(thrown), "expected a CREST fault, got " + String(thrown));
-    return thrown;
-  }
-  throw new Error("expected a throw");
-}
+import {
+  callContext,
+  crestErrorFrom,
+  crestRequest,
+  recordingLogger,
+} from "./harness.ts";
 
 const demo = defineEndpoint({
   name: "demo",
@@ -32,7 +28,7 @@ const demo = defineEndpoint({
       method: "query",
       path: "/",
       query: { limit: v.withDefault(v.integer({ min: 1, max: 10 }), 3) },
-      handler: ({ query }) => ({ result: [{ _id: String(query.limit) }] }),
+      handler: ({ query }) => queryResult([{ _id: String(query.limit) }]),
     }),
     route({
       method: "read",
@@ -97,166 +93,107 @@ test("splitResourcePath decodes each segment and drops empties", () => {
   assert.deepEqual(splitResourcePath("bad%"), ["bad%"]);
 });
 
-test("the root path routes to the query handler with its defaults applied", () => {
-  const result = demo.dispatch(crestRequest("query"), callContext()) as {
-    result: { _id: string }[];
-  };
-  assert.deepEqual(result.result, [{ _id: "3" }]);
-});
+type RouteCase = readonly [name: string, request: CrestRequest, select: (result: unknown) => unknown, expected: unknown, context?: IdmCallContext];
 
-test("a declared query param overrides the default", () => {
-  const result = demo.dispatch(
-    crestRequest("query", { query: { limit: "7" } }),
-    callContext()
-  ) as { result: { _id: string }[] };
-  assert.deepEqual(result.result, [{ _id: "7" }]);
-});
-
-test("a literal segment beats a same-length capture", () => {
-  const result = demo.dispatch(
-    crestRequest("read", { resourcePath: "daily/2026-08-13" }),
-    callContext()
-  ) as { date: string };
-  assert.equal(result.date, "2026-08-13");
-});
-
-test("a capture in the middle of three segments matches", () => {
-  const result = demo.dispatch(
-    crestRequest("read", { resourcePath: "widget/w-abcd/summary" }),
-    callContext()
-  ) as { summaryOf: string };
-  assert.equal(result.summaryOf, "w-abcd");
-});
-
-test("an unmatched path is a 404, not a crash", () => {
-  const fault = faultFrom(() =>
-    demo.dispatch(
-      crestRequest("read", { resourcePath: "a/b/c/d" }),
-      callContext()
-    )
-  );
-  assert.equal(fault.code, 404);
-  assert.equal(fault.reason, "Not Found");
-});
-
-test("a path that exists under another method is a 405 listing the alternatives", () => {
-  const fault = faultFrom(() =>
-    demo.dispatch(
-      crestRequest("update", { resourcePath: "abc", content: {} }),
-      callContext()
-    )
-  );
-  assert.equal(fault.code, 405);
-  assert.deepEqual((fault.detail as { allowed: string[] }).allowed, [
-    "read",
-    "patch",
-    "action",
-  ]);
-});
-
-test("an unknown action names the supported ones", () => {
-  const fault = faultFrom(() =>
-    demo.dispatch(
-      crestRequest("action", {
-        resourcePath: "abc",
-        action: "explode",
-        content: {},
-      }),
-      callContext({ scopes: ["demo:write"] })
-    )
-  );
-  assert.equal(fault.code, 404);
-  assert.deepEqual((fault.detail as { supported: string[] }).supported, [
-    "retire",
-  ]);
-});
-
-test("a path param failing its pattern is a 400 carrying the issue path", () => {
-  const fault = faultFrom(() =>
-    demo.dispatch(crestRequest("read", { resourcePath: "ABC" }), callContext())
-  );
-  assert.equal(fault.code, 400);
-  const detail = fault.detail as { issues: { path: string }[] };
-  assert.equal(detail.issues[0]?.path, "path.id");
-});
-
-test("an out-of-range query int is a 400", () => {
-  const fault = faultFrom(() =>
-    demo.dispatch(
-      crestRequest("query", { query: { limit: "99" } }),
-      callContext()
-    )
-  );
-  assert.equal(fault.code, 400);
-  assert.equal(
-    (fault.detail as { issues: { path: string }[] }).issues[0]?.path,
-    "query.limit"
-  );
-});
-
-test("a malformed body is a 400 and never reaches the handler", () => {
-  const fault = faultFrom(() =>
-    demo.dispatch(
-      crestRequest("create", { content: { name: "" } }),
-      callContext()
-    )
-  );
-  assert.equal(fault.code, 400);
-});
-
-test("a missing body is a 400 rather than a 500", () => {
-  const fault = faultFrom(() =>
-    demo.dispatch(crestRequest("create", {}), callContext())
-  );
-  assert.equal(fault.code, 400);
-  assert.equal(
-    (fault.detail as { issues: { path: string }[] }).issues[0]?.path,
-    "body"
-  );
-});
-
-test("a route with scopes refuses a token that lacks them", () => {
-  const fault = faultFrom(() =>
-    demo.dispatch(
-      crestRequest("action", {
-        resourcePath: "abc",
-        action: "retire",
-        content: { reason: "obsolete" },
-      }),
-      callContext({ scopes: ["something:else"] })
-    )
-  );
-  assert.equal(fault.code, 403);
-  assert.deepEqual((fault.detail as { missing: string[] }).missing, [
-    "demo:write",
-  ]);
-});
-
-test("a route with scopes refuses a caller with no oauth2 context at all", () => {
-  const fault = faultFrom(() =>
-    demo.dispatch(
-      crestRequest("action", {
-        resourcePath: "abc",
-        action: "retire",
-        content: { reason: "obsolete" },
-      }),
-      callContext()
-    )
-  );
-  assert.equal(fault.code, 403);
-});
-
-test("a route with scopes admits a token that carries them", () => {
-  const result = demo.dispatch(
+const routeCases: RouteCase[] = [
+  ["root query applies defaults", crestRequest("query"), (x) => (x as { result: unknown }).result, [{ _id: "3" }]],
+  ["query input overrides defaults", crestRequest("query", { query: { limit: "7" } }), (x) => (x as { result: unknown }).result, [{ _id: "7" }]],
+  ["literal beats a same-length capture", crestRequest("read", { resourcePath: "daily/2026-08-13" }), (x) => (x as { date: string }).date, "2026-08-13"],
+  ["capture matches in the middle", crestRequest("read", { resourcePath: "widget/w-abcd/summary" }), (x) => (x as { summaryOf: string }).summaryOf, "w-abcd"],
+  [
+    "matching action admits its scope",
     crestRequest("action", {
       resourcePath: "abc",
       action: "retire",
       content: { reason: "obsolete" },
     }),
+    (x) => x,
+    { retired: "abc", why: "obsolete" },
     callContext({ scopes: ["demo:write", "other"] })
-  ) as { retired: string; why: string };
-  assert.deepEqual(result, { retired: "abc", why: "obsolete" });
+  ],
+];
+
+for (const [name, request, select, expected, context] of routeCases) {
+  test(name, () => {
+    const result = demo.dispatch(request, context ?? callContext());
+    assert.deepEqual(select(result), expected);
+  });
+}
+
+test("the object thrown to IDM contains no private framework keys", () => {
+  const response = crestErrorFrom(() =>
+    demo.dispatch(crestRequest("read", { resourcePath: "not/a/route" }), callContext())
+  );
+  assert.deepEqual(Object.keys(response).sort(), ["code", "detail", "message"]);
+  assert.deepEqual(Object.keys(response).filter((key) => key.startsWith("__")), []);
+  assert.equal(Object.prototype.hasOwnProperty.call(response, "reason"), false);
 });
+
+interface ErrorCase {
+  name: string;
+  request: CrestRequest;
+  context?: IdmCallContext;
+  code: number;
+  issuePath?: string;
+  detail?: { key: string; value: unknown };
+}
+
+function fails(
+  name: string,
+  request: CrestRequest,
+  code: number,
+  expected: Pick<ErrorCase, "context" | "issuePath" | "detail"> = {}
+): ErrorCase {
+  return { name, request, code, ...expected };
+}
+
+function actionRequest(action: string, reason: string): CrestRequest {
+  return crestRequest("action", { resourcePath: "abc", action, content: { reason } });
+}
+
+const errorCases: ErrorCase[] = [
+  fails("unmatched path is a 404", crestRequest("read", { resourcePath: "a/b/c/d" }), 404),
+  fails("known path under another method is a 405", crestRequest("update", { resourcePath: "abc", content: {} }), 405, {
+    detail: { key: "allowed", value: ["read", "patch", "action"] },
+  }),
+  fails("unknown action is a 404", actionRequest("explode", ""), 404, {
+    context: callContext({ scopes: ["demo:write"] }),
+    detail: { key: "supported", value: ["retire"] },
+  }),
+  fails("invalid path parameter is a 400", crestRequest("read", { resourcePath: "ABC" }), 400, { issuePath: "path.id" }),
+  fails("out-of-range query parameter is a 400", crestRequest("query", { query: { limit: "99" } }), 400, { issuePath: "query.limit" }),
+  fails("malformed body is a 400", crestRequest("create", { content: { name: "" } }), 400),
+  fails("missing body is a 400", crestRequest("create"), 400, { issuePath: "body" }),
+  // The invalid body deliberately proves authorization happens before schema disclosure.
+  fails("missing scope is a 403 before body validation", actionRequest("retire", ""), 403, {
+    context: callContext({ scopes: ["something:else"] }),
+    detail: { key: "missing", value: ["demo:write"] },
+  }),
+  fails("missing OAuth context is a 403", actionRequest("retire", "obsolete"), 403),
+  fails("malformed correlation header is a 400", crestRequest("read", { resourcePath: "abc" }), 400, {
+    context: callContext({ headers: { "x-request-id": "nope" } }),
+    issuePath: "header.x-request-id",
+  }),
+];
+
+for (const row of errorCases) {
+  test(row.name, () => {
+    const response = crestErrorFrom(() =>
+      demo.dispatch(row.request, row.context ?? callContext())
+    );
+    assert.equal(response.code, row.code);
+    if (row.issuePath !== undefined) {
+      const detail = response.detail as { issues: { path: string }[] };
+      assert.equal(detail.issues[0]?.path, row.issuePath);
+    }
+    if (row.detail !== undefined) {
+      assert.deepEqual(
+        (response.detail as Record<string, unknown>)[row.detail.key],
+        row.detail.value
+      );
+    }
+  });
+}
 
 test("patch operations are validated before the handler sees them", () => {
   const ok = demo.dispatch(
@@ -268,7 +205,7 @@ test("patch operations are validated before the handler sees them", () => {
   ) as { ops: number };
   assert.equal(ok.ops, 1);
 
-  const fault = faultFrom(() =>
+  const fault = crestErrorFrom(() =>
     demo.dispatch(
       crestRequest("patch", { resourcePath: "abc", patchOperations: [] }),
       callContext()
@@ -284,20 +221,6 @@ test("the x-request-id header becomes the correlation id, case-insensitively", (
     callContext({ headers: { "X-Request-Id": id } })
   ) as { correlationId: string };
   assert.equal(result.correlationId, id);
-});
-
-test("a non-UUID x-request-id is a 400, not a silently ignored header", () => {
-  const fault = faultFrom(() =>
-    demo.dispatch(
-      crestRequest("read", { resourcePath: "abc" }),
-      callContext({ headers: { "x-request-id": "nope" } })
-    )
-  );
-  assert.equal(fault.code, 400);
-  assert.equal(
-    (fault.detail as { issues: { path: string }[] }).issues[0]?.path,
-    "header.x-request-id"
-  );
 });
 
 test("a request without the header still gets a correlation id", () => {
@@ -330,7 +253,7 @@ test("an unexpected throw becomes an opaque 500 and is logged", () => {
       }),
     ],
   });
-  const fault = faultFrom(() =>
+  const fault = crestErrorFrom(() =>
     exploding.dispatch(crestRequest("read"), callContext(), logger)
   );
   assert.equal(fault.code, 500);
@@ -351,50 +274,16 @@ test("a bare PUT arrives as a create carrying the client-supplied id", () => {
   assert.equal(result.created, "n");
 });
 
-test("route() refuses a path capture with no validator", () => {
-  assert.throws(
-    () =>
-      route({
-        method: "read",
-        path: "/{id}",
-        handler: () => ({}),
-      }),
-    /has no validator/
-  );
-});
+const invalidRouteCases = [
+  ["capture without validator", () => route({ method: "read", path: "/{id}", handler: () => ({}) }), /has no validator/],
+  ["validator without capture", () => route({ method: "read", path: "/", params: { id: v.string() }, handler: () => ({}) }), /is not in the path/],
+  ["action without a name", () => route({ method: "action", path: "/", handler: () => ({}) }), /requires an action name/],
+  ["non-action with an action name", () => route({ method: "read", path: "/", action: "retire", handler: () => ({}) }), /only an action route/],
+] as const;
 
-test("route() refuses a validator for a capture that is not in the path", () => {
-  assert.throws(
-    () =>
-      route({
-        method: "read",
-        path: "/",
-        params: { id: v.string() },
-        handler: () => ({}),
-      }),
-    /is not in the path/
-  );
-});
-
-test("route() refuses an action route with no action name", () => {
-  assert.throws(
-    () => route({ method: "action", path: "/", handler: () => ({}) }),
-    /requires an action name/
-  );
-});
-
-test("route() refuses an action name on a non-action route", () => {
-  assert.throws(
-    () =>
-      route({
-        method: "read",
-        path: "/",
-        action: "retire",
-        handler: () => ({}),
-      }),
-    /only an action route/
-  );
-});
+for (const [name, build, error] of invalidRouteCases) {
+  test("route refuses " + name, () => assert.throws(build, error));
+}
 
 test("the endpoint definition survives to build time", () => {
   assert.equal(demo.definition.name, "demo");
