@@ -236,9 +236,10 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
   `PUT …/Terraform_esv-oauthloop-probe` → 400 id regex;
   `PUT …/esv-terraform-oauthloop-probe` → 200, `loaded:false`, pending
   `variables:1`; `DELETE` of that probe → 200 and pending back to 0.
-  A later create of `esv-terraform_test11` (copy of `esv-test11`) also
-  returned `loaded:false` with the original still `loaded:true`. The tenant
-  was **not** restarted (`GET /environment/startup` stayed `ready`).
+  A later create of `esv-terraform-test11` (copy of `esv-test11`; the
+  provider prefix is lowercased and `_` becomes `-`) also returned
+  `loaded:false` with the original still `loaded:true`. The tenant was
+  **not** restarted (`GET /environment/startup` stayed `ready`).
 - Date: 2026-05-26 (variables); 2026-05-30 (full secrets lifecycle);
   2026-05-31 (`setDescription` returns empty `200`)
 - Calls: `GET /environment/variables`, `GET /environment/variables/{id}`,
