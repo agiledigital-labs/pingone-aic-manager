@@ -175,14 +175,28 @@ pub trait ExecuteIo {
 }
 
 /// Production I/O: agent vault verbs, local files, and `ProjectConfig::save`.
+///
+/// `confirmed_prod` defaults to `false` so a bare [`LiveIo::default`] cannot
+/// silently authorise a production issuer write.
 pub struct LiveIo {
     pub realm: String,
+    pub confirmed_prod: bool,
 }
 
 impl Default for LiveIo {
     fn default() -> Self {
         Self {
             realm: "alpha".into(),
+            confirmed_prod: false,
+        }
+    }
+}
+
+impl LiveIo {
+    pub fn new(confirmed_prod: bool) -> Self {
+        Self {
+            realm: "alpha".into(),
+            confirmed_prod,
         }
     }
 }
@@ -199,7 +213,14 @@ impl ExecuteIo for LiveIo {
             crate::jwtbearer::ops::DEFAULT_ISSUER_ID,
         )
         .await?;
-        crate::jwtbearer::ops::remove_key_from_issuer(tenant, &self.realm, kid, issuer).await?;
+        crate::jwtbearer::ops::remove_key_from_issuer(
+            tenant,
+            &self.realm,
+            kid,
+            issuer,
+            self.confirmed_prod,
+        )
+        .await?;
         Ok(())
     }
 

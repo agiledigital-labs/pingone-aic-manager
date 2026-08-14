@@ -1126,11 +1126,20 @@ pub(crate) struct WriteOk<'a> {
     pub(crate) confirmed_prod: bool,
 }
 
-/// Refuse an unconfirmed production write before any tenant fetch occurs.
-pub(crate) fn ensure_prod_confirmed(tenant: &str, yes: bool) -> Result<WriteOk<'_>> {
-    if tenant_config_for(Some(tenant.to_string()))?.theme == crate::config::TenantTheme::Production
-        && !yes
-    {
+/// The production decision itself, with the tenant's theme already resolved.
+///
+/// Split out from [`ensure_prod_confirmed`] so callers can exercise the real
+/// gate in a unit test — the wrapper reads `.aic/config.toml`, which a test
+/// has no business needing. A test that re-implements this rule instead cannot
+/// fail when a caller stops applying it, and "caller stopped applying it" is
+/// precisely the defect class here: `aic ctx rm` performed this check and then
+/// dropped the `WriteOk` on the floor for a whole release.
+pub(crate) fn prod_write_ok(
+    theme: crate::config::TenantTheme,
+    tenant: &str,
+    yes: bool,
+) -> Result<WriteOk<'_>> {
+    if theme == crate::config::TenantTheme::Production && !yes {
         return Err(Error::Config(
             "tenant is production — re-run with --yes to confirm the write".into(),
         ));
@@ -1139,6 +1148,12 @@ pub(crate) fn ensure_prod_confirmed(tenant: &str, yes: bool) -> Result<WriteOk<'
         tenant,
         confirmed_prod: yes,
     })
+}
+
+/// Refuse an unconfirmed production write before any tenant fetch occurs.
+pub(crate) fn ensure_prod_confirmed(tenant: &str, yes: bool) -> Result<WriteOk<'_>> {
+    let theme = tenant_config_for(Some(tenant.to_string()))?.theme;
+    prod_write_ok(theme, tenant, yes)
 }
 
 /// Turn the agent's prod-confirm refusal into an actionable CLI message.
