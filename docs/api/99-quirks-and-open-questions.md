@@ -788,3 +788,12 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   `Terraform_test_to` left only the latter; the first create had already
   confirmed. Serialising the RMW in-process recovered both; originals
   `test_from`/`test_to` were untouched. Documented in `10-managed-objects.md`.
+
+- **2026-08-15** — Custom managed types accept the same lifecycle-hook
+  shapes as Ping-shipped user/role objects, including a file-backed
+  `onDelete` pointing at `roles/onDelete-roles.js`. A throwaway
+  `Terraform_lifecycle_probe` stored inline copies of `alpha_user.onCreate`
+  / `onUpdate` and `alpha_role.postCreate`; originals were byte-identical
+  after the write. No probe records were created, so hook runtime was not
+  re-fired. Inventory: only `*_user` and `*_role` carry hooks. Documented
+  in `10-managed-objects.md`.
