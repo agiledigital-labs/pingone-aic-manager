@@ -142,6 +142,19 @@ appears to be derived from the source file path (config location that originally
 referenced the value). When **creating** a new ESV, the caller chooses the full
 ID — pick something descriptive like `esv-custom-myvarname`.
 
+**The id is enforced.** Verified 2026-08-15: `PUT /environment/variables/Terraform_esv-oauthloop-probe`
+returned `400` with
+`parameter "variableId" in path has an error: string doesn't match the regular expression "^esv-[a-z0-9_-]{1,124}$"`.
+`PUT …/esv-terraform-oauthloop-probe` with the same body returned 200
+(`loaded: false`). Prefixes must be inserted *after* `esv-` and lowercased.
+
+## List paging
+
+`_pageSize` has a hard max of **100**. `_pageSize=1000` returns
+`400 parameter "_pageSize" in query has an error: number must be at most 100`.
+`_pageSize=100` on this tenant still returned all 128 variables in one page
+(`pagedResultsCookie` empty); follow the cookie when it is present.
+
 ## Examples
 
 ```bash
@@ -217,6 +230,15 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-08-15
+- Calls: `GET /environment/variables?_pageSize=1000` → 400 (max 100);
+  `GET /environment/variables?_pageSize=100` → 200, 128 variables, no cookie;
+  `PUT …/Terraform_esv-oauthloop-probe` → 400 id regex;
+  `PUT …/esv-terraform-oauthloop-probe` → 200, `loaded:false`, pending
+  `variables:1`; `DELETE` of that probe → 200 and pending back to 0.
+  A later create of `esv-terraform_test11` (copy of `esv-test11`) also
+  returned `loaded:false` with the original still `loaded:true`. The tenant
+  was **not** restarted (`GET /environment/startup` stayed `ready`).
 - Date: 2026-05-26 (variables); 2026-05-30 (full secrets lifecycle);
   2026-05-31 (`setDescription` returns empty `200`)
 - Calls: `GET /environment/variables`, `GET /environment/variables/{id}`,
@@ -255,7 +277,8 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
 
 ## Open questions
 
-- Exact ID-prefix rules for *user-created* (vs system-generated) ESVs — does
-  AIC enforce the `esv-` prefix? Test by `PUT /environment/variables/foobar`.
 - Rate limits on `_action=restart` — is there a cool-down? Probably yes;
   capture the 429 response shape when we hit it.
+
+The `esv-` prefix question is resolved: the path parameter is validated
+against `^esv-[a-z0-9_-]{1,124}$`. See ID convention above.
