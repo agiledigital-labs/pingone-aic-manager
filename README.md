@@ -22,6 +22,12 @@ Working today, via the CLI and (mostly) the TUI:
   ESLint/TypeScript) with a file watcher and **content-based** conflict
   detection. Covers AM scripts, IDM endpoints, scheduled jobs, and
   managed-object hooks.
+- **TypeScript custom endpoints** — write IDM endpoints as ordinary TypeScript
+  modules with typed routing, declarative validation of paths, query strings,
+  bodies, headers and scopes, and **shared code across endpoints**. Each one
+  bundles to a self-contained ES5 file that the script watcher pushes, plus an
+  OpenAPI 3.1 document. See
+  [docs/typescript-endpoints.md](docs/typescript-endpoints.md).
 - **IDM managed objects** — inspect the per-tenant schema (`aic managed`), and
   **sync records into a local SQLite store to query with SQL** (`aic idm`),
   including joins into nested arrays.
@@ -32,7 +38,9 @@ Working today, via the CLI and (mostly) the TUI:
   logs.
 - **Fast environment switching** with per-env theme colours (sandbox=green,
   development=blue, staging=yellow, production=red + ⚠) and an automatic
-  **"you're writing to PROD" guard** on every mutation.
+  **"you're writing to PROD" guard** on every mutation. Tenants are added from
+  the TUI's env picker and removed with `aic ctx rm` (or from the picker), which
+  plans the local artifacts it would delete and shows you that plan first.
 
 Planned / stretch: SAML 2.0, and log sync with compression + search for offline
 history beyond AIC's 30-day retention.
@@ -139,6 +147,7 @@ The CLI mirrors and extends the TUI. A taste across feature areas:
 ```bash
 aic session status               # is the agent running/unlocked? which tenant?
 aic ctx use development          # switch the active tenant context
+aic ctx rm old-sandbox           # remove a tenant + the local artifacts it owns
 
 aic esv list                     # environment variables
 aic esv secret create esv-api-key  # versioned secret (no-echo prompt)
@@ -147,6 +156,7 @@ aic managed list                 # IDM managed-object schema
 aic idm sync                     # pick objects → sync records into a local SQLite store
 aic idm query "SELECT userName FROM obj_alpha_user WHERE accountStatus='active'"
 
+aic workspace update             # refresh the typed workspace + the TypeScript endpoint project
 aic script pull bravo/MyNode     # sync scripts to a typed local workspace, then edit + push
 aic oauth list                   # OAuth2 clients
 aic journey list                 # authentication trees
