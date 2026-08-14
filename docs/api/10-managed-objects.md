@@ -186,6 +186,13 @@ deterministic post-`object create` loss. It does **not** make long write
 sequences safe — see Q14 for why the residue is platform-side and what to do
 about it.
 
+**Concurrent writers of the same document lose inserts.** Verified 2026-08-15:
+two parallel Terraform creates (test_from + test_to copies) each GET-appended
+and PUT; the second PUT won and `Terraform_test_from` vanished even though its
+own confirm had passed. Serialising GET+mutate+PUT in one process recovered
+both copies. Confirm-after-write is not enough when two mutators share
+`objects[]`.
+
 The `managed_hooks` sync path already polls, because it waits for hook source to
 go live in the running IDM runtime — which is a separate concern from config
 read-back, and remains so.

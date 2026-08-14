@@ -782,3 +782,9 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   (`^esv-[a-z0-9_-]{1,124}$`); `esv-terraform-…` is 200 and comes back
   `loaded:false` until a tenant restart, which we did not trigger. List
   `_pageSize=1000` is 400. Documented in `03-esvs.md`.
+
+- **2026-08-15** — Concurrent `config/managed` writers drop each other's
+  inserts. Two parallel GET-append-PUTs of `Terraform_test_from` and
+  `Terraform_test_to` left only the latter; the first create had already
+  confirmed. Serialising the RMW in-process recovered both; originals
+  `test_from`/`test_to` were untouched. Documented in `10-managed-objects.md`.
