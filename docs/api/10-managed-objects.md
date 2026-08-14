@@ -509,6 +509,29 @@ Sync tooling should detect hooks **by value shape** (any object property with
 `type` + `source`/`file`), not by a hardcoded key list — which event keys beyond
 the six observed are accepted/fired remains an open question.
 
+**A custom type can carry the same hook shapes as the Ping-shipped objects.**
+Verified 2026-08-15: a throwaway custom type `Terraform_lifecycle_probe` was
+inserted via the usual whole-document RMW. It accepted:
+
+- copies of `alpha_user.onCreate` / `onUpdate` (inline `require('onCreateUser')`
+  / `require('onUpdateUser')` one-liners);
+- a copy of `alpha_role.postCreate` (inline
+  `require('roles/postOperation-roles').manageTemporalConstraints`);
+- a file-backed `onDelete` pointing at the same product path
+  `roles/onDelete-roles.js` as `alpha_role.onDelete`.
+
+The config PUT stored those siblings verbatim. `alpha_user` / `alpha_role` /
+`bravo_user` hook sources were byte-identical before and after. No records of
+the probe type were created, so hook **runtime** was not re-fired. Empty
+`globals: {}` (present on `bravo_user` hooks) is accepted on read and can be
+omitted on write.
+
+Live inventory the same day: of 26 types, only the Ping-shipped `*_user` and
+`*_role` objects carried hooks. All 14 custom types (plus the two Terraform_
+relationship copies) had none. `bravo_user` onCreate/onUpdate are the only
+inline hooks with a body longer than a one-line `require` (and the only ones
+with a `globals` key, empty).
+
 ### Hook runtime bindings (live probe, 2026-06-13)
 
 Probed by installing temporary `onCreate`/`onUpdate` hooks on the scratch type
@@ -634,7 +657,12 @@ error. Do not offer `ne` or `in` in script-template query validation.
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-08-07 (read-only inventory of all 24 objects in
+- Date: 2026-08-15 (custom-type hook copy: `Terraform_lifecycle_probe` PUT
+  accepted inline `onCreate`/`onUpdate`/`postCreate` plus file-backed
+  `onDelete: roles/onDelete-roles.js`; originals
+  `alpha_user`/`alpha_role`/`bravo_user` hook hashes unchanged; no records
+  created so runtime not re-fired; inventory still 4 shipped types with hooks,
+  no custom type had any). 2026-08-07 (read-only inventory of all 24 objects in
   `GET /openidm/config/managed`: the 10 Ping-shipped realm objects — `*_user`,
   `*_role`, `*_organization`, `*_assignment`, `*_application` across both realms
   — each carried top-level `"type": "Managed Object"`, and no other value of
