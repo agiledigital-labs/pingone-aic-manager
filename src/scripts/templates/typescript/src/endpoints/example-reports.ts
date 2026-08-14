@@ -1,5 +1,5 @@
 // Demo endpoint: multi-segment routing over the SAME shared modules as
-// `aicdemo-a1-claude-widgets`.
+// `example-widgets`.
 //
 // `/widget/{widgetId}/summary` deliberately puts the path parameter in the
 // middle of three segments, and `/daily/{date}` deliberately mixes a literal
@@ -29,7 +29,7 @@ import {
 const GROUPINGS = ["day", "status"] as const;
 
 export default defineEndpoint({
-  name: "aicdemo-a1-claude-reports",
+  name: "example-reports",
   summary: "Widget reports (demo)",
   headers: { "x-request-id": v.optional(v.uuid()) },
   routes: [

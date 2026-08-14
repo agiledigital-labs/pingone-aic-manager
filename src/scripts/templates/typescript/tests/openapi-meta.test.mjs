@@ -7,8 +7,8 @@ import { test } from "node:test";
 import { validate } from "@hyperjump/json-schema/openapi-3-1";
 
 import { toOpenApi } from "../framework/index.ts";
-import reports from "../src/endpoints/aicdemo-a1-claude-reports.ts";
-import widgets from "../src/endpoints/aicdemo-a1-claude-widgets.ts";
+import reports from "../src/endpoints/example-reports.ts";
+import widgets from "../src/endpoints/example-widgets.ts";
 
 test("the generated document validates against the OpenAPI 3.1 meta-schema", async () => {
   for (const endpoint of [widgets, reports]) {

@@ -1,6 +1,6 @@
 // Demo endpoint: the full CREST surface over an in-memory widget collection.
 //
-// Deployed as `endpoint/aicdemo-a1-claude-widgets` (the file name IS the
+// Deployed as `endpoint/example-widgets` (the file name IS the
 // endpoint name). Delete this file and its `reports` sibling once you have
 // your own endpoints — they exist to show the authoring API.
 //
@@ -32,7 +32,7 @@ import {
 } from "../shared/widget-key.ts";
 
 /** Scope required for anything that mutates a widget's lifecycle. */
-const WRITE_SCOPE = "aicdemo:widgets:write";
+const WRITE_SCOPE = "example:widgets:write";
 
 const widgetBody = v.object({
   name: v.string({ minLength: 1, maxLength: 64 }),
@@ -52,7 +52,7 @@ function requireWidget(id: string): Widget {
 }
 
 export default defineEndpoint({
-  name: "aicdemo-a1-claude-widgets",
+  name: "example-widgets",
   summary: "Widgets (demo)",
   // Validated on every route; also the log correlation id when present.
   headers: { "x-request-id": v.optional(v.uuid()) },
