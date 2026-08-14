@@ -20,7 +20,12 @@ pub const DEFAULT_ISSUER_ID: &str = "aic-agent";
 pub const DEFAULT_ISSUER: &str = "aic-agent";
 
 /// Set up the shared default issuer and this install's one per-tenant key.
-pub async fn setup(tenant: &Tenant, realm: &str, operator: &ResolvedOperator) -> Result<String> {
+pub async fn setup(
+    tenant: &Tenant,
+    realm: &str,
+    operator: &ResolvedOperator,
+    confirmed_prod: bool,
+) -> Result<String> {
     spec::ensure_not_production(tenant.theme)?;
     if operator.source == NameSource::Placeholder {
         return Err(Error::Config(
@@ -58,7 +63,8 @@ pub async fn setup(tenant: &Tenant, realm: &str, operator: &ResolvedOperator) ->
             async move {
                 let remote = read_or_template(&tenant, &realm, DEFAULT_ISSUER_ID).await?;
                 let body = body_with_key(remote, DEFAULT_ISSUER, &public_jwk)?;
-                api::upsert_issuer(&tenant, &realm, DEFAULT_ISSUER_ID, body).await?;
+                api::upsert_issuer(&tenant, &realm, DEFAULT_ISSUER_ID, body, confirmed_prod)
+                    .await?;
                 Ok(())
             }
         },
@@ -81,6 +87,7 @@ pub async fn remove_key_from_issuer(
     realm: &str,
     kid: &str,
     issuer: Value,
+    confirmed_prod: bool,
 ) -> Result<usize> {
     let jwk_set = spec::remove_from_jwk_set(spec::issuer_jwk_set(&issuer), kid)?;
     let remaining = spec::parse_jwk_set(Some(&jwk_set))?
@@ -88,7 +95,7 @@ pub async fn remove_key_from_issuer(
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
     let body = spec::issuer_body(issuer, DEFAULT_ISSUER, jwk_set)?;
-    api::upsert_issuer(tenant, realm, DEFAULT_ISSUER_ID, body).await?;
+    api::upsert_issuer(tenant, realm, DEFAULT_ISSUER_ID, body, confirmed_prod).await?;
     Ok(remaining)
 }
 
@@ -97,6 +104,7 @@ pub async fn rotate(
     tenant: &Tenant,
     realm: &str,
     operator: &ResolvedOperator,
+    confirmed_prod: bool,
 ) -> Result<(String, String)> {
     spec::ensure_not_production(tenant.theme)?;
     let old_record = crate::jwtbearer::get_key(AgentClient::connect_or_spawn().await?, &tenant.name)
@@ -124,28 +132,38 @@ pub async fn rotate(
     // failed removal leaves the new key working and an orphaned old public key
     // that `key remove` can clean up. Storing first would instead produce a
     // state where the only published key's private half has been discarded.
-    publish_public_jwk(&tenant.name, realm, &public).await?;
+    publish_public_jwk(&tenant.name, realm, &public, confirmed_prod).await?;
     crate::jwtbearer::put_key(
         AgentClient::connect_or_spawn().await?,
         &tenant.name,
         &new_record,
     )
     .await?;
-    remove_published_key(&tenant.name, realm, &old_kid).await?;
+    remove_published_key(&tenant.name, realm, &old_kid, confirmed_prod).await?;
 
     Ok((old_kid, new_kid))
 }
 
-async fn publish_public_jwk(tenant: &str, realm: &str, public_jwk: &Value) -> Result<()> {
+async fn publish_public_jwk(
+    tenant: &str,
+    realm: &str,
+    public_jwk: &Value,
+    confirmed_prod: bool,
+) -> Result<()> {
     let source = read_or_template(tenant, realm, DEFAULT_ISSUER_ID).await?;
     let body = body_with_key(source, DEFAULT_ISSUER, public_jwk)?;
-    api::upsert_issuer(tenant, realm, DEFAULT_ISSUER_ID, body).await?;
+    api::upsert_issuer(tenant, realm, DEFAULT_ISSUER_ID, body, confirmed_prod).await?;
     Ok(())
 }
 
-async fn remove_published_key(tenant: &str, realm: &str, kid: &str) -> Result<()> {
+async fn remove_published_key(
+    tenant: &str,
+    realm: &str,
+    kid: &str,
+    confirmed_prod: bool,
+) -> Result<()> {
     let issuer = api::read_issuer(tenant, realm, DEFAULT_ISSUER_ID).await?;
-    remove_key_from_issuer(tenant, realm, kid, issuer).await?;
+    remove_key_from_issuer(tenant, realm, kid, issuer, confirmed_prod).await?;
     Ok(())
 }
 
@@ -182,6 +200,7 @@ pub async fn create_issuer(
     id: &str,
     issuer: &str,
     jwks_path: &Path,
+    confirmed_prod: bool,
 ) -> Result<()> {
     spec::ensure_not_production(tenant.theme)?;
     let existing = match api::read_issuer(&tenant.name, realm, id).await {
@@ -202,7 +221,7 @@ pub async fn create_issuer(
     let jwk_set = serde_json::to_string(&jwks)?;
     let template = api::issuer_template(&tenant.name, realm).await?;
     let body = spec::issuer_body(template, issuer, jwk_set)?;
-    api::upsert_issuer(&tenant.name, realm, id, body).await?;
+    api::upsert_issuer(&tenant.name, realm, id, body, confirmed_prod).await?;
     Ok(())
 }
 

@@ -76,6 +76,41 @@ pub fn issuer_jwk_set(issuer: &Value) -> Option<&str> {
     })
 }
 
+/// Read `allowedSubjects` from an AM issuer object.
+///
+/// Reads come back wrapped as `{"inherited": false, "value": …}`; write bodies
+/// and templates carry a plain array. Both shapes are accepted.
+pub fn issuer_allowed_subjects(issuer: &Value) -> Vec<String> {
+    let entries = issuer
+        .get("allowedSubjects")
+        .and_then(Value::as_array)
+        .or_else(|| {
+            issuer
+                .get("allowedSubjects")
+                .and_then(|value| value.get("value"))
+                .and_then(Value::as_array)
+        });
+    entries
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether an issuer's `allowedSubjects` list restricts minting.
+///
+/// Restricted if and only if at least one entry is non-empty after trimming.
+/// In particular `[""]` and `["  "]` are unrestricted — the same realm-wide
+/// behaviour as `[]`. See `docs/api/17-jwt-bearer-user-tokens.md`, "The exact
+/// restriction rule".
+pub fn issuer_is_restricted(subjects: &[String]) -> bool {
+    subjects.iter().any(|subject| !subject.trim().is_empty())
+}
+
 /// Return the public JWK array from an AM issuer read, without adding local
 /// metadata. The result is safe for `--json`: it contains public halves only.
 pub fn jwk_set_keys(issuer: &Value) -> Result<Vec<Value>> {
@@ -259,7 +294,10 @@ pub fn issuer_body(source: Value, issuer: &str, jwk_set: String) -> Result<Value
     }
     object.insert("issuer".into(), Value::String(issuer.to_string()));
     object.insert("jwkSet".into(), Value::String(jwk_set));
-    object.insert("allowedSubjects".into(), json!([]));
+    // Preserve an existing restriction list. Blanking it on every write would
+    // silently re-open a previously restricted issuer on the next setup/rotate.
+    // Default only when the key is absent (create-from-template already has []).
+    object.entry("allowedSubjects").or_insert_with(|| json!([]));
     // This names the assertion claim that narrows a requested grant: an
     // assertion claiming `scope: "openid"` while requesting `openid profile`
     // receives only `openid`; it never grants scopes by itself. `sub` must
@@ -652,6 +690,38 @@ mod tests {
         assert_eq!(body["jwksCacheTimeout"], 60_000);
     }
 
+    /// A restricted issuer must survive the next setup/rotate; blanking the
+    /// list on every write was re-opening the realm-wide mint boundary.
+    #[test]
+    fn issuer_body_preserves_existing_allowed_subjects() {
+        let body = issuer_body(
+            json!({
+                "allowedSubjects": {"inherited": false, "value": ["user-uuid-1"]},
+            }),
+            "aic-agent",
+            "{\"keys\":[]}".into(),
+        )
+        .unwrap();
+        assert_eq!(body["allowedSubjects"], json!(["user-uuid-1"]));
+    }
+
+    #[test]
+    fn issuer_body_keeps_template_empty_allowed_subjects() {
+        let body = issuer_body(
+            json!({"allowedSubjects": []}),
+            "aic-agent",
+            "{\"keys\":[]}".into(),
+        )
+        .unwrap();
+        assert_eq!(body["allowedSubjects"], json!([]));
+    }
+
+    #[test]
+    fn issuer_body_defaults_missing_allowed_subjects_to_empty() {
+        let body = issuer_body(json!({}), "aic-agent", "{\"keys\":[]}".into()).unwrap();
+        assert_eq!(body["allowedSubjects"], json!([]));
+    }
+
     /// The write must overwrite AM's one-hour template default rather than
     /// round-tripping whatever the existing object happens to carry — an issuer
     /// created before this change should be corrected by the next `setup`.
@@ -665,6 +735,49 @@ mod tests {
         .unwrap();
 
         assert_eq!(body["jwksCacheTimeout"], 60_000);
+    }
+
+    #[test]
+    fn issuer_allowed_subjects_reads_plain_and_wrapped_shapes() {
+        assert_eq!(
+            issuer_allowed_subjects(&json!({"allowedSubjects": ["a", "b"]})),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(
+            issuer_allowed_subjects(&json!({
+                "allowedSubjects": {"inherited": false, "value": ["wrapped"]}
+            })),
+            vec!["wrapped".to_string()]
+        );
+        assert!(issuer_allowed_subjects(&json!({})).is_empty());
+    }
+
+    /// `!subjects.is_empty()` would treat `[""]` as restricted while AM still
+    /// mints for every user in the realm. Pin the trim rule from the verified
+    /// table in docs/api/17-jwt-bearer-user-tokens.md.
+    #[test]
+    fn issuer_is_restricted_follows_the_verified_trim_rule() {
+        let cases = [
+            (Vec::<String>::new(), false),
+            (vec!["".into()], false),
+            (vec!["  ".into()], false),
+            (vec!["user-uuid".into()], true),
+            (vec!["".into(), "user-uuid".into()], true),
+        ];
+        for (subjects, restricted) in cases {
+            assert_eq!(
+                issuer_is_restricted(&subjects),
+                restricted,
+                "subjects={subjects:?}"
+            );
+            // A length-only check is the bug this pins: it disagrees on [""].
+            if subjects == [""] {
+                assert!(
+                    !subjects.is_empty() && !issuer_is_restricted(&subjects),
+                    "length-only check must not pass for [\"\"]"
+                );
+            }
+        }
     }
 
     #[test]

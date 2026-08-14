@@ -58,6 +58,8 @@ pub struct State {
     pub pending_name: Option<String>,
     #[cfg(test)]
     pub last_purge: Option<ResolvedPurge>,
+    #[cfg(test)]
+    pub last_confirmed_prod: Option<bool>,
 }
 
 impl State {
@@ -71,6 +73,7 @@ impl State {
         #[cfg(test)]
         {
             self.last_purge = None;
+            self.last_confirmed_prod = None;
         }
     }
 }
@@ -277,12 +280,13 @@ fn submit(app: &mut App) {
         app.input_mode = InputMode::ProdConfirm;
         return;
     }
-    start_execute(app);
+    start_execute(app, false);
 }
 
 pub fn execute_prod_action(app: &mut App, action: ProdAction) {
     match action {
-        ProdAction::Execute => start_execute(app),
+        // Reached only after the prod-confirm modal accepted.
+        ProdAction::Execute => start_execute(app, true),
     }
 }
 
@@ -297,24 +301,28 @@ pub fn describe_prod_action(app: &App, _action: &ProdAction) -> Option<String> {
         .map(|form| format!("Delete tenant {}", form.tenant.name))
 }
 
-fn start_execute(app: &mut App) {
+fn start_execute(app: &mut App, confirmed_prod: bool) {
     let Some(form) = app.offboard.form.as_ref() else {
         return;
     };
     let purge = form.purge();
     #[cfg(test)]
     {
-        // Unit tests must not run LiveIo against the real `.aic/` tree.
+        // Unit tests must not run LiveIo against the real `.aic/` tree, so
+        // record what the live path would have been handed instead. Recording
+        // `confirmed_prod` is what lets a test catch `submit` starting to claim
+        // a confirmation the operator never gave.
         app.offboard.last_purge = Some(purge);
+        app.offboard.last_confirmed_prod = Some(confirmed_prod);
     }
     #[cfg(not(test))]
     {
-        spawn_live_execute(app, purge);
+        spawn_live_execute(app, purge, confirmed_prod);
     }
 }
 
 #[cfg(not(test))]
-fn spawn_live_execute(app: &mut App, purge: ResolvedPurge) {
+fn spawn_live_execute(app: &mut App, purge: ResolvedPurge, confirmed_prod: bool) {
     let Some(form) = app.offboard.form.as_ref() else {
         return;
     };
@@ -330,7 +338,7 @@ fn spawn_live_execute(app: &mut App, purge: ResolvedPurge) {
     app.input_mode = InputMode::Offboard(Mode::Working);
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let mut io = ops::LiveIo::default();
+        let mut io = ops::LiveIo::new(confirmed_prod);
         let report = ops::execute(
             &tenant,
             &cfg,
@@ -905,5 +913,36 @@ mod tests {
             Some(PendingProdAction::Offboard(ProdAction::Execute))
         ));
         assert!(app.offboard.form.is_some());
+        // Nothing was dispatched, so nothing can have claimed a confirmation.
+        assert_eq!(app.offboard.last_confirmed_prod, None);
+    }
+
+    /// The confirmation the transport eventually sees must come from the
+    /// operator clearing the prod modal, never from `submit` itself. Both
+    /// halves are asserted because a single wrong literal in `start_execute`'s
+    /// two call sites is invisible otherwise: passing `true` from `submit`
+    /// writes to production unconfirmed, and passing `false` from the accepted
+    /// modal fails the delete with `ProdConfirmRequired` after the operator
+    /// already agreed.
+    #[test]
+    fn only_the_accepted_prod_modal_confirms_the_write() {
+        let mut departing = tenant("prod", Some(DUP_SA));
+        departing.theme = TenantTheme::Production;
+        let mut app = App::for_test(vec![departing.clone()], View::Esvs);
+        let plan = spec::plan(&departing, &present(), &[]);
+        open_confirm_for_test(&mut app, present(), plan);
+
+        execute_prod_action(&mut app, ProdAction::Execute);
+        assert_eq!(app.offboard.last_confirmed_prod, Some(true));
+
+        // A non-production tenant never routes through the modal, and must not
+        // be handed a confirmation it never needed.
+        let plain = tenant("sandbox", Some(DUP_SA));
+        let mut app = App::for_test(vec![plain.clone()], View::Esvs);
+        let plan = spec::plan(&plain, &present(), &[]);
+        open_confirm_for_test(&mut app, present(), plan);
+
+        handle_key(&mut app, key(KeyCode::Enter), Mode::Confirm);
+        assert_eq!(app.offboard.last_confirmed_prod, Some(false));
     }
 }

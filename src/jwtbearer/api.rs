@@ -96,10 +96,16 @@ pub async fn issuer_template(tenant: &str, realm: &str) -> Result<Value> {
 }
 
 /// Create or update an issuer. AM agents use plain PUT without `If-Match`.
-pub async fn upsert_issuer(tenant: &str, realm: &str, id: &str, body: Value) -> Result<Value> {
+pub async fn upsert_issuer(
+    tenant: &str,
+    realm: &str,
+    id: &str,
+    body: Value,
+    confirmed_prod: bool,
+) -> Result<Value> {
     validate_issuer_id(id)?;
     let path = format!("{}/{}", issuers_path(realm), id);
-    crate::aic::api::put_versioned(tenant, &path, body, false, API_VERSION).await
+    crate::aic::api::put_versioned(tenant, &path, body, confirmed_prod, API_VERSION).await
 }
 
 #[cfg(test)]

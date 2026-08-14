@@ -11,7 +11,10 @@ use serde_json::Value;
 
 use crate::Result;
 use crate::agent::AgentClient;
-use crate::cli::{print_json, print_table, read_password_line, realm_arg, tenant_config_for};
+use crate::cli::{
+    ensure_prod_confirmed, print_json, print_table, read_password_line, realm_arg,
+    tenant_config_for,
+};
 use crate::config::{self, operator::NetworkAccess};
 use crate::jwtbearer::{self, ops, spec};
 
@@ -23,6 +26,9 @@ pub enum JwtBearerCommand {
         realm: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
     /// Manage named Trusted JWT Issuers.
     Issuer {
@@ -51,8 +57,12 @@ pub enum KeyCommand {
     Remove {
         /// Published key id.
         kid: String,
+        /// Actually remove the key. Without this, only describe it.
         #[arg(long)]
         force: bool,
+        /// Confirm the write on a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
         #[arg(long)]
         realm: Option<String>,
         #[arg(long, help = "Tenant to target")]
@@ -64,6 +74,9 @@ pub enum KeyCommand {
         realm: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
     /// Export this tenant's private signing JWK.
     Export {
@@ -143,6 +156,9 @@ pub enum IssuerCommand {
         realm: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
     /// Show one issuer, or all issuers in the realm when no id is supplied.
     Show {
@@ -156,13 +172,14 @@ pub enum IssuerCommand {
 
 pub async fn run(command: JwtBearerCommand) -> Result<()> {
     match command {
-        JwtBearerCommand::Setup { realm, tenant } => {
+        JwtBearerCommand::Setup { realm, tenant, yes } => {
             let realm = realm_arg("jwt-bearer", realm)?;
             let tenant = tenant_config_for(tenant)?;
+            let ok = ensure_prod_confirmed(&tenant.name, yes)?;
             let settings = config::Settings::load()?.unwrap_or_default();
             let operator =
                 config::operator::resolve(&settings, Some(&tenant), NetworkAccess::Skip).await;
-            let kid = ops::setup(&tenant, &realm, &operator).await?;
+            let kid = ops::setup(&tenant, &realm, &operator, ok.confirmed_prod).await?;
             println!(
                 "configured Trusted JWT issuer {} in realm {} for tenant {} (kid {})",
                 ops::DEFAULT_ISSUER_ID,
@@ -186,7 +203,6 @@ async fn run_key(command: KeyCommand) -> Result<()> {
         } => {
             let realm = realm_arg("jwt-bearer", realm)?;
             let tenant = tenant_config_for(tenant)?;
-            spec::ensure_not_production(tenant.theme)?;
             let issuer =
                 crate::jwtbearer::api::read_issuer(&tenant.name, &realm, ops::DEFAULT_ISSUER_ID)
                     .await?;
@@ -221,12 +237,13 @@ async fn run_key(command: KeyCommand) -> Result<()> {
         KeyCommand::Remove {
             kid,
             force,
+            yes,
             realm,
             tenant,
         } => {
             let realm = realm_arg("jwt-bearer", realm)?;
             let tenant = tenant_config_for(tenant)?;
-            spec::ensure_not_production(tenant.theme)?;
+            let ok = ensure_prod_confirmed(&tenant.name, yes)?;
             // Resolve and describe the key before the --force gate, so a run
             // without --force is a useful dry run: it rejects an unknown kid
             // and names the owner. Printing the attribution only after the
@@ -261,7 +278,9 @@ async fn run_key(command: KeyCommand) -> Result<()> {
                 ));
             }
 
-            let remaining = ops::remove_key_from_issuer(&tenant.name, &realm, &kid, issuer).await?;
+            let remaining =
+                ops::remove_key_from_issuer(&tenant.name, &realm, &kid, issuer, ok.confirmed_prod)
+                    .await?;
             if remaining == 0 {
                 println!(
                     "removed Trusted JWT key {kid:?}; it was the last key in the published set"
@@ -278,13 +297,15 @@ async fn run_key(command: KeyCommand) -> Result<()> {
             );
             Ok(())
         }
-        KeyCommand::Rotate { realm, tenant } => {
+        KeyCommand::Rotate { realm, tenant, yes } => {
             let realm = realm_arg("jwt-bearer", realm)?;
             let tenant = tenant_config_for(tenant)?;
+            let ok = ensure_prod_confirmed(&tenant.name, yes)?;
             let settings = config::Settings::load()?.unwrap_or_default();
             let operator =
                 config::operator::resolve(&settings, Some(&tenant), NetworkAccess::Skip).await;
-            let (old_kid, new_kid) = ops::rotate(&tenant, &realm, &operator).await?;
+            let (old_kid, new_kid) =
+                ops::rotate(&tenant, &realm, &operator, ok.confirmed_prod).await?;
             println!(
                 "rotated Trusted JWT key for tenant {} in realm {} (old kid {}, new kid {})",
                 tenant.name, realm, old_kid, new_kid
@@ -293,7 +314,6 @@ async fn run_key(command: KeyCommand) -> Result<()> {
         }
         KeyCommand::Export { tenant, out } => {
             let tenant = tenant_config_for(tenant)?;
-            spec::ensure_not_production(tenant.theme)?;
             let record = jwtbearer::get_key(AgentClient::connect_or_spawn().await?, &tenant.name)
                 .await?
                 .ok_or_else(|| no_stored_key_error(&tenant.name))?;
@@ -325,7 +345,6 @@ async fn run_key(command: KeyCommand) -> Result<()> {
         } => {
             let realm = realm_arg("jwt-bearer", realm)?;
             let tenant = tenant_config_for(tenant)?;
-            spec::ensure_not_production(tenant.theme)?;
             let contents = std::fs::read_to_string(&file).map_err(|error| {
                 crate::Error::Config(format!("read JWK file {}: {error}", file.display()))
             })?;
@@ -488,10 +507,13 @@ async fn run_issuer(command: IssuerCommand) -> Result<()> {
             jwks_from,
             realm,
             tenant,
+            yes,
         } => {
             let realm = realm_arg("jwt-bearer", realm)?;
             let tenant = tenant_config_for(tenant)?;
-            ops::create_issuer(&tenant, &realm, &id, &issuer, &jwks_from).await?;
+            let ok = ensure_prod_confirmed(&tenant.name, yes)?;
+            ops::create_issuer(&tenant, &realm, &id, &issuer, &jwks_from, ok.confirmed_prod)
+                .await?;
             println!("created Trusted JWT issuer {id} in realm {}", realm);
             Ok(())
         }
@@ -598,11 +620,19 @@ mod tests {
         let list = Cli::try_parse_from(["aic", "jwt-bearer", "key", "list", "--json"]).unwrap();
         assert!(matches!(list.command, Some(Command::JwtBearer { .. })));
 
-        let remove =
-            Cli::try_parse_from(["aic", "jwt-bearer", "key", "remove", "kid", "--force"]).unwrap();
+        let remove = Cli::try_parse_from([
+            "aic",
+            "jwt-bearer",
+            "key",
+            "remove",
+            "kid",
+            "--force",
+            "--yes",
+        ])
+        .unwrap();
         assert!(matches!(remove.command, Some(Command::JwtBearer { .. })));
 
-        let rotate = Cli::try_parse_from(["aic", "jwt-bearer", "key", "rotate"]).unwrap();
+        let rotate = Cli::try_parse_from(["aic", "jwt-bearer", "key", "rotate", "--yes"]).unwrap();
         assert!(matches!(rotate.command, Some(Command::JwtBearer { .. })));
     }
 

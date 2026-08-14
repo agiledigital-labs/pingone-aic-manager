@@ -580,35 +580,39 @@ grant emits a security note because a Trusted JWT Issuer with empty
 ## `aic jwt-bearer` — Trusted JWT Issuer setup
 
 ```bash
-aic jwt-bearer setup [--realm alpha] [--tenant NAME]
-aic jwt-bearer issuer create <id> --issuer ISS --jwks-from FILE [--realm alpha] [--tenant NAME]
+aic jwt-bearer setup [--realm alpha] [--tenant NAME] [--yes]
+aic jwt-bearer issuer create <id> --issuer ISS --jwks-from FILE [--realm alpha] [--tenant NAME] [--yes]
 aic jwt-bearer issuer show [<id>] [--realm alpha] [--tenant NAME]
 aic jwt-bearer key list [--realm alpha] [--tenant NAME] [--json]
-aic jwt-bearer key remove <KID> --force [--realm alpha] [--tenant NAME]
-aic jwt-bearer key rotate [--realm alpha] [--tenant NAME]
+aic jwt-bearer key remove <KID> --force [--yes] [--realm alpha] [--tenant NAME]
+aic jwt-bearer key rotate [--realm alpha] [--tenant NAME] [--yes]
 aic jwt-bearer key export [--tenant NAME] [--out FILE]
 aic jwt-bearer key import <FILE> [--realm alpha] [--tenant NAME] [--force]
 ```
 
 `setup` creates or updates the default lower-environment issuer, merges this
 install's public key into its shared key set, and stores the private key in the
-per-tenant encrypted vault. It is idempotent. All JWT-bearer writes are refused
-on production-themed tenants; no confirmation flag overrides that refusal.
-`issuer create` imports an existing public JWKS under a named issuer, and
-`issuer show` prints one issuer or the realm's issuer list as JSON. `key export`
-writes the tenant's private signing JWK either to stdout or to a new mode-600
-`.jwk` file; it never overwrites an existing file. `key import` stores a private
-JWK in the tenant's local vault, refuses to replace an existing key unless
-`--force` is supplied, and warns when the imported `kid` is not in the default
-issuer's published key set. `key list` displays the default issuer's public key
-attribution and marks the key whose private half is in this vault; `--json`
-prints only the published public-key array. `key remove` shows the key's
-attribution and then requires `--force`, so a run without it previews whose key
-you are about to revoke; it permits removing the last key. Removal is **not
-verified to be immediate revocation** — see the open question in
-`docs/api/17-jwt-bearer-user-tokens.md`. `key rotate` publishes a replacement
-before storing it locally and removes the old public key afterward, so each
-intermediate state retains a working key.
+per-tenant encrypted vault. It is idempotent. `setup`, `key rotate`, and
+`issuer create` are refused outright on production-themed tenants, because each
+can create or extend a minting capability there; `--yes` does not override that
+refusal. `key remove` is the exception and takes `--yes` instead: withdrawing a
+signing key reduces capability, and the tenant where a leaked key matters most
+is the one where revoking it must stay available. Reads and local key transfer
+(`key list`, `key export`, `key import`) are not gated at all. `issuer create`
+imports an existing public JWKS under a named issuer, and `issuer show` prints
+one issuer or the realm's issuer list as JSON. `key export` writes the tenant's
+private signing JWK either to stdout or to a new mode-600 `.jwk` file; it never
+overwrites an existing file. `key import` stores a private JWK in the tenant's
+local vault, refuses to replace an existing key unless `--force` is supplied,
+and warns when the imported `kid` is not in the default issuer's published key
+set. `key list` displays the default issuer's public key attribution and marks
+the key whose private half is in this vault; `--json` prints only the published
+public-key array. `key remove` shows the key's attribution and then requires
+`--force`, so a run without it previews whose key you are about to revoke; it
+permits removing the last key. Removal is **not verified to be immediate
+revocation** — see the open question in `docs/api/17-jwt-bearer-user-tokens.md`.
+`key rotate` publishes a replacement before storing it locally and removes the
+old public key afterward, so each intermediate state retains a working key.
 
 ---
 

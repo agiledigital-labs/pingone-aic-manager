@@ -92,7 +92,7 @@ pub async fn run(tenant: String, options: RmOptions) -> Result<()> {
         return Ok(());
     }
 
-    let _ok = ensure_prod_confirmed(&tenant, options.yes)?;
+    let ok = ensure_prod_confirmed(&tenant, options.yes)?;
     let purge = collect_purge(&plan, options.delete_keys)?;
 
     if !options.delete_keys {
@@ -100,7 +100,7 @@ pub async fn run(tenant: String, options: RmOptions) -> Result<()> {
     }
 
     let current = config::read_current_context()?;
-    let mut io = LiveIo::default();
+    let mut io = LiveIo::new(ok.confirmed_prod);
     let report = ops::execute(
         &departing,
         &cfg,
@@ -361,9 +361,21 @@ fn confirm_typed_name(name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
-    use crate::config::{Tenant, TenantTheme};
-    use crate::offboard::spec::{self, Inventory};
+    use crate::config::{Tenant, TenantTheme, VaultArtifact};
+    use crate::offboard::ops::{ExecuteIo, Layout, Step, StepStatus};
+    use crate::offboard::spec::{self, Inventory, TargetKind};
+
+    /// The gate + `LiveIo` construction that precedes `ops::execute` in [`run`],
+    /// driving the **real** decision function rather than a copy of its rule.
+    /// `run` reaches it through [`ensure_prod_confirmed`], which differs only by
+    /// reading the theme off disk instead of taking it as an argument.
+    fn live_io_after_prod_gate(theme: TenantTheme, yes: bool) -> Result<LiveIo> {
+        let ok = crate::cli::prod_write_ok(theme, "UAT", yes)?;
+        Ok(LiveIo::new(ok.confirmed_prod))
+    }
 
     fn tenant(name: &str, sa_id: &str) -> Tenant {
         Tenant {
@@ -406,5 +418,117 @@ mod tests {
         assert!(!purge.contains(&TargetKind::LogApiKey));
         assert!(!purge.contains(&TargetKind::IdmStore));
         assert!(!purge.contains(&TargetKind::UndoLog));
+    }
+
+    #[test]
+    fn production_without_yes_is_refused_before_execute() {
+        match live_io_after_prod_gate(TenantTheme::Production, false) {
+            Ok(_) => panic!("production without --yes must not build LiveIo"),
+            Err(error) => assert!(
+                error.to_string().contains("--yes"),
+                "expected --yes remediation, got {error}"
+            ),
+        }
+    }
+
+    #[test]
+    fn live_io_default_does_not_confirm_production() {
+        assert!(!LiveIo::default().confirmed_prod);
+    }
+
+    /// `yes: true` clears the gate with `confirmed_prod` set, then `execute`
+    /// runs against a double (no network).
+    #[tokio::test]
+    async fn yes_reaches_execute_with_confirmed_prod() {
+        let io = live_io_after_prod_gate(TenantTheme::Production, true).unwrap();
+        assert!(io.confirmed_prod);
+
+        let departing = tenant("UAT", "sa");
+        let inventory = Inventory {
+            service_account_jwk: false,
+            log_api_key_id: None,
+            issuer_kid: Some("kid".into()),
+            logs_database: false,
+            idm_store: false,
+            workspace: false,
+            sync_state: false,
+            undo_entries: false,
+        };
+        let plan = spec::plan(&departing, &inventory, &[]);
+        let purge = plan.resolve_purge([TargetKind::IssuerSigningKey]);
+        assert!(purge.contains(&TargetKind::IssuerSigningKey));
+
+        let root = std::env::temp_dir().join(format!("aic-offboard-cli-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let layout = Layout {
+            aic_dir: root.join(".aic"),
+            workspace_dir: root.join("workspace"),
+        };
+        let cfg = ProjectConfig {
+            project: "test".into(),
+            default_tenant: departing.name.clone(),
+            tenants: vec![departing.clone()],
+        };
+        let mut recording = RecordingExecuteIo {
+            remote_calls: Vec::new(),
+        };
+        let report = ops::execute(
+            &departing,
+            &cfg,
+            None,
+            &inventory,
+            &purge,
+            &layout,
+            &mut recording,
+        )
+        .await;
+        assert!(
+            recording
+                .remote_calls
+                .iter()
+                .any(|(tenant, kid)| tenant == "UAT" && kid == "kid"),
+            "execute must reach the remote-issuer step: {:?}",
+            recording.remote_calls
+        );
+        assert!(report.steps.iter().any(|step| {
+            matches!(step.step, Step::RemoteIssuer) && matches!(step.status, StepStatus::Ok)
+        }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    struct RecordingExecuteIo {
+        remote_calls: Vec<(String, String)>,
+    }
+
+    impl ExecuteIo for RecordingExecuteIo {
+        fn write_backup(&mut self, _path: &Path, _bytes: &[u8]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn remove_remote_issuer(&mut self, tenant: &str, kid: &str) -> Result<()> {
+            self.remote_calls
+                .push((tenant.to_string(), kid.to_string()));
+            Ok(())
+        }
+
+        async fn remove_vault(&mut self, _artifact: VaultArtifact, _tenant: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn remove_path(&mut self, _path: &Path, _directory: bool) -> Result<()> {
+            Ok(())
+        }
+
+        fn forget_undo(&mut self, _path: &Path, _tenant: &str) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn save_config(&mut self, _config: &ProjectConfig) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_context(&mut self, _name: Option<&str>) -> Result<()> {
+            Ok(())
+        }
     }
 }
