@@ -3,48 +3,50 @@
 Implemented in: `src/journey/`
 
 ## Purpose
+
 Journeys ("authentication trees") are AM's flow definitions: a graph of nodes
 that handle login, registration, MFA, password reset, etc. Not in the initial
 feature set, but documented because they reference scripts heavily and we'll
 need them for cross-feature integration (e.g. "which journeys use script X").
 
 ## Authentication
+
 Service-account bearer. Scope: `fr:am:*`.
 
 ## Endpoints
 
-Replace `{realm-path}` with `/realms/root/realms/alpha` (or `bravo`).
-Always send `Accept-API-Version: protocol=2.0,resource=1.0`.
+Replace `{realm-path}` with `/realms/root/realms/alpha` (or `bravo`). Always
+send `Accept-API-Version: protocol=2.0,resource=1.0`.
 
 ### Trees
 
-| Op | Method | Path | Notes |
-|----|--------|------|-------|
-| List | `GET` | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/trees?_queryFilter=true` | |
-| Read | `GET` | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/trees/{name}` | `name` is the tree name, not a UUID. |
-| Upsert | `PUT` | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/trees/{name}` | Plain `PUT` works for create and update; no `If-Match` required. Create returned 201, update returned 200 (verified 2026-06-14). |
-| Delete | `DELETE` | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/trees/{name}` | Returned 200; follow-up `GET` returned 404 (verified 2026-06-14). |
+| Op     | Method   | Path                                                                                           | Notes                                                                                                                            |
+| ------ | -------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| List   | `GET`    | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/trees?_queryFilter=true` |                                                                                                                                  |
+| Read   | `GET`    | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/trees/{name}`            | `name` is the tree name, not a UUID.                                                                                             |
+| Upsert | `PUT`    | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/trees/{name}`            | Plain `PUT` works for create and update; no `If-Match` required. Create returned 201, update returned 200 (verified 2026-06-14). |
+| Delete | `DELETE` | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/trees/{name}`            | Returned 200; follow-up `GET` returned 404 (verified 2026-06-14).                                                                |
 
 ### Nodes (per type)
 
-| Op | Method | Path | Notes |
-|----|--------|------|-------|
-| List type | `GET` | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}?_queryFilter=true` | |
-| Read | `GET` | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}/{nodeId}` | |
-| Upsert | `PUT` | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}/{nodeId}` | Plain `PUT` works for create and update; no `If-Match` required. Create returned 201, update returned 200 (verified 2026-06-14). |
+| Op        | Method | Path                                                                                                      | Notes                                                                                                                            |
+| --------- | ------ | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| List type | `GET`  | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}?_queryFilter=true` |                                                                                                                                  |
+| Read      | `GET`  | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}/{nodeId}`          |                                                                                                                                  |
+| Upsert    | `PUT`  | `/am/json{realm-path}/realm-config/authentication/authenticationtrees/nodes/{nodeType}/{nodeId}`          | Plain `PUT` works for create and update; no `If-Match` required. Create returned 201, update returned 200 (verified 2026-06-14). |
 
 ### Custom (designed) nodes
 
-| Op | Method | Path |
-|----|--------|------|
-| List custom nodes | `GET` | `/am/json/node-designer/node-type?_queryFilter=true` |
+| Op                | Method | Path                                                 |
+| ----------------- | ------ | ---------------------------------------------------- |
+| List custom nodes | `GET`  | `/am/json/node-designer/node-type?_queryFilter=true` |
 
 ## Node catalog discovery (verified 2026-06-14)
 
-Journey editing does not require a hand-built node reference. An AI coding
-agent can enumerate the tenant's available node types, fetch a type's JSON
-schema (property types, enums, defaults, descriptions, and display order), fetch
-the starter template, and then author a valid node config from live tenant data.
+Journey editing does not require a hand-built node reference. An AI coding agent
+can enumerate the tenant's available node types, fetch a type's JSON schema
+(property types, enums, defaults, descriptions, and display order), fetch the
+starter template, and then author a valid node config from live tenant data.
 
 Always send:
 
@@ -56,12 +58,12 @@ The sandbox returned **235** built-in node types from `getAllTypes`. `tags`
 group the catalog into useful buckets such as `marketplace`, `mfa`, and
 `basic authn`.
 
-| Op | Method | Full path | Body |
-|----|--------|-----------|------|
-| List all built-in node types | `POST` | `/am/json/realms/root/realms/{realm}/realm-config/authentication/authenticationtrees/nodes?_action=getAllTypes` | `{}` |
-| Fetch config schema for one type | `POST` | `/am/json/realms/root/realms/{realm}/realm-config/authentication/authenticationtrees/nodes/{nodeType}?_action=schema` | `{}` |
-| Fetch starter template for one type | `POST` | `/am/json/realms/root/realms/{realm}/realm-config/authentication/authenticationtrees/nodes/{nodeType}?_action=template` | `{}` |
-| List custom designer-built node types | `GET` | `/am/json/node-designer/node-type?_queryFilter=true` | none |
+| Op                                    | Method | Full path                                                                                                               | Body |
+| ------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------- | ---- |
+| List all built-in node types          | `POST` | `/am/json/realms/root/realms/{realm}/realm-config/authentication/authenticationtrees/nodes?_action=getAllTypes`         | `{}` |
+| Fetch config schema for one type      | `POST` | `/am/json/realms/root/realms/{realm}/realm-config/authentication/authenticationtrees/nodes/{nodeType}?_action=schema`   | `{}` |
+| Fetch starter template for one type   | `POST` | `/am/json/realms/root/realms/{realm}/realm-config/authentication/authenticationtrees/nodes/{nodeType}?_action=template` | `{}` |
+| List custom designer-built node types | `GET`  | `/am/json/node-designer/node-type?_queryFilter=true`                                                                    | none |
 
 ### List all built-in node types
 
@@ -82,8 +84,8 @@ group the catalog into useful buckets such as `marketplace`, `mfa`, and
 }
 ```
 
-`_id` is the `nodeType` string used in tree node metadata and node config
-paths. The CLI exposes this as:
+`_id` is the `nodeType` string used in tree node metadata and node config paths.
+The CLI exposes this as:
 
 ```bash
 aic journey nodes --realm alpha
@@ -174,8 +176,8 @@ To author a new node:
 3. Run `aic journey node-schema <nodeType> --realm alpha` to see valid fields,
    enum values, defaults, and property types.
 4. Add the node config under `nodes` keyed by a fresh UUID.
-5. Wire the same UUID into `tree.nodes` with `nodeType`, `connections`,
-   `x`/`y`, and any other metadata the tree uses.
+5. Wire the same UUID into `tree.nodes` with `nodeType`, `connections`, `x`/`y`,
+   and any other metadata the tree uses.
 6. Update the relevant `connections` from existing nodes so the graph can reach
    the new node.
 
@@ -185,12 +187,11 @@ Write semantics verified live on 2026-06-14:
   `If-None-Match` header is required. Create returned 201, update returned 200.
 - Tree and node `PUT` reject `_id`, `_rev`, and any non-whitelisted attribute
   with `400 "Invalid attribute specified"`. For trees, the response
-  `detail.validAttributes` listed:
-  `description`, `enabled`, `entryNodeId`, `identityResource`,
-  `innerTreeOnly`, `maximumIdleTime`, `maximumSessionTime`, `mustRun`,
-  `noSession`, `nodes`, `staticNodes`, `transactionalOnly`, `treeTimeout`,
-  `uiConfig`. The client strips top-level `_id`/`_rev` before writing and
-  leaves nested node metadata, connections, and config untouched.
+  `detail.validAttributes` listed: `description`, `enabled`, `entryNodeId`,
+  `identityResource`, `innerTreeOnly`, `maximumIdleTime`, `maximumSessionTime`,
+  `mustRun`, `noSession`, `nodes`, `staticNodes`, `transactionalOnly`,
+  `treeTimeout`, `uiConfig`. The client strips top-level `_id`/`_rev` before
+  writing and leaves nested node metadata, connections, and config untouched.
 - `DELETE .../trees/{name}` returned 200, and a follow-up `GET` returned 404.
 - Trees and nodes have `_rev`, but it is content-derived: re-PUTting
   byte-identical content returned the same `_rev`. Treat `_rev` equality as
@@ -209,12 +210,12 @@ and writes the same pulled bytes to:
 workspace/<tenant>/journeys/<realm>/.snapshots/<name>.json
 ```
 
-On `aic journey push <name>`, the CLI re-pulls the remote tree and nodes,
-loads the snapshot baseline, strips every `_rev` key before comparison, and
-pushes only if the remote still matches the snapshot. If the remote drifted,
-push aborts with a message naming whether the tree and/or node configs changed.
-Use `--force` only when intentionally overwriting remote drift or creating from
-a local export with no snapshot baseline.
+On `aic journey push <name>`, the CLI re-pulls the remote tree and nodes, loads
+the snapshot baseline, strips every `_rev` key before comparison, and pushes
+only if the remote still matches the snapshot. If the remote drifted, push
+aborts with a message naming whether the tree and/or node configs changed. Use
+`--force` only when intentionally overwriting remote drift or creating from a
+local export with no snapshot baseline.
 
 `aic journey delete <name>` requires `--force`; without it the CLI prints what
 would be deleted and exits without changing AIC. Before deleting an AM script,
@@ -252,31 +253,34 @@ It lists journeys whose scripted nodes reference the script UUID in a top-level
     "06fa2a1c-…": {
       "connections": {
         "disallowed": "e301438c-…",
-        "ok":         "6c0369ef-…"
+        "ok": "6c0369ef-…"
       },
       "displayName": "Called As Inner Journey?",
-      "nodeType":    "ScriptedDecisionNode",
-      "version":     "1.0",
-      "x": 60, "y": 427.75
+      "nodeType": "ScriptedDecisionNode",
+      "version": "1.0",
+      "x": 60,
+      "y": 427.75
     },
-    "6c0369ef-…": { /* HOTP Generator … */ }
+    "6c0369ef-…": {
+      /* HOTP Generator … */
+    }
   }
 }
 ```
 
 - **Has `_rev`**, but verified 2026-06-14 as content-derived. We use
   content-snapshot conflict detection and do not send `If-Match`.
-- `nodes` is a map keyed by UUID. Each node's connections reference other
-  node UUIDs (or built-in outcomes like `true`/`false`).
+- `nodes` is a map keyed by UUID. Each node's connections reference other node
+  UUIDs (or built-in outcomes like `true`/`false`).
 - `entryNodeId` points to the entry node UUID. Built-in sentinel
   `"e301438c-0bd0-429c-ab0c-66126501069a"` = failure node.
-- `staticNodes` holds positions for built-in Success/Failure nodes. These do
-  not have separately fetchable node configuration.
+- `staticNodes` holds positions for built-in Success/Failure nodes. These do not
+  have separately fetchable node configuration.
 
 ## Script references
 
-A `ScriptedDecisionNode` (or any `*ScriptedNode`) holds the script's UUID in
-its config. To find which journeys reference a given script, walk every tree's
+A `ScriptedDecisionNode` (or any `*ScriptedNode`) holds the script's UUID in its
+config. To find which journeys reference a given script, walk every tree's
 `nodes` and inspect node configs. Useful for the "won't-break-anything" check
 before deleting a script.
 
@@ -397,17 +401,18 @@ the custom host, so the same node must not redirect again.
 
 - Tenant: `<your-tenant>.forgeblocks.com`
 - Date: 2026-05-17
-- Calls: `GET …/authenticationtrees/trees?_queryFilter=true&_pageSize=1`
-  (200 OK, full structure as shown).
+- Calls: `GET …/authenticationtrees/trees?_queryFilter=true&_pageSize=1` (200
+  OK, full structure as shown).
 - Date: 2026-06-13
 - Calls: re-verified tree list, tree read, and node read
   (`nodes/ScriptedDecisionNode/{id}`) live. Scripted decision nodes carry a
   `script` UUID reference.
 - Date: 2026-06-14
-- Calls: `POST …/authenticationtrees/nodes?_action=getAllTypes` (200 OK,
-  235 result entries); `POST …/nodes/ScriptedDecisionNode?_action=schema`;
-  `POST …/nodes/ScriptedDecisionNode?_action=template`; `GET
-  /am/json/node-designer/node-type?_queryFilter=true` (200 OK, 1 result entry).
+- Calls: `POST …/authenticationtrees/nodes?_action=getAllTypes` (200 OK, 235
+  result entries); `POST …/nodes/ScriptedDecisionNode?_action=schema`;
+  `POST …/nodes/ScriptedDecisionNode?_action=template`;
+  `GET /am/json/node-designer/node-type?_queryFilter=true` (200 OK, 1 result
+  entry).
 - Date: 2026-06-14
 - Calls: `PUT …/authenticationtrees/nodes/ScriptedDecisionNode/{uuid}` create
   (201) and update (200); `PUT …/authenticationtrees/trees/test_push_probe`
@@ -433,5 +438,5 @@ the custom host, so the same node must not redirect again.
 ## Open questions
 
 - Resolved 2026-06-14: full inventory of built-in `nodeType` strings is
-  available from `POST …/authenticationtrees/nodes?_action=getAllTypes`
-  (235 entries on the sandbox).
+  available from `POST …/authenticationtrees/nodes?_action=getAllTypes` (235
+  entries on the sandbox).
