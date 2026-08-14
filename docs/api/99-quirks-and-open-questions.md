@@ -762,3 +762,17 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   read-modify-write, not at the point the schema changed. Widening is safe;
   narrowing needs the affected records migrated first. Full table in
   `10-managed-objects.md` → "Enum constraints".
+
+- **2026-08-15** — OAuth2 client template vs schema, and PUT raw vs GET
+  wrapped. The live `?_action=template` body still has 115 fields in six
+  groups, but `?_action=schema` omits
+  `advancedOAuth2ClientConfig.introspectionPolicySets` (present on the
+  template as `[]` and on 9/45 alpha clients as
+  `{"inherited":false,"value":[]}`). Catalogues that trust only the schema
+  will reject those clients. Separately, a create `PUT` of the **raw**
+  template (no `{inherited,value}` wrappers) returns 201; the subsequent
+  `GET` wraps every field in the five non-override groups and leaves
+  `overrideOAuth2ClientConfig` raw. Writers can send template-shaped raw
+  values; readers must unwrap. Probe client
+  `Terraform_oauth_probe_<ts>` was deleted. Documented in
+  `05-oauth2-oidc.md`.
