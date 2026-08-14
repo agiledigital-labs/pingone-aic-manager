@@ -269,6 +269,25 @@ $SCRIPTS/verify-endpoint.sh \
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`, realm `alpha`
+- Date: 2026-08-15
+- Calls: `POST …/OAuth2Client?_action=template` still returns the 115-field,
+  six-group body. `POST …?_action=schema` matches the template except
+  `advancedOAuth2ClientConfig.introspectionPolicySets`, which is in the
+  template (default `[]`) and on 9/45 live clients as
+  `{"inherited":false,"value":[]}`, but is **absent from the schema**. A GET
+  of every OAuth2 client in `alpha` (45/45) produced no top-level keys and no
+  group fields outside the 115-field template; no `*-encrypted` siblings were
+  present on this tenant version. `PUT` of the raw template (no inherited
+  wrappers, no `_id`/`_rev`/`_type`/`_provider`) to a new id
+  `Terraform_oauth_probe_<ts>` returned 201; the subsequent GET wrapped the
+  five non-override groups as `{inherited,value}` and left
+  `overrideOAuth2ClientConfig` raw; `userpassword` read back `null`. `DELETE`
+  of that probe returned 200 and a follow-up GET returned 404. Original
+  clients were not modified. A subsequent create of
+  `Terraform_TestAccessToken` from the typed catalog showed that the
+  template defaults `allowedResourceServerAudienceValues: [""]` and
+  `customProperties: [""]` are stored and read back as `[]`. The original
+  `TestAccessToken` client was not modified.
 - Date: 2026-08-07
 - Calls: `POST …/realm-config/agents/OAuth2Client?_action=schema` returned 200;
   `tokenEndpointAuthMethod.enum` contained `client_secret_post`,
