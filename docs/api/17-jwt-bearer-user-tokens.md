@@ -11,9 +11,13 @@ user as `sub`; AM verifies it against a realm-level **Trusted JWT Issuer**
 config that holds one public JWK per person/machine, and issues a user token.
 
 This is the tool for "I need to reproduce what the customer's app sees" and for
-agent-driven testing. It is deliberately a **lower-environment** capability: an
-issuer with a blank `allowedSubjects` can mint a token for **any user in the
-realm**.
+agent-driven testing. An issuer with a blank `allowedSubjects` can mint a token
+for **any user in the realm**, so in lower environments — where that blank list
+is the intended default — the whole capability is one.
+
+On a **production**-themed tenant the blank case is what is forbidden, not the
+capability: `aic` refuses to leave an issuer unrestricted there, and refuses to
+mint against one that already is. See "Production" below.
 
 Not to be confused with two neighbours:
 
@@ -295,14 +299,42 @@ defaults.
 - The `aic_owner`, `aic_host`, and `aic_created` members are load-bearing: they
   are the tenant-side attribution record, and the local record stores the same
   opaque `kid` used to identify that key.
-- **`allowedSubjects` stays empty by default** (decided 2026-08-06). Blank means
-  the issuer may mint for any user in the realm, which is the point: this exists
-  so a tester can become an arbitrary user without a journey or a password.
-  Requiring an explicit subject list would defeat the convenience the feature is
-  for. The setup command refuses production-themed tenants because an empty
-  `allowedSubjects` plus a client with the grant enabled is a realm-wide
-  capability. Minting a user token from the stored key and exporting a public
-  JWKS remain separate explicit commands; neither is a setup side effect.
+- **`allowedSubjects` stays empty by default outside production** (decided
+  2026-08-06). Blank means the issuer may mint for any user in the realm, which
+  is the point: this exists so a tester can become an arbitrary user without a
+  journey or a password. Requiring an explicit subject list would defeat the
+  convenience the feature is for. Minting a user token from the stored key and
+  exporting a public JWKS remain separate explicit commands; neither is a setup
+  side effect.
+- **`allowedSubjects` is preserved by every write** (changed 2026-08-14). It
+  used to be forced to `[]` on each `PUT`, which meant a colleague's next
+  `setup` or `key rotate` silently re-opened a restricted issuer to the whole
+  realm. `aic jwt-bearer subjects list/add/rm` edits the list; `--username`
+  resolves to the user's `_id` first, because AM matches the raw `sub` claim and
+  a username would be a lockout.
+
+### Production
+
+The 2026-08-06 decision was that the whole feature is refused on a
+production-themed tenant, on the grounds that an empty `allowedSubjects` plus a
+client with the grant enabled is a realm-wide capability. That reasoning was
+sound about the _blank list_ and wrong about the _feature_: it also refused
+`key list`, a read, and `key remove`, the revocation you most want available on
+production. Superseded 2026-08-14 by a narrower rule.
+
+**No `aic` write may leave an issuer unrestricted on a production-themed
+tenant.** `setup` and `issuer create` take `--id`/`--username` so a first run
+has a subject list; `key rotate` refuses against an already-unrestricted issuer;
+`subjects rm` will not remove the last real subject. `key remove` is exempt —
+withdrawing a signing key strictly reduces capability, and refusing a revocation
+over an unrelated field is the mistake being corrected here. `aic auth` reads
+the issuer on production only and refuses to mint against an unrestricted one.
+
+That mint check is not a boundary against a determined operator, who can call AM
+directly with the private key. It exists so the realm-wide _configuration_ never
+exists on production in the first place, which is why the write rule carries the
+weight. Ordinary production writes still need `--yes`, as everywhere else.
+
 - `aic jwt-bearer key export` emits the stored private JWK as one standard JWK
   object, retaining `kid` and any `aic_*` attribution members. With `--out` it
   creates a new mode-600 file and refuses to overwrite an existing path; without
@@ -436,6 +468,26 @@ defaults.
   probe client `DELETE`d and confirmed absent from `aic oauth list`; minted
   tokens shredded. The published `jwkSet`, its single key, and both users were
   left untouched — no user was created or modified.
+
+### 2026-08-14 — `aic jwt-bearer subjects` round trip
+
+Exercising the new editor against the same sandbox issuer, to confirm AM accepts
+the body it builds — unit tests cannot catch a body the tenant rejects.
+
+- `subjects list` on the blank issuer printed the "unrestricted" line rather
+  than an empty one; `subjects add --id <uuid>` then listed that subject.
+- `subjects add --username user.0` for the user already added by `--id` reported
+  **no change**, confirming the username was resolved to the same `_id` before
+  comparison rather than appended as a second entry.
+- `subjects add --id user.0` warned that the value is not UUID-shaped and
+  proceeded; `subjects add --id "   "` was refused.
+- `subjects rm` removed a present subject, reported no change for an absent one,
+  and returned the list to empty.
+- After all six writes the issuer re-read identical to its starting state:
+  `allowedSubjects: []`, `issuer: aic-agent`, `jwksCacheTimeout: 60000`,
+  `consentedScopesClaim: scope`, `resourceOwnerIdentityClaim: sub`, and the one
+  published `kid` unchanged — the property that a subject edit must not disturb
+  the shared key set, checked on the wire and not only in a unit test.
 
 ## Source citations
 

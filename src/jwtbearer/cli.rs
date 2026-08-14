@@ -22,6 +22,8 @@ use crate::jwtbearer::{self, ops, spec};
 pub enum JwtBearerCommand {
     /// Ensure the default realm issuer and this install's key exist.
     Setup {
+        #[command(flatten)]
+        subjects: SubjectSelectors,
         #[arg(long)]
         realm: Option<String>,
         #[arg(long, help = "Tenant to target")]
@@ -39,6 +41,81 @@ pub enum JwtBearerCommand {
     Key {
         #[command(subcommand)]
         command: KeyCommand,
+    },
+    /// Manage the issuer's allowedSubjects list.
+    Subjects {
+        #[command(subcommand)]
+        command: SubjectsCommand,
+    },
+}
+
+/// `--id` / `--username` selectors. Optional on setup and issuer create;
+/// required (via [`RequiredSubjectSelectors`]) on subjects add/rm.
+#[derive(Args, Debug, Clone, Default)]
+pub struct SubjectSelectors {
+    /// User UUID to allow. Repeatable; may be mixed with --username.
+    #[arg(long = "id", id = "subject_id")]
+    id: Vec<String>,
+    /// Username to resolve to a user UUID. Repeatable; may be mixed with --id.
+    #[arg(long)]
+    username: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+#[command(group(
+    clap::ArgGroup::new("subject")
+        .required(true)
+        .multiple(true)
+))]
+pub struct RequiredSubjectSelectors {
+    /// User UUID to allow. Repeatable; may be mixed with --username.
+    #[arg(long, group = "subject")]
+    id: Vec<String>,
+    /// Username to resolve to a user UUID. Repeatable; may be mixed with --id.
+    #[arg(long, group = "subject")]
+    username: Vec<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SubjectsCommand {
+    /// Show the issuer's allowedSubjects.
+    List {
+        #[arg(long)]
+        issuer: Option<String>,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        #[arg(long, help = "Print the raw allowedSubjects array")]
+        json: bool,
+    },
+    /// Add one or more subjects to the issuer.
+    Add {
+        #[command(flatten)]
+        selectors: RequiredSubjectSelectors,
+        #[arg(long)]
+        issuer: Option<String>,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove one or more subjects from the issuer.
+    Rm {
+        #[command(flatten)]
+        selectors: RequiredSubjectSelectors,
+        #[arg(long)]
+        issuer: Option<String>,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -105,6 +182,8 @@ pub fn quiet_preflight(command: &JwtBearerCommand) -> bool {
             command: KeyCommand::List { json: true, .. }
         } | JwtBearerCommand::Key {
             command: KeyCommand::Export { out: None, .. }
+        } | JwtBearerCommand::Subjects {
+            command: SubjectsCommand::List { json: true, .. }
         }
     )
 }
@@ -156,6 +235,8 @@ pub enum IssuerCommand {
         realm: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        #[command(flatten)]
+        subjects: SubjectSelectors,
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
@@ -172,14 +253,20 @@ pub enum IssuerCommand {
 
 pub async fn run(command: JwtBearerCommand) -> Result<()> {
     match command {
-        JwtBearerCommand::Setup { realm, tenant, yes } => {
+        JwtBearerCommand::Setup {
+            subjects,
+            realm,
+            tenant,
+            yes,
+        } => {
             let realm = realm_arg("jwt-bearer", realm)?;
             let tenant = tenant_config_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant.name, yes)?;
+            let incoming = resolve_subject_selectors(&tenant.name, &realm, &subjects).await?;
             let settings = config::Settings::load()?.unwrap_or_default();
             let operator =
                 config::operator::resolve(&settings, Some(&tenant), NetworkAccess::Skip).await;
-            let kid = ops::setup(&tenant, &realm, &operator, ok.confirmed_prod).await?;
+            let kid = ops::setup(&tenant, &realm, &operator, &incoming, ok.confirmed_prod).await?;
             println!(
                 "configured Trusted JWT issuer {} in realm {} for tenant {} (kid {})",
                 ops::DEFAULT_ISSUER_ID,
@@ -191,6 +278,7 @@ pub async fn run(command: JwtBearerCommand) -> Result<()> {
         }
         JwtBearerCommand::Issuer { command } => run_issuer(command).await,
         JwtBearerCommand::Key { command } => run_key(command).await,
+        JwtBearerCommand::Subjects { command } => run_subjects(command).await,
     }
 }
 
@@ -413,7 +501,12 @@ fn write_private_jwk_file(path: &std::path::Path, contents: &str) -> Result<()> 
 pub async fn run_auth(options: AuthOptions) -> Result<()> {
     let realm = realm_arg("auth", options.realm)?;
     let tenant = tenant_config_for(options.tenant)?;
-    spec::ensure_not_production(tenant.theme)?;
+    if spec::mint_reads_issuer(tenant.theme) {
+        let issuer =
+            crate::jwtbearer::api::read_issuer(&tenant.name, &realm, ops::DEFAULT_ISSUER_ID)
+                .await?;
+        spec::ensure_mint_allowed(tenant.theme, &spec::issuer_allowed_subjects(&issuer))?;
+    }
 
     let record = jwtbearer::get_key(AgentClient::connect_or_spawn().await?, &tenant.name)
         .await?
@@ -499,6 +592,145 @@ fn read_client_secret(from_stdin: bool) -> Result<Option<String>> {
     Ok(None)
 }
 
+async fn run_subjects(command: SubjectsCommand) -> Result<()> {
+    match command {
+        SubjectsCommand::List {
+            issuer,
+            realm,
+            tenant,
+            json,
+        } => {
+            let realm = realm_arg("jwt-bearer", realm)?;
+            let tenant = tenant_config_for(tenant)?;
+            let issuer_id = issuer.as_deref().unwrap_or(ops::DEFAULT_ISSUER_ID);
+            let issuer =
+                crate::jwtbearer::api::read_issuer(&tenant.name, &realm, issuer_id).await?;
+            let subjects = spec::issuer_allowed_subjects(&issuer);
+            if json {
+                return print_json(&subjects);
+            }
+            for line in spec::subjects_list_lines(&subjects) {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        SubjectsCommand::Add {
+            selectors,
+            issuer,
+            realm,
+            tenant,
+            yes,
+        } => {
+            edit_subjects(
+                issuer,
+                realm,
+                tenant,
+                yes,
+                &selectors.id,
+                &selectors.username,
+                ops::SubjectEdit::Add,
+            )
+            .await
+        }
+        SubjectsCommand::Rm {
+            selectors,
+            issuer,
+            realm,
+            tenant,
+            yes,
+        } => {
+            edit_subjects(
+                issuer,
+                realm,
+                tenant,
+                yes,
+                &selectors.id,
+                &selectors.username,
+                ops::SubjectEdit::Remove,
+            )
+            .await
+        }
+    }
+}
+
+async fn edit_subjects(
+    issuer: Option<String>,
+    realm: Option<String>,
+    tenant: Option<String>,
+    yes: bool,
+    ids: &[String],
+    usernames: &[String],
+    edit: ops::SubjectEdit,
+) -> Result<()> {
+    let realm = realm_arg("jwt-bearer", realm)?;
+    let tenant = tenant_config_for(tenant)?;
+    let ok = ensure_prod_confirmed(&tenant.name, yes)?;
+    let issuer_id = issuer.as_deref().unwrap_or(ops::DEFAULT_ISSUER_ID);
+    let incoming = resolve_subjects(&tenant.name, &realm, ids, usernames).await?;
+    let (before, after) = ops::edit_issuer_subjects(
+        &tenant,
+        &realm,
+        issuer_id,
+        &incoming,
+        edit,
+        ok.confirmed_prod,
+    )
+    .await?;
+    if after == before {
+        match edit {
+            ops::SubjectEdit::Add => {
+                println!("no change; those subjects are already on Trusted JWT issuer {issuer_id}")
+            }
+            ops::SubjectEdit::Remove => {
+                println!("no change; those subjects were not on Trusted JWT issuer {issuer_id}")
+            }
+        }
+        return Ok(());
+    }
+    let added = after.len().saturating_sub(before.len());
+    let removed = before.len().saturating_sub(after.len());
+    match edit {
+        ops::SubjectEdit::Add => {
+            println!("added {added} subject(s) to Trusted JWT issuer {issuer_id}");
+        }
+        ops::SubjectEdit::Remove => {
+            println!("removed {removed} subject(s) from Trusted JWT issuer {issuer_id}");
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_subject_selectors(
+    tenant: &str,
+    realm: &str,
+    selectors: &SubjectSelectors,
+) -> Result<Vec<String>> {
+    resolve_subjects(tenant, realm, &selectors.id, &selectors.username).await
+}
+
+async fn resolve_subjects(
+    tenant: &str,
+    realm: &str,
+    ids: &[String],
+    usernames: &[String],
+) -> Result<Vec<String>> {
+    for id in ids {
+        let id = spec::parse_subject(id)?;
+        if !spec::id_is_uuid_shaped(&id) {
+            eprintln!(
+                "warning: --id {id:?} is not UUID-shaped; `aic auth` signs the user's `_id`, so a username here will never match. Did you mean --username?"
+            );
+        }
+    }
+    let mut lookups = Vec::with_capacity(usernames.len());
+    for username in usernames {
+        let username = spec::parse_subject(username)?;
+        let response = crate::jwtbearer::api::lookup_username(tenant, realm, &username).await?;
+        lookups.push((username, response));
+    }
+    spec::subjects_from_resolved(ids, &lookups)
+}
+
 async fn run_issuer(command: IssuerCommand) -> Result<()> {
     match command {
         IssuerCommand::Create {
@@ -507,13 +739,23 @@ async fn run_issuer(command: IssuerCommand) -> Result<()> {
             jwks_from,
             realm,
             tenant,
+            subjects,
             yes,
         } => {
             let realm = realm_arg("jwt-bearer", realm)?;
             let tenant = tenant_config_for(tenant)?;
             let ok = ensure_prod_confirmed(&tenant.name, yes)?;
-            ops::create_issuer(&tenant, &realm, &id, &issuer, &jwks_from, ok.confirmed_prod)
-                .await?;
+            let incoming = resolve_subject_selectors(&tenant.name, &realm, &subjects).await?;
+            ops::create_issuer(
+                &tenant,
+                &realm,
+                &id,
+                &issuer,
+                &jwks_from,
+                &incoming,
+                ok.confirmed_prod,
+            )
+            .await?;
             println!("created Trusted JWT issuer {id} in realm {}", realm);
             Ok(())
         }
@@ -537,7 +779,9 @@ mod tests {
 
     use crate::cli::{Cli, Command, realm_arg};
 
-    use super::{JwtBearerCommand, KeyCommand, quiet_preflight, write_private_jwk_file};
+    use super::{
+        JwtBearerCommand, KeyCommand, SubjectsCommand, quiet_preflight, write_private_jwk_file,
+    };
     use crate::jwtbearer::spec::ClientAuthMethod;
 
     #[test]
@@ -637,6 +881,88 @@ mod tests {
     }
 
     #[test]
+    fn subjects_commands_parse_and_require_a_selector() {
+        let list =
+            Cli::try_parse_from(["aic", "jwt-bearer", "subjects", "list", "--json"]).unwrap();
+        assert!(matches!(
+            list.command,
+            Some(Command::JwtBearer {
+                command: JwtBearerCommand::Subjects {
+                    command: SubjectsCommand::List { json: true, .. }
+                }
+            })
+        ));
+
+        let add = Cli::try_parse_from([
+            "aic",
+            "jwt-bearer",
+            "subjects",
+            "add",
+            "--id",
+            "45565631-0000-4000-8000-000000000000",
+            "--username",
+            "user.0",
+            "--yes",
+        ])
+        .unwrap();
+        assert!(matches!(add.command, Some(Command::JwtBearer { .. })));
+
+        let rm = Cli::try_parse_from([
+            "aic",
+            "jwt-bearer",
+            "subjects",
+            "rm",
+            "--id",
+            "45565631-0000-4000-8000-000000000000",
+        ])
+        .unwrap();
+        assert!(matches!(rm.command, Some(Command::JwtBearer { .. })));
+
+        assert!(Cli::try_parse_from(["aic", "jwt-bearer", "subjects", "add"]).is_err());
+        assert!(Cli::try_parse_from(["aic", "jwt-bearer", "subjects", "rm"]).is_err());
+    }
+
+    #[test]
+    fn setup_and_create_accept_repeatable_subject_flags() {
+        let setup = Cli::try_parse_from([
+            "aic",
+            "jwt-bearer",
+            "setup",
+            "--id",
+            "one",
+            "--id",
+            "two",
+            "--username",
+            "alice",
+        ])
+        .unwrap();
+        let Some(Command::JwtBearer {
+            command: JwtBearerCommand::Setup { subjects, .. },
+        }) = setup.command
+        else {
+            panic!("expected setup");
+        };
+        assert_eq!(subjects.id, ["one", "two"]);
+        assert_eq!(subjects.username, ["alice"]);
+
+        let create = Cli::try_parse_from([
+            "aic",
+            "jwt-bearer",
+            "issuer",
+            "create",
+            "named",
+            "--issuer",
+            "iss",
+            "--jwks-from",
+            "jwks.json",
+            "--id",
+            "user-uuid",
+        ])
+        .unwrap();
+        assert!(matches!(create.command, Some(Command::JwtBearer { .. })));
+    }
+
+    #[test]
     fn stdout_export_suppresses_preflight_status_but_file_export_does_not() {
         assert!(quiet_preflight(&JwtBearerCommand::Key {
             command: KeyCommand::List {
@@ -655,6 +981,14 @@ mod tests {
             command: KeyCommand::Export {
                 tenant: None,
                 out: Some("key.jwk".into()),
+            },
+        }));
+        assert!(quiet_preflight(&JwtBearerCommand::Subjects {
+            command: SubjectsCommand::List {
+                issuer: None,
+                realm: None,
+                tenant: None,
+                json: true,
             },
         }));
     }
