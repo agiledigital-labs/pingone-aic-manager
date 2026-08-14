@@ -662,6 +662,10 @@ npm run check          # type-check + lint + test + build
 npm run watch          # rebuild on save — pair with `aic script watch`
 ```
 
+Needs **Node 22.18+ or 23.6+** (declared in the project's `engines`): `npm test`
+runs the `.ts` test files through `node --test` directly, which relies on native
+type stripping being on by default.
+
 The build writes `idm/endpoint/<name>.cjs`, an OpenAPI 3.1 document per endpoint
 under `typescript/openapi/`, and an ownership manifest that `aic script watch`
 reads (below).

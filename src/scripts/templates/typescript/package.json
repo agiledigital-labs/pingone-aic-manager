@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "TypeScript custom endpoints for one PingOne AIC tenant. Managed by `aic workspace update`: the framework-owned fields below are refreshed on update, any dependency you add is preserved.",
+  "engines": {
+    "node": "^22.18.0 || >=23.6.0"
+  },
   "scripts": {
     "build": "node tools/build.mjs",
     "watch": "node tools/build.mjs --watch",

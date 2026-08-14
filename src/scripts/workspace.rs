@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 52;
+pub const TEMPLATES_VERSION: u32 = 53;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -263,6 +263,10 @@ const MANAGED: &[(&str, &str)] = &[
         "typescript/tests/runtime-bans.test.mjs",
         include_str!("templates/typescript/tests/runtime-bans.test.mjs"),
     ),
+    (
+        "typescript/tests/openapi-meta.test.mjs",
+        include_str!("templates/typescript/tests/openapi-meta.test.mjs"),
+    ),
 ];
 
 /// The TypeScript project's `package.json`. Neither managed nor user: the
@@ -301,7 +305,7 @@ const USER: &[(&str, &str)] = &[
 /// first created — including on an `update` that introduces it to an existing
 /// workspace — and never touched again.
 ///
-/// The `aicdemo-*` endpoints are a worked example, not infrastructure: they
+/// The `example-*` endpoints are a worked example, not infrastructure: they
 /// exercise every routing and validation feature against fixture data and are
 /// meant to be deleted once you have your own.
 const TS_USER: &[(&str, &str)] = &[
@@ -318,12 +322,12 @@ const TS_USER: &[(&str, &str)] = &[
         include_str!("templates/typescript/src/shared/fixtures.ts"),
     ),
     (
-        "typescript/src/endpoints/aicdemo-a1-claude-widgets.ts",
-        include_str!("templates/typescript/src/endpoints/aicdemo-a1-claude-widgets.ts"),
+        "typescript/src/endpoints/example-widgets.ts",
+        include_str!("templates/typescript/src/endpoints/example-widgets.ts"),
     ),
     (
-        "typescript/src/endpoints/aicdemo-a1-claude-reports.ts",
-        include_str!("templates/typescript/src/endpoints/aicdemo-a1-claude-reports.ts"),
+        "typescript/src/endpoints/example-reports.ts",
+        include_str!("templates/typescript/src/endpoints/example-reports.ts"),
     ),
     (
         "typescript/tests/demo-endpoints.test.ts",
@@ -769,7 +773,7 @@ mod tests {
         }
         for rel in [
             "typescript/src/shared/widget-key.ts",
-            "typescript/src/endpoints/aicdemo-a1-claude-widgets.ts",
+            "typescript/src/endpoints/example-widgets.ts",
         ] {
             assert!(TS_USER.iter().any(|(r, _)| *r == rel), "not seeded: {rel}");
             assert!(
@@ -784,6 +788,48 @@ mod tests {
                 .chain(TS_USER)
                 .any(|(r, _)| *r == "typescript/package.json")
         );
+    }
+
+    /// A template file that nothing registers is invisible: it ships inside the
+    /// crate, so every check here and in CI passes, and it still never reaches a
+    /// workspace — a test in that state has silently stopped guarding anything.
+    /// `tests/openapi-meta.test.mjs` sat unregistered from the day it was
+    /// written until the v0.8.0 release rehearsal (2026-08-14) noticed the
+    /// scaffolded tree was one file short of the template tree.
+    #[test]
+    fn every_typescript_template_file_is_registered_somewhere() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/scripts/templates/typescript");
+
+        fn walk(dir: &std::path::Path, root: &std::path::Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("template dir is readable") {
+                let path = entry.expect("readable entry").path();
+                // `node_modules/` is a local install artifact, not a template.
+                if path.file_name().is_some_and(|n| n == "node_modules") {
+                    continue;
+                }
+                if path.is_dir() {
+                    walk(&path, root, found);
+                } else {
+                    let rel = path.strip_prefix(root).expect("under root");
+                    found.push(format!("typescript/{}", rel.display()));
+                }
+            }
+        }
+
+        let mut on_disk = Vec::new();
+        walk(&root, &root, &mut on_disk);
+        assert!(!on_disk.is_empty(), "found no template files to check");
+
+        for rel in on_disk {
+            let registered = MANAGED.iter().chain(TS_USER).any(|(r, _)| *r == rel)
+                || rel == "typescript/package.json"; // merged, not copied
+            assert!(
+                registered,
+                "{rel} is in the template tree but no workspace will ever receive it — \
+                 add it to MANAGED or TS_USER, or delete it"
+            );
+        }
     }
 
     #[test]
@@ -841,6 +887,37 @@ mod tests {
         assert_eq!(value["scripts"]["build"], "node tools/build.mjs");
         assert_ne!(value["devDependencies"]["esbuild"], "0.0.1");
         assert!(value["devDependencies"]["@babel/preset-env"].is_string());
+    }
+
+    /// `npm test` feeds `.ts` straight to `node --test`, so the project only
+    /// works on a runtime with type stripping on by default. That floor is
+    /// declared in `engines`, and the merge must keep re-asserting it: a
+    /// workspace that predates the declaration has no `engines` key at all, and
+    /// one whose owner pinned an older floor would otherwise keep it forever.
+    #[test]
+    fn merge_asserts_the_node_floor_over_a_workspace_that_lacks_or_lowers_it() {
+        let template: serde_json::Value = serde_json::from_str(TS_PACKAGE_JSON).unwrap();
+        let floor = template["engines"]["node"].as_str().unwrap().to_string();
+        assert!(!floor.is_empty(), "the template must declare a node floor");
+
+        for existing in [
+            r#"{ "name": "mine", "type": "module" }"#,
+            r#"{ "name": "mine", "engines": { "node": ">=18" } }"#,
+            r#"{ "name": "mine", "engines": { "node": ">=18", "npm": ">=9" } }"#,
+        ] {
+            let merged = merge_package_json(existing, TS_PACKAGE_JSON).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+            assert_eq!(value["engines"]["node"], floor);
+        }
+
+        // An engine the framework has no opinion about rides along.
+        let merged = merge_package_json(
+            r#"{ "name": "mine", "engines": { "node": ">=18", "npm": ">=9" } }"#,
+            TS_PACKAGE_JSON,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(value["engines"]["npm"], ">=9");
     }
 
     #[test]
@@ -905,7 +982,7 @@ mod tests {
         assert!(tree.join("typescript/package.json").exists());
         assert!(tree.join("typescript/src/generated").is_dir());
         assert!(
-            tree.join("typescript/src/endpoints/aicdemo-a1-claude-widgets.ts")
+            tree.join("typescript/src/endpoints/example-widgets.ts")
                 .exists()
         );
 
@@ -922,13 +999,13 @@ mod tests {
         scaffold_at(&tree, true).unwrap();
         assert!(tree.join("typescript/framework/router.ts").exists());
         assert!(
-            tree.join("typescript/src/endpoints/aicdemo-a1-claude-widgets.ts")
+            tree.join("typescript/src/endpoints/example-widgets.ts")
                 .exists(),
             "an update that introduces the project must seed its user files too"
         );
 
         // A second update leaves the user's edits alone.
-        let endpoint = tree.join("typescript/src/endpoints/aicdemo-a1-claude-widgets.ts");
+        let endpoint = tree.join("typescript/src/endpoints/example-widgets.ts");
         std::fs::write(&endpoint, "// mine now\n").unwrap();
         scaffold_at(&tree, true).unwrap();
         assert_eq!(std::fs::read_to_string(&endpoint).unwrap(), "// mine now\n");
