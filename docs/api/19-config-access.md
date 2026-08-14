@@ -54,7 +54,7 @@ Key frequency over the sandbox's 65 rules (2026-08-11):
 | `pattern`         | 65 / 65     | The route glob. `*` matches everything.                        |
 | `roles`           | 65 / 65     | **Comma-separated string**, or `*`. No sandbox rule lists two. |
 | `methods`         | 65 / 65     | Comma-separated. Observed vocabulary below.                    |
-| `actions`         | **59 / 65** | **Optional — six live rules omit the key entirely.**           |
+| `actions`         | **59 / 65** | **Optional — six live rules omit the key entirely.** Three of the 59 store `""`, which is not the same as omitting the key. |
 | `customAuthz`     | 22 / 65     | A JS expression that can only _deny_; see below.               |
 | `excludePatterns` | 1 / 65      | Comma-separated globs. **Semantics inferred, not observed.**   |
 
@@ -272,6 +272,14 @@ task prompt or a neighbouring doc.
   `75189406f2cad0de785a306176deb50fb57291319015946e98a2ae9e5900cf7f`, equal to
   the pre-experiment value; the probe returned to **403**.
   `config/authentication` was never touched.
+
+### Still byte-identical — 2026-08-15
+
+Independent `GET /openidm/config/access` while writing
+[20-config-authentication.md](20-config-authentication.md): 200, 65 rules,
+canonical sha256 still
+`75189406f2cad0de785a306176deb50fb57291319015946e98a2ae9e5900cf7f`. The
+document was not written.
 
 ### Bypass scoping — 2026-08-10
 
