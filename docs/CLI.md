@@ -178,8 +178,10 @@ and `client-secret-basic`. Set it to match the OAuth client's
 was observed accepting either method regardless (see
 `docs/api/17-jwt-bearer-user-tokens.md`), so a mismatch is not known to fail.
 `private-key-jwt` is reserved for a future extension and is not accepted yet.
-The command refuses production-themed tenants and requires a key from aic
-jwt-bearer setup.
+The command requires a key from `aic jwt-bearer setup`. On a production-themed
+tenant it reads the Trusted JWT issuer first and refuses to mint unless that
+issuer names the users it may act for; elsewhere it does not read the issuer at
+all. It takes no `--yes`, because minting a token is not a tenant write.
 
 Default output includes the user, client, granted scope, expiry, signing kid,
 and a redacted token. --token prints only the bare access token.
@@ -580,9 +582,12 @@ grant emits a security note because a Trusted JWT Issuer with empty
 ## `aic jwt-bearer` — Trusted JWT Issuer setup
 
 ```bash
-aic jwt-bearer setup [--realm alpha] [--tenant NAME] [--yes]
-aic jwt-bearer issuer create <id> --issuer ISS --jwks-from FILE [--realm alpha] [--tenant NAME] [--yes]
+aic jwt-bearer setup [--id UUID]... [--username NAME]... [--realm alpha] [--tenant NAME] [--yes]
+aic jwt-bearer issuer create <id> --issuer ISS --jwks-from FILE [--id UUID]... [--username NAME]... [--realm alpha] [--tenant NAME] [--yes]
 aic jwt-bearer issuer show [<id>] [--realm alpha] [--tenant NAME]
+aic jwt-bearer subjects list [--issuer ID] [--realm alpha] [--tenant NAME] [--json]
+aic jwt-bearer subjects add (--id UUID | --username NAME)... [--issuer ID] [--realm alpha] [--tenant NAME] [--yes]
+aic jwt-bearer subjects rm  (--id UUID | --username NAME)... [--issuer ID] [--realm alpha] [--tenant NAME] [--yes]
 aic jwt-bearer key list [--realm alpha] [--tenant NAME] [--json]
 aic jwt-bearer key remove <KID> --force [--yes] [--realm alpha] [--tenant NAME]
 aic jwt-bearer key rotate [--realm alpha] [--tenant NAME] [--yes]
@@ -592,27 +597,41 @@ aic jwt-bearer key import <FILE> [--realm alpha] [--tenant NAME] [--force]
 
 `setup` creates or updates the default lower-environment issuer, merges this
 install's public key into its shared key set, and stores the private key in the
-per-tenant encrypted vault. It is idempotent. `setup`, `key rotate`, and
-`issuer create` are refused outright on production-themed tenants, because each
-can create or extend a minting capability there; `--yes` does not override that
-refusal. `key remove` is the exception and takes `--yes` instead: withdrawing a
-signing key reduces capability, and the tenant where a leaked key matters most
-is the one where revoking it must stay available. Reads and local key transfer
-(`key list`, `key export`, `key import`) are not gated at all. `issuer create`
-imports an existing public JWKS under a named issuer, and `issuer show` prints
-one issuer or the realm's issuer list as JSON. `key export` writes the tenant's
-private signing JWK either to stdout or to a new mode-600 `.jwk` file; it never
-overwrites an existing file. `key import` stores a private JWK in the tenant's
-local vault, refuses to replace an existing key unless `--force` is supplied,
-and warns when the imported `kid` is not in the default issuer's published key
-set. `key list` displays the default issuer's public key attribution and marks
-the key whose private half is in this vault; `--json` prints only the published
-public-key array. `key remove` shows the key's attribution and then requires
-`--force`, so a run without it previews whose key you are about to revoke; it
-permits removing the last key. Removal is **not verified to be immediate
-revocation** — see the open question in `docs/api/17-jwt-bearer-user-tokens.md`.
-`key rotate` publishes a replacement before storing it locally and removes the
-old public key afterward, so each intermediate state retains a working key.
+per-tenant encrypted vault. It is idempotent.
+
+`subjects list`, `add` and `rm` edit the issuer's `allowedSubjects` — the list
+of users it may mint for, and the feature's entire security boundary. `--id` and
+`--username` are repeatable and may be mixed; a username is resolved to the
+user's `_id` before it is written, because AM matches the raw `sub` claim and a
+username in the list would never match. An empty or whitespace-only subject is
+refused: a list holding only blanks is treated by AM as no restriction at all.
+`--issuer` targets a named issuer, defaulting to the shared `aic-agent` one. A
+subject edit never disturbs the published key set.
+
+**On production-themed tenants, no write may leave an issuer unrestricted.**
+`setup` and `issuer create` take `--id`/`--username` so a first run can supply
+the list; `key rotate` is refused against an issuer that is not already
+restricted; `subjects rm` will not remove the last real subject. `key remove` is
+exempt — withdrawing a signing key reduces capability, and the tenant where a
+leaked key matters most is the one where revoking it must stay available.
+`aic auth` reads the issuer on production only, and refuses to mint against an
+unrestricted one. All of these still take `--yes` like any other production
+write. Reads and local key transfer (`key list`, `key export`, `key import`) are
+not gated at all. `issuer create` imports an existing public JWKS under a named
+issuer, and `issuer show` prints one issuer or the realm's issuer list as JSON.
+`key export` writes the tenant's private signing JWK either to stdout or to a
+new mode-600 `.jwk` file; it never overwrites an existing file. `key import`
+stores a private JWK in the tenant's local vault, refuses to replace an existing
+key unless `--force` is supplied, and warns when the imported `kid` is not in
+the default issuer's published key set. `key list` displays the default issuer's
+public key attribution and marks the key whose private half is in this vault;
+`--json` prints only the published public-key array. `key remove` shows the
+key's attribution and then requires `--force`, so a run without it previews
+whose key you are about to revoke; it permits removing the last key. Removal is
+**not verified to be immediate revocation** — see the open question in
+`docs/api/17-jwt-bearer-user-tokens.md`. `key rotate` publishes a replacement
+before storing it locally and removes the old public key afterward, so each
+intermediate state retains a working key.
 
 ---
 

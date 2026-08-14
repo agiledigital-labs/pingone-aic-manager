@@ -4,7 +4,7 @@
 //!
 //! File map:
 //! - [`api`] = realm-scoped `TrustedJwtIssuer` HTTP wrappers.
-//! - [`spec`] = TUI-free JWK-set and issuer-body transforms.
+//! - [`spec`] = TUI-free JWK-set, subject-list, and issuer-body transforms.
 //! - [`ops`] = key generation, merge/retry orchestration, and vault storage.
 //! - [`cli`] = `aic jwt-bearer` parsing and output.
 //!

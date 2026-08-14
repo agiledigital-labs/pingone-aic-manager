@@ -19,18 +19,77 @@ use crate::{Error, Result};
 pub const DEFAULT_ISSUER_ID: &str = "aic-agent";
 pub const DEFAULT_ISSUER: &str = "aic-agent";
 
+pub(crate) const SETUP_PRODUCTION_REMEDY: &str =
+    "pass --id/--username so the issuer is restricted, or run `aic jwt-bearer subjects add` first";
+pub(crate) const ROTATE_PRODUCTION_REMEDY: &str =
+    "restrict the issuer with `aic jwt-bearer subjects add` before rotating";
+pub(crate) const CREATE_PRODUCTION_REMEDY: &str =
+    "pass --id/--username so the new issuer is restricted";
+pub(crate) const SUBJECTS_RM_PRODUCTION_REMEDY: &str =
+    "the last non-empty subject cannot be removed on a production-themed tenant";
+
+/// Production gate for `setup`: the issuer must be restricted *after* merging
+/// `incoming` into whatever is already published (or `[]` if it is absent).
+pub fn check_setup_on_production(
+    theme: crate::config::TenantTheme,
+    existing: Option<&Value>,
+    incoming: &[String],
+) -> Result<()> {
+    let planned = spec::subjects_after_add(
+        &existing
+            .map(spec::issuer_allowed_subjects)
+            .unwrap_or_default(),
+        incoming,
+    )?;
+    spec::ensure_production_write_restricted(theme, &planned, SETUP_PRODUCTION_REMEDY)
+}
+
+/// Production gate for `rotate`: the existing issuer must already be restricted.
+pub fn check_rotate_on_production(
+    theme: crate::config::TenantTheme,
+    existing: &Value,
+) -> Result<()> {
+    spec::ensure_production_write_restricted(
+        theme,
+        &spec::issuer_allowed_subjects(existing),
+        ROTATE_PRODUCTION_REMEDY,
+    )
+}
+
+/// Production gate for `issuer create`: a new issuer's subjects are the flags
+/// alone (the template is empty).
+pub fn check_create_on_production(
+    theme: crate::config::TenantTheme,
+    incoming: &[String],
+) -> Result<()> {
+    let planned = spec::subjects_after_add(&[], incoming)?;
+    spec::ensure_production_write_restricted(theme, &planned, CREATE_PRODUCTION_REMEDY)
+}
+
 /// Set up the shared default issuer and this install's one per-tenant key.
 pub async fn setup(
     tenant: &Tenant,
     realm: &str,
     operator: &ResolvedOperator,
+    incoming_subjects: &[String],
     confirmed_prod: bool,
 ) -> Result<String> {
-    spec::ensure_not_production(tenant.theme)?;
     if operator.source == NameSource::Placeholder {
         return Err(Error::Config(
             "operator name is required for jwt-bearer setup; run `aic settings set operator.name <name>`".into(),
         ));
+    }
+
+    // Production only: one extra issuer read, before the vault write. The
+    // publish path reads again and re-checks the body it is about to send, so
+    // this pre-check is fail-fast rather than the last word.
+    if tenant.theme == crate::config::TenantTheme::Production {
+        let existing = match api::read_issuer(&tenant.name, realm, DEFAULT_ISSUER_ID).await {
+            Ok(value) => Some(value),
+            Err(error) if is_not_found(&error) => None,
+            Err(error) => return Err(error),
+        };
+        check_setup_on_production(tenant.theme, existing.as_ref(), incoming_subjects)?;
     }
 
     let record =
@@ -54,15 +113,28 @@ pub async fn setup(
     let tenant_name = tenant.name.clone();
     let realm_name = realm.to_string();
     let public_jwk_for_publish = public_jwk.clone();
+    let incoming_for_publish = incoming_subjects.to_vec();
+    let theme = tenant.theme;
     publish_and_verify(
         &record.kid,
         || {
             let tenant = tenant_name.clone();
             let realm = realm_name.clone();
             let public_jwk = public_jwk_for_publish.clone();
+            let incoming_subjects = incoming_for_publish.clone();
             async move {
                 let remote = read_or_template(&tenant, &realm, DEFAULT_ISSUER_ID).await?;
-                let body = body_with_key(remote, DEFAULT_ISSUER, &public_jwk)?;
+                check_setup_on_production(theme, Some(&remote), &incoming_subjects)?;
+                let body = if incoming_subjects.is_empty() {
+                    body_with_key(remote, DEFAULT_ISSUER, &public_jwk)?
+                } else {
+                    body_with_key_and_subjects(
+                        remote,
+                        DEFAULT_ISSUER,
+                        &public_jwk,
+                        &incoming_subjects,
+                    )?
+                };
                 api::upsert_issuer(&tenant, &realm, DEFAULT_ISSUER_ID, body, confirmed_prod)
                     .await?;
                 Ok(())
@@ -106,7 +178,6 @@ pub async fn rotate(
     operator: &ResolvedOperator,
     confirmed_prod: bool,
 ) -> Result<(String, String)> {
-    spec::ensure_not_production(tenant.theme)?;
     let old_record = crate::jwtbearer::get_key(AgentClient::connect_or_spawn().await?, &tenant.name)
         .await?
         .ok_or_else(|| {
@@ -132,7 +203,9 @@ pub async fn rotate(
     // failed removal leaves the new key working and an orphaned old public key
     // that `key remove` can clean up. Storing first would instead produce a
     // state where the only published key's private half has been discarded.
-    publish_public_jwk(&tenant.name, realm, &public, confirmed_prod).await?;
+    // The production restriction check rides the existing publish read, so it
+    // fires before the first irreversible step (the upsert).
+    publish_public_jwk(&tenant.name, realm, &public, tenant.theme, confirmed_prod).await?;
     crate::jwtbearer::put_key(
         AgentClient::connect_or_spawn().await?,
         &tenant.name,
@@ -148,9 +221,11 @@ async fn publish_public_jwk(
     tenant: &str,
     realm: &str,
     public_jwk: &Value,
+    theme: crate::config::TenantTheme,
     confirmed_prod: bool,
 ) -> Result<()> {
     let source = read_or_template(tenant, realm, DEFAULT_ISSUER_ID).await?;
+    check_rotate_on_production(theme, &source)?;
     let body = body_with_key(source, DEFAULT_ISSUER, public_jwk)?;
     api::upsert_issuer(tenant, realm, DEFAULT_ISSUER_ID, body, confirmed_prod).await?;
     Ok(())
@@ -200,9 +275,12 @@ pub async fn create_issuer(
     id: &str,
     issuer: &str,
     jwks_path: &Path,
+    incoming_subjects: &[String],
     confirmed_prod: bool,
 ) -> Result<()> {
-    spec::ensure_not_production(tenant.theme)?;
+    // Planned subjects are the flags alone; a first create has no list to
+    // add to. Fail before the existence read / file / template / upsert.
+    check_create_on_production(tenant.theme, incoming_subjects)?;
     let existing = match api::read_issuer(&tenant.name, realm, id).await {
         Ok(_) => true,
         Err(error) if is_not_found(&error) => false,
@@ -220,9 +298,59 @@ pub async fn create_issuer(
     let jwks = spec::parse_jwk_set(Some(&contents))?;
     let jwk_set = serde_json::to_string(&jwks)?;
     let template = api::issuer_template(&tenant.name, realm).await?;
-    let body = spec::issuer_body(template, issuer, jwk_set)?;
+    let subjects = spec::subjects_after_add(&[], incoming_subjects)?;
+    let body = spec::issuer_body_with_subjects(template, issuer, jwk_set, subjects)?;
     api::upsert_issuer(&tenant.name, realm, id, body, confirmed_prod).await?;
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubjectEdit {
+    Add,
+    Remove,
+}
+
+/// Replace `allowedSubjects` on an existing issuer without touching its
+/// published key set. One read: the write body is built from the same
+/// document the edit was computed against.
+pub async fn edit_issuer_subjects(
+    tenant: &Tenant,
+    realm: &str,
+    issuer_id: &str,
+    incoming: &[String],
+    edit: SubjectEdit,
+    confirmed_prod: bool,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let issuer = api::read_issuer(&tenant.name, realm, issuer_id).await?;
+    let before = spec::issuer_allowed_subjects(&issuer);
+    let after = match edit {
+        SubjectEdit::Add => spec::subjects_after_add(&before, incoming)?,
+        SubjectEdit::Remove => spec::subjects_after_remove(&before, incoming)?,
+    };
+    if after == before {
+        return Ok((before, after));
+    }
+    spec::ensure_production_write_restricted(tenant.theme, &after, SUBJECTS_RM_PRODUCTION_REMEDY)?;
+    let jwk_set = match spec::issuer_jwk_set(&issuer) {
+        Some(value) => value.to_string(),
+        None => serde_json::to_string(&spec::parse_jwk_set(None)?)?,
+    };
+    // Refuse rather than default. `--issuer` targets an arbitrary id, and
+    // `issuer_body` stamps this value into the `issuer` claim the assertion
+    // must match — so guessing `aic-agent` here would silently repoint someone
+    // else's issuer config at our own assertions while reporting a subject
+    // edit. There is no correct guess: the claim is the thing that identifies
+    // whose tokens this config accepts.
+    let claim = spec::issuer_name(&issuer)
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "Trusted JWT issuer {issuer_id:?} carries no `issuer` claim; refusing to guess one while editing its subjects"
+            ))
+        })?
+        .to_string();
+    let body = spec::issuer_body_with_subjects(issuer, &claim, jwk_set, after.clone())?;
+    api::upsert_issuer(&tenant.name, realm, issuer_id, body, confirmed_prod).await?;
+    Ok((before, after))
 }
 
 async fn read_or_template(tenant: &str, realm: &str, id: &str) -> Result<Value> {
@@ -234,14 +362,22 @@ async fn read_or_template(tenant: &str, realm: &str, id: &str) -> Result<Value> 
 }
 
 fn body_with_key(source: Value, issuer: &str, public_jwk: &Value) -> Result<Value> {
-    let existing = source.get("jwkSet").and_then(Value::as_str).or_else(|| {
-        source
-            .get("jwkSet")
-            .and_then(|value| value.get("value"))
-            .and_then(Value::as_str)
-    });
+    let existing = spec::issuer_jwk_set(&source);
     let jwk_set = spec::merge_jwk_set(existing, public_jwk.clone())?;
     spec::issuer_body(source, issuer, jwk_set)
+}
+
+fn body_with_key_and_subjects(
+    source: Value,
+    issuer: &str,
+    public_jwk: &Value,
+    extra_subjects: &[String],
+) -> Result<Value> {
+    let existing = spec::issuer_jwk_set(&source);
+    let jwk_set = spec::merge_jwk_set(existing, public_jwk.clone())?;
+    let subjects =
+        spec::subjects_after_add(&spec::issuer_allowed_subjects(&source), extra_subjects)?;
+    spec::issuer_body_with_subjects(source, issuer, jwk_set, subjects)
 }
 
 async fn key_is_present(tenant: &str, realm: &str, kid: &str) -> Result<bool> {
@@ -337,7 +473,11 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{add_attribution, generate_kid, publish_and_verify};
+    use super::{
+        add_attribution, check_create_on_production, check_rotate_on_production,
+        check_setup_on_production, generate_kid, publish_and_verify,
+    };
+    use crate::config::TenantTheme;
     use crate::config::operator::{NameSource, ResolvedOperator};
 
     #[test]
@@ -415,5 +555,44 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("kid-missing"));
+    }
+
+    /// Drive the same functions `setup` / `rotate` / `create_issuer` call.
+    /// `[""]` is the case a length-only check would get wrong.
+    #[test]
+    fn production_setup_rotate_and_create_refuse_an_unrestricted_result() {
+        let empty = json!({"allowedSubjects": []});
+        let blank = json!({"allowedSubjects": [""]});
+        let restricted = json!({"allowedSubjects": ["user-uuid"]});
+
+        assert!(check_setup_on_production(TenantTheme::Production, None, &[]).is_err());
+        assert!(check_setup_on_production(TenantTheme::Production, Some(&empty), &[]).is_err());
+        assert!(check_setup_on_production(TenantTheme::Production, Some(&blank), &[]).is_err());
+        assert!(check_setup_on_production(TenantTheme::Production, Some(&restricted), &[]).is_ok());
+        assert!(
+            check_setup_on_production(TenantTheme::Production, Some(&blank), &["user-uuid".into()])
+                .is_ok()
+        );
+        assert!(check_setup_on_production(TenantTheme::Sandbox, None, &[]).is_ok());
+
+        assert!(check_rotate_on_production(TenantTheme::Production, &empty).is_err());
+        assert!(check_rotate_on_production(TenantTheme::Production, &blank).is_err());
+        assert!(check_rotate_on_production(TenantTheme::Production, &restricted).is_ok());
+        assert!(check_rotate_on_production(TenantTheme::Sandbox, &blank).is_ok());
+        let rotate_err = check_rotate_on_production(TenantTheme::Production, &blank).unwrap_err();
+        assert!(
+            rotate_err.to_string().contains("subjects add"),
+            "{rotate_err}"
+        );
+
+        assert!(check_create_on_production(TenantTheme::Production, &[]).is_err());
+        assert!(check_create_on_production(TenantTheme::Production, &["".into()]).is_err());
+        assert!(check_create_on_production(TenantTheme::Production, &["user-uuid".into()]).is_ok());
+        assert!(check_create_on_production(TenantTheme::Sandbox, &[]).is_ok());
+        let create_err = check_create_on_production(TenantTheme::Production, &[]).unwrap_err();
+        assert!(
+            create_err.to_string().contains("--id/--username"),
+            "{create_err}"
+        );
     }
 }

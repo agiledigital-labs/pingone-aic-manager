@@ -111,6 +111,145 @@ pub fn issuer_is_restricted(subjects: &[String]) -> bool {
     subjects.iter().any(|subject| !subject.trim().is_empty())
 }
 
+/// Trim a subject and refuse the empty-string trap.
+///
+/// An empty or whitespace-only entry is what turns a restricted issuer into a
+/// realm-wide one (`[""]` is unrestricted). Rejecting it here means no write
+/// path can introduce one.
+pub fn parse_subject(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(Error::Config(
+            "subject cannot be empty or whitespace-only; an empty allowedSubjects entry makes the issuer unrestricted"
+                .into(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Whether `--id` looks like a UUID. A miss is almost certainly a username
+/// passed to the wrong flag; callers warn rather than refuse, because
+/// `resourceOwnerIdentityClaim` is configurable and a non-UUID subject is
+/// legal in principle. No network.
+pub fn id_is_uuid_shaped(id: &str) -> bool {
+    Uuid::parse_str(id).is_ok()
+}
+
+/// Return the `issuer` claim from an AM issuer object, wrapped or plain.
+pub fn issuer_name(issuer: &Value) -> Option<&str> {
+    issuer
+        .get("issuer")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            issuer
+                .get("issuer")
+                .and_then(|value| value.get("value"))
+                .and_then(Value::as_str)
+        })
+        .filter(|value| !value.is_empty())
+}
+
+/// Next `allowedSubjects` after an idempotent, order-preserving add.
+///
+/// Incoming values are trimmed and empty ones refused. Existing empty or
+/// whitespace-only entries are dropped so this path cannot write one.
+pub fn subjects_after_add(existing: &[String], incoming: &[String]) -> Result<Vec<String>> {
+    let mut next: Vec<String> = existing
+        .iter()
+        .filter(|subject| !subject.trim().is_empty())
+        .cloned()
+        .collect();
+    for raw in incoming {
+        let subject = parse_subject(raw)?;
+        if !next.iter().any(|existing| existing == &subject) {
+            next.push(subject);
+        }
+    }
+    Ok(next)
+}
+
+/// Next `allowedSubjects` after removing the given subjects.
+///
+/// Absent subjects are a no-op, not an error. Incoming empty values are still
+/// refused — they are never a real subject. Existing empty entries are dropped
+/// so this path cannot write one.
+pub fn subjects_after_remove(existing: &[String], incoming: &[String]) -> Result<Vec<String>> {
+    let remove = incoming
+        .iter()
+        .map(|raw| parse_subject(raw))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(existing
+        .iter()
+        .filter(|subject| {
+            !subject.trim().is_empty() && !remove.iter().any(|candidate| candidate == *subject)
+        })
+        .cloned()
+        .collect())
+}
+
+/// Assemble `--id` values and already-looked-up usernames into the list we
+/// write. Username resolution is `lookup_username` + [`user_id_from_lookup`];
+/// this only concatenates so a username never lands in `allowedSubjects`.
+pub fn subjects_from_resolved(
+    ids: &[String],
+    username_lookups: &[(String, Value)],
+) -> Result<Vec<String>> {
+    let mut subjects = Vec::with_capacity(ids.len() + username_lookups.len());
+    for id in ids {
+        subjects.push(parse_subject(id)?);
+    }
+    for (username, response) in username_lookups {
+        subjects.push(user_id_from_lookup(username, response)?);
+    }
+    Ok(subjects)
+}
+
+/// Human-readable `subjects list` lines. An unrestricted issuer must not
+/// render as a blank line — that reads as "one empty subject" rather than
+/// "mints for everyone".
+pub fn subjects_list_lines(subjects: &[String]) -> Vec<String> {
+    if issuer_is_restricted(subjects) {
+        subjects.to_vec()
+    } else {
+        vec!["unrestricted — this issuer can mint for every user in the realm".into()]
+    }
+}
+
+/// On a production-themed tenant, refuse a write that would leave the issuer
+/// unrestricted. `remedy` is the next action; the gate itself does not know
+/// which verb called it.
+pub fn ensure_production_write_restricted(
+    theme: TenantTheme,
+    subjects_after_write: &[String],
+    remedy: &str,
+) -> Result<()> {
+    if theme != TenantTheme::Production || issuer_is_restricted(subjects_after_write) {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "refusing to leave the Trusted JWT issuer unrestricted on a production-themed tenant; {remedy}"
+    )))
+}
+
+/// `aic auth` reads the issuer only on production. Lower environments are the
+/// hot path and do not read it at all.
+pub fn mint_reads_issuer(theme: TenantTheme) -> bool {
+    theme == TenantTheme::Production
+}
+
+/// Mint-time companion to [`ensure_production_write_restricted`]: on
+/// production, refuse unless the issuer is already restricted. Does not check
+/// that the requested subject is in the list — AM enforces that.
+pub fn ensure_mint_allowed(theme: TenantTheme, subjects: &[String]) -> Result<()> {
+    if !mint_reads_issuer(theme) || issuer_is_restricted(subjects) {
+        return Ok(());
+    }
+    Err(Error::Config(
+        "refusing to mint on a production-themed tenant whose Trusted JWT issuer is unrestricted; restrict it with `aic jwt-bearer subjects add` before minting"
+            .into(),
+    ))
+}
+
 /// Return the public JWK array from an AM issuer read, without adding local
 /// metadata. The result is safe for `--json`: it contains public halves only.
 pub fn jwk_set_keys(issuer: &Value) -> Result<Vec<Value>> {
@@ -311,14 +450,29 @@ pub fn issuer_body(source: Value, issuer: &str, jwk_set: String) -> Result<Value
     Ok(source)
 }
 
-/// The Trusted JWT capability is never allowed on a production-themed tenant.
-pub fn ensure_not_production(theme: TenantTheme) -> Result<()> {
-    if theme == TenantTheme::Production {
+/// [`issuer_body`] plus an explicit `allowedSubjects` overwrite.
+///
+/// `issuer_body` preserves an existing list (`or_insert`). A subjects edit
+/// must set the new list *after* that preserve, or `rm` would write the old
+/// list back. Empty or whitespace-only entries are refused so this path
+/// cannot produce the `[""]` trap.
+pub fn issuer_body_with_subjects(
+    source: Value,
+    issuer: &str,
+    jwk_set: String,
+    subjects: Vec<String>,
+) -> Result<Value> {
+    if subjects.iter().any(|subject| subject.trim().is_empty()) {
         return Err(Error::Config(
-            "jwt-bearer user-token operations are refused on production-themed tenants".into(),
+            "subject cannot be empty or whitespace-only; an empty allowedSubjects entry makes the issuer unrestricted"
+                .into(),
         ));
     }
-    Ok(())
+    let mut body = issuer_body(source, issuer, jwk_set)?;
+    body.as_object_mut()
+        .ok_or_else(|| Error::Config("Trusted JWT issuer body must be a JSON object".into()))?
+        .insert("allowedSubjects".into(), json!(subjects));
+    Ok(body)
 }
 
 pub const MAX_ASSERTION_TTL_SECS: i64 = 180;
@@ -661,11 +815,55 @@ mod tests {
     }
 
     #[test]
-    fn production_is_refused_without_a_confirmable_path() {
-        assert!(ensure_not_production(TenantTheme::Production).is_err());
-        assert!(ensure_not_production(TenantTheme::Sandbox).is_ok());
-        assert!(ensure_not_production(TenantTheme::Development).is_ok());
-        assert!(ensure_not_production(TenantTheme::Staging).is_ok());
+    fn production_writes_are_refused_only_when_the_result_would_be_unrestricted() {
+        let remedy = "do the next thing";
+        let unrestricted = [Vec::<String>::new(), vec!["".into()], vec!["  ".into()]];
+        for subjects in unrestricted {
+            let error =
+                ensure_production_write_restricted(TenantTheme::Production, &subjects, remedy)
+                    .unwrap_err();
+            assert!(error.to_string().contains("unrestricted"), "{error}");
+            assert!(error.to_string().contains(remedy), "{error}");
+            assert!(
+                ensure_production_write_restricted(TenantTheme::Sandbox, &subjects, remedy).is_ok(),
+                "sandbox must allow {subjects:?}"
+            );
+        }
+        assert!(
+            ensure_production_write_restricted(
+                TenantTheme::Production,
+                &["user-uuid".into()],
+                remedy
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_production_write_restricted(
+                TenantTheme::Production,
+                &["".into(), "user-uuid".into()],
+                remedy
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn mint_reads_the_issuer_on_production_only() {
+        assert!(mint_reads_issuer(TenantTheme::Production));
+        assert!(!mint_reads_issuer(TenantTheme::Sandbox));
+        assert!(!mint_reads_issuer(TenantTheme::Development));
+        assert!(!mint_reads_issuer(TenantTheme::Staging));
+    }
+
+    #[test]
+    fn mint_is_refused_on_production_unless_the_issuer_is_restricted() {
+        assert!(ensure_mint_allowed(TenantTheme::Sandbox, &[]).is_ok());
+        assert!(ensure_mint_allowed(TenantTheme::Sandbox, &["".into()]).is_ok());
+        assert!(ensure_mint_allowed(TenantTheme::Production, &[]).is_err());
+        assert!(ensure_mint_allowed(TenantTheme::Production, &["".into()]).is_err());
+        assert!(ensure_mint_allowed(TenantTheme::Production, &["user-uuid".into()]).is_ok());
+        let error = ensure_mint_allowed(TenantTheme::Production, &["  ".into()]).unwrap_err();
+        assert!(error.to_string().contains("subjects add"), "{error}");
     }
 
     #[test]
@@ -778,6 +976,133 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn empty_or_whitespace_subjects_cannot_be_written() {
+        for raw in ["", "   ", "\t"] {
+            assert!(parse_subject(raw).is_err(), "parse {raw:?}");
+            assert!(
+                subjects_after_add(&[], &[raw.into()]).is_err(),
+                "add {raw:?}"
+            );
+            assert!(
+                subjects_after_remove(&["keep".into()], &[raw.into()]).is_err(),
+                "rm {raw:?}"
+            );
+            assert!(
+                issuer_body_with_subjects(
+                    json!({}),
+                    "aic-agent",
+                    "{\"keys\":[]}".into(),
+                    vec![raw.into()],
+                )
+                .is_err(),
+                "body {raw:?}"
+            );
+        }
+        let added = subjects_after_add(&["".into(), "  ".into()], &["user-uuid".into()]).unwrap();
+        assert_eq!(added, vec!["user-uuid".to_string()]);
+        let removed =
+            subjects_after_remove(&["".into(), "user-uuid".into()], &["user-uuid".into()]).unwrap();
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn subjects_add_is_idempotent_and_preserves_order() {
+        let existing = vec!["first".into(), "second".into()];
+        let added = subjects_after_add(
+            &existing,
+            &["second".into(), "third".into(), "first".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            added,
+            vec![
+                "first".to_string(),
+                "second".to_string(),
+                "third".to_string()
+            ]
+        );
+        let unchanged = subjects_after_remove(&existing, &["absent".into()]).unwrap();
+        assert_eq!(unchanged, existing);
+    }
+
+    #[test]
+    fn username_is_resolved_to_a_uuid_before_it_reaches_the_list() {
+        let lookup = json!({"result": [{"_id": "45565631-0000-4000-8000-000000000000"}]});
+        let subjects =
+            subjects_from_resolved(&["already-a-uuid".into()], &[("user.0".into(), lookup)])
+                .unwrap();
+        assert_eq!(
+            subjects,
+            vec![
+                "already-a-uuid".to_string(),
+                "45565631-0000-4000-8000-000000000000".to_string()
+            ]
+        );
+        assert!(!subjects.iter().any(|subject| subject == "user.0"));
+    }
+
+    #[test]
+    fn subjects_add_leaves_published_kids_unchanged() {
+        let source = json!({
+            "issuer": "aic-agent",
+            "jwkSet": {"inherited": false, "value": r#"{"keys":[{"kid":"keep-me"},{"kid":"also"}]}"#},
+            "allowedSubjects": ["already"],
+        });
+        let kids_before: Vec<String> = jwk_set_keys(&source)
+            .unwrap()
+            .iter()
+            .map(|key| key["kid"].as_str().unwrap().to_string())
+            .collect();
+        let jwk_set = issuer_jwk_set(&source).unwrap().to_string();
+        let added =
+            subjects_after_add(&issuer_allowed_subjects(&source), &["new-uuid".into()]).unwrap();
+        let body = issuer_body_with_subjects(source, "aic-agent", jwk_set, added).unwrap();
+        let kids_after: Vec<String> = jwk_set_keys(&body)
+            .unwrap()
+            .iter()
+            .map(|key| key["kid"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(kids_before, kids_after);
+        assert_eq!(kids_after, vec!["keep-me", "also"]);
+        assert_eq!(body["allowedSubjects"], json!(["already", "new-uuid"]));
+    }
+
+    /// `issuer_body` preserves `allowedSubjects`. Setting the edited list
+    /// after that preserve is what makes `subjects rm` actually remove.
+    #[test]
+    fn issuer_body_with_subjects_overwrites_the_preserved_list() {
+        let source = json!({
+            "allowedSubjects": {"inherited": false, "value": ["keep", "drop"]},
+            "jwkSet": r#"{"keys":[{"kid":"k1"}]}"#,
+        });
+        let jwk_set = issuer_jwk_set(&source).unwrap().to_string();
+        let next =
+            subjects_after_remove(&issuer_allowed_subjects(&source), &["drop".into()]).unwrap();
+        let body = issuer_body_with_subjects(source, "aic-agent", jwk_set, next).unwrap();
+        assert_eq!(body["allowedSubjects"], json!(["keep"]));
+        assert_eq!(jwk_set_keys(&body).unwrap()[0]["kid"], "k1");
+    }
+
+    #[test]
+    fn subjects_list_makes_an_unrestricted_issuer_obvious() {
+        let unrestricted = subjects_list_lines(&["".into()]);
+        assert_eq!(unrestricted.len(), 1);
+        assert!(unrestricted[0].contains("unrestricted"));
+        assert!(!unrestricted[0].trim().is_empty());
+        assert_eq!(
+            subjects_list_lines(&["user-uuid".into()]),
+            vec!["user-uuid".to_string()]
+        );
+    }
+
+    #[test]
+    fn non_uuid_ids_are_detectable_without_a_network_call() {
+        assert!(id_is_uuid_shaped("45565631-0000-4000-8000-000000000000"));
+        assert!(!id_is_uuid_shaped("user.0"));
+        assert!(!id_is_uuid_shaped("not-a-uuid"));
     }
 
     #[test]
