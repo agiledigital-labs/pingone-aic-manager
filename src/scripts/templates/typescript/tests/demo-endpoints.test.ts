@@ -1,5 +1,5 @@
 // The two demo endpoints, driven through `dispatch` exactly as IDM drives the
-// bundle. Delete this alongside `src/endpoints/aicdemo-*` when you replace the
+// bundle. Delete this alongside `src/endpoints/example-*` when you replace the
 // demo with your own endpoints.
 //
 // User file — seeded once, yours to change.
@@ -7,11 +7,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import reports from "../src/endpoints/aicdemo-a1-claude-reports.ts";
-import widgets from "../src/endpoints/aicdemo-a1-claude-widgets.ts";
+import reports from "../src/endpoints/example-reports.ts";
+import widgets from "../src/endpoints/example-widgets.ts";
 import { callContext, crestErrorFrom, crestRequest } from "./harness.ts";
 
-const WRITE = ["aicdemo:widgets:write"];
+const WRITE = ["example:widgets:write"];
 
 test("query returns a CREST query result and honours status + paging", () => {
   const all = widgets.dispatch(crestRequest("query"), callContext()) as {
