@@ -353,6 +353,7 @@ body, and the create output carried `newResourceId` as the record `_id`.
 | Managed-object `totalPagedResults` is exact with `_totalPagedResultsPolicy=EXACT` | 10-managed-objects.md (earlier note) | False — empty objects can report `NONE`/`-1`, and populated objects can report `ESTIMATE`. Use cursor cookies for bulk record reads; do not use offset paging as a completeness strategy. |
 | Script `evaluatorVersion` defaults to `"2.0"` on create                           | 04-scripts.md (earlier note)         | False — omitting it yields `"1.0"` (legacy engine) on both create routes. Always send it explicitly.                                                                                      |
 | Relationship `resourceCollection[].query` is cosmetic                             | 10-managed-objects.md (earlier note) | False — the API stores an entry without it, but the console then cannot open the owning object at all. Always emit `query`, on both ends of a pair.                                       |
+| Tree `uiConfig` "holds palette/zoom state when set"                               | 09-journeys.md (earlier note)        | Not observed — across all 36 `alpha` trees `uiConfig` holds only `categories` (19) and `annotations` (6), the latter a JSON-encoded **string**. No palette or zoom key occurred.          |
 
 **Lesson:** Both libraries' research summaries had errors. Always verify
 endpoints + shapes against the live tenant before writing code.
@@ -500,6 +501,60 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
 ---
 
 ## Changelog
+
+- **2026-08-14** — **A tree's `uiConfig` is not just `categories`: 6 of the 36
+  `alpha` trees also carry `annotations`, and its value is a JSON-encoded
+  _string_, not an object.** All six hold the same value,
+  `{"forNodes":{},"structural":[]}` — the journey editor's canvas layout, UI
+  chrome rather than behaviour. `09-journeys.md` had never recorded that the key
+  occurs, and its only note on the field ("holds palette/zoom state when set")
+  named keys that appear on no tree in the realm; both are corrected there and
+  the second is now a row in the contradictions table. The cost of the omission
+  was concrete: the sibling `terraform-provider-pingone-aic` fails closed on
+  unknown API keys by design and allowlisted `categories` alone, so all six
+  annotated trees were rejected outright — generate aborted and the provider
+  could not read them. **A sixth of the realm was unusable because of a
+  documentation gap, not a code bug.** The general lesson for any fail-closed
+  consumer of the tree body: the `uiConfig` key set is larger than the one key
+  the doc showed, and a survey of _every_ object is what surfaces that — the
+  list form and a couple of spot reads would not have.
+
+  Four more results from the same survey (36 trees, 178 tree nodes, 126 scripts,
+  all fetched individually on the sandbox, realm `alpha`), now in
+  `09-journeys.md` and `04-scripts.md`:
+
+  1. **`staticNodes` is optional** — 3 of 36 trees have no such key at all, so a
+     decoder must treat it as absent rather than defaulting it to `{}`. Its 96
+     entries carry only `x` and `y`.
+  2. **Tree node metadata has a fixed six-key set** — `connections`,
+     `displayName`, `nodeType`, `version`, `x`, `y`, all present on 178/178,
+     with `version == "1.0"` on every one.
+  3. **`maximumIdleTime`, `maximumSessionTime` and `treeTimeout` are real and
+     writable even though they appear on none of the 36 trees** — a `PUT`
+     creating a tree with `7`/`11`/`13` returned **201** and echoed all three,
+     as did a subsequent `GET` (probe tree deleted, follow-up `GET` 404).
+     Absence from a response means "unset", not "unsupported"; a response echoes
+     only what was set.
+  4. **Script `evaluatorVersion` is never absent on read** — 126/126 scripts in
+     the realm carry it (88 `"1.0"`, 38 `"2.0"`), so the "default to 1.0 when
+     missing" fallback in client code never fires in practice.
+
+  Also worth knowing for anything that builds paths or filenames from a tree
+  name: **two trees in the realm have spaces in their `_id`** (e.g.
+  `OAuth2 Client Authorization Test`).
+
+  **Two census traps, both of which corrupted the first draft of these
+  figures.** They are method rather than API, but the numbers in this doc set
+  are only worth anything if the census behind them is sound, so: (a) **a probe
+  object created before the census is counted by it** — the throwaway
+  `evaluatorVersion: "2.0"` script was written first and then swept up in its
+  own script count, which read 127/39 instead of 126/38. Take the census before
+  writing probes, or re-take it after deleting them (which is what was done
+  here). (b) **A fetch loop can drop an object silently** — a filename-handling
+  bug in the per-tree fetch quietly skipped one tree, so the first pass surveyed
+  35 of 36 and nothing in the output said so. Reconcile the number of objects a
+  census actually examined against the count from the list endpoint before
+  believing any "N of M" in it.
 
 - **2026-08-13** — **A header-less `PUT /endpoint/x/{id}` is a CREST create.**
   See Q16. `11-idm-endpoints.md`'s per-method table had claimed `update`
