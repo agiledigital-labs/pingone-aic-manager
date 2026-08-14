@@ -46,6 +46,18 @@ was created, which is precisely the class of breakage `TEMPLATES_VERSION` exists
 to prevent. `workspace::merge_package_json` refreshes the framework's own keys
 and leaves everything else alone.
 
+## What it needs on your machine
+
+Node **22.18+ or 23.6+** — the project's `package.json` declares
+`"engines": { "node": "^22.18.0 || >=23.6.0" }`.
+
+The floor is the test script, not the build: `npm test` runs
+`node --test "tests/**/*.test.ts"`, feeding TypeScript to Node directly, which
+works only where native type stripping is on by default. On an older runtime the
+failure is a syntax error pointing inside _your_ test file — a confusing way to
+learn the runtime is too old — so `npm install` warns about the `engines`
+mismatch first.
+
 ## The build
 
 `esbuild` cannot target ES5 at all — it refuses with
@@ -60,9 +72,9 @@ and leaves everything else alone.
    (`constantSuper`, `noClassCalls`, `setClassMethods`,
    `superIsCallableConstructor`, `noDocumentAll`).
 4. The **generated** file is linted against IDM's runtime bans (below).
-5. Only if every endpoint clears every step is anything written to disk.
-   Bundles and the ownership manifest publish by same-directory atomic rename,
-   so `aic script watch` can observe the complete old or new file but never a
+5. Only if every endpoint clears every step is anything written to disk. Bundles
+   and the ownership manifest publish by same-directory atomic rename, so
+   `aic script watch` can observe the complete old or new file but never a
    partial write.
 
 The emitted file ends with the expression statement `__aicMain.default();`
