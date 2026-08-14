@@ -94,7 +94,16 @@ Inside a privilege, **every** one of `name`, `path`, `actions`, `permissions`
 and `accessFlags` is mandatory. Omitting any of them, or sending an empty
 `accessFlags`, fails with `403 "Policy validation failed"` and a deeply nested
 `failedPolicyRequirements` body. `actions` may be an empty array; `accessFlags`
-may not.
+may not. `filter` is optional — present on one live privilege
+(`identity-access-manager` → `managed/alpha_organization`) as
+`/name eq "Inactive Users to Review"`, and accepted on write.
+
+A privilege whose `permissions` include anything other than `VIEW` also
+requires **at least one** `accessFlags[].readOnly: false`. Verified 2026-08-15:
+`permissions: ["VIEW","UPDATE"]` with every flag `readOnly: true` → **403**
+`PRIVILEGE_AT_LEAST_ONE_ATTRIBUTE_READONLY_FALSE`. The same privilege with
+one writable flag → 200. VIEW-only privileges may be all-readOnly (the
+sandbox's `my-role` is).
 
 AM validates the contents server-side: a non-existent `path`, an unknown
 `permissions` value, and an `attribute` that is not a property of the target
@@ -230,3 +239,19 @@ reference rather than of the policy that consumes it.
   `PUT /openidm/internal/role/{new-id}` → 201 and
   `GET /openidm/internal/role?_queryFilter=true` → 200 for a bearer that no
   `config/access` rule grants either operation.
+
+### Chosen-id create, filter, If-Match, write-flag policy — 2026-08-15
+
+- `PUT /openidm/internal/role/Terraform_role_probe` with a single VIEW
+  privilege, `filter`, and `Accept-API-Version: resource=1.0` → **201**,
+  `_id` equals the path. Re-GET keeps `filter`. `If-Match: <current>`
+  update that adds UPDATE plus one `readOnly: false` flag → **200** and a
+  new `_rev`. `If-Match: <superseded>` → **412**.
+- PUT of a bare GET body (including `temporalConstraints: []`) → **403**.
+  PUT omitting `privileges` → 200 and `privileges: []`. DELETE → 200,
+  follow-up GET → 404. No `Terraform_` leftover. List without
+  `Accept-API-Version` still 200 (8 roles).
+- Privilege keys observed on the two console-created roles: `name`, `path`,
+  `actions`, `permissions`, `accessFlags`, and (on one) `filter`. Role-level
+  keys remain `_id`, `_rev`, `name`, `description`, `privileges`,
+  `condition` (null), `temporalConstraints` (`[]`).
