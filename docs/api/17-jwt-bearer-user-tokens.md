@@ -132,13 +132,12 @@ scope=openid profile fr:idm:*
 
 Client authentication defaults to `client_secret_post`: `aic auth` adds
 `client_secret=<secret>` to the form and sends no `Authorization` header. Use
-`--client-auth client-secret-basic` for a client whose
-`tokenEndpointAuthMethod` is `client_secret_basic` — AM's own template default —
-and it sends `Authorization: Basic base64(form_encode(client_id):form_encode(secret))`
-without duplicating the secret in the body. Omitting
-`--client-secret-stdin` sends neither credential under either method, for a
-public client. The flag is enum-valued so `private-key-jwt` can be added later;
-it is not implemented yet.
+`--client-auth client-secret-basic` for a client whose `tokenEndpointAuthMethod`
+is `client_secret_basic` — AM's own template default — and it sends
+`Authorization: Basic base64(form_encode(client_id):form_encode(secret))`
+without duplicating the secret in the body. Omitting `--client-secret-stdin`
+sends neither credential under either method, for a public client. The flag is
+enum-valued so `private-key-jwt` can be added later; it is not implemented yet.
 
 Response is a normal token response: `access_token`, `id_token` (when `openid`
 is in scope), `scope`, `token_type`, and `expires_in: 3599` — **one hour**, not
@@ -167,8 +166,46 @@ the private key equivalent to "log in as anyone in this realm". Verified: with
 `allowedSubjects` naming one user, a different `sub` fails with `invalid_grant`
 "Issuer is not authorized to grant consent for this subject".
 
+### The exact restriction rule (verified 2026-08-14)
+
+Code that gates on this field must use the rule AM actually implements, not the
+obvious one. **The issuer is restricted if and only if the list contains at
+least one entry that is non-empty after trimming.** Everything else about the
+field follows from that plus literal string matching against the assertion's
+`sub` claim:
+
+| `allowedSubjects` | Mint for a listed user | Mint for an unlisted user | Reading                                   |
+| ----------------- | ---------------------- | ------------------------- | ----------------------------------------- |
+| `[]`              | ✓                      | ✓                         | unrestricted — the documented blank case  |
+| `[""]`            | ✓                      | ✓                         | **also unrestricted** — see below         |
+| `["   "]`         | ✗                      | ✗                         | a literal subject nobody has; not trimmed |
+| `["<uuid>"]`      | ✓                      | ✗                         | restricted                                |
+| `["", "<uuid>"]`  | ✓                      | ✗                         | restricted; the blank does not weaken it  |
+| `["*"]`           | ✗                      | ✗                         | **not** a wildcard                        |
+| `["<username>"]`  | ✗                      | ✗                         | matching is literal — see below           |
+
+Two of these rows are traps:
+
+- **`[""]` is indistinguishable from `[]` at runtime but not to a naive check.**
+  A gate written as `!allowed_subjects.is_empty()` passes a list holding one
+  empty string and reports the issuer as restricted while it is minting for
+  every user in the realm. Trim and discard empty entries before deciding.
+- **Matching is against the raw `sub` claim, so a username never matches.**
+  `allowedSubjects: ["user.0"]` refused a mint for user.0's own UUID. AM
+  resolves either form in `sub` (see Quirks) but does _not_ resolve before
+  comparing against this list, and `aic auth --as-username` signs the UUID. A
+  username here is a lockout, not a restriction — resolve to `_id` first.
+
+Enforcement is **immediate**: a mint issued straight after the write was
+refused, with no settle time. Whatever caches `jwkSet` (see Open questions) does
+not cache this field, so narrowing a list takes effect at once.
+
 ## Quirks
 
+- **`allowedSubjects: [""]` is not a restriction.** A list holding only empty
+  strings behaves exactly like a blank list and mints for any user, so any code
+  gating on this field must trim and discard empty entries before testing it —
+  see "The exact restriction rule" above for the full table.
 - **`aud` must include `:443`.** The realm's OIDC issuer is
   `https://<tenant>:443/am/oauth2/realms/root/realms/alpha` — with the explicit
   port. Constructing the audience from `TENANT_BASE_URL` (no port) fails with
@@ -228,7 +265,7 @@ the private key equivalent to "log in as anyone in this realm". Verified: with
   while the realm's JWKS cache was in a known-stale state, so elapsed time
   cannot be separated from the auth method. A separate agent-run 2×2 reporting
   both crossed pairings failing did not reproduce either. Treat the auth method
-  as *not* established to be load-bearing until someone probes it on a realm
+  as _not_ established to be load-bearing until someone probes it on a realm
   with a known-good cache.
 
 ## Current implementation
@@ -352,16 +389,53 @@ defaults.
   agent run created `test_auth_basic_0807_codex` / `test_auth_post_0807_codex`
   and reported both crossed pairings failing. A reviewer re-ran the same design
   (`test_m_basic` / `test_m_post`, same secret per client, same published key,
-  50-second settle, four
-  `POST /am/oauth2/realms/root/realms/alpha/access_token` calls) and got **all
-  four minting**, including both crossed pairings. Only the second run's raw
-  results were observed directly by the person writing this entry. The
-  disagreement is unexplained; the reviewer's run is the one reflected in the
-  Quirks section, and neither run should be cited as establishing that a
-  method mismatch fails.
-- Both clients were `DELETE`d, and a subsequent client list confirmed neither
-  id remained. Subject: the pre-existing sandbox `testuser`; no user or
-  published JWT key was created, modified, rotated, or removed.
+  50-second settle, four `POST /am/oauth2/realms/root/realms/alpha/access_token`
+  calls) and got **all four minting**, including both crossed pairings. Only the
+  second run's raw results were observed directly by the person writing this
+  entry. The disagreement is unexplained; the reviewer's run is the one
+  reflected in the Quirks section, and neither run should be cited as
+  establishing that a method mismatch fails.
+- Both clients were `DELETE`d, and a subsequent client list confirmed neither id
+  remained. Subject: the pre-existing sandbox `testuser`; no user or published
+  JWT key was created, modified, rotated, or removed.
+
+### 2026-08-14 — `allowedSubjects` semantics probe
+
+- Purpose: decide whether "the issuer names its permitted subjects" is a sound
+  precondition for allowing a mint on a production-themed tenant. It only is if
+  AM enforces the field, enforces it promptly, and has no value that reads as
+  restrictive while behaving as open.
+- Tenant/realm: sandbox `alpha`, the existing shared default issuer `aic-agent`
+  (one published key, `jwksCacheTimeout` 60000). Client
+  `test_jwtbearer_subjects`, created with `aic --no-prompt oauth create` with
+  `--grant urn:ietf:params:oauth:grant-type:jwt-bearer`, `--generate-secret`.
+- Method: `allowedSubjects` was rewritten seven times by `PUT` on the issuer
+  (every other field preserved, read wrappers unwrapped, server fields
+  stripped), and after each write a mint was attempted with
+  `aic --no-prompt auth --as-id … --client-secret-stdin --scope openid`. Two
+  pre-existing sandbox users were used as subject and non-subject: `user.0`
+  (`45565631-…`) and `user.3` (`2a9d3074-…`).
+- Cases, in order: `[]` with a UUID subject (**positive control — minted**,
+  establishing that the client, key and grant all work before any restriction
+  was applied); `["<uuid user.0>"]` with `sub` = user.0 (minted) and with `sub`
+  = user.3 (**refused**, `invalid_grant` "Issuer is not authorized to grant
+  consent for this subject"); `["user.0"]` — the username — with `sub` = the
+  matching UUID (refused) and via `--as-username user.0` (refused, same
+  assertion since the CLI resolves first); `["*"]` with both subjects (both
+  refused); `[""]` with both subjects (**both minted**); `["", "<uuid user.0>"]`
+  with user.0 (minted) and user.3 (refused); `["   "]` with both subjects (both
+  refused).
+- The `[""]` and `["*"]` cases are the ones the conclusion rests on, and they
+  are why they were run: a wildcard would have made "non-empty" insufficient,
+  and the empty-string row shows that it is insufficient anyway. `["", uuid]`
+  separates "a blank entry disables the list" from "a list of only blanks is no
+  list", and it is the latter.
+- No settle time was allowed anywhere; every refusal followed its write
+  immediately, which is what establishes the promptness claim.
+- Cleanup: `allowedSubjects` restored to `[]` and confirmed by re-read; the
+  probe client `DELETE`d and confirmed absent from `aic oauth list`; minted
+  tokens shredded. The published `jwkSet`, its single key, and both users were
+  left untouched — no user was created or modified.
 
 ## Source citations
 
