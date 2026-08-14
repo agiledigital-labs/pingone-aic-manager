@@ -160,7 +160,11 @@ advertise `GROOVY` in `languages`.
   2026-07-31 — see "Creating scripts").
 - `evaluatorVersion`: `"1.0"` or `"2.0"`. Affects available bindings. v2 is the
   current engine, but **it is not the create default** — omit the field and you
-  get v1 (verified 2026-07-31).
+  get v1 (verified 2026-07-31). **On read it is never absent**: all **126**
+  scripts in `alpha` carried it on 2026-08-14 (**88** `"1.0"`, **38** `"2.0"`).
+  A client's "assume 1.0 when the key is missing" fallback therefore never fires
+  in practice — keep it as a guard, but don't design around it, and don't read
+  an absent field as a signal.
 - **No `_rev` field** on a `GET` or on an update `PUT` echo — so optimistic
   locking via `If-Match` is not available and **conflict detection must be
   content-based**. One exception, verified 2026-07-30: the **create** echo (201,
@@ -702,6 +706,24 @@ Audit history:
   (the same window also shows 26 `GET /openidm/managed/svcacct` queries that
   this verification never issued), which is itself the evidence that the SA DN
   cannot distinguish concurrent writers.
+
+### `evaluatorVersion` presence across the realm — 2026-08-14
+
+Sandbox, realm `alpha`, contributed by the sibling
+`terraform-provider-pingone-aic` project as part of a wider survey (36 trees,
+178 tree nodes, 126 scripts):
+
+- Every script in the realm listed and inspected: **126/126 carry
+  `evaluatorVersion`** — **88** `"1.0"`, **38** `"2.0"`, none missing.
+- `PUT` of a new script with `"evaluatorVersion": "2.0"` → **201** echoing
+  `"2.0"`; a follow-up `GET` also returned `"2.0"`. The probe script was deleted
+  afterwards and its removal confirmed, and the count above was **re-taken with
+  the probe gone** — see the census caveat in `99-quirks-and-open-questions.md`
+  (2026-08-14).
+- Key set observed on script `GET`/`PUT` responses: `_id`, `_rev` (on the `PUT`
+  echo only, consistent with the 2026-07-30 finding), `context`, `createdBy`,
+  `creationDate`, `default`, `description`, `evaluatorVersion`, `language`,
+  `lastModifiedBy`, `lastModifiedDate`, `name`, `script`.
 
 ## Source citations
 

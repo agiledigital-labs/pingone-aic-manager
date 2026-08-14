@@ -275,7 +275,67 @@ It lists journeys whose scripted nodes reference the script UUID in a top-level
 - `entryNodeId` points to the entry node UUID. Built-in sentinel
   `"e301438c-0bd0-429c-ab0c-66126501069a"` = failure node.
 - `staticNodes` holds positions for built-in Success/Failure nodes. These do not
-  have separately fetchable node configuration.
+  have separately fetchable node configuration. **It is optional** — see the
+  survey below.
+
+## Realm-wide survey of tree bodies (verified 2026-08-14)
+
+Every tree in `alpha` was fetched **individually** (`GET …/trees/{name}`, not
+just the `_queryFilter=true` list form) and the key sets tallied: **36 trees,
+178 tree nodes**. Counts below are over that population; they say what does
+occur, not what the API forbids.
+
+### `uiConfig` holds two keys, and `annotations` is a JSON-encoded string
+
+| Key           | Trees    | Value                                                                     |
+| ------------- | -------- | ------------------------------------------------------------------------- |
+| `categories`  | 19 of 36 | value shape not characterised in this survey                              |
+| `annotations` | 6 of 36  | a **string** containing JSON — `{"forNodes":{},"structural":[]}` on all 6 |
+
+No other `uiConfig` key occurred on any of the 36 trees. `annotations` is the
+journey editor's canvas layout — UI chrome, not behaviour — but note the type:
+it is a JSON-encoded string, not a nested object, so a typed decoder must not
+model it as one.
+
+**This bites fail-closed consumers.** The sibling
+`terraform-provider-pingone-aic` allowlisted `categories` as the only permitted
+`uiConfig` key and treats an unknown key as an error by design; all 6 annotated
+trees were therefore rejected outright — a sixth of the realm unreadable —
+because this file had never recorded that `annotations` occurs. Anything that
+validates the tree body must allow it. See `99-quirks-and-open-questions.md`
+(2026-08-14).
+
+### `staticNodes` is optional
+
+**3 of 36 trees have no `staticNodes` key at all.** Treat it as absent, not as
+an empty object. Where present, the 96 entries observed carry only `x` and `y` —
+no other key appeared.
+
+### Tree node metadata has a fixed key set
+
+Across all 178 nodes in `tree.nodes`, the key set is exactly:
+
+```text
+connections  displayName  nodeType  version  x  y
+```
+
+All six were present on all 178 — none was ever absent — and `version` was the
+string `"1.0"` on every one.
+
+### Session-timeout fields are real, writable, and omitted when unset
+
+`maximumIdleTime`, `maximumSessionTime` and `treeTimeout` are in the tree's
+`validAttributes` list (see the write-semantics note above) but appear on
+**none** of the 36 trees. They are not vestigial: a `PUT` creating a tree with
+`maximumIdleTime: 7`, `maximumSessionTime: 11`, `treeTimeout: 13` returned
+**201** with all three echoed in the response body, and a subsequent `GET`
+returned them too. (The probe tree was deleted afterwards and its removal
+confirmed by a `GET` returning 404.)
+
+So they are genuine optional tree attributes that AM simply omits from the
+response when unset. Two consequences for clients: model them as optional rather
+than required, and do not infer from a response that a field you did not set is
+unsupported.
 
 ## Script references
 
@@ -391,9 +451,18 @@ the custom host, so the same node must not redirect again.
 
 - **Tree ID is the name**, not a UUID. Renaming = delete + create (no in-place
   rename).
+- **Tree names may contain spaces.** Two of the 36 trees in `alpha` have a space
+  in their `_id` (e.g. `OAuth2 Client Authorization Test`). Anything that builds
+  a URL path or a filename from a tree name must encode or sanitise it.
 - **Node positions (`x`, `y`)** are floats and carry visual state from the UI
   editor. Preserve them on round-trip to avoid graph jiggle.
-- **`uiConfig`** is often `{}` but holds palette/zoom state when set.
+- **`uiConfig`** is editor state, not behaviour. Across the 36 `alpha` trees it
+  holds only `categories` and/or `annotations`, and `annotations` is a
+  JSON-encoded **string** — see the survey above. An earlier note here said it
+  "holds palette/zoom state when set"; no palette or zoom key was observed on
+  any tree, so that claim is withdrawn.
+- **`staticNodes` may be absent entirely** (3 of 36 trees), so a decoder must
+  treat it as optional rather than defaulting it to an empty map.
 - **`transactionalOnly: true`** journeys can't issue an SSO session — used for
   step-up MFA inside another flow.
 
@@ -428,6 +497,21 @@ the custom host, so the same node must not redirect again.
   redirected only when `Origin` was the tenant. Hosted `/login/` JS chunks
   contain `handleRedirectCallback` → `location.assign`. Probe script restored
   afterwards.
+- Date: 2026-08-14 — realm `alpha`, contributed by the sibling
+  `terraform-provider-pingone-aic` project.
+- Calls: `GET …/authenticationtrees/trees/{name}` for **every** tree in the
+  realm (**36 trees, 178 tree nodes** in total — the individual reads, not just
+  the `_queryFilter=true` list), key sets tallied per tree and per node:
+  `uiConfig` keys `categories` (19) and `annotations` (6) and nothing else;
+  `staticNodes` absent on 3 trees and holding only `x`/`y` in its 96 entries
+  where present; the six-key node metadata set present on 178/178 with
+  `version == "1.0"` on 178/178; `maximumIdleTime`, `maximumSessionTime` and
+  `treeTimeout` on 0/36. Plus `PUT …/trees/{probe}` carrying
+  `maximumIdleTime: 7`, `maximumSessionTime: 11`, `treeTimeout: 13` → **201**
+  with all three echoed, follow-up `GET` echoing the same, and a `DELETE` whose
+  follow-up `GET` returned **404**. Both probe objects (this tree and the script
+  probe in `04-scripts.md`) were deleted and their removal confirmed, and the
+  realm was re-listed afterwards.
 
 ## Source citations
 
