@@ -797,3 +797,20 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   after the write. No probe records were created, so hook runtime was not
   re-fired. Inventory: only `*_user` and `*_role` carry hooks. Documented
   in `10-managed-objects.md`.
+
+- **2026-08-15** — Schedule scripts live at two depths, and `taskscanner`
+  schedules do have them. A read-only sweep of all six
+  `config/schedule/*` documents in the alpha realm (captured 2026-08-14,
+  committed as fixtures in `terraform-provider-pingone-aic`
+  `internal/client/testdata/schedules/`) contradicts the note in
+  `11-idm-endpoints.md` that only `invokeService: "script"` schedules carry
+  an inline script: all three `taskscanner` documents hold 123–195 bytes of
+  JavaScript at `invokeContext.task.script.source`, not
+  `invokeContext.script.source`. A fourth value,
+  `org.forgerock.openidm.script`, behaves as `script` and would be missed by
+  an equality filter. Three of six emit `globals: {}` beside `source`, at
+  whichever depth the script sits — a decoder that models the script as
+  `{source, type}` and re-encodes deletes that key on the next
+  whole-document write. Non-empty `globals` was **not** observed, so its
+  value shape is still open. Observation, not a probe: nothing was written
+  to the tenant. `11-idm-endpoints.md` corrected.

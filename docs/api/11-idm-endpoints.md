@@ -373,16 +373,43 @@ same CRUD, no realm, no `_rev`. `pingone-aic-manager` syncs them as a second IDM
 script kind (`--kind schedule`). They differ from endpoints in **where the
 script lives** and **which ones have one**:
 
-- The script is nested at **`invokeContext.script.source`** (plaintext), with
-  `invokeContext.script.type: "text/javascript"`. A `globals` object may sit
-  beside `source`.
-- **Only `invokeService: "script"` schedules carry an inline script.** Others
-  (`taskscanner`, `sync`, …) have an `invokeContext` but no `script.source`
-  (they reference a script by `scriptProperty`, or scan managed objects) —
-  filter these out when listing syncable schedules.
-- On write, merge only `invokeContext.script.source` and round-trip the rest
-  (`schedule`, `enabled`, `persisted`, `type`, `globals`, …) so the cron
-  definition and flags aren't lost.
+- **The script's nesting depends on `invokeService`, and there are two
+  locations, not one.** Corrected 2026-08-15 — see the sweep note below; the
+  earlier claim that only `script` schedules carry an inline script was wrong.
+
+  | `invokeService`                | inline script at                   | seen in sweep |
+  | ------------------------------ | ---------------------------------- | ------------- |
+  | `script`                       | `invokeContext.script.source`      | 2 of 6        |
+  | `org.forgerock.openidm.script` | `invokeContext.script.source`      | 1 of 6        |
+  | `taskscanner`                  | `invokeContext.task.script.source` | 3 of 6        |
+
+  In every case `…script.type` is `text/javascript` and a `globals` object may
+  sit beside `source`.
+
+- **`invokeService` has a fully-qualified alias.**
+  `org.forgerock.openidm.script` behaves as `script` and nests its script the
+  same way. A filter written as `invokeService == "script"` silently skips those
+  schedules — match on the suffix, not equality.
+
+- **`taskscanner` schedules do carry inline scripts.** All three in the sweep
+  had 123–195 bytes of JavaScript at `invokeContext.task.script.source`. Their
+  `invokeContext` also holds `numberOfThreads`, `waitForCompletion`, and a
+  `scan` object with `object`, `_queryFilter`, `taskState` and (in one case)
+  `recovery`. Do not filter taskscanner out when listing syncable schedules.
+
+- **`globals` is emitted as `{}` even when empty**, in three of the six
+  schedules — both under `invokeContext.script` and under
+  `invokeContext.task.script`. A decoder that reads only `{source, type}` and
+  re-encodes drops the key, so a whole-document write deletes it. No schedule in
+  the sweep had a _non-empty_ `globals`, so whether it accepts nested or
+  non-string values is **unverified** — a consumer that models it as a flat
+  string map is guessing beyond the evidence.
+
+- On write, round-trip the whole document. Merging only
+  `invokeContext.script.source` and rebuilding the rest loses `globals`, the
+  `scan` sub-objects, and (for taskscanner) the task script entirely.
+  `schedule`, `enabled`, `persisted`, `type` and the cron definition must all
+  survive.
 - **`persisted` controls AIC console visibility.** Verified 2026-07-15 with
   `schedule/load-alpha-name-variant`: the config existed, was readable through
   `/openidm/config/schedule/...`, and could be triggered manually while
@@ -461,7 +488,14 @@ Object shape (real example, `schedule/UpdateReviewList`):
   carrying object, number, string, and `null` results); 2026-08-06 (protected
   bearer-token endpoint, `config/access` role gate, endpoint `globals`, and
   OAuth2 context/scope bindings); 2026-08-07 (`context.oauth2.rawInfo` full key
-  inventory + types)
+  inventory + types); 2026-08-15 (schedule script nesting and `globals`, from a
+  **full-realm sweep of all 6 `config/schedule/*` documents** rather than a
+  fresh probe — the responses were captured by `pingoneaic-tf` on 2026-08-14 and
+  are committed as fixtures in `terraform-provider-pingone-aic` under
+  `internal/client/testdata/schedules/`. This corrected the "only
+  `invokeService: script` carries an inline script" claim, added the
+  `org.forgerock.openidm.script` alias, and recorded `globals: {}`. Nothing was
+  written to the tenant.)
 - Endpoints: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
   `endpoint/` ids), `GET /openidm/config/endpoint/test` (200; keys
   `_id, description, source, type`, no `_rev`, plaintext `source`),
