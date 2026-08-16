@@ -285,17 +285,17 @@ just the `_queryFilter=true` list form) and the key sets tallied: **36 trees,
 178 tree nodes**. Counts below are over that population; they say what does
 occur, not what the API forbids.
 
-### `uiConfig` holds two keys, and `annotations` is a JSON-encoded string
+### Observed `uiConfig` keys; `annotations` is a JSON-encoded string
 
 | Key           | Trees    | Value                                                                     |
 | ------------- | -------- | ------------------------------------------------------------------------- |
 | `categories`  | 19 of 36 | value shape not characterised in this survey                              |
 | `annotations` | 6 of 36  | a **string** containing JSON — `{"forNodes":{},"structural":[]}` on all 6 |
 
-No other `uiConfig` key occurred on any of the 36 trees. `annotations` is the
-journey editor's canvas layout — UI chrome, not behaviour — but note the type:
-it is a JSON-encoded string, not a nested object, so a typed decoder must not
-model it as one.
+No other `uiConfig` key occurred on any of the 36 trees. The survey establishes
+the wire type, not the field's semantics: `annotations` is a JSON-encoded string,
+not a nested object. Preserve it unchanged; a typed decoder must not model it as
+an object.
 
 **This bites fail-closed consumers.** The sibling
 `terraform-provider-pingone-aic` allowlisted `categories` as the only permitted
@@ -311,7 +311,7 @@ validates the tree body must allow it. See `99-quirks-and-open-questions.md`
 an empty object. Where present, the 96 entries observed carry only `x` and `y` —
 no other key appeared.
 
-### Tree node metadata has a fixed key set
+### Tree node metadata key set observed in this survey
 
 Across all 178 nodes in `tree.nodes`, the key set is exactly:
 
@@ -320,7 +320,8 @@ connections  displayName  nodeType  version  x  y
 ```
 
 All six were present on all 178 — none was ever absent — and `version` was the
-string `"1.0"` on every one.
+string `"1.0"` on every one. This is an observed census, not an API allowlist:
+clients must tolerate and preserve unknown keys.
 
 ### Session-timeout fields are real, writable, and omitted when unset
 
@@ -456,11 +457,11 @@ the custom host, so the same node must not redirect again.
   a URL path or a filename from a tree name must encode or sanitise it.
 - **Node positions (`x`, `y`)** are floats and carry visual state from the UI
   editor. Preserve them on round-trip to avoid graph jiggle.
-- **`uiConfig`** is editor state, not behaviour. Across the 36 `alpha` trees it
-  holds only `categories` and/or `annotations`, and `annotations` is a
-  JSON-encoded **string** — see the survey above. An earlier note here said it
-  "holds palette/zoom state when set"; no palette or zoom key was observed on
-  any tree, so that claim is withdrawn.
+- **`uiConfig`** held only `categories` and/or `annotations` across the 36
+  `alpha` trees surveyed, and `annotations` was a JSON-encoded **string** — see
+  the survey above. Preserve unknown keys and values unchanged. An earlier note
+  here said it "holds palette/zoom state when set"; the survey did not establish
+  that semantic claim, so it is withdrawn.
 - **`staticNodes` may be absent entirely** (3 of 36 trees), so a decoder must
   treat it as optional rather than defaulting it to an empty map.
 - **`transactionalOnly: true`** journeys can't issue an SSO session — used for
