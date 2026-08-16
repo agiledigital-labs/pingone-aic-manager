@@ -160,11 +160,10 @@ advertise `GROOVY` in `languages`.
   2026-07-31 — see "Creating scripts").
 - `evaluatorVersion`: `"1.0"` or `"2.0"`. Affects available bindings. v2 is the
   current engine, but **it is not the create default** — omit the field and you
-  get v1 (verified 2026-07-31). **On read it is never absent**: all **126**
-  scripts in `alpha` carried it on 2026-08-14 (**88** `"1.0"`, **38** `"2.0"`).
-  A client's "assume 1.0 when the key is missing" fallback therefore never fires
-  in practice — keep it as a guard, but don't design around it, and don't read
-  an absent field as a signal.
+  get v1 (verified 2026-07-31). It was present on all **126** scripts surveyed
+  in `alpha` on 2026-08-14 (**88** `"1.0"`, **38** `"2.0"`). That census is not
+  an API guarantee: retain missing-field handling, and don't read an absent field
+  as a signal.
 - **No `_rev` field** on a `GET` or on an update `PUT` echo — so optimistic
   locking via `If-Match` is not available and **conflict detection must be
   content-based**. One exception, verified 2026-07-30: the **create** echo (201,

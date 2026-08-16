@@ -505,8 +505,8 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
 - **2026-08-14** — **A tree's `uiConfig` is not just `categories`: 6 of the 36
   `alpha` trees also carry `annotations`, and its value is a JSON-encoded
   _string_, not an object.** All six hold the same value,
-  `{"forNodes":{},"structural":[]}` — the journey editor's canvas layout, UI
-  chrome rather than behaviour. `09-journeys.md` had never recorded that the key
+  `{"forNodes":{},"structural":[]}`. The survey establishes that wire shape,
+  not the field's semantics. `09-journeys.md` had never recorded that the key
   occurs, and its only note on the field ("holds palette/zoom state when set")
   named keys that appear on no tree in the realm; both are corrected there and
   the second is now a row in the contradictions table. The cost of the omission
@@ -526,18 +526,19 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   1. **`staticNodes` is optional** — 3 of 36 trees have no such key at all, so a
      decoder must treat it as absent rather than defaulting it to `{}`. Its 96
      entries carry only `x` and `y`.
-  2. **Tree node metadata has a fixed six-key set** — `connections`,
-     `displayName`, `nodeType`, `version`, `x`, `y`, all present on 178/178,
-     with `version == "1.0"` on every one.
+  2. **Tree node metadata had the same six-key set throughout this census** —
+     `connections`, `displayName`, `nodeType`, `version`, `x`, `y`, all present
+     on 178/178, with `version == "1.0"` on every one. This is not an API
+     allowlist; clients must tolerate and preserve unknown keys.
   3. **`maximumIdleTime`, `maximumSessionTime` and `treeTimeout` are real and
      writable even though they appear on none of the 36 trees** — a `PUT`
      creating a tree with `7`/`11`/`13` returned **201** and echoed all three,
      as did a subsequent `GET` (probe tree deleted, follow-up `GET` 404).
      Absence from a response means "unset", not "unsupported"; a response echoes
      only what was set.
-  4. **Script `evaluatorVersion` is never absent on read** — 126/126 scripts in
-     the realm carry it (88 `"1.0"`, 38 `"2.0"`), so the "default to 1.0 when
-     missing" fallback in client code never fires in practice.
+  4. **Script `evaluatorVersion` was present on every script in this census** —
+     126/126 scripts in the realm carried it (88 `"1.0"`, 38 `"2.0"`). This is
+     not an API guarantee, so clients must retain missing-field handling.
 
   Also worth knowing for anything that builds paths or filenames from a tree
   name: **two trees in the realm have spaces in their `_id`** (e.g.
