@@ -152,14 +152,16 @@ returned `400` with
 
 `_pageSize` has a hard max of **100**. `_pageSize=1000` returns
 `400 parameter "_pageSize" in query has an error: number must be at most 100`.
-`_pageSize=100` on this tenant still returned all 128 variables in one page
-(`pagedResultsCookie` empty); follow the cookie when it is present.
+`_pageSize=100` on this tenant still returned more than the requested size (129
+variables in the 2026-08-17 recheck) in one page (`pagedResultsCookie` empty).
+Treat `_pageSize` as a request, not a client-side result cap, and follow the
+cookie when it is present.
 
 ## Examples
 
 ```bash
-# List all variables (paginated; default 1000)
-$SCRIPTS/verify-endpoint.sh "/environment/variables"
+# List variables (100 is the maximum request; the server may return more)
+$SCRIPTS/verify-endpoint.sh "/environment/variables?_pageSize=100"
 
 # Read one
 $SCRIPTS/verify-endpoint.sh "/environment/variables/esv-3d06f2834c-tenanturl"
@@ -230,9 +232,10 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-08-15
+- Date: 2026-08-17
 - Calls: `GET /environment/variables?_pageSize=1000` → 400 (max 100);
-  `GET /environment/variables?_pageSize=100` → 200, 128 variables, no cookie;
+  `GET /environment/variables?_pageSize=100` → 200, 129 variables, no cookie
+  (rechecked 2026-08-17; the 2026-08-15 run returned 128);
   `PUT …/Terraform_esv-oauthloop-probe` → 400 id regex;
   `PUT …/esv-terraform-oauthloop-probe` → 200, `loaded:false`, pending
   `variables:1`; `DELETE` of that probe → 200 and pending back to 0.

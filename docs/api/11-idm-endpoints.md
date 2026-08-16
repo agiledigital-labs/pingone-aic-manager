@@ -379,9 +379,9 @@ script lives** and **which ones have one**:
 
   | `invokeService`                | inline script at                   | seen in sweep |
   | ------------------------------ | ---------------------------------- | ------------- |
-  | `script`                       | `invokeContext.script.source`      | 2 of 6        |
-  | `org.forgerock.openidm.script` | `invokeContext.script.source`      | 1 of 6        |
-  | `taskscanner`                  | `invokeContext.task.script.source` | 3 of 6        |
+  | `script`                       | `invokeContext.script.source`      | 2 of 7        |
+  | `org.forgerock.openidm.script` | `invokeContext.script.source`      | 1 of 7        |
+  | `taskscanner`                  | `invokeContext.task.script.source` | 4 of 7        |
 
   In every case `…script.type` is `text/javascript` and a `globals` object may
   sit beside `source`.
@@ -391,8 +391,9 @@ script lives** and **which ones have one**:
   same way. A filter written as `invokeService == "script"` silently skips those
   schedules — match on the suffix, not equality.
 
-- **`taskscanner` schedules do carry inline scripts.** All three in the sweep
-  had 123–195 bytes of JavaScript at `invokeContext.task.script.source`. Their
+- **`taskscanner` schedules do carry inline scripts.** All four in the latest
+  sweep had 123–196 bytes of JavaScript at
+  `invokeContext.task.script.source`. Their
   `invokeContext` also holds `numberOfThreads`, `waitForCompletion`, and a
   `scan` object with `object`, `_queryFilter`, `taskState` and (in one case)
   `recovery`. Do not filter taskscanner out when listing syncable schedules.
@@ -501,12 +502,18 @@ Object shape (real example, `schedule/UpdateReviewList`):
   `_id, description, source, type`, no `_rev`, plaintext `source`),
   `PUT /openidm/config/endpoint/aicedit-verify` (201 create), `PUT` again (200
   replace), `DELETE` (200), `GET` after delete (404).
-- Schedules (2026-06-01): `GET …?_queryFilter=true` → 4 `schedule/` configs, 3
-  `taskscanner` (no inline script) + 1 `invokeService:"script"`
+- Schedules (2026-06-01; script-location interpretation superseded by the
+  2026-08-15 and 2026-08-17 sweeps): `GET …?_queryFilter=true` → 4
+  `schedule/` configs, 3 `taskscanner` (their nested task scripts were not
+  recognised in this run) + 1 `invokeService:"script"`
   (`UpdateReviewList`, script at `invokeContext.script.source`, no `_rev`).
   Throwaway `schedule/aicedit-sched` (disabled): `PUT` 201 create, `PUT` 200
   replace, source-only push preserved `enabled`/`schedule`/`script.type`,
   `DELETE` 200. Removed after the run.
+- Schedule nesting recheck (2026-08-17): 7 `schedule/` configs: 2 `script`, 1
+  `org.forgerock.openidm.script`, and 4 `taskscanner`. All 7 carried inline
+  source at the paths in the table above; the 4 taskscanner sources were
+  123–196 bytes.
 - Manual trigger (2026-07-14, name-variants-au load):
   `schedule/aicedit-trigger-probe` (`enabled:false`, far-future cron) created,
   `POST …/scheduler/job/<name>?_action=trigger` → 200 `{"success":true}`, target

@@ -66,11 +66,20 @@ difference — [18-internal-roles.md](18-internal-roles.md) has the table.
 A referenced role does not have to exist as an `internal/role` object.
 `test_service_C1` → `internal/role/c1` is the live synthetic case.
 
-## No `_rev` — content is the only precondition
+## No `_rev` — serialize writers externally
 
-Same as `config/access`. There is no conditional write. The only
-precondition is a content comparison against the document as previously
-read.
+Same as `config/access`. There is no `_rev` and no conditional write, so a
+content comparison against the document as previously read is only a local
+staleness check: the document can change between that check and the `PUT`.
+Two writers can read the same document and both successfully replace it; the
+later `PUT` silently loses the earlier writer's change.
+
+Serialize all writers through one process or a shared external lock. If that
+cannot be guaranteed, re-read after every `PUT`, verify that the intended
+change and all previously observed siblings remain, and on mismatch re-merge
+against the newest document and retry. That detects and repairs some races but
+is not an atomic correctness guarantee: without server-side conditional writes
+or a lock, another writer can race every retry.
 
 ## A mapping append survives a read-modify-write
 
@@ -85,11 +94,12 @@ untouched), and:
 - restoring the saved original is **byte-exact** (canonical sha256
   `4fabd82ccc9aa358e4e466af81532191562807ccde0292721b84539e6630258f`)
 
-So read-modify-write `PUT` is safe to build on, provided unmanaged mappings
-are not decoded and re-encoded. Rebuilding a mapping that omitted `roles`
-would hand `RCSClient` a key it never had. The same trap exists on
-`config/access`: three live rules store `actions: ""`, which is not the
-same as omitting `actions`.
+This verifies structural preservation by a single writer; it does **not** make
+read-modify-write safe across concurrent writers. Under the serialization rule
+above, preserve unmanaged mappings as parsed JSON values rather than decoding
+and re-encoding them. Rebuilding a mapping that omitted `roles` would hand
+`RCSClient` a key it never had. The same trap exists on `config/access`: three
+live rules store `actions: ""`, which is not the same as omitting `actions`.
 
 ## Individual mappings have no id
 
@@ -109,6 +119,8 @@ individual rule.
 - Tenant: `<your-tenant>.forgeblocks.com` (sandbox), no realm segment.
 - Date: 2026-08-15
 - Verified by the author of this file, from live calls made while writing it.
+- Read-only recheck 2026-08-17: top-level keys remain exactly `_id` and
+  `rsFilter`, with no `_rev`, and `staticUserMapping` still has 5 entries.
 
 ### Object shape — 2026-08-15
 
