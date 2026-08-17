@@ -271,7 +271,7 @@ function previouslyOwnedEndpointNames() {
           name !== ".." &&
           /^[A-Za-z0-9._-]+$/.test(name)
       );
-  } catch (_error) {
+  } catch {
     // A malformed generated manifest must not authorize deleting arbitrary
     // workspace files. The new manifest will repair it on this build.
     return [];
