@@ -399,6 +399,39 @@ function specificity(route: RouteDefinition): number {
   return route.segments.filter((segment) => "literal" in segment).length;
 }
 
+function routesAreAmbiguous(left: RouteDefinition, right: RouteDefinition): boolean {
+  if (
+    left.method !== right.method ||
+    left.action !== right.action ||
+    left.segments.length !== right.segments.length ||
+    specificity(left) !== specificity(right)
+  ) {
+    return false;
+  }
+  return left.segments.every((segment, index) => {
+    const other = right.segments[index] as PathSegment;
+    return (
+      !("literal" in segment) ||
+      !("literal" in other) ||
+      segment.literal === other.literal
+    );
+  });
+}
+
+function assertUnambiguousRoutes(routes: RouteDefinition[]): void {
+  for (let left = 0; left < routes.length; left += 1) {
+    for (let right = left + 1; right < routes.length; right += 1) {
+      const first = routes[left] as RouteDefinition;
+      const second = routes[right] as RouteDefinition;
+      if (routesAreAmbiguous(first, second)) {
+        throw new Error(
+          "ambiguous routes: " + routeLabel(first) + " and " + routeLabel(second)
+        );
+      }
+    }
+  }
+}
+
 function decodeSegment(value: string): string {
   try {
     return decodeURIComponent(value);
@@ -492,6 +525,7 @@ export function routeLabel(route: RouteDefinition): string {
  * emitted bundle calls it as its final expression statement.
  */
 export function defineEndpoint(spec: EndpointSpec): EndpointMain {
+  assertUnambiguousRoutes(spec.routes);
   const definition: EndpointDefinition = {
     name: spec.name,
     summary: spec.summary,
