@@ -46,13 +46,13 @@ driven by `If-None-Match: *`, independent of `_rev`.
 
 ### Three create paths — only two are "create-only" (verified 2026-06-10)
 
-| Path                                                        | Exists already →                                            | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ----------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PUT /managed/{t}/{id}` (no header)                         | **200, silent UPDATE**                                      | CREST maps bare PUT to create-or-**update** (upsert).                                                                                                                                                                                                                                                                                                                                                                                            |
-| `PUT /managed/{t}/{id}` + `If-None-Match: *`                | 412                                                         | Create-only _iff the precondition is honored_ — see caveat.                                                                                                                                                                                                                                                                                                                                                                                      |
-| `POST /managed/{t}?_action=create` (`_id` in body)          | 412 "Entry Already Exists"                                  | CREST `CreateRequest`; **no** update fallback.                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `openidm.create(container, id, content)` (script)           | throws `PreconditionFailedException` "Entry Already Exists" | Same `CreateRequest`. `id=null` → server-assigned UUID. **Never** updates.                                                                                                                                                                                                                                                                                                                                                                       |
-| `openidm.read("managed/{t}/{id}")` (script), record missing | **returns `null`** (does NOT throw)                         | Verified live 2026-07-17 (next-gen decision + LIBRARY). Also `null` for a missing managed-object **type** (`managed/zzz_no_such_type/x`). Only a genuine read error (500/403/transport) throws. So a `try/catch` around `openidm.read` catches only real failures, not normal misses — guard the miss with `if (!rec) …` and reserve `logger.warn` for the `catch`. Probe: `scripts/rhino-script-tester/fixtures/lib-openidm-miss-probe.lib.js`. |
+| Path                                                        | Exists already →                                            | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUT /managed/{t}/{id}` (no header)                         | **200, silent UPDATE**                                      | CREST maps bare PUT to create-or-**update** (upsert).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `PUT /managed/{t}/{id}` + `If-None-Match: *`                | 412                                                         | Create-only _iff the precondition is honored_ — see caveat.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `POST /managed/{t}?_action=create` (`_id` in body)          | 412 "Entry Already Exists"                                  | CREST `CreateRequest`; **no** update fallback.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `openidm.create(container, id, content)` (script)           | throws `PreconditionFailedException` "Entry Already Exists" | Same `CreateRequest`. `id=null` → server-assigned UUID. **Never** updates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `openidm.read("managed/{t}/{id}")` (script), record missing | **returns `null`** (does NOT throw)                         | Verified live 2026-07-17 (next-gen decision + LIBRARY), and again 2026-08-17 in the **IDM custom-endpoint** context (`endpoint/example-managed-users`, unused UUID: the handler's own `null` branch fired). Also `null` for a missing managed-object **type** (`managed/zzz_no_such_type/x`). Only a genuine read error (500/403/transport) throws. So a `try/catch` around `openidm.read` catches only real failures, not normal misses — guard the miss with `if (!rec) …` and reserve `logger.warn` for the `catch`. Probe: `scripts/rhino-script-tester/fixtures/lib-openidm-miss-probe.lib.js`. |
 
 **Caveat — `If-None-Match: *` is NOT a safe distributed lock in production.**
 Observed in a clustered prod tenant: 20 concurrent `PUT … If-None-Match: *` of
@@ -189,9 +189,8 @@ about it.
 **Concurrent writers of the same document lose inserts.** Verified 2026-08-15:
 two parallel Terraform creates (test_from + test_to copies) each GET-appended
 and PUT; the second PUT won and `Terraform_test_from` vanished even though its
-own confirm had passed. Serialising GET+mutate+PUT in one process recovered
-both copies. Confirm-after-write is not enough when two mutators share
-`objects[]`.
+own confirm had passed. Serialising GET+mutate+PUT in one process recovered both
+copies. Confirm-after-write is not enough when two mutators share `objects[]`.
 
 The `managed_hooks` sync path already polls, because it waits for hook source to
 go live in the running IDM runtime — which is a separate concern from config
@@ -527,7 +526,7 @@ the probe type were created, so hook **runtime** was not re-fired. Empty
 omitted on write.
 
 Live inventory the same day: of 26 types, only the Ping-shipped `*_user` and
-`*_role` objects carried hooks. All 14 custom types (plus the two Terraform_
+`*_role` objects carried hooks. All 14 custom types (plus the two Terraform\_
 relationship copies) had none. `bravo_user` onCreate/onUpdate are the only
 inline hooks with a body longer than a one-line `require` (and the only ones
 with a `globals` key, empty).
@@ -653,12 +652,24 @@ error. Do not offer `ne` or `in` in script-template query validation.
   property on update returns 200 and erases the stored value; only
   `PATCH remove` is refused. Defaults are applied on create only, so nothing
   puts it back. See "Property `default` and `required`".
+- **A script-side `fields` list accepts relationship and `_meta` paths**
+  (verified 2026-08-17). The `manager/userName` and `_meta/lastChanged` syntax
+  was verified over REST above; the same list passed as the third argument to
+  `openidm.read` inside a custom endpoint also returned 200. So
+  `ManagedField<T>` in the type definitions is right to allow both forms for
+  script calls as well as REST ones.
 
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-08-15 (custom-type hook copy: `Terraform_lifecycle_probe` PUT
-  accepted inline `onCreate`/`onUpdate`/`postCreate` plus file-backed
+- Date: 2026-08-17 (two re-confirmations in the IDM **custom-endpoint** script
+  context, which the earlier probes did not cover: `openidm.read` on a missing
+  record returns `null` — already established 2026-07-17 for next-gen decision
+  and LIBRARY — and a script-side `fields` list accepts relationship and `_meta`
+  paths. Both probed from `endpoint/example-managed-users` against
+  `managed/alpha_user`, read-only, no records altered). 2026-08-15 (custom-type
+  hook copy: `Terraform_lifecycle_probe` PUT accepted inline
+  `onCreate`/`onUpdate`/`postCreate` plus file-backed
   `onDelete: roles/onDelete-roles.js`; originals
   `alpha_user`/`alpha_role`/`bravo_user` hook hashes unchanged; no records
   created so runtime not re-fired; inventory still 4 shipped types with hooks,

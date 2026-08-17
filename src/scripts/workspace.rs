@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 53;
+pub const TEMPLATES_VERSION: u32 = 54;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -329,9 +329,20 @@ const TS_USER: &[(&str, &str)] = &[
         "typescript/src/endpoints/example-reports.ts",
         include_str!("templates/typescript/src/endpoints/example-reports.ts"),
     ),
+    // Depends on `src/generated/managed.ts`, which `managed_types::generate`
+    // writes in the same init pass, and on the stock `alpha_user` schema. Its
+    // header says so — a tenant whose schema differs edits or deletes it.
+    (
+        "typescript/src/endpoints/example-managed-users.ts",
+        include_str!("templates/typescript/src/endpoints/example-managed-users.ts"),
+    ),
     (
         "typescript/tests/demo-endpoints.test.ts",
         include_str!("templates/typescript/tests/demo-endpoints.test.ts"),
+    ),
+    (
+        "typescript/tests/example-managed-users.test.ts",
+        include_str!("templates/typescript/tests/example-managed-users.test.ts"),
     ),
 ];
 

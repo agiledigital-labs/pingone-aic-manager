@@ -84,6 +84,32 @@ Nothing in the handler is annotated: the types come from the validators. Change
 - **Logging**: `log` is pre-bound to the endpoint, the route and the correlation
   id (the `x-request-id` header when the caller sent one). Never log `context`.
 
+## Reading and writing managed objects
+
+`openidm` is a global here — no import — and its signatures are keyed on YOUR
+tenant's schema. `aic workspace update` writes `src/generated/managed.ts` from
+`config/managed`: one interface per object, plus the map that
+`framework/idm-globals.d.ts` looks paths up in.
+
+```ts
+// Typed: `user` is `StoredRecord<AlphaUser> | null`.
+const user = openidm.read(`managed/alpha_user/${id}`);
+
+// UNtyped: plain concatenation infers `string`, so there is no path to look up
+// and the result degrades to the generic `CrestResource`. Both lines compile.
+const same = openidm.read("managed/alpha_user/" + id);
+```
+
+Use a **template literal** for any managed path — Babel downlevels it to
+concatenation, so the emitted ES5 is unchanged. Import the interfaces when you
+need to name one: `import type { AlphaUser } from "../generated/managed.ts"`.
+
+`src/endpoints/example-managed-users.ts` walks the whole surface — every verb,
+the typed `fields` selector, the `_id`/`_rev` asymmetry between a plain read and
+a field-restricted one, and a list of lines that should NOT compile so you can
+watch the types bite. If hovering there shows `CrestResource` instead of your
+own interfaces, run `aic workspace update` and restart your editor's TS server.
+
 ## The rule that governs everything here
 
 **Never subclass `Error`.** `Reflect` is `undefined` on IDM, so after Babel's

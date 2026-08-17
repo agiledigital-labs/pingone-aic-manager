@@ -159,7 +159,56 @@ skipped.
 `.cjs` workspace. Ambient declarations are invisible inside a module graph, so
 `managed_types::generate` additionally emits
 `typescript/src/generated/managed.ts` — the same schema as `export`ed
-declarations plus an exported `ManagedObjects` collection map.
+declarations, plus the collection map.
+
+The map is the one declaration that is **not** exported. It has to reach the
+`openidm` signatures in `framework/idm-globals.d.ts`, and those cannot import
+it: the file is gitignored and absent until an update runs. So it is emitted as
+a `declare global` augmentation of the empty `interface ManagedObjects` those
+signatures key on, which applies because `tsconfig.json` includes `src/**/*` —
+not because anything imports it.
+
+That is what makes the typing flow end to end:
+
+| Call                                                    | Result type                       |
+| ------------------------------------------------------- | --------------------------------- |
+| `openidm.read` with a template-literal managed path     | `StoredRecord<AlphaUser> \| null` |
+| …plus a third `fields` argument                         | `AlphaUser \| null` — see below   |
+| `openidm.query("managed/alpha_user", { _queryFilter })` | `CrestQueryResult<AlphaUser>`     |
+| `openidm.create` / `update` / `patch` / `delete`        | `AlphaUser`                       |
+| any path that does not resolve to a managed object      | `CrestResource`                   |
+
+Three consequences worth knowing, all demonstrated in
+`src/endpoints/example-managed-users.ts`:
+
+- **Path inference needs a template literal.** `` `managed/alpha_user/${id}` ``
+  infers as the type `` `managed/alpha_user/${string}` `` and resolves;
+  `"managed/alpha_user/" + id` infers as plain `string` and silently degrades to
+  `CrestResource`. Both compile. Babel downlevels the backticks to
+  concatenation, so the emitted ES5 is identical.
+- **Missing tenant types cost inference, never a compile error.** With no
+  generated file the map stays empty, every conditional resolves to `never`, and
+  each signature falls back to its untyped form.
+- **`fields` drops the `_id`/`_rev` guarantee.** The plain read returns
+  `StoredRecord<T>`; the field-restricted overload returns bare `T`, because we
+  have not verified that IDM still includes them. A `query` returns bare `T` for
+  the same reason (`_fields` is a query parameter).
+
+The machinery — `ManagedName`, `ManagedField`, `ManagedCollectionOf`,
+`ManagedRecordOf`, `FieldsArg`, `ContentArg`, `StoredRecord`, `QueryParams` — is
+a deliberate mirror of the ambient workspace's `idm/types/common.d.ts`, so one
+mental model covers both surfaces. It differs in exactly one way: where the
+ambient version widens an unresolved path to `any`, this project stays strict
+and hands back `CrestResource`. One generic signature per verb with conditional
+results, rather than per-object overloads, is what makes a field typo report as
+`Did you mean '"userName"'?` against the offending element instead of "no
+overload matches this call".
+
+**Not covered by tests.** `openidm` is a global with no injection seam and the
+test harness has no double for it, so an endpoint's store calls are checked by
+`tsc` but never executed under `node`. `example-managed-users.test.ts` therefore
+stops at routing and validation. Adding a `managedStore()` double to
+`tests/harness.ts` would close this.
 
 ## OpenAPI and the `?_action=` problem
 
