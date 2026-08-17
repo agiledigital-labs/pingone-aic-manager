@@ -5,9 +5,9 @@ import { test } from "node:test";
 
 import { v, type Issue, type Validator } from "../framework/index.ts";
 
-function run<T>(validator: Validator<T>, input: unknown) {
+function run<T>(validator: Validator<T>, input: unknown, mode: "strict" | "coerce" = "strict") {
   const issues: Issue[] = [];
-  const value = validator.parse(input, "x", issues);
+  const value = validator.parse(input, "x", issues, mode);
   return { value, issues };
 }
 
@@ -68,28 +68,26 @@ const parseCases: ParseCase[] = [
   rejected("string: pattern", boundedString, "AB", "must match /^[a-z]+$/"),
   rejected("string: wrong type", boundedString, 7, "expected a string"),
   rejected("string: described pattern", describedPattern, "nope", "must start with w-"),
-  accepted("integer: string coercion", boundedInteger, "42", 42),
+  rejected("integer: strict string", boundedInteger, "42", INTEGER),
   accepted("integer: native number", boundedInteger, 42, 42),
-  rejected("integer: fraction", boundedInteger, "1.5", INTEGER),
+  rejected("integer: fraction", boundedInteger, 1.5, INTEGER),
   rejected("integer: blank", boundedInteger, "", INTEGER),
   rejected("integer: non-numeric", boundedInteger, "nope", INTEGER),
-  rejected("integer: minimum", boundedInteger, "0", "must be at least 1"),
-  rejected("integer: maximum", boundedInteger, "101", "must be at most 100"),
-  accepted("number: fraction", v.number(), "1.5", 1.5),
-  accepted("boolean: true string", bool, "true", true),
-  accepted("boolean: false string", bool, "false", false),
+  rejected("integer: minimum", boundedInteger, 0, "must be at least 1"),
+  rejected("integer: maximum", boundedInteger, 101, "must be at most 100"),
+  accepted("number: fraction", v.number(), 1.5, 1.5),
+  rejected("boolean: true string", bool, "true", "expected true or false"),
+  rejected("boolean: false string", bool, "false", "expected true or false"),
   accepted("boolean: native", bool, true, true),
   rejected("boolean: invalid string", bool, "yes", "expected true or false"),
   accepted("optional: undefined", optionalString, undefined, undefined),
-  accepted("optional: null", optionalString, null, undefined),
-  accepted("optional: empty", optionalString, "", undefined),
+  rejected("optional: null", optionalString, null, "expected a string"),
+  accepted("optional: empty string is a value", optionalString, "", ""),
   accepted("optional: present", optionalString, "x", "x"),
   accepted("default: absent", defaultInteger, undefined, 20),
-  accepted("default: present", defaultInteger, "3", 3),
-  accepted("csv: split and trim", commaList, "a, b ,,c", ["a", "b", "c"]),
-  accepted("csv: empty", commaList, "", []),
+  accepted("default: present", defaultInteger, 3, 3),
   accepted("csv: array", commaList, ["a", "b"], ["a", "b"]),
-  rejected("csv: item index", csvEnum, "owner,nope", "must be one of: owner, history", "x[1]"),
+  rejected("csv: strict string", csvEnum, "owner,nope", "expected a comma-separated list"),
   rejected("list: minimum", boundedList, [], "must have at least 1 items"),
   rejected("list: maximum", boundedList, ["a", "b", "c"], "must have at most 2 items"),
   rejected("list: wrong type", boundedList, "a", "expected an array"),
@@ -133,6 +131,22 @@ test("enumOf preserves its literal union", () => {
   const parsed = run(validator, "retired");
   const narrowed: "active" | "retired" | "draft" = parsed.value;
   assert.equal(narrowed, "retired");
+});
+
+test("coercion remains available for URL and header-shaped inputs", () => {
+  assert.deepEqual(run(boundedInteger, "42", "coerce"), {
+    value: 42,
+    issues: [],
+  });
+  assert.deepEqual(run(bool, "true", "coerce"), { value: true, issues: [] });
+  assert.deepEqual(run(optionalString, "", "coerce"), {
+    value: undefined,
+    issues: [],
+  });
+  assert.deepEqual(run(commaList, "a, b ,,c", "coerce"), {
+    value: ["a", "b", "c"],
+    issues: [],
+  });
 });
 
 test("object collects every failure", () => {

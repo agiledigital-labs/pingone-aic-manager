@@ -33,8 +33,10 @@ export interface Validator<T> {
    * return a placeholder when they push an issue; the caller must not use the
    * result unless `issues` stayed empty.
    */
-  parse(input: unknown, path: string, issues: Issue[]): T;
+  parse(input: unknown, path: string, issues: Issue[], mode?: ParseMode): T;
 }
+
+export type ParseMode = "strict" | "coerce";
 
 /** The TypeScript type a validator produces. */
 export type Infer<V> = V extends Validator<infer T> ? T : never;
@@ -88,9 +90,14 @@ function issue(issues: Issue[], path: string, message: string): void {
 function define<T>(
   schema: JsonSchema,
   isOptional: boolean,
-  parse: (input: unknown, path: string, issues: Issue[]) => T
+  parse: (input: unknown, path: string, issues: Issue[], mode: ParseMode) => T
 ): Validator<T> {
-  return { schema, isOptional, parse };
+  return {
+    schema,
+    isOptional,
+    parse: (input, path, issues, mode = "strict") =>
+      parse(input, path, issues, mode),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -166,11 +173,15 @@ function numeric(integral: boolean, options: NumberOptions): Validator<number> {
   if (options.description !== undefined) {
     schema["description"] = options.description;
   }
-  return define(schema, false, (input, path, issues) => {
+  return define(schema, false, (input, path, issues, mode) => {
     let value: number;
     if (typeof input === "number") {
       value = input;
-    } else if (typeof input === "string" && input.trim() !== "") {
+    } else if (
+      mode === "coerce" &&
+      typeof input === "string" &&
+      input.trim() !== ""
+    ) {
       value = Number(input);
     } else {
       issue(
@@ -215,14 +226,14 @@ export function boolean(description?: string): Validator<boolean> {
   if (description !== undefined) {
     schema["description"] = description;
   }
-  return define(schema, false, (input, path, issues) => {
+  return define(schema, false, (input, path, issues, mode) => {
     if (typeof input === "boolean") {
       return input;
     }
-    if (input === "true") {
+    if (mode === "coerce" && input === "true") {
       return true;
     }
-    if (input === "false") {
+    if (mode === "coerce" && input === "false") {
       return false;
     }
     issue(issues, path, "expected true or false");
@@ -278,22 +289,28 @@ export const isoDate = (description?: string): Validator<string> =>
 
 /** Allow the value to be absent. Produces `T | undefined`, never `?:`. */
 export function optional<T>(inner: Validator<T>): Validator<T | undefined> {
-  return define(inner.schema, true, (input, path, issues) => {
-    if (input === undefined || input === null || input === "") {
+  return define(inner.schema, true, (input, path, issues, mode) => {
+    if (
+      input === undefined ||
+      (mode === "coerce" && (input === null || input === ""))
+    ) {
       return undefined;
     }
-    return inner.parse(input, path, issues);
+    return inner.parse(input, path, issues, mode);
   });
 }
 
 /** Substitute `value` when the input is absent. Stays required-typed (`T`). */
 export function withDefault<T>(inner: Validator<T>, value: T): Validator<T> {
   const schema: JsonSchema = { ...inner.schema, default: value };
-  return define(schema, true, (input, path, issues) => {
-    if (input === undefined || input === null || input === "") {
+  return define(schema, true, (input, path, issues, mode) => {
+    if (
+      input === undefined ||
+      (mode === "coerce" && (input === null || input === ""))
+    ) {
       return value;
     }
-    return inner.parse(input, path, issues);
+    return inner.parse(input, path, issues, mode);
   });
 }
 
@@ -339,7 +356,7 @@ export function list<T>(
   return define(
     listSchema(inner.schema, options),
     false,
-    (input, path, issues) => {
+    (input, path, issues, mode) => {
       if (!Array.isArray(input)) {
         issue(issues, path, "expected an array");
         return [];
@@ -347,7 +364,9 @@ export function list<T>(
       checkLength(input.length, options, path, issues);
       const out: T[] = [];
       for (let index = 0; index < input.length; index += 1) {
-        out.push(inner.parse(input[index], path + "[" + index + "]", issues));
+        out.push(
+          inner.parse(input[index], path + "[" + index + "]", issues, mode)
+        );
       }
       return out;
     }
@@ -365,11 +384,11 @@ export function csv<T>(
 ): Validator<T[]> {
   const schema = listSchema(inner.schema, options);
   schema["x-aic-encoding"] = "comma-separated";
-  return define(schema, false, (input, path, issues) => {
+  return define(schema, false, (input, path, issues, mode) => {
     let parts: unknown[];
     if (Array.isArray(input)) {
       parts = input;
-    } else if (typeof input === "string") {
+    } else if (mode === "coerce" && typeof input === "string") {
       parts = input
         .split(",")
         .map((part) => part.trim())
@@ -381,7 +400,9 @@ export function csv<T>(
     checkLength(parts.length, options, path, issues);
     const out: T[] = [];
     for (let index = 0; index < parts.length; index += 1) {
-      out.push(inner.parse(parts[index], path + "[" + index + "]", issues));
+      out.push(
+        inner.parse(parts[index], path + "[" + index + "]", issues, mode)
+      );
     }
     return out;
   });
@@ -420,7 +441,7 @@ export function object<S extends Shape>(
     schema["description"] = options.description;
   }
 
-  return define(schema, false, (input, path, issues) => {
+  return define(schema, false, (input, path, issues, mode) => {
     const out: Record<string, unknown> = {};
     if (typeof input !== "object" || input === null || Array.isArray(input)) {
       issue(issues, path, "expected an object");
@@ -437,7 +458,7 @@ export function object<S extends Shape>(
         issue(issues, child, "is required");
         continue;
       }
-      out[key] = member.parse(raw, child, issues);
+      out[key] = member.parse(raw, child, issues, mode);
     }
     if (options.allowUnknown !== true) {
       for (const key of Object.keys(source)) {
@@ -469,7 +490,7 @@ export function record<T>(
   if (description !== undefined) {
     schema["description"] = description;
   }
-  return define(schema, false, (input, path, issues) => {
+  return define(schema, false, (input, path, issues, mode) => {
     const out: Record<string, T> = {};
     if (typeof input !== "object" || input === null || Array.isArray(input)) {
       issue(issues, path, "expected an object");
@@ -477,7 +498,7 @@ export function record<T>(
     }
     const source = input as Record<string, unknown>;
     for (const key of Object.keys(source)) {
-      out[key] = inner.parse(source[key], path + "." + key, issues);
+      out[key] = inner.parse(source[key], path + "." + key, issues, mode);
     }
     return out;
   });
@@ -518,7 +539,7 @@ export function patchOperations(
   });
   const inner = list(operation, options);
   const schema = { ...inner.schema, "x-aic-crest-patch": true };
-  return define(schema, false, (input, path, issues) => {
+  return define(schema, false, (input, path, issues, mode) => {
     let source: unknown = input;
     if (!Array.isArray(input) && typeof input === "object" && input !== null) {
       const indexed = input as Record<string, unknown>;
@@ -527,7 +548,7 @@ export function patchOperations(
       );
       source = keys.map((key) => indexed[key]);
     }
-    return inner.parse(source, path, issues) as PatchOperation[];
+    return inner.parse(source, path, issues, mode) as PatchOperation[];
   });
 }
 
@@ -555,7 +576,7 @@ export function parseShape<S extends Shape>(
       issue(issues, path, "is required");
       continue;
     }
-    out[key] = member.parse(raw, path, issues);
+    out[key] = member.parse(raw, path, issues, "coerce");
   }
   return out as InferShape<S>;
 }
