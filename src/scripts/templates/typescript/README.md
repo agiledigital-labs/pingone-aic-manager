@@ -79,8 +79,17 @@ Nothing in the handler is annotated: the types come from the validators. Change
   validators coerce. A failure is a CREST 400 listing every issue — never a 500.
 - **Errors**: throw `badRequest`/`notFound`/`forbidden`/… from the framework.
   Anything else thrown becomes an opaque 500 and the real cause goes to the log.
-- **Queries**: return `queryResult(rows, options)`. It fills every paging field
-  IDM requires; omitting one from a hand-built result is a type error.
+- **Responses**: `response` takes the response VALIDATOR (`v.object({…})`, not
+  its `.schema`), and the handler's return value is checked against it — so the
+  generated OpenAPI cannot promise a field the code stopped sending. Overriding a
+  member the response types as an enum needs `as const`
+  (`status: "retired" as const`); see the note in `framework/router.ts`.
+- **Queries**: declare them with `queryRoute({ … })`, not
+  `route({ method: "query" })`, and let `response` describe ONE ROW — the
+  framework wraps the paging envelope for the type and the document alike. Return
+  `queryResult(rows, options)`; it fills every paging field IDM requires, and a
+  raw `openidm.query` result is deliberately NOT assignable, because IDM does not
+  send `remainingPagedResults` but does require it on the way out.
 - **Logging**: `log` is pre-bound to the endpoint, the route and the correlation
   id (the `x-request-id` header when the caller sent one). Never log `context`.
 
@@ -98,11 +107,18 @@ const user = openidm.read(`managed/alpha_user/${id}`);
 // UNtyped: plain concatenation infers `string`, so there is no path to look up
 // and the result degrades to the generic `CrestResource`. Both lines compile.
 const same = openidm.read("managed/alpha_user/" + id);
+
+// A `fields` list projects the RESULT TYPE: `_id`, `_rev`, `userName`, `mail`,
+// and nothing else. `openidm.query` takes the same third argument.
+const thin = openidm.read(`managed/alpha_user/${id}`, null, ["userName", "mail"]);
 ```
 
 Use a **template literal** for any managed path — Babel downlevels it to
 concatenation, so the emitted ES5 is unchanged. Import the interfaces when you
 need to name one: `import type { AlphaUser } from "../generated/managed.ts"`.
+
+`_id` and `_rev` survive any field list, so a projection keeps them. Keep the
+list inline (or `as const`) — the projection needs literal members.
 
 `src/endpoints/example-managed-users.ts` walks the whole surface — every verb,
 the typed `fields` selector, the `_id`/`_rev` asymmetry between a plain read and

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 54;
+pub const TEMPLATES_VERSION: u32 = 55;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -246,6 +246,10 @@ const MANAGED: &[(&str, &str)] = &[
     (
         "typescript/tests/router.test.ts",
         include_str!("templates/typescript/tests/router.test.ts"),
+    ),
+    (
+        "typescript/tests/openidm-types.test.ts",
+        include_str!("templates/typescript/tests/openidm-types.test.ts"),
     ),
     (
         "typescript/tests/errors.test.ts",
@@ -840,6 +844,67 @@ mod tests {
                 "{rel} is in the template tree but no workspace will ever receive it — \
                  add it to MANAGED or TS_USER, or delete it"
             );
+        }
+    }
+
+    /// The `fields` projection machinery is duplicated across the three surfaces
+    /// that declare `openidm` — the IDM ambient types, the AM next-gen ambient
+    /// types, and the module-form TypeScript project. They cannot share a file:
+    /// `am/` and `idm/` are separate leaf programs and the third is a module
+    /// graph. So this asserts the load-bearing declarations stay identical in all
+    /// three, because a projection that silently differs per surface is worse
+    /// than one that does not exist. Change one, change all three.
+    #[test]
+    fn the_fields_projection_is_identical_on_every_openidm_surface() {
+        let surfaces = [
+            (
+                "idm/types/common.d.ts",
+                include_str!("templates/idm/types/common.d.ts"),
+            ),
+            (
+                "am/types/nextgen-common.d.ts",
+                include_str!("templates/am/types/nextgen-common.d.ts"),
+            ),
+            (
+                "typescript/framework/idm-globals.d.ts",
+                include_str!("templates/typescript/framework/idm-globals.d.ts"),
+            ),
+        ];
+
+        // One line per declaration whose SHAPE decides what a projection means.
+        // Whitespace is normalised because the module-form file is nested inside
+        // `declare global`, so every line there carries two extra spaces.
+        let required = [
+            "type Projected<T, F extends string> = string extends F",
+            "? StoredRecord<T>",
+            ": StoredRecord<",
+            "(\"*\" extends F ? T : Pick<T, Extract<F, keyof T>>) & {",
+            "[K in Extract<PathParentOf<F>, keyof T>]: ExpansionOf<T[K]>;",
+            "type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]",
+            "? RelationshipExpansion[]",
+            ": RelationshipExpansion | null;",
+            "} & MetaMemberOf<F>",
+            "type PathParentOf<F extends string> = F extends `${infer P}/${string}`",
+            "Extract<F, \"_meta\" | `_meta/${string}`>,",
+            "interface RelationshipExpansion {",
+            "_refResourceRev?: string;",
+            "[member: string]: unknown;",
+            ": readonly ManagedField<T>[];",
+        ];
+
+        for (name, contents) in surfaces {
+            let normalised = contents
+                .lines()
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join("\n");
+            for line in required {
+                assert!(
+                    normalised.contains(line),
+                    "{name} is missing the projection declaration `{line}` — the \
+                     three openidm surfaces have drifted"
+                );
+            }
         }
     }
 

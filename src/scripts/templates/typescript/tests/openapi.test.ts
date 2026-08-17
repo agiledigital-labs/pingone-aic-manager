@@ -7,6 +7,7 @@ import { test } from "node:test";
 import {
   defineEndpoint,
   queryResult,
+  queryRoute,
   route,
   toOpenApi,
   v,
@@ -18,10 +19,11 @@ const endpoint = defineEndpoint({
   version: "2.1.0",
   headers: { "x-request-id": v.optional(v.uuid()) },
   routes: [
-    route({
-      method: "query",
+    queryRoute({
       path: "/",
       query: { limit: v.withDefault(v.integer({ min: 1, max: 100 }), 20) },
+      // Declares one ROW; the generator wraps the paging envelope around it.
+      response: v.object({ _id: v.string(), name: v.string() }),
       handler: () => queryResult([]),
     }),
     route({
@@ -43,8 +45,9 @@ const endpoint = defineEndpoint({
       path: "/{id}",
       params: { id: v.string({ pattern: /^w-/ }) },
       query: { expand: v.optional(v.csv(v.enumOf(["owner", "history"]))) },
-      response: { type: "object" },
-      handler: () => ({}),
+      // The response is the VALIDATOR now; the generator reads `.schema`.
+      response: v.object({ _id: v.string() }),
+      handler: ({ params }) => ({ _id: params.id }),
     }),
     route({
       method: "action",
@@ -166,9 +169,46 @@ test("every operation documents CREST errors and its success schema", () => {
       "#/components/schemas/CrestError"
     );
   }
+  // The 200 schema comes off the response VALIDATOR, so it carries the members
+  // and `required` the validator would enforce — not a hand-written stand-in
+  // that could disagree with the handler.
   assert.deepEqual(responses["200"]?.content["application/json"].schema, {
     type: "object",
+    properties: { _id: { type: "string" } },
+    required: ["_id"],
+    additionalProperties: false,
   });
+});
+
+test("a query route's 200 schema is the envelope around its declared row", () => {
+  // The route declares ONE ROW; the generator wraps it, so the document and the
+  // handler's checked return type come from the same declaration.
+  const responses = operation(base, "get")["responses"] as Record<
+    string,
+    { content: { "application/json": { schema: Record<string, unknown> } } }
+  >;
+  const schema = responses["200"]?.content["application/json"].schema as {
+    properties: Record<string, Record<string, unknown>>;
+    required: string[];
+  };
+  assert.deepEqual(schema.properties["result"], {
+    type: "array",
+    items: {
+      type: "object",
+      properties: { _id: { type: "string" }, name: { type: "string" } },
+      required: ["_id", "name"],
+      additionalProperties: false,
+    },
+  });
+  // Every paging member IDM requires is documented, not just `result`.
+  assert.deepEqual(schema.required.sort(), [
+    "pagedResultsCookie",
+    "remainingPagedResults",
+    "result",
+    "resultCount",
+    "totalPagedResults",
+    "totalPagedResultsPolicy",
+  ]);
 });
 
 test("operation ids are unique and stable", () => {

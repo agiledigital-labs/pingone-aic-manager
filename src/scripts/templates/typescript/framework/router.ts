@@ -35,7 +35,6 @@ import {
   parseShape,
   type InferShape,
   type Issue,
-  type JsonSchema,
   type Shape,
   type Validator,
 } from "./validate.ts";
@@ -81,22 +80,25 @@ export interface RouteInput<
 }
 
 /**
- * A `query` handler MUST return a CREST query result; anything else fails at
- * runtime with `Script returned unexpected query result structure` (verified
- * 2026-06-04). Encoding that in the return type turns it into a build error.
+ * What a handler returns, for a caller who wants to name the type — a handler
+ * written as a standalone function rather than inline.
+ *
+ * `R` is the route's `response` payload. A `query` handler MUST return a CREST
+ * query result; anything else fails at runtime with `Script returned unexpected
+ * query result structure` (verified 2026-06-04).
  */
-export type ResultFor<M extends CrestMethod> = M extends "query"
-  ? CrestQueryResult<unknown>
-  : unknown;
+export type ResultFor<M extends CrestMethod, R = unknown> = M extends "query"
+  ? CrestQueryResult<R>
+  : R;
 
-export interface RouteSpec<
-  M extends CrestMethod,
+/** Everything a route declares except the method and its handler. */
+export interface RouteSpecBase<
   P extends Shape,
   Q extends Shape,
   H extends Shape,
   B,
+  R,
 > {
-  method: M;
   /** Sub-path pattern: `"/"`, `"/{widgetId}"`, `"/widget/{widgetId}/summary"`. */
   path: string;
   /** Required for `method: "action"`; the `?_action=` name. */
@@ -111,9 +113,86 @@ export interface RouteSpec<
   body?: Validator<B>;
   /** Validates `request.patchOperations` — only meaningful for `patch`. */
   patches?: Validator<PatchOperation[]>;
-  /** JSON Schema for the success body, used by the OpenAPI generator. */
-  response?: JsonSchema;
-  handler: (input: RouteInput<P, Q, H, B>) => ResultFor<M>;
+  /**
+   * The success body's VALIDATOR — `v.object({ … })`, not its `.schema`.
+   *
+   * Passing the validator is what lets the handler's return type be checked
+   * against the declared response; `.schema` is a plain `JsonSchema` value and
+   * erases the type, which is how a declared response and a handler could
+   * silently disagree. The OpenAPI generator reads `.schema` off this itself.
+   *
+   * For `method: "query"` this describes ONE ROW, not the envelope.
+   *
+   * Escape hatch for a body the validators cannot express:
+   * `response: v.unknownValue()` leaves the handler unconstrained, explicitly.
+   */
+  response?: Validator<R>;
+}
+
+// `NoInfer` on the handler's return type below makes `response` the ONLY place
+// `R` is inferred from. Without it a handler returning a wider object than the
+// response declares wins the inference and `response` gets reported as the
+// mismatch — blaming the declaration for the handler's error.
+//
+// KNOWN LIMIT. TypeScript will not use `R` as a contextual type here while the
+// other generics are still being inferred, so a returned object literal does not
+// get its literal types narrowed by the response. Overriding a member the
+// response types as an enum needs `as const`:
+//
+//   return { ...widget, status: "retired" as const };
+//
+// Without it the literal widens to `string` and fails against the enum. The
+// value is still CHECKED — `"retyred" as const` is an error — so this costs a
+// keyword, not safety. Tried and rejected: a conditional `ResultFor<M, R>`
+// return type, a discriminated union of spec types, and flattening the mapped
+// type; each loses the narrowing the same way. Documented in
+// docs/typescript-endpoints.md.
+
+/**
+ * A route declaration: the base above, plus a `method` and the handler that
+ * method requires.
+ *
+ * A DISCRIMINATED UNION rather than one shape with a conditional
+ * `ResultFor<M, R>` handler, because a conditional type over an un-inferred `M`
+ * cannot serve as a contextual type. With one, `return { ...widget, status:
+ * "retired" }` widened `status` to `string` and failed against the response's
+ * own enum — the declaration would have been unusable for exactly the values it
+ * describes. Narrowing on the `method` literal keeps the handler's expected
+ * return type concrete, and keeps errors pointing at the offending property
+ * instead of at a failed overload.
+ *
+ * A `query` handler must return the CREST envelope, so `response` there
+ * describes ONE ROW and the framework wraps it — for the type here and for the
+ * OpenAPI document in `openapi.ts`, from the single declaration.
+ */
+/**
+ * A non-query route. `method: "query"` is not accepted here — use
+ * {@link queryRoute}.
+ */
+export interface RouteSpec<
+  P extends Shape,
+  Q extends Shape,
+  H extends Shape,
+  B,
+  R,
+> extends RouteSpecBase<P, Q, H, B, R> {
+  method: Exclude<CrestMethod, "query">;
+  handler: (input: RouteInput<P, Q, H, B>) => NoInfer<R>;
+}
+
+/**
+ * A query route. `response` describes ONE ROW; the handler returns the CREST
+ * envelope around rows of that shape, and the OpenAPI generator wraps the same
+ * declaration, so the document and the checked return type cannot disagree.
+ */
+export interface QueryRouteSpec<
+  P extends Shape,
+  Q extends Shape,
+  H extends Shape,
+  B,
+  R,
+> extends RouteSpecBase<P, Q, H, B, R> {
+  handler: (input: RouteInput<P, Q, H, B>) => CrestQueryResult<NoInfer<R>>;
 }
 
 /** A route with its generics erased — what the endpoint and generator hold. */
@@ -130,7 +209,7 @@ export interface RouteDefinition {
   headers: Shape;
   body: Validator<unknown> | undefined;
   patches: Validator<PatchOperation[]> | undefined;
-  response: JsonSchema | undefined;
+  response: Validator<unknown> | undefined;
   run(input: RouteInput<Shape, Shape, Shape, unknown>): unknown;
 }
 
@@ -148,24 +227,58 @@ export function parsePath(path: string): PathSegment[] {
 }
 
 /**
- * Declare one route. The generics are inferred from the validators, so the
- * handler sees `number` for an int query param, `"a" | "b"` for an enum, and
+ * Declare a non-query route. The generics are inferred from the validators, so
+ * the handler sees `number` for an int query param, `"a" | "b"` for an enum, and
  * `string | undefined` for an optional — with no type annotations to keep in
- * step with the declaration.
+ * step with the declaration. The return type comes from `response` the same way.
+ *
+ * Queries go through {@link queryRoute}. Two functions rather than one taking a
+ * `method: "query"`: the handler's expected return type differs between them,
+ * and expressing that in one signature needs either a conditional type or a
+ * union, NEITHER of which TypeScript will use as a contextual type while it is
+ * still inferring the other generics. Both cost the object literal its literal
+ * types — `status: "retired"` widened to `string` and failed against the
+ * response's own enum. Two concrete signatures keep the check honest and the
+ * error message pointed at the offending property.
  */
 export function route<
-  M extends CrestMethod,
   P extends Shape = Record<never, never>,
   Q extends Shape = Record<never, never>,
   H extends Shape = Record<never, never>,
   B = undefined,
->(spec: RouteSpec<M, P, Q, H, B>): RouteDefinition {
-  if (spec.method === "action" && spec.action === undefined) {
+  R = unknown,
+>(spec: RouteSpec<P, Q, H, B, R>): RouteDefinition {
+  return build(spec.method, spec);
+}
+
+/**
+ * Declare a query route. `response` describes ONE ROW; the handler returns
+ * `queryResult(rows)`, whose envelope IDM requires — returning a bare object
+ * fails at runtime with `Script returned unexpected query result structure`
+ * (verified 2026-06-04).
+ */
+export function queryRoute<
+  P extends Shape = Record<never, never>,
+  Q extends Shape = Record<never, never>,
+  H extends Shape = Record<never, never>,
+  B = undefined,
+  R = unknown,
+>(spec: QueryRouteSpec<P, Q, H, B, R>): RouteDefinition {
+  return build("query", spec);
+}
+
+function build<P extends Shape, Q extends Shape, H extends Shape, B, R>(
+  method: CrestMethod,
+  spec: RouteSpecBase<P, Q, H, B, R> & {
+    handler: (input: RouteInput<P, Q, H, B>) => unknown;
+  }
+): RouteDefinition {
+  if (method === "action" && spec.action === undefined) {
     throw new Error(
       "route " + spec.path + ': method "action" requires an action name'
     );
   }
-  if (spec.method !== "action" && spec.action !== undefined) {
+  if (method !== "action" && spec.action !== undefined) {
     throw new Error(
       "route " + spec.path + ": only an action route may name an action"
     );
@@ -200,7 +313,7 @@ export function route<
     }
   }
   return {
-    method: spec.method,
+    method,
     path: spec.path,
     segments: declared,
     action: spec.action,
@@ -212,7 +325,7 @@ export function route<
     headers: (spec.headers ?? {}) as Shape,
     body: spec.body as Validator<unknown> | undefined,
     patches: spec.patches,
-    response: spec.response,
+    response: spec.response as Validator<unknown> | undefined,
     run: spec.handler as (
       input: RouteInput<Shape, Shape, Shape, unknown>
     ) => unknown,

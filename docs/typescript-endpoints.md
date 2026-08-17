@@ -170,13 +170,14 @@ not because anything imports it.
 
 That is what makes the typing flow end to end:
 
-| Call                                                    | Result type                       |
-| ------------------------------------------------------- | --------------------------------- |
-| `openidm.read` with a template-literal managed path     | `StoredRecord<AlphaUser> \| null` |
-| …plus a third `fields` argument                         | `AlphaUser \| null` — see below   |
-| `openidm.query("managed/alpha_user", { _queryFilter })` | `CrestQueryResult<AlphaUser>`     |
-| `openidm.create` / `update` / `patch` / `delete`        | `AlphaUser`                       |
-| any path that does not resolve to a managed object      | `CrestResource`                   |
+| Call                                                    | Result type                                   |
+| ------------------------------------------------------- | --------------------------------------------- |
+| `openidm.read` with a template-literal managed path     | `StoredRecord<AlphaUser> \| null`             |
+| …plus a third `fields` argument                         | `StoredRecord<Pick<AlphaUser, …>> \| null`    |
+| `openidm.query("managed/alpha_user", { _queryFilter })` | `OpenIdmQueryResult<StoredRecord<AlphaUser>>` |
+| …plus a third `fields` argument                         | rows projected the same way as `read`         |
+| `openidm.create` / `update` / `patch` / `delete`        | `AlphaUser`                                   |
+| any path that does not resolve to a managed object      | `CrestResource`                               |
 
 Three consequences worth knowing, all demonstrated in
 `src/endpoints/example-managed-users.ts`:
@@ -189,10 +190,20 @@ Three consequences worth knowing, all demonstrated in
 - **Missing tenant types cost inference, never a compile error.** With no
   generated file the map stays empty, every conditional resolves to `never`, and
   each signature falls back to its untyped form.
-- **`fields` drops the `_id`/`_rev` guarantee.** The plain read returns
-  `StoredRecord<T>`; the field-restricted overload returns bare `T`, because we
-  have not verified that IDM still includes them. A `query` returns bare `T` for
-  the same reason (`_fields` is a query parameter).
+- **A `fields` list PROJECTS the result type.** Ask for two properties and the
+  rest are gone from the type; `_id`/`_rev` stay, because IDM returns them
+  whatever the selector says (verified 2026-08-17 — docs/api/10). A
+  `parent/child` path replaces the parent's declared `RelationshipRef` with the
+  expansion IDM actually sends — nullable for a single-valued relationship
+  (`null` when unset), an array for a multi-valued one (`[]` when unset). The
+  projection needs LITERAL members, so an inline array or one declared
+  `as const`: a `ManagedField<T>[]` variable widens back to the whole record,
+  and a plain `string[]` is rejected outright.
+- **A query result is not an endpoint response.** `openidm.query` does not
+  return `remainingPagedResults`, and IDM requires it on a query handler's
+  return value, so `OpenIdmQueryResult` is a distinct type from
+  `CrestQueryResult`. Passing one straight through is a compile error; build the
+  response with `queryResult(rows)`.
 
 The machinery — `ManagedName`, `ManagedField`, `ManagedCollectionOf`,
 `ManagedRecordOf`, `FieldsArg`, `ContentArg`, `StoredRecord`, `QueryParams` — is
@@ -204,11 +215,62 @@ results, rather than per-object overloads, is what makes a field typo report as
 `Did you mean '"userName"'?` against the offending element instead of "no
 overload matches this call".
 
+`tests/openidm-types.test.ts` pins all of this down with `@ts-expect-error`
+assertions — the only way to gate a type in both directions — so a projection
+that stops narrowing fails `npm run type-check` rather than going unnoticed.
+
+The machinery is duplicated across the three surfaces that declare `openidm`
+(`idm/types/common.d.ts`, `am/types/nextgen-common.d.ts`, and this project's
+`framework/idm-globals.d.ts`); they cannot share a file, because `am/` and
+`idm/` are separate leaf programs and the third is a module graph. A test in
+`src/scripts/workspace.rs` asserts the load-bearing declarations stay identical
+in all three, since a projection that silently differs per surface is worse than
+one that does not exist.
+
 **Not covered by tests.** `openidm` is a global with no injection seam and the
 test harness has no double for it, so an endpoint's store calls are checked by
 `tsc` but never executed under `node`. `example-managed-users.test.ts` therefore
 stops at routing and validation. Adding a `managedStore()` double to
 `tests/harness.ts` would close this.
+
+## Declared responses are checked against the handler
+
+`response` takes the response **validator**, not its `.schema`:
+
+```ts
+const USER = v.object({ _id: v.string(), userName: v.string() });
+
+route({ method: "read", path: "/{id}", params: …, response: USER,
+        handler: () => ({ _id: "x", userName: "y" }) });   // both members required
+```
+
+Passing `.schema` erased the type, so a declared response and a handler could
+disagree silently and the generated OpenAPI would promise a field the code had
+stopped sending. Now the handler's return type comes from the same declaration
+the document does. `response: v.unknownValue()` is the explicit escape hatch for
+a body the validators cannot express.
+
+Queries go through **`queryRoute`** rather than `route({ method: "query" })`,
+and their `response` describes ONE ROW — the framework wraps the paging envelope
+for both the type and the document. Two functions rather than one, because the
+handler's expected return type differs between them and expressing that in a
+single signature needs either a conditional type or a union over the method,
+neither of which TypeScript will use as a contextual type while it is still
+inferring the other generics. Both cost a returned object literal its literal
+types.
+
+One limit survives that, for the same underlying reason: a literal overriding a
+member the response types as an **enum** needs `as const`.
+
+```ts
+return { ...widget, status: "retired" as const };
+```
+
+Without it the literal widens to `string` and fails against the enum. The value
+is still checked — `"retyred" as const` is an error — so it costs a keyword, not
+safety. `NoInfer` on the handler's return type keeps `response` the only place
+the payload type is inferred from, so the error blames the handler rather than
+the declaration.
 
 ## OpenAPI and the `?_action=` problem
 
