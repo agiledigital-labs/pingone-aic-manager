@@ -161,3 +161,101 @@ export function callContext(options: ContextOptions = {}): IdmCallContext {
   }
   return context;
 }
+
+type StoredValue = Record<string, unknown> & { _id: string; _rev: string };
+
+/**
+ * An in-memory `openidm` binding for endpoint tests.
+ *
+ * Keys are managed collection paths and values are their records. The double
+ * implements the common CRUD/query behavior; tests needing a special action
+ * can override that member on the returned object.
+ */
+export function managedStore(
+  initial: Record<string, StoredValue[]>
+): typeof openidm {
+  const collections: Record<string, StoredValue[]> = {};
+  for (const path of Object.keys(initial)) {
+    collections[path] = initial[path]?.map((record) => ({ ...record })) ?? [];
+  }
+  const splitRecordPath = (path: string): [string, string] => {
+    const slash = path.lastIndexOf("/");
+    return [path.slice(0, slash), path.slice(slash + 1)];
+  };
+  const binding = {
+    read(path: string): StoredValue | null {
+      const [collection, id] = splitRecordPath(path);
+      return collections[collection]?.find((record) => record._id === id) ?? null;
+    },
+    query(path: string) {
+      const result = (collections[path] ?? []).map((record) => ({ ...record }));
+      return {
+        result,
+        resultCount: result.length,
+        pagedResultsCookie: null,
+        totalPagedResults: result.length,
+        totalPagedResultsPolicy: "EXACT",
+      };
+    },
+    create(path: string, newResourceId: string | null, content: Record<string, unknown>) {
+      const rows = (collections[path] ??= []);
+      const created: StoredValue = {
+        ...content,
+        _id: newResourceId ?? "test-" + (rows.length + 1),
+        _rev: "1",
+      };
+      rows.push(created);
+      return created;
+    },
+    update(path: string, _revision: string | null, content: Record<string, unknown>) {
+      const [collection, id] = splitRecordPath(path);
+      const rows = (collections[collection] ??= []);
+      const index = rows.findIndex((record) => record._id === id);
+      const updated: StoredValue = {
+        ...(index < 0 ? {} : rows[index]),
+        ...content,
+        _id: id,
+        _rev: String(Number(index < 0 ? 0 : rows[index]?._rev ?? 0) + 1),
+      };
+      if (index < 0) {
+        rows.push(updated);
+      } else {
+        rows[index] = updated;
+      }
+      return updated;
+    },
+    patch() {
+      throw new Error("managedStore.patch is not implemented");
+    },
+    delete(path: string) {
+      const [collection, id] = splitRecordPath(path);
+      const rows = collections[collection] ?? [];
+      const index = rows.findIndex((record) => record._id === id);
+      if (index < 0) {
+        return {};
+      }
+      return rows.splice(index, 1)[0] as StoredValue;
+    },
+    action() {
+      throw new Error("managedStore.action is not implemented");
+    },
+  };
+  return binding as unknown as typeof openidm;
+}
+
+/** Install an `openidm` test binding for exactly one synchronous callback. */
+export function withOpenIdm<T>(binding: typeof openidm, run: () => T): T {
+  const globals = globalThis as unknown as Record<string, unknown>;
+  const hadPrevious = Object.prototype.hasOwnProperty.call(globals, "openidm");
+  const previous = globals["openidm"];
+  globals["openidm"] = binding;
+  try {
+    return run();
+  } finally {
+    if (hadPrevious) {
+      globals["openidm"] = previous;
+    } else {
+      delete globals["openidm"];
+    }
+  }
+}
