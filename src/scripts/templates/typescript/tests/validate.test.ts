@@ -100,6 +100,8 @@ const parseCases: ParseCase[] = [
   rejected("patch: operation name", v.patchOperations(), [{ operation: "frobnicate", field: "/x" }], "must be one of: add, remove, replace, increment, move, copy, transform"),
   rejected("UUID: pattern", v.uuid(), "not-a-uuid", "must be a UUID"),
   rejected("ISO date: pattern", v.isoDate(), "2026-13", "must be a date in YYYY-MM-DD form"),
+  rejected("ISO date: calendar", v.isoDate(), "2026-02-29", "must be a date in YYYY-MM-DD form"),
+  accepted("ISO date: leap year", v.isoDate(), "2028-02-29", "2028-02-29"),
 ];
 
 for (const [name, validator, input, expected] of parseCases) {

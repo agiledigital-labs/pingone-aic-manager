@@ -284,13 +284,30 @@ export const uuid = (description?: string): Validator<string> =>
     ...(description === undefined ? {} : { description }),
   });
 
-/** A `YYYY-MM-DD` calendar date. */
-export const isoDate = (description?: string): Validator<string> =>
-  string({
+/** A real Gregorian calendar date in `YYYY-MM-DD` form. */
+export const isoDate = (description?: string): Validator<string> => {
+  const formatted = string({
     pattern: /^\d{4}-\d{2}-\d{2}$/,
     patternDescription: "be a date in YYYY-MM-DD form",
     ...(description === undefined ? {} : { description }),
   });
+  return define(formatted.schema, false, (input, path, issues, mode) => {
+    const before = issues.length;
+    const value = formatted.parse(input, path, issues, mode);
+    if (issues.length !== before) {
+      return value;
+    }
+    const year = Number(value.slice(0, 4));
+    const month = Number(value.slice(5, 7));
+    const day = Number(value.slice(8, 10));
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (month < 1 || month > 12 || day < 1 || day > (days[month - 1] ?? 0)) {
+      issue(issues, path, "must be a date in YYYY-MM-DD form");
+    }
+    return value;
+  });
+};
 
 // ---------------------------------------------------------------------------
 // Composition
