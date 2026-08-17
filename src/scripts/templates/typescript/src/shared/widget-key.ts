@@ -8,12 +8,7 @@
 //
 // User file — seeded once, yours to change.
 
-import {
-  queryResultSchema,
-  v,
-  type JsonSchema,
-  type Validator,
-} from "../../framework/index.ts";
+import { v, type Validator } from "../../framework/index.ts";
 
 /** Widget ids are `w-` plus 4..12 lowercase alphanumerics. */
 export const WIDGET_ID_PATTERN = /^w-[a-z0-9]{4,12}$/;
@@ -46,7 +41,11 @@ export function isWidgetId(value: string): boolean {
   return WIDGET_ID_PATTERN.test(value);
 }
 
-export const WIDGET_RESPONSE: JsonSchema = v.object(
+// Response declarations are VALIDATORS, not `.schema`: passing the validator to
+// a route is what type-checks the handler's return value against it. A query
+// route declares one ROW and the framework wraps the envelope, so there is no
+// separate `*_QUERY_RESPONSE` to keep in step.
+export const WIDGET_RESPONSE = v.object(
   {
     _id: widgetId(),
     name: v.string(),
@@ -60,18 +59,21 @@ export const WIDGET_RESPONSE: JsonSchema = v.object(
     _patchOperations: v.optional(v.integer()),
   },
   { description: "A widget resource." }
-).schema;
-
-export const WIDGET_QUERY_RESPONSE = queryResultSchema(WIDGET_RESPONSE);
-export const IMPORT_RESPONSE = v.object({ imported: v.integer(), names: v.list(v.string()) }).schema;
+);
+export const IMPORT_RESPONSE = v.object({
+  imported: v.integer(),
+  names: v.list(v.string()),
+});
 export const DAILY_RESPONSE = v.object({
   _id: v.string(), date: v.isoDate(), created: v.integer(),
   retired: v.integer(), active: v.integer(),
-}).schema;
+});
 export const SUMMARY_RESPONSE = v.object({
   _id: v.string(), widgetId: widgetId(), status: widgetStatus(),
   tagCount: v.integer(), events: v.integer(),
-}).schema;
-export const REPORT_QUERY_RESPONSE = queryResultSchema(
-  v.object({ _id: v.string(), bucket: v.string(), count: v.integer() }).schema
-);
+});
+export const REPORT_ROW_RESPONSE = v.object({
+  _id: v.string(),
+  bucket: v.string(),
+  count: v.integer(),
+});

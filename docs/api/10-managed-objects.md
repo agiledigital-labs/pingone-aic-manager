@@ -133,18 +133,14 @@ for example `idr_name_variants` for the tenant-wide IDR name-variant table.
         "properties": {
           /* per-field type, constraints, viewable, searchable, etc. */
         },
-        "required": [
-          /* … */
-        ]
+        "required": [/* … */]
       },
       "onCreate": { "type": "text/javascript", "source": "…" },
       "onUpdate": {
         "type": "text/javascript",
         "file": "scripts/managed/onUpdate-user.js"
       },
-      "onDelete": {
-        /* … */
-      }
+      "onDelete": {/* … */}
     }
     /* alpha_user, alpha_role, alpha_assignment, bravo_user, ... */
   ]
@@ -395,8 +391,7 @@ reverse options:
 A bidirectional pair cross-links: the source's `reversePropertyName` is the
 reverse property's key and vice-versa, and **both** carry
 `reverseRelationship: true`. Self-referential relationships (source == target,
-e.g. `test_obj2.asdf` ↔ `test_obj2.obj2`) put both properties on the one
-object.
+e.g. `test_obj2.asdf` ↔ `test_obj2.obj2`) put both properties on the one object.
 
 **No server-side cascade.** Creating/editing a relationship with a reverse must
 write the reverse property on the target object itself — so an add/edit is a
@@ -538,15 +533,15 @@ Probed by installing temporary `onCreate`/`onUpdate` hooks on the scratch type
 schema byte-identical and deleting the probe records. Full sanitized results:
 [`bindings/managed-hooks-idm.json`](bindings/managed-hooks-idm.json).
 
-| Binding                                          | onCreate                                                                   | onUpdate              | Notes                            |
-| ------------------------------------------------ | -------------------------------------------------------------------------- | --------------------- | -------------------------------- |
-| `object`                                         | draft record, **mutable**                                                  | new state, mutable    | writes persist                   |
-| `oldObject`                                      | `null`                                                                     | previous record state |                                  |
-| `newObject`                                      | `=== object`                                                               | `=== object`          | alias, verified                  |
-| `request`                                        | CreateRequest (`method:"create"`, `content`, `newResourceId`, …)           | `method:"update"`     |                                  |
+| Binding                                          | onCreate                                                                  | onUpdate              | Notes                            |
+| ------------------------------------------------ | ------------------------------------------------------------------------- | --------------------- | -------------------------------- |
+| `object`                                         | draft record, **mutable**                                                 | new state, mutable    | writes persist                   |
+| `oldObject`                                      | `null`                                                                    | previous record state |                                  |
+| `newObject`                                      | `=== object`                                                              | `=== object`          | alias, verified                  |
+| `request`                                        | CreateRequest (`method:"create"`, `content`, `newResourceId`, …)          | `method:"update"`     |                                  |
 | `context`                                        | full context chain (http headers ⚠ incl. Authorization, security, oauth2) | same                  | treat as sensitive               |
-| `resourceName`                                   | `ResourcePath` (`managed/<type>/<id>`)                                     | same                  | only Java-classed binding        |
-| `openidm`, `logger`, `identityServer`, `require` | present                                                                    | present               | same surface as endpoint scripts |
+| `resourceName`                                   | `ResourcePath` (`managed/<type>/<id>`)                                    | same                  | only Java-classed binding        |
+| `openidm`, `logger`, `identityServer`, `require` | present                                                                   | present               | same surface as endpoint scripts |
 
 **Fatal gotcha:** `for (var k in this)` at hook top level throws — the
 triggering request gets **HTTP 500** and the write rolls back. Any uncaught hook
@@ -562,6 +557,74 @@ $SCRIPTS/verify-endpoint.sh "/openidm/config/managed"
 # Query users (alpha realm)
 $SCRIPTS/verify-endpoint.sh "/openidm/managed/alpha_user?_queryFilter=true&_pageSize=1"
 ```
+
+## Field selectors from a script (verified 2026-08-17)
+
+Probed from a custom endpoint against `managed/alpha_user`, read-only. This is
+what the `fields` projection in the type definitions encodes — `Projected<T, F>`
+in `idm/types/common.d.ts`, `am/types/nextgen-common.d.ts` and
+`typescript/framework/idm-globals.d.ts`.
+
+| Call                                             | Keys returned                                          |
+| ------------------------------------------------ | ------------------------------------------------------ |
+| `openidm.read(path)`                             | `_id`, `_rev`, every non-relationship property         |
+| `openidm.read(path, null, ["userName", "mail"])` | `_id`, `_rev`, `mail`, `userName` — and nothing else   |
+| `openidm.read(path, null, ["_id"])`              | `_id`, `_rev` — **both**, having asked for one         |
+| `openidm.read(path, null, ["*"])`                | same as no selector                                    |
+| `openidm.query(coll, params)`                    | rows of `_id`, `_rev`, every non-relationship property |
+| `openidm.query(coll, params, ["userName"])`      | rows of `_id`, `_rev`, `userName`                      |
+| `openidm.query(coll, {…, _fields: "userName"})`  | identical to the line above                            |
+
+Four things fall out of that:
+
+- **`_id` and `_rev` come back whatever you ask for.** A selector cannot drop
+  them, so a field-restricted read keeps the "`_id` and `_rev` plus properties"
+  guarantee. This file previously implied the opposite and the type definitions
+  hedged accordingly; both are corrected.
+- **`openidm.query` takes a third `fields` argument**, exactly like `read`, with
+  the same effect as `_fields` in the params. The IDM type definitions were
+  missing it — a hand-written sandbox endpoint had been calling the
+  three-argument form for months and failing `tsc` with "Expected 2 arguments,
+  but got 3".
+- **Relationships are absent unless requested.** No `manager`, `roles`,
+  `memberOfOrg` … on an unselected read or query. Asking for `manager` (bare) or
+  `manager/userName` (a path) both add the key.
+- **A `parent/child` path returns the reference envelope PLUS the requested
+  members**, not the bare reference. `_meta/lastChanged` returned:
+
+  ```json
+  {
+    "_meta": {
+      "_id": "c44d79cf-…",
+      "_rev": "af504ab6-…",
+      "_ref": "managed/alpha_usermeta/c44d79cf-…",
+      "_refResourceCollection": "managed/alpha_usermeta",
+      "_refResourceId": "c44d79cf-…",
+      "_refResourceRev": "af504ab6-…",
+      "_refProperties": { "_id": "7a5654ba-…", "_rev": "7a5654ba-…" },
+      "lastChanged": { "date": "2025-01-25T06:37:03.551561402Z" }
+    }
+  }
+  ```
+
+  Note `_refResourceRev`, which the generated `RelationshipRef` interface does
+  not declare, and that `_meta` is itself a relationship — to
+  `managed/<realm>_usermeta`. The bare `_meta` form returned the envelope
+  without the target's `_id`/`_rev`/`_refResourceRev`.
+
+Two more observations from the same probe:
+
+- **`openidm.query` does not return `remainingPagedResults`.** The envelope was
+  `result`, `resultCount`, `pagedResultsCookie`, `totalPagedResults`,
+  `totalPagedResultsPolicy` — five keys. IDM **requires** the sixth on a query
+  handler's _return_ value, so a script cannot pass a query result straight back
+  out of an endpoint. The type definitions now make that a compile error.
+- **A record carries properties `config/managed` does not declare.**
+  `assignedDashboard`, `displayName`, `isMemberOf` and `profileImage` came back
+  on every `alpha_user` read but are absent from that object's
+  `schema.properties`, so the generated interfaces cannot include them.
+  Platform-injected; reach them through an index, and do not treat a generated
+  interface as exhaustive.
 
 ## Record querying + change detection (drives the `idmstore` sync feature)
 
@@ -598,9 +661,9 @@ Relationship traversal in the query is unsupported:
 `_queryFilter=_meta/lastChanged/date gt …` returns `resultCount: 0`, and
 `_sortKeys=-_meta/lastChanged` → **HTTP 500**
 (`ByteString.toBase64String() … normalized is null`). So: query the _sidecar_
-for changed ids, and keep a local `meta_id ↔ record _id` map (built when
-records are pulled with `_fields=…,_meta/_id`). Detect creates/deletes with a
-cheap `_fields=_id` id-list diff against the local store.
+for changed ids, and keep a local `meta_id ↔ record _id` map (built when records
+are pulled with `_fields=…,_meta/_id`). Detect creates/deletes with a cheap
+`_fields=_id` id-list diff against the local store.
 
 **Paging (verified 2026-06-21).** Unlike AM scripts, managed lists return a
 **usable `pagedResultsCookie`** — pass it back as `_pagedResultsCookie` to walk
@@ -662,11 +725,16 @@ error. Do not offer `ne` or `in` in script-template query validation.
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
-- Date: 2026-08-17 (two re-confirmations in the IDM **custom-endpoint** script
-  context, which the earlier probes did not cover: `openidm.read` on a missing
-  record returns `null` — already established 2026-07-17 for next-gen decision
-  and LIBRARY — and a script-side `fields` list accepts relationship and `_meta`
-  paths. Both probed from `endpoint/example-managed-users` against
+- Date: 2026-08-17 (field selectors from a script — see "Field selectors from a
+  script" for the full table: `_id`/`_rev` returned whatever the selector says,
+  `openidm.query` accepting a third `fields` argument, relationship-path
+  expansion shape, `remainingPagedResults` absent from a script-side query
+  result, and four runtime properties absent from `config/managed`. Plus two
+  re-confirmations in the IDM **custom-endpoint** context, which the earlier
+  probes did not cover: `openidm.read` on a missing record returns `null` —
+  already established 2026-07-17 for next-gen decision and LIBRARY — and a
+  script-side `fields` list accepts relationship and `_meta` paths. All probed
+  from a throwaway endpoint plus `endpoint/example-managed-users` against
   `managed/alpha_user`, read-only, no records altered). 2026-08-15 (custom-type
   hook copy: `Terraform_lifecycle_probe` PUT accepted inline
   `onCreate`/`onUpdate`/`postCreate` plus file-backed

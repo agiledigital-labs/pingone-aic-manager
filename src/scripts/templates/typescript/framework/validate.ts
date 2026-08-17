@@ -42,8 +42,44 @@ export type Infer<V> = V extends Validator<infer T> ? T : never;
 /** A named set of validators — a body shape, or one param location. */
 export type Shape = Record<string, Validator<unknown>>;
 
-/** The object type a shape produces. Optional members surface as `| undefined`. */
+/**
+ * The object type a shape produces when PARSING. Every member is present, an
+ * optional one holding `undefined` — which is exactly what `parseShape` builds,
+ * and what a route's `params`/`query`/`headers`/`body` therefore look like.
+ */
 export type InferShape<S extends Shape> = { [K in keyof S]: Infer<S[K]> };
+
+/**
+ * The object type a shape describes when CONSTRUCTING a value: an optional
+ * member is an optional KEY, not a required key holding `undefined`.
+ *
+ * `object()` produces this rather than {@link InferShape} because its type is
+ * also what a route's `response` promises, and a handler must be able to omit an
+ * optional it has nothing to say about instead of writing `owner: undefined`.
+ *
+ * Deliberately NOT a mapped type applied later, on top of `InferShape`: a mapped
+ * type over an unresolved type parameter cannot serve as a contextual type, so
+ * `status: "retired"` in a returned object literal would widen to `string` and
+ * fail against its own declared enum. Baking it into the validator keeps the
+ * response type concrete at the point the handler is checked.
+ */
+export type InferObject<S extends Shape> = Resolve<
+  {
+    [K in keyof S as undefined extends Infer<S[K]> ? never : K]: Infer<S[K]>;
+  } & {
+    [K in keyof S as undefined extends Infer<S[K]> ? K : never]?: Infer<S[K]>;
+  }
+>;
+
+/**
+ * Collapse an intersection into one object type, preserving optional modifiers.
+ *
+ * Not cosmetic: TypeScript will not use an unresolved alias as a contextual
+ * type, so leaving `InferObject` as an intersection of two mapped types cost a
+ * returned object literal its literal types. Forcing it flat here is what lets
+ * `status: "retired"` narrow to the enum the response declares.
+ */
+type Resolve<T> = { [K in keyof T]: T[K] };
 
 function issue(issues: Issue[], path: string, message: string): void {
   issues.push({ path, message });
@@ -361,7 +397,7 @@ export interface ObjectOptions {
 export function object<S extends Shape>(
   shape: S,
   options: ObjectOptions = {}
-): Validator<InferShape<S>> {
+): Validator<InferObject<S>> {
   const properties: Record<string, JsonSchema> = {};
   const required: string[] = [];
   const keys = Object.keys(shape);
@@ -388,7 +424,7 @@ export function object<S extends Shape>(
     const out: Record<string, unknown> = {};
     if (typeof input !== "object" || input === null || Array.isArray(input)) {
       issue(issues, path, "expected an object");
-      return out as InferShape<S>;
+      return out as InferObject<S>;
     }
     const source = input as Record<string, unknown>;
     for (const key of keys) {
@@ -414,7 +450,10 @@ export function object<S extends Shape>(
         }
       }
     }
-    return out as InferShape<S>;
+    // `out` has every key present, optionals holding `undefined`; that is
+    // assignable to `InferObject` because an optional member's type includes
+    // `undefined` even under `exactOptionalPropertyTypes`.
+    return out as InferObject<S>;
   });
 }
 

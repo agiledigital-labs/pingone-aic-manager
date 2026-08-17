@@ -161,7 +161,9 @@ function operationFor(
       description: "Success",
       content: {
         "application/json": {
-          schema: route.response ?? {},
+          // A query route declares ONE ROW; the envelope is added here so the
+          // document and the handler's return type come from one declaration.
+          schema: responseSchema(route),
         },
       },
     },
@@ -216,6 +218,23 @@ function errorResponse(description: string): Record<string, unknown> {
       },
     },
   };
+}
+
+/**
+ * The 200 body schema for a route.
+ *
+ * The route carries the response VALIDATOR, so the schema is read off it here
+ * rather than being declared separately — that is what keeps the document and
+ * the handler's checked return type from drifting apart. A query route declares
+ * one row and gets the envelope wrapped around it.
+ */
+function responseSchema(route: RouteDefinition): JsonSchema {
+  if (route.response === undefined) {
+    return {};
+  }
+  return route.method === "query"
+    ? queryResultSchema(route.response.schema)
+    : route.response.schema;
 }
 
 /** JSON Schema for the complete paging envelope IDM requires from queries. */

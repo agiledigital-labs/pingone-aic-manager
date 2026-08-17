@@ -7,6 +7,7 @@ import {
   defineEndpoint,
   parsePath,
   queryResult,
+  queryRoute,
   route,
   splitResourcePath,
   v,
@@ -24,8 +25,7 @@ const demo = defineEndpoint({
   name: "demo",
   headers: { "x-request-id": v.optional(v.uuid()) },
   routes: [
-    route({
-      method: "query",
+    queryRoute({
       path: "/",
       query: { limit: v.withDefault(v.integer({ min: 1, max: 10 }), 3) },
       handler: ({ query }) => queryResult([{ _id: String(query.limit) }]),

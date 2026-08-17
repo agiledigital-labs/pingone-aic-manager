@@ -17,6 +17,7 @@ import {
   defineEndpoint,
   notFound,
   queryResult,
+  queryRoute,
   route,
   v,
 } from "../../framework/index.ts";
@@ -24,8 +25,7 @@ import { audit } from "../shared/audit.ts";
 import { findWidget, WIDGETS, type Widget } from "../shared/fixtures.ts";
 import {
   IMPORT_RESPONSE,
-  WIDGET_QUERY_RESPONSE,
-  WIDGET_RESPONSE,
+    WIDGET_RESPONSE,
   widgetId,
   widgetKey,
   widgetStatus,
@@ -57,8 +57,7 @@ export default defineEndpoint({
   // Validated on every route; also the log correlation id when present.
   headers: { "x-request-id": v.optional(v.uuid()) },
   routes: [
-    route({
-      method: "query",
+    queryRoute({
       path: "/",
       query: {
         status: v.optional(widgetStatus()),
@@ -66,7 +65,7 @@ export default defineEndpoint({
         offset: v.withDefault(v.integer({ min: 0 }), 0),
         tags: v.optional(v.csv(v.string({ minLength: 1 }))),
       },
-      response: WIDGET_QUERY_RESPONSE,
+      response: WIDGET_RESPONSE,
       handler: ({ query, log }) => {
         const wanted = query.tags;
         const filtered = WIDGETS.filter(
@@ -192,7 +191,14 @@ export default defineEndpoint({
           subject: widgetKey(widget._id),
           fields: { reason: body.reason },
         });
-        return { ...widget, status: "retired", retiredReason: body.reason };
+        // `as const`: a literal overriding an enum-typed response member does
+        // not get narrowed by the declaration — see the KNOWN LIMIT note in
+        // framework/router.ts. Still checked; a typo here is an error.
+        return {
+          ...widget,
+          status: "retired" as const,
+          retiredReason: body.reason,
+        };
       },
     }),
 

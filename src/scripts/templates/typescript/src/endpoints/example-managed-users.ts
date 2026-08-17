@@ -8,7 +8,7 @@
 // on. So `openidm.read(...)` hands back YOUR schema rather than an opaque
 // `Record<string, unknown>`, and a misspelled field is a build error.
 //
-// THREE THINGS TO KNOW.
+// FOUR THINGS TO KNOW.
 //
 // 1. Path inference needs a TEMPLATE LITERAL. openidm.read(`managed/alpha_user/${id}`)
 //    infers the argument as the type `managed/alpha_user/${string}`, which
@@ -18,12 +18,18 @@
 //    your field names. Babel downlevels the backticks to concatenation, so the
 //    emitted ES5 is identical either way.
 //
-// 2. Missing tenant types cost inference, never a compile error — every
+// 2. A `fields` list PROJECTS the result type: ask for two properties and the
+//    other seventy are gone from the type, while `_id`/`_rev` stay because IDM
+//    returns them whatever you ask for. `openidm.query` takes the same third
+//    argument and projects every row. Full behaviour, including relationship and
+//    `_meta` expansions, is pinned down in `tests/openidm-types.test.ts`.
+//
+// 3. Missing tenant types cost inference, never a compile error — every
 //    conditional resolves to `never` and each signature falls back to its
 //    untyped form. If hovering below shows CrestResource instead of AlphaUser,
 //    run `aic workspace update` and reload your editor's TS server.
 //
-// 3. This file is TENANT-SHAPED. It assumes `managed/alpha_user` with the stock
+// 4. This file is TENANT-SHAPED. It assumes `managed/alpha_user` with the stock
 //    AIC properties (`userName`, `mail`, `givenName`, `sn`, `accountStatus`,
 //    `telephoneNumber`, `manager`). If your tenant's schema differs,
 //    `npm run type-check` names the mismatch — adapt the file or delete it.
@@ -39,10 +45,9 @@ import {
   defineEndpoint,
   notFound,
   queryResult,
-  queryResultSchema,
+  queryRoute,
   route,
   v,
-  type JsonSchema,
 } from "../../framework/index.ts";
 import type { AlphaUser } from "../generated/managed.ts";
 
@@ -55,7 +60,7 @@ export const USER_COLLECTION: ManagedName = "managed/alpha_user";
 
 const ACCOUNT_STATUSES = ["active", "inactive"] as const;
 
-const USER_RESPONSE: JsonSchema = v.object(
+const USER_RESPONSE = v.object(
   {
     _id: v.string({ description: "Managed user id." }),
     userName: v.string(),
@@ -64,9 +69,9 @@ const USER_RESPONSE: JsonSchema = v.object(
     hasManager: v.boolean(),
   },
   { description: "The projection of a managed user this endpoint returns." }
-).schema;
+);
 
-const CONTACT_RESPONSE: JsonSchema = v.object(
+const CONTACT_RESPONSE = v.object(
   {
     _id: v.string(),
     userName: v.string(),
@@ -79,7 +84,7 @@ const CONTACT_RESPONSE: JsonSchema = v.object(
     }),
   },
   { description: "Contact details, read with an explicit field selector." }
-).schema;
+);
 
 export default defineEndpoint({
   name: "example-managed-users",
@@ -98,10 +103,10 @@ export default defineEndpoint({
         if (user === null) {
           throw notFound("No such user", { userId: params.userId });
         }
-        // `idOf` demands the StoredRecord form, so this line is also the proof
-        // that a plain read carries `_id` as `string` rather than
-        // `string | undefined`.
-        log.debug("read user", { id: idOf(user) });
+        // `user._id` is `string`, not `string | undefined`: the read overloads
+        // return `StoredRecord<AlphaUser>`, which adds the guarantee the
+        // generated interface leaves off for an onCreate draft.
+        log.debug("read user", { id: user._id });
         return summarise(user);
       },
     }),
@@ -113,9 +118,9 @@ export default defineEndpoint({
       params: { userId: v.uuid("Managed user id.") },
       response: CONTACT_RESPONSE,
       handler: ({ params }) => {
-        // The three-argument form checks `fields` against the schema: a typo is
-        // a build error WITH a spelling suggestion, and relationship / `_meta`
-        // paths are accepted (docs/api/10-managed-objects.md).
+        // The three-argument form checks `fields` against the schema — a typo is
+        // a build error with a spelling suggestion — and PROJECTS the result to
+        // what was asked for.
         const user = openidm.read(`managed/alpha_user/${params.userId}`, null, [
           "userName",
           "mail",
@@ -126,12 +131,20 @@ export default defineEndpoint({
         if (user === null) {
           throw notFound("No such user", { userId: params.userId });
         }
-        // Note the hover here: `AlphaUser | null`, WITHOUT the StoredRecord
-        // guarantee. Restricting the returned fields has not been verified to
-        // still include `_id`/`_rev`, so this overload does not promise them —
-        // which is why the id below comes from the path, not the record.
+        // Hover `user`: the four requested members plus `_id`/`_rev`, and
+        // nothing else. `user.givenName` does not compile here — it was not
+        // requested, so it is not in the response. `_id` IS available, because
+        // IDM returns it whatever the field list says (verified 2026-08-17).
+        //
+        // `manager` is the relationship EXPANSION rather than the declared
+        // `RelationshipRef`, since a `parent/child` path was asked for — and it
+        // is NULLABLE, because an unset single-valued relationship comes back as
+        // `null` (a multi-valued one comes back as `[]`). Dropping the `?.` below
+        // was a live 500 on the first user without a manager, past every gate.
+        // The target's schema is unknown to these types, so its members are
+        // index-only: `manager["userName"]`, not `manager.userName`.
         return {
-          _id: params.userId,
+          _id: user._id,
           userName: user.userName,
           mail: user.mail,
           telephoneNumber: user.telephoneNumber ?? "",
@@ -140,8 +153,7 @@ export default defineEndpoint({
       },
     }),
 
-    route({
-      method: "query",
+    queryRoute({
       path: "/",
       summary: "Page through managed users by account status.",
       query: {
@@ -151,7 +163,7 @@ export default defineEndpoint({
           50
         ),
       },
-      response: queryResultSchema(USER_RESPONSE),
+      response: USER_RESPONSE,
       handler: ({ query, log }) => {
         // `_queryFilter` is REQUIRED by `QueryParams` — IDM rejects a query
         // without one, so omitting it fails the build instead of the request.
@@ -162,7 +174,8 @@ export default defineEndpoint({
           _sortKeys: "userName",
           _pageSize: query.pageSize,
         });
-        // `page.result` is AlphaUser[].
+        // `page.result` is `StoredRecord<AlphaUser>[]` — pass a third `fields`
+        // argument here too and every row is projected to it instead.
         log.debug("queried users", { count: page.resultCount });
         return queryResult(page.result.map(summarise));
       },
@@ -170,18 +183,13 @@ export default defineEndpoint({
   ],
 });
 
-/** Only a stored record satisfies this — see the call site in the read route. */
-function idOf(user: StoredRecord<AlphaUser>): string {
-  return user._id;
-}
-
 /**
- * Takes the bare interface rather than `StoredRecord<AlphaUser>`, because a
- * `query` result is typed as `AlphaUser[]`: a query can carry `_fields`, so the
- * `_id`/`_rev` guarantee that a plain `read` gets does not apply. That is the
- * one asymmetry worth remembering, and the `?? ""` below is its cost.
+ * Takes `StoredRecord<AlphaUser>` — the type both an unprojected read and an
+ * unprojected query row have — so `_id` needs no `?? ""` fallback. Ask for a
+ * `fields` list at either call site and the argument no longer fits, which is
+ * the projection doing its job.
  */
-function summarise(user: AlphaUser): {
+function summarise(user: StoredRecord<AlphaUser>): {
   _id: string;
   userName: string;
   mail: string;
@@ -189,7 +197,7 @@ function summarise(user: AlphaUser): {
   hasManager: boolean;
 } {
   return {
-    _id: user._id ?? "",
+    _id: user._id,
     userName: user.userName,
     mail: user.mail,
     displayName: user.givenName + " " + user.sn,
@@ -247,8 +255,10 @@ export function writeTypingTour(userId: string): Record<string, unknown> {
 
 // ---------------------------------------------------------------------------
 // SHOULD NOT COMPILE — uncomment one at a time to watch the types bite. The
-// expected message is quoted; if you get "any" or no error at all, the
-// generated types are missing (see note 2 in the header).
+// expected message is quoted; if you get no error at all, the generated types
+// are missing (see note 3 in the header). `tests/openidm-types.test.ts` holds
+// the same cases as `@ts-expect-error` assertions, so they are gated rather
+// than just documented.
 // ---------------------------------------------------------------------------
 //
 // openidm.read(`managed/alpha_user/${userId}`).nosuchField;
@@ -258,8 +268,16 @@ export function writeTypingTour(userId: string): Record<string, unknown> {
 //   Type '"userNmae"' is not assignable to type 'ManagedField<AlphaUser>'.
 //   Did you mean '"userName"'?
 //
+// openidm.read(`managed/alpha_user/${userId}`, null, ["userName"]).sn;
+//   Property 'sn' does not exist on type 'StoredRecord<Pick<AlphaUser,
+//   "userName">>'. — the projection dropped everything you did not ask for.
+//
 // openidm.query(USER_COLLECTION, { _pageSize: 5 });
 //   Property '_queryFilter' is missing ... but required in type 'QueryParams'.
+//
+// openidm.query(USER_COLLECTION, { _queryFilter: "true" }, ["mial"]);
+//   Type '"mial"' is not assignable to type 'ManagedField<AlphaUser>'.
+//   Did you mean '"mail"'? — query takes a field list too, and projects rows.
 //
 // openidm.create(USER_COLLECTION, null, { userName: 42 });
 //   Type 'number' is not assignable to type 'string'.
@@ -272,3 +290,10 @@ export function writeTypingTour(userId: string): Record<string, unknown> {
 // const untyped: ManagedName = "managed/alpha_users";
 //   Type '"managed/alpha_users"' is not assignable to type 'ManagedName'.
 //   Did you mean '"managed/alpha_user"'?
+//
+// Delete a member from the object either read handler returns, e.g. `userName`
+// from the `/contact` route:
+//   Property 'userName' is missing in type '{ ... }' but required in type
+//   '{ _id: string; userName: string; ... }'. — the handler's return value is
+//   checked against the route's `response` validator, so the OpenAPI document
+//   cannot promise a field the code stopped sending.

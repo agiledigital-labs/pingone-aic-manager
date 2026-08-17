@@ -136,13 +136,17 @@ type ManagedField<T> =
   | `${(keyof T & string) | "_meta"}/${string}`
   | "_meta";
 
+// What `openidm.query` hands back. NOT the shape an endpoint may RETURN: IDM
+// requires `remainingPagedResults` on a query handler's return value (see
+// `IdmQueryResult` in endpoint.d.ts) but never sent it on a script-side query
+// result in any observed response (verified 2026-08-17), hence optional here.
 interface QueryResult<T> {
   result: T[];
   resultCount: number;
   pagedResultsCookie: string | null;
   totalPagedResultsPolicy: string;
   totalPagedResults: number;
-  remainingPagedResults: number;
+  remainingPagedResults?: number;
 }
 
 // Collection path ("managed/<obj>") → object interface, else never.
@@ -160,11 +164,13 @@ type ManagedRecordOf<R extends string> =
 
 // fields: typed for known managed paths, rejected for unknown managed paths
 // (nothing to check against — pull the schema again), free-form otherwise.
+// `readonly` so a `const` type parameter can capture the literal members; that
+// inference is what makes `Projected` below possible.
 type FieldsArg<T, R extends string> = [T] extends [never]
   ? R extends `managed/${string}`
     ? never
-    : string[]
-  : ManagedField<T>[];
+    : readonly string[]
+  : readonly ManagedField<T>[];
 
 type ContentArg<T> = [T] extends [never] ? object : Partial<T>;
 
@@ -176,6 +182,65 @@ type RecordResult<T> = [T] extends [never] ? any : T;
 // leave both optional, because the same interface types the onCreate hook's
 // draft `object`, which has neither yet.
 type StoredRecord<T> = T & { _id: string; _rev: string };
+
+// What a `parent/child` selector hands back for `parent`: the relationship
+// REFERENCE envelope plus the requested members of the target (verified
+// 2026-08-17 with `_meta/lastChanged`, which returned `_ref`,
+// `_refResourceCollection`, `_refResourceId`, `_refResourceRev`, the target's own
+// `_id`/`_rev`, and `lastChanged`). The target's schema is not recorded anywhere
+// these types can reach — a generated interface says `manager?: RelationshipRef`,
+// not which object it points at — so requested members stay index-only.
+interface RelationshipExpansion {
+  _id?: string;
+  _rev?: string;
+  _ref?: string;
+  _refResourceCollection?: string;
+  _refResourceId?: string;
+  _refResourceRev?: string;
+  _refProperties?: { _id?: string; _rev?: string };
+  [member: string]: unknown;
+}
+
+// The `parent` of every requested `parent/child` path.
+type PathParentOf<F extends string> = F extends `${infer P}/${string}`
+  ? P
+  : never;
+
+// `_meta` is a relationship in its own right (to `managed/<realm>usermeta`), so
+// asking for it adds an expansion rather than a declared property.
+type MetaMemberOf<F extends string> = [
+  Extract<F, "_meta" | `_meta/${string}`>,
+] extends [never]
+  ? unknown
+  : { _meta: RelationshipExpansion | null };
+
+// A relationship's CARDINALITY decides the projected shape (verified
+// 2026-08-17): single-valued comes back as the expansion or `null` when unset,
+// multi-valued as an array — `[]` when unset, never `null`. Typing a
+// single-valued one as always present cost a live 500 on the first request
+// against a user with no manager, which every gate had passed.
+type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]
+  ? RelationshipExpansion[]
+  : RelationshipExpansion | null;
+
+// The record shape a `fields` selector actually yields.
+//
+// `_id` and `_rev` come back whatever you asked for — even `fields: ["_id"]`
+// returns both (verified 2026-08-17, docs/api/10-managed-objects.md) — so a
+// projection keeps the StoredRecord guarantee. A relationship path upgrades the
+// parent key from its declared `RelationshipRef` to the expansion above.
+//
+// A list that is not made of LITERAL types cannot be projected: a
+// `ManagedField<T>[]` variable widens to the whole record rather than narrowing
+// to nothing, so losing the inference costs precision and never correctness. (A
+// plain `string[]` is rejected outright — the constraint wants schema members.)
+type Projected<T, F extends string> = string extends F
+  ? StoredRecord<T>
+  : StoredRecord<
+      ("*" extends F ? T : Pick<T, Extract<F, keyof T>>) & {
+        [K in Extract<PathParentOf<F>, keyof T>]: ExpansionOf<T[K]>;
+      } & MetaMemberOf<F>
+    >;
 
 // Parameters a managed-object query honours. `_queryFilter` stays required —
 // IDM rejects a query without one. `_fields`, `_sortKeys` and the paging cursor
@@ -202,19 +267,42 @@ interface OpenIdm {
   ): [ManagedRecordOf<R>] extends [never]
     ? any
     : StoredRecord<ManagedRecordOf<R>> | null;
-  // Restricting the returned fields drops the `_id`/`_rev` guarantee: we have
-  // not verified that IDM still includes them, so this form keeps them optional.
-  read<R extends `${ManagedName}/${string}` | (string & {})>(
+  // Restricting the fields narrows the RESULT TYPE to what you asked for, and
+  // keeps `_id`/`_rev`, which come back regardless (verified 2026-08-17).
+  read<
+    R extends `${ManagedName}/${string}` | (string & {}),
+    const F extends FieldsArg<ManagedRecordOf<R>, R>
+  >(
     path: R,
     params: Record<string, string> | null | undefined,
-    fields: FieldsArg<ManagedRecordOf<R>, R>
-  ): [ManagedRecordOf<R>] extends [never] ? any : ManagedRecordOf<R> | null;
-  query<R extends ManagedName | (string & {})>(
+    fields: F
+  ): [ManagedRecordOf<R>] extends [never]
+    ? any
+    : Projected<ManagedRecordOf<R>, F[number] & string> | null;
+  // Rows carry `_id`/`_rev` plus every declared property — unless `params` names
+  // `_fields`, which trims them opaquely; prefer the third argument below.
+  query<R extends ManagedName | (string & {}), P extends QueryParams>(
     path: R,
-    params: QueryParams
+    params: P
   ): [ManagedCollectionOf<R>] extends [never]
     ? any
-    : QueryResult<ManagedCollectionOf<R>>;
+    : QueryResult<
+        P extends { _fields: string }
+          ? StoredRecord<Partial<ManagedCollectionOf<R>>>
+          : StoredRecord<ManagedCollectionOf<R>>
+      >;
+  // `openidm.query` takes a third `fields` argument, same as `read` — verified
+  // 2026-08-17: rows came back as `_id`/`_rev` plus exactly the named fields.
+  query<
+    R extends ManagedName | (string & {}),
+    const F extends FieldsArg<ManagedCollectionOf<R>, R>
+  >(
+    path: R,
+    params: QueryParams,
+    fields: F
+  ): [ManagedCollectionOf<R>] extends [never]
+    ? any
+    : QueryResult<Projected<ManagedCollectionOf<R>, F[number] & string>>;
   create<R extends ManagedName | (string & {})>(
     path: R,
     newResourceId: string | null,

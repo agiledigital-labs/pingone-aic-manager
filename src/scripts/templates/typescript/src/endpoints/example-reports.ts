@@ -13,6 +13,7 @@ import {
   defineEndpoint,
   notFound,
   queryResult,
+  queryRoute,
   route,
   v,
 } from "../../framework/index.ts";
@@ -20,7 +21,7 @@ import { audit } from "../shared/audit.ts";
 import { WIDGETS, findWidget } from "../shared/fixtures.ts";
 import {
   DAILY_RESPONSE,
-  REPORT_QUERY_RESPONSE,
+  REPORT_ROW_RESPONSE,
   SUMMARY_RESPONSE,
   widgetId,
   widgetKey,
@@ -76,15 +77,14 @@ export default defineEndpoint({
       },
     }),
 
-    route({
-      method: "query",
+    queryRoute({
       path: "/",
       query: {
         from: v.isoDate("Inclusive start date."),
         to: v.isoDate("Inclusive end date."),
         groupBy: v.withDefault(v.enumOf(GROUPINGS), "day"),
       },
-      response: REPORT_QUERY_RESPONSE,
+      response: REPORT_ROW_RESPONSE,
       handler: ({ query, log }) => {
         if (query.from > query.to) {
           // Lexicographic comparison is exact for YYYY-MM-DD.

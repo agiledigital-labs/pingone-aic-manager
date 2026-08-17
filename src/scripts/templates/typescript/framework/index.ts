@@ -6,6 +6,7 @@
 export {
   defineEndpoint,
   parsePath,
+  queryRoute,
   route,
   routeLabel,
   splitResourcePath,
@@ -17,6 +18,8 @@ export {
   type RouteDefinition,
   type RouteInput,
   type RouteSpec,
+  type RouteSpecBase,
+  type QueryRouteSpec,
 } from "./router.ts";
 
 export {
@@ -73,6 +76,7 @@ export { queryResult } from "./types.ts";
 
 export type {
   Infer,
+  InferObject,
   InferShape,
   Issue,
   JsonSchema,
