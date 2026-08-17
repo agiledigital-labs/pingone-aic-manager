@@ -147,7 +147,16 @@ export function string(options: StringOptions = {}): Validator<string> {
         "must be at most " + options.maxLength + " characters"
       );
     }
-    if (options.pattern !== undefined && !options.pattern.test(input)) {
+    if (options.pattern !== undefined) {
+      // Global/sticky regular expressions retain state between `.test` calls.
+      // Validators are reused across requests, so always make the result
+      // independent of the preceding request.
+      options.pattern.lastIndex = 0;
+      const matches = options.pattern.test(input);
+      options.pattern.lastIndex = 0;
+      if (matches) {
+        return input;
+      }
       const wanted =
         options.patternDescription ?? "match " + String(options.pattern);
       issue(issues, path, "must " + wanted);
