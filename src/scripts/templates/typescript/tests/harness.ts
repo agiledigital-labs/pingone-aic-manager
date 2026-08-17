@@ -164,12 +164,79 @@ export function callContext(options: ContextOptions = {}): IdmCallContext {
 
 type StoredValue = Record<string, unknown> & { _id: string; _rev: string };
 
+/** Everything the double cannot model throws this, so it is never mistaken
+ * for a fault the tenant would raise. */
+function unsupported(what: string): never {
+  throw new Error("managedStore: " + what);
+}
+
+/**
+ * Apply a `fields` selector the way the tenant does: only the named members
+ * come back, and `_id`/`_rev` come back whatever you asked for (verified
+ * 2026-08-17, docs/api/10-managed-objects.md).
+ */
+function projectRecord(
+  record: StoredValue,
+  fields: readonly string[] | null | undefined
+): StoredValue {
+  if (fields === null || fields === undefined || fields.indexOf("*") >= 0) {
+    return { ...record };
+  }
+  const out: StoredValue = { _id: record._id, _rev: record._rev };
+  for (const field of fields) {
+    if (field.indexOf("/") >= 0) {
+      // A relationship path (`manager/userName`) makes the tenant return the
+      // EXPANSION, and the double holds no relationship graph to expand.
+      unsupported(
+        "cannot expand the relationship path " +
+          field +
+          " — give the handler its own double for that read"
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(record, field)) {
+      out[field] = record[field];
+    }
+  }
+  return out;
+}
+
+/** `true`, or a single `field eq "value"` term — anything else is refused. */
+function matchesFilter(record: StoredValue, filter: unknown): boolean {
+  if (filter === undefined || filter === null || filter === "true") {
+    return true;
+  }
+  if (typeof filter !== "string") {
+    unsupported("_queryFilter must be a string");
+  }
+  const term = /^\/?([A-Za-z_][A-Za-z0-9_]*) eq "([^"]*)"$/.exec(filter.trim());
+  if (term === null) {
+    unsupported(
+      'only _queryFilter: true and a single `field eq "value"` term are ' +
+        "modelled, not " +
+        filter
+    );
+  }
+  return record[term[1] as string] === term[2];
+}
+
 /**
  * An in-memory `openidm` binding for endpoint tests.
  *
  * Keys are managed collection paths and values are their records. The double
  * implements the common CRUD/query behavior; tests needing a special action
  * can override that member on the returned object.
+ *
+ * IT REFUSES WHAT IT CANNOT MODEL, and that is the point. A double more
+ * permissive than the tenant turns a live 500 into a green test: this one
+ * previously ignored the `fields` selector and the `_queryFilter` outright, so
+ * a projection bug and an unfiltered query both passed. Anything unmodelled now
+ * throws a `managedStore:` error naming what to do instead.
+ *
+ * Not modelled, on purpose: relationship expansion, paging, sort keys, patch
+ * and action. `openidm.update`/`delete` against a missing id throw here because
+ * IDM's own behaviour for that miss is NOT verified (docs/api/10 records the
+ * `read` miss and the `create` conflict only) — inventing a shape would be
+ * worse than refusing.
  */
 export function managedStore(
   initial: Record<string, StoredValue[]>
@@ -183,12 +250,40 @@ export function managedStore(
     return [path.slice(0, slash), path.slice(slash + 1)];
   };
   const binding = {
-    read(path: string): StoredValue | null {
+    read(
+      path: string,
+      _params?: unknown,
+      fields?: readonly string[] | null
+    ): StoredValue | null {
       const [collection, id] = splitRecordPath(path);
-      return collections[collection]?.find((record) => record._id === id) ?? null;
+      const found = collections[collection]?.find(
+        (record) => record._id === id
+      );
+      // A miss is `null`, never a throw (verified 2026-07-17 and 2026-08-17).
+      // The copy matters: handing out the stored object let a handler mutate
+      // the store through its own result.
+      return found === undefined ? null : projectRecord(found, fields);
     },
-    query(path: string) {
-      const result = (collections[path] ?? []).map((record) => ({ ...record }));
+    query(
+      path: string,
+      params?: Record<string, unknown> | null,
+      fields?: readonly string[] | null
+    ) {
+      if (params !== undefined && params !== null) {
+        for (const key of Object.keys(params)) {
+          if (key !== "_queryFilter") {
+            unsupported(
+              "query parameter " + key + " is not modelled (only _queryFilter)"
+            );
+          }
+        }
+      }
+      const filter = params === undefined || params === null
+        ? undefined
+        : params["_queryFilter"];
+      const result = (collections[path] ?? [])
+        .filter((record) => matchesFilter(record, filter))
+        .map((record) => projectRecord(record, fields));
       return {
         result,
         resultCount: result.length,
@@ -197,47 +292,60 @@ export function managedStore(
         totalPagedResultsPolicy: "EXACT",
       };
     },
-    create(path: string, newResourceId: string | null, content: Record<string, unknown>) {
+    create(
+      path: string,
+      newResourceId: string | null,
+      content: Record<string, unknown>
+    ) {
       const rows = (collections[path] ??= []);
-      const created: StoredValue = {
-        ...content,
-        _id: newResourceId ?? "test-" + (rows.length + 1),
-        _rev: "1",
-      };
+      const id = newResourceId ?? "test-" + (rows.length + 1);
+      if (rows.some((record) => record._id === id)) {
+        // Verified: `openidm.create` NEVER upserts — it throws
+        // PreconditionFailedException (docs/api/10-managed-objects.md).
+        unsupported("create conflicts with the existing record " + path + "/" + id);
+      }
+      const created: StoredValue = { ...content, _id: id, _rev: "1" };
       rows.push(created);
-      return created;
+      return { ...created };
     },
-    update(path: string, _revision: string | null, content: Record<string, unknown>) {
+    update(
+      path: string,
+      _revision: string | null,
+      content: Record<string, unknown>
+    ) {
       const [collection, id] = splitRecordPath(path);
       const rows = (collections[collection] ??= []);
       const index = rows.findIndex((record) => record._id === id);
+      const existing = rows[index];
+      if (index < 0 || existing === undefined) {
+        unsupported("update of a record that does not exist: " + path);
+      }
+      // Fixtures usually carry a numeric-looking `_rev`; a real IDM revision is
+      // opaque, so fall back rather than producing `NaN`.
+      const revision = Number(existing._rev);
       const updated: StoredValue = {
-        ...(index < 0 ? {} : rows[index]),
+        ...existing,
         ...content,
         _id: id,
-        _rev: String(Number(index < 0 ? 0 : rows[index]?._rev ?? 0) + 1),
+        _rev: String((Number.isFinite(revision) ? revision : 0) + 1),
       };
-      if (index < 0) {
-        rows.push(updated);
-      } else {
-        rows[index] = updated;
-      }
-      return updated;
+      rows[index] = updated;
+      return { ...updated };
     },
     patch() {
-      throw new Error("managedStore.patch is not implemented");
+      return unsupported("patch is not modelled");
     },
     delete(path: string) {
       const [collection, id] = splitRecordPath(path);
       const rows = collections[collection] ?? [];
       const index = rows.findIndex((record) => record._id === id);
       if (index < 0) {
-        return {};
+        unsupported("delete of a record that does not exist: " + path);
       }
       return rows.splice(index, 1)[0] as StoredValue;
     },
     action() {
-      throw new Error("managedStore.action is not implemented");
+      return unsupported("action is not modelled");
     },
   };
   return binding as unknown as typeof openidm;

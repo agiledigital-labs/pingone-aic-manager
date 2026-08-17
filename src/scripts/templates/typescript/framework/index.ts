@@ -10,6 +10,7 @@ export {
   route,
   routeLabel,
   splitResourcePath,
+  type DispatchOptions,
   type EndpointDefinition,
   type EndpointMain,
   type EndpointSpec,
@@ -80,6 +81,7 @@ export type {
   InferShape,
   Issue,
   JsonSchema,
+  ParseMode,
   Shape,
   Validator,
 } from "./validate.ts";

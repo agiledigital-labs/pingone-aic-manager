@@ -5,6 +5,13 @@
 // directions. `npm run type-check` is the real gate; the single runtime test at
 // the bottom exists so `node --test` reports the file rather than skipping it.
 //
+// HERMETIC BY DESIGN. This file declares its OWN managed object rather than
+// importing one from `src/generated/managed.ts`: that module is written from a
+// live tenant and is absent whenever `aic workspace init` ran without a reachable
+// agent, which used to leave the framework's own gate red in a workspace whose
+// framework was fine. A fixture also lets the test pin one relationship of each
+// cardinality, which no particular tenant is obliged to have.
+//
 // Nothing here runs against a tenant: `typeTours` is never called, and `openidm`
 // does not exist under node. Behaviour these types encode is verified live in
 // docs/api/10-managed-objects.md.
@@ -15,28 +22,59 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { CrestQueryResult } from "../framework/index.ts";
-import type { AlphaUser } from "../src/generated/managed.ts";
+
+/** A relationship reference, shaped as `managed_types.rs` generates one. */
+interface ProbeRef {
+  _ref: string;
+  _refResourceCollection?: string;
+  _refResourceId?: string;
+}
+
+/**
+ * Stands in for a tenant's managed object. `_id`/`_rev` are optional exactly as
+ * the generated interfaces leave them — the same interface types an onCreate
+ * draft, which has neither yet — so this also checks that {@link StoredRecord}
+ * is what puts them back.
+ */
+interface TypesFixture {
+  _id?: string;
+  _rev?: string;
+  userName: string;
+  sn: string;
+  mail: string;
+  /** Single-valued: unset comes back as `null`. */
+  manager?: ProbeRef;
+  /** Multi-valued: unset comes back as `[]`. */
+  authzRoles?: ProbeRef[];
+}
+
+declare global {
+  interface ManagedObjects {
+    // Deliberately un-tenant-like, so it cannot collide with a real object and
+    // trip declaration merging.
+    "managed/__aic_types_fixture": TypesFixture;
+  }
+}
+
+const FIXTURE = "managed/__aic_types_fixture";
 
 declare const id: string;
 
 /** Never called. Present so `tsc` checks every line in it. */
 export function typeTours(): void {
   // --- a plain read is the whole record, with _id/_rev guaranteed -----------
-  const whole = openidm.read(`managed/alpha_user/${id}`);
+  const whole = openidm.read(`${FIXTURE}/${id}`);
   if (whole !== null) {
     const _id: string = whole._id;
     const _userName: string = whole.userName;
     void _id;
     void _userName;
-    // @ts-expect-error not a property of the tenant's alpha_user schema
+    // @ts-expect-error not a property of the fixture schema
     void whole.nosuchField;
   }
 
   // --- a field-restricted read is projected to what was asked for ----------
-  const projected = openidm.read(`managed/alpha_user/${id}`, null, [
-    "userName",
-    "mail",
-  ]);
+  const projected = openidm.read(`${FIXTURE}/${id}`, null, ["userName", "mail"]);
   if (projected !== null) {
     // `_id`/`_rev` survive a projection: they come back whatever you ask for.
     const _id: string = projected._id;
@@ -50,7 +88,7 @@ export function typeTours(): void {
   }
 
   // --- `_id` alone still yields `_id` AND `_rev` ---------------------------
-  const idOnly = openidm.read(`managed/alpha_user/${id}`, null, ["_id"]);
+  const idOnly = openidm.read(`${FIXTURE}/${id}`, null, ["_id"]);
   if (idOnly !== null) {
     const _rev: string = idOnly._rev;
     void _rev;
@@ -59,14 +97,14 @@ export function typeTours(): void {
   }
 
   // --- `*` opts out of projection -----------------------------------------
-  const star = openidm.read(`managed/alpha_user/${id}`, null, ["*"]);
+  const star = openidm.read(`${FIXTURE}/${id}`, null, ["*"]);
   if (star !== null) {
     const _sn: string = star.sn;
     void _sn;
   }
 
   // --- a relationship path yields the EXPANSION, not the declared ref ------
-  const withManager = openidm.read(`managed/alpha_user/${id}`, null, [
+  const withManager = openidm.read(`${FIXTURE}/${id}`, null, [
     "manager/userName",
   ]);
   if (withManager !== null) {
@@ -83,9 +121,7 @@ export function typeTours(): void {
   }
 
   // --- a MULTI-valued relationship path projects to an array ---------------
-  const withRoles = openidm.read(`managed/alpha_user/${id}`, null, [
-    "authzRoles/name",
-  ]);
+  const withRoles = openidm.read(`${FIXTURE}/${id}`, null, ["authzRoles/name"]);
   if (withRoles !== null) {
     // `[]` when unset, never null — so no guard, but an index check instead.
     const _first: string | undefined = withRoles.authzRoles[0]?._ref;
@@ -95,7 +131,7 @@ export function typeTours(): void {
   }
 
   // --- `_meta` is an expansion too ----------------------------------------
-  const withMeta = openidm.read(`managed/alpha_user/${id}`, null, [
+  const withMeta = openidm.read(`${FIXTURE}/${id}`, null, [
     "_meta/lastChanged",
   ]);
   if (withMeta !== null) {
@@ -107,11 +143,11 @@ export function typeTours(): void {
   // --- a plain `string[]` is rejected, not silently accepted ---------------
   const loose: string[] = ["userName"];
   // @ts-expect-error a field list must be members of the schema, not any string
-  openidm.read(`managed/alpha_user/${id}`, null, loose);
+  openidm.read(`${FIXTURE}/${id}`, null, loose);
 
   // --- a correctly typed but non-LITERAL list widens to the whole record ----
-  const dynamic: ManagedField<AlphaUser>[] = ["userName"];
-  const widened = openidm.read(`managed/alpha_user/${id}`, null, dynamic);
+  const dynamic: ManagedField<TypesFixture>[] = ["userName"];
+  const widened = openidm.read(`${FIXTURE}/${id}`, null, dynamic);
   if (widened !== null) {
     // Precision is lost, not correctness: the whole record, never `{}`.
     const _sn: string = widened.sn;
@@ -119,14 +155,12 @@ export function typeTours(): void {
   }
 
   // --- query: two-argument form keeps every declared property -------------
-  const page = openidm.query("managed/alpha_user", { _queryFilter: "true" });
-  const _first: AlphaUser | undefined = page.result[0];
+  const page = openidm.query(FIXTURE, { _queryFilter: "true" });
+  const _first: TypesFixture | undefined = page.result[0];
   void _first;
 
   // --- query: the third argument projects every row -----------------------
-  const thin = openidm.query("managed/alpha_user", { _queryFilter: "true" }, [
-    "userName",
-  ]);
+  const thin = openidm.query(FIXTURE, { _queryFilter: "true" }, ["userName"]);
   const row = thin.result[0];
   if (row !== undefined) {
     const _id: string = row._id;
@@ -136,7 +170,7 @@ export function typeTours(): void {
   }
 
   // --- query: `_fields` in params cannot be projected, so rows go partial --
-  const opaque = openidm.query("managed/alpha_user", {
+  const opaque = openidm.query(FIXTURE, {
     _queryFilter: "true",
     _fields: "userName",
   });
@@ -149,7 +183,7 @@ export function typeTours(): void {
 
   // --- a query result is NOT an endpoint response -------------------------
   // @ts-expect-error `remainingPagedResults` is optional here and required there
-  const _asResponse: CrestQueryResult<AlphaUser> = page;
+  const _asResponse: CrestQueryResult<TypesFixture> = page;
   void _asResponse;
 
   // --- an unknown managed path rejects a field list -----------------------

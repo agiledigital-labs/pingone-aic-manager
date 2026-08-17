@@ -363,4 +363,56 @@ test("runtime response validation is off unless explicitly requested", () => {
     endpoint.dispatch(crestRequest("read"), callContext()),
     { count: "dynamic" }
   );
+  // …and a test can demand the check without the endpoint shipping it on.
+  const fault = crestErrorFrom(() =>
+    endpoint.dispatch(crestRequest("read"), callContext(), undefined, {
+      validateResponses: true,
+    })
+  );
+  assert.equal(fault.code, 500);
+});
+
+test("a per-call override can also turn response validation OFF", () => {
+  const endpoint = defineEndpoint({
+    name: "checked-off",
+    validateResponses: true,
+    routes: [
+      route({
+        method: "read",
+        path: "/",
+        response: v.object({ count: v.integer() }),
+        handler: () => ({ count: "dynamic" }) as never,
+      }),
+    ],
+  });
+  assert.deepEqual(
+    endpoint.dispatch(crestRequest("read"), callContext(), undefined, {
+      validateResponses: false,
+    }),
+    { count: "dynamic" }
+  );
+});
+
+test("a nullable response member accepts the null IDM actually returns", () => {
+  const endpoint = defineEndpoint({
+    name: "nulls",
+    validateResponses: true,
+    routes: [
+      route({
+        method: "read",
+        path: "/",
+        // `manager` is an unset single-valued relationship: IDM sends `null`,
+        // and a plain `optional()` would reject it under strict validation.
+        response: v.object({
+          userName: v.string(),
+          managerRef: v.nullable(v.string()),
+        }),
+        handler: () => ({ userName: "ada", managerRef: null }),
+      }),
+    ],
+  });
+  assert.deepEqual(endpoint.dispatch(crestRequest("read"), callContext()), {
+    userName: "ada",
+    managerRef: null,
+  });
 });

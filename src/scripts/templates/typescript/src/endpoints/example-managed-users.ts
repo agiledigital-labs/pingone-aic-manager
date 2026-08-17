@@ -76,12 +76,18 @@ const CONTACT_RESPONSE = v.object(
     _id: v.string(),
     userName: v.string(),
     mail: v.string(),
-    telephoneNumber: v.string({
-      description: "Empty when the user has none.",
-    }),
-    managerRef: v.string({
-      description: "Manager's _ref; empty when unset.",
-    }),
+    // ABSENT and NULL are different, and this route meets both. A schema
+    // property the user has not filled in is simply missing from the projection,
+    // which is `v.optional`; an unset single-valued RELATIONSHIP comes back as
+    // an explicit `null`, which only `v.nullable` accepts. Collapsing either one
+    // to `""` — as this example used to — invents a value the tenant never sent
+    // and puts it in the OpenAPI document as a plain string.
+    telephoneNumber: v.optional(
+      v.string({ description: "Absent when the user has none." })
+    ),
+    managerRef: v.nullable(
+      v.string({ description: "Manager's _ref; null when unset." })
+    ),
   },
   { description: "Contact details, read with an explicit field selector." }
 );
@@ -147,8 +153,8 @@ export default defineEndpoint({
           _id: user._id,
           userName: user.userName,
           mail: user.mail,
-          telephoneNumber: user.telephoneNumber ?? "",
-          managerRef: user.manager?._ref ?? "",
+          telephoneNumber: user.telephoneNumber,
+          managerRef: user.manager?._ref ?? null,
         };
       },
     }),

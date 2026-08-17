@@ -57,6 +57,8 @@ const describedPattern = v.string({
   patternDescription: "start with w-",
 });
 const csvEnum = v.csv(v.enumOf(["owner", "history"]));
+const nullableString = v.nullable(v.string());
+const maybeString = v.optional(v.nullable(v.string()));
 const shortRecord = v.record(v.string({ maxLength: 2 }));
 const INTEGER = "expected an integer";
 const OBJECT = { name: "a", note: undefined };
@@ -84,6 +86,11 @@ const parseCases: ParseCase[] = [
   rejected("optional: null", optionalString, null, "expected a string"),
   accepted("optional: empty string is a value", optionalString, "", ""),
   accepted("optional: present", optionalString, "x", "x"),
+  accepted("nullable: explicit null", nullableString, null, null),
+  accepted("nullable: present", nullableString, "x", "x"),
+  rejected("nullable: wrong type", nullableString, 7, "expected a string"),
+  accepted("nullable+optional: absent", maybeString, undefined, undefined),
+  accepted("nullable+optional: null", maybeString, null, null),
   accepted("default: absent", defaultInteger, undefined, 20),
   accepted("default: present", defaultInteger, 3, 3),
   accepted("csv: array", commaList, ["a", "b"], ["a", "b"]),
@@ -200,6 +207,11 @@ const schemaCases: readonly (readonly [string, unknown, unknown])[] = [
     }).schema["required"], ["name"]],
   ["object schema rejects extra members", fixedObject.schema["additionalProperties"], false],
   ["UUID schema carries a pattern", typeof v.uuid().schema["pattern"], "string"],
+  // OpenAPI 3.1 is JSON Schema 2020-12: a union `type`, not `nullable: true`.
+  ["nullable widens the schema type", nullableString.schema["type"], ["string", "null"]],
+  ["nullable widens an enum too", v.nullable(v.enumOf(["a"])).schema["enum"], ["a", null]],
+  ["nullable is about the value, not presence", nullableString.isOptional, false],
+  ["nullable inside optional stays optional", maybeString.isOptional, true],
 ];
 
 for (const [name, actual, expected] of schemaCases) {

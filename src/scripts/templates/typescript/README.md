@@ -79,6 +79,12 @@ Nothing in the handler is annotated: the types come from the validators. Change
   required OAuth scopes. Query and path values arrive as strings, so the scalar
   validators coerce there. JSON bodies are strict and therefore match their
   OpenAPI schemas. A failure is a CREST 400 listing every issue — never a 500.
+- **`null` vs absent**: `v.optional()` allows the key to be MISSING;
+  `v.nullable()` allows it to be present and `null`, which is what IDM sends for
+  an unset single-valued relationship and what a caller sends to clear a field.
+  Since bodies and responses are strict, a bare `v.optional(v.string())` rejects
+  `null` — compose them (`v.optional(v.nullable(v.string()))`) when both are
+  legal. `nullable` widens the OpenAPI type to `["string", "null"]`.
 - **Errors**: throw `badRequest`/`notFound`/`forbidden`/… from the framework.
   Anything else thrown becomes an opaque 500 and the real cause goes to the log.
 - **Responses**: `response` takes the response VALIDATOR (`v.object({…})`, not
@@ -87,7 +93,9 @@ Nothing in the handler is annotated: the types come from the validators. Change
   member the response types as an enum needs `as const`
   (`status: "retired" as const`); see the note in `framework/router.ts`.
   Set `validateResponses: true` on `defineEndpoint` to check dynamic handler
-  results at runtime as well (recommended in tests and non-production tenants).
+  results at runtime as well (recommended in tests and non-production tenants),
+  or ask for it per call so nothing ships enabled:
+  `dispatch(request, context, undefined, { validateResponses: true })`.
 - **Queries**: declare them with `queryRoute({ … })`, not
   `route({ method: "query" })`, and let `response` describe ONE ROW — the
   framework wraps the paging envelope for the type and the document alike. Return
@@ -114,7 +122,10 @@ const same = openidm.read("managed/alpha_user/" + id);
 
 // A `fields` list projects the RESULT TYPE: `_id`, `_rev`, `userName`, `mail`,
 // and nothing else. `openidm.query` takes the same third argument.
-const thin = openidm.read(`managed/alpha_user/${id}`, null, ["userName", "mail"]);
+const thin = openidm.read(`managed/alpha_user/${id}`, null, [
+  "userName",
+  "mail",
+]);
 ```
 
 Use a **template literal** for any managed path — Babel downlevels it to
@@ -193,3 +204,11 @@ endpoint with `endpoint.dispatch(request, context, logger)`; `tests/harness.ts`
 builds the request/context doubles, including a `java.util.Set` stand-in for
 `context.oauth2.scopes`. Use `managedStore()` with `withOpenIdm()` when a
 handler calls the global `openidm` binding.
+
+`managedStore()` deliberately **throws** instead of approximating: it projects a
+`fields` selector and applies a `field eq "value"` filter, but relationship
+expansion, paging, sort keys, richer filters, `patch`, `action` and
+`update`/`delete` of an absent record all raise a `managedStore:` error naming
+the gap. A double that is more permissive than the tenant turns a live 500 into a
+passing test, so give the handler its own stub for those reads rather than
+loosening this one.
