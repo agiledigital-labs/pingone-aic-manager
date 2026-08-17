@@ -402,16 +402,33 @@ async function once() {
 if (watchMode) {
   const { watch } = await import("node:fs");
   let pending = null;
+  let building = false;
+  let rerun = false;
+  const buildLatest = async () => {
+    if (building) {
+      rerun = true;
+      return;
+    }
+    building = true;
+    try {
+      do {
+        rerun = false;
+        await once();
+      } while (rerun);
+    } finally {
+      building = false;
+    }
+  };
   const trigger = () => {
     if (pending !== null) {
       clearTimeout(pending);
     }
     pending = setTimeout(() => {
       pending = null;
-      void once();
+      void buildLatest();
     }, 250);
   };
-  await once();
+  await buildLatest();
   for (const dir of ["src", "framework"]) {
     const target = join(projectRoot, dir);
     if (existsSync(target)) {
