@@ -149,6 +149,14 @@ test("coercion remains available for URL and header-shaped inputs", () => {
   });
 });
 
+test("stateful regular expressions give stable results across requests", () => {
+  const validator = v.string({ pattern: /^a+$/g });
+  assert.deepEqual(run(validator, "aaa").issues, []);
+  assert.deepEqual(run(validator, "aaa").issues, []);
+  assert.equal(run(validator, "bbb").issues.length, 1);
+  assert.deepEqual(run(validator, "aaa").issues, []);
+});
+
 test("object collects every failure", () => {
   const validator = v.object({
     name: v.string({ minLength: 3 }),
