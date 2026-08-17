@@ -290,3 +290,39 @@ test("the endpoint definition survives to build time", () => {
   assert.equal(demo.definition.routes.length, 7);
   assert.equal(demo.definition.correlationHeader, "x-request-id");
 });
+
+test("ambiguous routes are rejected instead of silently shadowing", () => {
+  const first = route({
+    method: "read",
+    path: "/a/{id}",
+    params: { id: v.string() },
+    handler: () => ({}),
+  });
+  const second = route({
+    method: "read",
+    path: "/{kind}/b",
+    params: { kind: v.string() },
+    handler: () => ({}),
+  });
+  assert.throws(
+    () => defineEndpoint({ name: "ambiguous", routes: [first, second] }),
+    /ambiguous routes/
+  );
+});
+
+test("a more-specific route may intentionally overlap a parameter route", () => {
+  assert.doesNotThrow(() =>
+    defineEndpoint({
+      name: "specific",
+      routes: [
+        route({ method: "read", path: "/fixed", handler: () => ({}) }),
+        route({
+          method: "read",
+          path: "/{id}",
+          params: { id: v.string() },
+          handler: () => ({}),
+        }),
+      ],
+    })
+  );
+});
