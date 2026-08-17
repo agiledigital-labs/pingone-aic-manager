@@ -73,10 +73,12 @@ Nothing in the handler is annotated: the types come from the validators. Change
 
 - **Routing** is keyed by (CREST method, sub-path pattern, action name).
   `request.resourcePath` carries the whole sub-path, so `/widget/{id}/summary`
-  is an ordinary pattern. A literal segment beats a capture of the same length.
+  is an ordinary pattern. A literal segment beats a capture of the same length;
+  same-specificity patterns that could match the same request are rejected.
 - **Validation** covers path params, query params, headers, the body and the
   required OAuth scopes. Query and path values arrive as strings, so the scalar
-  validators coerce. A failure is a CREST 400 listing every issue — never a 500.
+  validators coerce there. JSON bodies are strict and therefore match their
+  OpenAPI schemas. A failure is a CREST 400 listing every issue — never a 500.
 - **Errors**: throw `badRequest`/`notFound`/`forbidden`/… from the framework.
   Anything else thrown becomes an opaque 500 and the real cause goes to the log.
 - **Responses**: `response` takes the response VALIDATOR (`v.object({…})`, not
@@ -84,6 +86,8 @@ Nothing in the handler is annotated: the types come from the validators. Change
   generated OpenAPI cannot promise a field the code stopped sending. Overriding a
   member the response types as an enum needs `as const`
   (`status: "retired" as const`); see the note in `framework/router.ts`.
+  Set `validateResponses: true` on `defineEndpoint` to check dynamic handler
+  results at runtime as well (recommended in tests and non-production tenants).
 - **Queries**: declare them with `queryRoute({ … })`, not
   `route({ method: "query" })`, and let `response` describe ONE ROW — the
   framework wraps the paging envelope for the type and the document alike. Return
@@ -145,9 +149,15 @@ esbuild cannot target ES5 at all, and Babel cannot bundle. So:
 4. The output is linted against IDM's **runtime** bans — default parameters,
    `const` in a loop initializer, a trailing comma in a parameter list, and
    references to the absent `Reflect` or `Proxy` globals.
-5. Only if every endpoint passes every step is anything written. Bundles and
+5. Only if every endpoint passes every step is anything written. Every output
+   is prepared before publication; bundles and
    the ownership manifest publish by same-directory atomic rename, so watchers
    see the complete old or new file, never a partial write.
+
+Removing a TypeScript endpoint retires the generated bundle and OpenAPI file
+owned by the previous manifest. Removing the final endpoint also publishes an
+empty manifest; deleting the tenant endpoint itself remains an explicit
+`aic script rm` operation.
 
 The emitted file ends with `__aicMain.default();` because an endpoint's HTTP
 response body is the script's completion value.
@@ -181,4 +191,5 @@ aic script diff endpoint/my-thing
 types, so there is no test-runner dependency and no second build. Drive an
 endpoint with `endpoint.dispatch(request, context, logger)`; `tests/harness.ts`
 builds the request/context doubles, including a `java.util.Set` stand-in for
-`context.oauth2.scopes`.
+`context.oauth2.scopes`. Use `managedStore()` with `withOpenIdm()` when a
+handler calls the global `openidm` binding.

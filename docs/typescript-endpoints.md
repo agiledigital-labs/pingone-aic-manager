@@ -72,7 +72,8 @@ mismatch first.
    (`constantSuper`, `noClassCalls`, `setClassMethods`,
    `superIsCallableConstructor`, `noDocumentAll`).
 4. The **generated** file is linted against IDM's runtime bans (below).
-5. Only if every endpoint clears every step is anything written to disk. Bundles
+5. Only if every endpoint clears every step is anything written to disk. All
+   generated content is prepared before publication. Bundles
    and the ownership manifest publish by same-directory atomic rename, so
    `aic script watch` can observe the complete old or new file but never a
    partial write.
@@ -153,6 +154,11 @@ server's copy back), after which every later save takes the ordinary tracked
 path. Hand-written `.cjs` files are unaffected: an untracked one is still
 skipped.
 
+The manifest is also the cleanup boundary. A successful build removes bundle
+and OpenAPI files named by the previous manifest but absent from the new one.
+An empty project publishes an empty manifest and retires all previously-owned
+outputs; remote endpoint deletion remains an explicit lifecycle operation.
+
 ## Tenant-derived types
 
 `aic workspace update` already writes ambient `idm/types/managed/*.d.ts` for the
@@ -227,11 +233,10 @@ The machinery is duplicated across the three surfaces that declare `openidm`
 in all three, since a projection that silently differs per surface is worse than
 one that does not exist.
 
-**Not covered by tests.** `openidm` is a global with no injection seam and the
-test harness has no double for it, so an endpoint's store calls are checked by
-`tsc` but never executed under `node`. `example-managed-users.test.ts` therefore
-stops at routing and validation. Adding a `managedStore()` double to
-`tests/harness.ts` would close this.
+`tests/harness.ts` provides `managedStore()` and `withOpenIdm()` so Node tests
+can execute handlers that use the global `openidm` binding. The managed-users
+example exercises a real read through that seam; specialized actions or patch
+semantics can override the relevant member on the returned double.
 
 ## Declared responses are checked against the handler
 
@@ -249,6 +254,17 @@ disagree silently and the generated OpenAPI would promise a field the code had
 stopped sending. Now the handler's return type comes from the same declaration
 the document does. `response: v.unknownValue()` is the explicit escape hatch for
 a body the validators cannot express.
+
+This check is compile-time by default. `validateResponses: true` additionally
+validates dynamic handler results at runtime and turns drift into an opaque 500;
+it is intended for tests and non-production tenants where the extra traversal
+cost is acceptable.
+
+Request validation is location-aware: path, query and header strings are
+coerced, while JSON bodies and patch operations are strict against their JSON
+Schema shapes. Route declarations with same-specificity patterns that could
+match the same method/action request are rejected at definition time rather
+than resolved by declaration order.
 
 Queries go through **`queryRoute`** rather than `route({ method: "query" })`,
 and their `response` describes ONE ROW — the framework wraps the paging envelope
