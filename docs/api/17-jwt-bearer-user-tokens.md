@@ -335,6 +335,13 @@ directly with the private key. It exists so the realm-wide _configuration_ never
 exists on production in the first place, which is why the write rule carries the
 weight. Ordinary production writes still need `--yes`, as everywhere else.
 
+**None of this has run against a live production-themed tenant.** No configured
+tenant carries that theme, so every refusal above is covered by unit tests and
+by construction only — the tenant-side facts the rule rests on were probed on
+the sandbox, but the gate itself has never fired in anger. Onboarding the first
+production tenant should therefore include a deliberate `setup --id <uuid>` and
+a `subjects list` before anyone needs either under time pressure.
+
 - `aic jwt-bearer key export` emits the stored private JWK as one standard JWK
   object, retaining `kid` and any `aic_*` attribution members. With `--out` it
   creates a new mode-600 file and refuses to overwrite an existing path; without
