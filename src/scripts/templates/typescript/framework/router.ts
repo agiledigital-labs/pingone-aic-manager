@@ -342,6 +342,8 @@ export interface EndpointSpec {
   headers?: Shape;
   /** Header used as the log correlation id. Default `x-request-id`. */
   correlationHeader?: string;
+  /** Validate handler results at runtime. Useful in tests and non-production tenants. */
+  validateResponses?: boolean;
   routes: RouteDefinition[];
 }
 
@@ -353,6 +355,7 @@ export interface EndpointDefinition {
   version: string;
   headers: Shape;
   correlationHeader: string;
+  validateResponses: boolean;
   routes: RouteDefinition[];
 }
 
@@ -429,6 +432,39 @@ function assertUnambiguousRoutes(routes: RouteDefinition[]): void {
         );
       }
     }
+  }
+}
+
+function assertValidResponse(route: RouteDefinition, value: unknown): void {
+  if (route.response === undefined) {
+    return;
+  }
+  const issues: Issue[] = [];
+  if (route.method === "query") {
+    const rows =
+      typeof value === "object" && value !== null
+        ? (value as Record<string, unknown>)["result"]
+        : undefined;
+    if (!Array.isArray(rows)) {
+      issues.push({ path: "response.result", message: "expected an array" });
+    } else {
+      for (let index = 0; index < rows.length; index += 1) {
+        route.response.parse(
+          rows[index],
+          "response.result[" + index + "]",
+          issues,
+          "strict"
+        );
+      }
+    }
+  } else {
+    route.response.parse(value, "response", issues, "strict");
+  }
+  if (issues.length > 0) {
+    throw new Error(
+      "response validation failed: " +
+        issues.map((entry) => entry.path + " " + entry.message).join("; ")
+    );
   }
 }
 
@@ -533,6 +569,7 @@ export function defineEndpoint(spec: EndpointSpec): EndpointMain {
     version: spec.version ?? "1.0.0",
     headers: (spec.headers ?? {}) as Shape,
     correlationHeader: spec.correlationHeader ?? "x-request-id",
+    validateResponses: spec.validateResponses ?? false,
     routes: spec.routes.slice(),
   };
 
@@ -654,7 +691,7 @@ export function defineEndpoint(spec: EndpointSpec): EndpointMain {
       }
 
       routed.debug("dispatching", describeCaller(context));
-      return route.run({
+      const result = route.run({
         params,
         newResourceId:
           request.method === "create" ? request.newResourceId : null,
@@ -667,6 +704,10 @@ export function defineEndpoint(spec: EndpointSpec): EndpointMain {
         log: routed,
         correlationId,
       });
+      if (definition.validateResponses) {
+        assertValidResponse(route, result);
+      }
+      return result;
     } catch (thrown) {
       const fault = toCrestFault(thrown);
       if (!isFault(thrown)) {

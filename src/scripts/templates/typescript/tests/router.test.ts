@@ -326,3 +326,41 @@ test("a more-specific route may intentionally overlap a parameter route", () => 
     })
   );
 });
+
+test("optional runtime response validation catches dynamic result drift", () => {
+  const endpoint = defineEndpoint({
+    name: "checked",
+    validateResponses: true,
+    routes: [
+      route({
+        method: "read",
+        path: "/",
+        response: v.object({ count: v.integer() }),
+        handler: () => ({ count: "not-an-integer" }) as never,
+      }),
+    ],
+  });
+  const fault = crestErrorFrom(() =>
+    endpoint.dispatch(crestRequest("read"), callContext())
+  );
+  assert.equal(fault.code, 500);
+  assert.equal(fault.message, "Internal error");
+});
+
+test("runtime response validation is off unless explicitly requested", () => {
+  const endpoint = defineEndpoint({
+    name: "unchecked",
+    routes: [
+      route({
+        method: "read",
+        path: "/",
+        response: v.object({ count: v.integer() }),
+        handler: () => ({ count: "dynamic" }) as never,
+      }),
+    ],
+  });
+  assert.deepEqual(
+    endpoint.dispatch(crestRequest("read"), callContext()),
+    { count: "dynamic" }
+  );
+});
