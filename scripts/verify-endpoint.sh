@@ -7,8 +7,16 @@
 #   scripts/verify-endpoint.sh /am/json/realms/root/realms/alpha/scripts?_queryFilter=true \
 #       --header "Accept-API-Version: protocol=2.0,resource=1.0"
 #
-# Env (loaded from .envrc if direnv is not active):
-#   TENANT_BASE_URL
+# Tenant base URL, in order of precedence:
+#   1. $TENANT_BASE_URL from the environment
+#   2. `base_url` for the active context in .aic/config.toml  <- the usual case
+#   3. .envrc, sourced only if it happens to export TENANT_BASE_URL
+#
+# (2) is where the URL actually lives now. It used to be an `export` in .envrc;
+# onboarding moved it into the project config, and until 2026-08-17 this script
+# only looked at .envrc — so it failed with "TENANT_BASE_URL is not set (check
+# .envrc)" on a correctly configured project, and sourcing .envrc under a
+# non-direnv shell also spat `use: command not found` from its `use nix` line.
 #
 # The token comes from the running agent via `aic whoami --token`, for the
 # tenant in the current context (`aic ctx current`). The agent must be unlocked;
@@ -23,16 +31,45 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 
-# --- Load env if not already set ---
+# --- Tenant base URL ---
+# The project config is the normal source. Read the `base_url` of the active
+# context rather than the first one in the file, so a multi-tenant config does
+# not silently curl the wrong tenant with this tenant's bearer.
+if [ -z "${TENANT_BASE_URL:-}" ] && [ -f "$ROOT/.aic/config.toml" ]; then
+  ctx=$(aic --no-prompt ctx current 2>/dev/null || true)
+  # Config is an array of tables: a `[[tenant]]` block per tenant, each with a
+  # `name` and a `base_url` in no guaranteed order. So buffer both per block and
+  # emit only when the block ends and the name matched.
+  TENANT_BASE_URL=$(awk -v want="$ctx" '
+    function flush() { if (inblock && name == want && url != "") { print url; exit } }
+    /^\[\[tenant\]\]/ { flush(); name = ""; url = ""; inblock = 1; next }
+    /^\[/             { flush(); inblock = 0; next }
+    inblock && /^[[:space:]]*name[[:space:]]*=/     { name = value($0) }
+    inblock && /^[[:space:]]*base_url[[:space:]]*=/ { url  = value($0) }
+    function value(line) {
+      sub(/^[^=]*=[[:space:]]*"/, "", line); sub(/".*$/, "", line); return line
+    }
+    END { flush() }
+  ' "$ROOT/.aic/config.toml")
+fi
+
+# Last resort: .envrc, for a checkout that still exports it. Sourced in a
+# subshell-safe way — it may contain direnv-only commands (`use nix`) that are
+# not valid bash, and it holds secrets we must not let fail the script.
 if [ -z "${TENANT_BASE_URL:-}" ] && [ -f "$ROOT/.envrc" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$ROOT/.envrc"
-  set +a
+  TENANT_BASE_URL=$(
+    set -a
+    # shellcheck disable=SC1091
+    source "$ROOT/.envrc" 2>/dev/null || true
+    set +a
+    printf '%s' "${TENANT_BASE_URL:-}"
+  )
 fi
 
 if [ -z "${TENANT_BASE_URL:-}" ]; then
-  echo "error: TENANT_BASE_URL is not set (check .envrc)" >&2
+  echo "error: could not determine the tenant base URL." >&2
+  echo "  looked for: \$TENANT_BASE_URL, base_url for the active context in" >&2
+  echo "  .aic/config.toml, then .envrc. Check 'aic ctx current'." >&2
   exit 2
 fi
 
