@@ -634,13 +634,18 @@ export function defineEndpoint(spec: EndpointSpec): EndpointMain {
         if (raw === undefined || raw === null) {
           issues.push({ path: "body", message: "is required" });
         } else {
-          body = route.body.parse(raw, "body", issues);
+          body = route.body.parse(raw, "body", issues, "strict");
         }
       }
       let patches: PatchOperation[] =
         request.method === "patch" ? request.patchOperations : [];
       if (route.patches !== undefined) {
-        patches = route.patches.parse(patches, "patchOperations", issues);
+        patches = route.patches.parse(
+          patches,
+          "patchOperations",
+          issues,
+          "strict"
+        );
       }
 
       if (issues.length > 0) {
