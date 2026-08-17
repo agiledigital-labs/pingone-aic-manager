@@ -1,13 +1,7 @@
 // `example-managed-users`, driven through `dispatch` the way IDM drives it.
 //
-// The handlers there call `openidm`, which does not exist under node, so these
-// tests deliberately stop at the gates that run BEFORE a handler: routing and
-// per-route validation. That is the whole reachable surface without a store
-// double, and it is the half that a typo in a route declaration breaks.
-//
-// The typed `openidm` surface itself is covered by `npm run type-check` — the
-// point of that endpoint is that its mistakes are build errors, not test
-// failures.
+// The harness installs an in-memory `openidm` binding for tests that reach a
+// handler; validation-only tests need no global binding at all.
 //
 // User file — seeded once, yours to change.
 
@@ -18,7 +12,13 @@ import type { CrestErrorResponse } from "../framework/index.ts";
 import users, {
   USER_COLLECTION,
 } from "../src/endpoints/example-managed-users.ts";
-import { callContext, crestErrorFrom, crestRequest } from "./harness.ts";
+import {
+  callContext,
+  crestErrorFrom,
+  crestRequest,
+  managedStore,
+  withOpenIdm,
+} from "./harness.ts";
 
 /**
  * Which inputs a validation failure blamed. The caller-facing `message` is the
@@ -90,4 +90,34 @@ test("a sub-path no route matches is a 404", () => {
     )
   );
   assert.equal(error.code, 404);
+});
+
+test("a read handler can be exercised with the managed-store double", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const store = managedStore({
+    [USER_COLLECTION]: [
+      {
+        _id: id,
+        _rev: "1",
+        userName: "ada",
+        mail: "ada@example.invalid",
+        givenName: "Ada",
+        sn: "Lovelace",
+        accountStatus: "active",
+      },
+    ],
+  });
+  const result = withOpenIdm(store, () =>
+    users.dispatch(
+      crestRequest("read", { resourcePath: id }),
+      callContext()
+    )
+  );
+  assert.deepEqual(result, {
+    _id: id,
+    userName: "ada",
+    mail: "ada@example.invalid",
+    displayName: "Ada Lovelace",
+    hasManager: false,
+  });
 });
