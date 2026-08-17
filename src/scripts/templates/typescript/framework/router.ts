@@ -371,8 +371,23 @@ export interface EndpointMain {
   dispatch(
     request: CrestRequest,
     context: IdmCallContext,
-    logger?: IdmLogger
+    logger?: IdmLogger,
+    options?: DispatchOptions
   ): unknown;
+}
+
+/** Per-call overrides for one {@link EndpointMain.dispatch}. */
+export interface DispatchOptions {
+  /**
+   * Override the endpoint's `validateResponses`.
+   *
+   * Response validation is most valuable in TESTS and least wanted in
+   * production, and the endpoint's own declaration cannot be both. So a test
+   * turns it on per call — `dispatch(request, context, undefined, {
+   * validateResponses: true })` — and nothing has to ship enabled to get the
+   * check.
+   */
+  validateResponses?: boolean;
 }
 
 function segmentsMatch(
@@ -576,8 +591,13 @@ export function defineEndpoint(spec: EndpointSpec): EndpointMain {
   const dispatch = (
     request: CrestRequest,
     context: IdmCallContext,
-    logger?: IdmLogger
+    logger?: IdmLogger,
+    options?: DispatchOptions
   ): unknown => {
+    const validateResponses =
+      options === undefined || options.validateResponses === undefined
+        ? definition.validateResponses
+        : options.validateResponses;
     const log = createRequestLogger(logger ?? SILENT_LOGGER, {
       endpoint: definition.name,
     });
@@ -704,7 +724,7 @@ export function defineEndpoint(spec: EndpointSpec): EndpointMain {
         log: routed,
         correlationId,
       });
-      if (definition.validateResponses) {
+      if (validateResponses) {
         assertValidResponse(route, result);
       }
       return result;

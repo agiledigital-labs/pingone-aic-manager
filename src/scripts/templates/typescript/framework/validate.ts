@@ -154,12 +154,13 @@ export function string(options: StringOptions = {}): Validator<string> {
       options.pattern.lastIndex = 0;
       const matches = options.pattern.test(input);
       options.pattern.lastIndex = 0;
-      if (matches) {
-        return input;
+      if (!matches) {
+        const wanted =
+          options.patternDescription ?? "match " + String(options.pattern);
+        issue(issues, path, "must " + wanted);
       }
-      const wanted =
-        options.patternDescription ?? "match " + String(options.pattern);
-      issue(issues, path, "must " + wanted);
+      // Deliberately NOT an early `return input` on a match: every check in
+      // this function must stay reachable if another is added below.
     }
     return input;
   });
@@ -313,7 +314,61 @@ export const isoDate = (description?: string): Validator<string> => {
 // Composition
 // ---------------------------------------------------------------------------
 
-/** Allow the value to be absent. Produces `T | undefined`, never `?:`. */
+/**
+ * Widen a schema's `type` (and `enum`, when it has one) to admit `null`.
+ * OpenAPI 3.1 is JSON Schema 2020-12, so `type: ["string", "null"]` is the
+ * encoding — not the 3.0-era `nullable: true`.
+ */
+function nullableSchema(inner: JsonSchema): JsonSchema {
+  const schema: JsonSchema = { ...inner };
+  const type = schema["type"];
+  if (typeof type === "string") {
+    schema["type"] = [type, "null"];
+  } else if (Array.isArray(type) && type.indexOf("null") < 0) {
+    schema["type"] = type.concat(["null"]);
+  }
+  const values = schema["enum"];
+  if (Array.isArray(values) && values.indexOf(null) < 0) {
+    schema["enum"] = values.concat([null]);
+  }
+  return schema;
+}
+
+/**
+ * Allow an explicit JSON `null` as well as `T`. Produces `T | null`.
+ *
+ * NULL AND ABSENT ARE DIFFERENT THINGS, and IDM uses both: a managed record
+ * hands back `"manager": null` for an unset single-valued relationship, and a
+ * caller clearing a field sends `null` rather than omitting it. {@link optional}
+ * covers ABSENT (`undefined`); this covers PRESENT-AND-NULL. Compose them —
+ * `optional(nullable(v.string()))` — for a member that may be either.
+ *
+ * A JSON body, a patch value and a declared `response` are all validated
+ * STRICTLY (see {@link ParseMode}), so `null` there is a real value that only
+ * this combinator accepts. Without it a handler returning IDM's own `null` fails
+ * its own `response` declaration.
+ */
+export function nullable<T>(inner: Validator<T>): Validator<T | null> {
+  return define(
+    nullableSchema(inner.schema),
+    inner.isOptional,
+    (input, path, issues, mode) => {
+      if (input === null) {
+        return null;
+      }
+      return inner.parse(input, path, issues, mode);
+    }
+  );
+}
+
+/**
+ * Allow the value to be absent. Produces `T | undefined`, never `?:`.
+ *
+ * In `coerce` mode (path/query/header strings) `null` and `""` also count as
+ * absent, because that is what an omitted query param looks like. In `strict`
+ * mode (JSON bodies, patch values, responses) only `undefined` is absent —
+ * wrap with {@link nullable} to admit an explicit `null`.
+ */
 export function optional<T>(inner: Validator<T>): Validator<T | undefined> {
   return define(inner.schema, true, (input, path, issues, mode) => {
     if (

@@ -686,6 +686,48 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
     }
 }
 
+/// Say what a workspace without tenant types can and cannot do, and leave the
+/// same note in `src/generated/managed.ts` so it is findable from the editor.
+///
+/// Without this the failure is a one-line warning and the consequence lands much
+/// later: `npm run type-check` fails in a freshly scaffolded workspace, because
+/// the seeded `example-managed-users.ts` is written against the tenant's types
+/// and `ManagedName` is `never` until they exist.
+fn explain_missing_managed_types(tenant: &str) {
+    const NOTE: &str = "\
+// NOT GENERATED. `aic workspace init`/`update` could not reach the tenant, so
+// this file holds no managed-object types and `ManagedObjects` stays empty.
+//
+// What that costs, until `aic login && aic workspace update` replaces this file:
+//   * `openidm` calls still compile, but hand back the generic CREST resource,
+//     so members are index-only -- `record[\"userName\"]`, not `record.userName`;
+//   * a `fields` argument on a `managed/...` path is rejected outright;
+//   * `ManagedName` is `never`, so `src/endpoints/example-managed-users.ts`
+//     (seeded against this tenant's schema) does NOT type-check yet. Delete it
+//     if you would rather not wait.
+//
+// Gitignored either way. See docs/typescript-endpoints.md.
+export {};
+";
+    eprintln!(
+        "         `typescript/src/endpoints/example-managed-users.ts` needs them, so\n         \
+         `npm run type-check` will fail until you run `aic login && aic workspace update`."
+    );
+    let path = ProjectConfig::workspace_tree(tenant)
+        .join("typescript")
+        .join("src")
+        .join("generated")
+        .join("managed.ts");
+    // Never clobber a good module with the note: a transient fetch failure on a
+    // workspace that already has types must leave them alone.
+    if path.exists() || path.parent().is_none_or(|p| !p.is_dir()) {
+        return;
+    }
+    if let Err(error) = std::fs::write(&path, NOTE) {
+        eprintln!("warning: could not write {}: {error}", path.display());
+    }
+}
+
 /// Fetch the tenant's managed schema and write its generated per-object types.
 /// This is best-effort because the embedded workspace scaffold is still useful
 /// when the agent is locked or unavailable.
@@ -694,6 +736,7 @@ async fn generate_managed_types(tenant: &str) -> usize {
         Ok(schema) => schema,
         Err(error) => {
             eprintln!("warning: could not fetch managed schema (types not generated): {error}");
+            explain_missing_managed_types(tenant);
             return 0;
         }
     };
@@ -701,6 +744,7 @@ async fn generate_managed_types(tenant: &str) -> usize {
         Ok(files) => files,
         Err(error) => {
             eprintln!("warning: could not generate managed types: {error}");
+            explain_missing_managed_types(tenant);
             return 0;
         }
     };

@@ -328,8 +328,20 @@ function openApiOutputs(built, toOpenApi) {
 async function run() {
   const entries = entryPoints();
   const previousNames = previouslyOwnedEndpointNames();
-  if (!skipTypeCheck && entries.length > 0) {
+  // AN ABSENT `src/endpoints` IS NOT AN EMPTY ONE. Retirement deletes every
+  // bundle the previous manifest owned, so it must be driven by a project that
+  // says "no endpoints", not by a directory that happens not to be there right
+  // now — a branch switch, an interrupted move, or a watch tick mid-rename would
+  // otherwise wipe the lot and empty the manifest, silently and with exit 0.
+  if (!skipTypeCheck) {
     typeCheck();
+  }
+  if (!existsSync(endpointsDir)) {
+    console.log(
+      "src/endpoints does not exist — kept the previous manifest and bundles; " +
+        "create the directory (even empty) to retire them"
+    );
+    return;
   }
 
   // Build everything into memory first: a failure in the last endpoint must

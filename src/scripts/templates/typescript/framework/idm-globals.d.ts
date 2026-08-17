@@ -39,10 +39,20 @@ declare global {
    * applies because `tsconfig.json` includes `src/**\/*`, not because anything
    * imports it.
    *
-   * When the file is absent — workspace scaffolded but `aic workspace update`
-   * never run — this stays empty, every conditional below resolves to `never`,
-   * and each `openidm` signature falls back to its untyped form. Missing
-   * tenant types therefore cost you inference, never a compile error.
+   * When the file is absent — `aic workspace init` ran with no reachable agent,
+   * so the schema fetch was skipped — this stays empty and every conditional
+   * below resolves to `never`. That is a PARTIAL degradation, not a silent one,
+   * and the difference is worth knowing before you go looking for the cause:
+   *
+   * - a call still compiles, handing back {@link CrestResource}, whose members
+   *   are index-only — `record["userName"]`, never `record.userName`;
+   * - a `fields` argument on a `managed/…` path is REJECTED, because there is no
+   *   schema to check it against ({@link FieldsArg});
+   * - `ManagedName` is `never`, so anything annotated with it fails.
+   *
+   * All three clear up the moment `aic workspace update` runs with the agent
+   * unlocked. Code written against the tenant's types — the seeded
+   * `example-managed-users.ts`, for one — does not type-check until it does.
    */
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- the augmentation seam; see above.
   interface ManagedObjects {}

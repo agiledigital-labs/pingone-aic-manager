@@ -73,10 +73,9 @@ mismatch first.
    `superIsCallableConstructor`, `noDocumentAll`).
 4. The **generated** file is linted against IDM's runtime bans (below).
 5. Only if every endpoint clears every step is anything written to disk. All
-   generated content is prepared before publication. Bundles
-   and the ownership manifest publish by same-directory atomic rename, so
-   `aic script watch` can observe the complete old or new file but never a
-   partial write.
+   generated content is prepared before publication. Bundles and the ownership
+   manifest publish by same-directory atomic rename, so `aic script watch` can
+   observe the complete old or new file but never a partial write.
 
 The emitted file ends with the expression statement `__aicMain.default();`
 because an endpoint's HTTP response body is the script's completion value.
@@ -154,10 +153,21 @@ server's copy back), after which every later save takes the ordinary tracked
 path. Hand-written `.cjs` files are unaffected: an untracked one is still
 skipped.
 
-The manifest is also the cleanup boundary. A successful build removes bundle
-and OpenAPI files named by the previous manifest but absent from the new one.
-An empty project publishes an empty manifest and retires all previously-owned
-outputs; remote endpoint deletion remains an explicit lifecycle operation.
+The manifest is also the cleanup boundary. A successful build removes bundle and
+OpenAPI files named by the previous manifest but absent from the new one. An
+**empty** `src/endpoints` publishes an empty manifest and retires all
+previously-owned outputs; remote endpoint deletion remains an explicit lifecycle
+operation (`aic script rm` — `watch` only ever pushes and creates, so a deleted
+local bundle never deletes the tenant's copy).
+
+An **absent** `src/endpoints` is a different thing, and the build treats it as
+one: it keeps the manifest and every bundle, and says so. Retirement deletes
+every output the project owns, so it has to be driven by a project that says "no
+endpoints" rather than by a directory that happens not to be there this second —
+a branch switch, an interrupted `mv`, or a watch tick mid-rename would otherwise
+wipe the lot, empty the manifest so the next build could not name what it lost,
+and exit 0. The type-check now also runs in this case, so a test left importing
+a deleted endpoint is a build failure instead of a silent retirement.
 
 ## Tenant-derived types
 
@@ -173,6 +183,23 @@ it: the file is gitignored and absent until an update runs. So it is emitted as
 a `declare global` augmentation of the empty `interface ManagedObjects` those
 signatures key on, which applies because `tsconfig.json` includes `src/**/*` —
 not because anything imports it.
+
+### When the tenant was not reachable
+
+`aic workspace init` scaffolds while the agent is locked or offline — that is
+deliberate — and then the schema fetch is skipped and `ManagedObjects` stays
+empty. The degradation is **partial**, not silent, and it is worth knowing which
+half you get: calls still compile and hand back `CrestResource`, whose members
+are index-only (`record["userName"]`), but a `fields` argument on a `managed/…`
+path is rejected outright and `ManagedName` is `never`. The seeded
+`example-managed-users.ts` is written against the tenant's types, so it does not
+type-check until `aic login && aic workspace update` has run once. Init says so,
+and leaves the same note in `src/generated/managed.ts` where you would look for
+it.
+
+The framework's own gates are unaffected: `tests/openidm-types.test.ts` declares
+its own fixture managed object rather than importing a generated one, so the
+projection machinery is checked in a workspace that has never seen a tenant.
 
 That is what makes the typing flow end to end:
 
@@ -238,6 +265,23 @@ can execute handlers that use the global `openidm` binding. The managed-users
 example exercises a real read through that seam; specialized actions or patch
 semantics can override the relevant member on the returned double.
 
+**The double refuses what it cannot model, and that is the point.** It first
+shipped ignoring both the `fields` selector and `_queryFilter`, which is the one
+direction a double must never err in: a store more permissive than the tenant
+turns a live failure into a green test. A mis-projected read and an unfiltered
+query both passed. It now projects `fields` (keeping `_id`/`_rev`, as the tenant
+does), applies a `field eq "value"` filter, hands out copies so a handler cannot
+mutate the store through its own result, and throws a `managedStore:` error
+naming the gap for everything else — relationship expansion, paging, sort keys,
+richer filters, `patch`, `action`, and `update`/`delete` of a record that is not
+there. `tests/harness.test.ts` pins both halves.
+
+`update`/`delete` against a missing id throw here rather than mimicking IDM
+because IDM's own behaviour for that miss is **not** verified — `docs/api/10`
+records the `read` miss (`null`) and the `create` conflict, and nothing else. A
+double that invented a fault shape would be a second, unverified source of
+truth.
+
 ## Declared responses are checked against the handler
 
 `response` takes the response **validator**, not its `.schema`:
@@ -255,16 +299,46 @@ stopped sending. Now the handler's return type comes from the same declaration
 the document does. `response: v.unknownValue()` is the explicit escape hatch for
 a body the validators cannot express.
 
-This check is compile-time by default. `validateResponses: true` additionally
-validates dynamic handler results at runtime and turns drift into an opaque 500;
-it is intended for tests and non-production tenants where the extra traversal
-cost is acceptable.
+This check is compile-time by default. `validateResponses: true` on
+`defineEndpoint` additionally validates dynamic handler results at runtime and
+turns drift into an opaque 500; it is intended for tests and non-production
+tenants where the extra traversal cost is acceptable.
+
+Because the place it earns its keep is a **test** and the place it is least
+wanted is production, it is also a per-call override, so nothing has to ship
+enabled to get the check:
+
+```ts
+endpoint.dispatch(request, context, undefined, { validateResponses: true });
+```
+
+### `null` is a value, not an absence
+
+IDM hands back `null` constantly — an unset single-valued relationship is
+`"manager": null` — and a caller clearing a field sends `null` rather than
+omitting the key. `v.optional()` covers ABSENT (`undefined`); **`v.nullable()`**
+covers present-and-null, and they compose (`v.optional(v.nullable(…))`).
+
+This matters more than it looks, because strict validation means `null` is not
+quietly swallowed any more:
+
+| Declaration                      | `{"x": null}` in a body | handler returning `null` |
+| -------------------------------- | ----------------------- | ------------------------ |
+| `v.string()`                     | 400                     | 500 (when validating)    |
+| `v.optional(v.string())`         | 400                     | 500 (when validating)    |
+| `v.nullable(v.string())`         | accepted as `null`      | accepted                 |
+| `v.optional(v.nullable(v.str…))` | accepted as `null`      | accepted, may be omitted |
+
+`nullable` widens the JSON Schema `type` to `["string", "null"]` (and appends
+`null` to an `enum`), which is the OpenAPI **3.1** encoding — JSON Schema
+2020-12, not the 3.0-era `nullable: true`. So the document tells callers the
+truth without a second declaration.
 
 Request validation is location-aware: path, query and header strings are
 coerced, while JSON bodies and patch operations are strict against their JSON
 Schema shapes. Route declarations with same-specificity patterns that could
-match the same method/action request are rejected at definition time rather
-than resolved by declaration order.
+match the same method/action request are rejected at definition time rather than
+resolved by declaration order.
 
 Queries go through **`queryRoute`** rather than `route({ method: "query" })`,
 and their `response` describes ONE ROW — the framework wraps the paging envelope
