@@ -1,5 +1,12 @@
 // Demo endpoint: the TENANT-DERIVED types.
 //
+// SEEDED FILE. In the repo this lives under `templates/typescript-seeds/`, but it
+// is written to `typescript/src/endpoints/example-managed-users.ts`, and the
+// relative imports below resolve THERE. It sits outside the template project
+// because it is one of only two templates that cannot compile without a tenant —
+// `src/generated/managed.ts` does not exist in a checkout — and leaving it inside
+// kept the project's own `npm run type-check` permanently red.
+//
 // The other two examples show routing, validation and code sharing over
 // in-memory fixtures. This one shows what `aic workspace update` adds on top of
 // them. It writes `src/generated/managed.ts` from your tenant's managed schema:
@@ -43,8 +50,8 @@
 
 import {
   defineEndpoint,
+  forwardQuery,
   notFound,
-  queryResult,
   queryRoute,
   route,
   v,
@@ -76,14 +83,16 @@ const CONTACT_RESPONSE = v.object(
     _id: v.string(),
     userName: v.string(),
     mail: v.string(),
-    // ABSENT and NULL are different, and this route meets both. A schema
-    // property the user has not filled in is simply missing from the projection,
-    // which is `v.optional`; an unset single-valued RELATIONSHIP comes back as
-    // an explicit `null`, which only `v.nullable` accepts. Collapsing either one
-    // to `""` — as this example used to — invents a value the tenant never sent
-    // and puts it in the OpenAPI document as a plain string.
-    telephoneNumber: v.optional(
-      v.string({ description: "Absent when the user has none." })
+    // Both of these are NULL, not absent, and that is a fact about the store
+    // rather than a style choice: a `fields` read returns every requested member
+    // as a present key holding `null` when the record has no value for it
+    // (verified 2026-08-18), and an unset single-valued relationship is `null`
+    // too. Only `v.nullable` accepts that; `v.optional` means the key may be
+    // MISSING, which a projection never does. Collapsing either to `""` — as this
+    // example used to — invents a value the tenant never sent and then promises
+    // it in the OpenAPI document as a plain string.
+    telephoneNumber: v.nullable(
+      v.string({ description: "Null when the user has none." })
     ),
     managerRef: v.nullable(
       v.string({ description: "Manager's _ref; null when unset." })
@@ -168,6 +177,9 @@ export default defineEndpoint({
           v.integer({ min: 1, max: 200, description: "Records per page." }),
           50
         ),
+        cursor: v.optional(
+          v.string({ description: "The previous page's pagedResultsCookie." })
+        ),
       },
       response: USER_RESPONSE,
       handler: ({ query, log }) => {
@@ -179,11 +191,24 @@ export default defineEndpoint({
           _queryFilter: `/accountStatus eq "${query.status}"`,
           _sortKeys: "userName",
           _pageSize: query.pageSize,
+          // OMITTED when there is no cursor, never `null`: IDM rejects an
+          // explicit null cookie with `Expecting a value` and the caller sees an
+          // opaque 500 (verified 2026-08-18 — `cursor ?? null` here was exactly
+          // that bug).
+          ...(query.cursor === undefined
+            ? {}
+            : { _pagedResultsCookie: query.cursor }),
         });
         // `page.result` is `StoredRecord<AlphaUser>[]` — pass a third `fields`
         // argument here too and every row is projected to it instead.
         log.debug("queried users", { count: page.resultCount });
-        return queryResult(page.result.map(summarise));
+        // `forwardQuery`, not `queryResult`: it carries IDM's own cursor and
+        // total through. Building the envelope from the row count instead —
+        // `queryResult(rows)` — honours `_pageSize` but returns no cookie, so the
+        // caller has no way to ask for page two and the endpoint looks like it
+        // only ever has one. Use `queryResult` when the rows are yours, not a
+        // store page.
+        return forwardQuery(page, page.result.map(summarise));
       },
     }),
   ],

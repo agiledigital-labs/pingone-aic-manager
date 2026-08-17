@@ -1,5 +1,8 @@
 node_modules/
+package-lock.json
 dist/
+openapi/
+.aic-ts-manifest.json
 .env
 .DS_Store
 *.log

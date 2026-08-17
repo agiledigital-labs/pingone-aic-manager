@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 import {
   defineEndpoint,
+  forwardQuery,
   parsePath,
   queryResult,
   queryRoute,
@@ -391,6 +392,64 @@ test("a per-call override can also turn response validation OFF", () => {
     }),
     { count: "dynamic" }
   );
+});
+
+test("forwardQuery keeps the store's paging, not the row count", () => {
+  // What `openidm.query` hands back: no `remainingPagedResults`, and a cursor
+  // plus a total that a mapped row set must not overwrite.
+  const page = {
+    result: [{ _id: "a" }, { _id: "b" }],
+    resultCount: 2,
+    pagedResultsCookie: "cursor-2",
+    totalPagedResults: 57,
+    totalPagedResultsPolicy: "EXACT",
+  };
+  assert.deepEqual(forwardQuery(page, [{ id: "a" }]), {
+    result: [{ id: "a" }],
+    resultCount: 2,
+    pagedResultsCookie: "cursor-2",
+    totalPagedResults: 57,
+    remainingPagedResults: 0,
+    totalPagedResultsPolicy: "EXACT",
+  });
+  // One argument forwards the page's own rows.
+  assert.deepEqual(forwardQuery(page).result, page.result);
+});
+
+test("forwardQuery fills the envelope IDM requires from a bare page", () => {
+  assert.deepEqual(forwardQuery({ result: [{ _id: "a" }] }), {
+    result: [{ _id: "a" }],
+    resultCount: 1,
+    pagedResultsCookie: null,
+    totalPagedResults: 1,
+    remainingPagedResults: 0,
+    totalPagedResultsPolicy: "EXACT",
+  });
+});
+
+test("a forwarded page satisfies a query route's declared response", () => {
+  const endpoint = defineEndpoint({
+    name: "forwarded",
+    validateResponses: true,
+    routes: [
+      queryRoute({
+        path: "/",
+        response: v.object({ _id: v.string() }),
+        handler: () =>
+          forwardQuery({
+            result: [{ _id: "a" }],
+            pagedResultsCookie: "next",
+            totalPagedResults: 9,
+          }),
+      }),
+    ],
+  });
+  const page = endpoint.dispatch(crestRequest("query"), callContext()) as {
+    totalPagedResults: number;
+    pagedResultsCookie: string;
+  };
+  assert.equal(page.totalPagedResults, 9);
+  assert.equal(page.pagedResultsCookie, "next");
 });
 
 test("a nullable response member accepts the null IDM actually returns", () => {

@@ -32,6 +32,21 @@ import { findRuntimeBanViolations } from "./idm-runtime-bans.mjs";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(projectRoot, "..");
+
+// Refuse to run from the aic source tree's `templates/typescript`. Everything
+// this tool emits goes to `../idm/endpoint`, `../.prettierignore` and so on, and
+// one directory up from the template copy is the template SET — a build there
+// writes bundles into the repo instead of a workspace. `type-check`, `lint` and
+// `test` all work there and are the dev loop for framework changes; `build`
+// needs a real tenant workspace.
+if (basename(workspaceRoot) === "templates") {
+  console.error(
+    "build refused: this is the template copy under aic's own source tree, and " +
+      "the build writes into its parent. Run it in a scaffolded workspace " +
+      "(`aic workspace init`), or use type-check / lint / test here."
+  );
+  process.exit(2);
+}
 const endpointsDir = join(projectRoot, "src", "endpoints");
 const outputDir = join(workspaceRoot, "idm", "endpoint");
 const openapiDir = join(projectRoot, "openapi");
@@ -326,6 +341,12 @@ function openApiOutputs(built, toOpenApi) {
 }
 
 async function run() {
+  // Cleared every generation, not just on one-shot builds: `readDefinition`
+  // writes one `.mjs` per endpoint here, so a long `--watch` session otherwise
+  // accumulates a file per endpoint it has ever seen, including renamed and
+  // deleted ones. They are cache-busted on import, so nothing reads a stale one
+  // — they just pile up.
+  rmSync(join(distDir, "meta"), { recursive: true, force: true });
   const entries = entryPoints();
   const previousNames = previouslyOwnedEndpointNames();
   // AN ABSENT `src/endpoints` IS NOT AN EMPTY ONE. Retirement deletes every
@@ -456,7 +477,6 @@ if (watchMode) {
   }
   console.log("watching src/ and framework/ — Ctrl-C to stop");
 } else {
-  rmSync(join(distDir, "meta"), { recursive: true, force: true });
   const ok = await once();
   process.exit(ok ? 0 : 1);
 }

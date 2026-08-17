@@ -42,6 +42,8 @@ interface TypesFixture {
   userName: string;
   sn: string;
   mail: string;
+  /** Optional in the schema, so a projection returns it as `string | null`. */
+  telephoneNumber?: string;
   /** Single-valued: unset comes back as `null`. */
   manager?: ProbeRef;
   /** Multi-valued: unset comes back as `[]`. */
@@ -85,6 +87,24 @@ export function typeTours(): void {
     void _mail;
     // @ts-expect-error `sn` was not in the field list
     void projected.sn;
+  }
+
+  // --- a requested member is PRESENT and NULLABLE, never absent ------------
+  const selected = openidm.read(`${FIXTURE}/${id}`, null, [
+    "userName",
+    "telephoneNumber",
+  ]);
+  if (selected !== null) {
+    // Schema-optional: the key is always there, the value may be `null`
+    // (verified 2026-08-18). So a null check, never an existence check.
+    const _phone: string | null = selected.telephoneNumber;
+    void _phone;
+    // Schema-required: always has a value, so it is not widened.
+    const _userName: string = selected.userName;
+    void _userName;
+    // @ts-expect-error the value is nullable — `?? ""` or a guard, not a bare use
+    const _bad: string = selected.telephoneNumber;
+    void _bad;
   }
 
   // --- `_id` alone still yields `_id` AND `_rev` ---------------------------
@@ -180,6 +200,14 @@ export function typeTours(): void {
     const _userName: string | undefined = opaqueRow.userName;
     void _userName;
   }
+
+  // --- a null paging cursor is rejected, because IDM rejects it ------------
+  openidm.query(FIXTURE, { _queryFilter: "true", _pagedResultsCookie: "AAA=" });
+  openidm.query(FIXTURE, {
+    _queryFilter: "true",
+    // @ts-expect-error omit the key instead — an explicit null is a live 500
+    _pagedResultsCookie: null,
+  });
 
   // --- a query result is NOT an endpoint response -------------------------
   // @ts-expect-error `remainingPagedResults` is optional here and required there

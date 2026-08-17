@@ -98,7 +98,25 @@ interface Utils {
   base64: Base64;
   /** Base64url (URL-safe alphabet). */
   base64url: Base64;
-  /** String ↔ byte conversions. */
+  /**
+ * A requested member as the store actually returns it: the key is ALWAYS
+ * PRESENT, holding `null` when the record has no value for it (verified
+ * 2026-08-18 with a `fields` read of a user lacking `telephoneNumber`,
+ * `description` and `manager` — all three came back `null`, not absent).
+ *
+ * So a projected member is a REQUIRED key with a NULLABLE value — but only where
+ * the schema leaves the property optional, since a schema-required property
+ * always has a value. `Pick` was wrong twice here: it kept the `?`, implying the
+ * key might be missing, and it kept the value non-null, which is the shape that
+ * cost a live 500 on `manager`.
+ */
+type SelectedMembers<T, F extends string> = {
+  [K in Extract<F, keyof T>]-?: undefined extends T[K]
+    ? NonNullable<T[K]> | null
+    : T[K];
+};
+
+/** String ↔ byte conversions. */
   types: ScriptTypes;
 }
 declare const utils: Utils;
@@ -247,7 +265,7 @@ type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]
 type Projected<T, F extends string> = string extends F
   ? StoredRecord<T>
   : StoredRecord<
-      ("*" extends F ? T : Pick<T, Extract<F, keyof T>>) & {
+      ("*" extends F ? T : SelectedMembers<T, F>) & {
         [K in Extract<PathParentOf<F>, keyof T>]: ExpansionOf<T[K]>;
       } & MetaMemberOf<F>
     >;

@@ -147,6 +147,24 @@ declare global {
     : RelationshipExpansion | null;
 
   /**
+   * A requested member as the store actually returns it: the key is ALWAYS
+   * PRESENT, holding `null` when the record has no value for it (verified
+   * 2026-08-18 with a `fields` read of a user lacking `telephoneNumber`,
+   * `description` and `manager` — all three came back `null`, not absent).
+   *
+   * So a projected member is a REQUIRED key with a NULLABLE value — but only where
+   * the schema leaves the property optional, since a schema-required property
+   * always has a value. `Pick` was wrong twice here: it kept the `?`, implying the
+   * key might be missing, and it kept the value non-null, which is the shape that
+   * cost a live 500 on `manager`.
+   */
+  type SelectedMembers<T, F extends string> = {
+    [K in Extract<F, keyof T>]-?: undefined extends T[K]
+      ? NonNullable<T[K]> | null
+      : T[K];
+  };
+
+  /**
    * The record shape a `fields` selector actually yields.
    *
    * `_id` and `_rev` come back whatever you asked for — even `fields: ["_id"]`
@@ -164,7 +182,7 @@ declare global {
   type Projected<T, F extends string> = string extends F
     ? StoredRecord<T>
     : StoredRecord<
-        ("*" extends F ? T : Pick<T, Extract<F, keyof T>>) & {
+        ("*" extends F ? T : SelectedMembers<T, F>) & {
           [K in Extract<PathParentOf<F>, keyof T>]: ExpansionOf<T[K]>;
         } & MetaMemberOf<F>
       >;
@@ -233,8 +251,16 @@ declare global {
     _fields?: string;
     _sortKeys?: string;
     _pageSize?: number;
-    _pagedResultsCookie?: string | null;
-    [param: string]: string | number | null | undefined;
+    /**
+     * OMIT this key to start at the first page — do NOT pass `null`. IDM
+     * rejects an explicit null with
+     * `JsonValueException: /_pagedResultsCookie: Expecting a value`
+     * (verified 2026-08-18), which surfaces as an opaque 500. That is why
+     * neither this key nor the index signature admits `null`: the type used
+     * to, and a `cursor ?? null` in a handler was a live 500.
+     */
+    _pagedResultsCookie?: string;
+    [param: string]: string | number | undefined;
   }
 
   /**

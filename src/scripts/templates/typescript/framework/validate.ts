@@ -539,7 +539,20 @@ export function object<S extends Shape>(
         issue(issues, child, "is required");
         continue;
       }
-      out[key] = member.parse(raw, child, issues, mode);
+      const value = member.parse(raw, child, issues, mode);
+      // AN ABSENT OPTIONAL STAYS ABSENT. Writing `out[key] = undefined` created
+      // the key, so `"nickname" in body` was true for a field the caller never
+      // sent, `Object.keys(body)` listed it, and spreading `body` into an
+      // `openidm` write payload carried an explicit `undefined` for it. The
+      // declared type has said optional KEY all along ({@link InferObject}); this
+      // is the runtime catching up.
+      //
+      // `withDefault` and `nullable` are unaffected: the first returns its
+      // default and the second returns `null`, and neither is `undefined`.
+      if (value === undefined && member.isOptional) {
+        continue;
+      }
+      out[key] = value;
     }
     if (options.allowUnknown !== true) {
       for (const key of Object.keys(source)) {

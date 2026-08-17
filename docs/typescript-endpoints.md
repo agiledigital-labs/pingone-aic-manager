@@ -334,6 +334,47 @@ quietly swallowed any more:
 2020-12, not the 3.0-era `nullable: true`. So the document tells callers the
 truth without a second declaration.
 
+Relatedly: an **absent** optional no longer becomes a key holding `undefined`.
+`v.object()` used to write every declared member, so `"nickname" in body` was
+true for a field the caller never sent and spreading `body` into an `openidm`
+write carried an explicit `undefined` for it. The declared type has always said
+optional KEY; the runtime now matches. `withDefault` and `nullable` are
+unaffected — a default and a `null` are both values.
+
+### Forwarding a store page
+
+A `query` handler that pages a managed collection should return
+**`forwardQuery(page, rows)`**, not `queryResult(rows)`:
+
+```ts
+const page = openidm.query(USERS, { _queryFilter: filter, _pageSize: size });
+return forwardQuery(page, page.result.map(summarise));
+```
+
+`queryResult` builds the envelope from the rows it is given, which is right when
+the rows are yours and wrong when they are a page: it reports
+`totalPagedResults: rows.length` and no cursor, so the caller is told the
+collection has exactly one page and has no way to ask for a second. The seeded
+example did precisely that, live, until 2026-08-18. `forwardQuery` carries IDM's
+own `pagedResultsCookie`, `totalPagedResults` and policy through — including
+`-1` / `"NONE"`, which is IDM saying it did not count.
+
+To resume from a cursor, **omit** `_pagedResultsCookie` when you have none.
+Passing `null` throws
+`JsonValueException: /_pagedResultsCookie: Expecting a value`, which reaches the
+caller as an opaque 500; the type no longer allows it
+(`docs/api/10-managed-objects.md`).
+
+### A selected member is present and nullable
+
+`openidm.read(path, null, ["telephoneNumber"])` returns `telephoneNumber` as a
+**present key holding `null`** when the record has no value for it — verified
+2026-08-18. So the projection types a requested member as a required key with a
+nullable value (`SelectedMembers<T, F>`), for schema-optional properties only; a
+schema-required one always has a value. An existence check on a projected member
+therefore proves nothing, and `v.nullable` is what its response declaration
+wants.
+
 Request validation is location-aware: path, query and header strings are
 coerced, while JSON bodies and patch operations are strict against their JSON
 Schema shapes. Route declarations with same-specificity patterns that could

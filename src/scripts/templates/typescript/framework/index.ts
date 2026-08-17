@@ -71,9 +71,10 @@ export type {
   IdmLogger,
   JavaSet,
   PatchOperation,
+  QueryPage,
 } from "./types.ts";
 
-export { queryResult } from "./types.ts";
+export { forwardQuery, queryResult } from "./types.ts";
 
 export type {
   Infer,
