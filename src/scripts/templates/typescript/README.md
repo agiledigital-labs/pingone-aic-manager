@@ -102,6 +102,12 @@ Nothing in the handler is annotated: the types come from the validators. Change
   `queryResult(rows, options)`; it fills every paging field IDM requires, and a
   raw `openidm.query` result is deliberately NOT assignable, because IDM does not
   send `remainingPagedResults` but does require it on the way out.
+- **Paging a store collection**: return `forwardQuery(page, rows)`, not
+  `queryResult(rows)`. `queryResult` derives the envelope from the rows, so a page
+  comes back claiming `totalPagedResults: rows.length` and no cursor — the caller
+  is told there is only one page. `forwardQuery` carries IDM's own cookie and
+  total through. And OMIT `_pagedResultsCookie` when you have no cursor: an
+  explicit `null` throws `Expecting a value` and the caller sees a 500.
 - **Logging**: `log` is pre-bound to the endpoint, the route and the correlation
   id (the `x-request-id` header when the caller sent one). Never log `context`.
 
@@ -134,6 +140,11 @@ need to name one: `import type { AlphaUser } from "../generated/managed.ts"`.
 
 `_id` and `_rev` survive any field list, so a projection keeps them. Keep the
 list inline (or `as const`) — the projection needs literal members.
+
+A selected member comes back as a **present key holding `null`** when the record
+has no value for it, so a schema-optional property projects to `T | null` and
+`"telephoneNumber" in thin` is always true. Check the value, not the key, and
+declare the response member with `v.nullable`.
 
 `src/endpoints/example-managed-users.ts` walks the whole surface — every verb,
 the typed `fields` selector, the `_id`/`_rev` asymmetry between a plain read and

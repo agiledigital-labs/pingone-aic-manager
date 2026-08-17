@@ -133,14 +133,18 @@ for example `idr_name_variants` for the tenant-wide IDR name-variant table.
         "properties": {
           /* per-field type, constraints, viewable, searchable, etc. */
         },
-        "required": [/* … */]
+        "required": [
+          /* … */
+        ]
       },
       "onCreate": { "type": "text/javascript", "source": "…" },
       "onUpdate": {
         "type": "text/javascript",
         "file": "scripts/managed/onUpdate-user.js"
       },
-      "onDelete": {/* … */}
+      "onDelete": {
+        /* … */
+      }
     }
     /* alpha_user, alpha_role, alpha_assignment, bravo_user, ... */
   ]
@@ -391,7 +395,8 @@ reverse options:
 A bidirectional pair cross-links: the source's `reversePropertyName` is the
 reverse property's key and vice-versa, and **both** carry
 `reverseRelationship: true`. Self-referential relationships (source == target,
-e.g. `test_obj2.asdf` ↔ `test_obj2.obj2`) put both properties on the one object.
+e.g. `test_obj2.asdf` ↔ `test_obj2.obj2`) put both properties on the one
+object.
 
 **No server-side cascade.** Creating/editing a relationship with a reverse must
 write the reverse property on the target object itself — so an add/edit is a
@@ -533,15 +538,15 @@ Probed by installing temporary `onCreate`/`onUpdate` hooks on the scratch type
 schema byte-identical and deleting the probe records. Full sanitized results:
 [`bindings/managed-hooks-idm.json`](bindings/managed-hooks-idm.json).
 
-| Binding                                          | onCreate                                                                  | onUpdate              | Notes                            |
-| ------------------------------------------------ | ------------------------------------------------------------------------- | --------------------- | -------------------------------- |
-| `object`                                         | draft record, **mutable**                                                 | new state, mutable    | writes persist                   |
-| `oldObject`                                      | `null`                                                                    | previous record state |                                  |
-| `newObject`                                      | `=== object`                                                              | `=== object`          | alias, verified                  |
-| `request`                                        | CreateRequest (`method:"create"`, `content`, `newResourceId`, …)          | `method:"update"`     |                                  |
+| Binding                                          | onCreate                                                                   | onUpdate              | Notes                            |
+| ------------------------------------------------ | -------------------------------------------------------------------------- | --------------------- | -------------------------------- |
+| `object`                                         | draft record, **mutable**                                                  | new state, mutable    | writes persist                   |
+| `oldObject`                                      | `null`                                                                     | previous record state |                                  |
+| `newObject`                                      | `=== object`                                                               | `=== object`          | alias, verified                  |
+| `request`                                        | CreateRequest (`method:"create"`, `content`, `newResourceId`, …)           | `method:"update"`     |                                  |
 | `context`                                        | full context chain (http headers ⚠ incl. Authorization, security, oauth2) | same                  | treat as sensitive               |
-| `resourceName`                                   | `ResourcePath` (`managed/<type>/<id>`)                                    | same                  | only Java-classed binding        |
-| `openidm`, `logger`, `identityServer`, `require` | present                                                                   | present               | same surface as endpoint scripts |
+| `resourceName`                                   | `ResourcePath` (`managed/<type>/<id>`)                                     | same                  | only Java-classed binding        |
+| `openidm`, `logger`, `identityServer`, `require` | present                                                                    | present               | same surface as endpoint scripts |
 
 **Fatal gotcha:** `for (var k in this)` at hook top level throws — the
 triggering request gets **HTTP 500** and the write rolls back. Any uncaught hook
@@ -626,6 +631,63 @@ Two more observations from the same probe:
   Platform-injected; reach them through an index, and do not treat a generated
   interface as exhaustive.
 
+### A selected member is PRESENT and `null`, not absent (verified 2026-08-18)
+
+Probed from a throwaway `endpoint/aic-fields-probe` (deleted after), reading
+`managed/alpha_user/4542b497-…` — user `demo3`, who has no `telephoneNumber`, no
+`description` and no `manager` — with
+`["userName", "telephoneNumber", "manager/userName", "description"]`:
+
+```
+_id="4542b497-…"  _rev="4aa64e7e-…"  userName="demo3"
+telephoneNumber=null   description=null   manager=null
+```
+
+All three unset members came back as **present keys holding `null`**. So a
+selector never omits what you asked for; it hands you `null` instead. Two
+consequences:
+
+- `"telephoneNumber" in projected` is **always true** for a requested member, so
+  an existence check tells you nothing — check the value.
+- the projected type must be a REQUIRED key with a NULLABLE value, which is what
+  `SelectedMembers<T, F>` now encodes on all three surfaces. It used to be
+  `Pick<T, …>`, which kept the schema's `?` and dropped the `null` — wrong in
+  both directions at once.
+
+The same probe on a **plain** read (no selector) shows the two halves differ: an
+unset scalar is present and `null` (`telephoneNumber` was `null`), while an
+unset relationship is **absent** (`manager` was `undefined`). The generated
+interfaces say `telephoneNumber?: string`, which is therefore still optimistic
+for a plain read — see the open question at the end of this file.
+
+### `_pagedResultsCookie: null` is a 500 (verified 2026-08-18)
+
+Passing an explicit null cursor to a script-side query throws:
+
+```
+org.forgerock.json.JsonValueException: /_pagedResultsCookie: Expecting a value
+```
+
+**Omit the key** to start at the first page. `cursor ?? null` in a handler is a
+live opaque 500, and the type definitions invited it by declaring
+`_pagedResultsCookie?: string | null`; they now say `string`, and neither they
+nor the `QueryParams` index signature admits `null`.
+
+The same probe pins the rest of the script-side paging envelope, for a query
+with `_pageSize: 2` and no total requested:
+
+```
+rows=2  cookie="AAAAAAAAAKw="  resultCount=2
+totalPagedResults=-1  totalPagedResultsPolicy="NONE"  remainingPagedResults=undefined
+```
+
+`-1` / `"NONE"` is IDM saying "I did not count", so forwarding those values out
+of a query handler is honest; synthesising `totalPagedResults: rows.length`
+instead (what building the envelope by hand tends to do) tells the caller the
+collection has exactly one page. Confirmed end to end through
+`endpoint/example-managed-users`: page one returned `['81055514', '81060852']`
+and a cookie, and that cookie returned `['99999999', 'a']`.
+
 ## Record querying + change detection (drives the `idmstore` sync feature)
 
 Verified 2026-06-20/06-21 against sandbox
@@ -661,9 +723,9 @@ Relationship traversal in the query is unsupported:
 `_queryFilter=_meta/lastChanged/date gt …` returns `resultCount: 0`, and
 `_sortKeys=-_meta/lastChanged` → **HTTP 500**
 (`ByteString.toBase64String() … normalized is null`). So: query the _sidecar_
-for changed ids, and keep a local `meta_id ↔ record _id` map (built when records
-are pulled with `_fields=…,_meta/_id`). Detect creates/deletes with a cheap
-`_fields=_id` id-list diff against the local store.
+for changed ids, and keep a local `meta_id ↔ record _id` map (built when
+records are pulled with `_fields=…,_meta/_id`). Detect creates/deletes with a
+cheap `_fields=_id` id-list diff against the local store.
 
 **Paging (verified 2026-06-21).** Unlike AM scripts, managed lists return a
 **usable `pagedResultsCookie`** — pass it back as `_pagedResultsCookie` to walk
@@ -725,6 +787,21 @@ error. Do not offer `ne` or `in` in script-template query validation.
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-08-18 (two corrections to the 2026-08-17 field-selector results,
+  both from a throwaway `endpoint/aic-fields-probe`, deleted afterwards, reading
+  `managed/alpha_user` read-only. **One:** a selected member the record has no
+  value for comes back as a PRESENT key holding `null`, not absent — `demo3`
+  returned `telephoneNumber=null`, `description=null`, `manager=null` — while on
+  a plain read an unset scalar is `null` and an unset relationship is absent. So
+  `Pick<T, …>` was the wrong projection on all three surfaces and is now
+  `SelectedMembers<T, F>`, a required key with a nullable value. **Two:**
+  `_pagedResultsCookie: null` throws
+  `JsonValueException: /_pagedResultsCookie: Expecting a value` — omit the key
+  instead; the type said `string | null` and invited a live 500. Same probe
+  pinned the script-side paging envelope: `totalPagedResults=-1`,
+  `totalPagedResultsPolicy="NONE"`, `remainingPagedResults=undefined`, real
+  cookie. Cursor paging then confirmed end to end through
+  `endpoint/example-managed-users`.)
 - Date: 2026-08-17 (field selectors from a script — see "Field selectors from a
   script" for the full table: `_id`/`_rev` returned whatever the selector says,
   `openidm.query` accepting a third `fields` argument, relationship-path
@@ -802,3 +879,13 @@ error. Do not offer `ne` or `in` in script-template query validation.
   of the others as supported.
 - Hook bindings for `onDelete`/`post*` hooks are assumed to match the verified
   `onCreate`/`onUpdate` surface; not yet probed.
+- Should the **generated interfaces** declare an optional scalar as
+  `name?: T | null` rather than `name?: T`? A plain read returns `null`, not
+  absent, for an unset scalar (verified 2026-08-18), so `name?: T` is optimistic
+  and a handler can dereference a `null` after a perfectly good `!== undefined`
+  guard. The projection is now correct (`SelectedMembers`), but the plain-read
+  path is not. Deliberately not changed yet: the same interfaces type an
+  onCreate hook's draft object, `managed_types.rs` writes 85 files per tenant,
+  and every existing handler that reads an optional scalar would start failing
+  `tsc` — real bugs, but a wide blast radius that wants its own change rather
+  than a rider on a point release.

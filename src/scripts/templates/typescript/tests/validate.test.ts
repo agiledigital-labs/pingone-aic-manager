@@ -61,7 +61,9 @@ const nullableString = v.nullable(v.string());
 const maybeString = v.optional(v.nullable(v.string()));
 const shortRecord = v.record(v.string({ maxLength: 2 }));
 const INTEGER = "expected an integer";
-const OBJECT = { name: "a", note: undefined };
+/** An absent optional is ABSENT in the parsed value, not a key holding `undefined`. */
+const PARSED_OBJECT = { name: "a" };
+const EXPLICIT_UNDEFINED = { name: "a", note: undefined };
 
 const parseCases: ParseCase[] = [
   accepted("string: valid", boundedString, "abc", "abc"),
@@ -98,8 +100,25 @@ const parseCases: ParseCase[] = [
   rejected("list: minimum", boundedList, [], "must have at least 1 items"),
   rejected("list: maximum", boundedList, ["a", "b", "c"], "must have at most 2 items"),
   rejected("list: wrong type", boundedList, "a", "expected an array"),
-  accepted("object: declared fields", fixedObject, { name: "a" }, OBJECT),
-  accepted("object: explicit undefined", fixedObject, OBJECT, OBJECT),
+  accepted("object: declared fields", fixedObject, { name: "a" }, PARSED_OBJECT),
+  accepted(
+    "object: an explicit undefined is still absent",
+    fixedObject,
+    EXPLICIT_UNDEFINED,
+    PARSED_OBJECT
+  ),
+  accepted(
+    "object: a nullable member keeps its null",
+    v.object({ note: v.nullable(v.string()) }),
+    { note: null },
+    { note: null }
+  ),
+  accepted(
+    "object: a defaulted member is present even when absent",
+    v.object({ limit: v.withDefault(v.integer(), 20) }),
+    {},
+    { limit: 20 }
+  ),
   rejected("object: required field", fixedObject, {}, "is required", "x.name"),
   rejected("object: unknown field", fixedObject, { name: "a", extra: 1 }, "is not a known field"),
   rejected("object: wrong type", fixedObject, [], "expected an object"),
@@ -164,6 +183,15 @@ test("stateful regular expressions give stable results across requests", () => {
   assert.deepEqual(run(validator, "aaa").issues, []);
   assert.equal(run(validator, "bbb").issues.length, 1);
   assert.deepEqual(run(validator, "aaa").issues, []);
+});
+
+test("an absent optional does not become a key", () => {
+  const parsed = run(fixedObject, { name: "a" }).value as Record<
+    string,
+    unknown
+  >;
+  assert.equal("note" in parsed, false);
+  assert.deepEqual(Object.keys(parsed), ["name"]);
 });
 
 test("object collects every failure", () => {

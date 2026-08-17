@@ -142,6 +142,63 @@ export interface CrestQueryResult<T = CrestResource> {
 /** Overrides for the paging metadata filled by {@link queryResult}. */
 export type QueryResultOptions = Partial<Omit<CrestQueryResult<never>, "result">>;
 
+/**
+ * The paging metadata an `openidm.query` result carries.
+ *
+ * Structural, and every field but `result` optional, so it accepts an
+ * `OpenIdmQueryResult` without this module having to know about the `openidm`
+ * globals — `idm-globals.d.ts` imports from HERE, so the dependency cannot run
+ * the other way.
+ */
+export interface QueryPage<T> {
+  result: T[];
+  resultCount?: number;
+  pagedResultsCookie?: string | null;
+  totalPagedResults?: number;
+  totalPagedResultsPolicy?: string;
+  /** Absent from every observed script-side query result. */
+  remainingPagedResults?: number;
+}
+
+/**
+ * Pass an `openidm.query` page back out of a `query` handler, keeping ITS paging
+ * metadata instead of recomputing it from the row count.
+ *
+ * A raw `openidm.query` result is deliberately not assignable to
+ * `CrestQueryResult` — IDM never sends `remainingPagedResults` but requires it on
+ * the way out — and rebuilding the envelope by hand meant transcribing four
+ * fields per handler, which is exactly where a cursor gets dropped and paging
+ * silently truncates at page one.
+ *
+ * ```ts
+ * const page = openidm.query(USERS, { _queryFilter: filter, _pageSize: 10 });
+ * return forwardQuery(page, page.result.map(summarise));
+ * ```
+ *
+ * Omit `rows` to forward the page's own rows unchanged.
+ */
+export function forwardQuery<T>(page: QueryPage<T>): CrestQueryResult<T>;
+export function forwardQuery<T, R>(
+  page: QueryPage<T>,
+  rows: R[]
+): CrestQueryResult<R>;
+export function forwardQuery(
+  page: QueryPage<unknown>,
+  rows?: unknown[]
+): CrestQueryResult<unknown> {
+  const forwarded = rows === undefined ? page.result : rows;
+  return {
+    result: forwarded,
+    // The page's own count, not `forwarded.length`: a mapped or filtered row set
+    // must not rewrite how many the STORE matched.
+    resultCount: page.resultCount ?? forwarded.length,
+    pagedResultsCookie: page.pagedResultsCookie ?? null,
+    totalPagedResults: page.totalPagedResults ?? forwarded.length,
+    remainingPagedResults: page.remainingPagedResults ?? 0,
+    totalPagedResultsPolicy: page.totalPagedResultsPolicy ?? "EXACT",
+  };
+}
+
 /** Build the complete response shape IDM requires from every query handler. */
 export function queryResult<T>(
   rows: T[],

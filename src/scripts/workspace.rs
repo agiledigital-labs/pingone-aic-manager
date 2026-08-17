@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 57;
+pub const TEMPLATES_VERSION: u32 = 58;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -337,26 +337,54 @@ const TS_USER: &[(&str, &str)] = &[
         "typescript/src/endpoints/example-reports.ts",
         include_str!("templates/typescript/src/endpoints/example-reports.ts"),
     ),
-    // Depends on `src/generated/managed.ts`, which `managed_types::generate`
-    // writes in the same init pass, and on the stock `alpha_user` schema. Its
-    // header says so — a tenant whose schema differs edits or deletes it.
-    (
-        "typescript/src/endpoints/example-managed-users.ts",
-        include_str!("templates/typescript/src/endpoints/example-managed-users.ts"),
-    ),
     (
         "typescript/tests/demo-endpoints.test.ts",
         include_str!("templates/typescript/tests/demo-endpoints.test.ts"),
     ),
+    // The two TENANT-DEPENDENT seeds. They live under `templates/typescript-seeds/`
+    // rather than in the template project, mirroring their destination paths but
+    // outside it, because they are the only templates that cannot compile without
+    // a tenant: both lean on `src/generated/managed.ts`, which `managed_types`
+    // writes per tenant and which no repo checkout has. Leaving them in
+    // `templates/typescript/` made `npm run type-check` there permanently red —
+    // nine errors that look like framework breakage and are not — so the project's
+    // own gates could never be the dev loop for framework work. Their headers say
+    // they depend on the stock `alpha_user` schema; a tenant whose schema differs
+    // edits or deletes them.
+    (
+        "typescript/src/endpoints/example-managed-users.ts",
+        include_str!("templates/typescript-seeds/src/endpoints/example-managed-users.ts"),
+    ),
     (
         "typescript/tests/example-managed-users.test.ts",
-        include_str!("templates/typescript/tests/example-managed-users.test.ts"),
+        include_str!("templates/typescript-seeds/tests/example-managed-users.test.ts"),
+    ),
+];
+
+/// Where the tenant-dependent seeds live, relative to `templates/`, paired with
+/// the destination each is written to. Pinned by a test so the indirection above
+/// cannot rot into a file no workspace receives.
+#[cfg(test)]
+const TENANT_SEEDS: &[(&str, &str)] = &[
+    (
+        "typescript-seeds/src/endpoints/example-managed-users.ts",
+        "typescript/src/endpoints/example-managed-users.ts",
+    ),
+    (
+        "typescript-seeds/tests/example-managed-users.test.ts",
+        "typescript/tests/example-managed-users.test.ts",
     ),
 ];
 
 /// Our own `.gitignore` (the p1-sync one references `.p1-sync/`). Ignores build
 /// output and our sync state; keeps the source dirs tracked.
-const GITIGNORE: &str = "node_modules/\ndist/\ncoverage/\n.aic-sync/\nidm/types/managed/\nidm/types/sync/\nam/types/managed/\ntypescript/src/generated/\n*.log\n.DS_Store\n";
+///
+/// `typescript/openapi/` is deliberately NOT here — those
+/// documents are the endpoint's published contract, and a diff on one is worth
+/// reviewing. `.aic-ts-manifest.json` is: it is a build artifact regenerated
+/// deterministically from `src/endpoints/`, and committing it means every branch
+/// that adds an endpoint conflicts on it.
+const GITIGNORE: &str = "node_modules/\ndist/\ncoverage/\n.aic-sync/\nidm/types/managed/\nidm/types/sync/\nam/types/managed/\ntypescript/src/generated/\ntypescript/.aic-ts-manifest.json\n*.log\n.DS_Store\n";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WorkspaceState {
@@ -775,6 +803,63 @@ mod tests {
         );
     }
 
+    /// The tenant-dependent seeds live outside the template project, so nothing
+    /// type-checks them in this repo and nothing but this test notices if the
+    /// indirection breaks. Assert both ends: the source file is really there, and
+    /// the destination is really seeded.
+    #[test]
+    fn tenant_dependent_seeds_are_registered_and_live_outside_the_project() {
+        let templates = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("scripts")
+            .join("templates");
+        for (source, destination) in TENANT_SEEDS {
+            assert!(
+                templates.join(source).is_file(),
+                "seed source missing: {source}"
+            );
+            assert!(
+                TS_USER.iter().any(|(r, _)| r == destination),
+                "seed not registered in TS_USER: {destination}"
+            );
+            assert!(
+                !templates
+                    .join("typescript")
+                    .join(
+                        destination
+                            .strip_prefix("typescript/")
+                            .expect("destinations are project-relative")
+                    )
+                    .exists(),
+                "{destination} is BOTH a seed and in the template project — the \
+                 project's own type-check will go red on it"
+            );
+        }
+        // Nothing else may hide out there: a file in the seeds tree that no
+        // TS_USER row names would reach no workspace at all.
+        let mut found = Vec::new();
+        fn walk(dir: &Path, root: &Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("readable").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, root, found);
+                } else {
+                    let rel = path.strip_prefix(root).expect("under root");
+                    found.push(format!("typescript-seeds/{}", rel.display()));
+                }
+            }
+        }
+        let root = templates.join("typescript-seeds");
+        walk(&root, &root, &mut found);
+        assert!(!found.is_empty(), "found no seed files to check");
+        for rel in found {
+            assert!(
+                TENANT_SEEDS.iter().any(|(source, _)| *source == rel),
+                "{rel} is in the seeds tree but no workspace will ever receive it"
+            );
+        }
+    }
+
     #[test]
     fn typescript_project_ships_its_framework_managed_and_its_endpoints_user() {
         // The framework must be refreshable (a stale router is a silent bug);
@@ -820,11 +905,24 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/scripts/templates/typescript");
 
+        // Local artifacts of running the project's own gates in place — the dev
+        // loop for framework changes is `npm install && npm run type-check` right
+        // here — not templates. Kept in step with `src/scripts/templates/.gitignore`.
+        const LOCAL_ARTIFACTS: &[&str] = &[
+            "node_modules",
+            "package-lock.json",
+            "dist",
+            "openapi",
+            ".aic-ts-manifest.json",
+        ];
+
         fn walk(dir: &std::path::Path, root: &std::path::Path, found: &mut Vec<String>) {
             for entry in std::fs::read_dir(dir).expect("template dir is readable") {
                 let path = entry.expect("readable entry").path();
-                // `node_modules/` is a local install artifact, not a template.
-                if path.file_name().is_some_and(|n| n == "node_modules") {
+                if path
+                    .file_name()
+                    .is_some_and(|n| LOCAL_ARTIFACTS.iter().any(|a| n == *a))
+                {
                     continue;
                 }
                 if path.is_dir() {
@@ -882,7 +980,10 @@ mod tests {
             "type Projected<T, F extends string> = string extends F",
             "? StoredRecord<T>",
             ": StoredRecord<",
-            "(\"*\" extends F ? T : Pick<T, Extract<F, keyof T>>) & {",
+            "(\"*\" extends F ? T : SelectedMembers<T, F>) & {",
+            "type SelectedMembers<T, F extends string> = {",
+            "[K in Extract<F, keyof T>]-?: undefined extends T[K]",
+            "? NonNullable<T[K]> | null",
             "[K in Extract<PathParentOf<F>, keyof T>]: ExpansionOf<T[K]>;",
             "type ExpansionOf<D> = NonNullable<D> extends readonly unknown[]",
             "? RelationshipExpansion[]",

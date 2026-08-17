@@ -4,6 +4,11 @@
 // handler; validation-only tests need no global binding at all.
 //
 // User file — seeded once, yours to change.
+//
+// SEEDED FILE, written to `typescript/tests/example-managed-users.test.ts`; the
+// relative imports below resolve there, not from `templates/typescript-seeds/`.
+// It lives outside the template project for the reason its endpoint does: both
+// need `src/generated/managed.ts`, which only a tenant can produce.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
