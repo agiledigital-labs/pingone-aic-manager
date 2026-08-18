@@ -3,7 +3,7 @@
 // The harness installs an in-memory `openidm` binding for tests that reach a
 // handler; validation-only tests need no global binding at all.
 //
-// User file — seeded once, yours to change.
+// User file — yours to change. `workspace update` refreshes this only if you have not edited it.
 //
 // SEEDED FILE, written to `typescript/tests/example-managed-users.test.ts`; the
 // relative imports below resolve there, not from `templates/typescript-seeds/`.

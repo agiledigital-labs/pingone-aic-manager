@@ -46,6 +46,14 @@ was created, which is precisely the class of breakage `TEMPLATES_VERSION` exists
 to prevent. `workspace::merge_package_json` refreshes the framework's own keys
 and leaves everything else alone.
 
+The files under `src/` and your own tests are seeded, not managed. `workspace
+update` records a content hash when it writes a seed. On the next update it
+hashes the file on disk: a match means you never touched it, so a stale demo
+is refreshed; a mismatch means you own it, so the file is left alone and named
+in the output (your `src/` may no longer compile against the framework). A
+workspace that predates hash tracking has no recorded hash — those files are
+unverifiable and are never overwritten. A seed you deleted stays deleted.
+
 ## What it needs on your machine
 
 Node **22.18+ or 23.6+** — the project's `package.json` declares

@@ -665,8 +665,10 @@ Both commands also regenerate the tenant-derived types: ambient
 `typescript/src/generated/managed.ts` for the TypeScript endpoint project.
 
 `update` refreshes every managed file and **adds the TypeScript project to a
-workspace that predates it**, seeding its example endpoints once. It never
-overwrites your own endpoints or shared modules, and `typescript/package.json`
+workspace that predates it**, seeding its example endpoints. A seed you have
+not edited is refreshed when the template moves; a seed you have edited, or
+one whose origin cannot be verified (no recorded hash), is left alone and
+named in the output. Deleted seeds stay deleted. `typescript/package.json`
 is merged rather than replaced — the framework's toolchain entries are
 refreshed, any dependency you added is kept.
 

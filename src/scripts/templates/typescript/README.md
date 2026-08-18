@@ -23,8 +23,14 @@ typescript/
 
 Everything under `framework/` and `tools/`, plus the tsconfigs, the ESLint
 config and this file, is **managed** — `aic workspace update` rewrites them.
-`src/` and your own tests are yours. `package.json` is merged: the framework's
-own dependencies and scripts are refreshed, anything you added is kept.
+`src/` and your own tests are yours. An unmodified seed is refreshed when the
+template moves; a file you have edited is left alone and named in the update
+output, because it may no longer compile against the framework. A workspace
+seeded before hashes were recorded is treated the same as an edit — never
+overwritten. Delete a seeded demo (and `tests/demo-endpoints.test.ts`) once you
+have your own endpoints; `workspace update` will not put it back.
+`package.json` is merged: the framework's toolchain entries are refreshed,
+anything you added is kept.
 
 ## Getting started
 

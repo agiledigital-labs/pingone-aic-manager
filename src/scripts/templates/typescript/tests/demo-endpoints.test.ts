@@ -2,7 +2,7 @@
 // bundle. Delete this alongside `src/endpoints/example-*` when you replace the
 // demo with your own endpoints.
 //
-// User file — seeded once, yours to change.
+// User file — yours to change. `workspace update` refreshes this only if you have not edited it.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
