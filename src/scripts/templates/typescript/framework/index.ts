@@ -80,6 +80,9 @@ export type {
 
 export { forwardQuery, queryResult } from "./types.ts";
 
+export { bytesToHex, nfc, normalize } from "./java.ts";
+export type { JavaByte, JavaBytes, JavaLangString } from "./java.ts";
+
 export type {
   Infer,
   InferObject,

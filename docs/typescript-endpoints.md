@@ -114,6 +114,62 @@ it, and `typescript/eslint.config.js` rejects both `extends Error` and an
 why 412, 501 and 503 have reasons but no wrappers. Anything else becomes an
 opaque 500 and the real cause goes to the log.
 
+## Calling Java from an endpoint
+
+IDM's script engine is Rhino, so `java.*` and `javax.*` are in scope at
+runtime. `framework/idm-globals.d.ts` declares `openidm`, `logger` and
+`identityServer` only; the Java package roots live in
+`framework/java-globals.d.ts` so a user's own declarations are not overwritten
+by `aic workspace update`.
+
+The declared surface is **narrow on purpose** — not a JDK binding:
+
+- `javax.crypto.Mac` / `javax.crypto.spec.SecretKeySpec` — there is no JS
+  crypto library on the engine, and `openidm.hash` is the wrong tool wherever
+  a *stable* digest is required. Observed on the sandbox 2026-08-18: two
+  calls in one request with the same input produced different `data`; it
+  salts per call.
+- `java.text.Normalizer` and its `Form` constants — `String.prototype.normalize`
+  is in the configured `lib`, but an already-stored hash is a frozen contract,
+  so normalisation has to stay on the path that produced the persisted values.
+- `java.lang.String` — constructor plus `getBytes("UTF-8")`, which is how a
+  JS string becomes a Java `byte[]`. No-arg `getBytes()` works on the
+  engine (platform charset); we omit that overload so a silent charset
+  dependency is a compile error.
+
+`java.util.Set` is already `JavaSet` in `framework/types.ts` (the
+`context.oauth2.scopes` stand-in) and is not redeclared.
+
+Two traps are silent when wrong, so they live in the type system rather than
+only in comments:
+
+- A Java `byte[]` yields **signed** values (`-128..127`). Hex-rendering
+  without `& 0xff` still produces a digest of the right length and alphabet.
+  Mixing `JavaBytes` with a JS `number[]` is rejected in both directions,
+  and `JavaByte.toString` is `never` so `bytes[i]!.toString(16)` is a
+  compile error. `bytesToHex` is the helper that masks.
+- `Normalizer.normalize` returns a `java.lang.String`, not a JS `string`.
+  On the engine that object prints the same and even has JS string methods
+  (`slice` is a function); what it is *not* is `===` the JS string. The
+  branded type omits those methods so the only typed ways out are
+  `String(...)` or `getBytes("UTF-8")`. `nfc()` / `normalize()` wrap
+  `String(...)` and return a real `string`.
+
+`tests/harness.ts` provides `withJava(run)` in the same family as
+`withOpenIdm` / `withIdentityServer`. HMAC is `node:crypto`; normalisation
+is `String.prototype.normalize`. `doFinal` and `getBytes` hand back signed
+bytes so a forgotten mask fails in the test the same way it would on the
+tenant. Anything this double does not model throws a `java:` error naming
+the gap — a statement about the double, not about the engine.
+
+Observed on the sandbox tenant 2026-08-18 (throwaway endpoint, then
+deleted): `Mac.getInstance` / `init` / `doFinal`, `new java.lang.String(s)`,
+`.getBytes("UTF-8")`, signed `doFinal` bytes (HMAC-SHA256 fox vector first
+byte `-9`), `openidm.hash` salting per call, no-arg `getBytes()` working,
+and a Normalizer result that is a `java.lang.String` with JS methods but
+not `===` the JS string. Do not promote any of this into a
+`## Verified against` block under `docs/api/`.
+
 ## Runtime bans, checked on the generated file
 
 Three syntax constructs make an endpoint fail to **register** — an un-routable
@@ -279,7 +335,8 @@ one that does not exist.
 `tests/harness.ts` provides `managedStore()` and `withOpenIdm()` so Node tests
 can execute handlers that use the global `openidm` binding, and
 `withIdentityServer(properties, run)` for the global `identityServer` binding
-(ESV / boot-property lookup). The managed-users example exercises a real read
+(ESV / boot-property lookup), and `withJava(run)` for the `java` / `javax`
+package roots (HMAC, `Normalizer`). The managed-users example exercises a real read
 through the `openidm` seam; specialized actions or patch semantics can override
 the relevant member on the returned double.
 
@@ -311,7 +368,13 @@ there. `withIdentityServer` does the same for `getProperty`'s third
 `substitute` argument: `true` is declared, unverified and refused, while `false`
 requests the modelled behaviour and passes — refusing that would make a handler
 which declines substitution explicitly impossible to dispatch at all.
-`tests/harness.test.ts` pins both halves.
+`withJava` does the same for the rest of the JDK: only `HmacSHA1` /
+`HmacSHA256` / `HmacSHA512`, `Normalizer` (NFC/NFD/NFKC/NFKD), and
+`java.lang.String.getBytes("UTF-8")` are modelled, and `doFinal` returns
+signed bytes so a forgotten mask is a failed test rather than a kind
+double. Unmodelled members on a leaf (`Normalizer.isNormalized`,
+`String.charAt`, `Mac.clone`) throw the same way an unmodelled package
+does. `tests/harness.test.ts` pins both halves.
 
 `update`/`delete` against a missing id throw here rather than mimicking IDM
 because IDM's own behaviour for that miss is **not** verified — `docs/api/10`

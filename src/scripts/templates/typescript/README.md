@@ -203,6 +203,72 @@ ES5 downlevel `new MyError() instanceof MyError` is `false` while
 ESLint config rejects both the subclass and the `instanceof` check; use the
 tagged fault objects in `framework/errors.ts`.
 
+## Calling Java from an endpoint
+
+IDM's script engine is Rhino, so `java.*` and `javax.*` are in scope at
+runtime. `framework/java-globals.d.ts` declares a **narrow** surface — not the
+JDK — for the two things that have no JavaScript alternative here:
+
+- **HMAC**, via `javax.crypto.Mac` and `javax.crypto.spec.SecretKeySpec`.
+  There is no JS crypto library on the engine, and `openidm.hash` is the
+  wrong tool wherever a *stable* digest is required: observed on the
+  sandbox 2026-08-18, two calls in one request with the same input
+  produced different `data`; it salts per call.
+- **Unicode normalisation**, via `java.text.Normalizer`.
+  `String.prototype.normalize` is in the configured `lib`, but an
+  already-stored hash is a frozen contract, so normalisation has to stay
+  on the path that produced the persisted values.
+
+`java.util.Set` is already declared as `JavaSet` in `framework/types.ts` (for
+`context.oauth2.scopes`); it is not repeated here.
+
+Two silent traps, encoded in the types rather than only documented:
+
+- A Java `byte[]` yields **signed** values (`-128..127`). Omitting `& 0xff`
+  before hex rendering still produces a digest of the right length and
+  character set — a catastrophic bug that looks fine. Mixing `JavaBytes`
+  with a JS `number[]` is rejected in both directions, and
+  `JavaByte.toString` is `never` so `bytes[i]!.toString(16)` is a compile
+  error. `bytesToHex` is the conversion that masks.
+- `Normalizer.normalize` returns a `java.lang.String`, not a JS `string`.
+  On the engine that object prints the same and even has JS string methods
+  (`slice` is a function); what it is *not* is `===` the JS string. The
+  branded type omits those methods so the only typed ways out are
+  `String(...)` or `getBytes("UTF-8")`. Prefer `nfc(value)` /
+  `normalize(value, form)`, which return a real `string`.
+
+`getBytes()` with no charset works on the engine (platform default). We
+omit that overload so a silent charset dependency is a compile error.
+
+```typescript
+import { bytesToHex, nfc } from "../../framework/index.ts";
+
+const mac = javax.crypto.Mac.getInstance("HmacSHA256");
+mac.init(
+  new javax.crypto.spec.SecretKeySpec(
+    new java.lang.String(secret).getBytes("UTF-8"),
+    "HmacSHA256"
+  )
+);
+const digest = bytesToHex(
+  mac.doFinal(new java.lang.String(nfc(input)).getBytes("UTF-8"))
+);
+```
+
+Drive this from a test with `withJava(() => { … })` in `tests/harness.ts`.
+The double uses `node:crypto` and `String.prototype.normalize`, and
+reproduces signed `byte[]` values so a forgotten mask fails in the test the
+same way it would on the tenant. Anything this double does not model
+throws a `java:` error naming the gap — a statement about the double, not
+about the engine.
+
+Observed on the sandbox tenant 2026-08-18 (throwaway endpoint, then
+deleted): `Mac.getInstance` / `init` / `doFinal`, `new java.lang.String(s)`,
+`.getBytes("UTF-8")`, signed `doFinal` bytes (HMAC-SHA256 fox vector first
+byte `-9`), `openidm.hash` salting per call, no-arg `getBytes()` working,
+and a Normalizer result that is a `java.lang.String` with JS methods but
+not `===` the JS string.
+
 ## How the build works, and why it is two tools
 
 esbuild cannot target ES5 at all, and Babel cannot bundle. So:
@@ -257,9 +323,10 @@ types, so there is no test-runner dependency and no second build. Drive an
 endpoint with `endpoint.dispatch(request, context, logger)`; `tests/harness.ts`
 builds the request/context doubles, including a `java.util.Set` stand-in for
 `context.oauth2.scopes`. Use `managedStore()` with `withOpenIdm()` when a
-handler calls the global `openidm` binding, and
+handler calls the global `openidm` binding,
 `withIdentityServer({ "esv.foo": "bar" }, …)` when it reads an ESV through
-`identityServer.getProperty`.
+`identityServer.getProperty`, and `withJava(() => { … })` when it reaches
+for `java.*` / `javax.*` (HMAC, `Normalizer`).
 
 `callContext()` defaults the caller to `svc-account`. Pass `subject` and
 `roles` to act as someone else, and `component` when a handler tells a service
@@ -286,6 +353,12 @@ returns `null` (or the supplied default), and `substitute: true` throws.
 `substitute: false` asks for exactly the modelled behaviour, so it passes —
 refusing it would leave a handler that declines substitution explicitly
 undispatchable.
+`withJava` does the same for the rest of the JDK: `HmacSHA1` /
+`HmacSHA256` / `HmacSHA512`, `Normalizer` (NFC/NFD/NFKC/NFKD), and
+`java.lang.String.getBytes("UTF-8")` are modelled; anything this double
+does not model — including a member on a leaf — throws a `java:` error
+naming the gap. `doFinal` returns signed bytes, so a forgotten `& 0xff`
+fails here the same way it would on the tenant.
 A double that is more permissive than the tenant turns a live 500 into a
 passing test, so give the handler its own stub for those reads rather than
 loosening this one.
