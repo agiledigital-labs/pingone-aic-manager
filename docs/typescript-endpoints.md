@@ -355,6 +355,36 @@ enabled to get the check:
 endpoint.dispatch(request, context, undefined, { validateResponses: true });
 ```
 
+## Union validators
+
+`v.oneOf([first, second])` tries alternatives in order and returns the first
+match. Put the most specific alternative first: an earlier open object or bare
+scalar can make a later branch unreachable (`v.oneOf([v.string(),
+v.isoDate()])` never selects the date branch). Its schema uses JSON Schema
+`anyOf`, because overlapping first-match alternatives are valid at runtime.
+
+For tagged objects, prefer `v.discriminated` because its 400 is more useful: a
+missing or unknown tag is reported at the tag path, and a known tag reports the
+selected branch's failures at their real member paths.
+
+```ts
+const field = v.discriminated("type", {
+  date: v.object({ type: v.enumOf(["date"]), format: v.string() }),
+  string: v.object({
+    type: v.enumOf(["string"]),
+    minLength: v.integer({ min: 0 }),
+  }),
+});
+```
+
+Each branch must declare the literal tag matching its map key. Discriminated
+schemas use exclusive `oneOf` branches pinned with `const`; the generator emits
+no OpenAPI `discriminator` object because its schemas are inline rather than
+named component references. When a handler constructs a tagged response, use
+`as const` on the tag (`{ type: "date" as const, format: "iso" }`) because the
+same contextual-typing limit documented above for enums applies at every such
+construction site.
+
 ### `null` is a value, not an absence
 
 IDM hands back `null` constantly — an unset single-valued relationship is

@@ -50,6 +50,24 @@ const endpoint = defineEndpoint({
       handler: ({ params }) => ({ _id: params.id }),
     }),
     route({
+      method: "read",
+      path: "/contracts",
+      response: v.object({
+        loose: v.oneOf([v.string(), v.integer()]),
+        tagged: v.discriminated("type", {
+          date: v.object({ type: v.enumOf(["date"]), format: v.string() }),
+          string: v.object({
+            type: v.enumOf(["string"]),
+            minLength: v.integer(),
+          }),
+        }),
+      }),
+      handler: () => ({
+        loose: "ok",
+        tagged: { type: "date" as const, format: "iso" },
+      }),
+    }),
+    route({
       method: "action",
       action: "retire",
       path: "/{id}",
@@ -95,7 +113,7 @@ const shapeCases: ShapeCase[] = [
   ["JSON Schema dialect", document["jsonSchemaDialect"], "https://json-schema.org/draft/2020-12/schema"],
   ["server URL", document["servers"], [{ url: "https://t.example" }]],
   ["document info", document["info"], { title: "Widgets", version: "2.1.0" }],
-  ["stable RPC path keys", Object.keys(paths).sort(), [base, base + "/{id}", base + "/{id}:retire", base + ":bulkImport"]],
+  ["stable RPC path keys", Object.keys(paths).sort(), [base, base + "/contracts", base + "/{id}", base + "/{id}:retire", base + ":bulkImport"]],
   ["ordinary route is not synthetic", rootGet["x-crest-synthetic-path-key"], undefined],
   ["root POST remains create", rootPost["x-crest-method"], "create"],
   ["synthetic action metadata", [retirePost["x-crest-synthetic-path-key"], retirePost["x-crest-action"], retirePost["x-crest-path"]], [true, "retire", base + "/{id}"]],
@@ -209,6 +227,28 @@ test("a query route's 200 schema is the envelope around its declared row", () =>
     "totalPagedResults",
     "totalPagedResultsPolicy",
   ]);
+});
+
+test("union combinators emit inline schemas with const tags", () => {
+  const responses = operation(base + "/contracts", "get")["responses"] as Record<
+    string,
+    { content: { "application/json": { schema: Record<string, unknown> } } }
+  >;
+  const schema = responses["200"]?.content["application/json"].schema as {
+    properties: Record<string, Record<string, unknown>>;
+  };
+  assert.deepEqual(schema.properties["loose"]?.["anyOf"], [
+    { type: "string" },
+    { type: "integer" },
+  ]);
+  const branches = schema.properties["tagged"]?.["oneOf"] as Array<{
+    properties: Record<string, unknown>;
+  }>;
+  assert.deepEqual(branches.map((branch) => branch.properties["type"]), [
+    { const: "date" },
+    { const: "string" },
+  ]);
+  assert.equal(schema.properties["tagged"]?.["discriminator"], undefined);
 });
 
 test("operation ids are unique and stable", () => {
