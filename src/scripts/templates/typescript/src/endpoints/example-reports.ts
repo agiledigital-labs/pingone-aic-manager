@@ -6,7 +6,7 @@
 // with a capture — `request.resourcePath` carries the whole sub-path verbatim
 // (`"widget/w-abcd/summary"`), so both are ordinary pattern matches.
 //
-// User file — seeded once, yours to change.
+// User file — yours to change. `workspace update` refreshes this only if you have not edited it.
 
 import {
   badRequest,

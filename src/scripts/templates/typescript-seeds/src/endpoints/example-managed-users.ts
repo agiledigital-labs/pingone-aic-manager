@@ -46,7 +46,7 @@
 // modify a user. The "SHOULD NOT COMPILE" block at the bottom lists the
 // negative cases worth trying in your editor.
 //
-// User file — seeded once, yours to change.
+// User file — yours to change. `workspace update` refreshes this only if you have not edited it.
 
 import {
   defineEndpoint,

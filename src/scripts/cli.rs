@@ -661,6 +661,7 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
                 sync_types,
                 workspace::TEMPLATES_VERSION
             );
+            print_seed_notes(&r);
             println!(
                 "next: cd {} && npm install   (installs the lint/type-check toolchain)",
                 r.tree.display()
@@ -681,8 +682,26 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
                 sync_types,
                 r.tree.display()
             );
+            print_seed_notes(&r);
             Ok(())
         }
+    }
+}
+
+fn print_seed_notes(report: &crate::scripts::workspace::WorkspaceReport) {
+    for path in &report.drifted {
+        let rel = path.strip_prefix(&report.tree).unwrap_or(path);
+        println!(
+            "{rel}: skipped (you edited it; it may no longer compile against the framework)",
+            rel = rel.display()
+        );
+    }
+    for path in &report.unverifiable {
+        let rel = path.strip_prefix(&report.tree).unwrap_or(path);
+        println!(
+            "{rel}: skipped (no recorded seed hash; not overwritten)",
+            rel = rel.display()
+        );
     }
 }
 

@@ -9,7 +9,7 @@
 // `"active" | "retired" | "draft" | undefined` because it was declared an
 // optional `v.enumOf`. Change a validator and the handler stops compiling.
 //
-// User file — seeded once, yours to change.
+// User file — yours to change. `workspace update` refreshes this only if you have not edited it.
 
 import {
   badRequest,

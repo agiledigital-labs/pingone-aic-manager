@@ -4,7 +4,7 @@
 // logging, error mapping, OpenAPI — not to be a datastore. Nothing here is
 // persisted; replace it with `openidm.*` calls in a real endpoint.
 //
-// User file — seeded once, yours to change.
+// User file — yours to change. `workspace update` refreshes this only if you have not edited it.
 
 import type { WidgetStatus } from "./widget-key.ts";
 

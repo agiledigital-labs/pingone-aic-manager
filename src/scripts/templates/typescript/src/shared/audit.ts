@@ -4,7 +4,7 @@
 // allowlist. Do not "improve" it by logging `context` — it carries the bearer
 // token and the session token (docs/api/11-idm-endpoints.md).
 //
-// User file — seeded once, yours to change.
+// User file — yours to change. `workspace update` refreshes this only if you have not edited it.
 
 import {
   describeCaller,

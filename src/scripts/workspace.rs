@@ -13,11 +13,13 @@ use crate::app::event::ToastKind;
 use crate::config::ProjectConfig;
 use crate::scripts::ts_project::PROJECT_DIR;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 64;
+pub const TEMPLATES_VERSION: u32 = 65;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -315,11 +317,13 @@ const USER: &[(&str, &str)] = &[
 
 /// User files inside the TypeScript project. Seeded when the project tree is
 /// first created — including on an `update` that introduces it to an existing
-/// workspace — and never touched again.
+/// workspace. On later updates an **unmodified** seed (disk hash matches the
+/// hash recorded when we last wrote it) is refreshed; a file the user has
+/// edited, or one with no recorded hash, is left alone and reported.
 ///
 /// The `example-*` endpoints are a worked example, not infrastructure: they
 /// exercise every routing and validation feature against fixture data and are
-/// meant to be deleted once you have your own.
+/// meant to be deleted once you have your own. A deleted seed stays deleted.
 const TS_USER: &[(&str, &str)] = &[
     (
         "typescript/src/shared/widget-key.ts",
@@ -393,10 +397,44 @@ const GITIGNORE: &str = "node_modules/\ndist/\ncoverage/\n.aic-sync/\nidm/types/
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct WorkspaceState {
     templates_version: u32,
+    /// SHA-256 (lowercase hex) of each TypeScript seed as we last wrote it,
+    /// keyed by the workspace-relative path. Absent for workspaces that predate
+    /// this field — those files are unverifiable, never overwritten.
+    #[serde(default)]
+    seed_hashes: BTreeMap<String, String>,
 }
 
-fn state_path(tenant: &str) -> PathBuf {
-    ProjectConfig::aic_sync_dir(tenant).join("state.toml")
+fn state_path_in(tree: &Path) -> PathBuf {
+    tree.join(".aic-sync").join("state.toml")
+}
+
+fn load_state(tree: &Path) -> Result<WorkspaceState> {
+    let path = state_path_in(tree);
+    if !path.exists() {
+        return Ok(WorkspaceState::default());
+    }
+    Ok(toml::from_str(&std::fs::read_to_string(&path)?)?)
+}
+
+fn save_state(tree: &Path, state: &WorkspaceState) -> Result<()> {
+    let path = state_path_in(tree);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, toml::to_string_pretty(state)?)?;
+    Ok(())
+}
+
+/// SHA-256 of the exact bytes we write (or read back), lowercase hex.
+fn content_hash(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in digest {
+        hex.push(HEX[usize::from(byte >> 4)] as char);
+        hex.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    hex
 }
 
 /// Detect a pre-redesign **per-realm** workspace
@@ -414,12 +452,7 @@ pub fn legacy_layout(tenant: &str) -> Option<PathBuf> {
 
 /// Templates version recorded for a tenant's workspace (0 if uninitialised).
 pub fn applied_version(tenant: &str) -> Result<u32> {
-    let path = state_path(tenant);
-    if !path.exists() {
-        return Ok(0);
-    }
-    let state: WorkspaceState = toml::from_str(&std::fs::read_to_string(&path)?)?;
-    Ok(state.templates_version)
+    Ok(load_state(&ProjectConfig::workspace_tree(tenant))?.templates_version)
 }
 
 /// Shared first-use workspace guard for scripts-adjacent verticals.
@@ -459,16 +492,6 @@ pub fn ensure_workspace_ready(app: &mut App, tenant: &str) -> bool {
             false
         }
     }
-}
-
-fn record_version(tenant: &str) -> Result<()> {
-    let dir = ProjectConfig::aic_sync_dir(tenant);
-    std::fs::create_dir_all(&dir)?;
-    let state = WorkspaceState {
-        templates_version: TEMPLATES_VERSION,
-    };
-    std::fs::write(state_path(tenant), toml::to_string_pretty(&state)?)?;
-    Ok(())
 }
 
 /// Merge the framework's `package.json` into whatever is already on disk.
@@ -544,11 +567,17 @@ fn write_if(path: &Path, contents: &str, overwrite: bool) -> Result<bool> {
     Ok(true)
 }
 
-/// What a scaffolding run wrote (and, on update, removed).
+/// What a scaffolding run wrote (and, on update, removed or left).
 #[derive(Debug, Default)]
 pub struct WorkspaceReport {
     pub written: Vec<PathBuf>,
     pub removed: Vec<PathBuf>,
+    /// Seeds the user has edited: left on disk, named so they know `src/`
+    /// may no longer compile against the framework.
+    pub drifted: Vec<PathBuf>,
+    /// Seeds on disk with no recorded hash. Predate this tracking; not
+    /// overwritten, because we cannot tell a stale demo from their endpoint.
+    pub unverifiable: Vec<PathBuf>,
     pub tree: PathBuf,
 }
 
@@ -560,16 +589,15 @@ pub fn init(tenant: &str) -> Result<WorkspaceReport> {
 }
 
 /// Refresh the managed template files (types / tsconfig / eslint) to the
-/// current [`TEMPLATES_VERSION`], leaving user files untouched.
+/// current [`TEMPLATES_VERSION`]. Unmodified TypeScript seeds are repaired;
+/// edited or unverifiable seeds are left alone and reported.
 pub fn update(tenant: &str) -> Result<WorkspaceReport> {
     scaffold(tenant, true)
 }
 
 fn scaffold(tenant: &str, is_update: bool) -> Result<WorkspaceReport> {
     let tree = ProjectConfig::workspace_tree(tenant);
-    let report = scaffold_at(&tree, is_update)?;
-    record_version(tenant)?;
-    Ok(report)
+    scaffold_at(&tree, is_update)
 }
 
 /// Scaffold into an explicit `tree` dir (no tenant state). Split out from
@@ -579,6 +607,7 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
         tree: tree.to_path_buf(),
         ..Default::default()
     };
+    let mut state = load_state(tree)?;
 
     // An update that first introduces the TypeScript project still has to seed
     // its user files — otherwise an existing workspace gets a framework with no
@@ -614,14 +643,14 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
             }
         }
     }
-    if !is_update || typescript_is_new {
-        for (rel, contents) in TS_USER {
-            let path = tree.join(rel);
-            if write_if(&path, contents, false)? {
-                report.written.push(path);
-            }
-        }
-    }
+    seed_typescript_user_files(tree, typescript_is_new, &mut state, &mut report)?;
+    // Persist the seed hashes before the fallible writes below. They describe
+    // bytes already on disk, so losing them to a later error would leave a
+    // tool-written seed looking user-edited — and a seed reported as drifted is
+    // never refreshed again. `templates_version` is deliberately still the old
+    // value here, so a failed run retries the whole update rather than
+    // recording work it did not finish.
+    save_state(tree, &state)?;
     write_ts_package_json(tree, &mut report)?;
     // `.gitignore` is managed (always refreshed).
     let gi = tree.join(".gitignore");
@@ -675,7 +704,75 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
         }
     }
 
+    state.templates_version = TEMPLATES_VERSION;
+    save_state(tree, &state)?;
     Ok(report)
+}
+
+/// Write or refresh one TypeScript seed according to its provenance.
+///
+/// - missing, never recorded (or the project is new): write it
+/// - missing, hash recorded: the user deleted it — leave it
+/// - disk hash matches the recorded seed hash: they never touched it — refresh
+/// - disk hash differs: they own it — leave it, report drifted
+/// - no recorded hash: do not guess — leave it, report unverifiable
+/// - disk already equals the current seed and we have no hash: start tracking
+fn seed_typescript_user_files(
+    tree: &Path,
+    typescript_is_new: bool,
+    state: &mut WorkspaceState,
+    report: &mut WorkspaceReport,
+) -> Result<()> {
+    for (rel, contents) in TS_USER {
+        seed_one(tree, rel, contents, typescript_is_new, state, report)?;
+    }
+    state
+        .seed_hashes
+        .retain(|rel, _| TS_USER.iter().any(|(known, _)| known == rel));
+    Ok(())
+}
+
+fn seed_one(
+    tree: &Path,
+    rel: &str,
+    contents: &str,
+    typescript_is_new: bool,
+    state: &mut WorkspaceState,
+    report: &mut WorkspaceReport,
+) -> Result<()> {
+    let path = tree.join(rel);
+    let wanted = content_hash(contents.as_bytes());
+
+    if !path.exists() {
+        // A missing `src/` is "the project is new", not "the user deleted
+        // every seed": re-seed. A missing file next to a live `src/` whose
+        // hash we recorded is a deletion — the README told them to do that.
+        if !typescript_is_new && state.seed_hashes.contains_key(rel) {
+            return Ok(());
+        }
+        if write_if(&path, contents, true)? {
+            report.written.push(path);
+        }
+        state.seed_hashes.insert(rel.to_string(), wanted);
+        return Ok(());
+    }
+
+    let on_disk = std::fs::read(&path)?;
+    let disk_hash = content_hash(&on_disk);
+    match state.seed_hashes.get(rel) {
+        Some(recorded) if recorded == &disk_hash => {
+            if disk_hash != wanted && write_if(&path, contents, true)? {
+                report.written.push(path);
+            }
+            state.seed_hashes.insert(rel.to_string(), wanted);
+        }
+        Some(_) => report.drifted.push(path),
+        None if disk_hash == wanted => {
+            state.seed_hashes.insert(rel.to_string(), wanted);
+        }
+        None => report.unverifiable.push(path),
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1302,6 +1399,175 @@ mod tests {
         assert!(refreshed.contains("../../types/managed/*.d.ts"));
         assert!(refreshed.contains("../../types/managed/hooks/alpha_user.d.ts"));
         assert!(refreshed.contains("../../types/managed-hook.d.ts"));
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    const WIDGETS_SEED: &str = "typescript/src/endpoints/example-widgets.ts";
+
+    fn seed_body(rel: &str) -> &'static str {
+        TS_USER
+            .iter()
+            .find(|(candidate, _)| *candidate == rel)
+            .expect("rel is a TypeScript seed")
+            .1
+    }
+
+    fn report_has(paths: &[PathBuf], rel: &str) -> bool {
+        paths.iter().any(|path| path.ends_with(rel))
+    }
+
+    #[test]
+    fn init_records_a_hash_for_every_typescript_seed() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let state = load_state(&tree).unwrap();
+        for (rel, contents) in TS_USER {
+            let path = tree.join(rel);
+            assert!(path.exists(), "seed missing: {rel}");
+            assert_eq!(
+                state.seed_hashes.get(*rel).map(String::as_str),
+                Some(content_hash(contents.as_bytes()).as_str()),
+                "init must record the hash of what it wrote: {rel}"
+            );
+        }
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_repairs_an_unmodified_stale_seed() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let path = tree.join(WIDGETS_SEED);
+        std::fs::write(&path, "// old seed\n").unwrap();
+        let mut state = load_state(&tree).unwrap();
+        state
+            .seed_hashes
+            .insert(WIDGETS_SEED.to_string(), content_hash(b"// old seed\n"));
+        save_state(&tree, &state).unwrap();
+
+        let report = scaffold_at(&tree, true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            seed_body(WIDGETS_SEED)
+        );
+        assert!(report_has(&report.written, WIDGETS_SEED));
+        assert!(!report_has(&report.drifted, WIDGETS_SEED));
+        assert!(!report_has(&report.unverifiable, WIDGETS_SEED));
+        let state = load_state(&tree).unwrap();
+        assert_eq!(
+            state.seed_hashes.get(WIDGETS_SEED).map(String::as_str),
+            Some(content_hash(seed_body(WIDGETS_SEED).as_bytes()).as_str())
+        );
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_preserves_and_reports_a_modified_seed() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let path = tree.join(WIDGETS_SEED);
+        std::fs::write(&path, "// mine now\n").unwrap();
+
+        let report = scaffold_at(&tree, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "// mine now\n");
+        assert!(report_has(&report.drifted, WIDGETS_SEED));
+        assert!(!report_has(&report.written, WIDGETS_SEED));
+        assert!(!report_has(&report.unverifiable, WIDGETS_SEED));
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_writes_an_absent_seed_that_was_never_recorded() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let path = tree.join(WIDGETS_SEED);
+        std::fs::remove_file(&path).unwrap();
+        let mut state = load_state(&tree).unwrap();
+        state.seed_hashes.remove(WIDGETS_SEED);
+        save_state(&tree, &state).unwrap();
+
+        let report = scaffold_at(&tree, true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            seed_body(WIDGETS_SEED)
+        );
+        assert!(report_has(&report.written, WIDGETS_SEED));
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_leaves_a_user_deleted_seed_gone() {
+        // Distinct from "absent and never recorded": the README tells the user
+        // to delete the demos, and putting them back on every update would
+        // undo that. The recorded hash is the tombstone.
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let path = tree.join(WIDGETS_SEED);
+        std::fs::remove_file(&path).unwrap();
+
+        let report = scaffold_at(&tree, true).unwrap();
+        assert!(!path.exists(), "a deleted seed must stay deleted");
+        assert!(!report_has(&report.written, WIDGETS_SEED));
+        assert!(!report_has(&report.drifted, WIDGETS_SEED));
+        assert!(
+            load_state(&tree)
+                .unwrap()
+                .seed_hashes
+                .contains_key(WIDGETS_SEED)
+        );
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_preserves_and_reports_an_unverifiable_seed() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let path = tree.join(WIDGETS_SEED);
+        std::fs::write(&path, "// maybe mine\n").unwrap();
+        let mut state = load_state(&tree).unwrap();
+        state.seed_hashes.remove(WIDGETS_SEED);
+        save_state(&tree, &state).unwrap();
+
+        let report = scaffold_at(&tree, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "// maybe mine\n");
+        assert!(report_has(&report.unverifiable, WIDGETS_SEED));
+        assert!(!report_has(&report.written, WIDGETS_SEED));
+        assert!(!report_has(&report.drifted, WIDGETS_SEED));
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_starts_tracking_an_unhashed_seed_that_already_matches() {
+        // A workspace whose seed happens to equal the current template (fresh
+        // init from this version, or they copied the new file by hand) is not
+        // unverifiable — we can start hashing it without writing.
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let mut state = load_state(&tree).unwrap();
+        state.seed_hashes.remove(WIDGETS_SEED);
+        save_state(&tree, &state).unwrap();
+
+        let report = scaffold_at(&tree, true).unwrap();
+        assert!(!report_has(&report.unverifiable, WIDGETS_SEED));
+        assert!(!report_has(&report.written, WIDGETS_SEED));
+        assert_eq!(
+            std::fs::read_to_string(tree.join(WIDGETS_SEED)).unwrap(),
+            seed_body(WIDGETS_SEED)
+        );
+        assert_eq!(
+            load_state(&tree)
+                .unwrap()
+                .seed_hashes
+                .get(WIDGETS_SEED)
+                .map(String::as_str),
+            Some(content_hash(seed_body(WIDGETS_SEED).as_bytes()).as_str())
+        );
 
         std::fs::remove_dir_all(&tree).ok();
     }
