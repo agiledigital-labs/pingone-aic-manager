@@ -17,8 +17,6 @@ import {
   defineEndpoint,
   notFound,
   queryResult,
-  queryRoute,
-  route,
   v,
 } from "../../framework/index.ts";
 import { audit } from "../shared/audit.ts";
@@ -56,7 +54,7 @@ export default defineEndpoint({
   summary: "Widgets (demo)",
   // Validated on every route; also the log correlation id when present.
   headers: { "x-request-id": v.optional(v.uuid()) },
-  routes: [
+  routes: ({ route, queryRoute }) => [
     queryRoute({
       path: "/",
       query: {
@@ -97,9 +95,10 @@ export default defineEndpoint({
         expand: v.optional(v.csv(v.enumOf(["owner", "history"]))),
       },
       response: WIDGET_RESPONSE,
-      handler: ({ params, query }) => {
+      handler: ({ params, query, headers, log }) => {
         const widget = requireWidget(params.widgetId);
         const expand = query.expand ?? [];
+        log.debug("read widget", { requestId: headers["x-request-id"] });
         return {
           ...widget,
           ...(expand.indexOf("owner") < 0

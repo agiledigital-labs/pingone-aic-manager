@@ -79,6 +79,45 @@ export interface RouteInput<
   correlationId: string;
 }
 
+/** Endpoint headers overlaid with a route's declarations. Route keys win. */
+export type MergedShape<Base extends Shape, Override extends Shape> = {
+  [K in keyof Base | keyof Override]: K extends keyof Override
+    ? Override[K]
+    : K extends keyof Base
+      ? Base[K]
+      : never;
+};
+
+function hasHeaderName(shape: Shape, name: string): boolean {
+  const lowered = name.toLowerCase();
+  for (const key of Object.keys(shape)) {
+    if (key.toLowerCase() === lowered) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Apply the header precedence shared by dispatch and OpenAPI generation.
+ * Names that differ only in case are one header; the override keeps its
+ * own spelling.
+ */
+export function mergeHeaderShapes<
+  Base extends Shape,
+  Override extends Shape,
+>(base: Base, override: Override): MergedShape<Base, Override> {
+  const kept: Shape = {};
+  for (const name of Object.keys(base)) {
+    const validator = base[name];
+    if (validator !== undefined && !hasHeaderName(override, name)) {
+      kept[name] = validator;
+    }
+  }
+  // TS cannot relate a spread to a mapped type.
+  return { ...kept, ...override } as MergedShape<Base, Override>;
+}
+
 /**
  * What a handler returns, for a caller who wants to name the type — a handler
  * written as a standalone function rather than inline.
@@ -267,10 +306,66 @@ export function queryRoute<
   return build("query", spec);
 }
 
-function build<P extends Shape, Q extends Shape, H extends Shape, B, R>(
+type BoundRouteSpec<
+  EH extends Shape,
+  P extends Shape,
+  Q extends Shape,
+  H extends Shape,
+  B,
+  R,
+> = Omit<RouteSpec<P, Q, H, B, R>, "handler"> & {
+  handler: (input: RouteInput<P, Q, MergedShape<EH, H>, B>) => NoInfer<R>;
+};
+
+type BoundQueryRouteSpec<
+  EH extends Shape,
+  P extends Shape,
+  Q extends Shape,
+  H extends Shape,
+  B,
+  R,
+> = Omit<QueryRouteSpec<P, Q, H, B, R>, "handler"> & {
+  handler: (
+    input: RouteInput<P, Q, MergedShape<EH, H>, B>
+  ) => CrestQueryResult<NoInfer<R>>;
+};
+
+/** Route builders contextually typed with an endpoint's shared headers. */
+export interface EndpointRouteBuilders<EH extends Shape> {
+  route<
+    P extends Shape = Record<never, never>,
+    Q extends Shape = Record<never, never>,
+    H extends Shape = Record<never, never>,
+    B = undefined,
+    R = unknown,
+  >(spec: BoundRouteSpec<EH, P, Q, H, B, R>): RouteDefinition;
+  queryRoute<
+    P extends Shape = Record<never, never>,
+    Q extends Shape = Record<never, never>,
+    H extends Shape = Record<never, never>,
+    B = undefined,
+    R = unknown,
+  >(spec: BoundQueryRouteSpec<EH, P, Q, H, B, R>): RouteDefinition;
+}
+
+function endpointRouteBuilders<EH extends Shape>(): EndpointRouteBuilders<EH> {
+  return {
+    route: (spec) => build(spec.method, spec),
+    queryRoute: (spec) => build("query", spec),
+  };
+}
+
+function build<
+  P extends Shape,
+  Q extends Shape,
+  H extends Shape,
+  B,
+  R,
+  InputHeaders extends Shape = H,
+>(
   method: CrestMethod,
   spec: RouteSpecBase<P, Q, H, B, R> & {
-    handler: (input: RouteInput<P, Q, H, B>) => unknown;
+    handler: (input: RouteInput<P, Q, InputHeaders, B>) => unknown;
   }
 ): RouteDefinition {
   if (method === "action" && spec.action === undefined) {
@@ -332,19 +427,23 @@ function build<P extends Shape, Q extends Shape, H extends Shape, B, R>(
   };
 }
 
-export interface EndpointSpec {
+export interface EndpointSpec<
+  H extends Shape = Record<never, never>,
+> {
   /** The IDM config id suffix — `endpoint/<name>` and the emitted filename. */
   name: string;
   summary?: string;
   description?: string;
   version?: string;
   /** Headers validated on EVERY route (merged under the route's own). */
-  headers?: Shape;
+  headers?: H;
   /** Header used as the log correlation id. Default `x-request-id`. */
   correlationHeader?: string;
   /** Validate handler results at runtime. Useful in tests and non-production tenants. */
   validateResponses?: boolean;
-  routes: RouteDefinition[];
+  routes:
+    | RouteDefinition[]
+    | ((builders: EndpointRouteBuilders<H>) => RouteDefinition[]);
 }
 
 /** The build-time view of an endpoint, consumed by the OpenAPI generator. */
@@ -575,8 +674,13 @@ export function routeLabel(route: RouteDefinition): string {
  * Build an endpoint. The returned function is the module's default export; the
  * emitted bundle calls it as its final expression statement.
  */
-export function defineEndpoint(spec: EndpointSpec): EndpointMain {
-  assertUnambiguousRoutes(spec.routes);
+export function defineEndpoint<H extends Shape = Record<never, never>>(
+  spec: EndpointSpec<H>
+): EndpointMain {
+  const routes = Array.isArray(spec.routes)
+    ? spec.routes
+    : spec.routes(endpointRouteBuilders<H>());
+  assertUnambiguousRoutes(routes);
   const definition: EndpointDefinition = {
     name: spec.name,
     summary: spec.summary,
@@ -585,7 +689,7 @@ export function defineEndpoint(spec: EndpointSpec): EndpointMain {
     headers: (spec.headers ?? {}) as Shape,
     correlationHeader: spec.correlationHeader ?? "x-request-id",
     validateResponses: spec.validateResponses ?? false,
-    routes: spec.routes.slice(),
+    routes: routes.slice(),
   };
 
   const dispatch = (
@@ -683,7 +787,10 @@ export function defineEndpoint(spec: EndpointSpec): EndpointMain {
         (key) => request.additionalParameters[key],
         issues
       );
-      const headerShape: Shape = { ...definition.headers, ...route.headers };
+      const headerShape = mergeHeaderShapes(
+        definition.headers,
+        route.headers
+      );
       const headers = parseShape(headerShape, "header", header, issues);
       let body: unknown = undefined;
       if (route.body !== undefined) {

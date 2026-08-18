@@ -13,8 +13,10 @@ import {
   splitResourcePath,
   v,
   type CrestRequest,
+  type EndpointMain,
   type IdmCallContext,
 } from "../framework/index.ts";
+import { mergeHeaderShapes } from "../framework/router.ts";
 import {
   callContext,
   crestErrorFrom,
@@ -77,6 +79,85 @@ const demo = defineEndpoint({
   ],
 });
 
+const sharedHeaders = defineEndpoint({
+  name: "shared-headers",
+  headers: {
+    "x-shared": v.string({ minLength: 2 }),
+    "x-optional": v.optional(v.integer()),
+    "x-override": v.integer(),
+  },
+  routes: ({ route }) => [
+    route({
+      method: "read",
+      path: "/",
+      handler: ({ headers }) => ({ shared: headers["x-shared"] }),
+    }),
+    route({
+      method: "read",
+      path: "/override",
+      headers: { "x-override": v.enumOf(["route-wins"] as const) },
+      handler: ({ headers }) => ({ override: headers["x-override"] }),
+    }),
+  ],
+});
+
+/** Never called: `npm run type-check` gates the endpoint-bound builder types. */
+export function endpointHeaderTypeChecks(): void {
+  defineEndpoint({
+    name: "header-types",
+    headers: {
+      "x-required": v.integer(),
+      "x-optional": v.optional(v.string()),
+    },
+    routes: ({ route }) => [
+      route({
+        method: "read",
+        path: "/",
+        handler: ({ headers }) => {
+          const required: number = headers["x-required"];
+          const optional: string | undefined = headers["x-optional"];
+          // @ts-expect-error the header was not declared at either level
+          void headers["x-undeclared"];
+          // @ts-expect-error an optional header cannot be used as a bare string
+          const wronglyRequired: string = headers["x-optional"];
+          void required;
+          void optional;
+          void wronglyRequired;
+          return {};
+        },
+      }),
+      route({
+        method: "read",
+        path: "/optionality-overrides",
+        headers: {
+          "x-required": v.optional(v.integer()),
+          "x-optional": v.integer(),
+        },
+        handler: ({ headers }) => {
+          const nowOptional: number | undefined = headers["x-required"];
+          const nowRequired: number = headers["x-optional"];
+          // @ts-expect-error the route changed this endpoint header to optional
+          const staleRequired: number = headers["x-required"];
+          void nowOptional;
+          void nowRequired;
+          void staleRequired;
+          return {};
+        },
+      }),
+      route({
+        method: "read",
+        path: "/type-override",
+        headers: { "x-required": v.enumOf(["route-wins"] as const) },
+        handler: ({ headers }) => {
+          const narrowed: "route-wins" = headers["x-required"];
+          void narrowed;
+          return {};
+        },
+      }),
+    ],
+  });
+}
+
 test("parsePath splits literals and captures", () => {
   assert.deepEqual(parsePath("/"), []);
   assert.deepEqual(parsePath("/{id}"), [{ param: "id" }]);
@@ -94,7 +175,36 @@ test("splitResourcePath decodes each segment and drops empties", () => {
   assert.deepEqual(splitResourcePath("bad%"), ["bad%"]);
 });
 
-type RouteCase = readonly [name: string, request: CrestRequest, select: (result: unknown) => unknown, expected: unknown, context?: IdmCallContext];
+const caseFoldHeaders = defineEndpoint({
+  name: "case-fold-headers",
+  headers: { "x-tenant": v.optional(v.string()) },
+  routes: ({ route }) => [
+    route({
+      method: "read",
+      path: "/",
+      headers: { "X-Tenant": v.string() },
+      handler: ({ headers }) => ({ tenant: headers["X-Tenant"] }),
+    }),
+  ],
+});
+
+test("header names that differ only in case collapse to the route spelling", () => {
+  const merged = mergeHeaderShapes(
+    { "x-tenant": v.optional(v.string()) },
+    { "X-Tenant": v.string() }
+  );
+  assert.deepEqual(Object.keys(merged), ["X-Tenant"]);
+  assert.equal(merged["X-Tenant"]?.isOptional, false);
+});
+
+type RouteCase = readonly [
+  name: string,
+  request: CrestRequest,
+  select: (result: unknown) => unknown,
+  expected: unknown,
+  context?: IdmCallContext,
+  endpoint?: EndpointMain,
+];
 
 const routeCases: RouteCase[] = [
   ["root query applies defaults", crestRequest("query"), (x) => (x as { result: unknown }).result, [{ _id: "3" }]],
@@ -112,11 +222,37 @@ const routeCases: RouteCase[] = [
     { retired: "abc", why: "obsolete" },
     callContext({ scopes: ["demo:write", "other"] })
   ],
+  [
+    "a handler can read an endpoint-level header",
+    crestRequest("read"),
+    (x) => x,
+    { shared: "visible" },
+    callContext({ headers: { "x-shared": "visible", "x-override": "1" } }),
+    sharedHeaders,
+  ],
+  [
+    "a route header validator overrides the endpoint validator",
+    crestRequest("read", { resourcePath: "override" }),
+    (x) => x,
+    { override: "route-wins" },
+    callContext({
+      headers: { "x-shared": "ok", "x-override": "route-wins" },
+    }),
+    sharedHeaders,
+  ],
+  [
+    "a case-differing route header replaces the endpoint header",
+    crestRequest("read"),
+    (x) => x,
+    { tenant: "acme" },
+    callContext({ headers: { "X-Tenant": "acme" } }),
+    caseFoldHeaders,
+  ],
 ];
 
-for (const [name, request, select, expected, context] of routeCases) {
+for (const [name, request, select, expected, context, endpoint] of routeCases) {
   test(name, () => {
-    const result = demo.dispatch(request, context ?? callContext());
+    const result = (endpoint ?? demo).dispatch(request, context ?? callContext());
     assert.deepEqual(select(result), expected);
   });
 }
@@ -137,13 +273,14 @@ interface ErrorCase {
   code: number;
   issuePath?: string;
   detail?: { key: string; value: unknown };
+  endpoint?: EndpointMain;
 }
 
 function fails(
   name: string,
   request: CrestRequest,
   code: number,
-  expected: Pick<ErrorCase, "context" | "issuePath" | "detail"> = {}
+  expected: Pick<ErrorCase, "context" | "issuePath" | "detail" | "endpoint"> = {}
 ): ErrorCase {
   return { name, request, code, ...expected };
 }
@@ -175,12 +312,22 @@ const errorCases: ErrorCase[] = [
     context: callContext({ headers: { "x-request-id": "nope" } }),
     issuePath: "header.x-request-id",
   }),
+  fails("an invalid endpoint header is a 400 on a route with no headers", crestRequest("read"), 400, {
+    context: callContext({ headers: { "x-shared": "x", "x-override": "1" } }),
+    issuePath: "header.x-shared",
+    endpoint: sharedHeaders,
+  }),
+  fails("a case-differing required override rejects a missing header", crestRequest("read"), 400, {
+    context: callContext(),
+    issuePath: "header.X-Tenant",
+    endpoint: caseFoldHeaders,
+  }),
 ];
 
 for (const row of errorCases) {
   test(row.name, () => {
     const response = crestErrorFrom(() =>
-      demo.dispatch(row.request, row.context ?? callContext())
+      (row.endpoint ?? demo).dispatch(row.request, row.context ?? callContext())
     );
     assert.equal(response.code, row.code);
     if (row.issuePath !== undefined) {
