@@ -100,7 +100,11 @@ returns 500. Plain class-to-class inheritance is unaffected — only native
 
 The framework uses a tagged plain object (`framework/errors.ts`) and duck-types
 it, and `typescript/eslint.config.js` rejects both `extends Error` and an
-`instanceof …Error` test.
+`instanceof …Error` test. Throw `badRequest`, `notFound`, `forbidden`,
+`unprocessableEntity` (422), `badGateway` (502), or one of the other helpers —
+`fault(code, message, detail)` covers a status with no helper of its own, which is
+why 412, 501 and 503 have reasons but no wrappers. Anything else becomes an
+opaque 500 and the real cause goes to the log.
 
 ## Runtime bans, checked on the generated file
 
@@ -261,9 +265,26 @@ in all three, since a projection that silently differs per surface is worse than
 one that does not exist.
 
 `tests/harness.ts` provides `managedStore()` and `withOpenIdm()` so Node tests
-can execute handlers that use the global `openidm` binding. The managed-users
-example exercises a real read through that seam; specialized actions or patch
-semantics can override the relevant member on the returned double.
+can execute handlers that use the global `openidm` binding, and
+`withIdentityServer(properties, run)` for the global `identityServer` binding
+(ESV / boot-property lookup). The managed-users example exercises a real read
+through the `openidm` seam; specialized actions or patch semantics can override
+the relevant member on the returned double.
+
+`callContext()` defaults the caller to `svc-account`. Pass `subject` and
+`roles` to act as someone else, and `component` when a handler discriminates a
+service account from an end user; a path-shaped subject derives its own
+component rather than inheriting the service account's.
+`unauthenticated: true` omits `security` entirely, and cannot be combined with
+any of the three — a type error, and a throw as well, since `.mjs` tests are
+untyped.
+
+That last one models an **unverified** shape. `docs/api/11-idm-endpoints.md`
+records the anonymous endpoint path as not re-exercised against the sandbox, and
+IDM has historically sent an anonymous `security` block rather than omitting it.
+Absent `security` is therefore one of two candidates, and a passing test against
+it is not evidence about the live 401 path — probe it before relying on that
+branch.
 
 **The double refuses what it cannot model, and that is the point.** It first
 shipped ignoring both the `fields` selector and `_queryFilter`, which is the one
@@ -274,7 +295,11 @@ does), applies a `field eq "value"` filter, hands out copies so a handler cannot
 mutate the store through its own result, and throws a `managedStore:` error
 naming the gap for everything else — relationship expansion, paging, sort keys,
 richer filters, `patch`, `action`, and `update`/`delete` of a record that is not
-there. `tests/harness.test.ts` pins both halves.
+there. `withIdentityServer` does the same for `getProperty`'s third
+`substitute` argument: `true` is declared, unverified and refused, while `false`
+requests the modelled behaviour and passes — refusing that would make a handler
+which declines substitution explicitly impossible to dispatch at all.
+`tests/harness.test.ts` pins both halves.
 
 `update`/`delete` against a missing id throw here rather than mimicking IDM
 because IDM's own behaviour for that miss is **not** verified — `docs/api/10`
