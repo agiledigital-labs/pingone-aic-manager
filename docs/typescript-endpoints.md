@@ -241,6 +241,10 @@ Three consequences worth knowing, all demonstrated in
   return value, so `OpenIdmQueryResult` is a distinct type from
   `CrestQueryResult`. Passing one straight through is a compile error; build the
   response with `queryResult(rows)`.
+- **Open request bodies need an allowlist before managed writes.** If a body
+  uses `v.object(…, { allowUnknown: true })` or a validator remainder, do not
+  forward its caller-supplied remainder wholesale to `openidm.create`,
+  `update`, or `patch`; see [Declared responses are checked against the handler](#declared-responses-are-checked-against-the-handler).
 
 The machinery — `ManagedName`, `ManagedField`, `ManagedCollectionOf`,
 `ManagedRecordOf`, `FieldsArg`, `ContentArg`, `StoredRecord`, `QueryParams` — is
@@ -323,6 +327,20 @@ disagree silently and the generated OpenAPI would promise a field the code had
 stopped sending. Now the handler's return type comes from the same declaration
 the document does. `response: v.unknownValue()` is the explicit escape hatch for
 a body the validators cannot express.
+
+Objects are closed by default: `v.object(shape)` rejects keys outside `shape`
+and emits `additionalProperties: false`. For a body with constrained declared
+members plus a caller-chosen remainder, `{ allowUnknown: true }` retains the
+extra values as `unknown`; `{ allowUnknown: v.string(...) }` validates and
+retains each extra value with that validator. Declared-key reads keep their
+precise types in both forms. An arbitrary read from the validator form is the
+union of its remainder type and all declared-member types, because any string
+may name a declared key. Declared constraints and OpenAPI `required` entries
+are unchanged, while `additionalProperties` describes the remainder. Open
+objects and `v.record()` reject keys that could alter ordinary object behaviour,
+naming the unsafe key in a validation issue. Do not forward an open
+caller-supplied remainder wholesale into a managed-object write: that is a
+mass-assignment risk the framework cannot identify for you.
 
 This check is compile-time by default. `validateResponses: true` on
 `defineEndpoint` additionally validates dynamic handler results at runtime and
