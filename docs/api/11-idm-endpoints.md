@@ -175,7 +175,7 @@ endpoint takes a few seconds to register (first calls 404 until it does).
 
 | HTTP call                                             | `request.method` | Method-specific fields (beyond the common set)                                                                                                         |
 | ----------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /endpoint/x`                                     | `read`           | —                                                                                                                                                      |
+| `GET /endpoint/x`                                     | `read`           | — (response carries an `_id` IDM adds; `""` at the root, the id for `/{id}`)                                                                            |
 | `GET /endpoint/x?_queryFilter=…` or `?_queryId=…`     | `query`          | `queryFilter`, `queryId`, `queryExpression` (string\|null), `pageSize`, `pagedResultsOffset` (number), `pagedResultsCookie` (string\|null), `sortKeys` |
 | `POST /endpoint/x` (optional `?_action=create`)       | `create`         | `newResourceId` (string\|null), `content`. HTTP 201, and the response body carries an `_id` IDM adds (probed 2026-08-18).                               |
 | `POST /endpoint/x?_action=NAME`                       | `action`         | `action` (the action name), `content`                                                                                                                  |
@@ -187,6 +187,15 @@ endpoint takes a few seconds to register (first calls 404 until it does).
 Common to every method: `method`, `resourcePath` (string; `""` at the endpoint
 root), `additionalParameters` (a map of any non-`_` query params), `fields` (the
 `_fields` list).
+
+**IDM adds `_id` to every resource-shaped response.** `create`, `read`, `update`,
+`delete` and `patch` all come back carrying it even when the handler never
+returned it — a `read` of the collection root gets `_id: ""`, a `read` of `/{id}`
+gets the id (probed 2026-08-18, all six methods). An `action` response is passed
+through untouched, and a `query` gets the paging envelope instead. This is why
+the generated OpenAPI document and the response validator legitimately differ:
+the validator checks what the handler returns, the document describes what the
+caller receives.
 
 - **`patchOperations`** is a list of `{ operation, field, value }` (mirrored
   over the wire as an index-keyed object `{"0": {...}}` because it's a Java
@@ -533,7 +542,28 @@ Object shape (real example, `schedule/UpdateReviewList`):
   create wrapper supplies it. The endpoint was deleted and its config absence
   confirmed by a 404. This run corrected the table row below, which said a create
   was `POST ?_action=create`; the 2026-06-04 `rhino-probe` run it was attributed
-  to never tested a bare `POST`.)
+  to never tested a bare `POST`. A second run the same day, throwaway
+  `endpoint/java-probe`, then swept **all six methods** for that `_id`: `read`
+  (`_id: ""` at the collection root, `_id: "abc123"` for `GET /{id}`), `update`
+  (`PUT /{id}` with `If-Match: *` → `{"_id":"upd1","updated":"upd1"}`), `delete`,
+  and `patch` all carry it; an `action` response does **not**
+  (`POST ?_action=ping` → `{"pong":"yes"}`); a query returns the paging envelope
+  (`result`, `resultCount`, `pagedResultsCookie`, `remainingPagedResults`,
+  `totalPagedResults`, `totalPagedResultsPolicy`) with no `_id` of its own. The
+  same run confirmed the conditional-header rule from the tenant rather than from
+  this document: `PUT /{id}` **without** `If-Match` on an endpoint declaring only
+  read+action was refused as `"Method create is not supported on this path"`,
+  with `detail: {"allowed":["read","action"]}` — so a bare PUT really is
+  dispatched as a create. It also recorded the Rhino Java surface: `Mac.getInstance`
+  / `init` / `doFinal` and `new java.lang.String(s).getBytes("UTF-8")` are live
+  spellings, `doFinal` returns a `"[B"` (not a JS array) whose elements are
+  **signed** (first byte of the published `HMAC-SHA256("key", "The quick brown
+  fox…")` vector came back as `-9`), `java.text.Normalizer.normalize` returns a
+  `java.lang.String` that is **not** `===` a JS literal of the same text but
+  *does* expose JS string methods such as `.slice`, no-arg `getBytes()` works
+  (platform charset), and `openidm.hash(input, null)` returns a different salted
+  hash on each call. Both endpoints were deleted and their absence confirmed by a
+  404.)
 - Endpoints: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
   `endpoint/` ids), `GET /openidm/config/endpoint/test` (200; keys
   `_id, description, source, type`, no `_rev`, plaintext `source`),

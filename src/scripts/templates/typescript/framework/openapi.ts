@@ -298,10 +298,22 @@ function validatedResponseSchema(route: RouteDefinition): JsonSchema {
     : route.response.schema;
 }
 
-/** The wire response, including fields IDM adds after handler validation. */
+/**
+ * The wire response, including fields IDM adds after handler validation.
+ *
+ * IDM's resource wrapper adds `_id` to every response it treats as a resource —
+ * probed 2026-08-18 on all six methods: `create`, `read`, `update`, `delete` and
+ * `patch` all come back carrying it (a `read` of the collection root gets `""`,
+ * a `read` of `/{id}` gets the id), while an `action` response is passed through
+ * untouched and a query gets the paging envelope instead. So the handler's
+ * declaration describes what it returns and this describes what the caller
+ * receives; only the latter has `_id`.
+ */
 function documentedResponseSchema(route: RouteDefinition): JsonSchema {
   const schema = validatedResponseSchema(route);
-  if (route.method !== "create" || schema["type"] !== "object") {
+  const wrapped =
+    route.method !== "action" && route.method !== "query";
+  if (!wrapped || schema["type"] !== "object") {
     return schema;
   }
   const properties = (schema["properties"] ?? {}) as Record<string, JsonSchema>;
