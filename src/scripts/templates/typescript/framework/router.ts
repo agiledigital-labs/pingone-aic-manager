@@ -381,6 +381,20 @@ function build<
       "route " + spec.path + ": only an action route may name an action"
     );
   }
+  if (
+    method === "action" &&
+    ["create", "read", "update", "delete", "patch", "query"].indexOf(
+      spec.action as string
+    ) >= 0
+  ) {
+    throw new Error(
+      "route " +
+        spec.path +
+        ': action "' +
+        String(spec.action) +
+        '" collides with the CREST method of the same name'
+    );
+  }
   const declared = parsePath(spec.path);
   const params = (spec.params ?? {}) as Shape;
   for (const segment of declared) {
@@ -410,7 +424,15 @@ function build<
       );
     }
   }
-  return {
+  const errors = spec.errors === undefined ? [] : spec.errors.slice();
+  for (const status of errors) {
+    if (Math.floor(status) !== status || status < 400 || status > 599) {
+      throw new Error(
+        "route " + spec.path + ": error status must be an integer from 400 to 599"
+      );
+    }
+  }
+  const built: RouteDefinition = {
     method,
     path: spec.path,
     segments: declared,
@@ -418,7 +440,7 @@ function build<
     summary: spec.summary,
     description: spec.description,
     scopes: spec.scopes === undefined ? [] : spec.scopes.slice(),
-    errors: spec.errors === undefined ? [] : spec.errors.slice(),
+    errors,
     params,
     query: (spec.query ?? {}) as Shape,
     headers: (spec.headers ?? {}) as Shape,
@@ -429,6 +451,49 @@ function build<
       input: RouteInput<Shape, Shape, Shape, unknown>
     ) => unknown,
   };
+  assertErrorsDoNotRedeclareFrameworkStatuses([built], {});
+  return built;
+}
+
+/** Error statuses the framework itself can produce after selecting this route. */
+export function frameworkErrorStatuses(
+  route: RouteDefinition,
+  endpointHeaders: Shape
+): number[] {
+  const statuses = [500];
+  if (
+    Object.keys(route.params).length > 0 ||
+    Object.keys(route.query).length > 0 ||
+    Object.keys(mergeHeaderShapes(endpointHeaders, route.headers)).length > 0 ||
+    route.body !== undefined ||
+    route.patches !== undefined
+  ) {
+    statuses.push(400);
+  }
+  if (route.scopes.length > 0) {
+    statuses.push(403);
+  }
+  return statuses;
+}
+
+function assertErrorsDoNotRedeclareFrameworkStatuses(
+  routes: RouteDefinition[],
+  endpointHeaders: Shape
+): void {
+  for (const route of routes) {
+    const frameworkStatuses = frameworkErrorStatuses(route, endpointHeaders);
+    for (const status of route.errors) {
+      if (frameworkStatuses.indexOf(status) >= 0) {
+        throw new Error(
+          "route " +
+            routeLabel(route) +
+            ": error status " +
+            String(status) +
+            " is already declared by the framework"
+        );
+      }
+    }
+  }
 }
 
 export interface EndpointSpec<
@@ -685,12 +750,14 @@ export function defineEndpoint<H extends Shape = Record<never, never>>(
     ? spec.routes
     : spec.routes(endpointRouteBuilders<H>());
   assertUnambiguousRoutes(routes);
+  const headers = (spec.headers ?? {}) as Shape;
+  assertErrorsDoNotRedeclareFrameworkStatuses(routes, headers);
   const definition: EndpointDefinition = {
     name: spec.name,
     summary: spec.summary,
     description: spec.description,
     version: spec.version ?? "1.0.0",
-    headers: (spec.headers ?? {}) as Shape,
+    headers,
     correlationHeader: spec.correlationHeader ?? "x-request-id",
     validateResponses: spec.validateResponses ?? false,
     routes: routes.slice(),

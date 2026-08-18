@@ -427,11 +427,69 @@ const invalidRouteCases = [
   ["validator without capture", () => route({ method: "read", path: "/", params: { id: v.string() }, handler: () => ({}) }), /is not in the path/],
   ["action without a name", () => route({ method: "action", path: "/", handler: () => ({}) }), /requires an action name/],
   ["non-action with an action name", () => route({ method: "read", path: "/", action: "retire", handler: () => ({}) }), /only an action route/],
+  ...(["create", "read", "update", "delete", "patch", "query"] as const).map(
+    (action) => [
+      "action colliding with " + action,
+      () => route({ method: "action", action, path: "/", handler: () => ({}) }),
+      /collides with the CREST method/,
+    ] as const
+  ),
+  ...([999, 0, -1, 4.5, Number.NaN, 201] as const).map(
+    (status) => [
+      "invalid error status " + String(status),
+      () => route({ method: "read", path: "/", errors: [status], handler: () => ({}) }),
+      /integer from 400 to 599/,
+    ] as const
+  ),
 ] as const;
 
 for (const [name, build, error] of invalidRouteCases) {
   test("route refuses " + name, () => assert.throws(build, error));
 }
+
+test("duplicate declared errors are idempotent", () => {
+  assert.doesNotThrow(() =>
+    defineEndpoint({
+      name: "duplicates",
+      routes: [
+        route({
+          method: "read",
+          path: "/",
+          errors: [409, 409],
+          handler: () => ({}),
+        }),
+      ],
+    })
+  );
+});
+
+for (const [name, build] of [
+  ["500", () => route({ method: "read", path: "/", errors: [500], handler: () => ({}) })],
+  ["403", () => route({ method: "read", path: "/", scopes: ["read"], errors: [403], handler: () => ({}) })],
+  ["400", () => route({ method: "read", path: "/", query: { q: v.string() }, errors: [400], handler: () => ({}) })],
+] as const) {
+  test("route refuses framework-owned error " + name, () =>
+    assert.throws(build, /already declared by the framework/)
+  );
+}
+
+test("endpoint refuses error 400 when a shared header produces it", () => {
+  const declared = route({
+    method: "read",
+    path: "/",
+    errors: [400],
+    handler: () => ({}),
+  });
+  assert.throws(
+    () =>
+      defineEndpoint({
+        name: "shared-header-error",
+        headers: { "x-tenant": v.string() },
+        routes: [declared],
+      }),
+    /already declared by the framework/
+  );
+});
 
 test("the endpoint definition survives to build time", () => {
   assert.equal(demo.definition.name, "demo");

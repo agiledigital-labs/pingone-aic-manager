@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  assignPathKeys,
   defineEndpoint,
   queryResult,
   queryRoute,
@@ -30,7 +31,8 @@ const endpoint = defineEndpoint({
       method: "create",
       path: "/",
       body: v.object({ name: v.string({ maxLength: 64 }) }),
-      handler: () => ({}),
+      response: v.object({ reached: v.string() }),
+      handler: () => ({ reached: "create" }),
     }),
     route({
       method: "action",
@@ -49,6 +51,14 @@ const endpoint = defineEndpoint({
       // The response is the VALIDATOR now; the generator reads `.schema`.
       response: v.object({ _id: v.string() }),
       handler: ({ params }) => ({ _id: params.id }),
+    }),
+    route({
+      method: "update",
+      path: "/{id}",
+      params: { id: v.string() },
+      body: v.object({ name: v.string() }),
+      response: v.object({ name: v.string() }),
+      handler: ({ body }) => body,
     }),
     route({
       method: "read",
@@ -105,6 +115,7 @@ const rootPost = operation(base, "post");
 const itemGet = operation(base + "/{id}", "get");
 const retirePost = operation(base + "/{id}:retire", "post");
 const bulkAction = parameter(base + ":bulkImport", "post", "_action");
+const createAction = parameter(base, "post", "_action");
 const id = parameter(base + "/{id}", "get", "id");
 const expand = parameter(base + "/{id}", "get", "expand");
 
@@ -119,10 +130,14 @@ const shapeCases: ShapeCase[] = [
   ["root POST remains create", rootPost["x-crest-method"], "create"],
   ["synthetic action metadata", [retirePost["x-crest-synthetic-path-key"], retirePost["x-crest-action"], retirePost["x-crest-path"]], [true, "retire", base + "/{id}"]],
   ["action discriminator", [bulkAction["in"], bulkAction["required"], bulkAction["schema"]], ["query", true, { type: "string", enum: ["bulkImport"] }]],
-  ["create discriminator", (() => {
-    const createAction = parameter(base, "post", "_action");
-    return [createAction["in"], createAction["required"], createAction["schema"]];
-  })(), ["query", false, { type: "string", enum: ["create"] }]],
+  ["create discriminator", [createAction["in"], createAction["required"], createAction["schema"]], ["query", false, { type: "string", enum: ["create"] }]],
+  ["update discriminator", parameter(base + "/{id}", "put", "If-Match"), {
+    name: "If-Match",
+    in: "header",
+    required: true,
+    schema: { type: "string" },
+    description: "Required for IDM to dispatch this PUT as an update.",
+  }],
   ["query discriminator", parameter(base, "get", "_queryFilter")["required"], true],
   ["path parameter", [id["in"], id["required"]], ["path", true]],
   ["CSV query parameter", [expand["required"], expand["style"], expand["explode"]], [false, "form", false]],
@@ -178,6 +193,38 @@ test("a route header override replaces the endpoint header, including by case", 
   );
 });
 
+test("a declared If-Match merges with the one an update synthesises", () => {
+  // An author who wants the handler to read the revision must declare the
+  // header, and OpenAPI allows one parameter per (name, in) pair — so the
+  // synthetic entry tightens the declaration instead of duplicating it.
+  const revisions = defineEndpoint({
+    name: "revisions",
+    routes: ({ route }) => [
+      route({
+        method: "update",
+        path: "/{id}",
+        params: { id: v.string() },
+        headers: { "if-match": v.optional(v.string()) },
+        body: v.object({ name: v.string() }),
+        handler: ({ headers }) => ({ rev: headers["if-match"] ?? "" }),
+      }),
+    ],
+  });
+  const generated = toOpenApi(revisions.definition);
+  const generatedPaths = generated["paths"] as Record<
+    string,
+    Record<string, { parameters: Record<string, unknown>[] }>
+  >;
+  const parameters =
+    generatedPaths["/openidm/endpoint/revisions/{id}"]?.["put"]?.parameters ??
+    [];
+  const headers = parameters.filter((entry) => entry["in"] === "header");
+  assert.deepEqual(
+    headers.map((entry) => [entry["name"], entry["required"]]),
+    [["if-match", true]]
+  );
+});
+
 test("non-empty security scopes only reference an OAuth-capable scheme", () => {
   const components = document["components"] as {
     securitySchemes: Record<string, Record<string, unknown>>;
@@ -207,16 +254,19 @@ test("non-empty security scopes only reference an OAuth-capable scheme", () => {
   });
 });
 
-test("every operation documents CREST errors and its success schema", () => {
+test("a validated operation documents only its framework-produced errors", () => {
   const responses = operation(base + "/{id}", "get")["responses"] as Record<
     string,
     { content: { "application/json": { schema: Record<string, unknown> } } }
   >;
-  for (const status of ["400", "401", "403", "404", "405", "500"]) {
+  for (const status of ["400", "500"]) {
     assert.equal(
       responses[status]?.content["application/json"].schema["$ref"],
       "#/components/schemas/CrestError"
     );
+  }
+  for (const status of ["401", "403", "404", "405", "409", "422", "502"]) {
+    assert.equal(responses[status], undefined);
   }
   // The 200 schema comes off the response VALIDATOR, so it carries the members
   // and `required` the validator would enforce — not a hand-written stand-in
@@ -229,39 +279,49 @@ test("every operation documents CREST errors and its success schema", () => {
   });
 });
 
-test("create and action routes on one path remain distinct POST operations", () => {
-  const create = operation(base, "post");
-  const action = operation(base + ":bulkImport", "post");
-  assert.deepEqual(
-    [create["x-crest-method"], create["x-crest-path"]],
-    ["create", base]
-  );
-  assert.deepEqual(
-    [
-      action["x-crest-method"],
-      action["x-crest-action"],
-      action["x-crest-path"],
-    ],
-    ["action", "bulkImport", base]
-  );
-  assert.equal(parameter(base, "post", "_action")["required"], false);
-  assert.deepEqual(parameter(base + ":bulkImport", "post", "_action"), {
-    name: "_action",
-    in: "query",
-    required: true,
-    schema: { type: "string", enum: ["bulkImport"] },
-  });
+test("every operation has exactly the success status its CREST method produces", () => {
+  for (const assigned of assignPathKeys(endpoint.definition)) {
+    const methods: Record<string, string> = {
+      read: "get",
+      query: "get",
+      create: "post",
+      action: "post",
+      update: "put",
+      patch: "patch",
+      delete: "delete",
+    };
+    const method = methods[assigned.route.method] as string;
+    const responses = operation(assigned.key, method)["responses"] as Record<
+      string,
+      unknown
+    >;
+    const successes = Object.keys(responses).filter((status) =>
+      status.startsWith("2")
+    );
+    assert.deepEqual(successes, [assigned.route.method === "create" ? "201" : "200"]);
+  }
 });
 
-test("create succeeds with 201 while other routes keep 200", () => {
-  const createResponses = rootPost["responses"] as Record<string, unknown>;
-  const actionResponses = operation(base + ":bulkImport", "post")[
-    "responses"
-  ] as Record<string, unknown>;
-  assert.ok(createResponses["201"] !== undefined);
-  assert.equal(createResponses["200"], undefined);
-  assert.ok(actionResponses["200"] !== undefined);
-  assert.equal(actionResponses["201"], undefined);
+test("a create documents the _id IDM adds without changing handler validation", () => {
+  const responses = rootPost["responses"] as Record<
+    string,
+    { content: { "application/json": { schema: Record<string, unknown> } } }
+  >;
+  assert.deepEqual(responses["201"]?.content["application/json"].schema, {
+    type: "object",
+    properties: { reached: { type: "string" }, _id: { type: "string" } },
+    required: ["reached", "_id"],
+    additionalProperties: false,
+  });
+  const createRoute = endpoint.definition.routes.find(
+    (candidate) => candidate.method === "create"
+  );
+  assert.deepEqual(createRoute?.response?.schema, {
+    type: "object",
+    properties: { reached: { type: "string" } },
+    required: ["reached"],
+    additionalProperties: false,
+  });
 });
 
 test("a route documents its declared handler error statuses", () => {
@@ -277,6 +337,13 @@ test("a route documents its declared handler error statuses", () => {
       "#/components/schemas/CrestError"
     );
   }
+});
+
+test("CrestError requires only fields every framework error sends", () => {
+  const components = document["components"] as {
+    schemas: { CrestError: { required: string[] } };
+  };
+  assert.deepEqual(components.schemas.CrestError.required, ["code", "message"]);
 });
 
 test("a query route's 200 schema is the envelope around its declared row", () => {

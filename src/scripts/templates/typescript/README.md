@@ -91,8 +91,6 @@ only its own headers — mixing the two in one array compiles and dispatches.
   required OAuth scopes. Query and path values arrive as strings, so the scalar
   validators coerce there. JSON bodies are strict and therefore match their
   OpenAPI schemas. A failure is a CREST 400 listing every issue — never a 500.
-- **Declared handler errors** belong in `errors: [409, 422, 502]` on the route
-  so the generated OpenAPI includes every status the handler may throw.
 - **`null` vs absent**: `v.optional()` allows the key to be MISSING;
   `v.nullable()` allows it to be present and `null`, which is what IDM sends for
   an unset single-valued relationship and what a caller sends to clear a field.
@@ -119,7 +117,10 @@ only its own headers — mixing the two in one array compiles and dispatches.
 - **Errors**: throw `badRequest`/`notFound`/`forbidden`/`unprocessableEntity`/
   `badGateway`/… from the framework, or `fault(code, message, detail)` for a
   status with no helper of its own. Anything else thrown becomes an opaque 500
-  and the real cause goes to the log.
+  and the real cause goes to the log. Declare each handler or downstream fault
+  the route may intentionally pass through with `errors: [409, 422, 502]`;
+  entries must be integer error statuses from 400 through 599 and must not
+  repeat a status the framework already produces for that route.
 - **Responses**: `response` takes the response VALIDATOR (`v.object({…})`, not
   its `.schema`), and the handler's return value is checked against it — so the
   generated OpenAPI cannot promise a field the code stopped sending. Overriding a
@@ -129,6 +130,9 @@ only its own headers — mixing the two in one array compiles and dispatches.
   results at runtime as well (recommended in tests and non-production tenants),
   or ask for it per call so nothing ships enabled:
   `dispatch(request, context, undefined, { validateResponses: true })`.
+  On a create, IDM adds `_id` after the handler returns. The handler validator
+  still checks only the declared return, while OpenAPI adds the caller-visible
+  `_id` to the documented 201 object.
 - **Queries**: declare them with `queryRoute({ … })`, not
   `route({ method: "query" })`, and let `response` describe ONE ROW — the
   framework wraps the paging envelope for the type and the document alike. Return

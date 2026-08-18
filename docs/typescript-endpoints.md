@@ -357,9 +357,10 @@ stopped sending. Now the handler's return type comes from the same declaration
 the document does. `response: v.unknownValue()` is the explicit escape hatch for
 a body the validators cannot express.
 
-List handler-specific fault statuses on the same route, for example
-`errors: [409, 422, 502]`. The OpenAPI operation then documents those CREST
-error responses in addition to the framework's standard errors.
+For a create, the validated handler return and documented HTTP response differ
+deliberately: IDM adds `_id` after the handler returns. Response validation does
+not require the handler to invent it; the OpenAPI 201 object adds `_id` to the
+declared schema so it describes what the caller actually receives.
 
 Objects are closed by default: `v.object(shape)` rejects keys outside `shape`
 and emits `additionalProperties: false`. For a body with constrained declared
@@ -387,6 +388,15 @@ enabled to get the check:
 ```ts
 endpoint.dispatch(request, context, undefined, { validateResponses: true });
 ```
+
+Handler and downstream faults are part of the route contract. List every status
+the route intentionally throws or passes through, for example
+`errors: [409, 422, 502]`. Entries must be integers from 400 through 599;
+success statuses and a status the framework already produces for that route are
+rejected. Duplicate declarations are harmless. The generator adds `400` only
+when the route validates input, `403` only when it checks scopes, and `500` for
+unexpected failures; authentication and calls that do not select this operation
+are outside that operation's response set.
 
 ## Union validators
 
@@ -525,7 +535,9 @@ machine-readable truth — `x-crest-method`, `x-crest-action`, `x-crest-path`,
 `_queryFilter` for queries) pinned by a single-value `enum`, so a client that
 ignores the extensions still sends the right query string. A create documents
 `_action=create` as optional because bare `POST` is the normal create form and
-the query parameter is tolerated but redundant.
+the query parameter is tolerated but redundant. An update documents a required
+`If-Match` header: without a conditional header IDM normalises the PUT to a
+create at the root route instead of dispatching it to the update operation.
 
 The alternative — one POST per path with a `oneOf` body and a free `_action`
 enum — types nothing per action and loses the per-action scope requirement,
