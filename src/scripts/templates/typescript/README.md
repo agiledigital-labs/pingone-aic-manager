@@ -91,6 +91,8 @@ only its own headers — mixing the two in one array compiles and dispatches.
   required OAuth scopes. Query and path values arrive as strings, so the scalar
   validators coerce there. JSON bodies are strict and therefore match their
   OpenAPI schemas. A failure is a CREST 400 listing every issue — never a 500.
+- **Declared handler errors** belong in `errors: [409, 422, 502]` on the route
+  so the generated OpenAPI includes every status the handler may throw.
 - **`null` vs absent**: `v.optional()` allows the key to be MISSING;
   `v.nullable()` allows it to be present and `null`, which is what IDM sends for
   an unset single-valued relationship and what a caller sends to clear a field.

@@ -146,6 +146,8 @@ export interface RouteSpecBase<
   description?: string;
   /** OAuth scopes the caller's token must carry, on top of IDM's own gates. */
   scopes?: readonly string[];
+  /** Additional HTTP error statuses the handler may throw. */
+  errors?: readonly number[];
   params?: P;
   query?: Q;
   headers?: H;
@@ -243,6 +245,7 @@ export interface RouteDefinition {
   summary: string | undefined;
   description: string | undefined;
   scopes: string[];
+  errors: number[];
   params: Shape;
   query: Shape;
   headers: Shape;
@@ -415,6 +418,7 @@ function build<
     summary: spec.summary,
     description: spec.description,
     scopes: spec.scopes === undefined ? [] : spec.scopes.slice(),
+    errors: spec.errors === undefined ? [] : spec.errors.slice(),
     params,
     query: (spec.query ?? {}) as Shape,
     headers: (spec.headers ?? {}) as Shape,
