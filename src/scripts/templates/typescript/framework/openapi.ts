@@ -326,8 +326,13 @@ function documentedResponseSchema(route: RouteDefinition): JsonSchema {
   };
 }
 
-/** JSON Schema for the complete paging envelope IDM requires from queries. */
-export function queryResultSchema(item: JsonSchema): JsonSchema {
+/**
+ * The paging envelope IDM requires from queries. Internal: a `queryRoute`
+ * declares one ROW and `validatedResponseSchema` wraps this around it.
+ * Authors return `queryResult(...)` / `forwardQuery(...)`; they do not call
+ * this. (`queryResult` is the runtime helper; this is only the document.)
+ */
+function queryResultSchema(item: JsonSchema): JsonSchema {
   const paging: Record<string, JsonSchema> = {
     resultCount: { type: "integer" },
     pagedResultsCookie: { type: ["string", "null"] },
