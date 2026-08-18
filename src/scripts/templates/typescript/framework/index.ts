@@ -84,6 +84,7 @@ export type {
   InferShape,
   Issue,
   JsonSchema,
+  ObjectOptions,
   ParseMode,
   Shape,
   Validator,

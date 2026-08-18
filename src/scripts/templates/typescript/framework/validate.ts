@@ -489,20 +489,82 @@ export function csv<T>(
   });
 }
 
-export interface ObjectOptions {
-  /** Keep unrecognised keys instead of rejecting them. Default `false`. */
-  allowUnknown?: boolean;
+export interface ObjectOptions<T = unknown> {
+  /** Keep unrecognised keys, optionally validating each value. Default `false`. */
+  allowUnknown?: boolean | Validator<T>;
   description?: string;
+}
+
+type OpenObject<S extends Shape, T> = InferObject<S> &
+  Record<string, T | Infer<S[keyof S]>>;
+
+/**
+ * Keys that can alter an ordinary object's behaviour when assigned as data.
+ * Keep this shared between every open-object combinator.
+ */
+function isDangerousObjectKey(key: string): boolean {
+  switch (key) {
+    case "__proto__":
+    case "__defineGetter__":
+    case "__defineSetter__":
+    case "__lookupGetter__":
+    case "__lookupSetter__":
+    case "constructor":
+    case "hasOwnProperty":
+    case "isPrototypeOf":
+    case "propertyIsEnumerable":
+    case "prototype":
+    case "toLocaleString":
+    case "toString":
+    case "valueOf":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function refuseDangerousObjectKey(
+  key: string,
+  path: string,
+  issues: Issue[]
+): boolean {
+  if (!isDangerousObjectKey(key)) {
+    return false;
+  }
+  issue(issues, path, "is not a safe object key");
+  return true;
 }
 
 /** A JSON object with a fixed set of keys. */
 export function object<S extends Shape>(
   shape: S,
+  options: ObjectOptions & { allowUnknown: true }
+): Validator<InferObject<S> & Record<string, unknown>>;
+export function object<S extends Shape, T>(
+  shape: S,
+  options: ObjectOptions<T> & { allowUnknown: Validator<T> }
+): Validator<OpenObject<S, T>>;
+export function object<S extends Shape>(
+  shape: S,
+  options?: ObjectOptions & { allowUnknown?: false }
+): Validator<InferObject<S>>;
+export function object<S extends Shape>(
+  shape: S,
+  options: ObjectOptions
+): Validator<InferObject<S> & Record<string, unknown>>;
+export function object<S extends Shape>(
+  shape: S,
   options: ObjectOptions = {}
-): Validator<InferObject<S>> {
+): Validator<InferObject<S> & Record<string, unknown>> {
   const properties: Record<string, JsonSchema> = {};
   const required: string[] = [];
   const keys = Object.keys(shape);
+  const remainder =
+    options.allowUnknown !== null &&
+    typeof options.allowUnknown === "object"
+      ? options.allowUnknown
+      : null;
+  const open = options.allowUnknown === true || remainder !== null;
   for (const key of keys) {
     const member = shape[key] as Validator<unknown>;
     properties[key] = member.schema;
@@ -513,7 +575,7 @@ export function object<S extends Shape>(
   const schema: JsonSchema = {
     type: "object",
     properties,
-    additionalProperties: options.allowUnknown === true,
+    additionalProperties: remainder === null ? open : remainder.schema,
   };
   if (required.length > 0) {
     schema["required"] = required;
@@ -526,7 +588,7 @@ export function object<S extends Shape>(
     const out: Record<string, unknown> = {};
     if (typeof input !== "object" || input === null || Array.isArray(input)) {
       issue(issues, path, "expected an object");
-      return out as InferObject<S>;
+      return out as InferObject<S> & Record<string, unknown>;
     }
     const source = input as Record<string, unknown>;
     for (const key of keys) {
@@ -554,21 +616,37 @@ export function object<S extends Shape>(
       }
       out[key] = value;
     }
-    if (options.allowUnknown !== true) {
-      for (const key of Object.keys(source)) {
-        if (!Object.prototype.hasOwnProperty.call(shape, key)) {
+    for (const key of Object.keys(source)) {
+      if (!Object.prototype.hasOwnProperty.call(shape, key)) {
+        const child = path === "" ? key : path + "." + key;
+        if (open && refuseDangerousObjectKey(key, child, issues)) {
+          continue;
+        }
+        if (options.allowUnknown === true) {
+          out[key] = source[key];
+        } else if (remainder !== null) {
+          const issueCount = issues.length;
+          const value = remainder.parse(source[key], child, issues, mode);
+          // A failed parse returns only a placeholder. Do not make that
+          // placeholder look like successfully retained caller data.
+          if (
+            issues.length === issueCount &&
+            !(value === undefined && remainder.isOptional)
+          ) {
+            out[key] = value;
+          }
+        } else {
           issue(
             issues,
-            path === "" ? key : path + "." + key,
+            child,
             "is not a known field"
           );
         }
       }
     }
-    // `out` has every key present, optionals holding `undefined`; that is
-    // assignable to `InferObject` because an optional member's type includes
-    // `undefined` even under `exactOptionalPropertyTypes`.
-    return out as InferObject<S>;
+    // `out` contains every successfully parsed declared member and every
+    // successfully parsed or explicitly allowed remainder member.
+    return out as InferObject<S> & Record<string, unknown>;
   });
 }
 
@@ -592,7 +670,11 @@ export function record<T>(
     }
     const source = input as Record<string, unknown>;
     for (const key of Object.keys(source)) {
-      out[key] = inner.parse(source[key], path + "." + key, issues, mode);
+      const child = path === "" ? key : path + "." + key;
+      if (refuseDangerousObjectKey(key, child, issues)) {
+        continue;
+      }
+      out[key] = inner.parse(source[key], child, issues, mode);
     }
     return out;
   });

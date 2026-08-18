@@ -85,6 +85,14 @@ Nothing in the handler is annotated: the types come from the validators. Change
   Since bodies and responses are strict, a bare `v.optional(v.string())` rejects
   `null` — compose them (`v.optional(v.nullable(v.string()))`) when both are
   legal. `nullable` widens the OpenAPI type to `["string", "null"]`.
+- **Open objects**: `v.object(shape)` is closed by default. Pass
+  `{ allowUnknown: true }` to retain unrecognised keys as `unknown`, or
+  `{ allowUnknown: v.string(...) }` to validate and retain each remainder value
+  with that validator. The declared members keep their individual constraints
+  and remain listed in OpenAPI `required`; the remainder becomes
+  `additionalProperties`. Treat an open caller-supplied remainder as untrusted:
+  forwarding it wholesale into a managed-object write is a mass-assignment risk
+  that the framework cannot detect for you.
 - **Errors**: throw `badRequest`/`notFound`/`forbidden`/`unprocessableEntity`/
   `badGateway`/… from the framework, or `fault(code, message, detail)` for a
   status with no helper of its own. Anything else thrown becomes an opaque 500

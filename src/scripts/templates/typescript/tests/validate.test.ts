@@ -3,7 +3,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { v, type Issue, type Validator } from "../framework/index.ts";
+import {
+  defineEndpoint,
+  route,
+  v,
+  type Issue,
+  type ObjectOptions,
+  type Shape,
+  type Validator,
+} from "../framework/index.ts";
 
 function run<T>(validator: Validator<T>, input: unknown, mode: "strict" | "coerce" = "strict") {
   const issues: Issue[] = [];
@@ -122,6 +130,19 @@ const parseCases: ParseCase[] = [
   rejected("object: required field", fixedObject, {}, "is required", "x.name"),
   rejected("object: unknown field", fixedObject, { name: "a", extra: 1 }, "is not a known field"),
   rejected("object: wrong type", fixedObject, [], "expected an object"),
+  accepted(
+    "open object: retains unknown members",
+    v.object({ known: v.string() }, { allowUnknown: true }),
+    { known: "a", extra: "b", alsoExtra: "c" },
+    { known: "a", extra: "b", alsoExtra: "c" }
+  ),
+  rejected(
+    "open object: validates a remainder member at its path",
+    v.object({ known: v.string() }, { allowUnknown: v.string({ maxLength: 2 }) }),
+    { known: "a", long: "nope" },
+    "must be at most 2 characters",
+    "x.long"
+  ),
   rejected("record: value path", shortRecord, { a: "xyz" }, "must be at most 2 characters", "x.a"),
   rejected("patch: operation name", v.patchOperations(), [{ operation: "frobnicate", field: "/x" }], "must be one of: add, remove, replace, increment, move, copy, transform"),
   rejected("UUID: pattern", v.uuid(), "not-a-uuid", "must be a UUID"),
@@ -202,6 +223,111 @@ test("object collects every failure", () => {
   assert.equal(run(validator, { name: "a", count: 0 }).issues.length, 2);
 });
 
+test("open object retains and validates members in coerce mode", () => {
+  assert.deepEqual(
+    run(
+      v.object({ known: v.string() }, { allowUnknown: v.integer() }),
+      { known: "a", count: "42" },
+      "coerce"
+    ),
+    { value: { known: "a", count: 42 }, issues: [] }
+  );
+});
+
+test("object overloads preserve mixed response and compatibility call shapes", () => {
+  const mixed = v.object(
+    { n: v.integer(), s: v.string() },
+    { allowUnknown: v.string() }
+  );
+  const endpoint = defineEndpoint({
+    name: "mixed-open-response",
+    routes: [route({ method: "read", path: "/thing", response: mixed, handler: () => ({ n: 1, s: "a" }) })],
+  });
+  function wrap<S extends Shape>(shape: S, options: ObjectOptions) {
+    return v.object(shape, options);
+  }
+  const wrapped = wrap({ k: v.string() }, { allowUnknown: true });
+  const conditional = v.object(
+    { k: v.string() },
+    Math.random() > 0.5 ? { allowUnknown: true } : {}
+  );
+  const parsed = run(mixed, { n: 1, s: "a" }).value;
+  const known: number = parsed.n;
+  const remainder: string | number | undefined = parsed["other"];
+  assert.equal(known, 1);
+  assert.equal(remainder, undefined);
+  assert.equal(endpoint.name, "mixed-open-response");
+  assert.equal(wrapped.schema["type"], "object");
+  assert.equal(conditional.schema["type"], "object");
+
+  const openUnknown = v.object({ known: v.string() }, { allowUnknown: true });
+  const unknownMember: unknown = run(openUnknown, { known: "a" }).value["other"];
+  assert.equal(unknownMember, undefined);
+  const closedObject = v.object({ known: v.string() });
+  // @ts-expect-error a closed object has no index signature
+  const closedMember = closedObject.parse({ known: "a" }, "x", [])["other"];
+  assert.equal(closedMember, undefined);
+});
+
+test("open objects and records report dangerous keys", () => {
+  const dangerous = ["__proto__", "constructor", "prototype", "hasOwnProperty", "toString", "valueOf"];
+  const validators: Validator<unknown>[] = [
+    v.object({}, { allowUnknown: true }),
+    v.object({}, { allowUnknown: v.record(v.unknownValue()) }),
+    v.record(v.unknownValue()),
+  ];
+  for (const validator of validators) {
+    for (const key of dangerous) {
+      const parsed = run(validator, JSON.parse('{"' + key + '":{}}'));
+      assert.deepEqual(parsed.issues, [{ path: "x." + key, message: "is not a safe object key" }]);
+      assert.equal(Object.getPrototypeOf(parsed.value), Object.prototype);
+      assert.equal(Object.prototype.hasOwnProperty.call(parsed.value, key), false);
+    }
+  }
+
+  const nested = run(
+    v.object({}, { allowUnknown: v.record(v.unknownValue()) }),
+    JSON.parse('{"outer":{"__proto__":{}}}')
+  );
+  assert.deepEqual(nested.issues, [
+    { path: "x.outer.__proto__", message: "is not a safe object key" },
+  ]);
+  assert.deepEqual(nested.value, {});
+});
+
+test("a null allowUnknown from JavaScript remains closed", () => {
+  const fromJavaScript = v.object(
+    { known: v.string() },
+    { allowUnknown: null } as unknown as ObjectOptions
+  );
+  assert.equal(fromJavaScript.schema["additionalProperties"], false);
+  assert.deepEqual(run(fromJavaScript, { known: "a", extra: 1 }).issues, [
+    { path: "x.extra", message: "is not a known field" },
+  ]);
+});
+
+test("allowUnknown true conserves keys whenever parsing succeeds", () => {
+  const validator = v.object({ known: v.string() }, { allowUnknown: true });
+  const names = ["alpha", "beta", "gamma", "delta"];
+  for (let mask = 0; mask < 16; mask += 1) {
+    const source: Record<string, unknown> = { known: "a" };
+    for (let index = 0; index < names.length; index += 1) {
+      if ((mask & (1 << index)) !== 0) source[names[index] as string] = index;
+    }
+    const parsed = run(validator, source);
+    if (parsed.issues.length === 0) assert.deepEqual(Object.keys(parsed.value), Object.keys(source));
+  }
+});
+
+test("an optional remainder does not create absent keys in coerce mode", () => {
+  const parsed = run(
+    v.object({ known: v.string() }, { allowUnknown: v.optional(v.string()) }),
+    { known: "a", blank: "", nulled: null },
+    "coerce"
+  );
+  assert.deepEqual(parsed, { value: { known: "a" }, issues: [] });
+});
+
 test("record returns every valid member", () => {
   assert.deepEqual(run(v.record(v.string()), { a: "x", b: "y" }).value, {
     a: "x",
@@ -234,6 +360,8 @@ const schemaCases: readonly (readonly [string, unknown, unknown])[] = [
       limit: defaultInteger,
     }).schema["required"], ["name"]],
   ["object schema rejects extra members", fixedObject.schema["additionalProperties"], false],
+  ["object schema permits untyped extra members", v.object({}, { allowUnknown: true }).schema["additionalProperties"], true],
+  ["object schema describes validated extra members", v.object({}, { allowUnknown: v.string({ maxLength: 8 }) }).schema["additionalProperties"], { type: "string", maxLength: 8 }],
   ["UUID schema carries a pattern", typeof v.uuid().schema["pattern"], "string"],
   // OpenAPI 3.1 is JSON Schema 2020-12: a union `type`, not `nullable: true`.
   ["nullable widens the schema type", nullableString.schema["type"], ["string", "null"]],
