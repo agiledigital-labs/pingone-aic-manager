@@ -14,9 +14,10 @@
 //   x-crest-action  the `?_action=` name, for action routes
 //   x-crest-path    the REAL path to call, without the synthetic suffix
 //
-// plus a required `_action` (or `_queryFilter`) query parameter pinned by
-// `enum`, so a generated client that ignores the extensions still sends the
-// right query string. The alternative — one POST with a `oneOf` body and a
+// plus a required `_action` for actions (or `_queryFilter` for queries) pinned
+// by `enum`, so a generated client that ignores the extensions still sends the
+// right query string. A create's redundant `_action=create` is optional. The
+// alternative — one POST with a `oneOf` body and a
 // free `_action` enum — type-checks nothing per action and loses the per-action
 // scopes, which is the opposite of the point of this project.
 //
@@ -145,8 +146,10 @@ function operationFor(
     parameters.push({
       name: "_action",
       in: "query",
-      required: true,
+      required: false,
       schema: { type: "string", enum: ["create"] },
+      description:
+        "Optional CREST create discriminator; a bare POST is also a create.",
     });
   }
   if (route.method === "query") {
@@ -160,8 +163,9 @@ function operationFor(
     });
   }
 
+  const successStatus = route.method === "create" ? "201" : "200";
   const responses: Record<string, unknown> = {
-    "200": {
+    [successStatus]: {
       description: "Success",
       content: {
         "application/json": {
@@ -178,6 +182,12 @@ function operationFor(
     "405": errorResponse("Method not supported on this path"),
     "500": errorResponse("Unhandled failure"),
   };
+  for (const status of route.errors) {
+    const key = String(status);
+    if (responses[key] === undefined) {
+      responses[key] = errorResponse("Declared handler error");
+    }
+  }
 
   const operation: Record<string, unknown> = {
     operationId: operationId(definition.name, route),
@@ -225,7 +235,7 @@ function errorResponse(description: string): Record<string, unknown> {
 }
 
 /**
- * The 200 body schema for a route.
+ * The success body schema for a route.
  *
  * The route carries the response VALIDATOR, so the schema is read off it here
  * rather than being declared separately — that is what keeps the document and

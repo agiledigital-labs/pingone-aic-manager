@@ -357,6 +357,10 @@ stopped sending. Now the handler's return type comes from the same declaration
 the document does. `response: v.unknownValue()` is the explicit escape hatch for
 a body the validators cannot express.
 
+List handler-specific fault statuses on the same route, for example
+`errors: [409, 422, 502]`. The OpenAPI operation then documents those CREST
+error responses in addition to the framework's standard errors.
+
 Objects are closed by default: `v.object(shape)` rejects keys outside `shape`
 and emits `additionalProperties: false`. For a body with constrained declared
 members plus a caller-chosen remainder, `{ allowUnknown: true }` retains the
@@ -517,9 +521,11 @@ convention. An action route always gets the suffix, whether or not it currently
 collides, so adding a second action later cannot silently move the first one's
 key. A `read`/`query` collision moves the `query`. Every operation carries the
 machine-readable truth — `x-crest-method`, `x-crest-action`, `x-crest-path`,
-`x-crest-synthetic-path-key` — plus a \*\*required `_action` (or `_queryFilter`)
-query parameter pinned by a single-value `enum`, so a client that ignores the
-extensions still sends the right query string.
+`x-crest-synthetic-path-key` — plus a required `_action` for named actions (or
+`_queryFilter` for queries) pinned by a single-value `enum`, so a client that
+ignores the extensions still sends the right query string. A create documents
+`_action=create` as optional because bare `POST` is the normal create form and
+the query parameter is tolerated but redundant.
 
 The alternative — one POST per path with a `oneOf` body and a free `_action`
 enum — types nothing per action and loses the per-action scope requirement,

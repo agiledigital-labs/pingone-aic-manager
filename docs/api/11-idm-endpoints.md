@@ -177,7 +177,7 @@ endpoint takes a few seconds to register (first calls 404 until it does).
 | ----------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `GET /endpoint/x`                                     | `read`           | —                                                                                                                                                      |
 | `GET /endpoint/x?_queryFilter=…` or `?_queryId=…`     | `query`          | `queryFilter`, `queryId`, `queryExpression` (string\|null), `pageSize`, `pagedResultsOffset` (number), `pagedResultsCookie` (string\|null), `sortKeys` |
-| `POST /endpoint/x?_action=create`                     | `create`         | `newResourceId` (string\|null), `content`                                                                                                              |
+| `POST /endpoint/x` (optional `?_action=create`)       | `create`         | `newResourceId` (string\|null), `content`. HTTP 201, and the response body carries an `_id` IDM adds (probed 2026-08-18).                               |
 | `POST /endpoint/x?_action=NAME`                       | `action`         | `action` (the action name), `content`                                                                                                                  |
 | `PUT /endpoint/x/id` **with `If-Match`**              | `update`         | `revision` (string\|null), `content`; `resourcePath` = `id`                                                                                            |
 | `PUT /endpoint/x/id` **without a conditional header** | `create`         | `newResourceId` = `id`, `content`; `resourcePath` = **`""`**. HTTP 201.                                                                                |
@@ -524,7 +524,16 @@ Object shape (real example, `schedule/UpdateReviewList`):
   `internal/client/testdata/schedules/`. This corrected the "only
   `invokeService: script` carries an inline script" claim, added the
   `org.forgerock.openidm.script` alias, and recorded `globals: {}`. Nothing was
-  written to the tenant.)
+  written to the tenant.); 2026-08-18 (throwaway `endpoint/aic-action-probe`:
+  bare `POST` and `POST ?_action=create` both reached the create route and
+  returned **201**; `?_action=ping` reached the named action and returned 200; an
+  unknown action returned 404 listing the supported actions. **Both** create
+  responses carried an `_id` equal to the resource path, which the handler never
+  returned and which the TypeScript framework contains no code to add — so IDM's
+  create wrapper supplies it. The endpoint was deleted and its config absence
+  confirmed by a 404. This run corrected the table row below, which said a create
+  was `POST ?_action=create`; the 2026-06-04 `rhino-probe` run it was attributed
+  to never tested a bare `POST`.)
 - Endpoints: `GET /openidm/config?_queryFilter=true` (200; 85 objects, 12 with
   `endpoint/` ids), `GET /openidm/config/endpoint/test` (200; keys
   `_id, description, source, type`, no `_rev`, plaintext `source`),

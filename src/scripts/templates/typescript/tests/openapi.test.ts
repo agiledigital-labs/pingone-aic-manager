@@ -37,6 +37,7 @@ const endpoint = defineEndpoint({
       action: "bulkImport",
       path: "/",
       scopes: ["demo:write"],
+      errors: [409, 422, 502],
       body: v.object({ items: v.list(v.string(), { maxItems: 50 }) }),
       handler: () => ({}),
     }),
@@ -118,7 +119,10 @@ const shapeCases: ShapeCase[] = [
   ["root POST remains create", rootPost["x-crest-method"], "create"],
   ["synthetic action metadata", [retirePost["x-crest-synthetic-path-key"], retirePost["x-crest-action"], retirePost["x-crest-path"]], [true, "retire", base + "/{id}"]],
   ["action discriminator", [bulkAction["in"], bulkAction["required"], bulkAction["schema"]], ["query", true, { type: "string", enum: ["bulkImport"] }]],
-  ["create discriminator", parameter(base, "post", "_action")["schema"], { type: "string", enum: ["create"] }],
+  ["create discriminator", (() => {
+    const createAction = parameter(base, "post", "_action");
+    return [createAction["in"], createAction["required"], createAction["schema"]];
+  })(), ["query", false, { type: "string", enum: ["create"] }]],
   ["query discriminator", parameter(base, "get", "_queryFilter")["required"], true],
   ["path parameter", [id["in"], id["required"]], ["path", true]],
   ["CSV query parameter", [expand["required"], expand["style"], expand["explode"]], [false, "form", false]],
@@ -223,6 +227,56 @@ test("every operation documents CREST errors and its success schema", () => {
     required: ["_id"],
     additionalProperties: false,
   });
+});
+
+test("create and action routes on one path remain distinct POST operations", () => {
+  const create = operation(base, "post");
+  const action = operation(base + ":bulkImport", "post");
+  assert.deepEqual(
+    [create["x-crest-method"], create["x-crest-path"]],
+    ["create", base]
+  );
+  assert.deepEqual(
+    [
+      action["x-crest-method"],
+      action["x-crest-action"],
+      action["x-crest-path"],
+    ],
+    ["action", "bulkImport", base]
+  );
+  assert.equal(parameter(base, "post", "_action")["required"], false);
+  assert.deepEqual(parameter(base + ":bulkImport", "post", "_action"), {
+    name: "_action",
+    in: "query",
+    required: true,
+    schema: { type: "string", enum: ["bulkImport"] },
+  });
+});
+
+test("create succeeds with 201 while other routes keep 200", () => {
+  const createResponses = rootPost["responses"] as Record<string, unknown>;
+  const actionResponses = operation(base + ":bulkImport", "post")[
+    "responses"
+  ] as Record<string, unknown>;
+  assert.ok(createResponses["201"] !== undefined);
+  assert.equal(createResponses["200"], undefined);
+  assert.ok(actionResponses["200"] !== undefined);
+  assert.equal(actionResponses["201"], undefined);
+});
+
+test("a route documents its declared handler error statuses", () => {
+  const responses = operation(base + ":bulkImport", "post")[
+    "responses"
+  ] as Record<
+    string,
+    { content: { "application/json": { schema: Record<string, unknown> } } }
+  >;
+  for (const status of ["409", "422", "502"]) {
+    assert.equal(
+      responses[status]?.content["application/json"].schema["$ref"],
+      "#/components/schemas/CrestError"
+    );
+  }
 });
 
 test("a query route's 200 schema is the envelope around its declared row", () => {
