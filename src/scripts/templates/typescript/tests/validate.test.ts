@@ -34,6 +34,22 @@ const fixedObject = v.object({
   name: v.string({ minLength: 1 }),
   note: v.optional(v.string()),
 });
+const union = v.oneOf([v.string({ minLength: 2 }), v.integer({ min: 1 })]);
+const overlappingUnion = v.oneOf([v.string(), v.enumOf(["red", "green"])]);
+const objectUnion = v.oneOf([
+  v.object({ kind: v.enumOf(["a"]), a: v.string() }),
+  v.object({ kind: v.enumOf(["b"]), b: v.integer() }),
+]);
+const tagged = v.discriminated("type", {
+  date: v.object({
+    type: v.enumOf(["date"]),
+    format: v.string({ minLength: 1 }),
+  }),
+  string: v.object({
+    type: v.enumOf(["string"]),
+    minLength: v.integer({ min: 0 }),
+  }),
+});
 
 type Expected = { value?: unknown; messages?: string[]; paths?: string[] };
 type ParseCase = readonly [name: string, validator: Validator<unknown>, input: unknown, expected: Expected];
@@ -149,6 +165,18 @@ const parseCases: ParseCase[] = [
   rejected("ISO date: pattern", v.isoDate(), "2026-13", "must be a date in YYYY-MM-DD form"),
   rejected("ISO date: calendar", v.isoDate(), "2026-02-29", "must be a date in YYYY-MM-DD form"),
   accepted("ISO date: leap year", v.isoDate(), "2028-02-29", "2028-02-29"),
+  accepted("oneOf: first alternative", union, "ok", "ok"),
+  accepted("oneOf: second alternative", union, 2, 2),
+  accepted("oneOf: overlapping first alternative", overlappingUnion, "red", "red"),
+  rejected("oneOf: nothing matches", union, false, "must be one of: string, integer", "x"),
+  rejected("oneOf: unique closest branch", objectUnion, { kind: "b", b: "no" }, "expected an integer", "x.b"),
+  accepted("nullable oneOf: null", v.nullable(union), null, null),
+  accepted("nullable discriminated: null", v.nullable(tagged), null, null),
+  accepted("optional oneOf: absent object member", v.object({ choice: v.oneOf([v.optional(v.string()), v.integer()]) }), {}, {}),
+  rejected("discriminated: missing tag", tagged, { format: "date" }, "is required", "x.type"),
+  rejected("discriminated: unknown tag", tagged, { type: "number" }, "must be one of: date, string", "x.type"),
+  rejected("discriminated: branch failure keeps its path", tagged, { type: "date", format: "" }, "must be at least 1 characters", "x.format"),
+  rejected("discriminated: inside a list", v.list(tagged), [{ type: "date", format: "" }], "must be at least 1 characters", "x[0].format"),
 ];
 
 for (const [name, validator, input, expected] of parseCases) {
@@ -180,6 +208,47 @@ test("enumOf preserves its literal union", () => {
   const parsed = run(validator, "retired");
   const narrowed: "active" | "retired" | "draft" = parsed.value;
   assert.equal(narrowed, "retired");
+});
+
+test("unions compose in lists, objects, and optional members", () => {
+  const validator = v.object({
+    choices: v.list(union),
+    fields: v.list(tagged),
+    fallback: v.optional(union),
+    selected: v.optional(tagged),
+  });
+  const value = {
+    choices: ["ok", 2],
+    fields: [
+      { type: "date", format: "iso" },
+      { type: "string", minLength: 1 },
+    ],
+  };
+  assert.deepEqual(run(validator, value), { value, issues: [] });
+});
+
+test("union inference narrows discriminated members", () => {
+  const parsed = run(tagged, { type: "date", format: "iso" }).value;
+  if (parsed.type === "date") {
+    const format: string = parsed.format;
+    void format;
+    // @ts-expect-error the date branch has no string length constraint
+    void parsed.minLength;
+  } else {
+    const minLength: number = parsed.minLength;
+    void minLength;
+    // @ts-expect-error the string branch has no date format
+    void parsed.format;
+  }
+  const choice: string | number = run(union, 2).value;
+  void choice;
+
+  // @ts-expect-error each branch must declare its tag
+  v.discriminated("type", { date: v.object({ format: v.string() }) });
+  // @ts-expect-error a branch's declared tag must equal its map key
+  v.discriminated("type", { date: v.object({ type: v.enumOf(["string"]) }) });
+  // @ts-expect-error a discriminated union needs at least one branch
+  v.discriminated("type", {});
 });
 
 test("coercion remains available for URL and header-shaped inputs", () => {
@@ -247,18 +316,19 @@ test("object overloads preserve mixed response and compatibility call shapes", (
     return v.object(shape, options);
   }
   const wrapped = wrap({ k: v.string() }, { allowUnknown: true });
-  const conditional = v.object(
-    { k: v.string() },
-    Math.random() > 0.5 ? { allowUnknown: true } : {}
-  );
+  const openOptions: ObjectOptions = { allowUnknown: true };
+  const closedOptions: ObjectOptions = {};
+  const conditional = v.object({ k: v.string() }, openOptions);
+  const conditionalClosed = v.object({ k: v.string() }, closedOptions);
   const parsed = run(mixed, { n: 1, s: "a" }).value;
   const known: number = parsed.n;
   const remainder: string | number | undefined = parsed["other"];
   assert.equal(known, 1);
   assert.equal(remainder, undefined);
-  assert.equal(endpoint.name, "mixed-open-response");
+  assert.equal(endpoint.definition.name, "mixed-open-response");
   assert.equal(wrapped.schema["type"], "object");
   assert.equal(conditional.schema["type"], "object");
+  assert.equal(conditionalClosed.schema["additionalProperties"], false);
 
   const openUnknown = v.object({ known: v.string() }, { allowUnknown: true });
   const unknownMember: unknown = run(openUnknown, { known: "a" }).value["other"];
@@ -312,10 +382,14 @@ test("allowUnknown true conserves keys whenever parsing succeeds", () => {
   for (let mask = 0; mask < 16; mask += 1) {
     const source: Record<string, unknown> = { known: "a" };
     for (let index = 0; index < names.length; index += 1) {
-      if ((mask & (1 << index)) !== 0) source[names[index] as string] = index;
+      if ((mask & (1 << index)) !== 0) {
+        source[names[index] as string] = index;
+      }
     }
     const parsed = run(validator, source);
-    if (parsed.issues.length === 0) assert.deepEqual(Object.keys(parsed.value), Object.keys(source));
+    if (parsed.issues.length === 0) {
+      assert.deepEqual(Object.keys(parsed.value), Object.keys(source));
+    }
   }
 });
 
@@ -366,6 +440,19 @@ const schemaCases: readonly (readonly [string, unknown, unknown])[] = [
   // OpenAPI 3.1 is JSON Schema 2020-12: a union `type`, not `nullable: true`.
   ["nullable widens the schema type", nullableString.schema["type"], ["string", "null"]],
   ["nullable widens an enum too", v.nullable(v.enumOf(["a"])).schema["enum"], ["a", null]],
+  ["oneOf emits anyOf for overlapping alternatives", overlappingUnion.schema, { anyOf: [
+    { type: "string" },
+    { type: "string", enum: ["red", "green"] },
+  ] }],
+  ["nullable widens a oneOf union too", v.nullable(union).schema, { anyOf: [
+    union.schema,
+    { type: "null" },
+  ] }],
+  ["nullable widens a discriminated union too", v.nullable(tagged).schema, { anyOf: [
+    tagged.schema,
+    { type: "null" },
+  ] }],
+  ["oneOf forwards optionality", v.oneOf([v.optional(v.string()), v.integer()]).isOptional, true],
   ["nullable is about the value, not presence", nullableString.isOptional, false],
   ["nullable inside optional stays optional", maybeString.isOptional, true],
 ];

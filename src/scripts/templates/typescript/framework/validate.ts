@@ -331,6 +331,9 @@ function nullableSchema(inner: JsonSchema): JsonSchema {
   if (Array.isArray(values) && values.indexOf(null) < 0) {
     schema["enum"] = values.concat([null]);
   }
+  if (type === undefined) {
+    return { anyOf: [schema, { type: "null" }] };
+  }
   return schema;
 }
 
@@ -378,6 +381,121 @@ export function optional<T>(inner: Validator<T>): Validator<T | undefined> {
       return undefined;
     }
     return inner.parse(input, path, issues, mode);
+  });
+}
+
+/** Try alternatives in order, returning the first one that accepts. */
+export function oneOf<
+  const T extends readonly [Validator<unknown>, ...Validator<unknown>[]],
+>(members: T): Validator<Infer<T[number]>> {
+  return define(
+    // Runtime is ordered first-match, so overlapping alternatives are valid.
+    // JSON Schema `oneOf` would reject those; `anyOf` describes the accept-set.
+    { anyOf: members.map((member) => member.schema) },
+    members.some((member) => member.isOptional),
+    (input, path, issues, mode) => {
+      let closest: Issue[] | undefined;
+      let closestIsUnique = false;
+      for (let index = 0; index < members.length; index += 1) {
+        const branchIssues: Issue[] = [];
+        const member = members[index] as Validator<unknown>;
+        const value = member.parse(input, path, branchIssues, mode);
+        if (branchIssues.length === 0) {
+          return value as Infer<T[number]>;
+        }
+        if (closest === undefined || branchIssues.length < closest.length) {
+          closest = branchIssues;
+          closestIsUnique = true;
+        } else if (branchIssues.length === closest.length) {
+          closestIsUnique = false;
+        }
+      }
+      if (closestIsUnique && closest !== undefined) {
+        issues.push(...closest);
+      } else {
+        // Deduplicate: two closed object branches both label as "object", and
+        // "must be one of: object, object" tells a caller strictly less than
+        // "must be one of: object" does.
+        const labels: string[] = [];
+        for (let index = 0; index < members.length; index += 1) {
+          const name = label(members[index] as Validator<unknown>);
+          if (labels.indexOf(name) < 0) {
+            labels.push(name);
+          }
+        }
+        issue(issues, path, "must be one of: " + labels.join(", "));
+      }
+      return undefined as Infer<T[number]>;
+    }
+  );
+}
+
+function label(member: Validator<unknown>): string {
+  const constant = member.schema["const"];
+  if (typeof constant === "string") {
+    return constant;
+  }
+  const values = member.schema["enum"];
+  if (Array.isArray(values)) {
+    return values.join(" | ");
+  }
+  const type = member.schema["type"];
+  return typeof type === "string" ? type : "alternative";
+}
+
+/** Dispatch an object to one validator by a string tag. */
+export function discriminated<
+  const K extends string,
+  const M extends { [N in keyof M & string]: Validator<{ [P in K]: N }> },
+>(
+  tag: K,
+  members: keyof M extends never ? never : M
+): Validator<Infer<M[keyof M]>> {
+  const branchMap = members as Shape;
+  const names = Object.keys(members);
+  const schemas = names.map((name) => {
+    const member = branchMap[name] as Validator<unknown>;
+    const schema: JsonSchema = { ...member.schema };
+    const properties = {
+      ...((schema["properties"] as Record<string, JsonSchema> | undefined) ??
+        {}),
+      [tag]: { const: name },
+    };
+    const required = Array.isArray(schema["required"])
+      ? (schema["required"] as unknown[]).slice()
+      : [];
+    if (required.indexOf(tag) < 0) {
+      required.push(tag);
+    }
+    schema["properties"] = properties;
+    schema["required"] = required;
+    return schema;
+  });
+  return define({ oneOf: schemas }, false, (input, path, issues, mode) => {
+    if (typeof input !== "object" || input === null || Array.isArray(input)) {
+      issue(issues, path, "expected an object");
+      return undefined as Infer<M[keyof M]>;
+    }
+    const source = input as Record<string, unknown>;
+    const child = path === "" ? tag : path + "." + tag;
+    if (!Object.prototype.hasOwnProperty.call(source, tag)) {
+      issue(issues, child, "is required");
+      return undefined as Infer<M[keyof M]>;
+    }
+    const value = source[tag];
+    if (
+      typeof value !== "string" ||
+      !Object.prototype.hasOwnProperty.call(members, value)
+    ) {
+      issue(issues, child, "must be one of: " + names.join(", "));
+      return undefined as Infer<M[keyof M]>;
+    }
+    return (branchMap[value] as Validator<Infer<M[keyof M]>>).parse(
+      input,
+      path,
+      issues,
+      mode
+    );
   });
 }
 

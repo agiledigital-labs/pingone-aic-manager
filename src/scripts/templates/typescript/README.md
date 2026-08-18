@@ -93,6 +93,15 @@ Nothing in the handler is annotated: the types come from the validators. Change
   `additionalProperties`. Treat an open caller-supplied remainder as untrusted:
   forwarding it wholesale into a managed-object write is a mass-assignment risk
   that the framework cannot detect for you.
+- **Unions**: use `v.oneOf([first, second])` when alternatives have no reliable
+  tag. It is ordered first-match, so put the most specific branch first: an open
+  object or bare scalar can otherwise make a later branch unreachable. Prefer
+  `v.discriminated("type", { date: dateShape, string: stringShape })` for tagged
+  objects because its 400 names a missing/unknown tag or reports the selected
+  branch's real issue paths. Each shape declares its matching literal tag, for
+  example `v.object({ type: v.enumOf(["date"]), format: v.string() })`. A handler
+  constructing the value needs `type: "date" as const`, for the same contextual
+  typing reason described under Responses.
 - **Errors**: throw `badRequest`/`notFound`/`forbidden`/`unprocessableEntity`/
   `badGateway`/… from the framework, or `fault(code, message, detail)` for a
   status with no helper of its own. Anything else thrown becomes an opaque 500
