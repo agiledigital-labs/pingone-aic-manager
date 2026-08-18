@@ -147,6 +147,33 @@ test("the endpoint-wide header appears on every operation", () => {
   }
 });
 
+test("a route header override replaces the endpoint header, including by case", () => {
+  const tenants = defineEndpoint({
+    name: "tenants",
+    headers: { "x-tenant": v.optional(v.string()) },
+    routes: ({ route }) => [
+      route({
+        method: "read",
+        path: "/",
+        headers: { "X-Tenant": v.string() },
+        handler: ({ headers }) => ({ tenant: headers["X-Tenant"] }),
+      }),
+    ],
+  });
+  const generated = toOpenApi(tenants.definition);
+  const generatedPaths = generated["paths"] as Record<
+    string,
+    Record<string, { parameters: Record<string, unknown>[] }>
+  >;
+  const parameters =
+    generatedPaths["/openidm/endpoint/tenants"]?.["get"]?.parameters ?? [];
+  const headers = parameters.filter((entry) => entry["in"] === "header");
+  assert.deepEqual(
+    headers.map((entry) => [entry["name"], entry["required"]]),
+    [["X-Tenant", true]]
+  );
+});
+
 test("non-empty security scopes only reference an OAuth-capable scheme", () => {
   const components = document["components"] as {
     securitySchemes: Record<string, Record<string, unknown>>;

@@ -43,20 +43,24 @@ The file name is the endpoint name: `src/endpoints/my-thing.ts` becomes
 `endpoint/my-thing` on the tenant. The build refuses a mismatch.
 
 ```typescript
-import { defineEndpoint, notFound, route, v } from "../../framework/index.ts";
+import { defineEndpoint, notFound, v } from "../../framework/index.ts";
 import { widgetId } from "../shared/widget-key.ts";
 
 export default defineEndpoint({
   name: "my-thing",
   headers: { "x-request-id": v.optional(v.uuid()) }, // validated on every route
-  routes: [
+  // Bound builders also put those headers on the handler's input type.
+  routes: ({ route }) => [
     route({
       method: "read",
       path: "/{widgetId}",
       params: { widgetId: widgetId() },
       query: { expand: v.optional(v.csv(v.enumOf(["owner", "history"]))) },
-      handler: ({ params, query, log }) => {
-        log.info("read", { id: params.widgetId }); // params.widgetId: string
+      handler: ({ params, query, headers, log }) => {
+        log.info("read", {
+          id: params.widgetId, // string
+          requestId: headers["x-request-id"], // string | undefined
+        });
         const expand = query.expand ?? []; // query.expand: ("owner"|"history")[] | undefined
         if (expand.length > 3) {
           throw notFound("no");
@@ -70,6 +74,14 @@ export default defineEndpoint({
 
 Nothing in the handler is annotated: the types come from the validators. Change
 `v.integer` to `v.string` and the handler stops compiling.
+
+The callback form `routes: ({ route, queryRoute }) => […]` is the default for
+new endpoints. The builders are bound to the endpoint header shape, so shared
+and route headers are validated, documented, and typed from the same merge; a
+route declaration wins when both levels name the same header. The array form
+`routes: [route(…), queryRoute(…)]` is retained for compatibility. A route
+factored out into a shared module has to use the standalone `route()` and gets
+only its own headers — mixing the two in one array compiles and dispatches.
 
 - **Routing** is keyed by (CREST method, sub-path pattern, action name).
   `request.resourcePath` carries the whole sub-path, so `/widget/{id}/summary`

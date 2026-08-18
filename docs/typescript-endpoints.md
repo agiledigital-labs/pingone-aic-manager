@@ -311,6 +311,35 @@ records the `read` miss (`null`) and the `create` conflict, and nothing else. A
 double that invented a fault shape would be a second, unverified source of
 truth.
 
+## Shared request headers
+
+Endpoint-level headers apply to every route. The default for new endpoints is
+the bound builder callback, so a handler can read them:
+
+```ts
+defineEndpoint({
+  name: "reports",
+  headers: { "x-request-id": v.optional(v.uuid()) },
+  routes: ({ route, queryRoute }) => [
+    route({
+      method: "read",
+      path: "/",
+      handler: ({ headers }) => ({ requestId: headers["x-request-id"] }),
+    }),
+  ],
+});
+```
+
+The bound builders merge the endpoint and route header declarations for
+validation, OpenAPI, and the handler input type. A route declaration wins when
+both levels name the same header, compared case-insensitively; the winning
+declaration keeps its own spelling. Optional validators remain `T | undefined`.
+
+The array form, `routes: [route(…), queryRoute(…)]`, is retained for
+compatibility. A route factored out into a shared module has to use the
+standalone `route()` and gets only its own headers; mixing the two in one
+array compiles and dispatches.
+
 ## Declared responses are checked against the handler
 
 `response` takes the response **validator**, not its `.schema`:

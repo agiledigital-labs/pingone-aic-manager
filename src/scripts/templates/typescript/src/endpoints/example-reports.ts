@@ -13,8 +13,6 @@ import {
   defineEndpoint,
   notFound,
   queryResult,
-  queryRoute,
-  route,
   v,
 } from "../../framework/index.ts";
 import { audit } from "../shared/audit.ts";
@@ -33,16 +31,16 @@ export default defineEndpoint({
   name: "example-reports",
   summary: "Widget reports (demo)",
   headers: { "x-request-id": v.optional(v.uuid()) },
-  routes: [
+  routes: ({ route, queryRoute }) => [
     route({
       method: "read",
       path: "/daily/{date}",
       params: { date: v.isoDate("Report day, YYYY-MM-DD.") },
       response: DAILY_RESPONSE,
-      handler: ({ params, context, log }) => {
+      handler: ({ params, headers, context, log }) => {
         audit(log, context, {
           action: "report.daily.read",
-          fields: { date: params.date },
+          fields: { date: params.date, requestId: headers["x-request-id"] },
         });
         return {
           _id: "daily/" + params.date,
