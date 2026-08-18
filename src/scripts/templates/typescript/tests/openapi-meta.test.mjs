@@ -6,13 +6,26 @@ import { test } from "node:test";
 
 import { validate } from "@hyperjump/json-schema/openapi-3-1";
 
-import { toOpenApi } from "../framework/index.ts";
+import { defineEndpoint, route, toOpenApi, v } from "../framework/index.ts";
 import reports from "../src/endpoints/example-reports.ts";
 import widgets from "../src/endpoints/example-widgets.ts";
 import unions from "./union-endpoint.ts";
 
+const contractFixture = defineEndpoint({
+  name: "contract-fixture",
+  routes: [
+    route({
+      method: "update",
+      path: "/{id}",
+      params: { id: v.string() },
+      errors: [409, 422, 502],
+      handler: () => ({}),
+    }),
+  ],
+});
+
 test("the generated document validates against the OpenAPI 3.1 meta-schema", async () => {
-  for (const endpoint of [widgets, reports, unions]) {
+  for (const endpoint of [widgets, reports, unions, contractFixture]) {
     const result = await validate("https://spec.openapis.org/oas/3.1/schema", toOpenApi(endpoint.definition));
     assert.equal(result.valid, true, endpoint.definition.name + JSON.stringify(result));
   }
