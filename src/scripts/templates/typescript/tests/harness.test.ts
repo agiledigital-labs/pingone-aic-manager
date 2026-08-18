@@ -13,7 +13,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { managedStore, withOpenIdm } from "./harness.ts";
+import {
+  callContext,
+  type ContextOptions,
+  managedStore,
+  withIdentityServer,
+  withOpenIdm,
+} from "./harness.ts";
 
 /** Its own managed object, so the file does not lean on a tenant's schema. */
 interface HarnessProbe {
@@ -141,3 +147,167 @@ test("withOpenIdm installs and then removes the global binding", () => {
   assert.equal(seen?.userName, "ada");
   assert.equal("openidm" in globalThis, had);
 });
+
+test("withIdentityServer installs getProperty and then removes the global", () => {
+  const had = "identityServer" in globalThis;
+  const seen = withIdentityServer(
+    { "esv.demo.region": "eu" },
+    () => identityServer.getProperty("esv.demo.region")
+  );
+  assert.equal(seen, "eu");
+  assert.equal("identityServer" in globalThis, had);
+});
+
+test("withIdentityServer restores the global when run throws", () => {
+  const had = "identityServer" in globalThis;
+  assert.throws(
+    () =>
+      withIdentityServer({ "esv.x": "y" }, () => {
+        throw new Error("boom");
+      }),
+    { message: "boom" }
+  );
+  assert.equal("identityServer" in globalThis, had);
+});
+
+test("withIdentityServer restores a previous binding after run throws", () => {
+  withIdentityServer({ "esv.x": "outer" }, () => {
+    assert.throws(
+      () =>
+        withIdentityServer({ "esv.x": "inner" }, () => {
+          throw new Error("boom");
+        }),
+      { message: "boom" }
+    );
+    assert.equal(identityServer.getProperty("esv.x"), "outer");
+  });
+});
+
+test("getProperty returns null for a missing name, or the supplied default", () => {
+  withIdentityServer({ "esv.demo.region": "eu" }, () => {
+    assert.equal(identityServer.getProperty("esv.missing"), null);
+    assert.equal(identityServer.getProperty("esv.missing", "fallback"), "fallback");
+    assert.equal(
+      identityServer.getProperty("esv.demo.region", "fallback"),
+      "eu"
+    );
+  });
+});
+
+test("refuses getProperty substitution, which is not modelled", () => {
+  assert.throws(
+    () =>
+      withIdentityServer({ "esv.x": "y" }, () =>
+        identityServer.getProperty("esv.x", "z", true)
+      ),
+    /identityServer: getProperty substitution is not modelled/
+  );
+});
+
+// `false` asks for the behaviour the double DOES model, so refusing it would
+// leave a handler that declines substitution explicitly impossible to dispatch.
+test("getProperty accepts substitute: false as the modelled case", () => {
+  withIdentityServer({ "esv.x": "y" }, () => {
+    assert.equal(identityServer.getProperty("esv.x", "z", false), "y");
+    assert.equal(identityServer.getProperty("esv.absent", "z", false), "z");
+    assert.equal(identityServer.getProperty("esv.absent", undefined, false), null);
+  });
+});
+
+test("callContext defaults the subject to svc-account", () => {
+  const ctx = callContext();
+  assert.equal(ctx.security?.authenticationId, "svc-account");
+  assert.equal(ctx.security?.authorization.id, "svc-account");
+  assert.equal(ctx.security?.authorization.component, "managed/svcacct");
+  assert.deepEqual(ctx.security?.authorization.roles, [
+    "internal/role/openidm-authorized",
+  ]);
+});
+
+// A subject naming a collection must not arrive under the service account's
+// component, or a handler that tells the two apart passes here and fails live.
+test("callContext derives the component from a path-shaped subject", () => {
+  const ctx = callContext({ subject: "managed/alpha_user/ada" });
+  assert.equal(ctx.security?.authorization.component, "managed/alpha_user");
+});
+
+test("callContext takes an explicit component", () => {
+  const ctx = callContext({
+    subject: "ada",
+    component: "managed/bravo_user",
+  });
+  assert.equal(ctx.security?.authorization.component, "managed/bravo_user");
+});
+
+test("callContext sets the subject and roles", () => {
+  const ctx = callContext({
+    subject: "managed/alpha_user/ada",
+    roles: ["internal/role/openidm-admin"],
+  });
+  assert.equal(ctx.security?.authenticationId, "managed/alpha_user/ada");
+  assert.equal(ctx.security?.authorization.id, "managed/alpha_user/ada");
+  assert.deepEqual(ctx.security?.authorization.roles, [
+    "internal/role/openidm-admin",
+  ]);
+});
+
+test("callContext omits security when unauthenticated", () => {
+  const ctx = callContext({ unauthenticated: true });
+  assert.equal(Object.prototype.hasOwnProperty.call(ctx, "security"), false);
+});
+
+test("callContext throws if unauthenticated is forced with a subject", () => {
+  assert.throws(
+    () =>
+      callContext({
+        unauthenticated: true,
+        subject: "ada",
+      } as ContextOptions),
+    /unauthenticated cannot be combined/
+  );
+  assert.throws(
+    () =>
+      callContext({
+        unauthenticated: true,
+        roles: ["internal/role/openidm-authorized"],
+      } as ContextOptions),
+    /unauthenticated cannot be combined/
+  );
+  assert.throws(
+    () =>
+      callContext({
+        unauthenticated: true,
+        component: "managed/alpha_user",
+      } as ContextOptions),
+    /unauthenticated cannot be combined/
+  );
+});
+
+// `tests/**/*.test.mjs` callers get no type checking at all, so a truthy
+// non-boolean would otherwise select the authenticated branch in silence.
+test("callContext refuses a non-boolean unauthenticated flag", () => {
+  for (const flag of [1, "yes", {}]) {
+    assert.throws(
+      () => callContext({ unauthenticated: flag } as unknown as ContextOptions),
+      /unauthenticated must be a boolean/
+    );
+  }
+  // `false` is the authenticated arm's own default, so it must still pass.
+  assert.equal(
+    callContext({ unauthenticated: false }).security?.authorization.id,
+    "svc-account"
+  );
+});
+
+/** Never called. Present so `tsc` checks the incoherent combinations. */
+export function contextOptionTypes(): void {
+  callContext({ subject: "ada" });
+  callContext({ roles: ["internal/role/openidm-admin"] });
+  callContext({ unauthenticated: true });
+  // @ts-expect-error subject cannot combine with unauthenticated
+  callContext({ unauthenticated: true, subject: "ada" });
+  // @ts-expect-error roles cannot combine with unauthenticated
+  callContext({ unauthenticated: true, roles: ["x"] });
+  // @ts-expect-error component cannot combine with unauthenticated
+  callContext({ unauthenticated: true, component: "managed/alpha_user" });
+}

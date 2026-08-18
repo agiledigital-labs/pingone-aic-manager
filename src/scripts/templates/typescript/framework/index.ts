@@ -24,6 +24,7 @@ export {
 } from "./router.ts";
 
 export {
+  badGateway,
   badRequest,
   conflict,
   describeThrowable,
@@ -37,6 +38,7 @@ export {
   toCrestFault,
   toCrestResponse,
   unauthorized,
+  unprocessableEntity,
   FAULT_TAG,
   type CrestErrorResponse,
   type CrestFault,

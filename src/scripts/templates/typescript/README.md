@@ -85,8 +85,10 @@ Nothing in the handler is annotated: the types come from the validators. Change
   Since bodies and responses are strict, a bare `v.optional(v.string())` rejects
   `null` — compose them (`v.optional(v.nullable(v.string()))`) when both are
   legal. `nullable` widens the OpenAPI type to `["string", "null"]`.
-- **Errors**: throw `badRequest`/`notFound`/`forbidden`/… from the framework.
-  Anything else thrown becomes an opaque 500 and the real cause goes to the log.
+- **Errors**: throw `badRequest`/`notFound`/`forbidden`/`unprocessableEntity`/
+  `badGateway`/… from the framework, or `fault(code, message, detail)` for a
+  status with no helper of its own. Anything else thrown becomes an opaque 500
+  and the real cause goes to the log.
 - **Responses**: `response` takes the response VALIDATOR (`v.object({…})`, not
   its `.schema`), and the handler's return value is checked against it — so the
   generated OpenAPI cannot promise a field the code stopped sending. Overriding a
@@ -214,12 +216,35 @@ types, so there is no test-runner dependency and no second build. Drive an
 endpoint with `endpoint.dispatch(request, context, logger)`; `tests/harness.ts`
 builds the request/context doubles, including a `java.util.Set` stand-in for
 `context.oauth2.scopes`. Use `managedStore()` with `withOpenIdm()` when a
-handler calls the global `openidm` binding.
+handler calls the global `openidm` binding, and
+`withIdentityServer({ "esv.foo": "bar" }, …)` when it reads an ESV through
+`identityServer.getProperty`.
+
+`callContext()` defaults the caller to `svc-account`. Pass `subject` and
+`roles` to act as someone else, and `component` when a handler tells a service
+account from an end user — a path-shaped subject derives its own component, so
+`managed/alpha_user/ada` never arrives under `managed/svcacct`.
+`unauthenticated: true` omits `security` entirely. Subject/roles/component and
+`unauthenticated` cannot be combined — that is a type error, and `callContext`
+also throws if a cast smuggles the combination through, because `.mjs` tests are
+untyped.
+
+What an anonymous caller really carries is **unverified**: `docs/api/11` records
+the anonymous path as not re-exercised, and IDM has historically sent an
+anonymous `security` block rather than none. `unauthenticated: true` models the
+absent-`security` candidate, so a green test here is not evidence that a handler's
+`security === undefined` branch fires live.
 
 `managedStore()` deliberately **throws** instead of approximating: it projects a
 `fields` selector and applies a `field eq "value"` filter, but relationship
 expansion, paging, sort keys, richer filters, `patch`, `action` and
 `update`/`delete` of an absent record all raise a `managedStore:` error naming
-the gap. A double that is more permissive than the tenant turns a live 500 into a
+the gap. `withIdentityServer` does the same for `getProperty`'s third
+`substitute` argument, which is declared but not verified: a missing name
+returns `null` (or the supplied default), and `substitute: true` throws.
+`substitute: false` asks for exactly the modelled behaviour, so it passes —
+refusing it would leave a handler that declines substitution explicitly
+undispatchable.
+A double that is more permissive than the tenant turns a live 500 into a
 passing test, so give the handler its own stub for those reads rather than
 loosening this one.

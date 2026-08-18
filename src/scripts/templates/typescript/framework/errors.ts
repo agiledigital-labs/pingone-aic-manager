@@ -49,8 +49,10 @@ const REASONS: Record<number, string> = {
   405: "Method Not Allowed",
   409: "Conflict",
   412: "Precondition Failed",
+  422: "Unprocessable Entity",
   500: "Internal Server Error",
   501: "Not Implemented",
+  502: "Bad Gateway",
   503: "Service Unavailable",
 };
 
@@ -95,8 +97,14 @@ export const methodNotAllowed = (
 ): CrestFault => fault(405, message, detail);
 export const conflict = (message: string, detail?: unknown): CrestFault =>
   fault(409, message, detail);
+export const unprocessableEntity = (
+  message: string,
+  detail?: unknown
+): CrestFault => fault(422, message, detail);
 export const internalError = (message: string, detail?: unknown): CrestFault =>
   fault(500, message, detail);
+export const badGateway = (message: string, detail?: unknown): CrestFault =>
+  fault(502, message, detail);
 
 /** Duck-typed fault check — deliberately not `instanceof` (see file header). */
 export function isFault(value: unknown): value is CrestFault {

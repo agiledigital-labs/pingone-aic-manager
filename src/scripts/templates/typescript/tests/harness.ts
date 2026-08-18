@@ -130,34 +130,113 @@ export function crestRequest(
   }
 }
 
-export interface ContextOptions {
+interface ContextOptionsBase {
   headers?: Record<string, string>;
   scopes?: string[];
   /** Omit the HTTP context entirely — a scheduled/internal caller. */
   internal?: boolean;
 }
 
+/**
+ * A caller identity for {@link callContext}.
+ *
+ * `unauthenticated: true` omits `security` entirely. That flag is a
+ * discriminant: combining it with `subject`, `roles` or `component` is a type
+ * error, and `callContext` also throws if a cast smuggles the combination
+ * through.
+ *
+ * UNVERIFIED SHAPE. What an anonymous IDM caller actually carries has never
+ * been probed against a tenant — `docs/api/11-idm-endpoints.md` records the
+ * anonymous path as not re-exercised — and IDM has historically sent an
+ * anonymous `security` block rather than none at all. So this flag models
+ * "absent `security`", which is one of two candidates. Do not trust a handler's
+ * `security === undefined` branch on the strength of a green test here.
+ */
+export type ContextOptions =
+  | (ContextOptionsBase & {
+      /** `security.authorization.id` and `authenticationId`. */
+      subject?: string;
+      /** `security.authorization.roles`. */
+      roles?: string[];
+      /**
+       * `security.authorization.component`. Defaults to the collection the
+       * subject names, so a handler that discriminates a service account from
+       * an end user can be driven both ways.
+       */
+      component?: string;
+      unauthenticated?: false;
+    })
+  | (ContextOptionsBase & {
+      /** Omit `security` — the unauthenticated path. */
+      unauthenticated: true;
+    });
+
+/**
+ * The `component` a subject implies.
+ *
+ * A subject that names a resource path belongs to that collection, so pinning
+ * every caller to the service account's component would hand a handler a
+ * pairing the tenant never sends (`managed/alpha_user/ada` under
+ * `managed/svcacct`). Anything without a path keeps the observed service-account
+ * value — see `docs/api/11-idm-endpoints.md`.
+ */
+function componentOf(subject: string): string {
+  const cut = subject.lastIndexOf("/");
+  return cut > 0 ? subject.slice(0, cut) : "managed/svcacct";
+}
+
 export function callContext(options: ContextOptions = {}): IdmCallContext {
-  const context: IdmCallContext = {
-    security: {
-      authenticationId: "svc-account",
-      authorization: {
-        id: "svc-account",
-        component: "managed/svcacct",
-        roles: ["internal/role/openidm-authorized"],
-      },
-    },
+  // Read through a widened view. The discriminant keeps `subject`/`roles` off
+  // one arm's type, and `tests/**/*.test.mjs` callers are untyped altogether —
+  // so the runtime checks below are load-bearing, not belt-and-braces.
+  const raw = options as ContextOptionsBase & {
+    subject?: string;
+    roles?: string[];
+    component?: string;
+    unauthenticated?: unknown;
   };
-  if (options.internal !== true) {
+  if (
+    raw.unauthenticated !== undefined &&
+    typeof raw.unauthenticated !== "boolean"
+  ) {
+    // A truthy non-boolean would otherwise fall through to the authenticated
+    // branch and silently test the opposite path.
+    throw new Error("callContext: unauthenticated must be a boolean");
+  }
+  const unauthenticated = raw.unauthenticated === true;
+  if (
+    unauthenticated &&
+    (raw.subject !== undefined ||
+      raw.roles !== undefined ||
+      raw.component !== undefined)
+  ) {
+    throw new Error(
+      "callContext: unauthenticated cannot be combined with subject, roles or component"
+    );
+  }
+  const context: IdmCallContext = {};
+  if (!unauthenticated) {
+    const subject = raw.subject ?? "svc-account";
+    const roles = raw.roles ?? ["internal/role/openidm-authorized"];
+    context.security = {
+      authenticationId: subject,
+      authorization: {
+        id: subject,
+        component: raw.component ?? componentOf(subject),
+        roles,
+      },
+    };
+  }
+  if (raw.internal !== true) {
     context.http = {
       method: "GET",
       path: "/openidm/endpoint/demo",
-      headers: options.headers ?? {},
+      headers: raw.headers ?? {},
       parameters: {},
     };
   }
-  if (options.scopes !== undefined) {
-    context.oauth2 = { scopes: javaSet(options.scopes) };
+  if (raw.scopes !== undefined) {
+    context.oauth2 = { scopes: javaSet(raw.scopes) };
   }
   return context;
 }
@@ -364,6 +443,66 @@ export function withOpenIdm<T>(binding: typeof openidm, run: () => T): T {
       globals["openidm"] = previous;
     } else {
       delete globals["openidm"];
+    }
+  }
+}
+
+/**
+ * An in-memory `identityServer` binding for endpoint tests.
+ *
+ * `getProperty(name)` returns the mapped string, or `defaultValue` when the
+ * name is absent, or `null` when neither is present (verified 2026-07-22,
+ * docs/api/12-script-bindings-matrix.md). Asking for substitution
+ * (`substitute: true`) is not modelled — its effect has not been verified — and
+ * throws rather than being ignored. `substitute: false` is the behaviour above,
+ * so it passes: refusing it would make a handler that declines substitution
+ * explicitly impossible to dispatch at all.
+ */
+function identityServerBinding(
+  properties: Record<string, string>
+): typeof identityServer {
+  return {
+    getProperty(
+      name: string,
+      defaultValue?: string,
+      substitute?: boolean
+    ): string | null {
+      if (substitute === true) {
+        throw new Error(
+          "identityServer: getProperty substitution is not modelled"
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(properties, name)) {
+        const value = properties[name];
+        return value === undefined ? null : value;
+      }
+      if (defaultValue !== undefined) {
+        return defaultValue;
+      }
+      return null;
+    },
+  };
+}
+
+/** Install an `identityServer` test binding for exactly one synchronous callback. */
+export function withIdentityServer<T>(
+  properties: Record<string, string>,
+  run: () => T
+): T {
+  const globals = globalThis as unknown as Record<string, unknown>;
+  const hadPrevious = Object.prototype.hasOwnProperty.call(
+    globals,
+    "identityServer"
+  );
+  const previous = globals["identityServer"];
+  globals["identityServer"] = identityServerBinding(properties);
+  try {
+    return run();
+  } finally {
+    if (hadPrevious) {
+      globals["identityServer"] = previous;
+    } else {
+      delete globals["identityServer"];
     }
   }
 }

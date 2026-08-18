@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  badGateway,
   badRequest,
   describeThrowable,
   fault,
@@ -12,6 +13,7 @@ import {
   notFound,
   reasonFor,
   toCrestFault,
+  unprocessableEntity,
 } from "../framework/index.ts";
 
 test("a fault carries code, reason, message and optional detail", () => {
@@ -20,6 +22,22 @@ test("a fault carries code, reason, message and optional detail", () => {
   assert.equal(built.reason, "Bad Request");
   assert.equal(built.message, "bad");
   assert.deepEqual(built.detail, { issues: [] });
+});
+
+test("unprocessableEntity is 422", () => {
+  const built = unprocessableEntity("cannot", { field: "status" });
+  assert.equal(built.code, 422);
+  assert.equal(built.reason, "Unprocessable Entity");
+  assert.equal(built.message, "cannot");
+  assert.deepEqual(built.detail, { field: "status" });
+});
+
+test("badGateway is 502", () => {
+  const built = badGateway("upstream");
+  assert.equal(built.code, 502);
+  assert.equal(built.reason, "Bad Gateway");
+  assert.equal(built.message, "upstream");
+  assert.equal(Object.prototype.hasOwnProperty.call(built, "detail"), false);
 });
 
 test("detail is omitted rather than set to undefined", () => {
@@ -31,6 +49,8 @@ test("detail is omitted rather than set to undefined", () => {
 
 test("reasonFor falls back by status class", () => {
   assert.equal(reasonFor(403), "Forbidden");
+  assert.equal(reasonFor(422), "Unprocessable Entity");
+  assert.equal(reasonFor(502), "Bad Gateway");
   assert.equal(reasonFor(418), "Client Error");
   assert.equal(reasonFor(599), "Server Error");
 });
