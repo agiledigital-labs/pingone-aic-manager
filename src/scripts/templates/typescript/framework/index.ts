@@ -58,7 +58,6 @@ export {
 export {
   assignPathKeys,
   operationId,
-  queryResultSchema,
   routeUrl,
   toOpenApi,
   type OpenApiOptions,

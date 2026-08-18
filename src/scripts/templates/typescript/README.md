@@ -189,11 +189,16 @@ has no value for it, so a schema-optional property projects to `T | null` and
 `"telephoneNumber" in thin` is always true. Check the value, not the key, and
 declare the response member with `v.nullable`.
 
-`src/endpoints/example-managed-users.ts` walks the whole surface — every verb,
-the typed `fields` selector, the `_id`/`_rev` asymmetry between a plain read and
-a field-restricted one, and a list of lines that should NOT compile so you can
-watch the types bite. If hovering there shows `CrestResource` instead of your
-own interfaces, run `aic workspace update` and restart your editor's TS server.
+The worked example is seeded as `src/endpoints/example-managed-users.ts` — every
+verb, the typed `fields` selector, the `_id`/`_rev` asymmetry between a plain
+read and a field-restricted one, and a list of lines that should NOT compile so
+you can watch the types bite. It is not shipped inside the template project:
+it is written against those generated types, which only exist after a
+tenant has been reached, so `aic workspace init` (or `update`, for a seed that
+has never been written) copies it here. If the file is missing you deleted the
+demo — a deleted seed stays deleted. If hovering there shows `CrestResource`
+instead of your own interfaces, run `aic login && aic workspace update` and
+restart your editor's TS server.
 
 ## The rule that governs everything here
 
