@@ -367,3 +367,5 @@ declare global {
     ): string | null;
   };
 }
+
+// Java package roots (`java.*`, `javax.*`) live in `java-globals.d.ts`.

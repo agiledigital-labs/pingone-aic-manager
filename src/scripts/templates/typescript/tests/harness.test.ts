@@ -18,6 +18,7 @@ import {
   type ContextOptions,
   managedStore,
   withIdentityServer,
+  withJava,
   withOpenIdm,
 } from "./harness.ts";
 
@@ -202,6 +203,125 @@ test("refuses getProperty substitution, which is not modelled", () => {
       ),
     /identityServer: getProperty substitution is not modelled/
   );
+});
+
+test("withJava installs and then removes the global bindings", () => {
+  const hadJava = "java" in globalThis;
+  const hadJavax = "javax" in globalThis;
+  const seen = withJava(() =>
+    String(java.text.Normalizer.normalize("a", java.text.Normalizer.Form.NFC))
+  );
+  assert.equal(seen, "a");
+  assert.equal("java" in globalThis, hadJava);
+  assert.equal("javax" in globalThis, hadJavax);
+});
+
+test("withJava restores the globals when run throws", () => {
+  const hadJava = "java" in globalThis;
+  const hadJavax = "javax" in globalThis;
+  assert.throws(
+    () =>
+      withJava(() => {
+        throw new Error("boom");
+      }),
+    { message: "boom" }
+  );
+  assert.equal("java" in globalThis, hadJava);
+  assert.equal("javax" in globalThis, hadJavax);
+});
+
+test("withJava restores a previous binding after run throws", () => {
+  withJava(() => {
+    const outer = java.text.Normalizer.Form.NFC;
+    assert.throws(
+      () =>
+        withJava(() => {
+          throw new Error("boom");
+        }),
+      { message: "boom" }
+    );
+    assert.equal(java.text.Normalizer.Form.NFC, outer);
+  });
+});
+
+test("withJava throws for an unmodelled package", () => {
+  withJava(() => {
+    assert.throws(
+      () => (java as unknown as Record<string, unknown>)["util"],
+      /java: this test double does not model java.util/
+    );
+    assert.throws(
+      () =>
+        (javax.crypto as unknown as Record<string, unknown>)["Cipher"],
+      /java: this test double does not model javax.crypto.Cipher/
+    );
+  });
+});
+
+test("withJava throws for an unmodelled member on a leaf", () => {
+  withJava(() => {
+    assert.throws(
+      () =>
+        (java.text.Normalizer as unknown as Record<string, unknown>)[
+          "isNormalized"
+        ],
+      /java: this test double does not model java.text.Normalizer.isNormalized/
+    );
+    assert.throws(
+      () =>
+        (java.lang.String as unknown as Record<string, unknown>)["charAt"],
+      /java: this test double does not model java.lang.String.charAt/
+    );
+    assert.throws(
+      () =>
+        (javax.crypto.Mac as unknown as Record<string, unknown>)["clone"],
+      /java: this test double does not model javax.crypto.Mac.clone/
+    );
+    const mac = javax.crypto.Mac.getInstance("HmacSHA256");
+    assert.throws(
+      () => (mac as unknown as Record<string, unknown>)["clone"],
+      /java: this test double does not model javax.crypto.Mac.clone/
+    );
+    const key = new javax.crypto.spec.SecretKeySpec(
+      new java.lang.String("k").getBytes("UTF-8"),
+      "HmacSHA256"
+    );
+    assert.throws(
+      () => (key as unknown as Record<string, unknown>)["getEncoded"],
+      /java: this test double does not model javax.crypto.spec.SecretKeySpec.getEncoded/
+    );
+    const value = new java.lang.String("x");
+    assert.throws(
+      () => (value as unknown as Record<string, unknown>)["charAt"],
+      /java: this test double does not model java.lang.String.charAt/
+    );
+  });
+});
+
+test("withJava throws for an unmodelled Mac algorithm", () => {
+  withJava(() => {
+    assert.throws(
+      () => javax.crypto.Mac.getInstance("HmacMD5"),
+      /Mac.getInstance is only modelled/
+    );
+  });
+});
+
+test("withJava throws for getBytes without UTF-8", () => {
+  withJava(() => {
+    const value = new java.lang.String("x");
+    assert.throws(
+      () => (value as unknown as { getBytes: () => unknown }).getBytes(),
+      /getBytes\(\) with no charset/
+    );
+    assert.throws(
+      () =>
+        (value as unknown as { getBytes: (charset: string) => unknown }).getBytes(
+          "UTF-16"
+        ),
+      /only modelled for "UTF-8"/
+    );
+  });
 });
 
 // `false` asks for the behaviour the double DOES model, so refusing it would
