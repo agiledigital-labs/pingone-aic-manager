@@ -119,6 +119,30 @@ const createAction = parameter(base, "post", "_action");
 const id = parameter(base + "/{id}", "get", "id");
 const expand = parameter(base + "/{id}", "get", "expand");
 
+function successSchema(key: string, method: string): Record<string, unknown> {
+  const httpMethod: Record<string, string> = {
+    read: "get",
+    query: "get",
+    create: "post",
+    action: "post",
+    update: "put",
+    delete: "delete",
+    patch: "patch",
+  };
+  const responses = operation(key, httpMethod[method] ?? "get")[
+    "responses"
+  ] as Record<
+    string,
+    { content: { "application/json": { schema: Record<string, unknown> } } }
+  >;
+  const status = Object.keys(responses).filter(
+    (candidate) => candidate.charAt(0) === "2"
+  )[0];
+  const schema = responses[status ?? ""]?.content["application/json"].schema;
+  assert.ok(schema !== undefined, "no 2xx schema for " + key);
+  return schema;
+}
+
 type ShapeCase = readonly [name: string, actual: unknown, expected: unknown];
 const shapeCases: ShapeCase[] = [
   ["document version", document["openapi"], "3.1.0"],
@@ -299,6 +323,33 @@ test("every operation has exactly the success status its CREST method produces",
       status.startsWith("2")
     );
     assert.deepEqual(successes, [assigned.route.method === "create" ? "201" : "200"]);
+  }
+});
+
+test("every resource-shaped response documents the _id IDM adds", () => {
+  // Probed 2026-08-18: create/read/update/delete/patch all come back carrying
+  // `_id`; an action does not, and a query gets the paging envelope. The
+  // VALIDATED schema must stay exactly what the handler returns.
+  for (const assigned of assignPathKeys(endpoint.definition)) {
+    const method = assigned.route.method;
+    const documented = successSchema(assigned.key, method);
+    const validated = assigned.route.response?.schema as
+      | Record<string, unknown>
+      | undefined;
+    if (method === "action" || method === "query" || validated === undefined) {
+      continue;
+    }
+    const properties = validated["properties"] as Record<string, unknown>;
+    const required = validated["required"] as string[];
+    assert.deepEqual(
+      documented,
+      {
+        ...validated,
+        properties: { ...properties, _id: { type: "string" } },
+        required: required.indexOf("_id") >= 0 ? required : [...required, "_id"],
+      },
+      method + " " + assigned.key
+    );
   }
 });
 
