@@ -584,11 +584,13 @@ function isModelledMember(target: object, prop: string): boolean {
 function modelled<T extends object>(label: string, value: T): T {
   const handlers: ProxyHandler<object> = {
     get(target, prop, receiver) {
+      // `Reflect.get` is typed `any`, which would flow untyped into every
+      // caller of the double. Narrow it at the boundary.
       if (typeof prop !== "string") {
-        return Reflect.get(target, prop, receiver);
+        return Reflect.get(target, prop, receiver) as unknown;
       }
       if (isModelledMember(target, prop)) {
-        return Reflect.get(target, prop, receiver);
+        return Reflect.get(target, prop, receiver) as unknown;
       }
       return javaUnsupported(
         "this test double does not model " + label + "." + prop

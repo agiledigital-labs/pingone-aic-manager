@@ -44,7 +44,29 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   {
     files: ["framework/**/*.ts", "src/**/*.ts", "tests/**/*.ts"],
+    // TYPE-AWARE from here on, which the `no-unsafe-*` family below requires.
+    // Costs a `tsc` program per lint run; buys the only check that sees an `any`
+    // arriving STRUCTURALLY — from a `.d.ts`, an inference or a cast — which
+    // `no-explicit-any` cannot, since there is no `any` written down to find.
+    languageOptions: {
+      parserOptions: {
+        project: ["./tsconfig.json", "./tsconfig.tests.json"],
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
+      // Deliberately NOT enabling `no-unnecessary-condition` with these. It is
+      // the rule that found the context types over-promising what IDM sends
+      // (`oauth2.scopes`, `security.authorization`), so it is worth running by
+      // hand — but it also contradicts `tsc` on eight sites in
+      // `harness.test.ts`, calling `ctx.security?.authorization?.id` unnecessary
+      // where `tsc` reports TS18048 for the same expression. A gate cannot
+      // disagree with the compiler.
+      "@typescript-eslint/no-unsafe-argument": "error",
+      "@typescript-eslint/no-unsafe-assignment": "error",
+      "@typescript-eslint/no-unsafe-call": "error",
+      "@typescript-eslint/no-unsafe-member-access": "error",
+      "@typescript-eslint/no-unsafe-return": "error",
       "no-restricted-syntax": ["error", ...noNativeErrorSubclass],
       "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/consistent-type-imports": [
