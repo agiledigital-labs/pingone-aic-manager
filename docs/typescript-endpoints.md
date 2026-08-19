@@ -88,7 +88,18 @@ mismatch first.
 The emitted file ends with the expression statement `__aicMain.default();`
 because an endpoint's HTTP response body is the script's completion value.
 Bundle size is not a constraint: 2 MB of parsed source deploys and executes
-(probed 2026-08-13); the demo endpoints are ~40–45 KB.
+(probed 2026-08-13); the demo endpoints are ~44–54 KB.
+
+Tree-shaking is load-bearing all the same, and one export shape defeats it.
+`framework/index.ts` must not re-export a namespace: `export * as v from
+"./validate.ts"` materialises an object holding every validator, so esbuild can
+no longer prove any member unused and each endpoint ships the whole library.
+Endpoints therefore import that one namespace directly — `import * as v from
+"../../framework/validate.ts"` — which shakes, because every use is a static
+property access. Restoring the re-export cost the three demos 7.7-11.2 KB each,
+16.4% of their combined size (measured 2026-08-19); `tests/framework-surface.test.mjs`
+fails if it comes back. Endpoints import from `framework/index.ts` and
+`framework/validate.ts`, and no other framework module.
 
 ## Never subclass `Error`
 

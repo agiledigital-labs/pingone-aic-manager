@@ -54,8 +54,8 @@ import {
   notFound,
   queryRoute,
   route,
-  v,
 } from "../../framework/index.ts";
+import * as v from "../../framework/validate.ts";
 import type { AlphaUser } from "../generated/managed.ts";
 
 /**

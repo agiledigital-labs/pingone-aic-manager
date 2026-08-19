@@ -17,8 +17,8 @@ import {
   defineEndpoint,
   notFound,
   queryResult,
-  v,
 } from "../../framework/index.ts";
+import * as v from "../../framework/validate.ts";
 import { audit } from "../shared/audit.ts";
 import { findWidget, WIDGETS, type Widget } from "../shared/fixtures.ts";
 import {

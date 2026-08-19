@@ -49,7 +49,8 @@ The file name is the endpoint name: `src/endpoints/my-thing.ts` becomes
 `endpoint/my-thing` on the tenant. The build refuses a mismatch.
 
 ```typescript
-import { defineEndpoint, notFound, v } from "../../framework/index.ts";
+import { defineEndpoint, notFound } from "../../framework/index.ts";
+import * as v from "../../framework/validate.ts";
 import { widgetId } from "../shared/widget-key.ts";
 
 export default defineEndpoint({
@@ -80,6 +81,16 @@ export default defineEndpoint({
 
 Nothing in the handler is annotated: the types come from the validators. Change
 `v.integer` to `v.string` and the handler stops compiling.
+
+The validators come from `framework/validate.ts`, not from `framework/index.ts`
+— those two are the only framework modules an endpoint imports. The barrel used
+to re-export them as `v`, which quietly cost every endpoint the whole validator
+library: a namespace re-export builds an object holding all of them, so esbuild
+can no longer prove any one unused. Importing the namespace directly
+tree-shakes, because `v.string(...)` is a static property access. Call sites are
+identical, and the demos each dropped 7-11 KB. If an endpoint you wrote against
+an older framework fails with `has no exported member 'v'`, that is this change:
+drop `v` from the `framework/index.ts` import and add the line above.
 
 The callback form `routes: ({ route, queryRoute }) => […]` is the default for
 new endpoints. The builders are bound to the endpoint header shape, so shared

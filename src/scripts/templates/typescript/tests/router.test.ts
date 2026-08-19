@@ -11,11 +11,11 @@ import {
   queryRoute,
   route,
   splitResourcePath,
-  v,
   type CrestRequest,
   type EndpointMain,
   type IdmCallContext,
 } from "../framework/index.ts";
+import * as v from "../framework/validate.ts";
 import { mergeHeaderShapes } from "../framework/router.ts";
 import {
   callContext,

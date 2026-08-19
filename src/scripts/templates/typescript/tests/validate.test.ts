@@ -6,12 +6,12 @@ import { test } from "node:test";
 import {
   defineEndpoint,
   route,
-  v,
   type Issue,
   type ObjectOptions,
   type Shape,
   type Validator,
 } from "../framework/index.ts";
+import * as v from "../framework/validate.ts";
 
 function run<T>(validator: Validator<T>, input: unknown, mode: "strict" | "coerce" = "strict") {
   const issues: Issue[] = [];
