@@ -30,6 +30,7 @@ import {
   type EndpointDefinition,
   type RouteDefinition,
 } from "./router.ts";
+import type { CrestMethod } from "./types.ts";
 import type { JsonSchema, Shape } from "./validate.ts";
 
 export interface OpenApiOptions {
@@ -49,7 +50,13 @@ const CREST_ERROR_SCHEMA: JsonSchema = {
   required: ["code", "message"],
 };
 
-const HTTP_METHOD: Record<string, string> = {
+// Keyed on `CrestMethod`, not `string`: with a `string` key every lookup is
+// `string | undefined` under `noUncheckedIndexedAccess`, which was concatenated
+// straight into a path key (a missing method would have produced
+// `".../widgets undefined"`) and then hidden with an `as string` at the third
+// site. An exhaustive record makes the lookups total and turns a new CREST
+// method into a compile error here until this map covers it.
+const HTTP_METHOD: Record<CrestMethod, string> = {
   read: "get",
   query: "get",
   create: "post",
@@ -374,7 +381,7 @@ export function toOpenApi(
 ): Record<string, unknown> {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const assigned of assignPathKeys(definition)) {
-    const httpMethod = HTTP_METHOD[assigned.route.method] as string;
+    const httpMethod = HTTP_METHOD[assigned.route.method];
     const item = paths[assigned.key] ?? {};
     item[httpMethod] = operationFor(
       definition,
