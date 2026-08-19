@@ -335,7 +335,7 @@ test("object overloads preserve mixed response and compatibility call shapes", (
   assert.equal(unknownMember, undefined);
   const closedObject = v.object({ known: v.string() });
   // @ts-expect-error a closed object has no index signature
-  const closedMember = closedObject.parse({ known: "a" }, "x", [])["other"];
+  const closedMember = closedObject.parse({ known: "a" }, "x", [])["other"];  // eslint-disable-line @typescript-eslint/no-unsafe-assignment -- the expected error makes this error-typed
   assert.equal(closedMember, undefined);
 });
 

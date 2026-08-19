@@ -122,7 +122,7 @@ export function typeTours(): void {
   // Our surface omits JS string methods so String(...) is the way out.
   // The engine does expose them; the live trap is identity, not absence.
   // @ts-expect-error a Java string is not a JS string — String(...) or nfc()
-  javaStr.toLowerCase();
+  javaStr.toLowerCase(); // eslint-disable-line @typescript-eslint/no-unsafe-call -- the expected error makes this error-typed
   // @ts-expect-error not assignable to string
   const _asString: string = javaStr;
   void _asString;
@@ -147,7 +147,7 @@ export function typeTours(): void {
   void _signed;
   void _asNumber;
   // @ts-expect-error JavaByte.toString is never — bytesToHex is the hex path
-  const _unmasked = digested[0]!.toString(16);
+  const _unmasked = digested[0]!.toString(16); // eslint-disable-line @typescript-eslint/no-unsafe-assignment -- the expected error makes this error-typed
   void _unmasked;
   const unsigned: number[] = [255];
   // @ts-expect-error a number[] is not a Java byte[] — doFinal returns JavaBytes
