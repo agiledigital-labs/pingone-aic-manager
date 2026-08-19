@@ -32,6 +32,7 @@ export {
   type RouteSpec,
   type RouteSpecBase,
   type QueryRouteSpec,
+  type SyncResult,
 } from "./router.ts";
 
 export {
