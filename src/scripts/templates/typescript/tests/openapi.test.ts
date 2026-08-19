@@ -11,8 +11,8 @@ import {
   queryRoute,
   route,
   toOpenApi,
-  v,
 } from "../framework/index.ts";
+import * as v from "../framework/validate.ts";
 
 const endpoint = defineEndpoint({
   name: "widgets",

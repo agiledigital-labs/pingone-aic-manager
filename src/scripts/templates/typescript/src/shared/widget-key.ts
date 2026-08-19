@@ -8,7 +8,8 @@
 //
 // User file — yours to change. `workspace update` refreshes this only if you have not edited it.
 
-import { v, type Validator } from "../../framework/index.ts";
+import type { Validator } from "../../framework/index.ts";
+import * as v from "../../framework/validate.ts";
 
 /** Widget ids are `w-` plus 4..12 lowercase alphanumerics. */
 export const WIDGET_ID_PATTERN = /^w-[a-z0-9]{4,12}$/;

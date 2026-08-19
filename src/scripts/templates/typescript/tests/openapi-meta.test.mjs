@@ -11,7 +11,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { validate } from "@hyperjump/json-schema/openapi-3-1";
 
-import { defineEndpoint, route, toOpenApi, v } from "../framework/index.ts";
+import { defineEndpoint, route, toOpenApi } from "../framework/index.ts";
+import * as v from "../framework/validate.ts";
 import unions from "./union-endpoint.ts";
 
 const TESTS_DIR = dirname(fileURLToPath(import.meta.url));
