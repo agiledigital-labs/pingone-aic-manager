@@ -506,3 +506,30 @@ test("schema and runtime agree on every dangerous key, in both directions", () =
   assert.deepEqual(issues, []);
   assert.deepEqual(kept, { safeKey: "x" });
 });
+
+test("a collection refuses an optional element, and points at nullable", () => {
+  // `optional()` inside a collection produced a value the collection's own schema
+  // rejects: in coerce mode it maps `null` to `undefined`, so `[null]` parsed to
+  // `[undefined]`, which serialises back as `[null]` against `items: {type:"string"}`.
+  for (const build of [
+    () => v.list(v.optional(v.string())),
+    () => v.csv(v.optional(v.string())),
+    () => v.record(v.optional(v.string())),
+  ]) {
+    assert.throws(build, /cannot be optional/);
+  }
+  // `withDefault` is optional too — it substitutes for an absent input, which is
+  // equally meaningless at an index.
+  assert.throws(() => v.list(v.withDefault(v.string(), "x")), /cannot be optional/);
+});
+
+test("nullable is the element combinator for may-be-empty, and round-trips", () => {
+  const rows = v.list(v.nullable(v.string()));
+  const issues: v.Issue[] = [];
+  assert.deepEqual(rows.parse(["a", null], "body", issues, "strict"), ["a", null]);
+  assert.deepEqual(issues, []);
+  assert.deepEqual((rows.schema["items"] as Record<string, unknown>)["type"], [
+    "string",
+    "null",
+  ]);
+});

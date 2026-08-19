@@ -159,6 +159,20 @@ const PROTOTYPE_KEYS = [
   '{"hasOwnProperty":"x"}',
 ];
 
+/** `undefined` anywhere inside a result is not JSON: it serialises as `null`. */
+function hasUndefined(value) {
+  if (value === undefined) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.some(hasUndefined);
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.keys(value).some((key) => hasUndefined(value[key]));
+  }
+  return false;
+}
+
 function schemaChecker(name, validator) {
   const uri = "https://aic.test/schema-agreement/" + encodeURIComponent(name);
   registerSchema(
@@ -224,6 +238,50 @@ test("coerce mode: everything the schema accepts, the parser accepts", async () 
     }
   }
   assert.deepEqual(rejected, []);
+});
+
+test("whatever the parser returns satisfies the same schema", async () => {
+  // The third direction, and the one that caught `list(optional(string()))`
+  // returning `[undefined]` — JSON.stringify emits that as `[null]`, which the
+  // list's own `items` schema rejects. A parser that accepts a value and then
+  // hands back something its own document forbids is a contract break even
+  // though both halves looked right in isolation.
+  const violations = [];
+  for (const [name, validator] of CASES) {
+    if (EXEMPT.has(name)) {
+      continue;
+    }
+    const check = await schemaChecker(name + "#output", validator);
+    for (const mode of ["strict", "coerce"]) {
+      for (const value of POOL) {
+        const { ok, output } = parses(validator, value, mode);
+        if (!ok || output === undefined) {
+          continue;
+        }
+        if (hasUndefined(output)) {
+          violations.push(
+            name +
+              " [" +
+              mode +
+              "] " +
+              JSON.stringify(value) +
+              " -> undefined inside a structure"
+          );
+        } else if (!check(output).valid) {
+          violations.push(
+            name +
+              " [" +
+              mode +
+              "] " +
+              JSON.stringify(value) +
+              " -> " +
+              JSON.stringify(output)
+          );
+        }
+      }
+    }
+  }
+  assert.deepEqual(violations, []);
 });
 
 test("the property can fail — a divergent schema is caught", async () => {

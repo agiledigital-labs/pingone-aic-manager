@@ -548,10 +548,33 @@ function checkLength(
 }
 
 /** A JSON array. */
+/**
+ * A collection's ELEMENTS cannot be optional. "Absent" has no meaning at an array
+ * index or a map key, and allowing it produced a value the collection's own schema
+ * rejects: in coerce mode `optional()` maps `null` and `""` to `undefined`, so
+ * `list(optional(string())).parse([null])` returned `[undefined]`, which
+ * `JSON.stringify` emits as `[null]` against an `items: { type: "string" }` the
+ * generator published from the same declaration.
+ *
+ * `nullable()` is the combinator for "this element may be empty": `null` is a
+ * real JSON value, so it round-trips and the schema widens to match.
+ */
+function refuseOptionalElement(inner: Validator<unknown>, kind: string): void {
+  if (inner.isOptional) {
+    throw new Error(
+      kind +
+        "(): an element validator cannot be optional — absent has no meaning at " +
+        "an index or key, and it yields a value this schema rejects. Use " +
+        "nullable() if the element may be empty."
+    );
+  }
+}
+
 export function list<T>(
   inner: Validator<T>,
   options: ListOptions = {}
 ): Validator<T[]> {
+  refuseOptionalElement(inner, "list");
   return define(
     listSchema(inner.schema, options),
     false,
@@ -581,6 +604,7 @@ export function csv<T>(
   inner: Validator<T>,
   options: ListOptions = {}
 ): Validator<T[]> {
+  refuseOptionalElement(inner, "csv");
   const schema = listSchema(inner.schema, options);
   schema["x-aic-encoding"] = "comma-separated";
   return define(schema, false, (input, path, issues, mode) => {
@@ -787,6 +811,7 @@ export function record<T>(
   inner: Validator<T>,
   description?: string
 ): Validator<Record<string, T>> {
+  refuseOptionalElement(inner, "record");
   const schema: JsonSchema = {
     type: "object",
     additionalProperties: inner.schema,
