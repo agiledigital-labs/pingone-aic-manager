@@ -337,9 +337,9 @@ test("getProperty accepts substitute: false as the modelled case", () => {
 test("callContext defaults the subject to svc-account", () => {
   const ctx = callContext();
   assert.equal(ctx.security?.authenticationId, "svc-account");
-  assert.equal(ctx.security?.authorization.id, "svc-account");
-  assert.equal(ctx.security?.authorization.component, "managed/svcacct");
-  assert.deepEqual(ctx.security?.authorization.roles, [
+  assert.equal(ctx.security?.authorization?.id, "svc-account");
+  assert.equal(ctx.security?.authorization?.component, "managed/svcacct");
+  assert.deepEqual(ctx.security?.authorization?.roles, [
     "internal/role/openidm-authorized",
   ]);
 });
@@ -348,7 +348,7 @@ test("callContext defaults the subject to svc-account", () => {
 // component, or a handler that tells the two apart passes here and fails live.
 test("callContext derives the component from a path-shaped subject", () => {
   const ctx = callContext({ subject: "managed/alpha_user/ada" });
-  assert.equal(ctx.security?.authorization.component, "managed/alpha_user");
+  assert.equal(ctx.security?.authorization?.component, "managed/alpha_user");
 });
 
 test("callContext takes an explicit component", () => {
@@ -356,7 +356,7 @@ test("callContext takes an explicit component", () => {
     subject: "ada",
     component: "managed/bravo_user",
   });
-  assert.equal(ctx.security?.authorization.component, "managed/bravo_user");
+  assert.equal(ctx.security?.authorization?.component, "managed/bravo_user");
 });
 
 test("callContext sets the subject and roles", () => {
@@ -365,8 +365,8 @@ test("callContext sets the subject and roles", () => {
     roles: ["internal/role/openidm-admin"],
   });
   assert.equal(ctx.security?.authenticationId, "managed/alpha_user/ada");
-  assert.equal(ctx.security?.authorization.id, "managed/alpha_user/ada");
-  assert.deepEqual(ctx.security?.authorization.roles, [
+  assert.equal(ctx.security?.authorization?.id, "managed/alpha_user/ada");
+  assert.deepEqual(ctx.security?.authorization?.roles, [
     "internal/role/openidm-admin",
   ]);
 });
@@ -414,7 +414,7 @@ test("callContext refuses a non-boolean unauthenticated flag", () => {
   }
   // `false` is the authenticated arm's own default, so it must still pass.
   assert.equal(
-    callContext({ unauthenticated: false }).security?.authorization.id,
+    callContext({ unauthenticated: false }).security?.authorization?.id,
     "svc-account"
   );
 });
@@ -431,3 +431,18 @@ export function contextOptionTypes(): void {
   // @ts-expect-error component cannot combine with unauthenticated
   callContext({ unauthenticated: true, component: "managed/alpha_user" });
 }
+
+test("an unguarded read of an absent-able context field is a compile error", () => {
+  // The point of making these optional: the framework guarded them all along
+  // (`router.ts` for scopes, `logging.ts` for authorization) while the types
+  // told endpoint authors the guard was unnecessary. docs/api/11 gives the
+  // recommended scope check as `!context.oauth2 || !context.oauth2.scopes || …`.
+  const ctx = callContext({ scopes: ["read"] });
+  // @ts-expect-error `scopes` may be absent — narrow it first
+  void ctx.oauth2.scopes;
+  // @ts-expect-error `oauth2` itself may be absent (internal/scheduled callers)
+  void ctx.oauth2?.scopes.size;
+  // @ts-expect-error `authorization` may be absent (anonymous caller, unprobed)
+  void ctx.security?.authorization.id;
+  assert.ok(ctx.oauth2?.scopes !== undefined);
+});

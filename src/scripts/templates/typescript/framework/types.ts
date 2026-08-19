@@ -93,10 +93,24 @@ export interface IdmCallContext {
   };
   security?: {
     authenticationId: string;
-    authorization: { id: string; component: string; roles: string[] };
+    /**
+     * OPTIONAL because the framework already treats it as absent-able and no
+     * probe says otherwise. `logging.ts` guards it before reading `id`, and a
+     * required declaration made that guard provably dead while telling endpoint
+     * authors that `context.security.authorization.id` is always safe. The
+     * anonymous-caller shape has never been probed (`tests/harness.ts`,
+     * docs/api/11-idm-endpoints.md), so the type must not promise it.
+     */
+    authorization?: { id: string; component: string; roles: string[] };
   };
   oauth2?: {
-    scopes: JavaSet<string>;
+    /**
+     * OPTIONAL: docs/api/11-idm-endpoints.md gives the recommended scope check
+     * as `!context.oauth2 || !context.oauth2.scopes || !…contains(scope)`, so
+     * the verified guidance treats this as absent-able. `router.ts` checks it;
+     * declaring it required told every endpoint author they need not.
+     */
+    scopes?: JavaSet<string>;
     /** CREDENTIAL. Never log or return. */
     token?: string;
     rawInfo?: {
