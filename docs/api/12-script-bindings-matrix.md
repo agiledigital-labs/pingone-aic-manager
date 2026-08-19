@@ -182,6 +182,42 @@ confirmed).
 > `es2015.symbol` and would re-declare the `Symbol` global we are removing.
 > Existing workspaces pick this up via `aic workspace update`.
 
+## Post-ES5 features on the IDM endpoint engine (verified 2026-08-19)
+
+The TypeScript endpoint bundle is esbuild + Babel **ES5** output, so two
+different questions hide behind one artifact: what the ENGINE provides, and what
+Babel's downlevel needs in order to run. Both were probed from a single throwaway
+`endpoint/aic-ts-runtime-probe`, built by the workspace's own pipeline, with each
+case individually try/caught so one failure cannot mask the rest. **V**
+
+| Probe                                             | Result                         | What it settles                                                                                 |
+| ------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `typeof globalThis`                               | `"object"`                     | present — the only global the endpoint `lib` admits that the table above did not cover          |
+| `typeof Object.entries`                           | `"function"`                   | **present, although `typescript/tsconfig.json` rejects it** — ES2017 is not in the pinned `lib` |
+| `[1, 2].includes(2)`                              | `true`                         | ES2016 method works, matching the `ES2016.Array.Include` lib entry                              |
+| `for (const n of [1, 2, 3])` sum                  | `6`                            | works — but this is Babel's `for (var …)` output, NOT engine `for...of`                         |
+| generator, `function* () { yield 7 }` → `.next()` | `7`                            | Babel 8 inlines the regenerator helpers (`_regeneratorDefine`) and they RUN on IDM              |
+| `async` arrow: `typeof p` / `typeof p.then`       | `"object"` / `"function"`      | `_asyncToGenerator` runs; an async function returns a real thenable                             |
+| same, value read synchronously after `.then(…)`   | `"not-resolved-synchronously"` | the continuation had **not** run by the time the handler returned                               |
+
+The last row is the operative one for endpoint authors: **a handler must be
+synchronous.** An `async` handler returns a pending Promise, and a scripted
+endpoint's return value is serialised as-is, so the caller receives the Promise
+instead of the value it will eventually hold — with no error anywhere.
+
+`Object.entries` is the one row that reads the other way: it is present on the
+engine, and Babel's `preset-env` does not polyfill it, so using it would work.
+The pinned `lib` is NARROWER than the runtime here. That is the safe direction —
+it cannot admit runtime-impossible code — but it does mean the `tsconfig.json`
+comment claiming the lib is pinned "to what the IDM script engine actually
+provides" overstates the match. Widening to ES2017+ is a judgement call, not a
+correction, and would need `TEMPLATES_VERSION` bumped either way.
+
+Method: created with `aic script create endpoint/aic-ts-runtime-probe --from …`,
+invoked with one `GET /openidm/endpoint/aic-ts-runtime-probe` (HTTP 200), removed
+with `aic script delete --force` (`no synced script matches` confirmed after, and
+the local `.cjs` deleted from the workspace).
+
 ## `java.util` collections on AM (verified 2026-07-30)
 
 The obvious answer to "no JS `Map`" is a Java collection, and `JavaImporter` is
