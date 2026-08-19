@@ -46,3 +46,6 @@ __pycache__/
 
 # Personal todos
 TODO.md
+
+# Inbound defect reports from other agents — scratch, not project history
+/ISSUES.md
