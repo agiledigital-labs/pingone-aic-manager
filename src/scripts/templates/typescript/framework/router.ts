@@ -11,6 +11,7 @@ import {
   badRequest,
   describeThrowable,
   forbidden,
+  internalError,
   isFault,
   methodNotAllowed,
   notFound,
@@ -126,6 +127,18 @@ export function mergeHeaderShapes<
  * query result; anything else fails at runtime with `Script returned unexpected
  * query result structure` (verified 2026-06-04).
  */
+/**
+ * What a handler may return when the route declares no `response`.
+ *
+ * `unknown` was the obvious default and it was wrong: a `Promise` satisfies it,
+ * so `handler: async () => …` type-checked. An index signature accepts any
+ * ordinary result and rejects a `Promise`, which has none. This closes the
+ * declaration-free case at compile time; `response: v.unknownValue()` opts out
+ * of response typing altogether, so `dispatch` refuses a thenable at runtime as
+ * well — see the guard there.
+ */
+export type SyncResult = Record<string, unknown>;
+
 export type ResultFor<M extends CrestMethod, R = unknown> = M extends "query"
   ? CrestQueryResult<R>
   : R;
@@ -288,7 +301,7 @@ export function route<
   Q extends Shape = Record<never, never>,
   H extends Shape = Record<never, never>,
   B = undefined,
-  R = unknown,
+  R = SyncResult,
 >(spec: RouteSpec<P, Q, H, B, R>): RouteDefinition {
   return build(spec.method, spec);
 }
@@ -304,7 +317,7 @@ export function queryRoute<
   Q extends Shape = Record<never, never>,
   H extends Shape = Record<never, never>,
   B = undefined,
-  R = unknown,
+  R = SyncResult,
 >(spec: QueryRouteSpec<P, Q, H, B, R>): RouteDefinition {
   return build("query", spec);
 }
@@ -340,14 +353,14 @@ export interface EndpointRouteBuilders<EH extends Shape> {
     Q extends Shape = Record<never, never>,
     H extends Shape = Record<never, never>,
     B = undefined,
-    R = unknown,
+    R = SyncResult,
   >(spec: BoundRouteSpec<EH, P, Q, H, B, R>): RouteDefinition;
   queryRoute<
     P extends Shape = Record<never, never>,
     Q extends Shape = Record<never, never>,
     H extends Shape = Record<never, never>,
     B = undefined,
-    R = unknown,
+    R = SyncResult,
   >(spec: BoundQueryRouteSpec<EH, P, Q, H, B, R>): RouteDefinition;
 }
 
@@ -651,6 +664,15 @@ function assertValidResponse(route: RouteDefinition, value: unknown): void {
   }
 }
 
+/** A `Promise`, or anything else awaitable — see the guard in `dispatch`. */
+function isThenable(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
 function decodeSegment(value: string): string {
   try {
     return decodeURIComponent(value);
@@ -902,6 +924,21 @@ export function defineEndpoint<H extends Shape = Record<never, never>>(
         log: routed,
         correlationId,
       });
+      // A HANDLER MUST BE SYNCHRONOUS. An `async` handler returns a pending
+      // Promise and IDM serialises the return value as-is, so the caller gets
+      // HTTP 200 with an empty body while the awaited work has not run — the
+      // continuation had not fired by the time the handler returned (probed
+      // 2026-08-19, docs/api/12-script-bindings-matrix.md). {@link SyncResult}
+      // rejects it at compile time for a route that declares no `response`, but
+      // `response: v.unknownValue()` deliberately leaves the return unchecked,
+      // and a cast defeats either. Unconditional, not behind
+      // `validateResponses`: that flag defaults to `false`, so a check hidden
+      // behind it would never run where it matters.
+      if (isThenable(result)) {
+        throw internalError("Handler returned a Promise, not a result", {
+          route: routeLabel(route),
+        });
+      }
       if (validateResponses) {
         assertValidResponse(route, result);
       }

@@ -680,3 +680,78 @@ test("a nullable response member accepts the null IDM actually returns", () => {
     managerRef: null,
   });
 });
+
+test("a handler that returns a Promise is a 500, not an empty 200", () => {
+  // `response: v.unknownValue()` deliberately leaves the return unchecked, so
+  // the type system cannot catch an `async` handler here. Without the guard IDM
+  // serialises the pending Promise and the caller gets 200 with `{}` — probed
+  // 2026-08-19: the `.then` continuation had not run when the handler returned.
+  const endpoint = defineEndpoint({
+    name: "async-handler",
+    routes: [
+      route({
+        method: "read",
+        path: "/",
+        response: v.unknownValue(),
+        handler: async () => ({ _id: "x", ok: true }),
+      }),
+    ],
+  });
+  const fault = crestErrorFrom(() =>
+    endpoint.dispatch(crestRequest("read"), callContext())
+  );
+  assert.equal(fault.code, 500);
+});
+
+test("a thenable smuggled past the types is also refused", () => {
+  // The guard is on the VALUE, not on the declaration: a cast, a hand-rolled
+  // thenable or a library object all reach it the same way.
+  const endpoint = defineEndpoint({
+    name: "thenable-handler",
+    routes: [
+      route({
+        method: "read",
+        path: "/",
+        response: v.unknownValue(),
+        handler: () => ({ then: () => undefined }),
+      }),
+    ],
+  });
+  assert.equal(
+    crestErrorFrom(() => endpoint.dispatch(crestRequest("read"), callContext()))
+      .code,
+    500
+  );
+});
+
+test("an ordinary result with a `then`-shaped STRING is not mistaken for one", () => {
+  const endpoint = defineEndpoint({
+    name: "then-string",
+    routes: [
+      route({
+        method: "read",
+        path: "/",
+        response: v.unknownValue(),
+        handler: () => ({ then: "later" }),
+      }),
+    ],
+  });
+  assert.deepEqual(endpoint.dispatch(crestRequest("read"), callContext()), {
+    then: "later",
+  });
+});
+
+test("a route with no declared response rejects an async handler at COMPILE time", () => {
+  defineEndpoint({
+    name: "async-undeclared",
+    routes: [
+      route({
+        method: "read",
+        path: "/",
+        // @ts-expect-error a handler must be synchronous: `SyncResult` has an
+        // index signature, and a Promise does not.
+        handler: async () => ({ _id: "x", ok: true }),
+      }),
+    ],
+  });
+});
