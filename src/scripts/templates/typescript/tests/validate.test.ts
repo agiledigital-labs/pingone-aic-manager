@@ -472,3 +472,37 @@ test("parseShape locates a missing required member", () => {
   assert.equal(issues[0]?.path, "query.limit");
   assert.equal(parsed.cursor, "abc");
 });
+
+test("an open object publishes the keys its runtime refuses", () => {
+  // The defect this guards: `additionalProperties: true` with nothing saying
+  // which names are refused, so the OpenAPI document promised a request the
+  // endpoint answered with 400.
+  const open = v.object({}, { allowUnknown: true });
+  assert.deepEqual(open.schema["propertyNames"], {
+    not: { enum: v.DANGEROUS_OBJECT_KEYS.slice() },
+  });
+  assert.deepEqual(v.record(v.string()).schema["propertyNames"], {
+    not: { enum: v.DANGEROUS_OBJECT_KEYS.slice() },
+  });
+  // A closed object rejects every unknown key already; saying it twice would be
+  // noise in the document.
+  assert.equal(v.object({}).schema["propertyNames"], undefined);
+});
+
+test("schema and runtime agree on every dangerous key, in both directions", () => {
+  const open = v.object({}, { allowUnknown: true });
+  const published = (
+    open.schema["propertyNames"] as { not: { enum: string[] } }
+  ).not.enum;
+  for (const key of v.DANGEROUS_OBJECT_KEYS) {
+    const issues: v.Issue[] = [];
+    open.parse({ [key]: "x" }, "body", issues, "strict");
+    assert.equal(issues.length, 1, key + " must be refused at runtime");
+    assert.ok(published.includes(key), key + " must be published as refused");
+  }
+  // …and the list is not simply everything: an ordinary key still gets through.
+  const issues: v.Issue[] = [];
+  const kept = open.parse({ safeKey: "x" }, "body", issues, "strict");
+  assert.deepEqual(issues, []);
+  assert.deepEqual(kept, { safeKey: "x" });
+});

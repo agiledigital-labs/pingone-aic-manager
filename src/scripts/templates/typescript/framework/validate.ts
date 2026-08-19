@@ -618,27 +618,36 @@ type OpenObject<S extends Shape, T> = InferObject<S> &
 
 /**
  * Keys that can alter an ordinary object's behaviour when assigned as data.
- * Keep this shared between every open-object combinator.
+ *
+ * ONE list, because it feeds two things that must not drift apart: the runtime
+ * refusal below, and the `propertyNames` constraint every open-object schema
+ * carries. Before that constraint existed the published OpenAPI document said
+ * `additionalProperties: true` while the endpoint answered 400 to a request the
+ * document called valid.
  */
+export const DANGEROUS_OBJECT_KEYS: readonly string[] = [
+  "__proto__",
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+  "constructor",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "prototype",
+  "toLocaleString",
+  "toString",
+  "valueOf",
+];
+
+/** JSON Schema for "any key except the ones the runtime refuses". */
+function safeKeysSchema(): JsonSchema {
+  return { not: { enum: DANGEROUS_OBJECT_KEYS.slice() } };
+}
+
 function isDangerousObjectKey(key: string): boolean {
-  switch (key) {
-    case "__proto__":
-    case "__defineGetter__":
-    case "__defineSetter__":
-    case "__lookupGetter__":
-    case "__lookupSetter__":
-    case "constructor":
-    case "hasOwnProperty":
-    case "isPrototypeOf":
-    case "propertyIsEnumerable":
-    case "prototype":
-    case "toLocaleString":
-    case "toString":
-    case "valueOf":
-      return true;
-    default:
-      return false;
-  }
+  return DANGEROUS_OBJECT_KEYS.indexOf(key) >= 0;
 }
 
 function refuseDangerousObjectKey(
@@ -695,6 +704,11 @@ export function object<S extends Shape>(
     properties,
     additionalProperties: remainder === null ? open : remainder.schema,
   };
+  if (open) {
+    // A closed object rejects every unknown key already, so the constraint only
+    // says something when extra keys are allowed.
+    schema["propertyNames"] = safeKeysSchema();
+  }
   if (required.length > 0) {
     schema["required"] = required;
   }
@@ -776,6 +790,7 @@ export function record<T>(
   const schema: JsonSchema = {
     type: "object",
     additionalProperties: inner.schema,
+    propertyNames: safeKeysSchema(),
   };
   if (description !== undefined) {
     schema["description"] = description;
