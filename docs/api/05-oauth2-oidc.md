@@ -172,6 +172,15 @@ required** or the whole block is ignored:
   `null`.
 - Set `statelessTokensEnabled: true` on the override block if you want to read
   the effect straight out of the access-token JWT.
+- **The override block is all-or-nothing, and that has teeth (2026-08-25).**
+  Flipping `providerOverridesEnabled` to `true` stops the client inheriting the
+  realm for *every* field in the block, not just the ones you set — so all the
+  block's own defaults take effect at once. Two bite immediately:
+  `statelessTokensEnabled` defaults to **`false`**, silently turning a client
+  that was issuing stateless JWTs into one issuing opaque tokens; and
+  `scopesPolicySet` defaults to `"oauth2Scopes"`. Enabling overrides to attach
+  one script therefore changes the token format. Read the block's defaults from
+  `?_action=template` and set what you mean.
 - There is **no** per-client (or realm) hook for
   `OAUTH2_SCRIPTED_JWT_ISSUER[_NEXT_GEN]` anywhere in AIC — see
   `docs/api/13-script-contexts.md`.
@@ -196,6 +205,16 @@ When mutating an OAuth2 client, before sending the `PUT` body:
 3. **Use plain `PUT` for create and update.** No `If-Match` or `If-None-Match`
    header is needed. `PUT` to a new id creates the client and returns 201; `PUT`
    to an existing id updates and returns 200.
+   **`PUT` replaces the whole object — AM does not re-apply defaults to groups
+   you omit (2026-08-25).** A create body carrying only
+   `coreOAuth2ClientConfig`, `advancedOAuth2ClientConfig` and
+   `coreOpenIDClientConfig` returned 201 with an empty
+   `signEncOAuth2ClientConfig`, and every subsequent token request for that
+   client failed `400 {"error":"invalid_request","error_description":"Unknown
+   Signing Algorithm"}` — a failure that reads like a realm problem and is
+   nowhere near the client you just wrote. Build the body from
+   `POST …/agents/OAuth2Client?_action=template` and override fields on top of
+   it, or read-modify-write an existing client.
 4. **Decide on `userpassword` etc.**: if the corresponding `-encrypted` was
    stripped or absent, leave the plain field as-is. `null`/unset preserves the
    existing write-only secret on this tenant version.

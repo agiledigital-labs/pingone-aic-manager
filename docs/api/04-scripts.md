@@ -51,6 +51,14 @@ Everything else defaults: `description` → `null`, `default` → `false`,
 `evaluatorVersion` → **`"1.0"`** (see below). An **empty** `script` (`""`) is
 accepted (201) — only a _missing_ one 400s.
 
+**The context id decides `evaluatorVersion`; the field only follows
+(2026-08-25).** A `PUT` with `"context": "OAUTH2_MAY_ACT"` and
+`"evaluatorVersion": "2.0"` returns **201 echoing `"1.0"`** — no error, no
+warning, and the script then runs under the legacy evaluator with legacy
+semantics (a JS object literal passed to `token.setMayAct` fails there). Pick
+the `_NEXT_GEN` context id when you want v2. See
+[22-token-exchange.md](22-token-exchange.md).
+
 **Always send `evaluatorVersion` explicitly.** Omitting it creates a **legacy
 (v1) engine** script — on _both_ routes (verified 2026-07-31). An earlier note
 here claimed the default was `"2.0"`; that was wrong. `aic script create` always
