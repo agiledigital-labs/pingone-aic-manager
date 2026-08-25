@@ -140,6 +140,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::roles::cli::RoleCommand,
     },
+    /// AM policies: resource types, policy sets and the PDP.
+    Policy {
+        #[command(subcommand)]
+        command: crate::policy::cli::PolicyCommand,
+    },
     /// IDM config/access authorization rules.
     Access {
         #[command(subcommand)]
@@ -243,6 +248,7 @@ impl Command {
             | Self::Journey { .. }
             | Self::Role { .. }
             | Self::Access { .. }
+            | Self::Policy { .. }
             | Self::JwtBearer { .. }
             | Self::Auth { .. }
             | Self::Oauth { .. }
@@ -308,6 +314,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Journey { command }) => crate::journey::cli::run(command).await,
         Some(Command::Role { command }) => crate::roles::cli::run(command).await,
         Some(Command::Access { command }) => crate::access::cli::run(command).await,
+        Some(Command::Policy { command }) => crate::policy::cli::run(command).await,
         Some(Command::JwtBearer { command }) => crate::jwtbearer::cli::run(command).await,
         Some(Command::Auth { options }) => crate::jwtbearer::cli::run_auth(options).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
@@ -1769,6 +1776,7 @@ mod tests {
                 | Command::Journey { .. }
                 | Command::Role { .. }
                 | Command::Access { .. }
+                | Command::Policy { .. }
                 | Command::JwtBearer { .. }
                 | Command::Auth { .. }
                 | Command::Oauth { .. }

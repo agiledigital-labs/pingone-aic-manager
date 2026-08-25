@@ -437,6 +437,78 @@ aic journey node-template <nodeType> [--realm alpha]   # a starter node config (
 
 ---
 
+## `aic policy` — AM policies, policy sets and the PDP
+
+Realm-scoped, CLI-only (no TUI tab). Three collections — resource types, policy
+sets (`applications` on the wire) and policies — plus `eval`, which asks the
+policy decision point and then explains the answer.
+
+```bash
+aic policy list [--set <set>] [--realm alpha] [--json]
+aic policy show <name> [--realm alpha]
+aic policy pull <name> | --all [--set <set>] [--realm alpha]
+aic policy push <name> [--force] [--realm alpha] [--yes]
+aic policy rm   <name> --force [--realm alpha] [--yes]
+
+aic policy set list|show|pull|push|rm …          # policy sets, same shape
+aic policy rt  list|show|pull|push|rm …          # resource types, same shape
+aic policy types [--realm alpha] [--json]        # subject + condition catalogs
+
+aic policy eval --set <set> --resource <url> [--resource <url> …] \
+  [--action <name> …] \
+  [--subject-jwt <token> | --subject-jwt-file <path> | --subject-sso <token>] \
+  [--env scope=orders.read …] [--json] [--no-explain] [--realm alpha]
+```
+
+`pull` writes `workspace/<tenant>/policy/<realm>/{policies,sets,resourcetypes}/`
+with a `.snapshots/` sibling, and strips the fields AM writes itself (`_rev`,
+`createdBy`, `creationDate`, `lastModifiedBy`, `lastModifiedDate`, `editable`)
+so a diff shows only what an operator authored. `push` compares content, not a
+revision: an unchanged remote is a no-op, a remote that has drifted **back** to
+the snapshot is pushable, and any other drift is refused until you re-pull or
+pass `--force`. The verb asymmetry is handled for you — resource types create
+with `PUT`, policies and policy sets only with `POST ?_action=create`.
+
+### `aic policy eval`
+
+The reason this vertical exists. AM answers a denied request with
+`actions: {}`, which means "no policy applied" and covers a resource that
+matched nothing, a subject that failed, and a condition that failed — with no
+way to tell them apart. `eval` reads the set, its resource types and its
+policies and says which it was:
+
+```
+$ aic policy eval --realm bravo --set CapTokenDemo \
+    --resource https://shop-api.demo:443/payments/9 --action refund \
+    --subject-jwt-file ./cap.jwt
+
+RESOURCE                              DECISION
+https://shop-api.demo:443/payments/9  {} no policy applied
+
+https://shop-api.demo:443/payments/9
+  - policy CapTokenDemo_PaymentsRefund wants claim demoRoles="payments.admin";
+    the token has ["orders.approver","orders.reader"]
+  - policy CapTokenDemo_PaymentsRefund wants claim scope="payments.refund";
+    the token has ["orders.approve"]
+  - the resource matched policy CapTokenDemo_PaymentsRefund — so the subject or
+    a condition is what failed (subjects: AND, JwtClaim; conditions: none)
+```
+
+It also names the traps that produce a silent `{}`: a query string in the
+resource (AM matches it as part of the resource, so `…/orders/1?x=1` misses
+`…/orders/*`), a resource that names no port on a scheme AM cannot default, an
+action no resource type declares, an `AuthenticatedUsers` subject under a `jwt`
+subject (which never matches), and an `OAuth2Scope` condition with no
+`environment.scope`. `--action` sharpens all of this; without it, `eval` only
+explains a completely empty answer.
+
+`--subject-jwt-file` keeps the token out of shell history. The claims it prints
+are **decoded, not verified** — which is also all AM does: the PDP checks
+neither the signature nor the expiry of `subject.jwt`, so a resource server must
+verify locally before it evaluates. See `docs/api/21-am-policies.md`.
+
+---
+
 ## `aic role` — IDM internal roles
 
 Internal roles are tenant-global. Their `_id`, rather than their display `name`,
