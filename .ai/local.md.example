@@ -1,0 +1,28 @@
+# Local notes — pingone-aic-manager
+
+Machine-specific paths, tenants, and tooling. **Gitignored — never commit this
+file.** Copy to `.ai/local.md` and fill in.
+
+**No secrets.** Record _where_ a credential comes from, never its value. The
+vault master password lives in `.envrc`; the service-account JWK and log API
+keys live encrypted in `.aic/`. Nothing belongs here but paths and hostnames.
+
+## Tenant
+
+The tenant list lives in `.aic/config.toml` (gitignored, created by
+`aic ctx add`). Note here which tenant you normally work against and anything
+surprising about it.
+
+- Default context: `<name>` — `https://<tenant-host>` (sandbox / prod?)
+
+## Sibling checkouts
+
+`docs/api/*.md` cite evidence from checkouts by `~/w/…` path. Record which of
+them actually exist here; mark the rest missing so an agent stops looking.
+
+- `<repo>`: `/path/to/<repo>` — <why you'd open it>
+- `<repo>`: **not present on this machine** — cited in `docs/api/<file>.md`
+
+## Local tooling
+
+- <anything installed outside the repo that the workflow assumes>

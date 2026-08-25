@@ -42,7 +42,10 @@ __pycache__/
 
 # Managed-object backups (raw schema dumps for experimentation safety)
 /.managed-backup/
-.ai/
+
+# Machine-local AI agent notes (sandbox tenant, sibling-checkout paths).
+# .ai/core.md and .ai/local.md.example ARE committed; local.md is not.
+/.ai/local.md
 
 # Personal todos
 TODO.md
