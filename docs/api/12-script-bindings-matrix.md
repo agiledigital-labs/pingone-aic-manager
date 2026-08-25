@@ -538,6 +538,14 @@ So `require()` is confirmed on every next-gen context that can currently be
 reached: scripted decision, library-to-library, token mod, validate scope,
 evaluate scope, may-act.
 
+**Next-gen scripted decision sends callbacks by accumulation, not by an
+`action.send` (2026-08-25).** There is no `send` on the `action` binding at all;
+call `callbacksBuilder.<type>(…)` as many times as you like and AM sends the lot
+if the script does not `goTo` an outcome. And `callbacks.getXCallbacks().get(0)`
+returns the **submitted value**, not a callback object — `.getName()` /
+`.getValue()` on it throw `TypeError`. Worked example and the two-post drive
+loop: [09-journeys.md](09-journeys.md).
+
 **Next-gen validate-scope is a function-entry-point script.** This is a contract
 difference, not a bindings one, and it bites immediately: a top-level script
 body (the token-mod/evaluate-scope style) fails the token request with

@@ -448,6 +448,71 @@ the custom host, so the same node must not redirect again.
   `SSPWebPortal`, `Omni-Test`, and `customer-web-portal` configs covering
   several of ours.
 
+## Driving a journey from a server, and writing the node it runs
+
+Verified 2026-08-25 building a one-node self-service registration tree
+(`../../../aic-demos/capability-tokens/scripts/am/register.js`). Four things
+that are not obvious and each cost a round trip:
+
+**A node `PUT` accepts only its own config fields.** `ScriptedDecisionNode`
+takes `script`, `outcomes`, `outputs`, `inputs` and nothing else — including no
+`name`. Sending one is `400` with a `validAttributes` list in the body, which is
+at least a helpful error. The human-readable label is `displayName` on the
+**tree's** entry for that node, not on the node.
+
+**Every tree connects to the same two built-in endpoints**, which are not nodes
+you create:
+
+```
+success  70e691a5-1e33-4ac3-a356-e7b6d60d92e0
+failure  e301438c-0bd0-429c-ab0c-66126501069a
+```
+
+**Next-gen scripted decision has no `action.send`.** The `action` binding
+exposes `goTo`, `withErrorMessage`, `withHeader`, `suspend` and friends — no
+send. Callbacks are *accumulated* on `callbacksBuilder`, and AM sends whatever
+was built if the script does not `goTo`:
+
+```javascript
+if (callbacks.isEmpty()) {
+  callbacksBuilder.nameCallback("Email address");
+  callbacksBuilder.passwordCallback("Password", false);
+  callbacksBuilder.stringAttributeInputCallback("roles", "Roles", "orders.reader", true);
+} else {
+  // …read them, do the work…
+  nodeState.putShared("username", email);   // or success has no subject
+  action.goTo("created");
+}
+```
+
+**The `callbacks.getXCallbacks()` getters return the submitted value itself**,
+not a callback object:
+
+```javascript
+var email = String(callbacks.getNameCallbacks().get(0));           // works
+var email = callbacks.getNameCallbacks().get(0).getName();         // TypeError
+```
+
+The error is explicit about it — `Cannot find function getName in object
+carol@captoken.demo` — but only if you are reading the tree's logs, which lag
+several minutes. Faster to build a `textOutputCallback` with the diagnostics in
+it and read them straight out of the `/authenticate` response.
+
+**Driving it** is two posts: one with no body to collect the callbacks, then the
+same document back with `callbacks[n].input[0].value` filled in.
+
+```sh
+URL="$TENANT_BASE_URL/am/json/realms/root/realms/bravo/authenticate?authIndexType=service&authIndexValue=CapTokenDemoRegister"
+STEP=$(curl -sS -X POST -H 'Accept-API-Version: resource=2.0, protocol=1.0' \
+  -H 'Content-Type: application/json' "$URL")
+echo "$STEP" | jq '.callbacks[0].input[0].value="carol@example.com"' |
+  curl -sS -X POST -H 'Accept-API-Version: resource=2.0, protocol=1.0' \
+    -H 'Content-Type: application/json' -d @- "$URL"
+# → {"tokenId":"…","successUrl":"/enduser/?realm=/bravo","realm":"/bravo"}
+```
+
+No `authId` juggling is needed — post the whole document back as it came.
+
 ## Quirks
 
 - **Tree ID is the name**, not a UUID. Renaming = delete + create (no in-place

@@ -189,6 +189,41 @@ Response, one row per requested resource:
 | `{"jwt": "<signed JWT>"}` | **Accepted, and this is the useful one.** A malformed string is rejected `400`, so the JWT really is parsed. |
 | `{"claims": {…}}` | Accepted, but satisfies neither `AuthenticatedUsers` nor `JwtClaim` — effectively an anonymous subject. Do not reach for it. |
 
+### `subject.jwt` is unauthenticated input — the PEP must verify the token
+
+**AM does not verify the JWT.** Not the signature, not the expiry. Verified
+2026-08-25, twice, and both results are worth stating flatly:
+
+- A capability token whose claims were rewritten — `scope` and the roles claim
+  replaced, the original signature left in place and therefore invalid — was
+  accepted, and the policy granted the action the forged claims asked for. Bob,
+  who holds `orders.read` only, got `{"approve": true}`.
+- A token that had **expired nearly two hours earlier** also got
+  `{"approve": true}`.
+
+`subject.jwt` means "here are some claims the caller asserts", not "here is an
+authenticated identity". That is defensible — the PDP is answering a
+hypothetical, and a policy engine that re-implemented token validation would be
+the wrong place for it — but it puts the entire burden on the caller, and
+nothing in the API's shape hints at that.
+
+So a resource server evaluating a presented token **must**, before it calls the
+PDP:
+
+1. verify the signature against the realm's JWKS (`{issuer}/connect/jwk_uri`),
+2. check `iss` is the realm and `aud` is itself,
+3. check `exp` / `nbf`,
+4. and only then pass the token as `subject.jwt`.
+
+Skip any of that and the "policy decides" story is theatre: the caller decides,
+by writing whatever claims it likes. A PEP that verifies locally and then
+evaluates is doing something real; one that only evaluates is an open door.
+
+Do not generalise this to the rest of AM. The **token endpoint** does verify:
+the same forged token presented as an RFC 8693 `subject_token` is rejected with
+`invalid_request` ([22-token-exchange.md](22-token-exchange.md)). It is
+specifically `?_action=evaluate` that takes the caller's word for the subject.
+
 **With a `jwt` subject, `AuthenticatedUsers` never matches.** A JWT is not a
 session, so a policy written for browser traffic silently grants nothing to an
 API caller. Use `JwtClaim`.
@@ -201,6 +236,9 @@ trick behind the capability-token demo: the policy can require
 token, instead of trusting the PEP to declare it.
 
 ### Reading a decision
+
+(The subject is not authenticated by AM — see the section above before trusting
+any of these answers.)
 
 - `actions: {"approve": true}` — granted.
 - `actions: {}` — **no policy applied.** Ambiguous by design: the resource
