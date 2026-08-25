@@ -32,6 +32,19 @@ jobs:
       - name: Scan tracked files
         run: scripts/check-sensitive-metadata.sh --tracked
 
+      # Orthogonal to the scanner above: that one knows the SHAPE of tenant and
+      # client metadata, this one knows credentials — PEM/JWK material, API
+      # secrets, provider tokens. Pinned to a release binary rather than
+      # gitleaks-action, whose v2 wants a licence key for organisation repos.
+      # Scans git history, which in CI is a superset of the checked-out tree.
+      - name: Gitleaks (credentials)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          /tmp/gitleaks git . --redact --no-banner --exit-code 1
+
   gate:
     name: fmt + clippy + test
     runs-on: ubuntu-22.04

@@ -4,8 +4,21 @@
 # Usage:
 #   scripts/verify-endpoint.sh                       # check connectivity, print nothing secret
 #   scripts/verify-endpoint.sh /environment/variables
+#   scripts/verify-endpoint.sh --raw /environment/variables   # unredacted
+#
 #   scripts/verify-endpoint.sh /am/json/realms/root/realms/alpha/scripts?_queryFilter=true \
 #       --header "Accept-API-Version: protocol=2.0,resource=1.0"
+#
+# Output is SANITISED by default: tenant hostnames, Azure tenant GUIDs, SAML
+# entity hostnames and base64url-encoded URLs are replaced with the reserved
+# placeholders (see .ai/core.md). This is the point of capture — the moment
+# evidence for a docs/api/ claim is produced — and sanitising here is what
+# keeps client data out of the repo rather than catching it at commit time.
+# Redaction preserves SHAPE, so a claim about a field's type or structure is
+# still verifiable from the sanitised body. ESV `valueBase64` payloads are
+# stripped too — a live body carries real values and this is what gets pasted.
+# Use --raw when you genuinely need the real value on screen; think before
+# pasting that anywhere.
 #
 # Tenant base URL, in order of precedence:
 #   1. $TENANT_BASE_URL from the environment
@@ -85,9 +98,20 @@ fi
 TOKEN_URL="agent (aic whoami --token)"
 
 # --- If no path given, just confirm we can authenticate ---
-if [ "$#" -eq 0 ]; then
+if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = "--raw" ]; }; then
   echo "ok: got a bearer for $(aic --no-prompt ctx current 2>/dev/null || echo 'current context')" >&2
   exit 0
+fi
+
+RAW=0
+if [ "${1:-}" = "--raw" ]; then
+  RAW=1
+  shift
+fi
+
+if [ "$#" -eq 0 ]; then
+  echo "error: --raw needs a path after it." >&2
+  exit 2
 fi
 
 PATH_ARG="$1"
@@ -107,7 +131,15 @@ if [ "$have_apiver" -eq 0 ]; then
 fi
 
 URL="${TENANT_BASE_URL%/}${PATH_ARG}"
-echo "GET $URL" >&2
+
+# The banner named the real tenant host, which defeats redacting the body it
+# introduces — the hostname is exactly what rule 1 exists to keep out of a
+# pasted transcript.
+if [ "$RAW" = 1 ]; then
+  echo "GET $URL" >&2
+else
+  echo "GET $(printf '%s' "$URL" | "$HERE/check-sensitive-metadata.sh" --redact)" >&2
+fi
 echo "  token from: $TOKEN_URL" >&2
 
 curl -sS -o /tmp/aic-verify.body -w "HTTP %{http_code}\n" \
@@ -117,8 +149,22 @@ curl -sS -o /tmp/aic-verify.body -w "HTTP %{http_code}\n" \
   "$@" \
   "$URL" >&2
 
-if jq -e . /tmp/aic-verify.body >/dev/null 2>&1; then
-  jq . /tmp/aic-verify.body
+emit() {
+  if [ "$RAW" = 1 ]; then
+    cat
+  else
+    REDACT_VALUES=1 "$HERE/check-sensitive-metadata.sh" --redact
+  fi
+}
+
+if [ "$RAW" = 1 ]; then
+  echo "  output: RAW — not sanitised. Do not paste verbatim into docs/api/." >&2
 else
-  cat /tmp/aic-verify.body
+  echo "  output: sanitised (--raw for the real values)" >&2
+fi
+
+if jq -e . /tmp/aic-verify.body >/dev/null 2>&1; then
+  jq . /tmp/aic-verify.body | emit
+else
+  emit < /tmp/aic-verify.body
 fi
