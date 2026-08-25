@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# Reject tenant/client-identifying metadata before it is committed.
+# Enable with:  git config core.hooksPath .githooks
+# Bypassing this hook does not help: CI runs the same check over the whole
+# tree, so a --no-verify commit fails the pull request instead.
+exec scripts/check-sensitive-metadata.sh --staged

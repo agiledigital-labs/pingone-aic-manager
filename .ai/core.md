@@ -80,6 +80,55 @@ non-obvious behaviour:
 - Log API uses **separate** `x-api-key` / `x-api-secret` — these are
   console-issued and `api_key_secret` is shown only once at creation.
 
+### Sanitising live evidence — enforced
+
+Live response bodies, AM/IDM log excerpts, HAR files and SAML metadata are the
+main way client-identifying data reaches this repo, because they are pasted in
+as evidence for a `docs/api/` claim. **Sanitise at capture, not at commit.**
+
+`scripts/check-sensitive-metadata.sh` enforces this by **shape**, so it catches
+the next client's hostname rather than only the last one:
+
+```bash
+scripts/check-sensitive-metadata.sh --selftest   # prove the rules still fire
+scripts/check-sensitive-metadata.sh --tracked    # every tracked file (CI runs this)
+scripts/check-sensitive-metadata.sh --staged     # added lines only (pre-commit hook)
+scripts/check-sensitive-metadata.sh --history    # every blob in every commit (audit)
+```
+
+Enable the hook once per clone: `git config core.hooksPath .githooks`. CI runs
+the same check over the whole tree, so `--no-verify` only moves the failure to
+the pull request.
+
+Use these reserved placeholders — the scanner accepts them and rejects
+everything else of the same shape:
+
+| Instead of                | Write                                                            |
+| ------------------------- | ---------------------------------------------------------------- |
+| a real AIC tenant host    | `<your-tenant>.forgeblocks.com`, `tenant.example.com`            |
+| a client SP entity ID     | `https://sp-a.example.com`, `https://sp-b.example.com`           |
+| a CoT / config name       | `client-a`, `client-b`                                           |
+| an Azure AD tenant GUID   | `<tenant-guid>` or `00000000-0000-0000-0000-000000000000`        |
+| a base64url entity id     | `<entityId64>`                                                   |
+
+Two rules worth knowing before you argue with a finding:
+
+- **Do not "fix" a violation by base64-encoding the value.** Rule 4 decodes
+  base64url candidates that start with `aHR0c` and checks the host inside.
+- **Do not redact to a truncated-looking form** such as `uat.client-a…`. A
+  reviewer cannot tell that from a real hostname, which is the whole problem;
+  `370c7de` did this and `c3133e8` undid it.
+
+Literal client names are **not** in the scanner — committing a denylist of
+client names would commit the client names. Point `SENSITIVE_DENYLIST` at a
+file outside the repo (or the gitignored `.ai/denylist.txt`); see
+`.ai/local.md`.
+
+Known: `--history` reports 4 hits in blob `55b60cc` (the `370c7de` commit) for
+`uat.client-a` / `uat.client-b`. Those are placeholders, not real names — the
+finding is that the redaction was ambiguous, and it stands until the history is
+rewritten again.
+
 ## 4. Realm path convention
 
 All realm-scoped AM URLs use `/realms/root/realms/{realm}`:

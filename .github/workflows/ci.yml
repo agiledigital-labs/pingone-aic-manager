@@ -14,6 +14,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Runs before the build gate: it needs no toolchain, finishes in seconds, and
+  # a leaked tenant identifier should fail the PR even if the code does not
+  # compile. --selftest first, because a scanner whose rules silently stopped
+  # matching would report every tree clean forever.
+  metadata:
+    name: sensitive metadata
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scanner selftest
+        run: scripts/check-sensitive-metadata.sh --selftest
+
+      - name: Scan tracked files
+        run: scripts/check-sensitive-metadata.sh --tracked
+
   gate:
     name: fmt + clippy + test
     runs-on: ubuntu-22.04

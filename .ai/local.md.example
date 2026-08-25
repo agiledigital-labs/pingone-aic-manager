@@ -26,3 +26,16 @@ them actually exist here; mark the rest missing so an agent stops looking.
 ## Local tooling
 
 - <anything installed outside the repo that the workflow assumes>
+
+## Sensitive-metadata denylist
+
+`scripts/check-sensitive-metadata.sh` detects by shape. To also reject literal
+client names, put one regex per line in a file **outside the repo** (or in
+`.ai/denylist.txt`, which is gitignored) and export its path:
+
+```sh
+export SENSITIVE_DENYLIST="$HOME/.config/aic/denylist.txt"
+```
+
+Use word boundaries. A bare three-letter abbreviation can match inside ordinary
+camelCase identifiers, and a hook that cries wolf gets bypassed.
