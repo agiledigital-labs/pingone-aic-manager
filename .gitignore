@@ -52,3 +52,7 @@ TODO.md
 
 # Inbound defect reports from other agents — scratch, not project history
 /ISSUES.md
+
+# Optional literal denylist for scripts/check-sensitive-metadata.sh.
+# Never committed: a list of client names IS the client names.
+/.ai/denylist.txt
