@@ -32,6 +32,24 @@ jobs:
       - name: Scan tracked files
         run: scripts/check-sensitive-metadata.sh --tracked
 
+      # Scan every blob introduced anywhere in the pushed/PR commit series.
+      # The final tree alone is insufficient: adding metadata in one commit and
+      # deleting it in the next still publishes the first commit's blob.
+      - name: Scan introduced history
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            scripts/check-sensitive-metadata.sh --history "$PR_BASE_SHA..$HEAD_SHA"
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]; then
+            scripts/check-sensitive-metadata.sh --history "$BEFORE_SHA..$HEAD_SHA"
+          else
+            scripts/check-sensitive-metadata.sh --history
+          fi
+
       # Orthogonal to the scanner above: that one knows the SHAPE of tenant and
       # client metadata, this one knows credentials — PEM/JWK material, API
       # secrets, provider tokens. Pinned to a release binary rather than

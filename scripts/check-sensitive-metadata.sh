@@ -11,7 +11,9 @@
 # Modes:
 #   --staged     added lines of the staged diff        (pre-commit hook)
 #   --tracked    every tracked file in the work tree   (default; CI)
-#   --history    every blob in every reachable commit  (audit)
+#   --history [REV-RANGE]
+#                every blob introduced by the range    (audit/CI)
+#                defaults to every reachable commit
 #   --selftest   prove the rules still fire            (CI runs this first)
 #   --redact     filter stdin -> stdout, sanitised    (capture-time)
 #                REDACT_VALUES=1 additionally strips ESV valueBase64 payloads
@@ -21,10 +23,14 @@
 set -uo pipefail
 
 MODE=tracked
+HISTORY_RANGE=--all
 case "${1:-}" in
   --staged) MODE=staged ;;
   --tracked | "") MODE=tracked ;;
-  --history) MODE=history ;;
+  --history)
+    MODE=history
+    HISTORY_RANGE="${2:---all}"
+    ;;
   --selftest) MODE=selftest ;;
   --redact) MODE=redact ;;
   --fix) MODE=fix ;;
@@ -33,7 +39,7 @@ case "${1:-}" in
     exit 0
     ;;
   *)
-    echo "usage: $0 [--staged|--tracked|--history|--selftest|--redact|--fix]" >&2
+    echo "usage: $0 [--staged|--tracked|--history [REV-RANGE]|--selftest|--redact|--fix]" >&2
     exit 2
     ;;
 esac
@@ -413,7 +419,16 @@ case "$MODE" in
   history)
     while IFS= read -r obj; do
       scan_text "blob:$obj" < <(git cat-file -p "$obj" 2>/dev/null | grep -IniE "$CANDIDATE_RE")
-    done < <(git rev-list --objects --all | awk 'NF==2 {print $1}')
+    done < <(
+      git rev-list --objects "$HISTORY_RANGE" \
+        | while read -r object path; do
+            [ "$path" = "$SELF" ] && continue
+            printf '%s\n' "$object"
+          done \
+        | git cat-file --batch-check='%(objectname) %(objecttype)' \
+        | awk '$2 == "blob" {print $1}' \
+        | sort -u
+    )
     ;;
 esac
 
