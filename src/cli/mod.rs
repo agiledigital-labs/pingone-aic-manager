@@ -15,6 +15,7 @@
 //! keygen; we haven't tried to script them. Run the TUI once per tenant.
 
 use std::io::{BufRead, IsTerminal};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -525,19 +526,65 @@ fn unknown_setting(key: &str) -> Error {
     ))
 }
 
-/// Locate the project root (the dir containing `.aic/`) by walking up
-/// from the current directory, record any tenant/realm implied by a
-/// `workspace/<tenant>/<realm>/` working directory, then chdir to the root so
-/// every project-relative path (config, keystore, agent socket) resolves the
-/// same no matter which subdirectory the command was invoked from.
-pub fn bootstrap_project_root() {
-    let Ok(cwd) = std::env::current_dir() else {
-        return;
+/// Decide where to root the process, without touching it — the testable half
+/// of [`bootstrap_project_root`].
+///
+/// `explicit` is `$AIC_PROJECT`. It stands in for the working directory, for
+/// callers that cannot set one: a script in a sibling repo, an editor task, a
+/// CI step. Everything else behaves as if the user had `cd`'d there, including
+/// the walk up to the project root and the `workspace/<tenant>/` inference.
+///
+/// Returns the project root to chdir to, paired with the directory the search
+/// started from (which the workspace-context inference needs). `Ok(None)` means
+/// "no project here" — the ordinary case outside a project, left for the
+/// individual commands to complain about. An `AIC_PROJECT` that names no
+/// project is an **error**, not a fallback to the cwd: silently operating on a
+/// different tenant than the caller asked for is the one outcome worse than
+/// refusing.
+fn resolve_project_root(
+    explicit: Option<&std::ffi::OsStr>,
+    cwd: &Path,
+) -> Result<Option<(PathBuf, PathBuf)>> {
+    let Some(explicit) = explicit.filter(|v| !v.is_empty()) else {
+        return Ok(Some(cwd.to_path_buf())
+            .and_then(|cwd| config::find_project_root(&cwd).map(|root| (root, cwd))));
     };
-    if let Some(root) = config::find_project_root(&cwd) {
-        config::set_workspace_context(config::detect_workspace_context(&root, &cwd));
-        let _ = std::env::set_current_dir(&root);
+    let start = PathBuf::from(explicit);
+    if !start.is_dir() {
+        return Err(Error::Config(format!(
+            "AIC_PROJECT={} is not a directory",
+            start.display()
+        )));
     }
+    match config::find_project_root(&start) {
+        Some(root) => Ok(Some((root, start))),
+        None => Err(Error::Config(format!(
+            "AIC_PROJECT={} is not inside a project: no .aic/ there or in any parent",
+            start.display()
+        ))),
+    }
+}
+
+/// Locate the project root (the dir containing `.aic/`) by walking up from the
+/// working directory — or from `$AIC_PROJECT`, for callers that cannot choose
+/// their working directory — record any tenant/realm implied by a
+/// `workspace/<tenant>/<realm>/` path, then chdir to the root so every
+/// project-relative path (config, keystore, agent socket) resolves the same no
+/// matter which subdirectory the command was invoked from.
+pub fn bootstrap_project_root() -> Result<()> {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(());
+    };
+    let explicit = std::env::var_os("AIC_PROJECT");
+    let Some((root, start)) = resolve_project_root(explicit.as_deref(), &cwd)? else {
+        return Ok(());
+    };
+    config::set_workspace_context(config::detect_workspace_context(&root, &start));
+    // Not best-effort: if this fails every project-relative path below would
+    // silently resolve against the wrong directory.
+    std::env::set_current_dir(&root)
+        .map_err(|e| Error::Config(format!("could not enter project {}: {e}", root.display())))?;
+    Ok(())
 }
 
 /// Parse argv, but first bake the resolved tenant in as the `default_value` of
@@ -1294,9 +1341,85 @@ pub(crate) fn redact(token: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
     use super::*;
+
+    /// A throwaway tree with `.aic/` at its root, plus `nested/` beneath it.
+    /// Returns the canonical root — `resolve_project_root` canonicalises, and
+    /// on some systems `$TMPDIR` is itself a symlink.
+    fn project_tree() -> PathBuf {
+        let root = std::env::temp_dir().join(format!("aic-project-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".aic")).unwrap();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        root.canonicalize().unwrap()
+    }
+
+    fn bare_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("aic-bare-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    fn resolved(explicit: Option<&Path>, cwd: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
+        resolve_project_root(explicit.map(|p| p.as_os_str()), cwd)
+    }
+
+    #[test]
+    fn without_aic_project_the_cwd_is_walked_up_to_the_root() {
+        let root = project_tree();
+        let nested = root.join("nested");
+        let (found, start) = resolved(None, &nested).unwrap().unwrap();
+        assert_eq!(found, root);
+        assert_eq!(
+            start, nested,
+            "the search start is what infers the workspace"
+        );
+    }
+
+    #[test]
+    fn without_aic_project_and_outside_a_project_there_is_nothing_to_root_at() {
+        assert!(resolved(None, &bare_dir()).unwrap().is_none());
+    }
+
+    #[test]
+    fn aic_project_stands_in_for_the_cwd_and_is_itself_walked_up() {
+        let root = project_tree();
+        let nested = root.join("nested");
+        let elsewhere = bare_dir();
+        let (found, start) = resolved(Some(&nested), &elsewhere).unwrap().unwrap();
+        assert_eq!(found, root);
+        assert_eq!(start, nested);
+    }
+
+    #[test]
+    fn an_empty_aic_project_is_unset_not_the_current_directory() {
+        // `AIC_PROJECT=` is how a shell spells "I did not set this".
+        let root = project_tree();
+        let (found, _) = resolved(Some(Path::new("")), &root).unwrap().unwrap();
+        assert_eq!(found, root);
+    }
+
+    #[test]
+    fn an_aic_project_that_is_not_a_directory_is_refused() {
+        let missing = std::env::temp_dir().join(format!("aic-absent-{}", uuid::Uuid::new_v4()));
+        let err = resolved(Some(&missing), &project_tree()).unwrap_err();
+        assert!(
+            err.to_string().contains("is not a directory"),
+            "unhelpful error: {err}"
+        );
+    }
+
+    #[test]
+    fn an_aic_project_outside_a_project_is_an_error_not_a_fallback_to_the_cwd() {
+        // The discriminating case: the cwd *is* a valid project, so a version
+        // that quietly fell back to it would look like success — and would
+        // operate on a tenant the caller never named.
+        let cwd = project_tree();
+        let err = resolved(Some(&bare_dir()), &cwd).unwrap_err();
+        assert!(
+            err.to_string().contains("not inside a project"),
+            "unhelpful error: {err}"
+        );
+    }
 
     fn row(cells: &[&str]) -> Vec<String> {
         cells.iter().map(|c| c.to_string()).collect()

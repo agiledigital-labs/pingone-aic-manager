@@ -37,6 +37,13 @@ aic <command> <subcommand> --help
 - **Output format.** List commands default to kubectl-style tables. Pass
   `--json` on list commands for machine-readable output. Single-resource reads
   and export-style commands still print JSON by default.
+- **Project directory.** `aic` roots itself at the nearest ancestor containing
+  `.aic/`, so any subdirectory of a project works. Set **`AIC_PROJECT=<dir>`**
+  when you cannot choose the working directory — a script in a sibling repo, an
+  editor task, a CI step. It stands in for the cwd: the walk up to the project
+  root and the `workspace/<tenant>/` tenant inference both start there. Pointing
+  it at something that is not inside a project is an error rather than a
+  fallback to the cwd, so a typo cannot silently act on a different tenant.
 - **Non-interactive mode.** Pass the global `--no-prompt` flag, or set
   `AIC_NO_PROMPT=1`, to disable every interactive prompt. If input is required,
   the command fails instead of waiting on a terminal. Confirming a missing
