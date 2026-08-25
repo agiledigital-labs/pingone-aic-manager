@@ -199,12 +199,33 @@ fn current_exe() -> Result<PathBuf> {
     std::env::current_exe().map_err(|e| Error::Config(format!("current_exe: {e}")))
 }
 
+/// The agent is project-scoped — socket, pid and log all live in `.aic/` — so
+/// there is nothing to run one *for* outside a project.
+///
+/// This used to be a `create_dir_all`, which meant any command that reached the
+/// agent from an unrelated directory silently made a `.aic/` there and left a
+/// detached daemon holding a socket in it. The mistake is easy to make and
+/// invisible afterwards: the command still failed, with a message about the
+/// missing config, so nothing pointed at the orphan it had just started.
+/// Creating a project is `aic onboard`'s job, never a side effect of opening a
+/// log file.
+fn ensure_project_for_agent(dir: &Path) -> Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "no project here ({} does not exist), so there is no agent to start; \
+         run aic from a project directory, or set AIC_PROJECT=<dir>",
+        dir.display()
+    )))
+}
+
 fn spawn_detached_agent() -> Result<()> {
     use std::os::unix::process::CommandExt;
 
     let exe = current_exe()?;
     let log_path = super::log_path();
-    std::fs::create_dir_all(crate::config::ProjectConfig::dir())?;
+    ensure_project_for_agent(&crate::config::ProjectConfig::dir())?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -243,6 +264,30 @@ fn spawn_detached_agent() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agent_is_refused_where_there_is_no_project() {
+        let bare = std::env::temp_dir().join(format!("aic-noproj-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&bare).unwrap();
+        let err = ensure_project_for_agent(&bare.join(".aic")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no project here"), "unhelpful error: {msg}");
+        assert!(
+            msg.contains("AIC_PROJECT"),
+            "the error should name the way out: {msg}"
+        );
+        assert!(
+            !bare.join(".aic").exists(),
+            "checking for a project must not create one"
+        );
+    }
+
+    #[test]
+    fn an_agent_is_allowed_where_a_project_exists() {
+        let root = std::env::temp_dir().join(format!("aic-proj-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".aic")).unwrap();
+        assert!(ensure_project_for_agent(&root.join(".aic")).is_ok());
+    }
 
     #[test]
     fn structured_mismatch_renders_stop_remedy() {
