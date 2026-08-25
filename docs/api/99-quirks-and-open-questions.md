@@ -1018,3 +1018,54 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   whole-document write. Non-empty `globals` was **not** observed, so its
   value shape is still open. Observation, not a probe: nothing was written
   to the tenant. `11-idm-endpoints.md` corrected.
+
+- **2026-08-25** — First pass over the **AM policy engine** and **RFC 8693
+  token exchange**, in the `bravo` realm, for the capability-token demo. New
+  files: `21-am-policies.md`, `22-token-exchange.md`. Five findings that
+  contradict a reasonable prior and would each have cost an afternoon:
+
+  1. **Create is asymmetric across three sibling collections.** Resource types
+     create with `PUT /resourcetypes/{id}` (201, and the id need not be a UUID);
+     policies and policy sets refuse `PUT` to a name that does not exist and
+     create only via `POST ?_action=create`. `?_action=template` on
+     `applications` is **501**.
+  2. **`evaluatorVersion` is decided by the script's context id, not by the
+     field.** `PUT` with `"context": "OAUTH2_MAY_ACT"` and
+     `"evaluatorVersion": "2.0"` returns 201 echoing `"1.0"`, silently, and the
+     script then runs under the legacy evaluator. `04-scripts.md` corrected —
+     its "always send `evaluatorVersion` explicitly" advice is still right but
+     was not sufficient.
+  3. **Turning on `providerOverridesEnabled` applies every default in the
+     override block**, not just the field you came for. `statelessTokensEnabled`
+     defaults to `false` there, so attaching one script quietly switched a
+     client from stateless JWTs to opaque tokens. Separately, `PUT` on an
+     OAuth2 client is a whole-object replace and AM does **not** re-apply
+     defaults to omitted groups: a partial create body left
+     `signEncOAuth2ClientConfig` empty and every later token request failed with
+     `"Unknown Signing Algorithm"`, an error that points nowhere near the cause.
+     Both noted in `05-oauth2-oidc.md`.
+  4. **Token exchange widens scope by default.** A subject token holding only
+     `openid` was exchanged for `payments.refund` — AM checks the request
+     against the *client's* allowed scopes, not the subject token's. Any
+     "capability token" design needs an explicit mint-time gate or it is
+     decorative.
+  5. **The obvious gate does not work on this path.**
+     `usePolicyEngineForScope` + `scopesPolicySet` does engage on the exchange
+     (it zeroed the issued scope) but the policy engine is handed an
+     *unauthenticated* subject — `AuthenticatedUsers` grants nothing and
+     `NOT(AuthenticatedUsers)` grants. So the resource owner never reaches the
+     policy. The working gate is a next-gen `validate-scope` script, where
+     `identity` is also empty (`AMIdentity is null`) and the resource owner has
+     to be recovered from `requestProperties.requestParams` — `username` on the
+     password grant, `subject_token` on the exchange.
+
+  Two smaller ones worth having in the index: with a `subject: {"jwt": …}`,
+  `AuthenticatedUsers` **never** matches (a JWT is not a session) while
+  `JwtClaim` matches **inside an array claim**, including the standard `scope`
+  claim — which is what lets a policy read the capability out of the presented
+  token instead of trusting the PEP to declare it. And an `AuthLevel` condition
+  evaluated against a `jwt` subject returns **500**, not a deny.
+
+  Also: stock resource types share UUIDs across realms while holding different
+  content (`URL` is the same uuid in `alpha` and `bravo`, with 210 vs 475
+  patterns). A matching uuid is not evidence of a shared object.
