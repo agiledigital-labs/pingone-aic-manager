@@ -27,9 +27,15 @@ jobs:
           fetch-depth: 0
 
       - name: Scanner selftest
+        env:
+          REQUIRE_SENSITIVE_DENYLIST: "1"
+          SENSITIVE_DENYLIST_CONTENT: ${{ secrets.SENSITIVE_METADATA_DENYLIST }}
         run: scripts/check-sensitive-metadata.sh --selftest
 
       - name: Scan tracked files
+        env:
+          REQUIRE_SENSITIVE_DENYLIST: "1"
+          SENSITIVE_DENYLIST_CONTENT: ${{ secrets.SENSITIVE_METADATA_DENYLIST }}
         run: scripts/check-sensitive-metadata.sh --tracked
 
       # Scan every blob introduced anywhere in the pushed/PR commit series.
@@ -41,6 +47,8 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
+          REQUIRE_SENSITIVE_DENYLIST: "1"
+          SENSITIVE_DENYLIST_CONTENT: ${{ secrets.SENSITIVE_METADATA_DENYLIST }}
         run: |
           if [ "$EVENT_NAME" = pull_request ]; then
             scripts/check-sensitive-metadata.sh --history "$PR_BASE_SHA..$HEAD_SHA"

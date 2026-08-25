@@ -64,14 +64,23 @@ UUID_RE='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 # the gitignored .ai/denylist.txt): committing a list of client names would
 # commit the client names. One pattern per line, '#' comments ignored.
 DENY_RE=""
-if [ -n "${SENSITIVE_DENYLIST:-}" ] && [ -f "${SENSITIVE_DENYLIST}" ]; then
+if [ -n "${SENSITIVE_DENYLIST_CONTENT:-}" ]; then
+  DENY_RE=$(printf '%s\n' "$SENSITIVE_DENYLIST_CONTENT" | grep -vE '^\s*(#|$)' | paste -sd '|' -)
+elif [ -n "${SENSITIVE_DENYLIST:-}" ] && [ -f "${SENSITIVE_DENYLIST}" ]; then
   DENY_RE=$(grep -vE '^\s*(#|$)' "${SENSITIVE_DENYLIST}" | paste -sd '|' -)
+fi
+if [ "${REQUIRE_SENSITIVE_DENYLIST:-0}" = 1 ] && [ -z "$DENY_RE" ]; then
+  echo "error: a non-empty sensitive metadata denylist is required" >&2
+  exit 2
 fi
 
 # Cheap pre-filter: only lines that could possibly match a rule are worth the
 # per-line analysis. Without this a full-tree scan forks greps for every line
 # of every file and takes minutes.
 CANDIDATE_RE='forgeblocks|sts\.windows\.net|entityid|trustedproviders|metaalias|SAML2MetaCache|setToPrototolMap|assertionConsumerService|singleLogoutService|nameIdService|AuthConsumer|\|saml2|aHR0c'
+if [ -n "$DENY_RE" ]; then
+  CANDIDATE_RE="$CANDIDATE_RE|$DENY_RE"
+fi
 
 # Shape-preserving redaction. Every substitution keeps the STRUCTURE of what it
 # replaces — a host stays a host, a GUID stays a same-shaped GUID — because
