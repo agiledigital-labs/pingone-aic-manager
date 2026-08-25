@@ -13,7 +13,7 @@ async fn run() -> pingone_aic_manager::Result<()> {
 
     // Root the process at the project dir + detect any workspace tenant/realm
     // before parsing, so resolved defaults can be baked into `--help`.
-    pingone_aic_manager::cli::bootstrap_project_root();
+    pingone_aic_manager::cli::bootstrap_project_root()?;
     let cli = pingone_aic_manager::cli::parse_with_defaults();
     if cli.command.is_none() {
         return run_tui().await;
