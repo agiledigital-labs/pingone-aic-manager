@@ -142,9 +142,11 @@ Two rules worth knowing before you argue with a finding:
   gained its idempotence fixtures.
 
 Literal client names are **not** in the scanner — committing a denylist of
-client names would commit the client names. Point `SENSITIVE_DENYLIST` at a
-file outside the repo (or the gitignored `.ai/denylist.txt`); see
-`.ai/local.md`.
+client names would commit the client names. Locally, point `SENSITIVE_DENYLIST`
+at a file outside the repo (or the gitignored `.ai/denylist.txt`). CI requires
+the protected `SENSITIVE_METADATA_DENYLIST` repository secret and fails closed
+when it is absent or empty; the workflow passes its content without writing it
+to the checkout. See `.ai/local.md`.
 
 Known: `--history` reports 4 hits in blob `55b60cc` (the `370c7de` commit) for
 `uat.client-a` / `uat.client-b`. Those are placeholders, not real names — the
