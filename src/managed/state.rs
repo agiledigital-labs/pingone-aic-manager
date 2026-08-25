@@ -967,26 +967,15 @@ impl RelationshipFormState {
         property: Value,
     ) -> Option<Self> {
         let parsed = crate::managed::ops::parse_relationship(&property)?;
-        // A `reversePropertyName` naming a property the target does not have is
-        // `Dangling`, not `One`: seeding a cardinality made an otherwise
+        // Carries `Dangling` through: seeding a cardinality made an otherwise
         // untouched save materialise the property on a second object, and
         // seeding `None` made the same save strip the source's claim. Neither
-        // is a decision the operator asked for, so carry the tenant's actual
-        // state and let them choose.
-        let reverse = match &parsed.reverse_key {
-            None => ReverseCardinality::None,
-            Some(reverse_key) => crate::managed::api::object_named(&original_doc, &parsed.target)
-                .ok()
-                .and_then(properties)
-                .and_then(|props| props.get(reverse_key))
-                .map_or(ReverseCardinality::Dangling, |property| {
-                    if property.get("type").and_then(Value::as_str) == Some("array") {
-                        ReverseCardinality::Many
-                    } else {
-                        ReverseCardinality::One
-                    }
-                }),
-        };
+        // is a decision the operator asked for.
+        let reverse = crate::managed::ops::existing_reverse_cardinality(
+            &original_doc,
+            &parsed.target,
+            parsed.reverse_key.as_deref(),
+        );
         let required = crate::managed::api::object_named(&original_doc, &source_object)
             .ok()
             .is_some_and(|object| required_fields(object).contains(&key));

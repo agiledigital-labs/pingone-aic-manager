@@ -182,8 +182,11 @@ pub enum RelationshipCommand {
         target: String,
         #[arg(long)]
         forward: String,
-        #[arg(long, default_value = "none")]
-        reverse: String,
+        /// Omit to keep whatever the relationship already declares — including
+        /// a reverse that names a property the target does not have. Defaults
+        /// to `none` only when creating.
+        #[arg(long)]
+        reverse: Option<String>,
         #[arg(long = "reverse-key")]
         reverse_key: Option<String>,
         #[command(flatten)]
@@ -524,8 +527,28 @@ async fn relationship(command: RelationshipCommand) -> Result<()> {
                     .unwrap_or_else(|| existing_description.to_string()),
                 target_object: target,
                 forward: cardinality(&forward)?,
-                reverse: reverse_cardinality(&reverse)?,
-                reverse_key: reverse_key.unwrap_or_default(),
+                // Every other optional field on this verb merges with what the
+                // schema has; the reverse used to default to `none` instead,
+                // so a `set` that only changed a title stripped the relationship's
+                // reverse declaration. Absent now means keep.
+                reverse: match &reverse {
+                    Some(value) => reverse_cardinality(value)?,
+                    None => match &parsed {
+                        Some(parsed) => ops::existing_reverse_cardinality(
+                            &doc,
+                            &parsed.target,
+                            parsed.reverse_key.as_deref(),
+                        ),
+                        None => state::ReverseCardinality::None,
+                    },
+                },
+                reverse_key: reverse_key
+                    .or_else(|| {
+                        parsed
+                            .as_ref()
+                            .and_then(|parsed| parsed.reverse_key.clone())
+                    })
+                    .unwrap_or_default(),
                 searchable: attrs
                     .searchable
                     .unwrap_or_else(|| parsed.as_ref().is_some_and(|value| value.searchable)),
@@ -1014,6 +1037,56 @@ mod tests {
             ["aic", "managed", "relationship", "delete", "test.owner"].as_slice(),
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn omitted_reverse_flag_is_absent_rather_than_none() {
+        // `--reverse` used to carry `default_value = "none"`, which made a
+        // `set` that only touched a title strip the reverse declaration. Absent
+        // has to reach the handler as `None` so it can mean "keep".
+        let parsed = Cli::try_parse_from([
+            "aic",
+            "managed",
+            "relationship",
+            "set",
+            "test.owner",
+            "--target",
+            "test2",
+            "--forward",
+            "one",
+        ])
+        .unwrap();
+        let reverse = relationship_set_reverse(&parsed);
+        assert_eq!(reverse, None);
+
+        let parsed = Cli::try_parse_from([
+            "aic",
+            "managed",
+            "relationship",
+            "set",
+            "test.owner",
+            "--target",
+            "test2",
+            "--forward",
+            "one",
+            "--reverse",
+            "many",
+        ])
+        .unwrap();
+        assert_eq!(relationship_set_reverse(&parsed).as_deref(), Some("many"));
+    }
+
+    /// The `--reverse` value as parsed, or `None` when the flag was omitted.
+    fn relationship_set_reverse(cli: &Cli) -> Option<String> {
+        match &cli.command {
+            Some(crate::cli::Command::Managed { command }) => match command {
+                ManagedCommand::Relationship {
+                    command: RelationshipCommand::Set { reverse, .. },
+                } => reverse.clone(),
+                other => panic!("not a relationship set: {other:?}"),
+            },
+            other => panic!("not a managed command: {other:?}"),
         }
     }
 }
