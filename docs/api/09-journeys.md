@@ -153,6 +153,59 @@ characterised yet, so client code should keep entries opaque.
 }
 ```
 
+### ESVs in node config: wrapped, or not, depending on the field (verified 2026-08-26)
+
+A node field can hold an ESV placeholder — `&{esv.some.name}` — and **the wire
+shape depends on the field, not on the value**. Established by decoding every
+node in both realms (1,119 of them) and tallying every placeholder:
+
+| Shape | Fields seen carrying it |
+| ----- | ----------------------- |
+| `{"$string": "&{esv.…}"}` | `PersistentCookieDecisionNode.hmacSigningKey`, `SetPersistentCookieNode.hmacSigningKey` |
+| `{"$int": "&{esv.…}"}` | `RetryLimitDecisionNode.retryLimit` |
+| bare `"&{esv.…}"`, no wrapper | `product-CaptchaNode.{siteKey,secretKey,scoreThreshold}`, `product-ReCaptchaNode.{siteKey,secretKey}`, `product-Saml2Node.idpEntityId`, `PushRegistrationNode.issuer`, `SetSuccessUrlNode.successUrl` |
+
+Three consequences for a client:
+
+- **`$int` exists.** A reader that only knows `$string` reports
+  `expected number, got map` on a perfectly ordinary retry-limit node. There is
+  no way to guess which integer fields accept one; find out by reading the
+  realm.
+- **A wrapped field is wrapped even when it holds a literal**, and a bare field
+  stays bare even when it holds a placeholder. Do not decide by inspecting the
+  value.
+- **An integer field that accepts an ESV cannot be typed as an integer**
+  anywhere downstream, because `4` and `&{esv.otp.retry.limit}` have to share
+  one type. A string that is either digits or a placeholder is the shape that
+  works.
+
+### A node's `?_action=schema` is not the whole story (verified 2026-08-26)
+
+`ConfigProviderNode` returns **`nodeVersion`** on every read, and it is absent
+from that type's `?_action=schema` **and** from its `?_action=template`. A
+client that treats the schema as the allowlist rejects the node.
+
+So validate a client's field list against **live nodes**, not against the
+schema endpoint. The schema is a good starting point and an incomplete one.
+
+Related: several types have no `properties` at all — `RecoveryCodeDisplayNode`,
+`OathDeviceStorageNode`, `product-WriteFederationInformationNode`,
+`DataStoreDecisionNode`. That is a legitimate no-config node, not a failed read.
+
+### Custom `designer-…` node types are tenant-scoped
+
+`GET /am/json/node-designer/node-type?_queryFilter=true` lists node types built
+in the console's node designer. Their `nodeType` on a tree is
+`designer-<32 hex chars>` — **the id is part of the type name**, so the type
+name itself is tenant-specific and cannot be written into shared tooling. The
+sandbox has one, used by 16 nodes, whose `name` is `null` and whose entire
+schema is a single `toggle` boolean.
+
+Their per-type schema *is* fetchable at
+`…/authenticationtrees/nodes/designer-<id>?_action=schema`, so a client can
+handle them — but only by discovering them at run time, never from a static
+table.
+
 ### The device-profile node family (verified 2026-08-26)
 
 Three types that work together — collect a profile, compare it to the saved
@@ -614,6 +667,21 @@ No `authId` juggling is needed — post the whole document back as it came.
   redirected only when `Origin` was the tenant. Hosted `/login/` JS chunks
   contain `handleRedirectCallback` → `location.assign`. Probe script restored
   afterwards.
+- Date: 2026-08-26 (second pass) — realms `bravo` and `alpha`, read-only.
+- Calls: `?_queryFilter=true` on the node collection of all 53 node types the
+  sibling Terraform provider models, in both realms — **1,119 node instances**
+  — each decoded against that provider's typed catalog. Two gaps found and
+  named above: the `{"$int": …}` ESV wrapper on `RetryLimitDecisionNode`
+  (4 nodes, previously unreadable) and `ConfigProviderNode.nodeVersion`
+  (absent from schema and template, present on every read). Also
+  `?_action=schema` and `?_action=template` on `AuthLevelDecisionNode`,
+  `ConfigProviderNode`, `CookiePresenceDecisionNode`, `EmailTemplateNode`,
+  `OathDeviceStorageNode`, `OathRegistrationNode`, `OathTokenVerifierNode`,
+  `product-CaptchaNode`, `product-ReCaptchaNode`, `product-Saml2Node`,
+  `product-WriteFederationInformationNode`,
+  `RecoveryCodeCollectorDecisionNode`, `RecoveryCodeDisplayNode`,
+  `SetCustomCookieNode`, `WebAuthnAuthenticationNode`,
+  `WebAuthnRegistrationNode`, and `designer-<id>`.
 - Date: 2026-08-26 — realms `bravo` and `alpha`, read-only.
 - Calls: `?_action=schema` and `?_action=template` on `DeviceMatchNode`,
   `DeviceSaveNode` and `DeviceProfileCollectorNode`; `?_queryFilter=true` on
