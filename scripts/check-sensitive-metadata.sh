@@ -65,7 +65,7 @@ fi
 # Cheap pre-filter: only lines that could possibly match a rule are worth the
 # per-line analysis. Without this a full-tree scan forks greps for every line
 # of every file and takes minutes.
-CANDIDATE_RE='forgeblocks|sts\.windows\.net|entityid|trustedproviders|metaalias|SAML2MetaCache|setToPrototolMap|aHR0c'
+CANDIDATE_RE='forgeblocks|sts\.windows\.net|entityid|trustedproviders|metaalias|SAML2MetaCache|setToPrototolMap|assertionConsumerService|singleLogoutService|nameIdService|AuthConsumer|\|saml2|aHR0c'
 
 # Shape-preserving redaction. Every substitution keeps the STRUCTURE of what it
 # replaces — a host stays a host, a GUID stays a same-shaped GUID — because
@@ -145,7 +145,7 @@ redact_stream() {
           }
         }
 
-        if (line ~ /entityId|entityid|trustedProviders|metaAlias|SAML2MetaCache|setToPrototolMap/) {
+        if (line ~ /entityId|entityid|trustedProviders|metaAlias|SAML2MetaCache|setToPrototolMap|assertionConsumerService|singleLogoutService|nameIdService|AuthConsumer|\|saml2/) {
           out = ""; rest = line
           while (match(rest, /https?:\/\/[A-Za-z0-9<>{}._-]+/)) {
             pre = substr(rest, 1, RSTART - 1)
@@ -219,7 +219,7 @@ scan_text() {
     # Rule 3 — SAML entity / CoT hostnames. Scoped to lines that are actually
     # SAML metadata, because a blanket hostname rule would drown in false
     # positives from ordinary docs.
-    if grep -qiE 'entityid|trustedproviders|metaalias|SAML2MetaCache|setToPrototolMap' <<<"$content"; then
+    if grep -qiE 'entityid|trustedproviders|metaalias|SAML2MetaCache|setToPrototolMap|assertionConsumerService|singleLogoutService|nameIdService|AuthConsumer|\|saml2' <<<"$content"; then
       while read -r host; do
         [ -n "$host" ] || continue
         is_placeholder_host "$host" && continue
@@ -308,6 +308,8 @@ case "$MODE" in
     probe "aic tenant hostname"  'https://openam-acme-sndbx.forgeblocks.com/am'
     probe "azure tenant guid"    'check https://sts.windows.net/7f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b/|saml2'
     probe "saml entity hostname" '"entityId": "https://sso.acme.com.au"'
+    probe "trusted provider array value" '  "https://sso.acme.com.au|saml2"'
+    probe "ACS array value"       '  "https://sso.acme.com.au/am/AuthConsumer/metaAlias/alpha/sp"'
     probe "mixed-case entityId"  '"entityId": "https://sso.acme.com.au"'
     probe "base64url url"        '"_id": "aHR0cHM6Ly9zc28uYWNtZS5jb20uYXU"'
     negative "placeholder host"   'https://<your-tenant>.forgeblocks.com/am'
@@ -326,6 +328,7 @@ case "$MODE" in
       'COTUtils.setToPrototolMap: check https://sts.windows.net/<tenant-guid>/|saml2'
       '    "https://sts.windows.net/00000000-0000-0000-0000-000000000000/|saml2",'
       '"entityId": "https://sp-b.example.com"'
+      '    "https://sp-b.example.com|saml2"'
       '  "valueBase64": "aGVsbG8="'
     )
     for fixture in "${for_idempotence[@]}"; do
@@ -345,6 +348,12 @@ case "$MODE" in
     roundtrip=$(printf '%s\n' \
       'GET https://openam-acme-sndbx.forgeblocks.com/am' \
       '  "entityId": "https://sso.acme.com.au",' \
+      '  "trustedProviders": [' \
+      '    "https://peer.acme.com.au|saml2"' \
+      '  ]' \
+      '  "assertionConsumerService": [' \
+      '    "https://acs.acme.com.au/am/AuthConsumer/metaAlias/alpha/sp"' \
+      '  ]' \
       '  "trustedProviders": ["https://sts.windows.net/7f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b/|saml2"]' \
       '  "_id": "aHR0cHM6Ly9zc28uYWNtZS5jb20uYXU"' | redact_stream)
     left=$(findings=0; scan_text "roundtrip" < <(grep -iEn "$CANDIDATE_RE" <<<"$roundtrip"); echo "F=$findings")
