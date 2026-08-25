@@ -142,7 +142,14 @@ else
 fi
 echo "  token from: $TOKEN_URL" >&2
 
-curl -sS -o /tmp/aic-verify.body -w "HTTP %{http_code}\n" \
+BODY_FILE=$(mktemp "${TMPDIR:-/tmp}/aic-verify.XXXXXX") || {
+  echo "error: could not create a private response file" >&2
+  exit 2
+}
+chmod 600 "$BODY_FILE"
+trap 'rm -f "$BODY_FILE"' EXIT
+
+curl -sS -o "$BODY_FILE" -w "HTTP %{http_code}\n" \
   --header "Authorization: Bearer $TOKEN" \
   --header "Accept: application/json" \
   "${extra_headers[@]}" \
@@ -163,8 +170,8 @@ else
   echo "  output: sanitised (--raw for the real values)" >&2
 fi
 
-if jq -e . /tmp/aic-verify.body >/dev/null 2>&1; then
-  jq . /tmp/aic-verify.body | emit
+if jq -e . "$BODY_FILE" >/dev/null 2>&1; then
+  jq . "$BODY_FILE" | emit
 else
-  emit < /tmp/aic-verify.body
+  emit < "$BODY_FILE"
 fi
