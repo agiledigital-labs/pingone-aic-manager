@@ -94,7 +94,23 @@ scripts/check-sensitive-metadata.sh --selftest   # prove the rules still fire
 scripts/check-sensitive-metadata.sh --tracked    # every tracked file (CI runs this)
 scripts/check-sensitive-metadata.sh --staged     # added lines only (pre-commit hook)
 scripts/check-sensitive-metadata.sh --history    # every blob in every commit (audit)
+scripts/check-sensitive-metadata.sh --redact     # filter stdin -> stdout, sanitised
+scripts/check-sensitive-metadata.sh --fix        # rewrite tracked files in place
 ```
+
+**Capture is sanitised by default.** `scripts/verify-endpoint.sh` pipes the
+response body — and its own `GET <url>` banner — through `--redact`, so
+evidence for a `docs/api/` claim arrives already redacted instead of being
+caught at commit time. Redaction preserves shape, so a claim about a field's
+type or structure survives it. `--raw` opts out and says so on stderr. Capture
+also strips ESV `valueBase64` payloads (`REDACT_VALUES=1`), which `--fix`
+deliberately does **not** do — `docs/api/03-esvs.md` has example values that
+rewriting would destroy.
+
+CI also runs **Gitleaks** over the history for the orthogonal class: PEM/JWK
+material, API secrets, provider tokens. Baseline verified clean over 396
+commits on 2026-08-26; the 36 findings a working-tree scan reports are all in
+`target/` and the gitignored `workspace/`, none in tracked files.
 
 Enable the hook once per clone: `git config core.hooksPath .githooks`. CI runs
 the same check over the whole tree, so `--no-verify` only moves the failure to
@@ -118,6 +134,12 @@ Two rules worth knowing before you argue with a finding:
 - **Do not redact to a truncated-looking form** such as `uat.client-a…`. A
   reviewer cannot tell that from a real hostname, which is the whole problem;
   `370c7de` did this and `c3133e8` undid it.
+- **If you change the placeholder vocabulary, change it in both halves.** The
+  checker holds it in `$PLACEHOLDER_TENANT` / `$PLACEHOLDER_HOST` /
+  `$PLACEHOLDER_UUID`; the redactor mirrors them in awk. When they drift,
+  `--fix` rewrites files the checker calls clean — it did exactly that to
+  `example.forgeblocks.com` and to the all-zeros GUID before the selftest
+  gained its idempotence fixtures.
 
 Literal client names are **not** in the scanner — committing a denylist of
 client names would commit the client names. Point `SENSITIVE_DENYLIST` at a
