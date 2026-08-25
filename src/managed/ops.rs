@@ -609,6 +609,36 @@ pub fn parse_ref_properties(property: &Value) -> Vec<RefProperty> {
         .unwrap_or_default()
 }
 
+/// The reverse cardinality a relationship already has, read off the target
+/// object rather than the source's declaration — the source only names the
+/// reverse property, it does not say what shape it is
+/// (`docs/api/10-managed-objects.md`).
+///
+/// A name the target does not carry is [`ReverseCardinality::Dangling`], so
+/// every caller that round-trips an existing relationship re-states what the
+/// tenant has instead of silently deciding to create the missing property or to
+/// drop the claim. Shared by the TUI form and `aic managed relationship set`.
+pub fn existing_reverse_cardinality(
+    doc: &Value,
+    target: &str,
+    reverse_key: Option<&str>,
+) -> ReverseCardinality {
+    let Some(reverse_key) = reverse_key else {
+        return ReverseCardinality::None;
+    };
+    crate::managed::api::object_named(doc, target)
+        .ok()
+        .and_then(crate::managed::state::properties)
+        .and_then(|properties| properties.get(reverse_key))
+        .map_or(ReverseCardinality::Dangling, |property| {
+            if property.get("type").and_then(Value::as_str) == Some("array") {
+                ReverseCardinality::Many
+            } else {
+                ReverseCardinality::One
+            }
+        })
+}
+
 /// A relationship whose `reversePropertyName` names a property the target
 /// object does not have.
 #[derive(Debug, PartialEq, Eq)]
@@ -3942,6 +3972,38 @@ mod tests {
 
     fn many_relationship(target: &str, reverse_key: Option<&str>) -> Value {
         json!({"type": "array", "items": one_relationship(target, reverse_key)})
+    }
+
+    #[test]
+    fn existing_reverse_cardinality_reads_the_target_not_the_claim() {
+        // The source names the reverse property; only the target says what
+        // shape it is, or whether it exists at all. Shared by the TUI form and
+        // `aic managed relationship set`, so both round-trip the same state.
+        let doc = json!({"objects": [
+            {"name": "a", "schema": {"properties": {}}},
+            {"name": "b", "schema": {"properties": {
+                "single": {"type": "relationship"},
+                "multiple": {"type": "array", "items": {"type": "relationship"}},
+            }}},
+        ]});
+
+        for (reverse_key, expected) in [
+            (None, ReverseCardinality::None),
+            (Some("single"), ReverseCardinality::One),
+            (Some("multiple"), ReverseCardinality::Many),
+            (Some("never_created"), ReverseCardinality::Dangling),
+        ] {
+            assert_eq!(
+                existing_reverse_cardinality(&doc, "b", reverse_key),
+                expected,
+                "{reverse_key:?}"
+            );
+        }
+        // An absent target object cannot be carrying the property either.
+        assert_eq!(
+            existing_reverse_cardinality(&doc, "gone", Some("whatever")),
+            ReverseCardinality::Dangling
+        );
     }
 
     #[test]

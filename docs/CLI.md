@@ -309,7 +309,7 @@ aic managed field edit custom_widget.code --searchable true [--enum value[:Title
 aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
-aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse many] [--reverse-key widgets] [--yes] [--json]
+aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--yes] [--json]
 ```
 
@@ -317,7 +317,12 @@ Every write accepts `--tenant <name>` and requires `--yes` for a
 production-themed tenant. Field and relationship booleans take explicit values
 (for example `--viewable false`). Field creation defaults to non-searchable,
 viewable, user-editable, and optional; omitted field-edit flags leave that
-attribute unchanged. `<object>.<key>` must contain exactly one dot. Every schema
+attribute unchanged. On `relationship set`, an omitted `--reverse` likewise
+**keeps** whatever the relationship already declares — including a reverse that
+names a property the target object does not have — and `--reverse-key` defaults
+to the declared name. It is `none` only when the relationship is being created.
+Removing a reverse therefore takes an explicit `--reverse none`, which also
+deletes the property from the target object. `<object>.<key>` must contain exactly one dot. Every schema
 write is recorded for reversal from the TUI history overlay; there is no CLI
 undo command.
 
