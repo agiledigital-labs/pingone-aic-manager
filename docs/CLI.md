@@ -664,6 +664,14 @@ Both commands also regenerate the tenant-derived types: ambient
 `idm/types/managed/*.d.ts` for the `.cjs` scripts, and the module-form
 `typescript/src/generated/managed.ts` for the TypeScript endpoint project.
 
+Each names any **dangling reverse** it finds — a relationship whose
+`reversePropertyName` points at a property the target object does not have. The
+stock `alpha_application`/`bravo_application` objects ship with six. The reverse
+side is missing from the runtime too, so the omission in the generated types is
+correct; the warning exists so a member you expected and cannot find reads as a
+tenant schema defect rather than a generation bug
+(`docs/api/10-managed-objects.md`).
+
 `update` refreshes every managed file and **adds the TypeScript project to a
 workspace that predates it**, seeding its example endpoints. A seed you have
 not edited is refreshed when the template moves; a seed you have edited, or

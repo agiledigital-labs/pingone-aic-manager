@@ -502,20 +502,31 @@ pub enum ReverseCardinality {
     None,
     One,
     Many,
+    /// The source declares a `reversePropertyName` the target object does not
+    /// have. Inherited from the tenant, never chosen: `config/managed` runs no
+    /// cross-object validation on write, so half-declared pairs are storable
+    /// and Ping ships six (`docs/api/10-managed-objects.md`). Kept as its own
+    /// state so an edit that leaves the reverse alone re-writes the declaration
+    /// verbatim, instead of quietly deciding to create the missing property or
+    /// to strip the claim.
+    Dangling,
 }
 
 impl ReverseCardinality {
+    /// Cycling leaves `Dangling` and cannot return to it: it is a state you
+    /// inherit, and offering it as a choice would mean offering to author a new
+    /// dangling declaration. Cancel the form to get it back.
     pub fn next(self) -> Self {
         match self {
             Self::None => Self::One,
             Self::One => Self::Many,
-            Self::Many => Self::None,
+            Self::Many | Self::Dangling => Self::None,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            Self::None => Self::Many,
+            Self::None | Self::Dangling => Self::Many,
             Self::One => Self::None,
             Self::Many => Self::One,
         }
@@ -526,7 +537,14 @@ impl ReverseCardinality {
             Self::None => "has none",
             Self::One => "has one",
             Self::Many => "has many",
+            Self::Dangling => "declared, missing on target",
         }
+    }
+
+    /// Whether a reverse property has to be written to the target object.
+    /// `Dangling` claims one without owning one, so it writes nothing there.
+    pub fn writes_target_property(self) -> bool {
+        matches!(self, Self::One | Self::Many)
     }
 }
 
@@ -949,20 +967,25 @@ impl RelationshipFormState {
         property: Value,
     ) -> Option<Self> {
         let parsed = crate::managed::ops::parse_relationship(&property)?;
+        // A `reversePropertyName` naming a property the target does not have is
+        // `Dangling`, not `One`: seeding a cardinality made an otherwise
+        // untouched save materialise the property on a second object, and
+        // seeding `None` made the same save strip the source's claim. Neither
+        // is a decision the operator asked for, so carry the tenant's actual
+        // state and let them choose.
         let reverse = match &parsed.reverse_key {
             None => ReverseCardinality::None,
             Some(reverse_key) => crate::managed::api::object_named(&original_doc, &parsed.target)
                 .ok()
                 .and_then(properties)
                 .and_then(|props| props.get(reverse_key))
-                .map(|property| {
+                .map_or(ReverseCardinality::Dangling, |property| {
                     if property.get("type").and_then(Value::as_str) == Some("array") {
                         ReverseCardinality::Many
                     } else {
                         ReverseCardinality::One
                     }
-                })
-                .unwrap_or(ReverseCardinality::One),
+                }),
         };
         let required = crate::managed::api::object_named(&original_doc, &source_object)
             .ok()
@@ -1641,20 +1664,39 @@ mod tests {
         assert_eq!(draft.key.locked_prefix, "");
     }
 
-    #[test]
-    fn relationship_form_edit_seeds_dangling_reverse() {
+    /// Reverse cardinality is read off the target object, so the form has to be
+    /// driven from a whole document, not from the source property alone.
+    fn relationship_form_edit(target_reverse: Option<Value>) -> RelationshipFormState {
         let property = json!({"type": "array", "searchable": true, "viewable": false, "userEditable": false, "items": {"type": "relationship", "validate": true, "reverseRelationship": true, "reversePropertyName": "owners", "resourceCollection": [{"path": "managed/b"}], "properties": {"_refProperties": {"properties": {"_id": {"type": "string"}}}}}});
-        let doc = json!({"objects": [{"name": "a", "schema": {"properties": {"owner": property.clone()}, "required": ["owner"]}}, {"name": "b", "schema": {"properties": {}}}]});
-        let form = RelationshipFormState::edit(
-            "sandbox".into(),
-            "a".into(),
-            doc,
-            "owner".into(),
-            property,
-        )
-        .unwrap();
+        let mut target_properties = serde_json::Map::new();
+        if let Some(reverse) = target_reverse {
+            target_properties.insert("owners".into(), reverse);
+        }
+        let doc = json!({"objects": [
+            {"name": "a", "schema": {"properties": {"owner": property.clone()}, "required": ["owner"]}},
+            {"name": "b", "schema": {"properties": target_properties}},
+        ]});
+        RelationshipFormState::edit("sandbox".into(), "a".into(), doc, "owner".into(), property)
+            .unwrap()
+    }
+
+    #[test]
+    fn relationship_form_edit_reads_reverse_cardinality_off_the_target() {
+        for (target_reverse, expected) in [
+            (json!({"type": "relationship"}), ReverseCardinality::One),
+            (
+                json!({"type": "array", "items": {"type": "relationship"}}),
+                ReverseCardinality::Many,
+            ),
+        ] {
+            assert_eq!(
+                relationship_form_edit(Some(target_reverse)).reverse,
+                expected
+            );
+        }
+
+        let form = relationship_form_edit(Some(json!({"type": "relationship"})));
         assert_eq!(form.forward, Cardinality::Many);
-        assert_eq!(form.reverse, ReverseCardinality::One);
         assert_eq!(form.target_name.as_deref(), Some("b"));
         assert!(form.searchable);
         assert!(form.required);
@@ -1662,6 +1704,45 @@ mod tests {
             form.previous.unwrap().old_reverse_key.as_deref(),
             Some("owners")
         );
+    }
+
+    #[test]
+    fn relationship_form_edit_reports_a_dangling_reverse_as_its_own_state() {
+        // The stock `alpha_application.members` names `alpha_user.applications`,
+        // which does not exist. `One` made an untouched save create it on the
+        // target; `None` made the same save strip the source's claim. Neither is
+        // the operator's decision, so the form carries the inherited state.
+        let form = relationship_form_edit(None);
+
+        assert_eq!(form.reverse, ReverseCardinality::Dangling);
+        assert_eq!(form.reverse_key.value, "owners");
+        assert_eq!(
+            form.previous.unwrap().old_reverse_key.as_deref(),
+            Some("owners")
+        );
+    }
+
+    #[test]
+    fn cycling_leaves_dangling_and_never_offers_it_back() {
+        // Authoring a fresh dangling declaration is not a thing to offer; the
+        // state only exists because a tenant already has one.
+        assert_eq!(
+            ReverseCardinality::Dangling.next(),
+            ReverseCardinality::None
+        );
+        assert_eq!(
+            ReverseCardinality::Dangling.prev(),
+            ReverseCardinality::Many
+        );
+        let mut seen = ReverseCardinality::Dangling;
+        for _ in 0..8 {
+            seen = seen.next();
+            assert_ne!(seen, ReverseCardinality::Dangling);
+        }
+        assert!(!ReverseCardinality::Dangling.writes_target_property());
+        assert!(!ReverseCardinality::None.writes_target_property());
+        assert!(ReverseCardinality::One.writes_target_property());
+        assert!(ReverseCardinality::Many.writes_target_property());
     }
 
     #[test]
