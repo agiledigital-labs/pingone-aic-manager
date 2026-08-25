@@ -791,6 +791,49 @@ error. Do not offer `ne` or `in` in script-template query validation.
 
 ## Quirks
 
+### A managed **record** creates with `PUT` and then refuses one (verified 2026-08-25)
+
+`PUT /openidm/managed/{obj}/{id}` with a caller-chosen 36-char UUID creates the
+record. A **second** `PUT` to the same id — the same body, even — is:
+
+```
+400 Bad Request
+Not Allowed on RDN: Entry fr-idm-uuid=<id>,ou=user,o=bravo,… cannot be modified
+because the change to attribute fr-idm-uuid would have removed a value used in
+the RDN
+```
+
+A full replace rewrites every attribute, `fr-idm-uuid` included, and that
+attribute is the directory entry's RDN. So "create or update with one idempotent
+`PUT`" does not hold for managed records, however well it works for schema, for
+resource types and for AM's OAuth2 clients. Probe with a `GET` and `PATCH` the
+existing record instead:
+
+```jsonc
+PATCH /openidm/managed/bravo_user/{id}
+[ {"operation": "replace", "field": "/mail",  "value": "…"},
+  {"operation": "replace", "field": "/roles", "value": [{"_ref": "managed/bravo_role/…"}]} ]
+```
+
+A `replace` on `/roles` sets the whole relationship set, which is what a
+converging provisioner wants.
+
+This one bites late: a script that only ever runs after a teardown looks
+idempotent for months, and fails the first time it is re-run against a tenant
+that still has its users.
+
+### Re-setting the password a user already has is a 400 (verified 2026-08-25)
+
+```
+400 Constraint Violation: The provided new password was found in the password
+history for the user
+```
+
+…with a `passwordQualityAdvice` block naming the failing criterion. The realm
+keeps a password history, so a converging update must **omit** `password`
+rather than write the value it believes is already there. Only send a password
+on create, or when actually rotating it.
+
 - **PUT is "replace entire schema"** — there's no partial patch. Read, modify
   the relevant `objects[]` entry, write back. Object entries store verbatim; no
   server field injection, normalisation, or reordering was observed.
@@ -825,6 +868,12 @@ error. Do not offer `ne` or `in` in script-template query validation.
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-08-25 (managed **records** in `bravo`, writes: a repeat `PUT` to an
+  existing `managed/bravo_user/{uuid}` is `400 Not Allowed on RDN`; a `PATCH`
+  of the same fields is 200; a `PATCH` that re-sends the user's current password
+  is `400 Constraint Violation` from the realm's password history, and the same
+  `PATCH` without `/password` succeeds. Found by re-running a provisioning
+  script that had only ever been exercised against a torn-down tenant.)
 - Date: 2026-08-21 (dangling reverse properties: the six Ping-shipped
   half-declared relationships on `*_application` were confirmed absent from the
   target objects' `schema.properties`, and the relationship sub-resource route

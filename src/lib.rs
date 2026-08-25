@@ -16,6 +16,7 @@ pub mod mappings;
 pub mod oauth;
 pub mod offboard;
 pub mod onboard;
+pub mod policy;
 pub mod roles;
 pub mod scripts;
 pub mod secretmap;

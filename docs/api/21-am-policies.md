@@ -1,7 +1,7 @@
 # 21 — AM policies (policy sets, resource types, evaluation)
 
-Implemented in: **nothing yet.** This file is the discovery pass that precedes
-an `aic policy` vertical and the Terraform resources; see
+Implemented in: **`src/policy/`** (`aic policy`, CLI-only — see
+[`../CLI.md`](../CLI.md)). The Terraform resources are still to come; see
 `../../../aic-demos/capability-tokens/PLAN.md`.
 
 ## Purpose
@@ -253,8 +253,48 @@ any of these answers.)
 `applicationType: iPlanetAMWebAgentService` means resources are compared as
 URLs. `shop://orders/123` did **not** match the pattern `shop://orders/*`;
 `https://shop-api.demo:443/orders/123` matched `https://*:*/orders/*`. Write
-resources as `scheme://host:port/path` — including the port — or nothing will
-match and you will read it as a policy bug.
+patterns as `scheme://host:port/path` and nothing will surprise you; write them
+any other way and the mismatch is silent, because a resource that matches no
+pattern is reported as `actions: {}` — the same answer as a deny.
+
+#### Wildcard semantics, measured
+
+Verified 2026-08-25 with a throwaway resource type, policy set and
+`AuthenticatedUsers` policy in `bravo`, evaluated as the service-account caller
+so a match reads `{"read": true}` and a non-match `{}`. The probe objects were
+deleted afterwards. Every row below is an observation, not a reading of the
+vendor docs — which describe `*` the other way round.
+
+| Pattern | Resource | Result |
+| ------- | -------- | ------ |
+| `https://*:*/g/*` | `https://x:443/g/one` | ✅ |
+| `https://*:*/g/*` | `https://x:443/g/one/two` | ✅ **crosses `/`** |
+| `https://*:*/g/*` | `https://x:443/g/` | ✅ matches zero characters |
+| `https://*:*/g/*` | `https://x:443/g` | ❌ the literal `/` must be present |
+| `https://*:*/h/-*-` | `https://x:443/h/one` | ✅ |
+| `https://*:*/h/-*-` | `https://x:443/h/one/two` | ❌ **`-*-` is the single-level wildcard** |
+| `https://*:*/i/*/z` | `https://x:443/i/one/two/z` | ✅ a mid-pattern `*` crosses `/` too |
+| `https://*:*/lit/One` | `https://x:443/LIT/one` | ✅ **matching is case-insensitive** |
+| `https://*:*/g/*` | `https://x:443/g/one?b=1` | ❌ **a query string is part of the resource** |
+| `https://*:*/q/a?*` | `https://x:443/q/a?b=1` | ✅ … and needs its own `?*` |
+| `https://*:*/q/a?*` | `https://x:443/q/a` | ❌ `?*` then requires a query string |
+| `https://*:*/t/*/` | `https://x:443/t/one` | ❌ a trailing `/` is significant |
+| `https://*:*/g/*` | `https://x/g/one` | ✅ a missing port defaults by scheme |
+| `https://*:*/g/*` | `http://x:80/g/one` | ❌ the scheme is compared literally |
+
+Three of those are worth pulling out, because each produces a silent `{}` that
+reads like an authorization bug:
+
+- **`*` crosses `/` and `-*-` does not.** This is the opposite of the glob
+  intuition and the opposite of how the AM console's help describes it. If you
+  want "one path segment", `-*-` is the wildcard you need.
+- **A query string is part of the resource being matched.** A PEP that hands the
+  PDP the full request URL — `…/orders/123?expand=lines` — gets no match against
+  `…/orders/*`. Either strip the query before evaluating, or add `?*` patterns.
+  Prefer stripping: `…/orders/*` and `…/orders/*?*` are two patterns to keep in
+  step forever.
+- **Matching is case-insensitive**, including the path. Do not lean on case to
+  separate two resources.
 
 ## Examples
 
@@ -354,6 +394,9 @@ and strip its identity fields.
   `GET ?_queryFilter=true` on `subjecttypes` and `conditiontypes`;
   `POST ?_action=evaluate` with no subject, `claims`, `ssoToken`, a valid `jwt`
   and a malformed `jwt`; `POST ?_action=evaluateTree`.
+- **Wildcard semantics** measured 2026-08-25 with a throwaway `ZZProbeGlob`
+  resource type, `ZZProbeGlobSet` policy set and an `AuthenticatedUsers` policy,
+  19 resources across 6 patterns. All three probe objects were deleted after.
 - Objects created and **left in place** in `bravo`: resource type
   `CapTokenDemoShopApi`; policy sets `CapTokenDemo` and `CapTokenDemoScopes`;
   policies `CapTokenDemo_{OrdersRead,OrdersApprove,PaymentsRefund}` and
