@@ -153,6 +153,31 @@ characterised yet, so client code should keep entries opaque.
 }
 ```
 
+### The device-profile node family (verified 2026-08-26)
+
+Three types that work together — collect a profile, compare it to the saved
+ones, save the new one — captured because a full-realm generate stopped on each
+in turn. Field names and defaults are from each type's own `?_action=schema`
+and `?_action=template`, cross-checked against the live nodes in `bravo`.
+
+| Type | Fields (template default) |
+| ---- | ------------------------- |
+| `DeviceProfileCollectorNode` | `maximumSize` (`"3"`), `deviceMetadata` (`true`), `deviceLocation` (`false`), `message` (`{}`) |
+| `DeviceMatchNode` | `script` (`01e1a3c0-…328cff`), `useScript` (`false`), `acceptableVariance` (`0`), `expiration` (`30`) |
+| `DeviceSaveNode` | `maxSavedProfiles` (`5`), `saveDeviceMetadata` (`true`), `saveDeviceLocation` (`true`), `variableName` (`""`) |
+
+Three things in there are easy to get wrong:
+
+- **`maximumSize` is a string**, not a number. The template ships `"3"`.
+- **`DeviceMatchNode.script` is always sent**, whether or not `useScript` is
+  true, and its default is the Ping-shipped `Authentication Tree Decision Node
+  Script`. That id is `01e1a3c0-038b-4c16-956a-6c9d89328cff` in **both** `alpha`
+  and `bravo`, and the script is `default: true`, so it is a stock id rather
+  than a per-tenant one — checked in both realms rather than assumed.
+- **`variableName` is in the schema and the template but absent from every live
+  node.** AM drops the key rather than storing an empty string, so a client that
+  treats "absent" as "unmodelled" will reject a perfectly ordinary node.
+
 ## Editing journeys — pull / edit / push workflow (verified 2026-06-14)
 
 Audience: AI coding agents editing tenant journeys from the workspace. Use this
@@ -589,6 +614,13 @@ No `authId` juggling is needed — post the whole document back as it came.
   redirected only when `Origin` was the tenant. Hosted `/login/` JS chunks
   contain `handleRedirectCallback` → `location.assign`. Probe script restored
   afterwards.
+- Date: 2026-08-26 — realms `bravo` and `alpha`, read-only.
+- Calls: `?_action=schema` and `?_action=template` on `DeviceMatchNode`,
+  `DeviceSaveNode` and `DeviceProfileCollectorNode`; `?_queryFilter=true` on
+  each type's node collection in `bravo` (two instances each) to confirm the
+  live wire shapes against the schemas; `GET …/scripts/01e1a3c0-…` in both
+  realms to establish that `DeviceMatchNode`'s default script id is stock
+  (`default: true`, same id, same name) rather than tenant-specific.
 - Date: 2026-08-25 — realm `bravo`, `CapTokenDemoRegister`.
 - Calls: two-post `/authenticate` conversations against the tree, with and
   without values on the `NameCallback`. A submission with a blank name reached
