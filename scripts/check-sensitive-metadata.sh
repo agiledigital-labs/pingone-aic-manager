@@ -57,7 +57,7 @@ SELF="scripts/check-sensitive-metadata.sh"
 PLACEHOLDER_HOST='(^|[./@])(example\.(com|org|net)|localhost|tenant\.example\.com)$|<[^>]+>|\{[^}]+\}|your-tenant|placeholder'
 PLACEHOLDER_UUID='^0{8}-0{4}-0{4}-0{4}-0{12}$'
 # Reserved tenant labels — the sanctioned stand-ins for a real AIC tenant.
-PLACEHOLDER_TENANT='<|\{|example|your-tenant|my-?tenant|placeholder|^tenant\.'
+PLACEHOLDER_TENANT='^(<[^>]+>|\{[^}]+\}|example|tenant|your-tenant|my-?tenant|placeholder|openam-mytenant-(sndbx|dev|uat|prod))\.forgeblocks\.com$'
 UUID_RE='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
 
 # Literal deny patterns, compiled once. The file lives OUTSIDE the repo (or in
@@ -101,8 +101,10 @@ redact_stream() {
     # a single shared predicate silently redacted example.forgeblocks.com.
     function is_placeholder_tenant(h,   l) {
       l = tolower(h)
-      return l ~ /[<{]/ || l ~ /example/ || l ~ /your-tenant/ ||
-             l ~ /my-?tenant/ || l ~ /placeholder/ || l ~ /^tenant\./
+      return l ~ /^<[^>]+>\.forgeblocks\.com$/ ||
+             l ~ /^\{[^}]+\}\.forgeblocks\.com$/ ||
+             l ~ /^(example|tenant|your-tenant|my-?tenant|placeholder)\.forgeblocks\.com$/ ||
+             l ~ /^openam-mytenant-(sndbx|dev|uat|prod)\.forgeblocks\.com$/
     }
     function is_placeholder_host(h,   l) {
       l = tolower(h)
@@ -321,6 +323,7 @@ case "$MODE" in
       fi
     }
     probe "aic tenant hostname"  'https://openam-acme-sndbx.forgeblocks.com/am'
+    probe "example substring is real" 'https://openam-realexampleclient-prod.forgeblocks.com/am'
     probe "azure tenant guid"    'check https://sts.windows.net/7f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b/|saml2'
     probe "saml entity hostname" '"entityId": "https://sso.acme.com.au"'
     probe "trusted provider array value" '  "https://sso.acme.com.au|saml2"'
