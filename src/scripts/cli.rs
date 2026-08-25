@@ -789,7 +789,34 @@ async fn generate_managed_types(tenant: &str) -> usize {
             ),
         }
     }
+    warn_dangling_reverses(&schema);
     written
+}
+
+/// Name the relationships whose declared reverse property was never created on
+/// the target object, so a missing member in the generated types reads as a
+/// tenant defect rather than a generation bug. The reverse side is absent from
+/// the runtime as well — see `managed::ops::dangling_reverses`.
+fn warn_dangling_reverses(schema: &serde_json::Value) {
+    let dangling = crate::managed::ops::dangling_reverses(schema);
+    if dangling.is_empty() {
+        return;
+    }
+    let subject = match dangling.len() {
+        1 => "1 relationship names".to_string(),
+        n => format!("{n} relationships name"),
+    };
+    eprintln!(
+        "warning: {subject} a reverse property that does not exist on the\n         \
+         target object. It is missing from the runtime too, so the generated types\n         \
+         leave it out — the tenant's schema is half-declared, not the generator:"
+    );
+    for entry in dangling {
+        eprintln!(
+            "           {}.{} -> {}.{}",
+            entry.source_object, entry.key, entry.target_object, entry.reverse_key
+        );
+    }
 }
 
 /// Fetch the tenant's sync mappings and managed schema, then write generated

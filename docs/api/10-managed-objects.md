@@ -406,6 +406,44 @@ drops to none, or the target is repointed, the tool must remove/move the old
 reverse property (the server won't). `config/managed` PUT accepted every combo
 with 200 and stored verbatim.
 
+**A dangling reverse stays dangling, at runtime too** (verified 2026-08-21).
+No cross-object validation runs on write (see above), so a
+`reversePropertyName` naming a property the target never got is accepted and
+stored — and Ping ships six of them: `alpha_application.members`/`owners`/
+`roles` and their `bravo_` twins name `alpha_user.applications`,
+`alpha_user.ownerOfApp` and `alpha_role.applications`, none of which exist in
+`alpha_user`/`alpha_role`. The missing side is **not** inferred from the
+source's declaration; it is absent from the runtime as well as the schema:
+
+| Request                                             | Result              |
+| --------------------------------------------------- | ------------------- |
+| `GET /openidm/managed/alpha_user/<id>/roles`        | 200 `{"result":[]}` |
+| `GET /openidm/managed/alpha_user/<id>/applications` | 404 Not Found       |
+| `GET /openidm/managed/alpha_user/<id>/bogusField`   | 404 Not Found       |
+
+A declared-but-uncreated reverse is indistinguishable from a field name nobody
+ever mentioned. Consequences:
+
+- **Generated types are right to omit it.** A missing member in
+  `idm/types/managed/alpha_user.d.ts` reflects the tenant, not the generator.
+  `aic workspace update` names every dangling pair it finds;
+  `managed::ops::dangling_reverses` is the audit behind that warning.
+- **There is no traversal from the target side.** Query the source instead:
+  `managed/alpha_application?_queryFilter=/members/_ref eq "managed/alpha_user/<id>"`.
+- **The relationship editor treats it as its own state**, labelled
+  `declared, missing on target`, rather than folding it into one of the three
+  choices. Reporting it as `has one` made an otherwise-untouched save create
+  the property on the target; reporting it as `has none` made the same save
+  strip the source's claim. Both are decisions the operator did not make, so an
+  untouched reverse is re-written verbatim and stays dangling. Cycling the field
+  leaves that state and cannot return to it — authoring a _new_ dangling
+  declaration is not on offer — so clearing the claim, or creating the missing
+  property, is an explicit choice either way.
+
+Caveat on the evidence: the sandbox holds no `alpha_application` records, so the
+404s establish that IDM registers no route for the property, not that a
+populated read would skip it.
+
 **`resourceCollection[].query` is required by the console, not by the API**
 (corrected 2026-08-04 — see `99-quirks-and-open-questions.md`). The console
 additionally writes `id`/`notifySelf`/`label`/`notify`/`propName`; those really
@@ -787,6 +825,11 @@ error. Do not offer `ne` or `in` in script-template query validation.
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-08-21 (dangling reverse properties: the six Ping-shipped
+  half-declared relationships on `*_application` were confirmed absent from the
+  target objects' `schema.properties`, and the relationship sub-resource route
+  for one 404s exactly as an invented field name does — read-only, no records or
+  config altered. See "A dangling reverse stays dangling".)
 - Date: 2026-08-18 (two corrections to the 2026-08-17 field-selector results,
   both from a throwaway `endpoint/aic-fields-probe`, deleted afterwards, reading
   `managed/alpha_user` read-only. **One:** a selected member the record has no
@@ -856,6 +899,9 @@ error. Do not offer `ne` or `in` in script-template query validation.
   `validate: true` + dangling `reversePropertyName` (200, stored);
   `PUT /openidm/managed/alpha_lock/{id}` + `If-None-Match: *` (201/412); bare
   `PUT` update (200, fires onUpdate); `DELETE` (200);
+  `GET /openidm/managed/alpha_user/{id}/roles?_queryFilter=true` (200, empty
+  result) vs `…/applications`, `…/ownerOfApp` and an invented `…/bogusNotAField`
+  (all 404, identical shape);
   `GET …?_queryFilter=true&_fields=_id` (200);
   `GET …?_queryFilter=!(/description eq "lkj")&_pageSize=1` (200);
   `GET …?_queryFilter=not (/description eq "lkj")&_pageSize=1` (400);

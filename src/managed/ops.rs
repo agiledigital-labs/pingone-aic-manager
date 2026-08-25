@@ -401,7 +401,9 @@ fn source_property(spec: &RelationshipSpec) -> Value {
 
 fn reverse_property(spec: &RelationshipSpec) -> Option<Value> {
     let cardinality = match spec.reverse {
-        ReverseCardinality::None => return None,
+        // `Dangling` re-writes the source's claim (see `source_property`) but
+        // owns no property on the target, so there is nothing to build here.
+        ReverseCardinality::None | ReverseCardinality::Dangling => return None,
         ReverseCardinality::One => Cardinality::One,
         ReverseCardinality::Many => Cardinality::Many,
     };
@@ -454,7 +456,10 @@ pub fn apply_relationship_spec(
     }
 
     ensure_doc_property_available(&updated, &spec.source_object, &spec.key)?;
-    if spec.reverse != ReverseCardinality::None {
+    // Only the cardinalities that actually write to the target need its slot
+    // free; `Dangling` leaves the target untouched, so a property appearing
+    // there since the form opened is not this write's collision to report.
+    if spec.reverse.writes_target_property() {
         ensure_doc_property_available(&updated, &spec.target_object, &spec.reverse_key)?;
     }
 
@@ -604,6 +609,69 @@ pub fn parse_ref_properties(property: &Value) -> Vec<RefProperty> {
         .unwrap_or_default()
 }
 
+/// A relationship whose `reversePropertyName` names a property the target
+/// object does not have.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DanglingReverse {
+    pub source_object: String,
+    pub key: String,
+    pub target_object: String,
+    pub reverse_key: String,
+}
+
+/// Every dangling reverse in a whole `config/managed` document, sorted by
+/// source object then key.
+///
+/// `config/managed` runs no cross-object reverse-property validation on write
+/// (`docs/api/10-managed-objects.md`), so a half-declared pair is accepted and
+/// stored — and Ping ships six of them, on the stock `alpha_application` and
+/// `bravo_application` objects. The missing side is absent from the runtime as
+/// well as the schema: `GET /openidm/managed/alpha_user/<id>/applications`
+/// 404s exactly as an invented field name does (verified 2026-08-21). So this
+/// reports a tenant defect, not a gap in anything that reads the schema.
+///
+/// Relationships pointing outside `managed/` (`alpha_user.authzRoles` ->
+/// `internal/role`) are skipped: their target is not in this document, so
+/// there is nothing to check against.
+pub fn dangling_reverses(doc: &Value) -> Vec<DanglingReverse> {
+    let mut found = Vec::new();
+    for object in doc
+        .get("objects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(source_object) = object.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(properties) = crate::managed::state::properties(object) else {
+            continue;
+        };
+        for (key, property) in properties {
+            let Some(parsed) = parse_relationship(property) else {
+                continue;
+            };
+            let Some(reverse_key) = parsed.reverse_key else {
+                continue;
+            };
+            let present = crate::managed::api::object_named(doc, &parsed.target)
+                .ok()
+                .and_then(crate::managed::state::properties)
+                .is_some_and(|target| target.contains_key(&reverse_key));
+            if !present {
+                found.push(DanglingReverse {
+                    source_object: source_object.to_string(),
+                    key: key.clone(),
+                    target_object: parsed.target,
+                    reverse_key,
+                });
+            }
+        }
+    }
+    found.sort_by(|a, b| (&a.source_object, &a.key).cmp(&(&b.source_object, &b.key)));
+    found
+}
+
 pub fn start_record_count(app: &mut App, draft: RenameObjectState) {
     let tenant = draft.tenant_name.clone();
     let old_name = draft.old_name.clone();
@@ -751,21 +819,14 @@ pub fn execute_create_object(app: &mut App, request: CreateObjectRequest, confir
     });
 }
 
-/// Validates and submits the active relationship form as a whole-document write.
-pub fn commit_relationship(app: &mut App) {
-    let Some(form) = app.managed.relationship_form.as_mut() else {
-        return;
-    };
-    let Some(target_object) = form.target_name.clone() else {
-        form.error = Some("Choose a target object".into());
-        return;
-    };
-    if form.reverse != ReverseCardinality::None && form.reverse_key.trimmed().is_empty() {
-        form.error =
-            Some("Reverse property key is required when a reverse relationship is selected".into());
-        return;
-    }
-    let spec = RelationshipSpec {
+/// The relationship form's fields as the pure spec the transforms take. Split
+/// out of `commit_relationship` so a test can drive the whole path — form ->
+/// spec -> document — rather than restating the mapping and drifting from it.
+fn relationship_spec_from_form(
+    form: &crate::managed::state::RelationshipFormState,
+    target_object: String,
+) -> RelationshipSpec {
+    RelationshipSpec {
         source_object: form.source_object.clone(),
         key: form.key.trimmed().to_string(),
         title: form.title.trimmed().to_string(),
@@ -780,7 +841,24 @@ pub fn commit_relationship(app: &mut App) {
         required: form.required,
         validate: form.validate,
         ref_properties: form.ref_properties.clone(),
+    }
+}
+
+/// Validates and submits the active relationship form as a whole-document write.
+pub fn commit_relationship(app: &mut App) {
+    let Some(form) = app.managed.relationship_form.as_mut() else {
+        return;
     };
+    let Some(target_object) = form.target_name.clone() else {
+        form.error = Some("Choose a target object".into());
+        return;
+    };
+    if form.reverse != ReverseCardinality::None && form.reverse_key.trimmed().is_empty() {
+        form.error =
+            Some("Reverse property key is required when a reverse relationship is selected".into());
+        return;
+    }
+    let spec = relationship_spec_from_form(form, target_object);
     if let Err(error) = apply_relationship_spec(&form.original_doc, &spec, form.previous.as_ref()) {
         form.error = Some(error);
         return;
@@ -3848,6 +3926,205 @@ mod tests {
             .map(|name| json!({"name": name, "schema": {"properties": {}, "order": [], "required": []}}))
             .collect::<Vec<_>>()
         })
+    }
+
+    fn one_relationship(target: &str, reverse_key: Option<&str>) -> Value {
+        let mut node = json!({
+            "type": "relationship",
+            "reverseRelationship": reverse_key.is_some(),
+            "resourceCollection": [{"path": target}],
+        });
+        if let Some(reverse_key) = reverse_key {
+            node["reversePropertyName"] = json!(reverse_key);
+        }
+        node
+    }
+
+    fn many_relationship(target: &str, reverse_key: Option<&str>) -> Value {
+        json!({"type": "array", "items": one_relationship(target, reverse_key)})
+    }
+
+    #[test]
+    fn dangling_reverses_flags_only_the_half_declared_pairs() {
+        let doc = json!({"objects": [
+            {"name": "alpha_application", "schema": {"properties": {
+                // Ping's own shape: names a property alpha_user does not have.
+                "members": many_relationship("managed/alpha_user", Some("applications")),
+                "owners": many_relationship("managed/alpha_user", Some("ownerOfApp")),
+                // One-way by declaration — nothing is claimed, nothing is missing.
+                "icon": one_relationship("managed/alpha_user", None),
+                // Target object is not in the document at all.
+                "ghosts": many_relationship("managed/gone", Some("apps")),
+                // Outside `managed/`: the target's schema is not in this
+                // document, so there is nothing to check the name against.
+                "authzRoles": many_relationship("internal/role", Some("authzMembers")),
+                "name": {"type": "string"},
+            }}},
+            {"name": "alpha_user", "schema": {"properties": {
+                "manager": one_relationship("managed/alpha_user", Some("reports")),
+                "reports": many_relationship("managed/alpha_user", Some("manager")),
+            }}},
+        ]});
+
+        let found = dangling_reverses(&doc);
+
+        let named = found
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{}.{} -> {}.{}",
+                    entry.source_object, entry.key, entry.target_object, entry.reverse_key
+                )
+            })
+            .collect::<Vec<_>>();
+        // Sorted by source object then key, so the warning is reproducible.
+        assert_eq!(
+            named,
+            [
+                "alpha_application.ghosts -> gone.apps",
+                "alpha_application.members -> alpha_user.applications",
+                "alpha_application.owners -> alpha_user.ownerOfApp",
+            ]
+        );
+    }
+
+    /// Ping's shape: `alpha_application.members` names `alpha_user.applications`,
+    /// which `alpha_user` does not have. Returns the document and the form an
+    /// operator gets by opening that relationship.
+    fn dangling_pair() -> (Value, crate::managed::state::RelationshipFormState) {
+        let source_property = many_relationship("managed/alpha_user", Some("applications"));
+        let doc = json!({"objects": [
+            {"name": "alpha_application", "schema": {
+                "properties": {"members": source_property.clone()},
+                "order": ["members"],
+                "required": [],
+            }},
+            {"name": "alpha_user", "schema": {
+                "properties": {"userName": {"type": "string"}},
+                "order": ["userName"],
+                "required": [],
+            }},
+        ]});
+        let form = crate::managed::state::RelationshipFormState::edit(
+            "sandbox".into(),
+            "alpha_application".into(),
+            doc.clone(),
+            "members".into(),
+            source_property,
+        )
+        .unwrap();
+        (doc, form)
+    }
+
+    fn saved(doc: &Value, form: &crate::managed::state::RelationshipFormState) -> Value {
+        let target = form.target_name.clone().unwrap();
+        let spec = relationship_spec_from_form(form, target);
+        apply_relationship_spec(doc, &spec, form.previous.as_ref()).unwrap()
+    }
+
+    fn members_node(doc: &Value) -> &Value {
+        &doc["objects"][0]["schema"]["properties"]["members"]["items"]
+    }
+
+    #[test]
+    fn saving_an_untouched_dangling_relationship_decides_nothing() {
+        // Both directions of harm: seeding `One` wrote `applications` onto
+        // `alpha_user`, seeding `None` stripped the source's claim. An operator
+        // who opened the form to change something else asked for neither.
+        let (doc, form) = dangling_pair();
+
+        let updated = saved(&doc, &form);
+
+        assert_eq!(
+            crate::managed::api::object_named(&updated, "alpha_user").unwrap(),
+            crate::managed::api::object_named(&doc, "alpha_user").unwrap(),
+            "the target object must come out untouched"
+        );
+        assert_eq!(members_node(&updated)["reverseRelationship"], json!(true));
+        assert_eq!(
+            members_node(&updated)["reversePropertyName"],
+            json!("applications")
+        );
+        // Still dangling, because that is what the tenant has.
+        assert_eq!(dangling_reverses(&updated).len(), 1);
+    }
+
+    #[test]
+    fn choosing_a_reverse_on_a_dangling_relationship_is_honoured() {
+        // The state is sticky only while untouched: an explicit `None` clears
+        // the claim, an explicit cardinality creates the missing property.
+        let (doc, mut form) = dangling_pair();
+        form.reverse = ReverseCardinality::None;
+
+        let cleared = saved(&doc, &form);
+
+        assert_eq!(members_node(&cleared)["reverseRelationship"], json!(false));
+        assert!(members_node(&cleared).get("reversePropertyName").is_none());
+        assert_eq!(dangling_reverses(&cleared), vec![]);
+        assert_eq!(
+            crate::managed::api::object_named(&cleared, "alpha_user").unwrap(),
+            crate::managed::api::object_named(&doc, "alpha_user").unwrap(),
+            "clearing the claim is a source-only edit"
+        );
+
+        let (doc, mut form) = dangling_pair();
+        form.reverse = ReverseCardinality::Many;
+
+        let created = saved(&doc, &form);
+
+        assert_eq!(
+            created["objects"][1]["schema"]["properties"]["applications"]["type"],
+            json!("array")
+        );
+        assert_eq!(dangling_reverses(&created), vec![]);
+    }
+
+    #[test]
+    fn a_relationship_this_tool_writes_never_dangles() {
+        // Both sides are written by `apply_relationship_spec`, so its output is
+        // the reference the audit should always pass — including the one-way
+        // case, where nothing is claimed. `Dangling` is excluded on purpose: it
+        // restates a claim the tenant already has, so it is the one spec that is
+        // *meant* to leave a dangle.
+        for reverse in [
+            ReverseCardinality::None,
+            ReverseCardinality::One,
+            ReverseCardinality::Many,
+        ] {
+            for forward in [Cardinality::One, Cardinality::Many] {
+                let doc = relationship_doc(&["a", "b"]);
+                let spec = relationship_spec(forward, reverse);
+                let updated = apply_relationship_spec(&doc, &spec, None).unwrap();
+
+                assert_eq!(
+                    dangling_reverses(&updated),
+                    vec![],
+                    "{forward:?}/{reverse:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dangling_reverses_survives_objects_without_a_schema() {
+        let doc = json!({"objects": [
+            {"name": "no_schema"},
+            {"schema": {"properties": {}}},
+            {"name": "a", "schema": {"properties": {
+                "owner": one_relationship("managed/no_schema", Some("owned")),
+            }}},
+        ]});
+
+        assert_eq!(
+            dangling_reverses(&doc),
+            vec![DanglingReverse {
+                source_object: "a".into(),
+                key: "owner".into(),
+                target_object: "no_schema".into(),
+                reverse_key: "owned".into(),
+            }]
+        );
+        assert_eq!(dangling_reverses(&json!({})), vec![]);
     }
 
     fn relationship_spec(forward: Cardinality, reverse: ReverseCardinality) -> RelationshipSpec {
