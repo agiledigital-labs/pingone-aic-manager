@@ -173,6 +173,26 @@ function resourceOwnerId(params) {
 The full working script is
 `../../../aic-demos/capability-tokens/scripts/am/validate-scope.js`.
 
+### The token endpoint does verify the subject token
+
+Worth stating because its neighbour does not (see
+[21-am-policies.md](21-am-policies.md): `?_action=evaluate` checks neither
+signature nor expiry on a `jwt` subject). Take a valid identity token, rewrite
+a claim, leave the signature in place, and present it as `subject_token`:
+
+```
+genuine bob identity token  -> scope: null      (policy said no, correctly)
+FORGED, demoRoles rewritten -> invalid_request  "Invalid token exchange."
+```
+
+The exchange is a token-endpoint operation and validates the subject token
+before anything downstream sees it. So a validate-scope script may treat the
+claims on `subject_token` as trustworthy — which is what makes a mint-time gate
+keyed on a roles claim sound, rather than a decoration a caller can rewrite.
+
+The contrast is the thing to remember: **the token endpoint authenticates, the
+policy endpoint does not.**
+
 ## One client per layer
 
 `may_act` names a **client**, and the acting client authenticates the exchange,
