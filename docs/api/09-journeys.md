@@ -485,6 +485,32 @@ if (callbacks.isEmpty()) {
 }
 ```
 
+**`action.goTo()` records the outcome; it does not stop the script.** There is
+no early return in it, so everything after the call still runs — including a
+second `goTo`, which wins. Verified 2026-08-25 by a registration node whose
+`catch` block did this:
+
+```javascript
+try {
+  openidm.create("managed/bravo_user", null, { … });
+} catch (e) {
+  action.withErrorMessage("Could not register " + email).goTo("error");
+  // execution continues from here
+}
+nodeState.putShared("username", email);
+action.goTo("created");        // …and this is the outcome AM acts on
+```
+
+The create failed, the node reported `created`, **AM issued a session, and the
+`/authenticate` response carried a `tokenId` for a user that does not exist.**
+The failure then surfaced one step later, as `invalid_grant: Resource owner
+authentication failed` from the token endpoint — pointing squarely at the wrong
+component. `return` after the `goTo`.
+
+That combination is worth naming because it defeats the obvious check: a caller
+that treats `tokenId` as proof the journey did its work will believe a node that
+did nothing.
+
 **The `callbacks.getXCallbacks()` getters return the submitted value itself**,
 not a callback object:
 
@@ -563,6 +589,15 @@ No `authId` juggling is needed — post the whole document back as it came.
   redirected only when `Origin` was the tenant. Hosted `/login/` JS chunks
   contain `handleRedirectCallback` → `location.assign`. Probe script restored
   afterwards.
+- Date: 2026-08-25 — realm `bravo`, `CapTokenDemoRegister`.
+- Calls: two-post `/authenticate` conversations against the tree, with and
+  without values on the `NameCallback`. A submission with a blank name reached
+  the `catch` branch's `action.withErrorMessage(...).goTo("error")` and **still**
+  returned a `tokenId` with `successUrl`, because the script continued to a
+  second `goTo("created")`; a `GET managed/bravo_user?_queryFilter=…` confirmed
+  no record was created. With a `return` added after the first `goTo`, the same
+  submission returns the error and a valid submission creates the user with the
+  chosen role. Probe users were deleted afterwards.
 - Date: 2026-08-14 — realm `alpha`, contributed by the sibling
   `terraform-provider-pingone-aic` project.
 - Calls: `GET …/authenticationtrees/trees/{name}` for **every** tree in the
