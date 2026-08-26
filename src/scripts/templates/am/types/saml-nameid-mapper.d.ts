@@ -1,6 +1,8 @@
 // GENERATED from docs/api/bindings/saml2-nameid-mapper-next.json by
 // scripts/gen-binding-types.mjs — do not edit by hand. Context: SAML2_NAMEID_MAPPER.
 // Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.
+// Applied metadata refinements:
+//   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
 
 declare const nameIDScriptHelper: any;
 interface Identity {

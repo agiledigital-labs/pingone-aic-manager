@@ -435,6 +435,9 @@ pub fn leaf_tsconfig(slug: &str) -> String {
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
                 "nextgen-common.d.ts",
+                // Argument types only — a library sees no per-context globals,
+                // but has to be able to name what a caller hands it.
+                "library-args.d.ts",
                 "library.d.ts",
             ],
             Some("./*"),
@@ -871,12 +874,22 @@ mod tests {
         assert!(!legacy.contains("managed/*.d.ts"));
         assert!(!legacy.contains("paths"));
 
-        // Library scripts: next-gen common + library overlay + sibling alias.
+        // Library scripts: next-gen common + the caller-argument types + library
+        // overlay + sibling alias.
         let lib = leaf_tsconfig("lib");
         assert!(lib.contains("../../types/library.d.ts"));
+        assert!(lib.contains("../../types/library-args.d.ts"));
         assert!(lib.contains("../../types/nextgen-common.d.ts"));
         assert!(lib.contains("../../types/managed/*.d.ts"));
         assert!(lib.contains("\"*\": [\"./*\"]"));
+        // Only libraries get them: everywhere else the context's own overlay
+        // declares the same names, and two declarations would collide.
+        for slug in ["decision-node", "decision-node-legacy", "device-match"] {
+            assert!(
+                !leaf_tsconfig(slug).contains("library-args.d.ts"),
+                "{slug} must not pull the library argument types"
+            );
+        }
 
         // OIDC claims is self-contained (no next-gen common set).
         let oidc = leaf_tsconfig("oidc-claims");
@@ -945,5 +958,89 @@ mod tests {
         assert!(!library.contains("declare const nodeState"));
         assert!(!library.contains("declare const requestHeaders"));
         assert!(!library.contains("declare const requestParameters"));
+
+        // Everything else a caller can pass is generated into library-args.d.ts,
+        // which carries the types WITHOUT their bindings.
+        let args = include_str!("templates/am/types/library-args.d.ts");
+        assert!(args.contains("interface CallbacksBuilder"));
+        assert!(args.contains("interface Action"));
+        assert!(args.contains("interface AccessToken"));
+        assert!(
+            !args.contains("declare "),
+            "library-args.d.ts must declare types only, never a binding"
+        );
+        // NodeState is hand-written in library.d.ts; two declarations of it in
+        // one scope would merge into a contradictory `get`.
+        assert!(!args.contains("interface NodeState"));
+    }
+
+    /// Anything a caller can hand a library has to be nameable in library scope
+    /// — the globals stay out, their types cannot. Driven off the context
+    /// metadata rather than a list, so a newly captured context fails here until
+    /// library-args.d.ts is regenerated (the command is in its footer).
+    #[test]
+    fn every_next_gen_binding_type_is_nameable_in_library_scope() {
+        use std::collections::HashSet;
+        use std::path::Path;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let types = root.join("src/scripts/templates/am/types");
+        // Take the file set from the leaf itself, so the two cannot drift.
+        let mut scope = String::new();
+        for name in leaf_tsconfig("lib")
+            .split('"')
+            .filter_map(|part| part.strip_prefix("../../types/"))
+            .filter(|name| name.ends_with(".d.ts") && !name.contains('*'))
+        {
+            scope.push_str(&std::fs::read_to_string(types.join(name)).unwrap());
+        }
+        let ident = |line: &str, keyword: &str| {
+            line.strip_prefix(keyword).map(|rest| {
+                rest.split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or_default()
+                    .to_lowercase()
+            })
+        };
+        // Case-insensitive: `openidm` pascal-cases to `Openidm`, and the shared
+        // set spells it `OpenIdm`.
+        let declared: HashSet<String> = scope
+            .lines()
+            .filter_map(|line| ident(line, "interface ").or_else(|| ident(line, "type ")))
+            .collect();
+
+        let mut checked = 0;
+        for entry in std::fs::read_dir(root.join("docs/api/bindings")).unwrap() {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            // Only next-gen contexts can require() a library, and the library's
+            // own bindings are already the shared set.
+            if !file.ends_with("-next.json") || file == "library-next.json" {
+                continue;
+            }
+            let ctx: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            for binding in ctx["bindings"].as_array().unwrap() {
+                let name = binding["name"].as_str().unwrap();
+                // Only object bindings with enumerated members get an interface;
+                // the rest are scalars, or `RequestMap` (aliased in library.d.ts).
+                if binding["javaScriptType"] != "object"
+                    || binding["elements"]
+                        .as_array()
+                        .is_none_or(|elements| elements.is_empty())
+                {
+                    continue;
+                }
+                let wanted = name.to_lowercase();
+                assert!(
+                    declared.contains(&wanted),
+                    "{file}: `{name}` can be passed into a library, but library \
+                     scope declares no type named it — regenerate library-args.d.ts"
+                );
+                checked += 1;
+            }
+        }
+        // A glob that stops matching would make this vacuous.
+        assert!(checked > 20, "only {checked} bindings checked");
     }
 }

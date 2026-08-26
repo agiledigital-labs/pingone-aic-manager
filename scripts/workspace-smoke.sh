@@ -52,7 +52,7 @@ JSON
 cat > "$WS/am/alpha/lib/tsconfig.json" <<'JSON'
 {
   "extends": "../../tsconfig.json",
-  "include": ["./**/*", "../../types/rhino-1.7.14.d.ts", "../../types/common.d.ts", "../../types/nextgen-common.d.ts", "../../types/library.d.ts"],
+  "include": ["./**/*", "../../types/rhino-1.7.14.d.ts", "../../types/common.d.ts", "../../types/nextgen-common.d.ts", "../../types/library-args.d.ts", "../../types/library.d.ts"],
   "compilerOptions": { "paths": { "*": ["./*"] } }
 }
 JSON
@@ -61,11 +61,25 @@ cat > "$WS/am/alpha/decision-node/Sample.cjs" <<'JS'
 var name = nodeState.get("username");
 logger.info("hello {}", name);
 var lib = require("MyLib");
+lib.prompt(callbacksBuilder, "who are you?");
 action.goTo(lib.ok ? "true" : "false");
 JS
+# The factory annotates its parameters, which is the whole point of
+# library-args.d.ts: a library sees no `callbacksBuilder` binding, but has to be
+# able to name its type to accept one.
 cat > "$WS/am/alpha/lib/MyLib.cjs" <<'JS'
 const ok = true;
+
+/**
+ * @param {CallbacksBuilder} callbacksBuilder
+ * @param {string} message
+ */
+function prompt(callbacksBuilder, message) {
+  callbacksBuilder.textOutputCallback(0, message);
+}
+
 exports.ok = ok;
+exports.prompt = prompt;
 JS
 cat > "$WS/am/alpha/lib/MyLib.js" <<'JS'
 export * from "./MyLib.cjs";

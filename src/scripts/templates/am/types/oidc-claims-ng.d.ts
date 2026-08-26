@@ -1,6 +1,8 @@
 // GENERATED from docs/api/bindings/oidc-claims-next.json by
 // scripts/gen-binding-types.mjs — do not edit by hand. Context: OIDC_CLAIMS_NEXT_GEN.
 // Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.
+// Applied metadata refinements:
+//   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
 
 declare const requestProperties: object;
 declare const clientProperties: object;
