@@ -450,7 +450,8 @@ outside that vocabulary — `policies`, the console's `id`/`notify`/`notifySelf`
 the `required`/`labelText` on a custom `_refProperties` definition, a resource
 collection entry pointing outside `managed/` — is carried across from the
 property the edit opened rather than reconstructed (`ops::carry_unmodelled`).
-Keys the form _does_ model are still rewritten from the form, so
+The property also goes back to the `schema.order` slot it came from instead of
+to the end. Keys the form _does_ model are still rewritten from the form, so
 clearing a title clears it and repointing a target drops the entry it left.
 
 **`resourceCollection[].query` is required by the console, not by the API**
