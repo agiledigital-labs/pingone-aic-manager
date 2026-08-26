@@ -444,6 +444,15 @@ Caveat on the evidence: the sandbox holds no `alpha_application` records, so the
 404s establish that IDM registers no route for the property, not that a
 populated read would skip it.
 
+**An edit keeps what the editor does not model.** Both surfaces rebuild the
+property out of typed fields (`managed::ops::source_property`), so every key
+outside that vocabulary — `policies`, the console's `id`/`notify`/`notifySelf`,
+the `required`/`labelText` on a custom `_refProperties` definition, a resource
+collection entry pointing outside `managed/` — is carried across from the
+property the edit opened rather than reconstructed (`ops::carry_unmodelled`).
+Keys the form _does_ model are still rewritten from the form, so
+clearing a title clears it and repointing a target drops the entry it left.
+
 **`resourceCollection[].query` is required by the console, not by the API**
 (corrected 2026-08-04 — see `99-quirks-and-open-questions.md`). The console
 additionally writes `id`/`notifySelf`/`label`/`notify`/`propName`; those really
