@@ -589,6 +589,10 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                                 println!("← pulled {full} (resolved: remote; local backed up)");
                             }
                             ConflictChoice::Skip => conflicts.push(full),
+                            ConflictChoice::Stop => {
+                                println!("\nstopped.");
+                                return Ok(());
+                            }
                         }
                     }
                 }
@@ -1312,6 +1316,10 @@ fn pick(
 }
 
 enum ConflictChoice {
+    /// Ctrl-C at the prompt. `inquire` is in raw mode, so the terminal never
+    /// raises SIGINT and no signal handler sees it — it arrives only as this,
+    /// and reading it as "skip" is what made Ctrl-C unable to stop a watch.
+    Stop,
     Local,
     Remote,
     Skip,
@@ -1352,11 +1360,8 @@ fn prompt_conflict(full: &str, allow_local: bool) -> Result<ConflictChoice> {
         } else {
             ConflictChoice::Skip
         }),
-        Err(
-            InquireError::OperationCanceled
-            | InquireError::OperationInterrupted
-            | InquireError::NotTTY,
-        ) => Ok(ConflictChoice::Skip),
+        Err(InquireError::OperationInterrupted) => Ok(ConflictChoice::Stop),
+        Err(InquireError::OperationCanceled | InquireError::NotTTY) => Ok(ConflictChoice::Skip),
         Err(e) => Err(Error::Config(format!("conflict prompt: {e}"))),
     }
 }
@@ -1451,23 +1456,45 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
         tree.display()
     );
 
-    loop {
+    // One handler for the whole run. A fresh `tokio::signal::ctrl_c()` per
+    // `select!` only remembers signals delivered while that particular future
+    // is alive, so every Ctrl-C landing in a gap — mid-debounce, or while
+    // `inquire` owns the terminal and swallows the interrupt — was dropped.
+    // Latching it once means a Ctrl-C is never missed, only acted on late.
+    let stop = Stop::latch_ctrl_c();
+
+    'watching: loop {
         let first = tokio::select! {
-            _ = tokio::signal::ctrl_c() => { println!("\nstopped watching."); break; }
+            _ = stop.wait() => break,
             ev = rx.recv() => match ev { Some(e) => e, None => break },
         };
-        // Debounce: coalesce the burst of events an editor emits per save.
+        // Debounce: coalesce the burst of events an editor emits per save,
+        // under a ceiling — a tree something else is writing to continuously
+        // must not hold the loop open past the next Ctrl-C.
         let mut changed = std::collections::BTreeSet::new();
         collect_cjs(&mut changed, first);
-        while let Ok(Some(ev)) =
-            tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await
-        {
-            collect_cjs(&mut changed, ev);
+        let ceiling = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            tokio::select! {
+                _ = stop.wait() => break,
+                _ = tokio::time::sleep_until(ceiling) => break,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => break,
+                ev = rx.recv() => match ev {
+                    Some(e) => collect_cjs(&mut changed, e),
+                    None => break,
+                },
+            }
+        }
+        if stop.stopped() {
+            break;
         }
         // Re-read each round: the save that woke us may have been the
         // TypeScript build emitting a brand-new endpoint plus its manifest.
         let declared = script::ts_project::declared_endpoints(tenant);
         for path in changed {
+            if stop.stopped() {
+                break 'watching;
+            }
             let Some((ns, name)) = workspace_path_ref(&tree, &path) else {
                 continue;
             };
@@ -1480,7 +1507,7 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                     if ns.kind != script::Kind::IdmEndpoint || !declared.contains(&name) {
                         continue;
                     }
-                    match create_generated(tenant, &ns, &name, &path, yes).await {
+                    match create_generated(tenant, &ns, &name, &path, yes, &stop).await {
                         Ok(()) => {
                             println!("{}", watch_green(&format!("+ created {full}")));
                         }
@@ -1498,7 +1525,7 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
             let push = script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes);
             tokio::pin!(push);
             let result = tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
+                _ = stop.wait() => {
                     println!("\nstopped watching.");
                     return Ok(());
                 }
@@ -1524,7 +1551,7 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                             );
                             tokio::pin!(push);
                             let result = tokio::select! {
-                                _ = tokio::signal::ctrl_c() => {
+                                _ = stop.wait() => {
                                     println!("\nstopped watching.");
                                     return Ok(());
                                 }
@@ -1554,7 +1581,7 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                             );
                             tokio::pin!(pull);
                             let result = tokio::select! {
-                                _ = tokio::signal::ctrl_c() => {
+                                _ = stop.wait() => {
                                     println!("\nstopped watching.");
                                     return Ok(());
                                 }
@@ -1575,6 +1602,10 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                             "{}",
                             watch_red(&format!("! {full}: remote changed — skipped"))
                         ),
+                        ConflictChoice::Stop => {
+                            println!("\nstopped watching.");
+                            return Ok(());
+                        }
                     }
                 }
                 Err(e) if is_fatal_watch_error(&e) => {
@@ -1584,6 +1615,9 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                 Err(e) => eprintln!("! {full}: {e}"),
             }
         }
+    }
+    if stop.stopped() {
+        println!("\nstopped watching.");
     }
     Ok(())
 }
@@ -1603,6 +1637,7 @@ async fn create_generated(
     name: &str,
     path: &std::path::Path,
     yes: bool,
+    stop: &Stop,
 ) -> Result<()> {
     let source =
         std::fs::read(path).map_err(|e| Error::Config(format!("read {}: {e}", path.display())))?;
@@ -1612,8 +1647,66 @@ async fn create_generated(
     let create = script::sync::create(tenant, ns.realm_arg(), &new_script, yes);
     tokio::pin!(create);
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => Err(Error::Config("stopped watching.".into())),
+        _ = stop.wait() => Err(Error::Config("stopped watching.".into())),
         result = &mut create => prod_hint(result).map(|_| ()),
+    }
+}
+
+/// A Ctrl-C that is remembered rather than raced for.
+///
+/// `tokio::signal::ctrl_c()` builds a fresh listener each call and only sees
+/// signals that arrive while its future is being polled. A loop that awaits a
+/// new one per `select!` therefore drops every interrupt landing in between —
+/// and `inquire` maps the one arriving at a prompt to "skip", so during a busy
+/// watch there may be no window at all in which Ctrl-C reaches this process.
+/// Latching it once makes the signal sticky: whenever the loop next looks, it
+/// is still set.
+#[derive(Clone)]
+struct Stop {
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    notify: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl Stop {
+    fn new() -> Self {
+        Self {
+            stopped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    /// Latch the stop. Waking waiters is a courtesy — the flag is the record,
+    /// so a caller that was not waiting at the time still sees it later.
+    fn trip(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    fn latch_ctrl_c() -> Self {
+        let stop = Self::new();
+        let handle = stop.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                handle.trip();
+            }
+        });
+        stop
+    }
+
+    fn stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Resolves once Ctrl-C has been seen — including before this was called.
+    /// The `notified()` future is created before the flag is read, so a signal
+    /// arriving between the two still wakes it.
+    async fn wait(&self) {
+        let notified = self.notify.notified();
+        if self.stopped() {
+            return;
+        }
+        notified.await;
     }
 }
 
@@ -1909,6 +2002,32 @@ mod tests {
         assert!(err.contains("30 days"), "{err}");
         // Zero is not "no limit".
         assert!(validate_minutes(0).is_err());
+    }
+
+    /// The bug this replaced: a fresh `tokio::signal::ctrl_c()` per `select!`
+    /// only sees signals delivered while that future is polled, so an interrupt
+    /// arriving in a gap was dropped and the watcher ran on.
+    #[tokio::test]
+    async fn a_stop_that_arrives_with_nobody_waiting_is_still_seen() {
+        let stop = Stop::new();
+        stop.trip();
+        assert!(stop.stopped());
+        tokio::time::timeout(std::time::Duration::from_secs(5), stop.wait())
+            .await
+            .expect("a stop latched before the wait must resolve at once");
+    }
+
+    #[tokio::test]
+    async fn a_waiter_wakes_on_a_later_stop() {
+        let stop = Stop::new();
+        let waiting = stop.clone();
+        let waiter = tokio::spawn(async move { waiting.wait().await });
+        tokio::task::yield_now().await;
+        stop.trip();
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("a waiter must wake when the stop is tripped")
+            .expect("waiter task");
     }
 
     #[test]
