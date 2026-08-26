@@ -4,8 +4,8 @@
 // Applied metadata refinements:
 //   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
 
-declare const requestProperties: object;
-declare const clientProperties: object;
+declare const requestProperties: RequestProperties;
+declare const clientProperties: ClientProperties;
 interface EmailService {
   send(to: StringLike, subject: StringLike, body: StringLike): void;
   send(

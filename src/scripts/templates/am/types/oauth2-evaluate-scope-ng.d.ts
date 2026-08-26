@@ -11,8 +11,8 @@
 // tokens — keep it small.
 type TokenFieldValue = StringLike | number | boolean | any[] | object;
 
-declare const requestProperties: object;
-declare const clientProperties: object;
+declare const requestProperties: RequestProperties;
+declare const clientProperties: ClientProperties;
 interface AccessToken {
   getField(key: StringLike): any;
   toMap(): object;

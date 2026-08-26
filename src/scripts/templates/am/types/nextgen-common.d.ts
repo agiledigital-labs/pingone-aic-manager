@@ -491,6 +491,59 @@ type AmUserAttribute =
   | "oathDeviceProfiles"
   | "pushDeviceProfiles";
 
+// ---- OAuth2 request / client context -------------------------------------
+//
+// `requestProperties` and `clientProperties` are bound in every next-gen OAuth2
+// context (access-token modification, evaluate/validate scope, may-act,
+// authorize-endpoint data provider, DCR) and in next-gen OIDC claims. The editor
+// metadata reports both as an `object` with **no enumerated members**, which
+// generates `declare const requestProperties: object` — unusable under `strict`:
+// no member read, no indexing, no autocomplete. They are named here instead.
+//
+// Verified members, from a live next-gen validate-scope script on the
+// token-exchange and password grants (docs/api/22-token-exchange.md, 2026-08-25
+// — the working script is `~/w/aic-demos/capability-tokens/scripts/am/`):
+//
+//     var params = requestProperties.requestParams;   // property access, not .get()
+//     var v = params[name];                           // still a Java multimap inside
+//     return v && v.length ? String(v[0]) : null;     // so a Java list inside
+//
+// plus `requestHeaders` (which carries the client's `Authorization: Basic …`)
+// and `requestUri`. `realm`, and every member of `ClientProperties`, are carried
+// over from the LEGACY OIDC claims bindings in oidc-claims.d.ts and are NOT
+// verified on the next-gen engine; neither is DCR's `requestProperties`, which
+// shares the binding name and nothing else that has been checked here.
+//
+// The lists are `JavaArray<StringLike>`, not `JavaArray<JavaString>`: they hold
+// Java strings, but `JavaArray<T>.contains` takes a `T`, so the tighter element
+// type rejects the ordinary `allowedScopes.contains("openid")`.
+//
+// The index signature is what keeps that honest. Members named below are the
+// ones with evidence and get autocomplete; anything else is still reachable as
+// `requestProperties["whatever"]`, because the base tsconfig sets
+// `noPropertyAccessFromIndexSignature` and draws the line there.
+interface RequestProperties {
+  /** Query/form parameters of the OAuth2 request. Does **not** carry
+   * `password` or `client_secret` (verified on the `password` grant). */
+  requestParams: Record<string, JavaArray<StringLike>>;
+  /** Request headers, client credentials included — keep them out of logs. */
+  requestHeaders: Record<string, JavaArray<StringLike>>;
+  requestUri: StringLike;
+  /** Legacy-derived; not verified next-gen. */
+  realm: StringLike;
+  [key: string]: any;
+}
+
+// Legacy-derived in full — see the note above. Only `clientId` is a safe
+// assumption; the three lists are the legacy OIDC claims shape.
+interface ClientProperties {
+  clientId: StringLike;
+  allowedGrantTypes: JavaArray<StringLike>;
+  allowedScopes: JavaArray<StringLike>;
+  allowedResponseTypes: JavaArray<StringLike>;
+  [key: string]: any;
+}
+
 // Only next-generation scripts can require() library scripts (resolved via the
 // leaf tsconfig `paths` alias to ../lib/*). `require` is a module mechanism, not
 // a listed binding, so it's shared here across all next-gen contexts.

@@ -21,6 +21,15 @@ import { basename } from "node:path";
 
 const REQUEST_MAPS = new Set(["requestHeaders", "requestParameters", "requestCookies"]);
 
+// Bindings the metadata reports as an `object` with no enumerated members, but
+// whose shape is documented and named in nextgen-common.d.ts. Generated
+// verbatim they become `declare const requestProperties: object`, and under
+// `strict` that is unusable — no member read, no indexing, no autocomplete.
+const NAMED_OPAQUE = {
+  requestProperties: "RequestProperties",
+  clientProperties: "ClientProperties",
+};
+
 // Ping's editor metadata loses a little useful type information. Keep every
 // correction here, keyed by generated interface + member, so each overlay that
 // exposes one of these bindings gets the same faithful declaration.
@@ -198,6 +207,10 @@ function perContext(jsonPath, skip) {
     }
     if (REQUEST_MAPS.has(b.name)) {
       out.push(`declare const ${b.name}: RequestMap;`);
+      continue;
+    }
+    if (NAMED_OPAQUE[b.name]) {
+      out.push(`declare const ${safe(b.name)}: ${NAMED_OPAQUE[b.name]};`);
       continue;
     }
     if (!b.elements || b.elements.length === 0) {

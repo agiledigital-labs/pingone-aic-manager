@@ -4,8 +4,8 @@
 // Applied metadata refinements:
 //   - `Identity.getAttributeValues` adds the typed `AmUserAttribute` overload first.
 
-declare const requestProperties: object;
-declare const clientProperties: object;
+declare const requestProperties: RequestProperties;
+declare const clientProperties: ClientProperties;
 declare const claimsLocales: any[];
 declare const requestedClaims: object;
 interface Identity {
