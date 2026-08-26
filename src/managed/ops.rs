@@ -418,6 +418,229 @@ fn reverse_property(spec: &RelationshipSpec) -> Option<Value> {
     ))
 }
 
+// ── Carrying what the relationship form does not model ───────────────────
+//
+// These lists are what says which keys the form owns. A key the builder
+// writes only *sometimes* — `title` when it is non-empty, `reversePropertyName`
+// when there is a reverse — has to be listed, or clearing it in the form would
+// restore the stored value instead of removing it.
+
+/// Keys `wrap_with_attrs` writes on the outer property.
+const ATTRIBUTE_KEYS: [&str; 6] = [
+    "title",
+    "description",
+    "searchable",
+    "viewable",
+    "userEditable",
+    "returnByDefault",
+];
+
+/// Keys the has-many array wrapper owns.
+const WRAPPER_KEYS: [&str; 2] = ["type", "items"];
+
+/// Keys that belong to the managed property rather than to the relationship
+/// node, even when the property *is* the node — so a flip to has-many carries
+/// them out to the array wrapper rather than into `items`. `policies` is a
+/// constraint on the property, sitting where `title` and `searchable` sit; it
+/// is not part of the node's shape.
+const SCHEMA_PROPERTY_KEYS: [&str; 1] = ["policies"];
+
+/// Keys `build_relationship_node` writes on the relationship node.
+const NODE_KEYS: [&str; 6] = [
+    "type",
+    "validate",
+    "reverseRelationship",
+    "reversePropertyName",
+    "resourceCollection",
+    "properties",
+];
+
+fn is_many(property: &Value) -> bool {
+    property.get("type").and_then(Value::as_str) == Some("array")
+}
+
+/// The relationship node inside a property: the property itself for has-one,
+/// its `items` for has-many (`docs/api/10-managed-objects.md`).
+fn relationship_node(property: &Value) -> Option<&Value> {
+    if is_many(property) {
+        property.get("items")
+    } else {
+        Some(property)
+    }
+}
+
+fn relationship_node_mut(property: &mut Value) -> Option<&mut Value> {
+    if is_many(property) {
+        property.get_mut("items")
+    } else {
+        Some(property)
+    }
+}
+
+/// Copies the keys of `from` that `into` neither carries nor models.
+fn carry_extras(from: &Value, into: &mut Value, modelled: impl Fn(&str) -> bool) {
+    let Some(from) = from.as_object() else {
+        return;
+    };
+    let Some(into) = into.as_object_mut() else {
+        return;
+    };
+    for (key, value) in from {
+        if modelled(key) || into.contains_key(key) {
+            continue;
+        }
+        into.insert(key.clone(), value.clone());
+    }
+}
+
+/// Restores what the rebuilt property does not model from the property the edit
+/// started from.
+///
+/// [`source_property`] and [`reverse_property`] reconstruct a relationship out
+/// of the form's typed fields, so any key neither the form nor the builder
+/// knows about — `policies`, the console's cosmetics, whatever a later AIC
+/// release adds — is absent from the rebuild and would be dropped by an
+/// otherwise untouched save. Keys the builder *does* model stay as it wrote
+/// them, so clearing a title still clears it and dropping a reverse still
+/// removes `reversePropertyName`.
+///
+/// `repointed_from` is the resource-collection path this edit is moving away
+/// from, if any. Every other entry the rebuild does not mention is kept: the
+/// form models one target, so collapsing a collection that names several (an
+/// `internal/role` alongside a `managed/` one) is not a change the operator
+/// asked for.
+fn carry_unmodelled(old: &Value, rebuilt: &mut Value, repointed_from: Option<&str>) {
+    let old_is_many = is_many(old);
+    // The node first: when the rebuild is has-one the outer property and the
+    // node are one object, and the node's own value is the one that belongs
+    // there. A has-one *source* is likewise the relationship node itself, so
+    // its extras follow the node through a flip to has-many — apart from
+    // `SCHEMA_PROPERTY_KEYS`, which belong to the property either way.
+    if let (Some(old_node), Some(node)) = (relationship_node(old), relationship_node_mut(rebuilt)) {
+        carry_extras(old_node, node, |key| {
+            NODE_KEYS.contains(&key)
+                || (!old_is_many
+                    && (ATTRIBUTE_KEYS.contains(&key)
+                        || WRAPPER_KEYS.contains(&key)
+                        || SCHEMA_PROPERTY_KEYS.contains(&key)))
+        });
+        carry_resource_collection(old_node, node, repointed_from);
+        carry_ref_properties(old_node, node);
+    }
+    carry_extras(old, rebuilt, |key| {
+        ATTRIBUTE_KEYS.contains(&key)
+            || WRAPPER_KEYS.contains(&key)
+            || (!old_is_many && !SCHEMA_PROPERTY_KEYS.contains(&key))
+    });
+}
+
+/// Keeps the resource collection the tenant has rather than the one the builder
+/// would invent.
+///
+/// `label` and `query` are the builder's defaults for an entry it is creating,
+/// not values the form collected, and the console writes
+/// `id`/`notify`/`notifySelf`/`propName` besides. So an entry still pointing
+/// where an old entry pointed is kept whole and the rebuild fills only the keys
+/// it lacks — which is how a collection missing the console's `query` still
+/// gains one.
+fn carry_resource_collection(old_node: &Value, node: &mut Value, repointed_from: Option<&str>) {
+    let Some(old_entries) = old_node.get("resourceCollection").and_then(Value::as_array) else {
+        return;
+    };
+    let Some(entries) = node
+        .get_mut("resourceCollection")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for entry in entries.iter_mut() {
+        let Some(path) = entry
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let Some(old_entry) = old_entries
+            .iter()
+            .find(|old| old.get("path").and_then(Value::as_str) == Some(path.as_str()))
+        else {
+            continue;
+        };
+        let mut kept = old_entry.clone();
+        carry_extras(entry, &mut kept, |_| false);
+        *entry = kept;
+    }
+    for old_entry in old_entries {
+        let path = old_entry.get("path").and_then(Value::as_str);
+        if path.is_none() || path == repointed_from {
+            continue;
+        }
+        if entries
+            .iter()
+            .any(|entry| entry.get("path").and_then(Value::as_str) == path)
+        {
+            continue;
+        }
+        entries.push(old_entry.clone());
+    }
+}
+
+/// Restores the parts of `_ref` and `_refProperties` the form does not collect.
+///
+/// The builder writes `type`/`label`/`propName` per custom definition; the
+/// console also writes `required` and `labelText`
+/// (`docs/api/10-managed-objects.md`).
+fn carry_ref_properties(old_node: &Value, node: &mut Value) {
+    let Some(old_properties) = old_node.get("properties").and_then(Value::as_object) else {
+        return;
+    };
+    let Some(properties) = node.get_mut("properties").and_then(Value::as_object_mut) else {
+        return;
+    };
+    // A member the builder never writes — `_ref` and `_refProperties` are all it
+    // knows — is the tenant's, so it survives. A *missing custom definition* is
+    // not: those are `spec.ref_properties`, and dropping one is intent.
+    for (key, definition) in old_properties {
+        if !properties.contains_key(key) {
+            properties.insert(key.clone(), definition.clone());
+        }
+    }
+    for (key, definition) in properties.iter_mut() {
+        if let Some(old) = old_properties.get(key) {
+            carry_extras(old, definition, |key| matches!(key, "type" | "properties"));
+        }
+    }
+    let (Some(old_definitions), Some(definitions)) = (
+        old_properties
+            .get("_refProperties")
+            .and_then(|value| value.pointer("/properties"))
+            .and_then(Value::as_object),
+        properties
+            .get_mut("_refProperties")
+            .and_then(|value| value.pointer_mut("/properties"))
+            .and_then(Value::as_object_mut),
+    ) else {
+        return;
+    };
+    for (name, definition) in definitions.iter_mut() {
+        if let Some(old) = old_definitions.get(name) {
+            carry_extras(old, definition, |key| {
+                matches!(key, "type" | "label" | "propName")
+            });
+        }
+    }
+}
+
+/// The property `object` holds at `key`, if it has one.
+fn existing_property(doc: &Value, object: &str, key: &str) -> Option<Value> {
+    crate::managed::api::object_named(doc, object)
+        .ok()
+        .and_then(crate::managed::state::properties)
+        .and_then(|properties| properties.get(key))
+        .cloned()
+}
+
 /// Applies relationship intent to a complete managed config document.
 ///
 /// The old pair is removed before collision checks and insertion, which keeps
@@ -447,6 +670,19 @@ pub fn apply_relationship_spec(
         }
     }
 
+    // Read the pair this edit started from before it is removed: everything the
+    // form does not model is carried across from it.
+    let old_source = previous
+        .and_then(|previous| existing_property(doc, &spec.source_object, &previous.old_key));
+    let old_reverse = previous.and_then(|previous| {
+        existing_property(
+            doc,
+            &previous.old_target,
+            previous.old_reverse_key.as_deref()?,
+        )
+    });
+    let repointed_from = previous.map(|previous| format!("managed/{}", previous.old_target));
+
     let mut updated = doc.clone();
     if let Some(previous) = previous {
         remove_relationship_property(&mut updated, &spec.source_object, &previous.old_key, true)?;
@@ -465,11 +701,20 @@ pub fn apply_relationship_spec(
 
     let source = crate::managed::api::object_named_mut(&mut updated, &spec.source_object)
         .map_err(|error| error.to_string())?;
-    properties_mut(source)?.insert(spec.key.clone(), source_property(spec));
+    let mut property = source_property(spec);
+    if let Some(old) = &old_source {
+        carry_unmodelled(old, &mut property, repointed_from.as_deref());
+    }
+    properties_mut(source)?.insert(spec.key.clone(), property);
     append_order_key(source, &spec.key)?;
     set_required(source, &spec.key, spec.required)?;
 
-    if let Some(property) = reverse_property(spec) {
+    if let Some(mut property) = reverse_property(spec) {
+        // The reverse end points back at the source object, which this form
+        // cannot change, so none of its entries is ever repointed away.
+        if let Some(old) = &old_reverse {
+            carry_unmodelled(old, &mut property, None);
+        }
         let target = crate::managed::api::object_named_mut(&mut updated, &spec.target_object)
             .map_err(|error| error.to_string())?;
         properties_mut(target)?.insert(spec.reverse_key.clone(), property);
@@ -4429,6 +4674,208 @@ mod tests {
             repointed["objects"][0]["schema"]["properties"]["owner"]["resourceCollection"][0]["path"],
             json!("managed/c")
         );
+    }
+
+    /// The spec a form would submit for a relationship it did not touch, plus
+    /// the one custom `_refProperties` definition `decorate` annotates.
+    fn decorated_spec(forward: Cardinality) -> RelationshipSpec {
+        let mut spec = relationship_spec(forward, ReverseCardinality::Many);
+        spec.ref_properties.push(RefProperty {
+            name: "grantType".into(),
+            label: "Grant".into(),
+            kind: crate::managed::state::RefPropType::String,
+        });
+        spec
+    }
+
+    /// Dresses a freshly built pair in what a console-created relationship also
+    /// carries and this form does not model: `policies`, the node's `id`, the
+    /// resource collection's `notify`/`label`/`query.fields`, a second
+    /// collection entry outside `managed/`, and the console's extra
+    /// `_refProperties` attributes. The neighbouring scalar pins `schema.order`.
+    /// Assumes the pair was built with a has-many reverse.
+    fn decorate(mut doc: Value, forward: Cardinality) -> Value {
+        let source = &mut doc["objects"][0]["schema"];
+        source["properties"]["first"] = json!({"type": "string"});
+        source["order"] = json!(["first", "owner"]);
+        let property = &mut source["properties"]["owner"];
+        property["policies"] = json!([{"policyId": "cannot-contain-characters"}]);
+        if forward == Cardinality::Many {
+            // Only a has-many property has a level of its own to collide at.
+            property["collides"] = json!("wrapper");
+        }
+        let node = if forward == Cardinality::Many {
+            &mut property["items"]
+        } else {
+            property
+        };
+        node["id"] = json!("owner");
+        node["notifySelf"] = json!(false);
+        node["collides"] = json!("node");
+        node["properties"]["_futureMetadata"] = json!({"whatever": true});
+        node["properties"]["_ref"]["description"] = json!("Relationship reference");
+        node["properties"]["_refProperties"]["properties"]["grantType"]["required"] = json!(false);
+        node["properties"]["_refProperties"]["properties"]["grantType"]["labelText"] =
+            json!("Grant type");
+        let collection = &mut node["resourceCollection"];
+        collection[0]["id"] = json!("b");
+        collection[0]["notify"] = json!(true);
+        collection[0]["label"] = json!("Owner of");
+        collection[0]["query"]["fields"] = json!(["userName"]);
+        collection
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"path": "internal/role", "label": "Internal role"}));
+
+        let target = &mut doc["objects"][1]["schema"];
+        target["properties"]["firstB"] = json!({"type": "string"});
+        target["order"] = json!(["firstB", "owned"]);
+        target["properties"]["owned"]["policies"] = json!([]);
+        target["properties"]["owned"]["items"]["resourceCollection"][0]["notify"] = json!(false);
+        doc
+    }
+
+    /// A save that changes nothing must write nothing. The builders reconstruct
+    /// a relationship from the form's typed fields, so every key they do not
+    /// model — and the property's slot in `schema.order` — is lost unless it is
+    /// carried across. Nothing on this tenant depends on those keys today (every
+    /// `policies` is `[]`), which is exactly why the loss would go unnoticed.
+    #[test]
+    fn an_untouched_relationship_edit_rewrites_nothing() {
+        for forward in [Cardinality::One, Cardinality::Many] {
+            let spec = decorated_spec(forward);
+            let created =
+                apply_relationship_spec(&relationship_doc(&["a", "b"]), &spec, None).unwrap();
+            let tenant = decorate(created, forward);
+            let previous = PreviousRelationship {
+                old_key: "owner".into(),
+                old_target: "b".into(),
+                old_reverse_key: Some("owned".into()),
+            };
+
+            let saved = apply_relationship_spec(&tenant, &spec, Some(&previous)).unwrap();
+
+            assert_eq!(saved, tenant, "{forward:?}");
+        }
+    }
+
+    /// The other half of the same rule: carrying the old property across must
+    /// not smother what the operator did change. Each assertion here fails for
+    /// an implementation that simply keeps the old property.
+    #[test]
+    fn a_relationship_edit_still_applies_what_the_form_changed() {
+        let created = apply_relationship_spec(
+            &relationship_doc(&["a", "b", "c"]),
+            &decorated_spec(Cardinality::One),
+            None,
+        )
+        .unwrap();
+        let tenant = decorate(created, Cardinality::One);
+        let mut spec = decorated_spec(Cardinality::One);
+        spec.title = String::new();
+        spec.target_object = "c".into();
+        spec.validate = false;
+        spec.ref_properties.clear();
+        let previous = PreviousRelationship {
+            old_key: "owner".into(),
+            old_target: "b".into(),
+            old_reverse_key: Some("owned".into()),
+        };
+
+        let saved = apply_relationship_spec(&tenant, &spec, Some(&previous)).unwrap();
+        let property = &saved["objects"][0]["schema"]["properties"]["owner"];
+
+        assert!(property["title"].is_null());
+        assert_eq!(property["validate"], json!(false));
+        // The target it was repointed away from goes; the entry the form never
+        // modelled stays.
+        assert_eq!(
+            property["resourceCollection"],
+            json!([
+                {
+                    "path": "managed/c",
+                    "label": "c",
+                    "query": {"fields": [], "queryFilter": "true", "sortKeys": []},
+                },
+                {"path": "internal/role", "label": "Internal role"},
+            ])
+        );
+        assert_eq!(
+            property["policies"],
+            json!([{"policyId": "cannot-contain-characters"}])
+        );
+        assert_eq!(property["id"], json!("owner"));
+        // A custom `_refProperties` definition is modelled, so dropping it is
+        // the operator's intent; a member of `properties` the builder never
+        // writes is not modelled and stays.
+        let ref_properties = &property["properties"]["_refProperties"]["properties"];
+        assert!(ref_properties["grantType"].is_null());
+        assert_eq!(ref_properties["_id"], json!({"type": "string"}));
+        assert_eq!(
+            property["properties"]["_futureMetadata"],
+            json!({"whatever": true})
+        );
+        // The reverse moved objects, so it takes its unmodelled keys with it.
+        assert!(saved["objects"][1]["schema"]["properties"]["owned"].is_null());
+        assert_eq!(
+            saved["objects"][2]["schema"]["properties"]["owned"]["policies"],
+            json!([])
+        );
+    }
+
+    /// A cardinality flip restructures the property, so an unmodelled key has to
+    /// be *placed*, not merely kept. `policies` belongs to the managed property
+    /// at either cardinality; the console's node metadata belongs to the
+    /// relationship node, which for has-one is the property itself. Where the
+    /// old shape carried a key at both levels, the node's copy is the one that
+    /// belongs on a merged has-one object.
+    #[test]
+    fn a_cardinality_flip_places_unmodelled_keys_by_level() {
+        for (from, to) in [
+            (Cardinality::One, Cardinality::Many),
+            (Cardinality::Many, Cardinality::One),
+        ] {
+            let created = apply_relationship_spec(
+                &relationship_doc(&["a", "b"]),
+                &decorated_spec(from),
+                None,
+            )
+            .unwrap();
+            let tenant = decorate(created, from);
+            let previous = PreviousRelationship {
+                old_key: "owner".into(),
+                old_target: "b".into(),
+                old_reverse_key: Some("owned".into()),
+            };
+
+            let saved =
+                apply_relationship_spec(&tenant, &decorated_spec(to), Some(&previous)).unwrap();
+
+            let flip = format!("{from:?} -> {to:?}");
+            let property = &saved["objects"][0]["schema"]["properties"]["owner"];
+            let node = if to == Cardinality::Many {
+                &property["items"]
+            } else {
+                property
+            };
+            assert_eq!(
+                property["policies"],
+                json!([{"policyId": "cannot-contain-characters"}]),
+                "{flip}"
+            );
+            assert_eq!(node["id"], json!("owner"), "{flip}");
+            assert_eq!(node["notifySelf"], json!(false), "{flip}");
+            assert_eq!(node["collides"], json!("node"), "{flip}");
+            assert_eq!(
+                node["properties"]["_futureMetadata"],
+                json!({"whatever": true}),
+                "{flip}"
+            );
+            if to == Cardinality::Many {
+                assert!(property["id"].is_null(), "{flip}");
+                assert!(node["policies"].is_null(), "{flip}");
+            }
+        }
     }
 
     #[test]
