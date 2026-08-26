@@ -273,7 +273,8 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 }
             }
             let new_script = ns.kind.new_script(&name, &source, &opts)?;
-            let created = prod_hint(sync::create(&tenant, ns.realm_arg(), &new_script, yes).await)?;
+            let created =
+                prod_hint(sync::create_new(&tenant, ns.realm_arg(), &new_script, yes).await)?;
             let path = ProjectConfig::workspace_tree(&tenant).join(
                 created
                     .reference
@@ -1507,17 +1508,31 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                     if ns.kind != script::Kind::IdmEndpoint || !declared.contains(&name) {
                         continue;
                     }
-                    match create_generated(tenant, &ns, &name, &path, yes, &stop).await {
-                        Ok(()) => {
+                    match adopt_generated(tenant, &ns, &name, &path, yes, &stop).await {
+                        Ok(Adoption::Created) => {
                             println!("{}", watch_green(&format!("+ created {full}")));
+                            continue;
+                        }
+                        // Now tracked, so fall through and let the ordinary
+                        // push decide what to do with the local build.
+                        Ok(Adoption::Adopted(backup)) => {
+                            println!(
+                                "{}",
+                                watch_green(&format!("+ adopted {full} from the tenant"))
+                            );
+                            if let Some(backup) = backup {
+                                println!("  its copy differed — saved to {}", backup.display());
+                            }
                         }
                         Err(e) if is_fatal_watch_error(&e) => {
                             eprintln!("! watch stopped: {e}");
                             return Err(e);
                         }
-                        Err(e) => eprintln!("{}", watch_red(&format!("! {full}: {e}"))),
+                        Err(e) => {
+                            eprintln!("{}", watch_red(&format!("! {full}: {e}")));
+                            continue;
+                        }
                     }
-                    continue;
                 }
                 Err(_) => continue,
                 Ok(_) => {}
@@ -1622,7 +1637,16 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
     Ok(())
 }
 
-/// Create an endpoint that exists only as a build artefact.
+/// How a generated endpoint came under sync.
+enum Adoption {
+    /// It did not exist on the tenant; we made it.
+    Created,
+    /// It was already there. We took its copy as the baseline (backing that
+    /// copy up when it differed from the file on disk) and wrote nothing.
+    Adopted(Option<std::path::PathBuf>),
+}
+
+/// Bring an endpoint that exists only as a build artefact under sync.
 ///
 /// `aic script watch` otherwise skips any untracked file, which made a
 /// generated endpoint impossible to deploy: it has no snapshot until it exists
@@ -1631,14 +1655,20 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
 /// intentionally owned rather than stray. `sync::create` carries the same prod
 /// guard as a push and pulls the server's copy straight back, so the next save
 /// takes the ordinary tracked path.
-async fn create_generated(
+///
+/// A name already on the tenant used to end here, permanently: `create` refuses
+/// it and `push` refuses it too (no snapshot), so every save repeated the same
+/// refusal and nothing the message suggested could clear it. Adopting the
+/// tenant's copy as the baseline is the missing step — after it, the file is an
+/// ordinary local edit and the next push is conflict-aware like any other.
+async fn adopt_generated(
     tenant: &str,
     ns: &Namespace,
     name: &str,
     path: &std::path::Path,
     yes: bool,
     stop: &Stop,
-) -> Result<()> {
+) -> Result<Adoption> {
     let source =
         std::fs::read(path).map_err(|e| Error::Config(format!("read {}: {e}", path.display())))?;
     let new_script = ns
@@ -1646,9 +1676,20 @@ async fn create_generated(
         .new_script(name, &source, &script::NewScriptOpts::default())?;
     let create = script::sync::create(tenant, ns.realm_arg(), &new_script, yes);
     tokio::pin!(create);
-    tokio::select! {
-        _ = stop.wait() => Err(Error::Config("stopped watching.".into())),
-        result = &mut create => prod_hint(result).map(|_| ()),
+    let outcome = tokio::select! {
+        _ = stop.wait() => return Err(Error::Config("stopped watching.".into())),
+        result = &mut create => prod_hint(result)?,
+    };
+    match outcome {
+        script::sync::CreateOutcome::Created(_) => Ok(Adoption::Created),
+        script::sync::CreateOutcome::NameTaken(existing) => {
+            let adopt = script::sync::adopt(tenant, ns.realm_arg(), &existing);
+            tokio::pin!(adopt);
+            tokio::select! {
+                _ = stop.wait() => Err(Error::Config("stopped watching.".into())),
+                backup = &mut adopt => Ok(Adoption::Adopted(backup?)),
+            }
+        }
     }
 }
 
@@ -2028,6 +2069,16 @@ mod tests {
             .await
             .expect("a waiter must wake when the stop is tripped")
             .expect("waiter task");
+    }
+
+    /// The advice has to be a verb that works. `push` needs a snapshot, so on a
+    /// name that was never synced it fails with `not synced yet` — following it
+    /// left the caller exactly where they started.
+    #[test]
+    fn a_taken_name_points_at_the_verb_that_can_clear_it() {
+        let message = script::sync::name_taken_message("myEndpoint");
+        assert!(message.contains("aic script pull myEndpoint"), "{message}");
+        assert!(!message.contains("push"), "{message}");
     }
 
     #[test]

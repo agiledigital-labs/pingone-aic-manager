@@ -840,6 +840,13 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   precisely because it has never existed remotely, so watch **creates** it on
   the tenant (honouring the same prod guard as a push) and every later save
   takes the ordinary tracked path. Hand-written `.cjs` files are unaffected.
+  If the tenant already has that name — a bundle built in another checkout, or a
+  create whose pull-back never finished — watch **adopts** the tenant's copy as
+  the baseline instead, writing nothing to the tenant and backing that copy up
+  when it differs from the file on disk. The next line of output is the ordinary
+  conflict-aware push. Adopting is the step that was missing: `create` refuses a
+  taken name and `push` refuses an unsynced one, so before this every save
+  repeated the same refusal and no suggested command could clear it.
 - Ctrl-C stops `watch` from anywhere, including at a conflict prompt. The prompt
   runs in raw mode, where the terminal raises no SIGINT, so the interrupt
   reaches the process only as a keypress; it used to read as "skip" and leave
