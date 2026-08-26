@@ -469,25 +469,41 @@ pub async fn pull(
     Ok(outcomes)
 }
 
-/// Create a standalone script after refusing an existing name, then pull the
-/// server's canonical representation into the workspace and snapshot store.
+/// What [`create`] found when it went to make the script.
+#[derive(Debug, Clone)]
+pub enum CreateOutcome {
+    Created(RemoteScript),
+    /// The tenant already had a script by that name. Carries its reference so
+    /// the caller can [`adopt`] it rather than only report the refusal.
+    NameTaken(RemoteRef),
+}
+
+/// What to tell someone whose chosen name is already on the tenant. Not "use
+/// `aic script push`": push needs a snapshot, so on an untracked name it fails
+/// with `not synced yet` and leaves the caller exactly where they started.
+pub fn name_taken_message(name: &str) -> String {
+    format!(
+        "{name} already exists on the tenant — `aic script pull {name}` to bring it under sync first"
+    )
+}
+
+/// Create a standalone script, then pull the server's canonical representation
+/// into the workspace and snapshot store. Returns [`CreateOutcome::NameTaken`]
+/// rather than writing over a script that is already there.
 pub async fn create(
     tenant: &str,
     realm: &str,
     script: &RemoteScript,
     confirmed_prod: bool,
-) -> Result<RemoteScript> {
+) -> Result<CreateOutcome> {
     let kind = script.reference.kind;
-    if kind
+    if let Some(existing) = kind
         .list(tenant, realm)
         .await?
-        .iter()
-        .any(|existing| existing.name == script.reference.name)
+        .into_iter()
+        .find(|existing| existing.name == script.reference.name)
     {
-        return Err(Error::Config(format!(
-            "{} already exists; use `aic script push` to overwrite it",
-            script.reference.name
-        )));
+        return Ok(CreateOutcome::NameTaken(existing));
     }
     kind.write(tenant, realm, script, confirmed_prod).await?;
     // Pull it straight back so the workspace file, generated extras, and the
@@ -505,7 +521,50 @@ pub async fn create(
     // Every kind honours the id we wrote to (AM: the URL uuid; IDM: the
     // name-derived config id — both verified), so re-read it directly rather
     // than listing the namespace again to rediscover it.
-    kind.fetch(tenant, realm, &script.reference.id).await
+    Ok(CreateOutcome::Created(
+        kind.fetch(tenant, realm, &script.reference.id).await?,
+    ))
+}
+
+/// [`create`], refusing a name the tenant already has. What `aic script new` and
+/// `aic script copy` want — both are asking for a script that does not exist.
+pub async fn create_new(
+    tenant: &str,
+    realm: &str,
+    script: &RemoteScript,
+    confirmed_prod: bool,
+) -> Result<RemoteScript> {
+    match create(tenant, realm, script, confirmed_prod).await? {
+        CreateOutcome::Created(created) => Ok(created),
+        CreateOutcome::NameTaken(existing) => {
+            Err(Error::Config(name_taken_message(&existing.name)))
+        }
+    }
+}
+
+/// Bring a script that is already on the tenant under sync **without writing to
+/// the tenant and without touching the local file**: fetch it and snapshot it
+/// as the baseline.
+///
+/// This is what an untracked name needs. `create` refuses it (rightly — it will
+/// not silently overwrite), and `push` refuses it too (no snapshot), so a caller
+/// that only has those two verbs is stuck repeating one refusal forever. After
+/// adopting, the local file is an ordinary local edit against a known baseline
+/// and the next push takes the conflict-aware path like any other script.
+///
+/// The tenant's own source is backed up when it differs from what is on disk,
+/// because adopting makes the next push overwrite it.
+pub async fn adopt(tenant: &str, realm: &str, r: &RemoteRef) -> Result<Option<PathBuf>> {
+    let store = SnapshotStore::open(tenant);
+    let remote = r.kind.fetch(tenant, realm, &r.id).await?;
+    let remote_src = r.kind.decode_source(&remote.raw_config)?;
+    let local = read_local(&workspace_file(tenant, realm, r))?;
+    let backup = match local {
+        Some(local) if local != remote_src => Some(back_up(&store, r, &remote_src)?),
+        _ => None,
+    };
+    store.record(&remote, realm)?;
+    Ok(backup)
 }
 
 /// Rewrite only the identity fields required to copy a raw config verbatim.
@@ -566,7 +625,7 @@ pub async fn copy(
         },
         raw_config,
     };
-    create(tenant, realm, &script, confirmed_prod).await
+    create_new(tenant, realm, &script, confirmed_prod).await
 }
 
 /// Delete a remote standalone script and remove only its local sync metadata.
