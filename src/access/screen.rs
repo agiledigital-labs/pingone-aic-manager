@@ -215,10 +215,57 @@ pub fn delete(app: &mut App) {
 }
 
 pub fn new_item(app: &mut App) {
-    start_create(app);
+    // `^N` and `o` both mean "one below the cursor", which on an empty list is
+    // the same as appending. `O` puts it above instead. Position is for reading
+    // only — rules are OR-ed — so neither changes what the new rule grants.
+    start_create_at(app, below_cursor(app));
 }
 
-fn start_create(app: &mut App) {
+pub fn new_item_above(app: &mut App) {
+    start_create_at(app, document_index(app));
+}
+
+pub fn new_item_below(app: &mut App) {
+    start_create_at(app, below_cursor(app));
+}
+
+/// The document index of the selected row, or `None` when nothing is selected.
+///
+/// The list is filtered and the selection indexes the FILTERED rows, so a row's
+/// position on screen is not its position in `configs`. Everything that writes
+/// has to go through here.
+fn document_index(app: &App) -> Option<usize> {
+    let tenant = app.active_tenant().map(|tenant| tenant.name.clone())?;
+    app.access
+        .matches(Some(tenant.as_str()))
+        .get(app.access.selected)
+        .map(|matched| matched.row.summary.index)
+}
+
+fn below_cursor(app: &App) -> Option<usize> {
+    document_index(app).map(|index| index + 1)
+}
+
+/// Move the selected rule one place towards the top of the document.
+pub fn move_up(app: &mut App) {
+    let Some(index) = document_index(app) else {
+        return;
+    };
+    match index.checked_sub(1) {
+        Some(target) => start_move(app, index, target),
+        None => app.push_toast(ToastKind::Info, "Already the first rule"),
+    }
+}
+
+/// Move the selected rule one place towards the end of the document.
+pub fn move_down(app: &mut App) {
+    let Some(index) = document_index(app) else {
+        return;
+    };
+    start_move(app, index, index + 1);
+}
+
+fn start_move(app: &mut App, from: usize, to: usize) {
     let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) else {
         return;
     };
@@ -229,7 +276,33 @@ fn start_create(app: &mut App) {
     let Some(document) = app.access.document(&tenant) else {
         return;
     };
-    let mut form = crate::access::state::RuleFormState::create(tenant.clone(), document);
+    if to >= ops::rules(&document.value).map_or(0, Vec::len) {
+        app.push_toast(ToastKind::Info, "Already the last rule");
+        return;
+    }
+    // Built before `submit_write` takes `app` mutably.
+    let request = ops::request_from_move(&tenant, document, from, to);
+    match request {
+        Ok(request) => {
+            app.access.follow_index = Some(to);
+            ops::submit_write(app, request);
+        }
+        Err(error) => app.push_toast(ToastKind::Error, error.to_string()),
+    }
+}
+
+fn start_create_at(app: &mut App, at: Option<usize>) {
+    let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) else {
+        return;
+    };
+    if app.access.in_flight_writes.contains(&tenant) {
+        app.push_toast(ToastKind::Info, "An Access write is already in progress");
+        return;
+    }
+    let Some(document) = app.access.document(&tenant) else {
+        return;
+    };
+    let mut form = crate::access::state::RuleFormState::create_at(tenant.clone(), document, at);
     let (known_roles, note) = app.access.role_validation(&tenant);
     form.set_role_validation(known_roles, note);
     app.access.form = Some(form);
@@ -307,8 +380,29 @@ fn apply_refresh(app: &mut App, tenant: String, result: std::result::Result<Valu
         .active_tenant()
         .is_some_and(|active| active.name == tenant)
     {
+        follow_moved_rule(app, &tenant);
         let count = row_count(app);
         app.access.clamp_selection(count);
+    }
+}
+
+/// Put the cursor back on the rule a reorder just moved.
+///
+/// Resolved against the refreshed rows, because a document index is not a row:
+/// the list is filtered and the filter may not even contain the moved rule, in
+/// which case there is nothing to follow and the selection stays where it is.
+fn follow_moved_rule(app: &mut App, tenant: &str) {
+    let Some(index) = app.access.follow_index.take() else {
+        return;
+    };
+    let row = app
+        .access
+        .matches(Some(tenant))
+        .iter()
+        .position(|matched| matched.row.summary.index == index);
+    if let Some(row) = row {
+        let count = row_count(app);
+        app.access.select(row, count);
     }
 }
 

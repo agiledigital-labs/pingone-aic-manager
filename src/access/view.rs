@@ -39,9 +39,15 @@ pub fn draw_form_modal(f: &mut Frame, app: &App, mode: Mode) {
         return;
     }
     let (title, default_status) = match form.kind {
-        FormKind::Create => (
+        FormKind::Create { at: None } => (
             "Create access rule",
             "Append one grant to config/access".to_string(),
+        ),
+        // Position is presentational — rules are OR-ed — so the status says
+        // where it lands without implying it matters to evaluation.
+        FormKind::Create { at: Some(index) } => (
+            "Create access rule",
+            format!("Add one grant to config/access at #{index}"),
         ),
         FormKind::Edit { index } => (
             "Edit access rule",
@@ -117,7 +123,7 @@ pub fn draw_form_modal(f: &mut Frame, app: &App, mode: Mode) {
 
 fn draw_review_modal(f: &mut Frame, form: &crate::access::state::RuleFormState) {
     let disjunction = match form.kind {
-        FormKind::Create => {
+        FormKind::Create { .. } => {
             "Rules are OR-ed: creating this rule can only grant access, never restrict it."
         }
         FormKind::Edit { .. } => {

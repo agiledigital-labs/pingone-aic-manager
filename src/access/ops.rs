@@ -33,6 +33,9 @@ pub enum ResumeMode {
     Create,
     Edit,
     DeleteConfirm,
+    /// Submitted from the list with no modal open — a reorder. There is nothing
+    /// to resume into, so a prod confirm returns to the list.
+    List,
 }
 
 impl ResumeMode {
@@ -41,6 +44,7 @@ impl ResumeMode {
             Self::Create => crate::access::screen::Mode::Create,
             Self::Edit => crate::access::screen::Mode::Edit,
             Self::DeleteConfirm => crate::access::screen::Mode::DeleteConfirm,
+            Self::List => return InputMode::Normal,
         };
         InputMode::Access(mode)
     }
@@ -85,6 +89,13 @@ pub struct RuleChange {
     pub after: Option<Value>,
 }
 
+/// One rule that kept its content and changed position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuleMove {
+    pub from: usize,
+    pub to: usize,
+}
+
 /// Rule-level changes and the number of rules that remained byte-identical.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Changes {
@@ -93,6 +104,11 @@ pub struct Changes {
     pub touched: TouchedIndices,
     /// True when an apply diff could only recover approximate source positions.
     pub positions_approximate: bool,
+    /// Reordering, which is deliberately **not** a `changed` entry: every rule
+    /// survives byte-identical, nothing is granted or withdrawn, and callers
+    /// that key on `changed` — the disjunction warning, the "is anything
+    /// different" guard — must not treat a move as a grant change.
+    pub moved: Vec<RuleMove>,
 }
 
 /// How changed rules should be paired when producing a summary.
@@ -124,6 +140,33 @@ pub fn amend(before: &Value, amendment: Amendment) -> Result<Amended> {
         Amendment::Add(rule) => {
             let transformed = append(before, rule)?;
             (transformed.document, Some(transformed.touched))
+        }
+        Amendment::Insert { index, rule } => {
+            let transformed = insert_at(before, index, rule)?;
+            (transformed.document, Some(transformed.touched))
+        }
+        Amendment::Move { from, to } => {
+            let transformed = move_rule(before, from, to)?;
+            // A move has no `changed` entries by construction, so it takes the
+            // summary straight rather than going through `changes`, which would
+            // read the differing before/after indices as a remove plus an add.
+            let moved = if from == to {
+                Vec::new()
+            } else {
+                vec![RuleMove { from, to }]
+            };
+            let unchanged = rules(&transformed.document)?.len();
+            return Ok(Amended {
+                after: transformed.document,
+                touched: transformed.touched.clone(),
+                summary: Changes {
+                    changed: Vec::new(),
+                    unchanged,
+                    touched: transformed.touched,
+                    positions_approximate: false,
+                    moved,
+                },
+            });
         }
         Amendment::Edit { index, edit } => {
             let transformed = replace_at(before, index, edit)?;
@@ -161,12 +204,47 @@ pub fn rules(doc: &Value) -> Result<&Vec<Value>> {
 
 /// Append one grant without rebuilding or reordering existing rules.
 pub fn append(doc: &Value, spec: RuleSpec) -> Result<Transformed> {
-    let index = rules(doc)?.len();
+    insert_at(doc, rules(doc)?.len(), spec)
+}
+
+/// Insert one grant at `index`, shifting the rest down. `index == len` appends.
+///
+/// Placement is presentational: `configs` is a disjunction, so a rule grants
+/// the same wherever it sits (`docs/api/19-config-access.md`, verified
+/// 2026-08-10). What it buys is a document a person can read — the new rule
+/// beside the ones it belongs with instead of alone at the end.
+pub fn insert_at(doc: &Value, index: usize, spec: RuleSpec) -> Result<Transformed> {
+    let len = rules(doc)?.len();
+    if index > len {
+        return Err(Error::Config(format!(
+            "cannot insert an access rule at #{index}: the document has {len}"
+        )));
+    }
     let mut amended = doc.clone();
-    rules_mut(&mut amended)?.push(new_rule_value(spec));
+    rules_mut(&mut amended)?.insert(index, new_rule_value(spec));
     Ok(Transformed {
         document: amended,
         touched: TouchedIndices::appended(index),
+    })
+}
+
+/// Move the rule at `from` to `to`, shifting whatever lies between.
+///
+/// `to` is the index the rule ends up at in the RESULT, which is what a caller
+/// nudging a row up or down means by it. Same rules, same content, one
+/// different position — and per the disjunction that cannot change who is
+/// authorized, so this reorders a document for reading and nothing else.
+pub fn move_rule(doc: &Value, from: usize, to: usize) -> Result<Transformed> {
+    let len = rules(doc)?.len();
+    crate::access::spec::ensure_index(from, len)?;
+    crate::access::spec::ensure_index(to, len)?;
+    let mut amended = doc.clone();
+    let rules = rules_mut(&mut amended)?;
+    let rule = rules.remove(from);
+    rules.insert(to, rule);
+    Ok(Transformed {
+        document: amended,
+        touched: TouchedIndices::moved(from, to),
     })
 }
 
@@ -331,6 +409,10 @@ fn multiset_changes(before: &[Value], after: &[Value]) -> Changes {
         positions_approximate: duplicate_flags(before)
             .into_iter()
             .any(|duplicate| duplicate),
+        // A hand-edited document is matched by content, which cannot tell a
+        // move from a coincidence of equal rules. `apply` says what changed,
+        // not what shifted.
+        moved: Vec::new(),
     }
 }
 
@@ -434,7 +516,7 @@ pub fn request_from_form(form: &RuleFormState) -> Result<WriteRequest> {
         return Err(Error::Config("access rule is unchanged".into()));
     }
     let (expected_rule, description, resume_mode) = match form.kind {
-        FormKind::Create => (
+        FormKind::Create { .. } => (
             None,
             "Remove newly created access rule".into(),
             ResumeMode::Create,
@@ -483,6 +565,38 @@ pub fn request_from_delete(delete: &DeleteState) -> Result<WriteRequest> {
         description: format!("Restore access rule #{}", delete.index),
         resume_mode: ResumeMode::DeleteConfirm,
         warnings,
+    })
+}
+
+/// A reorder, submitted straight from the list — no form, no review.
+///
+/// The review step exists to catch a grant being widened or withdrawn before it
+/// reaches the tenant. A move cannot do either: every rule survives
+/// byte-identical and `configs` is a disjunction, so making the operator
+/// confirm each nudge would be ceremony over a change that carries no risk.
+/// `^Z` still undoes it, and the prod guard still applies.
+pub fn request_from_move(
+    tenant: &str,
+    document: &crate::access::state::Document,
+    from: usize,
+    to: usize,
+) -> Result<WriteRequest> {
+    let amendment = Amendment::Move { from, to };
+    let amended = amend(&document.value, amendment.clone())?;
+    let expected_rule = rules(&document.value)?
+        .get(from)
+        .map(crate::access::spec::digest)
+        .ok_or_else(|| Error::Config(format!("access rule #{from} no longer exists")))?;
+    Ok(WriteRequest {
+        tenant: tenant.to_string(),
+        expected_document_digest: document.digest.clone(),
+        previous_document: document.value.clone(),
+        amendment,
+        expected_rule: Some((from, expected_rule)),
+        after: amended.after,
+        description: format!("Move access rule #{to} back to #{from}"),
+        resume_mode: ResumeMode::List,
+        warnings: Vec::new(),
     })
 }
 
@@ -794,6 +908,9 @@ fn retained_guidance(mode: ResumeMode) -> &'static str {
         ResumeMode::DeleteConfirm => {
             "The selected index and rule digest remain in the confirmation; cancel, then refresh before retrying."
         }
+        // A reorder holds no draft — nothing was typed and nothing is waiting
+        // in a form, so there is nothing to preserve.
+        ResumeMode::List => "Refresh before retrying.",
     }
 }
 
@@ -1014,6 +1131,137 @@ pub fn describe_prod_action(action: &ProdAction) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A reorder must not be a grant change. `configs` is a disjunction — order
+    /// carries no evaluation meaning (`docs/api/19-config-access.md`, verified
+    /// 2026-08-10) — so the multiset of rules has to come out identical, and
+    /// `changed` has to stay empty or every caller keying on it (the disjunction
+    /// warning, the unchanged guard, the review modal) reads a move as a
+    /// widening.
+    #[test]
+    fn a_move_reorders_without_changing_a_single_rule() {
+        let before = crate::access::six_rule_fixture();
+        let original = rules(&before).unwrap().clone();
+
+        for (name, from, to) in [
+            ("up", 3, 2),
+            ("down", 1, 4),
+            ("to the top", 5, 0),
+            ("to the end", 0, 5),
+        ] {
+            let amended = amend(&before, Amendment::Move { from, to }).unwrap();
+            let after = rules(&amended.after).unwrap();
+
+            assert_eq!(
+                after[to], original[from],
+                "{name}: moved rule stayed put in content but not in position"
+            );
+            let mut sorted_before = original.clone();
+            let mut sorted_after = after.clone();
+            sorted_before.sort_by_key(|rule| rule.to_string());
+            sorted_after.sort_by_key(|rule| rule.to_string());
+            assert_eq!(sorted_before, sorted_after, "{name}: same rules");
+
+            assert!(
+                amended.summary.changed.is_empty(),
+                "{name}: no rule changed"
+            );
+            assert_eq!(
+                amended.summary.moved,
+                vec![RuleMove { from, to }],
+                "{name}: reported move"
+            );
+            assert_eq!(amended.summary.unchanged, original.len(), "{name}");
+            // The narrowing warning keys on a change with a `before`. A move has
+            // none, so it must not fire.
+            assert!(
+                !amended
+                    .summary
+                    .changed
+                    .iter()
+                    .any(|change| change.before.is_some()),
+                "{name}: must not read as a narrowing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_move_to_where_it_already_is_reports_nothing() {
+        let before = crate::access::six_rule_fixture();
+        let amended = amend(&before, Amendment::Move { from: 2, to: 2 }).unwrap();
+        assert_eq!(rules(&amended.after).unwrap(), rules(&before).unwrap());
+        assert!(amended.summary.moved.is_empty());
+        assert!(amended.summary.changed.is_empty());
+    }
+
+    #[test]
+    fn a_move_off_the_end_is_refused() {
+        let before = crate::access::six_rule_fixture();
+        let len = rules(&before).unwrap().len();
+        assert!(move_rule(&before, 0, len).is_err());
+        assert!(move_rule(&before, len, 0).is_err());
+    }
+
+    /// `Insert` puts the rule at the index asked for and shifts the rest down;
+    /// `Add` is the same transform at the end, which is what keeps a positioned
+    /// create and an append from drifting apart.
+    #[test]
+    fn an_insert_places_the_rule_and_shifts_the_rest() {
+        let before = crate::access::six_rule_fixture();
+        let original = rules(&before).unwrap().clone();
+        let spec = RuleSpec {
+            pattern: "endpoint/new".into(),
+            roles: "internal/role/openidm-authorized".into(),
+            methods: "read".into(),
+            actions: None,
+            custom_authz: None,
+            exclude_patterns: None,
+        };
+
+        let amended = amend(
+            &before,
+            Amendment::Insert {
+                index: 2,
+                rule: spec.clone(),
+            },
+        )
+        .unwrap();
+        let after = rules(&amended.after).unwrap();
+        assert_eq!(after.len(), original.len() + 1);
+        assert_eq!(after[2]["pattern"], "endpoint/new");
+        assert_eq!(after[3], original[2], "the rule at 2 shifted down");
+        assert_eq!(after[..2], original[..2], "earlier rules did not move");
+        // One added rule, nothing else touched.
+        assert_eq!(amended.summary.changed.len(), 1);
+        assert!(amended.summary.changed[0].before.is_none());
+
+        // Inserting at the end is an append.
+        let appended = amend(&before, Amendment::Add(spec.clone())).unwrap();
+        let inserted = amend(
+            &before,
+            Amendment::Insert {
+                index: original.len(),
+                rule: spec,
+            },
+        )
+        .unwrap();
+        assert_eq!(appended.after, inserted.after);
+    }
+
+    #[test]
+    fn an_insert_past_the_end_is_refused() {
+        let before = crate::access::six_rule_fixture();
+        let len = rules(&before).unwrap().len();
+        let spec = RuleSpec {
+            pattern: "endpoint/new".into(),
+            roles: "internal/role/openidm-authorized".into(),
+            methods: "read".into(),
+            actions: None,
+            custom_authz: None,
+            exclude_patterns: None,
+        };
+        assert!(insert_at(&before, len + 1, spec).is_err());
+    }
+
     use chrono::TimeZone;
     use serde_json::json;
 

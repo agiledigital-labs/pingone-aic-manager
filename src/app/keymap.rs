@@ -65,6 +65,13 @@ pub enum Act {
     Primary,
     Delete,
     NewItem,
+    /// Create above / below the cursor. `NewItem` keeps meaning "below", so a
+    /// view that has no notion of position can ignore these two entirely.
+    NewItemAbove,
+    NewItemBelow,
+    /// Reorder the selected row within its document.
+    MoveItemUp,
+    MoveItemDown,
     RenameField,
     RenameObject,
     DeleteObject,
@@ -439,6 +446,34 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
     } else if access_view {
         if n > 0 {
             out.push(hint(&[Trigger::ENTER], "Enter", "edit", Primary));
+            // Help-only: reordering is housekeeping, and the Access footer has
+            // no width to spare. `K`/`J` are the shifted forms of the movement
+            // keys directly above, which is the vim reading — move the line,
+            // not the cursor.
+            out.push(help_only(
+                &[Trigger::Char('K')],
+                "K",
+                "move rule up",
+                MoveItemUp,
+            ));
+            out.push(help_only(
+                &[Trigger::Char('J')],
+                "J",
+                "move rule down",
+                MoveItemDown,
+            ));
+            out.push(help_only(
+                &[Trigger::Char('O')],
+                "O",
+                "new rule above",
+                NewItemAbove,
+            ));
+            out.push(help_only(
+                &[Trigger::Char('o')],
+                "o",
+                "new rule below",
+                NewItemBelow,
+            ));
             out.push(hint(
                 &[
                     Trigger::Char('d'),
@@ -462,7 +497,7 @@ pub fn normal_binds(app: &App) -> Vec<Bind> {
                 DetailScrollUp,
             ));
         }
-        out.push(hint(&[Trigger::Ctrl('n')], "^N", "new rule", NewItem));
+        out.push(hint(&[Trigger::Ctrl('n')], "^N", "new rule below", NewItem));
         out.push(hint(&[Trigger::Ctrl('z')], "^Z", "undo", Undo));
         out.push(hint(
             &[Trigger::Ctrl('y')],
@@ -657,6 +692,28 @@ async fn run_normal(app: &mut App, act: Act) {
         Primary => primary(app),
         Delete => delete(app),
         NewItem => new_item(app),
+        // Position-aware creation and reordering exist only where a view has an
+        // order worth arranging — today, the Access rules document.
+        NewItemAbove => {
+            if app.active_view == View::Access {
+                crate::access::screen::new_item_above(app);
+            }
+        }
+        NewItemBelow => {
+            if app.active_view == View::Access {
+                crate::access::screen::new_item_below(app);
+            }
+        }
+        MoveItemUp => {
+            if app.active_view == View::Access {
+                crate::access::screen::move_up(app);
+            }
+        }
+        MoveItemDown => {
+            if app.active_view == View::Access {
+                crate::access::screen::move_down(app);
+            }
+        }
         RenameField => crate::managed::screen::start_rename_field(app),
         RenameObject => crate::managed::screen::start_rename_object(app),
         DeleteObject => crate::managed::screen::start_delete_object(app),
@@ -1196,6 +1253,76 @@ mod tests {
             code(KeyCode::Delete),
             Some(Delete),
         );
+        // Reorder and positioned create are selection-dependent, so they belong
+        // inside the `n > 0` guard — unlike `^N`, which has to work on an empty
+        // document. The empty rows below are what pins that distinction.
+        add(
+            "access move up",
+            Access,
+            Variables,
+            true,
+            char_key('K'),
+            Some(MoveItemUp),
+        );
+        add(
+            "access move down",
+            Access,
+            Variables,
+            true,
+            char_key('J'),
+            Some(MoveItemDown),
+        );
+        add(
+            "access new above",
+            Access,
+            Variables,
+            true,
+            char_key('O'),
+            Some(NewItemAbove),
+        );
+        add(
+            "access new below",
+            Access,
+            Variables,
+            true,
+            char_key('o'),
+            Some(NewItemBelow),
+        );
+        add(
+            "access move up needs a row",
+            Access,
+            Variables,
+            false,
+            char_key('K'),
+            None,
+        );
+        add(
+            "access new above needs a row",
+            Access,
+            Variables,
+            false,
+            char_key('O'),
+            None,
+        );
+        add(
+            "access create on an empty document",
+            Access,
+            Variables,
+            false,
+            ctrl('n'),
+            Some(NewItem),
+        );
+        // Reordering is Access-only: nothing else has a document order worth
+        // arranging, and `J`/`K` must stay free everywhere else.
+        for (name, view) in [
+            ("scripts", Scripts),
+            ("managed", Managed),
+            ("oauth", Oauth),
+            ("mappings", Mappings),
+        ] {
+            add(name, view, Variables, true, char_key('J'), None);
+            add(name, view, Variables, true, char_key('O'), None);
+        }
         add(
             "oauth inspect",
             Oauth,
