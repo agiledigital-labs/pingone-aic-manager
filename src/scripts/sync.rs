@@ -562,16 +562,20 @@ pub async fn create_new(
 ///
 /// The tenant's own source is backed up when it differs from what is on disk,
 /// because adopting makes the next push overwrite it.
-pub async fn adopt(tenant: &str, realm: &str, r: &RemoteRef) -> Result<PathBuf> {
+/// Snapshot **this** copy, which must be the one the caller inspected. Taking a
+/// fresh fetch here instead would reopen the window it just closed: the copy
+/// that was compared and the copy that becomes the baseline have to be the same
+/// bytes, or a write landing between them is adopted unseen and the next push
+/// overwrites it without a conflict.
+pub fn adopt(tenant: &str, realm: &str, remote: &RemoteScript) -> Result<PathBuf> {
     let store = SnapshotStore::open(tenant);
-    let remote = r.kind.fetch(tenant, realm, &r.id).await?;
-    let remote_src = r.kind.decode_source(&remote.raw_config)?;
-    let backup = back_up(&store, r, &remote_src)?;
-    store.record(&remote, realm)?;
+    let r = &remote.reference;
+    let backup = back_up(&store, r, &r.kind.decode_source(&remote.raw_config)?)?;
+    store.record(remote, realm)?;
     Ok(backup)
 }
 
-/// Does the tenant's copy already match what is on disk?
+/// The tenant's copy, and whether it already matches what is on disk.
 ///
 /// The two cases are not the same decision. Matching content raises no ownership
 /// question — adopting writes nothing to the tenant, the push that follows is
@@ -580,10 +584,16 @@ pub async fn adopt(tenant: &str, realm: &str, r: &RemoteRef) -> Result<PathBuf> 
 /// snapshot, so the ordinary conflict check cannot help: manufacture a snapshot
 /// from the remote and the next push has drift-free permission to overwrite work
 /// this workspace has never seen. That one needs the operator.
-pub async fn already_matches(tenant: &str, realm: &str, r: &RemoteRef) -> Result<bool> {
+pub async fn fetch_for_adoption(
+    tenant: &str,
+    realm: &str,
+    r: &RemoteRef,
+) -> Result<(RemoteScript, bool)> {
     let remote = r.kind.fetch(tenant, realm, &r.id).await?;
     let remote_src = r.kind.decode_source(&remote.raw_config)?;
-    Ok(read_local(&workspace_file(tenant, realm, r))?.as_deref() == Some(remote_src.as_slice()))
+    let matches =
+        read_local(&workspace_file(tenant, realm, r))?.as_deref() == Some(remote_src.as_slice());
+    Ok((remote, matches))
 }
 
 /// Rewrite only the identity fields required to copy a raw config verbatim.
