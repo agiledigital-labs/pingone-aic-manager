@@ -1030,6 +1030,34 @@ mod tests {
         assert!(!leaf_tsconfig("oidc-claims").contains("nextgen-common.d.ts"));
     }
 
+    /// A Java collection is reached with a JS string literal in every family —
+    /// `scopes.contains("openid")`, `requestedClaims.get("email")` — and typing
+    /// the lookup parameter as the collection's own element type rejected all of
+    /// them. The widening has to stay conditional: `any` would take anything.
+    #[test]
+    fn java_lookups_take_a_js_string_without_taking_anything() {
+        let rhino = include_str!("templates/am/types/rhino-1.7.14.d.ts");
+        assert!(rhino.contains("type Lookup<T> = T extends JavaString ? StringLike : T;"));
+        for signature in [
+            "get(key: Lookup<Key>)",
+            "containsKey?(key: Lookup<Key>)",
+            "includes(value: Lookup<T>)",
+            "contains(value: Lookup<T>)",
+            "contains(key: Lookup<T>)",
+        ] {
+            assert!(rhino.contains(signature), "rhino: {signature}");
+        }
+        // The legacy OIDC leaf is the one that reaches Java collections for
+        // everything, and its own parameters have to widen the same way.
+        let oidc = include_str!("templates/am/types/oidc-claims.d.ts");
+        assert!(oidc.contains("getAttribute(attributeName: StringLike)"));
+        assert!(oidc.contains("getProperty(name: StringLike)"));
+        assert!(
+            !oidc.contains(": string)"),
+            "a `string` parameter rejects the JavaString a legacy script has in hand"
+        );
+    }
+
     /// Anything a caller can hand a library has to be nameable in library scope
     /// — the globals stay out, their types cannot. Driven off the context
     /// metadata rather than a list, so a newly captured context fails here until

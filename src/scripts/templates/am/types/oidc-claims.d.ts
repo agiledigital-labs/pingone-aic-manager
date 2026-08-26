@@ -12,7 +12,7 @@
 //   SSOToken, java.util Map/Set/List, org.forgerock.http.Client.
 
 interface Session {
-  getProperty(name: string): JavaArray;
+  getProperty(name: StringLike): JavaArray;
 }
 
 interface Claim {
@@ -35,10 +35,10 @@ interface RequestProperties {
 }
 
 interface ClientProperties {
-  allowedGrantTypes: JavaArray;
+  allowedGrantTypes: JavaArray<JavaString>;
   clientId: JavaString;
-  allowedScopes: JavaArray;
-  allowedResponseTypes: JavaArray;
+  allowedScopes: JavaArray<JavaString>;
+  allowedResponseTypes: JavaArray<JavaString>;
 }
 
 // Legacy OIDC logger shape (distinct from the next-gen slf4j logger).
@@ -52,10 +52,14 @@ interface OidcLogger {
 }
 declare const logger: OidcLogger;
 
+// Parameters are `StringLike`, returns are `JavaString`: a legacy script reaches
+// these with JS string literals and with values it pulled out of another Java
+// collection, and only the argument side can be widened without lying about
+// what comes back. `String(...)` before comparing a result is the safe idiom.
 interface AMIdentity {
-  getAttribute(attributeName: string): JavaArray<string>;
-  getAttributes(): JavaArray<string>;
-  getAttributes(attributeNames: string[]): JavaArray<string>;
+  getAttribute(attributeName: StringLike): JavaArray<JavaString>;
+  getAttributes(): JavaArray<JavaString>;
+  getAttributes(attributeNames: StringLike[]): JavaArray<JavaString>;
 }
 
 interface JavaClass {}

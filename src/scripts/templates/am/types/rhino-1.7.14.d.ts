@@ -23,6 +23,14 @@ interface JavaByteArray {
   new (value: StringLike): JavaByteArray;
 }
 
+// The argument to a Java lookup. Rhino converts a JS string on the way in, so
+// `scopes.contains("openid")` is the ordinary way to write it and typing the
+// parameter as the collection's own element type rejected all of them. The
+// conditional keeps that widening where the element really is a Java string:
+// `JavaArray<number>.includes("2")` is still an error, and so is
+// `JavaArray<Claim>.contains("name")`.
+type Lookup<T> = T extends JavaString ? StringLike : T;
+
 // Union of the Java List/array methods scripts use across families (next-gen
 // uses `length`/`includes`; legacy Java collections use `size`/`contains`).
 interface JavaArray<T = JavaString> {
@@ -30,16 +38,16 @@ interface JavaArray<T = JavaString> {
   length: number;
   size(): number;
   get(index: number): T | null | undefined;
-  includes(value: T): boolean;
-  contains(value: T): boolean;
+  includes(value: Lookup<T>): boolean;
+  contains(value: Lookup<T>): boolean;
   isEmpty(): boolean;
   asList(): any[];
   toArray(): T[];
 }
 
 interface JavaMap<Key = JavaString, Value = JavaString> {
-  get(key: Key): Value | null;
-  containsKey?(key: Key): boolean;
+  get(key: Lookup<Key>): Value | null;
+  containsKey?(key: Lookup<Key>): boolean;
 }
 
 // Request header/parameter/cookie bindings are Java multimaps surfaced without
@@ -50,7 +58,7 @@ interface RequestMap {
 }
 
 interface JavaSet<T = JavaString> {
-  contains(key: T): boolean;
+  contains(key: Lookup<T>): boolean;
   size(): number;
   toArray(): T[];
   isEmpty(): boolean;
