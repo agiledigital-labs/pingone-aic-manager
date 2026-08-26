@@ -481,9 +481,15 @@ pub enum CreateOutcome {
 /// What to tell someone whose chosen name is already on the tenant. Not "use
 /// `aic script push`": push needs a snapshot, so on an untracked name it fails
 /// with `not synced yet` and leaves the caller exactly where they started.
-pub fn name_taken_message(name: &str) -> String {
+///
+/// The remedy names the **full ref**, not the bare name: a bare name resolves
+/// its namespace from the current directory, so `aic script pull foo` run from
+/// anywhere but a workspace subdir fails with `ambiguous "foo"` — advice that
+/// works only where the caller already was.
+pub fn name_taken_message(kind: Kind, realm: &str, name: &str) -> String {
+    let reference = super::full_name(kind, kind.realm_scoped().then_some(realm), name);
     format!(
-        "{name} already exists on the tenant — `aic script pull {name}` to bring it under sync first"
+        "{name} already exists on the tenant — `aic script pull {reference}` to bring it under sync first"
     )
 }
 
@@ -536,9 +542,11 @@ pub async fn create_new(
 ) -> Result<RemoteScript> {
     match create(tenant, realm, script, confirmed_prod).await? {
         CreateOutcome::Created(created) => Ok(created),
-        CreateOutcome::NameTaken(existing) => {
-            Err(Error::Config(name_taken_message(&existing.name)))
-        }
+        CreateOutcome::NameTaken(existing) => Err(Error::Config(name_taken_message(
+            existing.kind,
+            realm,
+            &existing.name,
+        ))),
     }
 }
 
@@ -554,17 +562,28 @@ pub async fn create_new(
 ///
 /// The tenant's own source is backed up when it differs from what is on disk,
 /// because adopting makes the next push overwrite it.
-pub async fn adopt(tenant: &str, realm: &str, r: &RemoteRef) -> Result<Option<PathBuf>> {
+pub async fn adopt(tenant: &str, realm: &str, r: &RemoteRef) -> Result<PathBuf> {
     let store = SnapshotStore::open(tenant);
     let remote = r.kind.fetch(tenant, realm, &r.id).await?;
     let remote_src = r.kind.decode_source(&remote.raw_config)?;
-    let local = read_local(&workspace_file(tenant, realm, r))?;
-    let backup = match local {
-        Some(local) if local != remote_src => Some(back_up(&store, r, &remote_src)?),
-        _ => None,
-    };
+    let backup = back_up(&store, r, &remote_src)?;
     store.record(&remote, realm)?;
     Ok(backup)
+}
+
+/// Does the tenant's copy already match what is on disk?
+///
+/// The two cases are not the same decision. Matching content raises no ownership
+/// question — adopting writes nothing to the tenant, the push that follows is
+/// `Unchanged`, and an overwrite needs a later local edit like any tracked
+/// script. **Differing** content means the local file never forked from that
+/// snapshot, so the ordinary conflict check cannot help: manufacture a snapshot
+/// from the remote and the next push has drift-free permission to overwrite work
+/// this workspace has never seen. That one needs the operator.
+pub async fn already_matches(tenant: &str, realm: &str, r: &RemoteRef) -> Result<bool> {
+    let remote = r.kind.fetch(tenant, realm, &r.id).await?;
+    let remote_src = r.kind.decode_source(&remote.raw_config)?;
+    Ok(read_local(&workspace_file(tenant, realm, r))?.as_deref() == Some(remote_src.as_slice()))
 }
 
 /// Rewrite only the identity fields required to copy a raw config verbatim.

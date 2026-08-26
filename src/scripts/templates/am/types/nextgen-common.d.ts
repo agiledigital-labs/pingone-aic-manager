@@ -531,6 +531,12 @@ type AmUserAttribute =
 // ones with evidence and get autocomplete; anything else is still reachable as
 // `requestProperties["whatever"]`, because the base tsconfig sets
 // `noPropertyAccessFromIndexSignature` and draws the line there.
+//
+// It is `unknown`, not `any`. `any` would have let a misspelled key straight
+// through — `requestProperties["requestParam"].length` compiles and throws —
+// which is the same fault `noUncheckedIndexedAccess` catches on the named
+// members, waved away one line lower down. `unknown` keeps the key reachable
+// and makes you narrow it first.
 interface RequestProperties {
   /** Query/form parameters of the OAuth2 request. Does **not** carry
    * `password` or `client_secret` (verified on the `password` grant). */
@@ -540,7 +546,7 @@ interface RequestProperties {
   requestUri: StringLike;
   /** Legacy-derived; not verified next-gen. */
   realm: StringLike;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // Legacy-derived in full — see the note above. Only `clientId` is a safe
@@ -550,7 +556,7 @@ interface ClientProperties {
   allowedGrantTypes: JavaArray<JavaString>;
   allowedScopes: JavaArray<JavaString>;
   allowedResponseTypes: JavaArray<JavaString>;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // Only next-generation scripts can require() library scripts (resolved via the

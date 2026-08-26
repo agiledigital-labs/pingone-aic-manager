@@ -26,7 +26,14 @@ pub(crate) struct AicClient {
 
 impl AicClient {
     pub fn new(tenant: Tenant, jwk: serde_json::Value) -> Self {
+        // Finite timeouts, because callers are not free to cancel. `script
+        // watch` treats a tenant write plus its snapshot update as one
+        // uncancellable step — dropping the future cannot retract a PUT the
+        // server already accepted — so the only thing that can bound a hung
+        // request is the transport. reqwest defaults to waiting forever.
         let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(120))
             .build()
             .expect("failed to build reqwest client");
         Self {

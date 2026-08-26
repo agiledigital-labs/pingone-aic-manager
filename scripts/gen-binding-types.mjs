@@ -111,8 +111,11 @@ const signature = (indent, head, parts, tail) => {
 };
 
 // One entry per member, so `--library-args` can merge two contexts' views of the
-// same binding by dropping members it already has. An entry may span lines (a
-// documented overload, a nested field object); the whole entry is the unit.
+// same binding. Each entry carries its member `name` as well as its rendered
+// `text`: the merge partitions on the member, not on the string, because two
+// contexts can render the same member differently and a text-only comparison
+// would call that a divergence. An entry may span lines (a documented overload,
+// a nested field object); the whole entry is the unit.
 function body(elements, iface, indent = "  ") {
   const seen = new Set();
   const members = [];
@@ -129,7 +132,7 @@ function body(elements, iface, indent = "  ") {
       for (const overload of refinement?.overloads ?? []) {
         const lines = (overload.comment ?? []).map((comment) => `${indent}// ${comment}`);
         lines.push(signature(indent, safe(el.name), [overload.parameters], `: ${overload.returnType};`));
-        members.push(lines.join("\n"));
+        members.push({ name: el.name, kind: "method", text: lines.join("\n") });
       }
       const generated = tsType(el.returnType);
       const returnType =
@@ -138,15 +141,21 @@ function body(elements, iface, indent = "  ") {
       const sig = signature(indent, safe(el.name), params(el.parameters, refinement), `: ${returnType};`);
       if (!seen.has(sig)) {
         seen.add(sig);
-        members.push(sig);
+        members.push({ name: el.name, kind: "method", text: sig });
       }
     } else if (el.elementType === "field") {
       if (el.elements && el.elements.length) {
-        members.push(
-          [`${indent}${safe(el.name)}: {`, ...body(el.elements, pascal(el.name), indent + "  "), `${indent}};`].join("\n")
-        );
+        members.push({
+          name: el.name,
+          kind: "field",
+          text: [
+            `${indent}${safe(el.name)}: {`,
+            ...body(el.elements, pascal(el.name), indent + "  ").map((m) => m.text),
+            `${indent}};`,
+          ].join("\n"),
+        });
       } else {
-        members.push(`${indent}${safe(el.name)}: ${tsType(el.javaScriptType)};`);
+        members.push({ name: el.name, kind: "field", text: `${indent}${safe(el.name)}: ${tsType(el.javaScriptType)};` });
       }
     }
   }
@@ -218,43 +227,78 @@ function perContext(jsonPath, skip) {
       continue;
     }
     const iface = pascal(b.name);
-    out.push(`interface ${iface} {`, ...body(b.elements, iface), `}`, `declare const ${safe(b.name)}: ${iface};`, "");
+    out.push(`interface ${iface} {`, ...body(b.elements, iface).map((m) => m.text), `}`, `declare const ${safe(b.name)}: ${iface};`, "");
   }
   emit(out);
 }
 
+// A short type-name prefix for a context, from its artifact filename:
+// `oauth2-jwt-issuer-next.json` -> `Oauth2JwtIssuer`.
+const contextPrefix = (jsonPath) =>
+  basename(jsonPath)
+    .replace(/(-next)?\.json$/, "")
+    .split("-")
+    .map(pascal)
+    .join("");
+
+// A member every context has, rendered. Contexts can describe the same method
+// differently, and every rendering has to survive: a method keeps the complete
+// overload set, so a partially-overlapping method is not split across the common
+// and derived declarations. A FIELD cannot be overloaded, so two contexts giving
+// one field two types is a duplicate identifier — structurally detectable here,
+// which is why there is no regex over the rendered output.
+function renderCommon(iface, name, contexts, entry) {
+  const texts = [];
+  let kind = "method";
+  for (const prefix of contexts) {
+    const member = entry.byContext.get(prefix).get(name);
+    kind = member.kind;
+    for (const text of member.texts) if (!texts.includes(text)) texts.push(text);
+  }
+  if (kind === "field" && texts.length > 1) {
+    throw new Error(
+      `${iface}.${name} is a field with ${texts.length} conflicting declarations across contexts:\n${texts.join("\n")}`
+    );
+  }
+  return texts;
+}
+
 function libraryArgs(jsonPaths, skip) {
-  // iface -> {members: [], seen: Set, contexts: []}
+  // iface -> {byContext: Map<prefix, Map<memberName, text[]>>, order: [], contexts: []}
   const merged = new Map();
   for (const jsonPath of jsonPaths) {
     const ctx = JSON.parse(readFileSync(jsonPath, "utf8"));
+    const prefix = contextPrefix(jsonPath);
     for (const binding of interfaceBindings(ctx, skip)) {
       const iface = pascal(binding.name);
-      if (!merged.has(iface)) merged.set(iface, { members: [], seen: new Set(), contexts: [] });
+      if (!merged.has(iface)) merged.set(iface, { byContext: new Map(), order: [], contexts: [] });
       const entry = merged.get(iface);
       entry.contexts.push(ctx._id);
+      const members = new Map();
       for (const member of body(binding.elements, iface)) {
-        if (entry.seen.has(member)) continue;
-        entry.seen.add(member);
-        entry.members.push(member);
+        if (!members.has(member.name)) {
+          members.set(member.name, { kind: member.kind, texts: [] });
+          if (!entry.order.includes(member.name)) entry.order.push(member.name);
+        }
+        const entryMember = members.get(member.name);
+        entryMember.kind = member.kind;
+        if (!entryMember.texts.includes(member.text)) entryMember.texts.push(member.text);
       }
+      entry.byContext.set(prefix, members);
     }
   }
-  // A field declared twice with different types is a duplicate identifier, not
-  // an overload — merging cannot express it, so say so rather than emit it.
-  for (const [iface, entry] of merged) {
-    const fields = new Map();
-    for (const member of entry.members) {
-      const field = /^ {2}([A-Za-z_$][\w$]*): (.*);$/.exec(member);
-      if (!field) continue;
-      const [, name, type] = field;
-      if (fields.has(name) && fields.get(name) !== type) {
-        throw new Error(`${iface}.${name} merges to conflicting types: ${fields.get(name)} vs ${type}`);
-      }
-      fields.set(name, type);
-    }
-  }
-  const ifaces = [...merged.keys()].sort();
+
+  // Each binding is the members EVERY contributing context has. Unioning them
+  // was unsound: only the JWT-issuer context's `idRepository` has `createUser`,
+  // and a merged `IdRepository` let a library call it on the scripted-decision
+  // binding, which has `getIdentity` and nothing else — a type-checked "not a
+  // function" at runtime.
+  //
+  // Members only some contexts have are OMITTED, and named in a comment above
+  // the interface. A context-qualified type carrying them was the other option
+  // and is worse: a caller resolves `require()` through its own leaf, which does
+  // NOT include this file, so a library annotated with such a name fails to
+  // compile in every caller — the whole module, not just that export.
   const out = [
     "// GENERATED by scripts/gen-binding-types.mjs --library-args — do not edit by",
     "// hand. See the regenerate command at the bottom of this file.",
@@ -262,20 +306,62 @@ function libraryArgs(jsonPaths, skip) {
     "// Types a caller can hand a library script. A library sees none of the",
     "// per-context globals (verified 2026-07-29 — docs/api/12-script-bindings-matrix.md),",
     "// so it takes them as arguments, and the argument types have to exist in library",
-    "// scope or the factory signature cannot be written. One declaration per binding,",
-    "// merged across every next-gen context that can require() a library; where two",
-    "// contexts describe the same binding differently, the members are unioned, so a",
-    "// member here may not exist in the context that actually calls the library.",
+    "// scope or the factory signature cannot be written.",
+    "//",
+    "// Each binding is the members that EVERY next-gen context able to require() a",
+    "// library agrees on — what a library can call whoever hands it the value. A",
+    "// member only some contexts have is omitted and named in a comment; a library",
+    "// that needs one declares a module-local structural type or casts, which makes",
+    "// the context it is written for explicit rather than ambient.",
+    "//",
+    "// A caller re-checks this library against its OWN same-named types, so an",
+    "// overlay declaring one has to stay a compatible refinement of the surface",
+    "// here: extra members and more precise returns are fine, narrower parameters",
+    "// and incompatible returns are not.",
     "//",
     "// `NodeState` is NOT here — library.d.ts hand-writes a better one.",
-    ...refinementNotes(refinementHeaders(ifaces)),
-    "",
   ];
+  const ifaces = [...merged.keys()].sort();
+  const notes = refinementNotes(refinementHeaders(ifaces));
+  out.push(...notes, "");
   if (merged.has("AccessToken")) out.push(...TOKEN_FIELD_VALUE);
+
   for (const iface of ifaces) {
     const entry = merged.get(iface);
-    out.push(`// ${entry.contexts.join(", ")}`, `interface ${iface} {`, ...entry.members, `}`, "");
+    const contexts = [...entry.byContext.keys()];
+    const common = entry.order.filter((name) =>
+      contexts.every((prefix) => entry.byContext.get(prefix).has(name))
+    );
+    // An empty common surface would be an interface that accepts nearly any
+    // object. Say so and emit only the qualified types.
+    const omitted = [];
+    for (const prefix of contexts) {
+      const members = entry.byContext.get(prefix);
+      for (const name of entry.order) {
+        if (!members.has(name) || common.includes(name)) continue;
+        for (const text of members.get(name).texts) {
+          omitted.push(`//   ${text.trim().replace(/\s*\n\s*/g, " ")}   (${prefix} only)`);
+        }
+      }
+    }
+    if (omitted.length) {
+      out.push("// Omitted — not on every context's binding, so a library cannot call it", ...omitted);
+    }
+    if (common.length === 0) {
+      out.push(
+        `// ${entry.contexts.join(", ")}`,
+        `// No member is common to every context, so there is no \`${iface}\` at all:`,
+        "// an empty interface would accept very nearly any object.",
+        ""
+      );
+    } else {
+      out.push(`// ${entry.contexts.join(", ")}`, `interface ${iface} {`);
+      for (const name of common) out.push(...renderCommon(iface, name, contexts, entry));
+      out.push(`}`, "");
+    }
+
   }
+
   out.push(
     "// Regenerate:",
     "//   node scripts/gen-binding-types.mjs --library-args \\",
