@@ -433,6 +433,17 @@ Consequences (applied to the type layering):
 - **2026-07-22:** `library.d.ts` redeclares `NodeState`, `RequestHeaders`, and
   `RequestParameters` as types for library `.load(...)` factory parameters;
   their scripted-decision globals remain outside library scope.
+- **2026-08-26:** the same argument applies to every other binding a caller can
+  hand a library — `CallbacksBuilder` was the one that surfaced it — so the
+  library leaf now also includes **`library-args.d.ts`**, one type per binding
+  merged from every next-gen context's metadata (`gen-binding-types.mjs
+  --library-args`, regenerate command in the file's footer). The types are
+  there; the `declare const`s are not, which is the distinction library scope
+  actually makes. `NodeState` stays hand-written in `library.d.ts` (the metadata
+  types `get` as a bare `object`), and `ExistingSession` and the
+  `OAuthApplication` spelling live there too because the metadata cannot
+  describe them. `am::leaf_tsconfig`'s unit tests read the binding artifacts
+  directly, so a newly captured context fails until the file is regenerated.
 
 ### Method surfaces verified 2026-06-04 (legacy engine)
 
@@ -612,7 +623,7 @@ unprompted.
 | --------------------------------------- | ---------------------- | ------------------ | --------------------------------------------- | ------------------------------------------------------------------------------- |
 | Scripted decision (next-gen)            | `decision-node`        | `2.0`              | yes                                           | decision-node-base + next-gen                                                   |
 | Scripted decision (legacy)              | `decision-node-legacy` | `1.0`              | no                                            | decision-node-base + legacy                                                     |
-| Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)                                | library                                                                         |
+| Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)                                | library + library-args (caller argument types)                                  |
 | OIDC claims                             | `oidc-claims`          | mixed              | next-gen only                                 | oidc-claims                                                                     |
 | OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only (token mod verified 2026-07-29) | all next-gen OAuth2 contexts typed (2026-07-29); legacy ids shared globals only |
 | SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | per-context (future)                                                            |

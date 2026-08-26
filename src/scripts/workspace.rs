@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 79;
+pub const TEMPLATES_VERSION: u32 = 80;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -62,6 +62,10 @@ const MANAGED: &[(&str, &str)] = &[
     (
         "am/types/library.d.ts",
         include_str!("templates/am/types/library.d.ts"),
+    ),
+    (
+        "am/types/library-args.d.ts",
+        include_str!("templates/am/types/library-args.d.ts"),
     ),
     (
         "am/types/oidc-claims.d.ts",
