@@ -161,8 +161,15 @@ impl OptionalField {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormKind {
-    Create,
-    Edit { index: usize },
+    /// `at` is where the rule lands: `None` appends. Position is for reading
+    /// only — `configs` is a disjunction, so it cannot change who is
+    /// authorized (`docs/api/19-config-access.md`).
+    Create {
+        at: Option<usize>,
+    },
+    Edit {
+        index: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -191,12 +198,17 @@ pub struct RuleFormState {
 
 impl RuleFormState {
     pub fn create(tenant: String, document: &Document) -> Self {
+        Self::create_at(tenant, document, None)
+    }
+
+    /// `at` is the index the new rule takes, or `None` to append.
+    pub fn create_at(tenant: String, document: &Document, at: Option<usize>) -> Self {
         Self {
             tenant,
             original_document: document.value.clone(),
             original_digest: document.digest.clone(),
             original_rule_digest: None,
-            kind: FormKind::Create,
+            kind: FormKind::Create { at },
             pattern: TextField::single_line("Pattern"),
             pattern_seed: String::new(),
             roles: TextField::single_line("Roles (full internal/role/<id> paths)"),
@@ -261,14 +273,20 @@ impl RuleFormState {
     pub fn amendment(&self) -> spec::Amendment {
         match self.kind {
             // Create treats an empty optional input as absent.
-            FormKind::Create => spec::Amendment::Add(spec::RuleSpec {
-                pattern: self.pattern.value.clone(),
-                roles: self.roles.value.clone(),
-                methods: self.methods.value.clone(),
-                actions: nonempty(&self.actions.input.value),
-                custom_authz: nonempty(&self.custom_authz.input.value),
-                exclude_patterns: nonempty(&self.exclude_patterns.input.value),
-            }),
+            FormKind::Create { at } => {
+                let rule = spec::RuleSpec {
+                    pattern: self.pattern.value.clone(),
+                    roles: self.roles.value.clone(),
+                    methods: self.methods.value.clone(),
+                    actions: nonempty(&self.actions.input.value),
+                    custom_authz: nonempty(&self.custom_authz.input.value),
+                    exclude_patterns: nonempty(&self.exclude_patterns.input.value),
+                };
+                match at {
+                    Some(index) => spec::Amendment::Insert { index, rule },
+                    None => spec::Amendment::Add(rule),
+                }
+            }
             // Edit preserves an explicitly set empty string as a present value.
             FormKind::Edit { index } => spec::Amendment::Edit {
                 index,
@@ -387,6 +405,13 @@ pub struct State {
     pub form: Option<RuleFormState>,
     pub pending_delete: Option<DeleteState>,
     pub in_flight_writes: HashSet<String>,
+    /// A document index the next refresh should select, set by a reorder.
+    ///
+    /// Without it the cursor keeps its ROW and the rule slides out from under
+    /// it, so a second nudge moves whatever was displaced instead of the rule
+    /// the operator is dragging. Rows are filtered and reordered, so this has to
+    /// be resolved against the new document rather than carried as a row.
+    pub follow_index: Option<usize>,
 }
 
 impl State {
@@ -403,6 +428,7 @@ impl State {
             form: None,
             pending_delete: None,
             in_flight_writes: HashSet::new(),
+            follow_index: None,
         }
     }
 

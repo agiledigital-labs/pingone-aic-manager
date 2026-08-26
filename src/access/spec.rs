@@ -58,6 +58,16 @@ impl TouchedIndices {
         }
     }
 
+    /// A rule that kept its content and changed position. Both sets are
+    /// populated, and they differ — which is what distinguishes a move from a
+    /// replacement (same index in both) or an add/remove (one side empty).
+    pub(super) fn moved(from: usize, to: usize) -> Self {
+        Self {
+            before: BTreeSet::from([from]),
+            after: BTreeSet::from([to]),
+        }
+    }
+
     pub(super) fn removed(indices: BTreeSet<usize>) -> Self {
         Self {
             before: indices,
@@ -127,7 +137,24 @@ pub struct RuleEdit {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Amendment {
     Add(RuleSpec),
-    Edit { index: usize, edit: RuleEdit },
+    /// `Add` at a chosen position rather than the end. Order carries no
+    /// evaluation meaning — `configs` is a disjunction, verified 2026-08-10
+    /// (`docs/api/19-config-access.md`) — so this is for reading, not for
+    /// precedence: a rule placed next to the ones it belongs with.
+    Insert {
+        index: usize,
+        rule: RuleSpec,
+    },
+    Edit {
+        index: usize,
+        edit: RuleEdit,
+    },
+    /// Same rules, one of them at a different index. See `Insert` on why this
+    /// cannot change who is authorized.
+    Move {
+        from: usize,
+        to: usize,
+    },
     Remove(Vec<usize>),
     Apply(Value),
 }

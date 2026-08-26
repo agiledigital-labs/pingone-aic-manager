@@ -523,6 +523,15 @@ fn render_changes(changes: &Changes) -> String {
             lines.push(format!("+ #{} {}", change.index, compact_json(after)));
         }
     }
+    // A move has no `changed` entries by design — nothing is granted or
+    // withdrawn — so it would otherwise render as "N rules unchanged" and
+    // nothing else.
+    for moved in &changes.moved {
+        lines.push(format!(
+            "~ #{} -> #{} (order only; rules are OR-ed)",
+            moved.from, moved.to
+        ));
+    }
     lines.push(format!("  {} rules unchanged", changes.unchanged));
     lines.join("\n")
 }
@@ -860,6 +869,7 @@ mod tests {
             unchanged: 7,
             touched: TouchedIndices::default(),
             positions_approximate: false,
+            moved: Vec::new(),
         };
 
         assert_eq!(
