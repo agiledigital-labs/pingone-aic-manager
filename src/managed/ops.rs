@@ -641,6 +641,66 @@ fn existing_property(doc: &Value, object: &str, key: &str) -> Option<Value> {
         .cloned()
 }
 
+/// The `schema.order` entry `field_key` follows: `None` when it is first,
+/// and the whole result is `None` when the object does not order it at all.
+///
+/// A neighbour rather than an index, because a self-referential pair removes
+/// two entries from the one list before either is put back — an index read
+/// before both removals is stale for the second insertion.
+fn order_predecessor(object: &Value, field_key: &str) -> Option<Option<String>> {
+    let order = object.pointer("/schema/order")?.as_array()?;
+    let at = order
+        .iter()
+        .position(|value| value.as_str() == Some(field_key))?;
+    Some(
+        at.checked_sub(1)
+            .and_then(|before| order[before].as_str().map(str::to_string)),
+    )
+}
+
+/// Adds `field_key` to `schema.order`, putting it back behind the entry it
+/// followed when the edit found it there.
+///
+/// Appending would shuffle the console's field list on a save that changed
+/// nothing else; `rename_order_key` already keeps a renamed field in place. A
+/// predecessor that is itself missing — the other half of a self-referential
+/// pair, not yet re-inserted — leaves the key appended, and the second call
+/// puts that one back in front of it.
+fn place_order_key(
+    object: &mut Value,
+    field_key: &str,
+    after: Option<Option<String>>,
+) -> Result<(), String> {
+    append_order_key(object, field_key)?;
+    let (Some(after), Some(order)) = (
+        after,
+        object
+            .pointer_mut("/schema/order")
+            .and_then(Value::as_array_mut),
+    ) else {
+        return Ok(());
+    };
+    let Some(current) = order
+        .iter()
+        .position(|value| value.as_str() == Some(field_key))
+    else {
+        return Ok(());
+    };
+    let at = match &after {
+        None => Some(0),
+        Some(predecessor) => order
+            .iter()
+            .position(|value| value.as_str() == Some(predecessor.as_str()))
+            .map(|before| before + 1),
+    };
+    let Some(at) = at else {
+        return Ok(());
+    };
+    let entry = order.remove(current);
+    order.insert(at.min(order.len()), entry);
+    Ok(())
+}
+
 /// Applies relationship intent to a complete managed config document.
 ///
 /// The old pair is removed before collision checks and insertion, which keeps
@@ -671,9 +731,15 @@ pub fn apply_relationship_spec(
     }
 
     // Read the pair this edit started from before it is removed: everything the
-    // form does not model is carried across from it.
+    // form does not model is carried across from it, and each property goes
+    // back to the `schema.order` slot it came from.
     let old_source = previous
         .and_then(|previous| existing_property(doc, &spec.source_object, &previous.old_key));
+    let source_order = previous.and_then(|previous| {
+        crate::managed::api::object_named(doc, &spec.source_object)
+            .ok()
+            .and_then(|object| order_predecessor(object, &previous.old_key))
+    });
     let old_reverse = previous.and_then(|previous| {
         existing_property(
             doc,
@@ -681,6 +747,15 @@ pub fn apply_relationship_spec(
             previous.old_reverse_key.as_deref()?,
         )
     });
+    // A repointed target moves the reverse property to another object, where the
+    // slot it held on the old one means nothing.
+    let reverse_order = previous
+        .filter(|previous| previous.old_target == spec.target_object)
+        .and_then(|previous| {
+            crate::managed::api::object_named(doc, &previous.old_target)
+                .ok()
+                .and_then(|object| order_predecessor(object, previous.old_reverse_key.as_deref()?))
+        });
     let repointed_from = previous.map(|previous| format!("managed/{}", previous.old_target));
 
     let mut updated = doc.clone();
@@ -706,7 +781,7 @@ pub fn apply_relationship_spec(
         carry_unmodelled(old, &mut property, repointed_from.as_deref());
     }
     properties_mut(source)?.insert(spec.key.clone(), property);
-    append_order_key(source, &spec.key)?;
+    place_order_key(source, &spec.key, source_order)?;
     set_required(source, &spec.key, spec.required)?;
 
     if let Some(mut property) = reverse_property(spec) {
@@ -718,7 +793,7 @@ pub fn apply_relationship_spec(
         let target = crate::managed::api::object_named_mut(&mut updated, &spec.target_object)
             .map_err(|error| error.to_string())?;
         properties_mut(target)?.insert(spec.reverse_key.clone(), property);
-        append_order_key(target, &spec.reverse_key)?;
+        place_order_key(target, &spec.reverse_key, reverse_order)?;
     }
     Ok(updated)
 }
@@ -4697,7 +4772,8 @@ mod tests {
     fn decorate(mut doc: Value, forward: Cardinality) -> Value {
         let source = &mut doc["objects"][0]["schema"];
         source["properties"]["first"] = json!({"type": "string"});
-        source["order"] = json!(["first", "owner"]);
+        // Ahead of the scalar, so appending on save would be visible.
+        source["order"] = json!(["owner", "first"]);
         let property = &mut source["properties"]["owner"];
         property["policies"] = json!([{"policyId": "cannot-contain-characters"}]);
         if forward == Cardinality::Many {
@@ -4729,7 +4805,7 @@ mod tests {
 
         let target = &mut doc["objects"][1]["schema"];
         target["properties"]["firstB"] = json!({"type": "string"});
-        target["order"] = json!(["firstB", "owned"]);
+        target["order"] = json!(["owned", "firstB"]);
         target["properties"]["owned"]["policies"] = json!([]);
         target["properties"]["owned"]["items"]["resourceCollection"][0]["notify"] = json!(false);
         doc
@@ -4875,6 +4951,35 @@ mod tests {
                 assert!(property["id"].is_null(), "{flip}");
                 assert!(node["policies"].is_null(), "{flip}");
             }
+        }
+    }
+
+    /// A self-referential pair holds both ends in one `schema.order`, and both
+    /// are removed before either is put back — so a slot recorded as an index
+    /// is stale by the time the second one is inserted.
+    #[test]
+    fn a_self_referential_save_keeps_both_ends_where_they_were() {
+        for order in [
+            json!(["owner", "x", "owned", "y"]),
+            json!(["owned", "x", "owner", "y"]),
+        ] {
+            let mut spec = relationship_spec(Cardinality::One, ReverseCardinality::One);
+            spec.target_object = "a".into();
+            let mut tenant =
+                apply_relationship_spec(&relationship_doc(&["a"]), &spec, None).unwrap();
+            let schema = &mut tenant["objects"][0]["schema"];
+            schema["properties"]["x"] = json!({"type": "string"});
+            schema["properties"]["y"] = json!({"type": "string"});
+            schema["order"] = order.clone();
+            let previous = PreviousRelationship {
+                old_key: "owner".into(),
+                old_target: "a".into(),
+                old_reverse_key: Some("owned".into()),
+            };
+
+            let saved = apply_relationship_spec(&tenant, &spec, Some(&previous)).unwrap();
+
+            assert_eq!(saved, tenant, "{order}");
         }
     }
 
