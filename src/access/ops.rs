@@ -830,6 +830,13 @@ pub fn apply_write_result(
 ) {
     let may_restore_input_mode = write_mode_is_current(app, resume_mode);
     app.access.in_flight_writes.remove(&tenant);
+    // Whatever happens next, this write is over: either the success path below
+    // consumes the follow, or there is nothing left to follow and leaving it
+    // armed would move the cursor on some unrelated later refresh.
+    let follow = app.access.follow.take();
+    if matches!(result, Ok(())) {
+        app.access.follow = follow;
+    }
     if let Some(status) = undo_disposition(&result) {
         mark_undo(app, undo_id, status);
     }
@@ -841,6 +848,9 @@ pub fn apply_write_result(
                         tenant.clone(),
                         crate::access::state::LoadState::Loaded(document),
                     );
+                    // This path swaps the document in with no refresh, so it is
+                    // where a reorder's cursor has to catch up.
+                    crate::access::screen::follow_moved_rule(app, &tenant);
                 }
                 Err(error) => {
                     app.access.data.remove(&tenant);

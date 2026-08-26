@@ -1288,6 +1288,8 @@ mod tests {
             char_key('o'),
             Some(NewItemBelow),
         );
+        // Reordering is refused while a filter is active, but the BIND stays
+        // reachable — the refusal is a toast that says why, not a missing key.
         add(
             "access move up needs a row",
             Access,

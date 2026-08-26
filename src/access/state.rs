@@ -405,13 +405,15 @@ pub struct State {
     pub form: Option<RuleFormState>,
     pub pending_delete: Option<DeleteState>,
     pub in_flight_writes: HashSet<String>,
-    /// A document index the next refresh should select, set by a reorder.
+    /// The tenant and document index a reorder should leave the cursor on.
     ///
     /// Without it the cursor keeps its ROW and the rule slides out from under
     /// it, so a second nudge moves whatever was displaced instead of the rule
-    /// the operator is dragging. Rows are filtered and reordered, so this has to
-    /// be resolved against the new document rather than carried as a row.
-    pub follow_index: Option<usize>,
+    /// the operator is dragging. Rows are filtered, so this is resolved against
+    /// the new rows rather than carried as a row number — and it carries its
+    /// tenant, because a refresh for a DIFFERENT tenant would otherwise consume
+    /// it and move that tenant's cursor instead.
+    pub follow: Option<(String, usize)>,
 }
 
 impl State {
@@ -428,7 +430,7 @@ impl State {
             form: None,
             pending_delete: None,
             in_flight_writes: HashSet::new(),
-            follow_index: None,
+            follow: None,
         }
     }
 
