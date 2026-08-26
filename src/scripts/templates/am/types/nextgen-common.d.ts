@@ -514,9 +514,18 @@ type AmUserAttribute =
 // verified on the next-gen engine; neither is DCR's `requestProperties`, which
 // shares the binding name and nothing else that has been checked here.
 //
-// The lists are `JavaArray<StringLike>`, not `JavaArray<JavaString>`: they hold
-// Java strings, but `JavaArray<T>.contains` takes a `T`, so the tighter element
-// type rejects the ordinary `allowedScopes.contains("openid")`.
+// Reading one is `String(v[0])`, not `v[0] === "…"`: the element type is
+// `JavaString`, so a direct comparison against a JS string literal is a type
+// error rather than a comparison that may quietly be false. Membership takes a
+// plain literal — `allowedScopes.contains("openid")` — because the lookup
+// parameters in rhino-1.7.14.d.ts widen for Java strings.
+//
+// Note also that `requestHeaders["content-type"]` is possibly `undefined` under
+// the base tsconfig's `noUncheckedIndexedAccess`, so indexing straight into it
+// does not compile. That is not pedantry: the same expression throws in Rhino
+// on a request that lacks the header. Bind it first, and guard —
+// `var v = requestProperties.requestHeaders["content-type"];` then
+// `v && v.length ? String(v[0]) : null`.
 //
 // The index signature is what keeps that honest. Members named below are the
 // ones with evidence and get autocomplete; anything else is still reachable as
@@ -525,9 +534,9 @@ type AmUserAttribute =
 interface RequestProperties {
   /** Query/form parameters of the OAuth2 request. Does **not** carry
    * `password` or `client_secret` (verified on the `password` grant). */
-  requestParams: Record<string, JavaArray<StringLike>>;
+  requestParams: Record<string, JavaArray<JavaString>>;
   /** Request headers, client credentials included — keep them out of logs. */
-  requestHeaders: Record<string, JavaArray<StringLike>>;
+  requestHeaders: Record<string, JavaArray<JavaString>>;
   requestUri: StringLike;
   /** Legacy-derived; not verified next-gen. */
   realm: StringLike;
@@ -538,9 +547,9 @@ interface RequestProperties {
 // assumption; the three lists are the legacy OIDC claims shape.
 interface ClientProperties {
   clientId: StringLike;
-  allowedGrantTypes: JavaArray<StringLike>;
-  allowedScopes: JavaArray<StringLike>;
-  allowedResponseTypes: JavaArray<StringLike>;
+  allowedGrantTypes: JavaArray<JavaString>;
+  allowedScopes: JavaArray<JavaString>;
+  allowedResponseTypes: JavaArray<JavaString>;
   [key: string]: any;
 }
 

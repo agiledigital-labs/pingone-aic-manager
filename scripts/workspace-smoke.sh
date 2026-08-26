@@ -38,7 +38,8 @@ echo "==> aic workspace init --tenant $TENANT"
 "$AIC_BIN" workspace init --tenant "$TENANT" >/dev/null
 
 echo "==> writing known-clean sample scripts + leaf tsconfigs"
-mkdir -p "$WS/am/alpha/decision-node" "$WS/am/alpha/lib" "$WS/idm/endpoint"
+mkdir -p "$WS/am/alpha/decision-node" "$WS/am/alpha/lib" "$WS/idm/endpoint" \
+  "$WS/am/alpha/oauth2-access-token-ng" "$WS/am/alpha/oidc-claims"
 
 # Leaf tsconfigs mirror am::leaf_tsconfig (whose output is covered by the Rust
 # unit tests); a real pull writes these automatically.
@@ -84,6 +85,50 @@ JS
 cat > "$WS/am/alpha/lib/MyLib.js" <<'JS'
 export * from "./MyLib.cjs";
 JS
+cat > "$WS/am/alpha/oauth2-access-token-ng/tsconfig.json" <<'JSON'
+{
+  "extends": "../../tsconfig.json",
+  "include": ["./**/*", "../../types/rhino-1.7.14.d.ts", "../../types/common.d.ts", "../../types/nextgen-common.d.ts", "../../types/oauth2-access-token-ng.d.ts", "../../types/managed/*.d.ts"],
+  "compilerOptions": { "paths": { "*": ["../lib/*"] } }
+}
+JSON
+cat > "$WS/am/alpha/oidc-claims/tsconfig.json" <<'JSON'
+{
+  "extends": "../../tsconfig.json",
+  "include": ["./**/*", "../../types/rhino-1.7.14.d.ts", "../../types/oidc-claims.d.ts"]
+}
+JSON
+
+# `requestProperties`/`clientProperties` are an unenumerated `object` in the
+# editor metadata; this is the read that proves they are named types instead.
+# The header is bound and guarded because indexing straight into the map is both
+# a type error and a Rhino TypeError on a request that lacks it.
+cat > "$WS/am/alpha/oauth2-access-token-ng/Sample.cjs" <<'JS'
+function firstHeader(name) {
+  var v = requestProperties.requestHeaders[name];
+  return v && v.length ? String(v[0]) : null;
+}
+logger.info("{} {} {}", firstHeader("content-type"),
+  requestProperties.requestUri, clientProperties.clientId);
+if (clientProperties.allowedScopes.contains("openid")) {
+  accessToken.setField("aicedit_smoke", true);
+}
+JS
+
+# Legacy OIDC claims: every one of these reaches a Java collection with a JS
+# string literal, which is what the `Lookup` widening in rhino-1.7.14.d.ts is for.
+cat > "$WS/am/alpha/oidc-claims/Sample.cjs" <<'JS'
+var ct = requestProperties.requestHeaders.get("content-type");
+var wanted = requestedClaims.get("email");
+var attr = identity.getAttribute("mail");
+logger.message(
+  "" + ct + wanted + attr + scopes.contains("openid") +
+  claimsLocales.includes("en") +
+  clientProperties.allowedGrantTypes.contains("authorization_code") +
+  session.getProperty("Principal")
+);
+JS
+
 cat > "$WS/idm/endpoint/myEndpoint.cjs" <<'JS'
 var users = openidm.query("managed/alpha_user", { _queryFilter: "true" });
 logger.info("endpoint {} found {}", request.method, users);

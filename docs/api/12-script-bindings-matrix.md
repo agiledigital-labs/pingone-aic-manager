@@ -433,6 +433,16 @@ Consequences (applied to the type layering):
 - **2026-07-22:** `library.d.ts` redeclares `NodeState`, `RequestHeaders`, and
   `RequestParameters` as types for library `.load(...)` factory parameters;
   their scripted-decision globals remain outside library scope.
+- **2026-08-26:** Java lookup parameters take a JS string. `JavaMap.get`,
+  `JavaSet.contains` and `JavaArray.includes`/`contains` typed their argument as
+  the collection's own element type, so every ordinary
+  `scopes.contains("openid")` / `requestedClaims.get("email")` was a type error —
+  seven of them in the stock legacy OIDC claims idiom alone. `Lookup<T>` in
+  `rhino-1.7.14.d.ts` widens to `StringLike` **only** where the element really is
+  a Java string, so `JavaArray<Claim>.contains("name")` and
+  `JavaMap<JavaString, …>.get(42)` are still errors. The legacy OIDC
+  `AMIdentity`/`Session` parameters widened the same way — they were `string`,
+  which rejected the `JavaString` a legacy script has in hand.
 - **2026-08-26:** `requestProperties` and `clientProperties` are named types
   (`RequestProperties`/`ClientProperties` in `nextgen-common.d.ts`) rather than
   the bare `object` the editor metadata yields. The metadata enumerates no
@@ -448,7 +458,10 @@ Consequences (applied to the type layering):
   DCR's `requestProperties`, which shares the binding name and nothing checked.
   An index signature keeps the unnamed members reachable by bracket. The legacy
   `oidc-claims` leaf keeps its own Java-shaped pair and pulls neither common
-  file, so the two never meet.
+  file, so the two never meet. Note that `requestHeaders["content-type"][0]`
+  does **not** compile: `noUncheckedIndexedAccess` makes the lookup possibly
+  `undefined`, which is also what it is in Rhino when the request lacks that
+  header. Bind and guard — `v && v.length ? String(v[0]) : null`.
 - **2026-08-26:** the same argument applies to every other binding a caller can
   hand a library — `CallbacksBuilder` was the one that surfaced it — so the
   library leaf now also includes **`library-args.d.ts`**, one type per binding
