@@ -248,6 +248,9 @@ fn below_cursor(app: &App) -> Option<usize> {
 
 /// Move the selected rule one place towards the top of the document.
 pub fn move_up(app: &mut App) {
+    if reordering_blocked_by_filter(app) {
+        return;
+    }
     let Some(index) = document_index(app) else {
         return;
     };
@@ -259,10 +262,30 @@ pub fn move_up(app: &mut App) {
 
 /// Move the selected rule one place towards the end of the document.
 pub fn move_down(app: &mut App) {
+    if reordering_blocked_by_filter(app) {
+        return;
+    }
     let Some(index) = document_index(app) else {
         return;
     };
     start_move(app, index, index + 1);
+}
+
+/// A filtered list is scored, not ordered, so "up" is not a direction on it.
+///
+/// `K` would move the rule one place in the DOCUMENT while the displayed order
+/// — which ranks by match score — need not change at all, so the operator sees
+/// a write they cannot see the effect of. Better to say why than to guess what
+/// they meant.
+fn reordering_blocked_by_filter(app: &mut App) -> bool {
+    if !filter_active(app) {
+        return false;
+    }
+    app.push_toast(
+        ToastKind::Info,
+        "Clear the filter to reorder — a filtered list is ranked, not ordered",
+    );
+    true
 }
 
 fn start_move(app: &mut App, from: usize, to: usize) {
@@ -284,7 +307,15 @@ fn start_move(app: &mut App, from: usize, to: usize) {
     let request = ops::request_from_move(&tenant, document, from, to);
     match request {
         Ok(request) => {
-            app.access.follow_index = Some(to);
+            // Swapping two byte-identical rules produces the same document.
+            // Nothing distinguishes them, so there is nothing to write — and a
+            // whole-document PUT, a backup and an undo entry for a no-op is a
+            // cost the operator did not ask for.
+            if request.after == request.previous_document {
+                app.push_toast(ToastKind::Info, "That rule is identical to its neighbour");
+                return;
+            }
+            app.access.follow = Some((tenant, to));
             ops::submit_write(app, request);
         }
         Err(error) => app.push_toast(ToastKind::Error, error.to_string()),
@@ -376,11 +407,11 @@ fn apply_refresh(app: &mut App, tenant: String, result: std::result::Result<Valu
         }
     }
 
+    follow_moved_rule(app, &tenant);
     if app
         .active_tenant()
         .is_some_and(|active| active.name == tenant)
     {
-        follow_moved_rule(app, &tenant);
         let count = row_count(app);
         app.access.clamp_selection(count);
     }
@@ -388,13 +419,32 @@ fn apply_refresh(app: &mut App, tenant: String, result: std::result::Result<Valu
 
 /// Put the cursor back on the rule a reorder just moved.
 ///
-/// Resolved against the refreshed rows, because a document index is not a row:
+/// Resolved against the current rows, because a document index is not a row:
 /// the list is filtered and the filter may not even contain the moved rule, in
 /// which case there is nothing to follow and the selection stays where it is.
-fn follow_moved_rule(app: &mut App, tenant: &str) {
-    let Some(index) = app.access.follow_index.take() else {
+///
+/// Called from both paths that can replace the document — the write's own
+/// result, which swaps the cached document in without any refresh, and a later
+/// refresh — and it is a no-op unless the tenant matches, so a refresh for
+/// another tenant cannot consume it.
+pub(super) fn follow_moved_rule(app: &mut App, tenant: &str) {
+    if app
+        .access
+        .follow
+        .as_ref()
+        .is_none_or(|(owner, _)| owner != tenant)
+    {
+        return;
+    }
+    let Some((_, index)) = app.access.follow.take() else {
         return;
     };
+    if app
+        .active_tenant()
+        .is_none_or(|active| active.name != tenant)
+    {
+        return;
+    }
     let row = app
         .access
         .matches(Some(tenant))
@@ -595,4 +645,106 @@ fn handle_delete_confirm_key(app: &mut App, key: KeyEvent) {
 fn move_selection(app: &mut App, delta: isize) {
     let count = row_count(app);
     app.access.move_selection(count, delta);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::View;
+    use crate::config::{Tenant, TenantTheme};
+
+    fn tenant(name: &str) -> Tenant {
+        Tenant {
+            name: name.into(),
+            base_url: "https://test.invalid".into(),
+            theme: TenantTheme::Sandbox,
+            sa_id: None,
+            scopes: Vec::new(),
+            provenance: crate::config::Provenance::default(),
+        }
+    }
+
+    fn app_with_rules(tenant_name: &str) -> App {
+        let mut app = App::for_test(vec![tenant(tenant_name)], View::Access);
+        let document =
+            crate::access::state::Document::from_value(crate::access::six_rule_fixture())
+                .expect("fixture document");
+        app.access.data.insert(
+            tenant_name.into(),
+            crate::access::state::LoadState::Loaded(document),
+        );
+        app
+    }
+
+    /// The cursor has to end up on the rule that moved, not the row it left.
+    ///
+    /// The write's own result swaps the cached document in **without a
+    /// refresh**, so a follow consumed only by `apply_refresh` never fires: the
+    /// selection keeps its row, the moved rule slides out from under it, and the
+    /// next `J` moves whatever was displaced instead.
+    #[test]
+    fn the_cursor_follows_the_moved_rule_through_the_writes_own_result() {
+        let mut app = app_with_rules("sandbox");
+        app.access.select(1, row_count(&app));
+        let moved =
+            crate::access::ops::rules(&app.access.document("sandbox").expect("document").value)
+                .expect("rules")[1]
+                .clone();
+
+        let after = crate::access::ops::move_rule(
+            &app.access.document("sandbox").expect("document").value,
+            1,
+            3,
+        )
+        .expect("move")
+        .document;
+        app.access.follow = Some(("sandbox".into(), 3));
+        crate::access::ops::apply_write_result(
+            &mut app,
+            "sandbox".into(),
+            after,
+            crate::undo::UndoId::default(),
+            crate::access::ops::ResumeMode::List,
+            Ok(()),
+        );
+
+        let selected = app.access.matches(Some("sandbox"))[app.access.selected]
+            .row
+            .raw
+            .clone();
+        assert_eq!(selected, moved, "selection stayed on the row, not the rule");
+        assert!(app.access.follow.is_none(), "the follow must be consumed");
+    }
+
+    /// A follow left armed by one tenant must not steer another tenant's list.
+    #[test]
+    fn a_follow_is_not_consumed_by_another_tenants_refresh() {
+        let mut app = app_with_rules("sandbox");
+        app.access.select(2, row_count(&app));
+        app.access.follow = Some(("other".into(), 0));
+        follow_moved_rule(&mut app, "sandbox");
+        assert_eq!(app.access.selected, 2, "another tenant's follow moved us");
+        assert!(app.access.follow.is_some(), "and it was consumed");
+    }
+
+    /// Ranked rows are not ordered rows, so "up" is not a direction on them.
+    #[test]
+    fn reordering_is_refused_while_a_filter_is_active() {
+        let mut app = app_with_rules("sandbox");
+        app.access.query.set("duplicate");
+        let before = app
+            .access
+            .document("sandbox")
+            .expect("document")
+            .value
+            .clone();
+        move_up(&mut app);
+        move_down(&mut app);
+        assert_eq!(
+            app.access.document("sandbox").expect("document").value,
+            before,
+            "a filtered reorder must not write"
+        );
+        assert!(app.access.follow.is_none());
+    }
 }
