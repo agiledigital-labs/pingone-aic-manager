@@ -882,8 +882,12 @@ mod tests {
         assert!(lib.contains("../../types/nextgen-common.d.ts"));
         assert!(lib.contains("../../types/managed/*.d.ts"));
         assert!(lib.contains("\"*\": [\"./*\"]"));
-        // Only libraries get them: everywhere else the context's own overlay
-        // declares the same names, and two declarations would collide.
+        // Only libraries get them. Not because the names collide — measured
+        // 2026-08-26, TypeScript merges the duplicate declarations and the leaf
+        // still compiles — but because merging turns a hand-written overlay's
+        // `IdRepository.getIdentity(): Identity` and the generated
+        // `getIdentity(): object` into one overload set whose resolution order
+        // follows file order, so a caller's inferred return type moves silently.
         for slug in ["decision-node", "decision-node-legacy", "device-match"] {
             assert!(
                 !leaf_tsconfig(slug).contains("library-args.d.ts"),
@@ -972,6 +976,27 @@ mod tests {
         // NodeState is hand-written in library.d.ts; two declarations of it in
         // one scope would merge into a contradictory `get`.
         assert!(!args.contains("interface NodeState"));
+
+        // A binding is only the members EVERY caller has. Unioning them was
+        // unsound: `createUser` exists on the JWT-issuer `idRepository` alone,
+        // and a merged `IdRepository` let a library call it on the
+        // scripted-decision binding — type-checked, "not a function" at runtime.
+        let id_repository = args
+            .split("interface ")
+            .find(|block| block.starts_with("IdRepository {"))
+            .expect("IdRepository");
+        assert!(id_repository.contains("getIdentity"));
+        assert!(
+            !id_repository.contains("createUser"),
+            "createUser is not on every context's idRepository"
+        );
+        // Omitting it silently would read as "this binding has nothing else", so
+        // the generator names what it dropped and which context has it. A
+        // context-qualified type carrying the extras was the other option and is
+        // worse: a caller resolves `require()` through its own leaf, which does
+        // not include this file, so the name fails to compile in every caller.
+        assert!(args.contains("createUser") && args.contains("(Oauth2JwtIssuer only)"));
+        assert!(!args.contains("interface Oauth2JwtIssuerIdRepository"));
     }
 
     /// `requestProperties`/`clientProperties` are an `object` with no enumerated

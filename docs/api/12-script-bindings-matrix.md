@@ -462,6 +462,27 @@ Consequences (applied to the type layering):
   does **not** compile: `noUncheckedIndexedAccess` makes the lookup possibly
   `undefined`, which is also what it is in Rhino when the request lacks that
   header. Bind and guard — `v && v.length ? String(v[0]) : null`.
+- **2026-08-26:** `library-args.d.ts` carries the members every context
+  **agrees** on, not their union. Unioning was unsound: `createUser` is on the
+  JWT-issuer `idRepository` alone, so a merged `IdRepository` let a library call
+  it on the scripted-decision binding — type-checked, "not a function" at run
+  time. Members only some contexts have are **omitted**, and named in a generated
+  comment with the context that has them (`createUser` is the only divergence
+  across all 14 artifacts today). A context-qualified type carrying the extras
+  was the other option and is worse: a caller resolves `require()` through its
+  own leaf, which does **not** include `library-args.d.ts`, so a library
+  annotated with such a name fails to compile in every caller — the whole
+  module, not only that export. A library that needs an omitted member declares
+  a module-local structural type or casts, which makes the context it is written
+  for explicit rather than ambient.
+
+  The same mechanism gives a rule for anyone hand-writing an overlay: a caller
+  re-checks the library against its **own** same-named types, so an overlay
+  declaring one must stay a compatible refinement of the common surface — extra
+  members and more precise returns are fine, narrower parameters and
+  incompatible returns are not. Put explicit JSDoc return types on exported
+  library functions when a context-relative value escapes, so a caller's more
+  precise type cannot silently change what the export infers.
 - **2026-08-26:** the same argument applies to every other binding a caller can
   hand a library — `CallbacksBuilder` was the one that surfaced it — so the
   library leaf now also includes **`library-args.d.ts`**, one type per binding

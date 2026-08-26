@@ -542,7 +542,11 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             }
             let (mut pushed, mut pulled, mut in_sync) = (0u32, 0u32, 0u32);
             let mut conflicts: Vec<String> = Vec::new();
+            let mut stopped = false;
             for c in cands {
+                if stopped {
+                    break;
+                }
                 let full = full_of(&c);
                 let ns = Namespace {
                     kind: c.kind,
@@ -590,16 +594,21 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                                 println!("← pulled {full} (resolved: remote; local backed up)");
                             }
                             ConflictChoice::Skip => conflicts.push(full),
+                            // Fall out to the summary rather than returning:
+                            // a stop can land after a tenant write, and the
+                            // count of what already happened is the one thing
+                            // the operator needs before deciding what to do.
                             ConflictChoice::Stop => {
-                                println!("\nstopped.");
-                                return Ok(());
+                                conflicts.push(full);
+                                stopped = true;
                             }
                         }
                     }
                 }
             }
             println!(
-                "\nsync: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {}",
+                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {}",
+                if stopped { " (stopped, partial)" } else { "" },
                 conflicts.len()
             );
             if !conflicts.is_empty() {
@@ -1508,7 +1517,7 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                     if ns.kind != script::Kind::IdmEndpoint || !declared.contains(&name) {
                         continue;
                     }
-                    match adopt_generated(tenant, &ns, &name, &path, yes, &stop).await {
+                    match adopt_generated(tenant, &ns, &name, &full, &path, yes).await {
                         Ok(Adoption::Created) => {
                             println!("{}", watch_green(&format!("+ created {full}")));
                             continue;
@@ -1520,9 +1529,40 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                                 "{}",
                                 watch_green(&format!("+ adopted {full} from the tenant"))
                             );
-                            if let Some(backup) = backup {
-                                println!("  its copy differed — saved to {}", backup.display());
+                            println!("  its copy saved to {}", backup.display());
+                        }
+                        Ok(Adoption::Stop) => {
+                            println!("\nstopped watching.");
+                            return Ok(());
+                        }
+                        Ok(Adoption::Declined) => {
+                            eprintln!(
+                                "{}",
+                                watch_red(&format!("! {full}: left alone — still untracked"))
+                            );
+                            continue;
+                        }
+                        Ok(Adoption::TakeRemote(existing)) => {
+                            let selector = script::sync::Selector::Name(existing.name.clone());
+                            match script::sync::pull(
+                                tenant,
+                                ns.realm_arg(),
+                                ns.kind,
+                                &selector,
+                                false,
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    println!("← pulled {full} (resolved: remote; local backed up)")
+                                }
+                                Err(e) if is_fatal_watch_error(&e) => {
+                                    eprintln!("! watch stopped: {e}");
+                                    return Err(e);
+                                }
+                                Err(e) => eprintln!("{}", watch_red(&format!("! {full}: {e}"))),
                             }
+                            continue;
                         }
                         Err(e) if is_fatal_watch_error(&e) => {
                             eprintln!("! watch stopped: {e}");
@@ -1537,15 +1577,16 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                 Err(_) => continue,
                 Ok(_) => {}
             }
-            let push = script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes);
-            tokio::pin!(push);
-            let result = tokio::select! {
-                _ = stop.wait() => {
-                    println!("\nstopped watching.");
-                    return Ok(());
-                }
-                result = &mut push => prod_hint(result),
-            };
+            // Not cancellable, deliberately. Dropping the future cannot
+            // retract a PUT the tenant already accepted, and `push` records the
+            // snapshot only after the write returns — so a stop landing in
+            // between left the tenant ahead of the snapshot, which is the exact
+            // drift the whole content-comparison design exists to avoid. The
+            // stop is honoured at the top of the next iteration instead; the
+            // transport's own timeout is what bounds the wait.
+            let result = prod_hint(
+                script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes).await,
+            );
             match result {
                 Ok(PushOutcome::Pushed) => println!("{}", watch_green(&format!("→ pushed {full}"))),
                 Ok(PushOutcome::Unchanged | PushOutcome::AlreadyInSync) => {}
@@ -1556,22 +1597,17 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                     );
                     match prompt_conflict(&full, true)? {
                         ConflictChoice::Local => {
-                            let push = script::sync::push(
-                                tenant,
-                                ns.realm_arg(),
-                                ns.kind,
-                                &name,
-                                true,
-                                yes,
+                            let result = prod_hint(
+                                script::sync::push(
+                                    tenant,
+                                    ns.realm_arg(),
+                                    ns.kind,
+                                    &name,
+                                    true,
+                                    yes,
+                                )
+                                .await,
                             );
-                            tokio::pin!(push);
-                            let result = tokio::select! {
-                                _ = stop.wait() => {
-                                    println!("\nstopped watching.");
-                                    return Ok(());
-                                }
-                                result = &mut push => prod_hint(result),
-                            };
                             match result {
                                 Ok(PushOutcome::Pushed) => println!(
                                     "{}",
@@ -1587,21 +1623,16 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                         }
                         ConflictChoice::Remote => {
                             let selector = script::sync::Selector::Name(name.clone());
-                            let pull = script::sync::pull(
+                            // Same reasoning: a pull writes the workspace file
+                            // and only then records the snapshot.
+                            let result = script::sync::pull(
                                 tenant,
                                 ns.realm_arg(),
                                 ns.kind,
                                 &selector,
                                 false,
-                            );
-                            tokio::pin!(pull);
-                            let result = tokio::select! {
-                                _ = stop.wait() => {
-                                    println!("\nstopped watching.");
-                                    return Ok(());
-                                }
-                                result = &mut pull => result,
-                            };
+                            )
+                            .await;
                             match result {
                                 Ok(_) => {
                                     println!("← pulled {full} (resolved: remote; local backed up)")
@@ -1641,9 +1672,18 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
 enum Adoption {
     /// It did not exist on the tenant; we made it.
     Created,
-    /// It was already there. We took its copy as the baseline (backing that
-    /// copy up when it differed from the file on disk) and wrote nothing.
-    Adopted(Option<std::path::PathBuf>),
+    /// It was already there and its copy matched ours, so we took that copy as
+    /// the baseline and wrote nothing.
+    Adopted(std::path::PathBuf),
+    /// It was already there with different content and the operator did not
+    /// claim it. Still untracked; the next save asks again.
+    Declined,
+    /// The operator asked for the tenant's copy instead of ours.
+    TakeRemote(script::RemoteRef),
+    /// Ctrl-C at the prompt. A variant rather than an error, because an error
+    /// here is non-fatal and would print "stopped watching." and then carry on
+    /// watching — which is the shape this whole commit is about.
+    Stop,
 }
 
 /// Bring an endpoint that exists only as a build artefact under sync.
@@ -1661,36 +1701,48 @@ enum Adoption {
 /// refusal and nothing the message suggested could clear it. Adopting the
 /// tenant's copy as the baseline is the missing step — after it, the file is an
 /// ordinary local edit and the next push is conflict-aware like any other.
+///
+/// Adopting is only silent where the two copies **already agree**. Where they
+/// differ it is an ownership question the conflict check cannot answer for us —
+/// the local file never forked from that snapshot, so manufacturing one would
+/// hand the next push drift-free permission to overwrite work this workspace
+/// has never seen. `--no-prompt` and a non-TTY both decline, so automation
+/// never takes a name it did not create.
 async fn adopt_generated(
     tenant: &str,
     ns: &Namespace,
     name: &str,
+    full: &str,
     path: &std::path::Path,
     yes: bool,
-    stop: &Stop,
 ) -> Result<Adoption> {
     let source =
         std::fs::read(path).map_err(|e| Error::Config(format!("read {}: {e}", path.display())))?;
     let new_script = ns
         .kind
         .new_script(name, &source, &script::NewScriptOpts::default())?;
-    let create = script::sync::create(tenant, ns.realm_arg(), &new_script, yes);
-    tokio::pin!(create);
-    let outcome = tokio::select! {
-        _ = stop.wait() => return Err(Error::Config("stopped watching.".into())),
-        result = &mut create => prod_hint(result)?,
+    let outcome = prod_hint(script::sync::create(tenant, ns.realm_arg(), &new_script, yes).await)?;
+    let existing = match outcome {
+        script::sync::CreateOutcome::Created(_) => return Ok(Adoption::Created),
+        script::sync::CreateOutcome::NameTaken(existing) => existing,
     };
-    match outcome {
-        script::sync::CreateOutcome::Created(_) => Ok(Adoption::Created),
-        script::sync::CreateOutcome::NameTaken(existing) => {
-            let adopt = script::sync::adopt(tenant, ns.realm_arg(), &existing);
-            tokio::pin!(adopt);
-            tokio::select! {
-                _ = stop.wait() => Err(Error::Config("stopped watching.".into())),
-                backup = &mut adopt => Ok(Adoption::Adopted(backup?)),
-            }
+    if !script::sync::already_matches(tenant, ns.realm_arg(), &existing).await? {
+        eprintln!(
+            "{}",
+            watch_red(&format!(
+                "! {full}: the tenant already has this name, with different content"
+            ))
+        );
+        match prompt_conflict(full, true)? {
+            ConflictChoice::Local => {}
+            ConflictChoice::Remote => return Ok(Adoption::TakeRemote(existing)),
+            ConflictChoice::Skip => return Ok(Adoption::Declined),
+            ConflictChoice::Stop => return Ok(Adoption::Stop),
         }
     }
+    Ok(Adoption::Adopted(
+        script::sync::adopt(tenant, ns.realm_arg(), &existing).await?,
+    ))
 }
 
 /// A Ctrl-C that is remembered rather than raced for.
@@ -2071,14 +2123,20 @@ mod tests {
             .expect("waiter task");
     }
 
-    /// The advice has to be a verb that works. `push` needs a snapshot, so on a
-    /// name that was never synced it fails with `not synced yet` — following it
-    /// left the caller exactly where they started.
+    /// The advice has to be a verb that works, on a ref that resolves. `push`
+    /// needs a snapshot, so on a name that was never synced it fails with `not
+    /// synced yet`; and a **bare** name takes its namespace from the current
+    /// directory, so `pull myEndpoint` is `ambiguous "myEndpoint"` anywhere but
+    /// a workspace subdir. Both left the caller exactly where they started.
     #[test]
-    fn a_taken_name_points_at_the_verb_that_can_clear_it() {
-        let message = script::sync::name_taken_message("myEndpoint");
-        assert!(message.contains("aic script pull myEndpoint"), "{message}");
-        assert!(!message.contains("push"), "{message}");
+    fn a_taken_name_points_at_a_verb_and_a_ref_that_work() {
+        let idm =
+            script::sync::name_taken_message(script::Kind::IdmEndpoint, "alpha", "myEndpoint");
+        assert!(idm.contains("aic script pull endpoint/myEndpoint"), "{idm}");
+        assert!(!idm.contains("push"), "{idm}");
+        // AM is realm-scoped, so the ref that resolves carries the realm.
+        let am = script::sync::name_taken_message(script::Kind::Am, "bravo", "MyScript");
+        assert!(am.contains("aic script pull bravo/MyScript"), "{am}");
     }
 
     #[test]

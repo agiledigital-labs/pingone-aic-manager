@@ -4,10 +4,18 @@
 // Types a caller can hand a library script. A library sees none of the
 // per-context globals (verified 2026-07-29 — docs/api/12-script-bindings-matrix.md),
 // so it takes them as arguments, and the argument types have to exist in library
-// scope or the factory signature cannot be written. One declaration per binding,
-// merged across every next-gen context that can require() a library; where two
-// contexts describe the same binding differently, the members are unioned, so a
-// member here may not exist in the context that actually calls the library.
+// scope or the factory signature cannot be written.
+//
+// Each binding is the members that EVERY next-gen context able to require() a
+// library agrees on — what a library can call whoever hands it the value. A
+// member only some contexts have is omitted and named in a comment; a library
+// that needs one declares a module-local structural type or casts, which makes
+// the context it is written for explicit rather than ambient.
+//
+// A caller re-checks this library against its OWN same-named types, so an
+// overlay declaring one has to stay a compatible refinement of the surface
+// here: extra members and more precise returns are fine, narrower parameters
+// and incompatible returns are not.
 //
 // `NodeState` is NOT here — library.d.ts hand-writes a better one.
 // Applied metadata refinements:
@@ -522,15 +530,12 @@ interface EmailService {
   ): void;
 }
 
+// Omitted — not on every context's binding, so a library cannot call it
+//   createUser(userName: StringLike, password: StringLike): object;   (Oauth2JwtIssuer only)
+//   createUser( userName: StringLike, password: StringLike, attributes: object ): object;   (Oauth2JwtIssuer only)
 // SCRIPTED_DECISION_NODE, DEVICE_MATCH_NODE, OAUTH2_SCRIPTED_JWT_ISSUER_NEXT_GEN
 interface IdRepository {
   getIdentity(userName: StringLike): object;
-  createUser(userName: StringLike, password: StringLike): object;
-  createUser(
-    userName: StringLike,
-    password: StringLike,
-    attributes: object
-  ): object;
 }
 
 // OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN, OAUTH2_AUTHORIZE_ENDPOINT_DATA_PROVIDER_NEXT_GEN, OAUTH2_EVALUATE_SCOPE_NEXT_GEN, OAUTH2_MAY_ACT_NEXT_GEN, OAUTH2_VALIDATE_SCOPE_NEXT_GEN, OIDC_CLAIMS_NEXT_GEN, SAML2_NAMEID_MAPPER
@@ -599,4 +604,6 @@ interface Token {
 //     docs/api/bindings/saml2-sp-account-mapper-next.json \
 //     docs/api/bindings/social-provider-handler-next.json
 //   > src/scripts/templates/am/types/library-args.d.ts
-//   (then run the repo's prettier over it)
+//
+// The output is already prettier-formatted (`signature` applies prettier's
+// 80-column rule), so a regenerate is a clean diff or no diff at all.
