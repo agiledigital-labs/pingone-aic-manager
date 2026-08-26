@@ -3,7 +3,7 @@
 // Shared next-gen-common bindings come from common.d.ts + nextgen-common.d.ts.
 
 declare const softwareStatement: object;
-declare const requestProperties: object;
+declare const requestProperties: RequestProperties;
 declare const operation: StringLike;
 interface ClientIdentity {
   getName(): StringLike;

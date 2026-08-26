@@ -433,6 +433,22 @@ Consequences (applied to the type layering):
 - **2026-07-22:** `library.d.ts` redeclares `NodeState`, `RequestHeaders`, and
   `RequestParameters` as types for library `.load(...)` factory parameters;
   their scripted-decision globals remain outside library scope.
+- **2026-08-26:** `requestProperties` and `clientProperties` are named types
+  (`RequestProperties`/`ClientProperties` in `nextgen-common.d.ts`) rather than
+  the bare `object` the editor metadata yields. The metadata enumerates no
+  members for either, and `object` under the workspace's `strict` tsconfig
+  cannot be read, indexed or completed — so they were unusable in all seven
+  contexts that bind them (the five next-gen OAuth2 token-endpoint scripts, DCR,
+  and next-gen OIDC claims). The members named are the ones exercised by the
+  live validate-scope script in
+  [22-token-exchange.md](22-token-exchange.md) — `requestParams`,
+  `requestHeaders`, `requestUri`, reached by **property access, not `.get()`**,
+  with Java lists inside. `realm` and all of `ClientProperties` are carried over
+  from the legacy OIDC claims bindings and are **not** verified next-gen; nor is
+  DCR's `requestProperties`, which shares the binding name and nothing checked.
+  An index signature keeps the unnamed members reachable by bracket. The legacy
+  `oidc-claims` leaf keeps its own Java-shaped pair and pulls neither common
+  file, so the two never meet.
 - **2026-08-26:** the same argument applies to every other binding a caller can
   hand a library — `CallbacksBuilder` was the one that surfaced it — so the
   library leaf now also includes **`library-args.d.ts`**, one type per binding

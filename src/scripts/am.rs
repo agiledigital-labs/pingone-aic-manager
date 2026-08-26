@@ -974,6 +974,62 @@ mod tests {
         assert!(!args.contains("interface NodeState"));
     }
 
+    /// `requestProperties`/`clientProperties` are an `object` with no enumerated
+    /// members in the editor metadata, so generated verbatim they reach a script
+    /// as `object` — which under the workspace's `strict` tsconfig cannot be
+    /// read, indexed or completed at all. The generator names them instead.
+    #[test]
+    fn the_oauth2_request_context_is_named_not_a_bare_object() {
+        for (overlay, contents) in [
+            (
+                "oauth2-access-token-ng.d.ts",
+                include_str!("templates/am/types/oauth2-access-token-ng.d.ts"),
+            ),
+            (
+                "oauth2-validate-scope-ng.d.ts",
+                include_str!("templates/am/types/oauth2-validate-scope-ng.d.ts"),
+            ),
+            (
+                "oauth2-evaluate-scope-ng.d.ts",
+                include_str!("templates/am/types/oauth2-evaluate-scope-ng.d.ts"),
+            ),
+            (
+                "oauth2-may-act-ng.d.ts",
+                include_str!("templates/am/types/oauth2-may-act-ng.d.ts"),
+            ),
+            (
+                "oauth2-authz-data-ng.d.ts",
+                include_str!("templates/am/types/oauth2-authz-data-ng.d.ts"),
+            ),
+            (
+                "oauth2-dcr.d.ts",
+                include_str!("templates/am/types/oauth2-dcr.d.ts"),
+            ),
+            (
+                "oidc-claims-ng.d.ts",
+                include_str!("templates/am/types/oidc-claims-ng.d.ts"),
+            ),
+        ] {
+            for binding in ["requestProperties", "clientProperties"] {
+                assert!(
+                    !contents.contains(&format!("declare const {binding}: object;")),
+                    "{overlay}: `{binding}` regenerated as a bare object — the \
+                     generator's NAMED_OPAQUE table is what stops that"
+                );
+            }
+        }
+        // Both shapes are shared, so they live with the next-gen common set —
+        // which is also what puts them in library scope.
+        let shared = include_str!("templates/am/types/nextgen-common.d.ts");
+        assert!(shared.contains("interface RequestProperties"));
+        assert!(shared.contains("interface ClientProperties"));
+        // The legacy OIDC claims leaf keeps its own Java-shaped pair; its leaf
+        // pulls neither common file, so the two never meet.
+        let legacy = include_str!("templates/am/types/oidc-claims.d.ts");
+        assert!(legacy.contains("interface RequestProperties"));
+        assert!(!leaf_tsconfig("oidc-claims").contains("nextgen-common.d.ts"));
+    }
+
     /// Anything a caller can hand a library has to be nameable in library scope
     /// — the globals stay out, their types cannot. Driven off the context
     /// metadata rather than a list, so a newly captured context fails here until
