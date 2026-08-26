@@ -241,28 +241,6 @@ const contextPrefix = (jsonPath) =>
     .map(pascal)
     .join("");
 
-// A member every context has, rendered. Contexts can describe the same method
-// differently, and every rendering has to survive: a method keeps the complete
-// overload set, so a partially-overlapping method is not split across the common
-// and derived declarations. A FIELD cannot be overloaded, so two contexts giving
-// one field two types is a duplicate identifier — structurally detectable here,
-// which is why there is no regex over the rendered output.
-function renderCommon(iface, name, contexts, entry) {
-  const texts = [];
-  let kind = "method";
-  for (const prefix of contexts) {
-    const member = entry.byContext.get(prefix).get(name);
-    kind = member.kind;
-    for (const text of member.texts) if (!texts.includes(text)) texts.push(text);
-  }
-  if (kind === "field" && texts.length > 1) {
-    throw new Error(
-      `${iface}.${name} is a field with ${texts.length} conflicting declarations across contexts:\n${texts.join("\n")}`
-    );
-  }
-  return texts;
-}
-
 function libraryArgs(jsonPaths, skip) {
   // iface -> {byContext: Map<prefix, Map<memberName, text[]>>, order: [], contexts: []}
   const merged = new Map();
@@ -329,9 +307,17 @@ function libraryArgs(jsonPaths, skip) {
   for (const iface of ifaces) {
     const entry = merged.get(iface);
     const contexts = [...entry.byContext.keys()];
-    const common = entry.order.filter((name) =>
-      contexts.every((prefix) => entry.byContext.get(prefix).has(name))
-    );
+    // Common means every context has the member AND describes it the same way.
+    // Name alone is not enough: two contexts rendering `lookup(x)` with
+    // different return types would both be emitted, and overload order — file
+    // order, not intent — would pick one. A member that differs is as
+    // uncallable as one that is missing, so it is omitted the same way.
+    const common = entry.order.filter((name) => {
+      const members = contexts.map((prefix) => entry.byContext.get(prefix).get(name));
+      if (members.some((member) => !member)) return false;
+      const first = JSON.stringify([members[0].kind, members[0].texts]);
+      return members.every((member) => JSON.stringify([member.kind, member.texts]) === first);
+    });
     // An empty common surface would be an interface that accepts nearly any
     // object. Say so and emit only the qualified types.
     const omitted = [];
@@ -356,7 +342,9 @@ function libraryArgs(jsonPaths, skip) {
       );
     } else {
       out.push(`// ${entry.contexts.join(", ")}`, `interface ${iface} {`);
-      for (const name of common) out.push(...renderCommon(iface, name, contexts, entry));
+      // Every context renders these identically — that is what made them
+      // common — so any context's rendering is the rendering.
+      for (const name of common) out.push(...entry.byContext.get(contexts[0]).get(name).texts);
       out.push(`}`, "");
     }
 

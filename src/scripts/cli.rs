@@ -1517,7 +1517,7 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                     if ns.kind != script::Kind::IdmEndpoint || !declared.contains(&name) {
                         continue;
                     }
-                    match adopt_generated(tenant, &ns, &name, &full, &path, yes).await {
+                    match adopt_generated(tenant, &ns, &name, &full, &path, yes, &stop).await {
                         Ok(Adoption::Created) => {
                             println!("{}", watch_green(&format!("+ created {full}")));
                             continue;
@@ -1590,6 +1590,12 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
             match result {
                 Ok(PushOutcome::Pushed) => println!("{}", watch_green(&format!("→ pushed {full}"))),
                 Ok(PushOutcome::Unchanged | PushOutcome::AlreadyInSync) => {}
+                // The push was uncancellable, so a stop may have landed while
+                // it ran. Do not open a prompt on the way out.
+                Ok(PushOutcome::Conflict(_)) if stop.stopped() => {
+                    println!("\nstopped watching.");
+                    return Ok(());
+                }
                 Ok(PushOutcome::Conflict(_)) => {
                     eprintln!(
                         "{}",
@@ -1672,8 +1678,10 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
 enum Adoption {
     /// It did not exist on the tenant; we made it.
     Created,
-    /// It was already there and its copy matched ours, so we took that copy as
-    /// the baseline and wrote nothing.
+    /// It was already there and is now the baseline; nothing was written to the
+    /// tenant. Either the two copies already matched, or they differed and the
+    /// operator chose ours — the push that follows is `Unchanged` in the first
+    /// case and an overwrite in the second. Carries where its copy was saved.
     Adopted(std::path::PathBuf),
     /// It was already there with different content and the operator did not
     /// claim it. Still untracked; the next save asks again.
@@ -1715,6 +1723,7 @@ async fn adopt_generated(
     full: &str,
     path: &std::path::Path,
     yes: bool,
+    stop: &Stop,
 ) -> Result<Adoption> {
     let source =
         std::fs::read(path).map_err(|e| Error::Config(format!("read {}: {e}", path.display())))?;
@@ -1726,7 +1735,16 @@ async fn adopt_generated(
         script::sync::CreateOutcome::Created(_) => return Ok(Adoption::Created),
         script::sync::CreateOutcome::NameTaken(existing) => existing,
     };
-    if !script::sync::already_matches(tenant, ns.realm_arg(), &existing).await? {
+    // One fetch: the copy that is compared is the copy that becomes the
+    // baseline, so a write landing between the two cannot be adopted unseen.
+    let (remote, matches) =
+        script::sync::fetch_for_adoption(tenant, ns.realm_arg(), &existing).await?;
+    if !matches {
+        // The fetch above was uncancellable; a stop that landed during it must
+        // not walk into a prompt.
+        if stop.stopped() {
+            return Ok(Adoption::Stop);
+        }
         eprintln!(
             "{}",
             watch_red(&format!(
@@ -1740,9 +1758,11 @@ async fn adopt_generated(
             ConflictChoice::Stop => return Ok(Adoption::Stop),
         }
     }
-    Ok(Adoption::Adopted(
-        script::sync::adopt(tenant, ns.realm_arg(), &existing).await?,
-    ))
+    Ok(Adoption::Adopted(script::sync::adopt(
+        tenant,
+        ns.realm_arg(),
+        &remote,
+    )?))
 }
 
 /// A Ctrl-C that is remembered rather than raced for.
