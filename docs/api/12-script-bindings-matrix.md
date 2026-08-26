@@ -433,6 +433,23 @@ Consequences (applied to the type layering):
 - **2026-07-22:** `library.d.ts` redeclares `NodeState`, `RequestHeaders`, and
   `RequestParameters` as types for library `.load(...)` factory parameters;
   their scripted-decision globals remain outside library scope.
+- **2026-08-26:** the **legacy** token-modification leaf
+  (`OAUTH2_ACCESS_TOKEN_MODIFICATION`, no `_NEXT_GEN`) declares its binding
+  names. It had fallen into `am::leaf_tsconfig`'s catch-all — rhino + common +
+  legacy-common — so `accessToken`, `identity`, `session`, `scopes`,
+  `requestProperties` and `clientProperties` were all `Cannot find name`, while
+  the ESLint config had listed them all along. That asymmetry is the bug:
+  `no-undef` is **off** for AM scripts precisely because the type layer is meant
+  to be the authority, so per-slug ESLint globals are inert and the authority
+  knew less than the linter.
+
+  Every one is `any`. **No legacy member shape is verified**, and the next-gen
+  `AccessToken` interface came from `_NEXT_GEN` editor metadata, which says
+  nothing about this context — copying it across would be the transcription §2
+  forbids. To earn real types, probe the live context with a `typeof` fixture
+  per binding under `scripts/rhino-script-tester/` and add a dated row here.
+  Migrating the script to next-gen is usually worth more: it brings `openidm`,
+  `utils`, `require()` and the generated overlay.
 - **2026-08-26:** Java lookup parameters take a JS string. `JavaMap.get`,
   `JavaSet.contains` and `JavaArray.includes`/`contains` typed their argument as
   the collection's own element type, so every ordinary
@@ -675,7 +692,7 @@ unprompted.
 | Scripted decision (legacy)              | `decision-node-legacy` | `1.0`              | no                                            | decision-node-base + legacy                                                     |
 | Library                                 | `lib`                  | (next-gen)         | yes (CommonJS)                                | library + library-args (caller argument types)                                  |
 | OIDC claims                             | `oidc-claims`          | mixed              | next-gen only                                 | oidc-claims                                                                     |
-| OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only (token mod verified 2026-07-29) | all next-gen OAuth2 contexts typed (2026-07-29); legacy ids shared globals only |
+| OAuth2 (token mod, scope, jwt, dcr, …)  | `oauth2-*`             | mixed              | next-gen only (token mod verified 2026-07-29) | all next-gen OAuth2 contexts typed (2026-07-29); legacy token mod names its bindings as `any` (2026-08-26), other legacy ids shared globals only |
 | SAML2 (idp/sp adapter, mappers)         | `saml-*`               | mixed              | next-gen only                                 | per-context (future)                                                            |
 | Social normalization/handler            | `social-*`             | mixed              | —                                             | per-context (future)                                                            |
 | Config provider / device match / policy | various                | mixed              | —                                             | shared globals only (today)                                                     |

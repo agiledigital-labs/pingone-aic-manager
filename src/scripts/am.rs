@@ -565,6 +565,19 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             ],
             Some("../lib/*"),
         ),
+        // Legacy token modification. Names only — no legacy member shape is
+        // verified — but a declared `any` beats `Cannot find name`, and the
+        // ESLint config has known these names all along while `no-undef` is off
+        // because the type layer is supposed to be the authority.
+        "oauth2-access-token" => (
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "legacy-common.d.ts",
+                "oauth2-access-token.d.ts",
+            ],
+            None,
+        ),
         // Any other context (legacy OAuth2, SAML adapters, policy condition, …):
         // shared Rhino + common globals, plus the classic Debug `logger` (these
         // are mostly unmigrated/legacy-style scripts), until they go next-gen.
@@ -1053,6 +1066,49 @@ mod tests {
         let legacy = include_str!("templates/am/types/oidc-claims.d.ts");
         assert!(legacy.contains("interface RequestProperties"));
         assert!(!leaf_tsconfig("oidc-claims").contains("nextgen-common.d.ts"));
+    }
+
+    /// The legacy token-modification leaf fell into the catch-all, so every one
+    /// of its bindings was `Cannot find name` while the ESLint config listed
+    /// them all — and `no-undef` is off there *because* the type layer is meant
+    /// to be the authority. Declaring the names fixes that without claiming a
+    /// shape, which is the part no probe in this repo has established.
+    #[test]
+    fn the_legacy_token_modification_leaf_names_its_bindings_without_typing_them() {
+        let cfg = leaf_tsconfig("oauth2-access-token");
+        assert!(cfg.contains("../../types/oauth2-access-token.d.ts"));
+        assert!(cfg.contains("legacy-common.d.ts"));
+        // Legacy cannot require() a library (verified — ReferenceError).
+        assert!(!cfg.contains("paths"));
+
+        let legacy = include_str!("templates/am/types/oauth2-access-token.d.ts");
+        let lint = include_str!("templates/am/eslint.config.js");
+        let block = lint
+            .split("files: [\"*/oauth2-access-token/**/*.cjs\"]")
+            .nth(1)
+            .and_then(|rest| rest.split("},").next())
+            .expect("the legacy ESLint globals block");
+        for binding in [
+            "accessToken",
+            "identity",
+            "session",
+            "scopes",
+            "requestProperties",
+            "clientProperties",
+        ] {
+            assert!(block.contains(binding), "eslint lost {binding}");
+            assert!(
+                legacy.contains(&format!("declare const {binding}: any;")),
+                "{binding} must be declared, and as `any` until a probe says otherwise"
+            );
+        }
+        // No shape claims. A verified shape is welcome — with a dated row in
+        // docs/api/12 and this assertion updated, per `.ai/core.md` §2.
+        assert!(
+            !legacy.lines().any(|line| line.starts_with("interface ")),
+            "no unverified shapes"
+        );
+        assert!(legacy.contains("unverified"));
     }
 
     /// A Java collection is reached with a JS string literal in every family —
