@@ -91,3 +91,16 @@ var qrow = qrows.result[0];
 if (qrow) {
   qrow.mail; // expect: TS2339 — not selected, so not on the projected row
 }
+
+// The discriminating half: a single-valued expansion on a QUERY row is
+// `expansion | null`, exactly as on a read. A `query` that merely narrowed
+// would leave `manager` absent and report TS2339 here instead.
+var qexp = openidm.query(
+  "managed/__aic_fixture_user",
+  { _queryFilter: "true" },
+  ["manager/displayName"]
+);
+var qexpRow = qexp.result[0];
+if (qexpRow) {
+  qexpRow.manager._ref; // expect: TS18047 — expansion is nullable on a row too
+}
