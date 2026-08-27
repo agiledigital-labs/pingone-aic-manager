@@ -284,6 +284,16 @@ $SCRIPTS/verify-endpoint.sh \
   opaque string.
 - **`coreUmaClientConfig`** present even on non-UMA clients with empty fields —
   don't strip it.
+- **`advancedOAuth2ClientConfig.allowedResourceServerAudienceValues` is the only
+  way to get a caller-chosen `aud`** into an access token without a
+  modification script — and it works **only** on token-exchange requests, gated
+  by `acceptAudienceParametersInTokenExchangeRequests`. Ordinary grants ignore
+  an `audience` parameter silently. Full behaviour, including which of the two
+  clients in an exchange the fields are read from, is in
+  [22-token-exchange.md](22-token-exchange.md#setting-the-aud-claim--the-audience-whitelist)
+  (verified 2026-08-27). Not to be confused with the provider's
+  `advancedOAuth2Config.allowedAudienceValues`, which is **inbound**: extra
+  audiences accepted when verifying client-authentication JWTs.
 
 ## Verified against
 
