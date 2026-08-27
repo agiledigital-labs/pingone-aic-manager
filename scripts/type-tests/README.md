@@ -31,6 +31,12 @@ One directory per script family, holding four files:
   `type_test_leaf_manifests_are_subsets_of_the_real_leaf_configs` fails if a
   manifest names a declaration the real leaf does not, so a leaf here can be
   smaller than a shipped one but never a fiction.
+- any `*.d.ts` in the leaf directory — copied in and left in place for both
+  runs. These are a test AUGMENTATION and sit OUTSIDE the subset assertion,
+  which only sees the `types` manifest: a leaf is a template subset **plus**
+  whatever these add. `managed-fixture.d.ts` is the one that exists, and
+  `managed_fixture_matches_what_the_generator_emits` is what stops it drifting
+  from `managed_types.rs` unnoticed.
 - `accept.cjs` / `reject.cjs` — the two directions.
 
 A reject row does not always prove what its comment says. The parity row
@@ -77,17 +83,24 @@ Two things make that coverage real rather than nominal:
 - **Discriminating cases.** The first attempt guarded everything
   (`if (record.manager) { … }`), which compiles under a correct projection AND
   under a broken one — it passed while the single-valued-expansion type was
-  mutated to always-present, the exact bug that once cost a live 500. The
-  fixtures now pin the shapes instead: an unguarded read of a single-valued
-  expansion must FAIL, a `/** @type {string | null} */` assignment pins the
-  required-and-nullable projection, and an unguarded `.length` on a multi-valued
-  one must PASS.
+  mutated to always-present, the exact bug that once cost a live 500.
 
-Drift between the two ambient copies needs no equality assertion: each leaf
-carries its own fixtures, so mutating one copy fails that copy's leaf and leaves
-the other green. Verified both ways. (The logger format types DO have a
-byte-equality test, for a different reason — they are meant to be identical, and
-the IDM copy has no runtime evidence behind it.)
+  Two rounds of review were needed to get this right, and the second found the
+  fix was still half a test: `/** @type {string | null} */ var phone = …` pins
+  REQUIREDNESS only. `string` is assignable to `string | null`, so that line
+  survives losing the `| null` entirely. Nullability needs its own rejection —
+  assigning the same value to a plain `string` must fail. Most properties here
+  need a pair like that, one case in each file.
+
+Drift between the two ambient copies is caught two ways, and both are needed.
+The behavioural gate catches a change that is identical in both copies and still
+wrong, which an equality test cannot; but it only catches drift on the axes its
+fixtures happen to pin, and a review found several one-sided changes that
+slipped through. So the kernel from `ManagedCollectionOf` through `Projected` is
+ALSO held byte-identical, by
+`the_managed_projection_kernel_is_identical_across_the_two_workspaces`. It is
+per-declaration rather than whole-block: IDM carries an extra `QueryParams`
+interface, and the two `OpenIdm` interfaces differ on purpose.
 
 ## Not yet covered
 

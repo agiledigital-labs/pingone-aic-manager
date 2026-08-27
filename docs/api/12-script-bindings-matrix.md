@@ -663,12 +663,18 @@ unknown-path fallback and the machinery is parsed but never instantiated. The
 third is covered by the TypeScript project's own `tests/openidm-types.test.ts`,
 which CI now compiles.
 
-The fixtures had to be made DISCRIMINATING to be worth anything: the first pass
-guarded every read (`if (record.manager) { … }`), which compiles under a correct
-projection and under a broken one alike, and it passed while the
-single-valued-expansion type was mutated to always-present — the exact defect
-that once cost a live 500 against a user with no manager
-(`docs/api/10-managed-objects.md`).
+The fixtures had to be made DISCRIMINATING to be worth anything, and it took two
+rounds of review. The first pass guarded every read
+(`if (record.manager) { … }`), which compiles under a correct projection and a
+broken one alike, and it passed while the single-valued-expansion type was
+mutated to always-present — the exact defect that once cost a live 500 against a
+user with no manager (`docs/api/10-managed-objects.md`). The second pass was
+still half-right: a `/** @type {string | null} */` annotation pins requiredness
+only, because `string` is assignable to `string | null`. Eight named mutations
+are now verified caught — query widening, scalar nullability, `_meta` made
+non-null, `_meta` added to every projection, `PathParentOf` returning every
+relationship, `ManagedRecordOf` collapsing to one interface, `ContentArg` losing
+`Partial`, and `StoredRecord` dropping `_id`/`_rev`.
 
 Provenance notes worth keeping:
 
