@@ -23,6 +23,23 @@ No log API keys should be committed. `.envrc` is ignored by the repo.
 
 ## Tenant Resources
 
+> **Reserved ids, and how to not clobber one.** The harness numbers its
+> throwaway objects `2e87a29c-0e30-4d85-bf0e-a1c0a11e7xxx`: `…7001`/`…7002`
+> next-gen probe script + node, `…7101`/`…7102` legacy, `…74xx` library probes.
+> The family is a convention, not a registry — on 2026-08-27 a hand-written
+> probe picked `…7201` on the assumption it was free, `PUT` it, and **replaced a
+> script that had been there since 2026-07-01**. The `PUT` answered `200`
+> instead of `201` and nobody looked. The prior content is unrecoverable:
+> no snapshot, no repo mention, and `am-config` logs that old are past
+> retention.
+>
+> So: `GET` an id before writing it unless you minted it in the same script, and
+> treat a `200` from a create-or-update `PUT` as a failed create. Record any new
+> id you take in the list below. See Q17 in
+> `docs/api/99-quirks-and-open-questions.md` — which also explains why the
+> clobbered script cannot simply be deleted.
+
+
 By default the harness uses these sandbox resources:
 
 - Script: `AIC Rhino Let Probe`

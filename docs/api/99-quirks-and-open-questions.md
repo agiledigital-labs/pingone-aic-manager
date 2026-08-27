@@ -341,31 +341,57 @@ body, and the create output carried `newResourceId` as the record `_id`.
   "message": "The script <name> is used once" }
 ```
 
-Observed with a throwaway legacy access-token-modification probe
-(`2e87a29c-…7201`) after the only client referencing it was deleted. What was
+Observed on script `2e87a29c-…7201` in the sandbox's `alpha` realm. What was
 ruled out, in this order:
 
-- the client: deleted, `GET` 404;
+- the client that referenced it: deleted, `GET` 404;
 - a lingering reference: the realm's `oauth-oidc` service, its
-  `advancedOAuth2Config`, and every `OAuth2Client` in the realm were fetched and
-  searched for the script id — zero hits;
+  `advancedOAuth2Config`, and every `OAuth2Client` in `alpha`, `bravo` and root
+  were fetched and searched for the script id — zero hits;
 - a stale reference the delete left behind: the client was RECREATED with
   `accessTokenModificationScript: "[Empty]"`, `…PluginType: "PROVIDER"` and
   `providerOverridesEnabled: false`, then deleted again. Same refusal;
-- a cache TTL: retried every 30–50s for over an hour. Same refusal;
+- a cache TTL, and the theory that AM counts an issued GRANT rather than a live
+  configuration reference: retried every 30–50s for **75 minutes**, well past
+  the CTS tokens' one-hour lifetime. Same refusal. That theory is dead;
 - the other realms: `bravo` 404, root 403.
 
-The leading remaining theory is that AM's usage tracking counts an **issued
-grant** rather than a live configuration reference — the probe minted both
-stateless and CTS tokens — but that is a theory, not a measurement, and the CTS
-tokens' one-hour lifetime has passed without the refusal clearing.
+No explanation survives. `?_action=getUsage` and `?_action=usage` are 403, so
+AM's own usage count cannot be inspected, and the script record carries no
+usage field.
+
+**Read this next part before writing another probe.** The script was NOT created
+by the run that got stuck. Its `creationDate` is `1782897343930` —
+2026-07-01 — while `lastModifiedDate` is the probe's. The probe had picked an id
+in the `2e87a29c-0e30-4d85-bf0e-a1c0a11e7xxx` family the rhino harness uses
+(`…7001`/`…7002` next-gen, `…7101`/`…7102` legacy, `…74xx` library), assumed
+`…7201` was free, and `PUT` it. **The `PUT` returned `200`, not `201`** — an
+update of something already there — and nobody read the status code. The prior
+content is gone: there is no snapshot in `.aic-sync/`, nothing in the repo
+mentions `…7201`, and `am-config` logs for 2026-07-01 are past the log API's
+retention window, so it cannot be recovered or even identified.
+
+Two things follow, and the second is the more useful:
+
+1. `…7201` is undocumented, sits in the harness's throwaway-id family, and was
+   already undeletable-shaped — a script created 2026-07-01 that survived the
+   2026-07-29 access-token-modification probe whose write-up says its resources
+   were "all deleted afterwards". The most likely story is that it was an
+   earlier probe that hit this same refusal and was abandoned. That is a
+   reconstruction, not a measurement.
+2. **On a create-or-update `PUT`, the status code is the only thing that tells
+   you which one happened.** `201` is create, `200` is replace. Check it, and
+   `GET` an id first when you did not mint it in the same script. Both the AM
+   scripts API and `/openidm/config/*` behave this way
+   ([11-idm-endpoints.md](11-idm-endpoints.md)), so this applies to every probe
+   in `scripts/rhino-script-tester/` and every one written by hand.
 
 Consequence for this repo: a probe that attaches a script to a client leaves the
 SCRIPT behind even when everything else cleans up. Budget for that when writing
-one — give it an obvious throwaway name, and expect to remove it from the
-console. `aic script` does not currently surface a delete for AM scripts, so
-there is nothing to fix on our side yet; if it ever grows one, this is the error
-it has to explain rather than pass through.
+one — give it an obvious throwaway name, pick an id no one else could have used,
+and expect to remove it from the console. `aic script` does not currently
+surface a delete for AM scripts, so there is nothing to fix on our side yet; if
+it ever grows one, this is the error it has to explain rather than pass through.
 
 ---
 
