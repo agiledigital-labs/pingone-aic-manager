@@ -869,11 +869,16 @@ mod tests {
     /// dragging in the comments and neighbours around them.
     #[cfg(test)]
     fn declaration<'a>(source: &'a str, name: &str) -> &'a str {
+        // A generated file can OPEN with the declaration, so match at the start
+        // of the source as well as after a newline.
         let start = ["type ", "interface "]
             .iter()
             .find_map(|kw| {
-                let needle = format!("\n{kw}{name}");
-                source.find(&needle).map(|at| at + 1)
+                let head = format!("{kw}{name}");
+                if source.starts_with(&head) {
+                    return Some(0);
+                }
+                source.find(&format!("\n{head}")).map(|at| at + 1)
             })
             .unwrap_or_else(|| panic!("no declaration of {name}"));
 
@@ -1019,63 +1024,60 @@ mod tests {
                 .clone()
         };
 
-        // Every property line the fixture declares must be a line the generator
-        // writes, verbatim — same optionality, same rendered type.
-        for (rel, members) in [
-            (
-                "am/types/managed/__aic_fixture_user.d.ts",
-                &[
-                    "  _id?: string;",
-                    "  _rev?: string;",
-                    "  userName: string;",
-                    "  sn: string;",
-                    "  mail: string;",
-                    "  telephoneNumber?: string;",
-                    "  manager?: RelationshipRef;",
-                    "  authzRoles?: RelationshipRef[];",
-                ][..],
-            ),
-            (
-                "am/types/managed/__aic_fixture_device.d.ts",
-                &[
-                    "  deviceId: string;",
-                    "  model: string;",
-                    "  serialNumber?: string;",
-                    "  owner?: RelationshipRef;",
-                ][..],
-            ),
-        ] {
-            let emitted = file(rel);
-            for member in members {
-                assert!(
-                    emitted.contains(member),
-                    "generator does not emit `{member}` in {rel}:\n{emitted}"
-                );
-                assert!(
-                    am_fixture.contains(member),
-                    "the fixture is missing `{member}`, which the generator emits"
-                );
-            }
+        // Compare the interfaces MEMBER FOR MEMBER, in both directions. An
+        // earlier version asserted that a hard-coded list of lines occurred in
+        // both, which is not the same thing and not what the test name claims:
+        // it accepted a fixture property the generator never emits, and an
+        // altered member that simply was not on the list.
+        //
+        // Comments and ordering are normalised away — the generator sorts
+        // properties and writes no per-field docs, and neither difference is
+        // semantic. Everything else must match exactly.
+        fn members(declaration: &str) -> Vec<String> {
+            let body = declaration
+                .split_once('{')
+                .expect("interface body")
+                .1
+                .rsplit_once('}')
+                .expect("interface close")
+                .0;
+            let mut in_block_comment = false;
+            let mut out = body
+                .lines()
+                .map(str::trim)
+                .filter(|line| {
+                    if in_block_comment {
+                        in_block_comment = !line.ends_with("*/");
+                        return false;
+                    }
+                    if line.starts_with("/*") {
+                        in_block_comment = !line.ends_with("*/");
+                        return false;
+                    }
+                    !line.is_empty() && !line.starts_with("//") && !line.starts_with('*')
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            out.sort();
+            out
         }
 
-        // The relationship envelope and the collection map.
         let shared = file("am/types/managed/_shared.d.ts");
-        for line in [
-            "interface RelationshipRef {",
-            "  _ref: string;",
-            "  _refResourceCollection?: string;",
-            "  _refResourceId?: string;",
-        ] {
-            assert!(shared.contains(line), "generator dropped `{line}`");
-            assert!(am_fixture.contains(line), "the fixture dropped `{line}`");
-        }
         let map = file("am/types/managed/openidm-map.d.ts");
-        for entry in [
-            "\"managed/__aic_fixture_user\": AicFixtureUser;",
-            "\"managed/__aic_fixture_device\": AicFixtureDevice;",
+        let user = file("am/types/managed/__aic_fixture_user.d.ts");
+        let device = file("am/types/managed/__aic_fixture_device.d.ts");
+
+        for (name, generated) in [
+            ("RelationshipRef", &shared),
+            ("AicFixtureUser", &user),
+            ("AicFixtureDevice", &device),
+            ("ManagedObjects", &map),
         ] {
-            assert!(map.contains(entry), "generator dropped `{entry}`");
-            assert!(am_fixture.contains(entry), "the fixture dropped `{entry}`");
+            assert_eq!(
+                members(declaration(&am_fixture, name)),
+                members(declaration(generated, name)),
+                "`{name}` in managed-fixture.d.ts does not match what managed_types.rs emits"
+            );
         }
     }
 

@@ -78,8 +78,11 @@ Two things make that coverage real rather than nominal:
 
 - **`managed-fixture.d.ts`.** `interface ManagedObjects` ships EMPTY, so a leaf
   without a fixture takes the unknown-path fallback in every conditional and
-  instantiates none of the machinery. It merges in one managed object with one
-  relationship of each cardinality and one schema-optional scalar.
+  instantiates none of the machinery. It merges in TWO managed objects with
+  disjoint properties — one is not enough, because a single object cannot
+  distinguish correct path parsing in `ManagedRecordOf` from "return the only
+  type there is" — one with a relationship of each cardinality and a
+  schema-optional scalar.
 - **Discriminating cases.** The first attempt guarded everything
   (`if (record.manager) { … }`), which compiles under a correct projection AND
   under a broken one — it passed while the single-valued-expansion type was

@@ -90,6 +90,31 @@ if (row) {
   logger.info("row {} {}", rowId, row.userName);
 }
 
+// query does not merely NARROW — it runs the same `Projected` as `read`. A
+// relationship path must expand on a row, and an optional scalar must come back
+// required-and-nullable. Without these, `QueryResult<StoredRecord<
+// SelectedMembers<…>>>` would pass every other query case here: it narrows away
+// an unselected field and carries `_id`, and carries none of the rest.
+var qexpanded = openidm.query(
+  "managed/__aic_fixture_user",
+  { _queryFilter: "true" },
+  ["telephoneNumber", "manager/displayName", "authzRoles/name"]
+);
+var qexpandedRow = qexpanded.result[0];
+if (qexpandedRow) {
+  logger.info(
+    "phone {}",
+    qexpandedRow.telephoneNumber === null
+      ? "none"
+      : qexpandedRow.telephoneNumber
+  );
+  // Multi-valued expansion on a query row: an array, never null.
+  logger.info("roles {}", qexpandedRow.authzRoles.length);
+  if (qexpandedRow.manager) {
+    logger.info("manager {}", qexpandedRow.manager._ref);
+  }
+}
+
 // An unknown path keeps the loose fallback: free-form fields, `any` result.
 var other = openidm.read("internal/role/openidm-admin", undefined, ["name"]);
 logger.info("other {}", other);
