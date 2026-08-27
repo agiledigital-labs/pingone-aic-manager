@@ -4,7 +4,10 @@
 // IDM binding availability is inferred from the prior template + docs; not yet
 // runtime-probed (no local IDM sample corpus). See docs/api/12 IDM open items.
 
-type LogFunction = (message: StringLike, ...args: any[]) => void;
+// slf4j-style. `LogFunction` comes from rhino-1.7.14.d.ts and counts the `{}`
+// in the message, so a call that would silently leave a bare `{}` in the log —
+// or silently drop an argument — fails to compile. See that file for what is
+// measured on AM and what is carried over here.
 interface Logger {
   trace: LogFunction;
   debug: LogFunction;

@@ -6,8 +6,12 @@
 // Signatures transcribed from the script editor's binding metadata
 // (docs/api/bindings/scripted-decision-next.json, 2026-06-04) — authoritative.
 
-// slf4j-style logger. `{}` placeholders in `format` are filled by the args.
-type LogFunction = (message: StringLike, ...args: any[]) => void;
+// slf4j-style logger. `{}` placeholders in `message` are filled from the extra
+// args — verified on this engine 2026-08-27 (`fixtures/logger-placeholders.script.js`),
+// having been metadata-claimed until then. `LogFunction` lives in common.d.ts
+// because the legacy Debug logger formats identically, and it counts the `{}`:
+// a deficit leaves a bare `{}` in the log line, a surplus is dropped, and both
+// were silent before.
 interface Logger {
   getName(): string;
   trace: LogFunction;

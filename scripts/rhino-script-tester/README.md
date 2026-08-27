@@ -244,3 +244,29 @@ Findings (2026-06-04), vs next-gen:
 
 - legacy `idRepository`: `getIdentity`, `getAttribute`, `setAttribute`, and
   `addAttribute` are functions.
+
+`fixtures-legacy/legacy-logger-levels.script.js` and
+`fixtures-legacy/legacy-logger-args.script.js` (with the next-gen counterpart
+`fixtures/logger-placeholders.script.js`) probe how the `logger` handles its
+EXTRA arguments (verified 2026-08-27). Both engines bind `{}` from them, leave a
+spare `{}` verbatim, drop a surplus argument, and take a **trailing throwable**
+into a separate `exception` field — stripping it BEFORE formatting, so it never
+fills a placeholder. `\{}` escapes by backslash **parity**, so `\\{}` is a
+literal backslash followed by a live placeholder. A JavaScript `Error` is not a
+throwable and is dropped. Full table and the type consequences:
+`docs/api/12-script-bindings-matrix.md`.
+
+Unlike the other fixtures these answer nothing from the callback payload — it
+only reports that no call threw. The result is the LOG EVENT, and it has to be
+the whole event: two rows turn on whether an `exception` field is present, which
+a message-only query cannot see.
+
+```bash
+aic logs tx <txid> | jq -r '.[] | select(.payload.message|tostring|test("AICPROBE"))
+  | {level: .payload.level, message: .payload.message, exception: .payload.exception}'
+```
+
+**Re-fetch before believing a line is missing.** The log API is eventually
+consistent: the first run above showed six of its nine lines absent on an
+immediate read and all nine a few minutes later, which is indistinguishable from
+a call that never logged.

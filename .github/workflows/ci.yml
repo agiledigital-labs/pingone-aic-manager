@@ -107,3 +107,24 @@ jobs:
 
       - name: Test (logs-store)
         run: cargo test --features logs-store
+
+  script-types:
+    name: script workspace types
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The .d.ts files under src/scripts/templates/ carry real logic — the
+      # `{}`-placeholder arity check, the managed-record `fields` projection —
+      # and no cargo gate compiles any of it: the Rust tests check the strings
+      # that emit those files, never what tsc makes of them.
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install TypeScript
+        run: npm install --no-save typescript@5
+
+      - name: Type tests (accept + reject)
+        run: PATH="$PWD/node_modules/.bin:$PATH" scripts/type-tests/run.sh
