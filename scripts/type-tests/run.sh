@@ -68,6 +68,20 @@ for leaf in "$HERE"/leaves/*/; do
   printf '{\n  "extends": "../tsconfig.json",\n  "include": [%s]\n}\n' "$includes" \
     > "$dir/tsconfig.json"
 
+  # Optional ambient fixtures, e.g. a stand-in for the generated managed-object
+  # declarations `aic workspace update` writes from a live tenant. They sit in
+  # the leaf directory and are picked up by the leaf's own `./**/*`, and they
+  # stay in place for BOTH the accept and the reject run.
+  #
+  # Without one, `interface ManagedObjects` is EMPTY and every conditional in
+  # the openidm signatures collapses to its unknown-path fallback — the leaf
+  # parses the projection machinery and instantiates none of it, which looks
+  # exactly like coverage and is not.
+  for fixture in "$leaf"/*.d.ts; do
+    [ -e "$fixture" ] || continue
+    cp "$fixture" "$dir/"
+  done
+
   # --- accept: must compile clean -----------------------------------------
   cp "$leaf/accept.cjs" "$dir/accept.cjs"
   if out="$(run_tsc "$dir/tsconfig.json")"; then

@@ -651,15 +651,24 @@ of them. The AM and IDM copies of the format types are held identical by
 `logger_format_types_are_identical_across_the_two_workspaces`, because two copies
 of a conditional type drift silently.
 
-Still ungated, and the next thing worth doing: the **managed-record type
-machinery** (path resolution, `fields` projection, relationship expansion,
-`_meta`, `read`/`query` result shaping) exists in three copies —
-`idm/types/common.d.ts`, `am/types/nextgen-common.d.ts` and the TypeScript
-project's `framework/idm-globals.d.ts`. The new leaves parse the first two but
-with an empty `ManagedObjects`, so none of the load-bearing branches instantiate,
-and the third is not compiled by the CI job at all. The TypeScript project
-already has a bidirectional test for it in `tests/openidm-types.test.ts` that
-nothing runs in CI.
+The **managed-record type machinery** (path resolution, `fields` projection,
+relationship expansion, `_meta`, `read`/`query` result shaping) is gated the same
+way. It exists in three copies — `idm/types/common.d.ts`,
+`am/types/nextgen-common.d.ts` and the TypeScript project's
+`framework/idm-globals.d.ts`. The first two are driven by the
+`nextgen-decision-node` and `idm-endpoint` leaves against a
+`managed-fixture.d.ts` that merges a managed object into the otherwise-EMPTY
+`interface ManagedObjects` — without it every conditional takes its
+unknown-path fallback and the machinery is parsed but never instantiated. The
+third is covered by the TypeScript project's own `tests/openidm-types.test.ts`,
+which CI now compiles.
+
+The fixtures had to be made DISCRIMINATING to be worth anything: the first pass
+guarded every read (`if (record.manager) { … }`), which compiles under a correct
+projection and under a broken one alike, and it passed while the
+single-valued-expansion type was mutated to always-present — the exact defect
+that once cost a live 500 against a user with no manager
+(`docs/api/10-managed-objects.md`).
 
 Provenance notes worth keeping:
 

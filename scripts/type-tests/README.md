@@ -55,17 +55,43 @@ scripts/type-tests/run.sh
 Needs `node` and `tsc` on `PATH` (`npx typescript` is used if `tsc` is absent).
 CI runs it in the `script workspace types` job.
 
+## Managed-record projection
+
+The other shipped declaration set carrying real logic — path resolution,
+`fields` projection, `SelectedMembers`, relationship-cardinality expansion,
+`_meta`, `read`/`query` result shaping. It exists in THREE copies:
+`am/types/nextgen-common.d.ts`, `idm/types/common.d.ts`, and the TypeScript
+project's `framework/idm-globals.d.ts`.
+
+The first two are covered by the `nextgen-decision-node` and `idm-endpoint`
+leaves; the third by the TypeScript project's own `tests/openidm-types.test.ts`,
+which CI now runs (`npm run type-check` in that directory) — it is a wall of
+`@ts-expect-error` markers, and those mean nothing unless a compiler reads them.
+
+Two things make that coverage real rather than nominal:
+
+- **`managed-fixture.d.ts`.** `interface ManagedObjects` ships EMPTY, so a leaf
+  without a fixture takes the unknown-path fallback in every conditional and
+  instantiates none of the machinery. It merges in one managed object with one
+  relationship of each cardinality and one schema-optional scalar.
+- **Discriminating cases.** The first attempt guarded everything
+  (`if (record.manager) { … }`), which compiles under a correct projection AND
+  under a broken one — it passed while the single-valued-expansion type was
+  mutated to always-present, the exact bug that once cost a live 500. The
+  fixtures now pin the shapes instead: an unguarded read of a single-valued
+  expansion must FAIL, a `/** @type {string | null} */` assignment pins the
+  required-and-nullable projection, and an unguarded `.length` on a multi-valued
+  one must PASS.
+
+Drift between the two ambient copies needs no equality assertion: each leaf
+carries its own fixtures, so mutating one copy fails that copy's leaf and leaves
+the other green. Verified both ways. (The logger format types DO have a
+byte-equality test, for a different reason — they are meant to be identical, and
+the IDM copy has no runtime evidence behind it.)
+
 ## Not yet covered
 
-The managed-record type machinery — path resolution, `fields` projection,
-relationship expansion, `_meta`, `read`/`query` result shaping — is the other
-shipped declaration set carrying real logic, in three copies
-(`idm/types/common.d.ts`, `am/types/nextgen-common.d.ts`, and the TypeScript
-project's `framework/idm-globals.d.ts`). The leaves here parse the first two but
-with an EMPTY `ManagedObjects`, so none of its branches instantiate, and the
-third is not compiled by this harness at all. The TypeScript project already has
-a bidirectional test for it (`tests/openidm-types.test.ts`) that CI does not run.
-
-Adding that is the next piece of work: run the TypeScript project's own
-type-check in CI, then add a small generated-managed-object fixture here and
-drive it through both the IDM endpoint and next-gen AM leaves.
+`idm-libs.d.ts` (needs `lodash`, `handlebars` and `validator` types), the
+generated `types/managed/hooks/*.d.ts` and `types/sync/*.d.ts` overlays, and the
+`../lib/*` path alias that only next-gen leaves get. None of them carry
+conditional types today; add coverage when one does.

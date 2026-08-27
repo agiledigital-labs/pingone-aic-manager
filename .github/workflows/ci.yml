@@ -128,3 +128,19 @@ jobs:
 
       - name: Type tests (accept + reject)
         run: PATH="$PWD/node_modules/.bin:$PATH" scripts/type-tests/run.sh
+
+      # The TypeScript endpoint project is the THIRD copy of the managed-record
+      # type machinery (`framework/idm-globals.d.ts`), and it carries the only
+      # bidirectional test of it: `tests/openidm-types.test.ts` is a wall of
+      # `@ts-expect-error` markers, which mean nothing unless a compiler reads
+      # them. Nothing ran that compiler in CI.
+      #
+      # `npm run type-check` is the project's own entry point and runs BOTH
+      # programs — the endpoint program is pinned to the narrow IDM runtime lib
+      # while the tests run under node — so this keeps working if those
+      # tsconfigs change. No lockfile is tracked, hence `install` and not `ci`.
+      - name: TypeScript project type-check
+        working-directory: src/scripts/templates/typescript
+        run: |
+          npm install --no-audit --no-fund
+          npm run type-check
