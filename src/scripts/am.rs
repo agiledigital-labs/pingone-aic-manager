@@ -414,6 +414,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "decision-node-base.d.ts",
                 "decision-node-next.d.ts",
@@ -424,6 +425,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "legacy-common.d.ts",
                 "decision-node-base.d.ts",
                 "decision-node-legacy.d.ts",
@@ -434,6 +436,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 // Argument types only — a library sees no per-context globals,
                 // but has to be able to name what a caller hands it.
@@ -452,6 +455,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "oidc-claims-ng.d.ts",
             ],
@@ -461,6 +465,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "device-match.d.ts",
             ],
@@ -470,6 +475,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "social-handler.d.ts",
             ],
@@ -479,6 +485,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "saml-nameid-mapper.d.ts",
             ],
@@ -488,6 +495,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "saml-sp-account-mapper.d.ts",
             ],
@@ -497,6 +505,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "oauth2-dcr.d.ts",
             ],
@@ -506,6 +515,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "oauth2-access-token-ng.d.ts",
             ],
@@ -515,6 +525,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "oauth2-may-act-ng.d.ts",
             ],
@@ -524,6 +535,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "oauth2-jwt-issuer-ng.d.ts",
             ],
@@ -533,6 +545,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "oauth2-validate-scope-ng.d.ts",
             ],
@@ -542,6 +555,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "oauth2-evaluate-scope-ng.d.ts",
             ],
@@ -551,6 +565,7 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "oauth2-authz-data-ng.d.ts",
             ],
@@ -560,15 +575,20 @@ pub fn leaf_tsconfig(slug: &str) -> String {
             &[
                 "rhino-1.7.14.d.ts",
                 "common.d.ts",
+                "secrets.d.ts",
                 "nextgen-common.d.ts",
                 "pingone-verify.d.ts",
             ],
             Some("../lib/*"),
         ),
-        // Legacy token modification. Names only — no legacy member shape is
-        // verified — but a declared `any` beats `Cannot find name`, and the
-        // ESLint config has known these names all along while `no-undef` is off
-        // because the type layer is supposed to be the authority.
+        // Legacy token modification. Fully typed as of 2026-08-27 — every member
+        // in `oauth2-access-token.d.ts` was CALLED against the live context, not
+        // enumerated with `typeof`, which reports "function" for Java methods
+        // that do not exist.
+        //
+        // This is the one leaf that does NOT get `secrets.d.ts`: the binding is
+        // `undefined` here (measured in the same run), so declaring it would
+        // hand the leaf a global its scripts can only `TypeError` on.
         "oauth2-access-token" => (
             &[
                 "rhino-1.7.14.d.ts",
@@ -582,7 +602,12 @@ pub fn leaf_tsconfig(slug: &str) -> String {
         // shared Rhino + common globals, plus the classic Debug `logger` (these
         // are mostly unmigrated/legacy-style scripts), until they go next-gen.
         _ => (
-            &["rhino-1.7.14.d.ts", "common.d.ts", "legacy-common.d.ts"],
+            &[
+                "rhino-1.7.14.d.ts",
+                "common.d.ts",
+                "secrets.d.ts",
+                "legacy-common.d.ts",
+            ],
             None,
         ),
     };
@@ -1068,18 +1093,37 @@ mod tests {
         assert!(!leaf_tsconfig("oidc-claims").contains("nextgen-common.d.ts"));
     }
 
-    /// The legacy token-modification leaf fell into the catch-all, so every one
-    /// of its bindings was `Cannot find name` while the ESLint config listed
-    /// them all — and `no-undef` is off there *because* the type layer is meant
-    /// to be the authority. Declaring the names fixes that without claiming a
-    /// shape, which is the part no probe in this repo has established.
+    /// The legacy access-token-modification leaf, which went from a wall of
+    /// `any` to a measured shape on 2026-08-27.
+    ///
+    /// Every member in `oauth2-access-token.d.ts` was CALLED against the live
+    /// context. That mattered: an earlier pass enumerated the surface with
+    /// `typeof`, which reports `"function"` for a Rhino-wrapped Java method that
+    /// does not exist — `identity.getMemberships` reads as a function and throws
+    /// `Can't find method` when called. So this test holds the two properties a
+    /// future edit could plausibly break, and leaves the member list to
+    /// `docs/api/12-script-bindings-matrix.md`.
     #[test]
-    fn the_legacy_token_modification_leaf_names_its_bindings_without_typing_them() {
+    fn the_legacy_token_modification_leaf_is_typed_from_calls_not_from_the_nextgen_overlay() {
         let cfg = leaf_tsconfig("oauth2-access-token");
         assert!(cfg.contains("../../types/oauth2-access-token.d.ts"));
         assert!(cfg.contains("legacy-common.d.ts"));
         // Legacy cannot require() a library (verified — ReferenceError).
         assert!(!cfg.contains("paths"));
+
+        // `secrets` is `undefined` in this context, so this is the one leaf that
+        // must not be handed the binding. Declaring it would compile a script
+        // that can only TypeError.
+        assert!(
+            !cfg.contains("secrets.d.ts"),
+            "the legacy token-mod leaf must not include secrets.d.ts — the binding is absent there"
+        );
+        for slug in ["decision-node", "decision-node-legacy", "oidc-claims-ng"] {
+            assert!(
+                leaf_tsconfig(slug).contains("secrets.d.ts"),
+                "{slug} lost secrets.d.ts"
+            );
+        }
 
         let legacy = include_str!("templates/am/types/oauth2-access-token.d.ts");
         let lint = include_str!("templates/am/eslint.config.js");
@@ -1088,6 +1132,10 @@ mod tests {
             .nth(1)
             .and_then(|rest| rest.split("},").next())
             .expect("the legacy ESLint globals block");
+
+        // The linter and the type layer must name the same bindings: `no-undef`
+        // is off here *because* the type layer is meant to be the authority, so
+        // a binding in only one of them is invisible in exactly one direction.
         for binding in [
             "accessToken",
             "identity",
@@ -1098,17 +1146,40 @@ mod tests {
         ] {
             assert!(block.contains(binding), "eslint lost {binding}");
             assert!(
-                legacy.contains(&format!("declare const {binding}: any;")),
-                "{binding} must be declared, and as `any` until a probe says otherwise"
+                legacy.contains(&format!("declare const {binding}")),
+                "the type layer lost {binding}"
             );
         }
-        // No shape claims. A verified shape is welcome — with a dated row in
-        // docs/api/12 and this assertion updated, per `.ai/core.md` §2.
         assert!(
-            !legacy.lines().any(|line| line.starts_with("interface ")),
-            "no unverified shapes"
+            !block.contains("secrets"),
+            "eslint must not offer `secrets` here either"
         );
-        assert!(legacy.contains("unverified"));
+
+        // The context is NOT the next-gen one with the suffix stripped, and the
+        // measured differences are the ones a well-meaning edit would "fix" by
+        // copying `oauth2-access-token-ng.d.ts` over. Each name below throws or
+        // is undefined here.
+        for absent in [
+            "setAct(",
+            "setMayAct(",
+            "setPermissions(",
+            "setConfirmationKey(",
+            "getExtraData(",
+            "getResourceOwner(",
+            "getAttributeValues(",
+            "addAttribute(",
+        ] {
+            assert!(
+                !legacy.contains(absent),
+                "{absent} is not callable in the legacy token-mod context — do not copy it from the next-gen overlay"
+            );
+        }
+        // `isExists`/`getAttribute` are the legacy AMIdentity spellings; the
+        // next-gen `exists`/`getAttributeValues` throw here.
+        assert!(legacy.contains("isExists(): boolean;"));
+        assert!(legacy.contains("getAttribute(attributeName: StringLike)"));
+        // A JS array throws `Cannot convert NativeArray to java.util.Set`.
+        assert!(legacy.contains("setScope(scopes: JavaSet<JavaString>): void;"));
     }
 
     /// A Java collection is reached with a JS string literal in every family —
