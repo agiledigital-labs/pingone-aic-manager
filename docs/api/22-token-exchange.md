@@ -34,7 +34,7 @@ clients, scripts, override config — needs only a service-account bearer with
 | -- | ------ | ---- | ----- |
 | Exchange | `POST` | `/am/oauth2{realm-path}/access_token` | The ordinary realm token endpoint. |
 | Discovery | `GET` | `/am/oauth2{realm-path}/.well-known/openid-configuration` | **Does not advertise the grant.** See Quirks. |
-| Client grant-type enum | `POST` | `…/realm-config/agents/OAuth2Client?_action=schema` | Lists `urn:ietf:params:oauth:grant-type:token-exchange`. |
+| Client grant-type enum | `POST` | `…/realm-config/agents/OAuth2Client?_action=schema` | Lists `urn:ietf:params:oauth:grant-type:token-exchange`. Also where `advancedOAuth2ClientConfig.allowedResourceServerAudienceValues` and the client's own `acceptAudienceParametersInTokenExchangeRequests` live. |
 | Provider exchange config | `GET` | `…/realm-config/services/oauth-oidc` | `coreOAuth2Config.accessTokenMayActScript`, `advancedOAuth2Config.acceptAudienceParametersInTokenExchangeRequests`, `tokenExchangeClasses`. |
 
 Request:
@@ -241,6 +241,12 @@ exchanged onward** unless the acting client also runs a may-act script. Chaining
 to a third layer is therefore opt-in, per client, and the `token.setAct()` /
 `setMayAct()` pair on the may-act binding is the hook for it.
 
+That last clause is now observed rather than inferred: a 2026-08-27 probe with
+the may-act script attached to the **acting** client got an exchanged token
+carrying `may_act` itself. So `act: null` is AM's behaviour, but `may_act: null`
+is a property of *where the script hangs* — put it on a mint-capable client and
+every token it issues is onward-exchangeable.
+
 ## Getting attributes into the token: the modification script
 
 `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN` on
@@ -264,6 +270,63 @@ An array claim set this way survives the exchange: the capability token carried
 `demoRoles` too, which is what lets an AM policy key on it
 ([21-am-policies.md](21-am-policies.md)).
 
+## Setting the `aud` claim — the audience whitelist
+
+`aud` is the acting client's id, and on an **ordinary grant there is no way to
+change it** — no request parameter, no configuration field. Verified
+2026-08-27 with a `client_credentials` client carrying a populated whitelist:
+`audience=`, `resource=` and even `aud=` were all accepted and had no effect,
+with `acceptAudienceParametersInTokenExchangeRequests` both off *and* on.
+
+Token exchange is the one place AM will put a caller-chosen value in `aud`, and
+it does it from a **per-client whitelist**, not from a script:
+
+| Where | Field | Effect |
+| ----- | ----- | ------ |
+| Client, `advancedOAuth2ClientConfig` | `allowedResourceServerAudienceValues` | The whitelist. Exact strings; template default is `[""]`, stored as `[]`. |
+| Client, `overrideOAuth2ClientConfig` — or provider `advancedOAuth2Config` | `acceptAudienceParametersInTokenExchangeRequests` | The switch. Default **false**. |
+
+With the switch on, `audience=<value>` on the exchange request is validated
+against the list and **appended** to `aud`:
+
+| Request | Result |
+| ------- | ------ |
+| `audience=https://api.example.com` | `aud: ["<client_id>", "https://api.example.com"]` |
+| the parameter twice, both allowed | both appended, in request order |
+| `audience=https://not-allowed.example.com` | `400 invalid_request` — `"Invalid audience requested."` |
+| `audience=https://api.example.com/orders` | `400` — matching is exact, no prefix or wildcard |
+| `audience=` (empty) | `400` — omit the parameter instead of sending it empty |
+| no `audience` parameter | `aud: "<client_id>"` — a **string** |
+| `resource=https://api.example.com` | ignored, switch on or off |
+
+Two shapes to settle with the resource server before it validates this:
+
+- **`aud` changes type.** A bare string with no audience requested, an array
+  when one is. An RS comparing `aud === "my-api"` breaks on the array; it has
+  to test membership.
+- **the client id stays, as the first element.** Ping documents that as a
+  consequence of the provider's `includeClientIdClaimInStatelessTokens`
+  (default `true`) — which exists **only realm-wide**, with no client override
+  in the OAuth2Client schema. So `aud` holding nothing but the resource server
+  is not reachable per client; that is the one thing here still needing an
+  access-token-modification script, or a realm-wide change.
+
+### Both the switch and the whitelist are read from the ACTING client
+
+Same trap as [the scope gate](#the-scope-gate-lives-on-the-acting-client--this-one-bites),
+and worth proving the same way — with two clients whose configuration
+deliberately disagrees:
+
+| Acting client | Subject's client | `audience=` requested | Result |
+| ------------- | ---------------- | --------------------- | ------ |
+| list `[api, second]`, switch on | list `[api]` | `second` | **appended** — the subject's list does not narrow |
+| list `[api, second]`, switch on | list `[third]` | `third` | **`400` Invalid audience requested** — the subject's list does not widen |
+| list `[api, second]`, switch **off** | list `[api]`, switch **on** | `api` | **ignored**, `aud` a plain string — the subject's switch does not enable |
+
+So the whitelist belongs on every client that can mint, exactly like the scope
+gate, and a mint-capable client with an empty list simply cannot be asked for
+an audience.
+
 ## Quirks
 
 ### Discovery does not advertise the grant
@@ -275,16 +338,19 @@ tenant where the exchange demonstrably works. The provider's
 schema's `grantTypes` enum. Treat discovery as incomplete here; it is enabled
 per client, and the client config is the truth.
 
-### `audience` and `resource` are accepted and ignored
+### `audience` and `resource` are accepted and ignored by DEFAULT
 
 `acceptAudienceParametersInTokenExchangeRequests` is `false` by default. With it
 off, passing `audience=shop-api` or `resource=https://…` produces **no error** —
 the exchange succeeds and the parameter has no effect, `aud` still being the
-acting client. If a demo or design depends on audience-restricted tokens, check
-the flag rather than the response.
+acting client. A design that depends on audience-restricted tokens therefore
+fails **silently**: check the flag, not the response.
 
 Usefully, the flag exists on `overrideOAuth2ClientConfig` as well as the realm
-service, so it can be turned on for one client without a realm-wide change.
+service, so it can be turned on for one client without a realm-wide change —
+and it is the acting client's copy that counts. `resource` is ignored even with
+the flag on: there is no RFC 8707 resource-indicator support in this schema.
+See [Setting the `aud` claim](#setting-the-aud-claim--the-audience-whitelist).
 
 ### The issued token's lifetime is the acting client's
 
@@ -294,6 +360,28 @@ a capability token with `expires_in: 59` from a 900s identity token.
 
 ## Verified against
 
+- Sandbox tenant, realms **`alpha`** and **`bravo`**, **2026-08-27**,
+  service-account bearer. AM reports `9.0.0-SNAPSHOT` (build 2026-August-14).
+  Subject of the run: how `aud` is set without an access-token-modification
+  script. Calls: `_action=schema` on both `…/agents/OAuth2Client` and
+  `…/services/oauth-oidc` — the only audience-shaped fields in either are
+  `allowedResourceServerAudienceValues`,
+  `acceptAudienceParametersInTokenExchangeRequests` and the provider's
+  inbound-only `allowedAudienceValues`. Throwaway confidential clients
+  `AudienceProbe_20260827` (alpha and bravo) and `AudienceProbeSubject_20260827`
+  (bravo), plus a throwaway `OAUTH2_MAY_ACT_NEXT_GEN` script, all four created
+  by `PUT` and **deleted**, each confirmed `404` afterwards. Ordinary
+  `client_credentials` mints with `audience=`/`resource=`/`aud=`, flag off and
+  on, all left `aud` as the client_id string. **Alpha cannot exchange at all** —
+  its provider `advancedOAuth2Config.grantTypes` omits token-exchange while
+  bravo's includes it, which surfaces as `unsupported_grant_type` and reads like
+  a client misconfiguration. Exchange runs in bravo covered: flag off (audience
+  ignored), flag on with an allowed value (appended, `aud` becomes an array),
+  two allowed values, a value absent from the list, a path-suffixed value, an
+  empty value, `resource=`, and the three acting-versus-subject-client
+  permutations in the table above. The
+  `includeClientIdClaimInStatelessTokens` claim in that section is **Ping's
+  documentation, not a local measurement** — see open question 6.
 - Sandbox tenant, realm **`bravo`**, **2026-08-25**, service-account bearer.
 - Clients `CapTokenDemo_web` (login: `password`, `authorization_code`,
   `refresh_token`; 900s) and `CapTokenDemo_caller` (token-exchange only; 60s),
@@ -336,3 +424,12 @@ None. First-hand observation only.
    presumably raises the bar on the subject token's `auth_level`.
 5. **`oidcMayActScript`** — the id-token twin of the access-token may-act hook,
    untested.
+6. **Can `aud` hold only the resource server?** Ping's docs tie the leading
+   client-id audience value to the provider's
+   `includeClientIdClaimInStatelessTokens`, which is realm-wide with no client
+   override. Untested here deliberately: flipping it rewrites every stateless
+   token in the realm, so it wants its own run rather than a side effect of an
+   audience probe.
+7. **Does an exchanged token's `aud` survive introspection?** The probes decoded
+   the JWT locally; `/oauth2/introspect` was not exercised, and its
+   audience-members-may-introspect behaviour keys on `aud` membership.
