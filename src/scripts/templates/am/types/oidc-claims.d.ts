@@ -41,13 +41,17 @@ interface ClientProperties {
   allowedResponseTypes: JavaArray<JavaString>;
 }
 
-// Legacy OIDC logger shape (distinct from the next-gen slf4j logger).
+// Legacy OIDC logger shape: the classic Debug method names, distinct from the
+// next-gen slf4j one. The FORMATTING is slf4j's either way, so the methods take
+// `LogFunction` (rhino-1.7.14.d.ts) and get the `{}` arity check — verified on
+// the legacy engine 2026-08-27 via the scripted-decision node, which shares this
+// engine's Debug logger.
 interface OidcLogger {
-  error(message: StringLike): void;
+  error: LogFunction;
   errorEnabled(): boolean;
-  message(message: StringLike): void;
+  message: LogFunction;
   messageEnabled(): boolean;
-  warning(message: StringLike): void;
+  warning: LogFunction;
   warningEnabled(): boolean;
 }
 declare const logger: OidcLogger;

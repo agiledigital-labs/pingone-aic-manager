@@ -353,7 +353,7 @@ workspace routing slug from `src/aic/script/am.rs::slug_for`.
 
 | Binding                                  | Legacy                                                     | Next-gen                             | Status    | Shape / notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ---------------------------------------- | ---------------------------------------------------------- | ------------------------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `logger`                                 | yes                                                        | yes                                  | **D/I**   | Legacy: `error/message/warning(+Enabled)`. Next-gen: slf4j-style `trace/debug/info/warn/error`. **Shapes differ** — must split legacy vs next-gen.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `logger`                                 | yes                                                        | yes                                  | **V**     | Legacy: `error/message/warning(+Enabled)`. Next-gen: slf4j-style `trace/debug/info/warn/error`. **Shapes differ** — must split legacy vs next-gen. The METHOD NAMES differ; the ARGUMENT HANDLING does not — both engines bind `{}` from extra args and both take a trailing throwable (verified 2026-08-27, below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `httpClient`                             | partial                                                    | yes                                  | **D/I**   | Next-gen: `httpClient.send(url, opts).get()` returning fetch-like `{status,ok,json(),text()}`. Legacy: Java `Request`/`Response`. Used in 25 `src/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `openidm`                                | no                                                         | yes                                  | **D/I**   | CRUDPAQ. Next-gen scripted decision + IDM only. Used in 63 `src/`. Not a legacy decision-node binding. `read` and **`query`** both take a third `fields` argument (verified 2026-08-17 — docs/api/10; the IDM type definitions were missing it on `query`). **LIBRARY confirmed** (2026-07-14): `openidm.read(...)` called from inside a function in a `require()`d LIBRARY script (not just the top-level decision-node script) works and returns the real record — `fixtures/lib-openidm-read-probe.lib.js` + `lib-openidm-read-consumer.script.js`, read `managed/alpha_name_variant/aaron_erin` and got the seeded row back verbatim. |
 | `utils`                                  | no                                                         | yes                                  | **D/I**   | base64/UUID/random. Used in 86 `src/`. Next-gen only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -536,6 +536,162 @@ Type model: the slf4j `logger` lives in `nextgen-common.d.ts`; the classic
 `Debug` `logger` in `legacy-common.d.ts` (included by the legacy decision leaf
 and the other unmigrated AM contexts). `nodeState.isDefined`/`remove` are merged
 onto `NodeState` only on the legacy leaf (via `decision-node-legacy.d.ts`).
+
+### `logger` argument handling — BOTH engines (verified 2026-08-27)
+
+The classic Debug method names hid an slf4j back end. `error`/`message`/
+`warning` were declared **single-argument**, which is wrong in the direction
+that costs you working code: it rejected the two-argument calls scripts
+actually write. Most visible in the legacy access-token-modification context,
+whose own bindings say nothing about logging, so it inherits this shape whole.
+
+Fixtures: `fixtures-legacy/legacy-logger-levels.script.js` and
+`fixtures-legacy/legacy-logger-args.script.js` (legacy, evaluatorVersion 1.0),
+`fixtures/logger-placeholders.script.js` (next-gen). Every call is tagged
+`AICPROBE-…` and read back out of `am-core` — the whole event, not just the
+message, because two of the rows below turn on the presence of an `exception`
+field:
+
+```bash
+aic logs tx <txid> | jq -r '.[] | select(.payload.message|tostring|test("AICPROBE"))
+  | {level: .payload.level, message: .payload.message, exception: .payload.exception}'
+```
+
+Identical answers on both engines:
+
+| Call                                    | Logged as                                    |
+| --------------------------------------- | -------------------------------------------- |
+| `error("a")`                            | `a`                                          |
+| `error("a {} b", "X")`                  | `a X b`                                      |
+| `error("a {} b {} c", "X", "Y")`        | `a X b Y c`                                  |
+| `error("a {} b {} c", "X")`             | `a X b {} c` — **spare `{}` left verbatim**  |
+| `error("a", "X")`                       | `a` — **surplus argument dropped**           |
+| `error("a", throwable)`                 | `a` + an `exception` field with the stack    |
+| `error("a {} b", "X", throwable)`       | `a X b` + the `exception` field              |
+| `error("a {} b", throwable)`            | `a {} b` + the `exception` field — see below |
+| `error("a \\{} b", "X")`                | `a {} b` — the `\` escapes it, binds nothing |
+| `error("a \\\\{} b", "X")`              | `a \X b` — **`\\` is literal; `{}` binds**   |
+| `error("a", new Error("boom"))`         | `a`, **no** `exception` field — dropped      |
+
+Four of those rows are the ones that decide the type's shape, and three of them
+were added only after a review pointed out the first pass could not have found
+them:
+
+- **A trailing throwable is stripped BEFORE formatting, unconditionally.** It is
+  not "the extra argument when there is a spare one": `error("a {} b", throwable)`
+  has one placeholder and one argument, and still logs a bare `{}`
+  (`AICPROBE-H1`/`H2`). So a throwable never fills a placeholder.
+- **`\\` is a literal backslash and the `{}` after it is live** (`AICPROBE-G1`
+  logged `double \X bound`). The escape rule is backslash **parity**, not
+  presence — a check that looks at one backslash rejects a correct call.
+- **A JavaScript `Error` is not a throwable.** `AICPROBE-I1`/`I2` produced no
+  `exception` field and `I2` dropped the `Error` outright. Typing `Error` as a
+  throwable would license a call whose second half goes nowhere.
+
+Both mismatch rows are **silent**: nothing throws, nothing warns, and the defect
+only shows up in a log line nobody reads until an incident. So the types count
+the `{}` and make the compiler ask for one argument each — `EndsInOddBackslashes`
+/ `LogPlaceholders` / `LogArgs` / `LogFunction` / `JavaThrowable` in
+`am/types/rhino-1.7.14.d.ts`, which is the one file every AM leaf includes (the
+legacy OIDC claims leaf takes rhino plus its own overlay and nothing else, and
+needs the check too), mirrored in `idm/types/rhino-1.7.14.d.ts`.
+
+> **Surfaced since `TEMPLATES_VERSION` 85.**
+
+Three deliberate decisions in that type:
+
+- **The extra arguments are a UNION of two tuples**, `P | [...P, JavaThrowable]`,
+  not one tuple with an optional tail. An optional element also accepts an
+  explicit `undefined`, so `logger.error("boom", undefined)` compiled while the
+  runtime dropped it. The cost is a `TS2345` where the tail form gave the
+  friendlier `TS2554 Expected 3-4 arguments`; the nested message still names the
+  required count.
+- **A format string that has widened to `string` is unchecked.**
+  `string extends S` detects a `var`-held string, a concatenation, or a
+  `JavaString`. Without the guard the pattern match just fails and the call is
+  typed as taking no extra arguments, rejecting every dynamically-built message.
+  A template literal keeps its literal type, so `{}` written inside one is still
+  counted — correctly, since `${}` interpolation and `{}` binding are different
+  mechanisms.
+- **The throwable-in-a-placeholder-slot case is not caught for an `any`-typed
+  throwable**, even though the runtime row above proves it is a bug. The
+  workspace sets `useUnknownInCatchVariables: false` and `java.*` is `any`, so
+  every throwable a real script holds today is `any`, and no static shape can
+  tell that from an ordinary `any` without rejecting both. A three-state
+  validator — infer the argument tuple, treat an `any`/`unknown` tail as
+  indeterminate, strip a tail that is statically known to extend `JavaThrowable`,
+  compare arity otherwise — WOULD catch a throwable the compiler can see, e.g.
+  one behind a `@type {JavaThrowable}` annotation. It is not implemented because
+  it catches none of the unannotated Rhino cases that actually occur; if typed
+  throwables start appearing in these workspaces, that is the shape to build.
+
+Known approximations, all of which reject a correct call rather than accept a
+wrong one:
+
+- An **intentional unescaped `{}` with no argument** — the runtime prints the
+  braces verbatim, and the type now calls it a deficit. This is the one
+  source-compatibility break a client with existing scripts will actually hit;
+  the migration is to write `\{}`, which says the same thing and is what the
+  escape row above measures.
+- An **open template-literal hole** whose interpolated value itself carries `{}`,
+  and a **branded string subtype or unresolved generic parameter**, neither of
+  which `string extends S` recognises as dynamic. Neither appears in the corpus,
+  and with `noImplicitAny: false` an ordinary unannotated forwarding helper falls
+  into `any` and stays compatible; only a deliberately typed wrapper is affected.
+
+The type is gated. `scripts/type-tests/` compiles a declaration SUBSET of each
+real leaf — `type_test_leaf_manifests_are_subsets_of_the_real_leaf_configs`
+holds the manifests honest against what `leaf_tsconfig` actually emits — and runs
+`tsc` over an `accept.cjs` and a `reject.cjs` per leaf, asserting the exact
+diagnostic code on each rejected line and failing on any diagnostic the fixture
+did not ask for, including one raised outside `reject.cjs`. CI runs it as the
+`script workspace types` job. No cargo gate compiles these declarations at all —
+the Rust tests check the strings that emit the files, never what a compiler makes
+of them. The AM and IDM copies of the format types are held identical by
+`logger_format_types_are_identical_across_the_two_workspaces`, because two copies
+of a conditional type drift silently.
+
+Still ungated, and the next thing worth doing: the **managed-record type
+machinery** (path resolution, `fields` projection, relationship expansion,
+`_meta`, `read`/`query` result shaping) exists in three copies —
+`idm/types/common.d.ts`, `am/types/nextgen-common.d.ts` and the TypeScript
+project's `framework/idm-globals.d.ts`. The new leaves parse the first two but
+with an empty `ManagedObjects`, so none of the load-bearing branches instantiate,
+and the third is not compiled by the CI job at all. The TypeScript project
+already has a bidirectional test for it in `tests/openidm-types.test.ts` that
+nothing runs in CI.
+
+Provenance notes worth keeping:
+
+- `new java.lang.RuntimeException(...)` is **blocked on next-gen** by the same
+  allow-list that blocks `new java.util.HashMap()`, so the next-gen fixture
+  catches a throwable from `java.lang.Integer.parseInt` instead. Rhino wraps it:
+  on next-gen the Java throwable hangs off `e.rhinoException` (`e.javaException`
+  is `undefined` for an engine-raised error, and a first pass that read it
+  logged `undefined` and established nothing). On IDM's Rhino, `e.javaException`
+  **is** populated.
+- Next-gen `logger.trace` produced no line — the level is filtered, not absent.
+  Next-gen coverage is also narrower than legacy: mismatch, throwable and escape
+  rows run on `error` only, with exact substitution confirmed on `warn`/`info`.
+- Both legacy fixtures are scripted-decision scripts. The strict type also
+  applies to access-token modification, OIDC claims and every fallback legacy
+  context. Multi-argument acceptance IS established for legacy access-token
+  modification (`docs/api/12` ATM probe, same date); the detailed formatting
+  rules there and in OIDC claims are carried over from the shared legacy Debug
+  binding rather than probed per context.
+- **The log API is eventually consistent.** A fetch immediately after the run
+  returned six of nine lines; all nine were there minutes later. A partial read
+  looks exactly like "that call never logged" — re-fetch before concluding.
+
+**IDM: the types match AM, the evidence does not.** `idm/types/rhino-1.7.14.d.ts`
+mirrors the AM block and `idm/types/common.d.ts`'s `Logger` uses it, at the
+maintainer's direction. It is NOT probe-verified: a custom endpoint
+(`endpoint/aicprobe-logger`, created and deleted 2026-08-27) called
+`logger.error`/`warn`/`info`/`debug` and **none of it reached `idm-core` or
+`idm-everything`** — only the `idm-access` record for the request itself, so
+there was no formatted line to read. Open question: what makes IDM ship script
+log output. Until that is answered, an IDM formatting surprise lands as a
+compile error in a client workspace, and this paragraph is the thing to read.
 
 ### Library `require()` from next-gen access-token modification (verified 2026-07-29)
 

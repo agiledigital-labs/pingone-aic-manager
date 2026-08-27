@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 84;
+pub const TEMPLATES_VERSION: u32 = 85;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -825,6 +825,85 @@ mod tests {
         );
         assert!(MANAGED.iter().any(|(r, _)| *r == "idm/types/endpoint.d.ts"));
         assert!(USER.iter().any(|(r, _)| *r == "package.json"));
+    }
+
+    /// The slf4j `logger` format types are shipped TWICE — once per workspace,
+    /// because AM and IDM have separate `rhino-1.7.14.d.ts` files that
+    /// deliberately redeclare the same global names and cannot share a program.
+    /// Two copies of a conditional type drift silently: a fix to the backslash
+    /// parity or the throwable tail lands in one workspace and not the other,
+    /// and nothing fails until a client script does.
+    ///
+    /// The runtime rules behind these types are measured on AM
+    /// (docs/api/12-script-bindings-matrix.md); IDM inherits them by decision,
+    /// not by evidence, which is exactly why the two must stay identical rather
+    /// than being allowed to diverge quietly.
+    #[test]
+    fn logger_format_types_are_identical_across_the_two_workspaces() {
+        fn block(rel: &str) -> &'static str {
+            let src = MANAGED
+                .iter()
+                .find(|(r, _)| *r == rel)
+                .unwrap_or_else(|| panic!("missing template: {rel}"))
+                .1;
+            let marker = "/**\n * A Java `Throwable` as Rhino surfaces it";
+            let start = src
+                .find(marker)
+                .unwrap_or_else(|| panic!("{rel} has no logger format block"));
+            &src[start..]
+        }
+
+        assert_eq!(
+            block("am/types/rhino-1.7.14.d.ts"),
+            block("idm/types/rhino-1.7.14.d.ts"),
+            "the AM and IDM logger format types have drifted; change both or neither"
+        );
+    }
+
+    /// `scripts/type-tests/leaves/*/types` names the declarations each type-test
+    /// leaf compiles. Those manifests are hand-written, so they can name a set
+    /// no real workspace ever has — and a gate that type-checks a fictional leaf
+    /// proves nothing about the files we ship.
+    ///
+    /// A manifest is allowed to be a SUBSET (the leaves skip declarations that
+    /// pull in npm type packages, and the generated managed/hook overlays), but
+    /// never a superset and never an invention.
+    #[test]
+    fn type_test_leaf_manifests_are_subsets_of_the_real_leaf_configs() {
+        use crate::scripts::{am, managed_hooks};
+
+        let idm_endpoint = MANAGED
+            .iter()
+            .find(|(r, _)| *r == "idm/endpoint/tsconfig.json")
+            .expect("idm endpoint tsconfig")
+            .1
+            .to_string();
+
+        let leaves: [(&str, String); 5] = [
+            (
+                "legacy-access-token",
+                am::leaf_tsconfig("oauth2-access-token"),
+            ),
+            ("nextgen-decision-node", am::leaf_tsconfig("decision-node")),
+            ("legacy-oidc-claims", am::leaf_tsconfig("oidc-claims")),
+            ("idm-endpoint", idm_endpoint),
+            (
+                "idm-managed-hook",
+                managed_hooks::leaf_tsconfig("alpha_user"),
+            ),
+        ];
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/type-tests/leaves");
+        for (leaf, tsconfig) in leaves {
+            let manifest = std::fs::read_to_string(root.join(leaf).join("types"))
+                .unwrap_or_else(|e| panic!("type-test leaf {leaf}: {e}"));
+            for decl in manifest.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                assert!(
+                    tsconfig.contains(&format!("/{decl}\"")),
+                    "type-test leaf {leaf} names {decl}, which its real tsconfig does not include:\n{tsconfig}"
+                );
+            }
+        }
     }
 
     #[test]
