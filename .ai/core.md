@@ -272,6 +272,12 @@ rule or a doc row.
   the user already has trips the realm's password history
   (`docs/api/10-managed-objects.md`). This only bites a provisioner that has
   never been re-run against a live tenant.
+- **Don't log `identity.getAttributes()` from an OAuth2 script.** In the legacy
+  access-token-modification context it returns the whole agent profile of the
+  calling client — `userpassword` included, in clear (verified 2026-08-27,
+  `docs/api/12-script-bindings-matrix.md`). Read the one attribute you want with
+  `getAttribute(name)`. No type can catch this one; the return is a map either
+  way.
 - **Don't trust `creationDate` / `lastModifiedDate` types are consistent.**
   Scripts use epoch-ms ints; ESVs use ISO-8601 strings. Don't assume.
 - **Don't try to create new realms.** AIC only allows `alpha` + `bravo` + root.

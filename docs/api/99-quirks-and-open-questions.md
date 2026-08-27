@@ -332,6 +332,43 @@ The control that this is real rather than a routing artefact: the same endpoint
 under `If-Match: *` returned the update handler's output for the same URL and
 body, and the create output carried `newResourceId` as the record `_id`.
 
+### Q17. An AM script that has RUN cannot be deleted — `500 "used once"` (open, 2026-08-27)
+
+`DELETE /am/json{realm-path}/scripts/{id}` on a script that has executed returns:
+
+```json
+{ "code": 500, "reason": "Internal Server Error",
+  "message": "The script <name> is used once" }
+```
+
+Observed with a throwaway legacy access-token-modification probe
+(`2e87a29c-…7201`) after the only client referencing it was deleted. What was
+ruled out, in this order:
+
+- the client: deleted, `GET` 404;
+- a lingering reference: the realm's `oauth-oidc` service, its
+  `advancedOAuth2Config`, and every `OAuth2Client` in the realm were fetched and
+  searched for the script id — zero hits;
+- a stale reference the delete left behind: the client was RECREATED with
+  `accessTokenModificationScript: "[Empty]"`, `…PluginType: "PROVIDER"` and
+  `providerOverridesEnabled: false`, then deleted again. Same refusal;
+- a cache TTL: retried every 30–50s for over an hour. Same refusal;
+- the other realms: `bravo` 404, root 403.
+
+The leading remaining theory is that AM's usage tracking counts an **issued
+grant** rather than a live configuration reference — the probe minted both
+stateless and CTS tokens — but that is a theory, not a measurement, and the CTS
+tokens' one-hour lifetime has passed without the refusal clearing.
+
+Consequence for this repo: a probe that attaches a script to a client leaves the
+SCRIPT behind even when everything else cleans up. Budget for that when writing
+one — give it an obvious throwaway name, and expect to remove it from the
+console. `aic script` does not currently surface a delete for AM scripts, so
+there is nothing to fix on our side yet; if it ever grows one, this is the error
+it has to explain rather than pass through.
+
+---
+
 ---
 
 ---

@@ -1,6 +1,12 @@
 // Bindings present on ALL AM leaves — both engine generations and every context
 // (verified across the legacy probe + the next-gen context metadata): realm,
-// scriptName, httpClient, secrets.
+// scriptName, httpClient.
+//
+// `secrets` USED to be in this list and is not any more. It is `undefined` in
+// the legacy access-token-modification context (measured 2026-08-27), so the
+// "every context" claim was false and this file was handing that leaf a binding
+// its scripts would have gotten `TypeError` from. It now lives in secrets.d.ts,
+// which every leaf includes except that one.
 //
 // `logger` is NOT here — its shape differs by engine (next-gen slf4j lives in
 // nextgen-common.d.ts; classic Debug in legacy-common.d.ts). `systemEnv` is NOT
@@ -64,13 +70,4 @@ interface HttpClient {
 }
 declare const httpClient: HttpClient;
 
-// Secrets API. Each accessor returns a secret object (read it via its own
-// methods). Method set from the next-gen binding metadata; present on legacy too.
-interface Secrets {
-  getGenericSecret(secretId: StringLike): object;
-  getDecryptionKey(secretId: StringLike): object;
-  getEncryptionKey(secretId: StringLike): object;
-  getSigningKey(secretId: StringLike): object;
-  getVerificationKey(secretId: StringLike): object;
-}
-declare const secrets: Secrets;
+// `secrets` is NOT here — it is NOT on every leaf. See secrets.d.ts.

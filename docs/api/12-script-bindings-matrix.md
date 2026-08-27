@@ -693,6 +693,163 @@ there was no formatted line to read. Open question: what makes IDM ship script
 log output. Until that is answered, an IDM formatting surprise lands as a
 compile error in a client workspace, and this paragraph is the thing to read.
 
+### Legacy access-token modification: the whole binding surface (verified 2026-08-27)
+
+`OAUTH2_ACCESS_TOKEN_MODIFICATION` (evaluatorVersion `1.0`). Until this run
+`am/types/oauth2-access-token.d.ts` declared six bindings as `any`, on the
+honest grounds that no member shape had been probed. It is now typed from calls.
+
+**Method.** A throwaway confidential client (`aicatm-probe`) with
+`providerOverridesEnabled: true`, `accessTokenModificationPluginType: "SCRIPTED"`
+and the probe script id, per
+[05-oauth2-oidc.md](05-oauth2-oidc.md#per-client-script-overrides-verified-2026-07-29).
+Results come back as `am-core` log lines (the `logger` now takes format args, see
+above) and as token claims via `accessToken.setField`. A throwaway
+`managed/alpha_user` supplied the `password` grant. Client and user deleted
+afterwards; the script would not delete — see Quirks.
+
+**`typeof` is not evidence here.** The first pass enumerated members with
+`typeof`, which reports `"function"` for a Rhino-wrapped Java method that does
+not exist: `typeof identity.getMemberships` is `"function"` and calling it throws
+`Can't find method com.sun.identity.idm.AMIdentity.getMemberships()`. `typeof`
+is reliable only in the negative. Every member in the `.d.ts` was invoked and
+returned; every exclusion is either an invocation that threw or a `typeof` of
+`undefined`.
+
+#### Top-level bindings
+
+| Binding             | Present | Notes                                                          |
+| ------------------- | ------- | -------------------------------------------------------------- |
+| `accessToken`       | yes     | Shape below. Not the next-gen shape.                           |
+| `identity`          | yes     | Classic `AMIdentity`, not the next-gen `Identity`.             |
+| `session`           | **null**| On `client_credentials` AND `password`.                        |
+| `scopes`            | yes     | A `java.util.HashSet`.                                         |
+| `requestProperties` | yes     | `requestParams`, `requestHeaders`, `realm`, `requestUri`.      |
+| `clientProperties`  | yes     | Plus `customProperties`, which next-gen does not have.         |
+| `logger`            | yes     | Classic Debug names, slf4j formatting (above).                 |
+| `httpClient`        | yes     | `send` is a function.                                          |
+| `systemEnv`         | yes     | `getProperty` is a function.                                   |
+| `realm`             | yes     | `/alpha` — a JS string, not a `JavaString`.                    |
+| `scriptName`        | yes     | JS string.                                                     |
+| `JavaImporter`      | yes     | `new java.lang.RuntimeException(...)` constructs here.         |
+| **`secrets`**       | **no**  | `undefined`. See below — this one was declared and should not have been. |
+| `openidm`           | no      | Next-gen only.                                                 |
+| `utils`             | no      | Next-gen only.                                                 |
+| `idRepository`      | no      | —                                                              |
+| `emailService`      | no      | Next-gen only.                                                 |
+| `require`           | no      | Consistent with the 2026-07-29 finding above.                  |
+
+**`secrets` was a false declaration.** `am/types/common.d.ts` had it in the
+"present on ALL AM leaves" set, so this leaf's scripts type-checked against a
+global that is `undefined` at runtime. It now lives in its own `secrets.d.ts`
+which every leaf includes **except** this one. The evidence stops there: no
+other legacy context has been probed for it, so nothing else was narrowed. The
+sandbox's own ESLint globals block for this context never listed `secrets`,
+which is a small corroboration that the type layer was the thing that was wrong.
+
+#### `accessToken`
+
+Callable, and what they return on a plain `client_credentials` token:
+
+| Call                                                             | Returns                                     |
+| ---------------------------------------------------------------- | ------------------------------------------- |
+| `getRealm`                                                       | `/alpha`                                    |
+| `getResourceOwnerId`                                             | client id; the IDM uuid on a user grant     |
+| `getAuditTrackingId`, `getAuthGrantId`, `getTokenId`             | `JavaString`                                |
+| `getTokenName`, `getTokenType`, `getClientId`, `getGrantType`    | `JavaString`                                |
+| `getAuthTimeSeconds`                                             | epoch **seconds**                           |
+| `getExpiryTime`                                                  | epoch **milliseconds**                      |
+| `isExpired`                                                      | `boolean`                                   |
+| `getAudience`                                                    | Java list                                   |
+| `getScope`                                                       | `java.util.Set`                             |
+| `getCustomFields`                                                | `{subname, expires_in}`                     |
+| `toMap`                                                          | `access_token, scope, token_type, expires_in` |
+| `getTokenInfo`                                                   | object                                      |
+| `getNonce`, `getAct`, `getMayAct`, `getPermissions`, `getClaims`, `getAuthLevel`, `getConfirmationKey` | **`null`** |
+| `getField("<unset>")`                                            | **`null`**                                  |
+
+Writers that work: `setField`, `setFields`, `setNonce`, `setRealm`, `setClaims`,
+`setAuthLevel`, `addExtraData`, `addExtraJsonData`, `setClientId`,
+`setResourceOwnerId`, `setTokenName`, `setTokenType`, `setGrantType`,
+`setAuthGrantId`, `setAuditTrackingId`, `setExpiryTime`, `setAuthTime`, and
+every `remove*` (`removeRealm`, `removeNonce`, `removeClaims`,
+`removePermissions`, `removeAuthLevel`, `removeTokenName`, `removeTokenType`,
+`removeGrantType`, `removeAuditTrackingId`, `removeAuthGrantId`,
+`removeClientId`, `removeResourceOwnerId`, `removeScopes`, `removeAuthTime`,
+`removeConfirmationKey`).
+
+Four traps, all of which a transcription from `oauth2-access-token-ng.d.ts`
+would have gotten wrong:
+
+- **`setAct`, `setMayAct`, `setPermissions`, `setConfirmationKey` are not
+  callable.** `Can't find method …setAct(object)`. Checked against BOTH token
+  flavours by flipping `statelessTokensEnabled`, so it is the context and not
+  the implementation: the error names `StatelessAccessToken` in one run and
+  `StatefulAccessToken` in the other.
+- **`setScope` wants a `java.util.Set`.** A JS array throws
+  `Cannot convert org.mozilla.javascript.NativeArray to java.util.Set`.
+  `new java.util.HashSet()` + `.add()` works.
+- **`setId` is stateful-only.** On a stateless client it throws
+  `Client-side token's ID cannot be changed`; on a CTS client it returns the new
+  id. This is the one difference the flavour control DID find, which is what
+  makes the three preceding rows trustworthy.
+- **`setField` coerces numbers to doubles.** `setField("n", 42)` reads back
+  `42.0`, the same coercion `httpClient` applies to request bodies. Box with
+  `java.lang.Integer.valueOf`.
+
+Absent (`typeof undefined`, or a call that threw): `getType`, `getValue`,
+`getCreationTime`, `getSubject`, `getExtraData`, `setExtraData`, `getIssuer`,
+`setIssuer`, `getSessionId`, `getRefreshTokenId`, `getAuthModules`,
+`getAuthenticationContextClassReference`, `getRedirectUri`, `getExpiresIn`,
+`getScriptedClaims`, and `getResourceOwner` — which throws
+`Access to Java class "org.forgerock.oauth2.core.ResourceOwner" is prohibited`.
+
+#### `identity`, `session`, `scopes`, the two property bags
+
+- **`identity` is a classic `AMIdentity`** and it resolves: `getName`,
+  `getUniversalId`, `getRealm` (a DN, not `/alpha`), `getType` (`IdType: user`
+  or `IdType: agentonly`), `isExists`, `isActive`, `getAttribute` (empty list,
+  never `null`), `getAttributes`, `store`. On a `password` grant
+  `getAttribute("mail")` returned the real address.
+
+  The next-gen spellings `exists`, `getAttributeValues`, `setAttribute` and
+  `addAttribute` are all absent, as is `getMemberships`.
+
+  > **`identity.getAttributes()` returns the OAuth2 client's `userpassword`** on
+  > an `agentonly` identity — the whole agent profile, secret included. Do not
+  > log that object. It went into `am-core` once during this probe, on a
+  > throwaway client that was deleted.
+
+  Note this **contradicts** [22-token-exchange.md](22-token-exchange.md), which
+  records `identity` bound but empty (`AMIdentity` is null) in the next-gen
+  validate-scope context on the same two grants. Different context, different
+  answer — neither result carries across.
+
+- **`session` is `null`** on both grants; every member access throws
+  `Cannot call method "…" of null`. No grant that populates it was exercised, so
+  the member surface is unknown and the declaration stays `any` with a guard
+  note rather than being transcribed from AM's `SSOToken` API.
+
+- **`scopes` is a `java.util.HashSet`**: `contains`, `size`, `isEmpty`,
+  `iterator`, `toArray`, `add`, `remove`. No `length`, and `scopes[0]` throws
+  `Java class "java.util.HashSet" has no public instance field or method named
+  "0"`.
+
+- **`requestProperties`** members are read as PROPERTIES: `requestParams`,
+  `requestHeaders`, `realm`, `requestUri`. The maps inside are Java multimaps —
+  `String(params.grant_type[0])`. Lowercase header keys work
+  (`requestHeaders["content-type"]`). `requestParams` did not carry
+  `client_secret`, matching the next-gen note in `nextgen-common.d.ts`.
+
+- **`clientProperties`**: `clientId`, `allowedGrantTypes` (screaming case —
+  `CLIENT_CREDENTIALS`), `allowedScopes`, `allowedResponseTypes`, and
+  `customProperties`. `.contains()` works on the lists.
+
+> **Surfaced since `TEMPLATES_VERSION` 86.** Gated by
+> `the_legacy_token_modification_leaf_is_typed_from_calls_not_from_the_nextgen_overlay`
+> and the `legacy-access-token` leaf in `scripts/type-tests/`, whose reject
+> fixture asserts that each next-gen-only member is a compile error here.
+
 ### Library `require()` from next-gen access-token modification (verified 2026-07-29)
 
 Question: can an OAuth2 **access token modification** script use AM library
