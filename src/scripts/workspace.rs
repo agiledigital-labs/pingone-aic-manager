@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 86;
+pub const TEMPLATES_VERSION: u32 = 87;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -862,6 +862,221 @@ mod tests {
             block("idm/types/rhino-1.7.14.d.ts"),
             "the AM and IDM logger format types have drifted; change both or neither"
         );
+    }
+
+    /// Pull one `type X = …;` or `interface X { … }` out of a `.d.ts`, brace
+    /// depth aware, so two copies of a declaration can be compared without
+    /// dragging in the comments and neighbours around them.
+    #[cfg(test)]
+    fn declaration<'a>(source: &'a str, name: &str) -> &'a str {
+        let start = ["type ", "interface "]
+            .iter()
+            .find_map(|kw| {
+                let needle = format!("\n{kw}{name}");
+                source.find(&needle).map(|at| at + 1)
+            })
+            .unwrap_or_else(|| panic!("no declaration of {name}"));
+
+        let mut depth = 0usize;
+        for (offset, ch) in source[start..].char_indices() {
+            match ch {
+                '{' | '[' | '(' => depth += 1,
+                '}' | ']' | ')' => depth = depth.saturating_sub(1),
+                ';' if depth == 0 => return &source[start..start + offset + 1],
+                // An interface ends at the newline after its closing brace.
+                '\n' if depth == 0
+                    && offset > 0
+                    && source[start..start + offset].trim_end().ends_with('}') =>
+                {
+                    return &source[start..start + offset];
+                }
+                _ => {}
+            }
+        }
+        panic!("unterminated declaration of {name}");
+    }
+
+    /// The managed-record projection kernel is shipped TWICE — AM and IDM have
+    /// separate declaration sets that redeclare the same global names and
+    /// cannot share a program.
+    ///
+    /// `scripts/type-tests/` catches drift BEHAVIOURALLY, and better: it also
+    /// catches a change that is identical in both copies and still wrong. But it
+    /// only catches drift on the axes its fixtures happen to pin, and a review
+    /// found several one-sided changes that slipped through — so this holds the
+    /// kernel byte-identical as well. The two are complementary, not redundant.
+    ///
+    /// Deliberately per-declaration rather than whole-block: IDM carries an
+    /// extra `QueryParams` interface in the middle of this run, and the two
+    /// `OpenIdm` interfaces differ on purpose (query parameters and unknown-path
+    /// fallbacks are not the same on the two engines).
+    #[test]
+    fn the_managed_projection_kernel_is_identical_across_the_two_workspaces() {
+        let am = MANAGED
+            .iter()
+            .find(|(r, _)| *r == "am/types/nextgen-common.d.ts")
+            .expect("am nextgen-common")
+            .1;
+        let idm = MANAGED
+            .iter()
+            .find(|(r, _)| *r == "idm/types/common.d.ts")
+            .expect("idm common")
+            .1;
+
+        for name in [
+            "ManagedField",
+            "QueryResult",
+            "ManagedCollectionOf",
+            "ManagedRecordOf",
+            "FieldsArg",
+            "ContentArg",
+            "RecordResult",
+            "StoredRecord",
+            "RelationshipExpansion",
+            "PathParentOf",
+            "MetaMemberOf",
+            "ExpansionOf",
+            "SelectedMembers",
+            "Projected",
+        ] {
+            assert_eq!(
+                declaration(am, name),
+                declaration(idm, name),
+                "the AM and IDM copies of `{name}` have drifted; change both or neither"
+            );
+        }
+    }
+
+    /// `scripts/type-tests/leaves/*/managed-fixture.d.ts` stands in for the
+    /// managed declarations `aic workspace update` generates from a live tenant.
+    /// Nothing otherwise ties it to the generator: `run.sh` copies whatever
+    /// `.d.ts` a leaf directory holds, which is outside the manifest subset
+    /// assertion, so a generator change could leave both fixtures stale while
+    /// every gate stayed green.
+    ///
+    /// This runs a schema shaped like the fixture through `generate()` and
+    /// checks the emitted declarations agree with it. Not byte-for-byte — the
+    /// fixture collapses three generated files into one, and the generator sorts
+    /// properties and writes no per-field docs — but every property line, the
+    /// `RelationshipRef` shape and the `ManagedObjects` entries must match.
+    #[test]
+    fn managed_fixture_matches_what_the_generator_emits() {
+        use crate::scripts::managed_types;
+        use serde_json::json;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/type-tests/leaves");
+        let am_fixture =
+            std::fs::read_to_string(root.join("nextgen-decision-node/managed-fixture.d.ts"))
+                .expect("am fixture");
+        let idm_fixture = std::fs::read_to_string(root.join("idm-endpoint/managed-fixture.d.ts"))
+            .expect("idm fixture");
+        assert_eq!(
+            am_fixture, idm_fixture,
+            "the two managed-object fixtures have drifted; they must stay identical"
+        );
+
+        let schema = json!({
+            "objects": [
+                {
+                    "name": "__aic_fixture_user",
+                    "schema": {
+                        "required": ["userName", "sn", "mail"],
+                        "properties": {
+                            "userName": { "type": "string" },
+                            "sn": { "type": "string" },
+                            "mail": { "type": "string" },
+                            "telephoneNumber": { "type": "string" },
+                            "manager": { "type": "relationship" },
+                            "authzRoles": {
+                                "type": "array",
+                                "items": { "type": "relationship" }
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "__aic_fixture_device",
+                    "schema": {
+                        "required": ["deviceId", "model"],
+                        "properties": {
+                            "deviceId": { "type": "string" },
+                            "model": { "type": "string" },
+                            "serialNumber": { "type": "string" },
+                            "owner": { "type": "relationship" }
+                        }
+                    }
+                }
+            ]
+        });
+
+        let generated = managed_types::generate(&schema).expect("generate");
+        let file = |rel: &str| -> String {
+            generated
+                .iter()
+                .find(|(path, _)| path == &PathBuf::from(rel))
+                .unwrap_or_else(|| panic!("generator did not emit {rel}"))
+                .1
+                .clone()
+        };
+
+        // Every property line the fixture declares must be a line the generator
+        // writes, verbatim — same optionality, same rendered type.
+        for (rel, members) in [
+            (
+                "am/types/managed/__aic_fixture_user.d.ts",
+                &[
+                    "  _id?: string;",
+                    "  _rev?: string;",
+                    "  userName: string;",
+                    "  sn: string;",
+                    "  mail: string;",
+                    "  telephoneNumber?: string;",
+                    "  manager?: RelationshipRef;",
+                    "  authzRoles?: RelationshipRef[];",
+                ][..],
+            ),
+            (
+                "am/types/managed/__aic_fixture_device.d.ts",
+                &[
+                    "  deviceId: string;",
+                    "  model: string;",
+                    "  serialNumber?: string;",
+                    "  owner?: RelationshipRef;",
+                ][..],
+            ),
+        ] {
+            let emitted = file(rel);
+            for member in members {
+                assert!(
+                    emitted.contains(member),
+                    "generator does not emit `{member}` in {rel}:\n{emitted}"
+                );
+                assert!(
+                    am_fixture.contains(member),
+                    "the fixture is missing `{member}`, which the generator emits"
+                );
+            }
+        }
+
+        // The relationship envelope and the collection map.
+        let shared = file("am/types/managed/_shared.d.ts");
+        for line in [
+            "interface RelationshipRef {",
+            "  _ref: string;",
+            "  _refResourceCollection?: string;",
+            "  _refResourceId?: string;",
+        ] {
+            assert!(shared.contains(line), "generator dropped `{line}`");
+            assert!(am_fixture.contains(line), "the fixture dropped `{line}`");
+        }
+        let map = file("am/types/managed/openidm-map.d.ts");
+        for entry in [
+            "\"managed/__aic_fixture_user\": AicFixtureUser;",
+            "\"managed/__aic_fixture_device\": AicFixtureDevice;",
+        ] {
+            assert!(map.contains(entry), "generator dropped `{entry}`");
+            assert!(am_fixture.contains(entry), "the fixture dropped `{entry}`");
+        }
     }
 
     /// `scripts/type-tests/leaves/*/types` names the declarations each type-test

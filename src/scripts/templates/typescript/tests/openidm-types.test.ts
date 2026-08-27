@@ -76,7 +76,10 @@ export function typeTours(): void {
   }
 
   // --- a field-restricted read is projected to what was asked for ----------
-  const projected = openidm.read(`${FIXTURE}/${id}`, null, ["userName", "mail"]);
+  const projected = openidm.read(`${FIXTURE}/${id}`, null, [
+    "userName",
+    "mail",
+  ]);
   if (projected !== null) {
     // `_id`/`_rev` survive a projection: they come back whatever you ask for.
     const _id: string = projected._id;
@@ -217,6 +220,29 @@ export function typeTours(): void {
   // --- an unknown managed path rejects a field list -----------------------
   // @ts-expect-error nothing to check the list against; re-run workspace update
   openidm.read(`managed/no_such_object/${id}`, null, ["userName"]);
+
+  // --- ContentArg: a write takes a PARTIAL of the object ------------------
+  // The tours read exhaustively and, until now, never wrote — so `ContentArg`
+  // was the one conditional in this file's signatures that nothing exercised.
+  // It needs BOTH halves: a valid partial that must compile, and a misspelling
+  // that must not. With only the rejection, changing `ContentArg<T>` to `T`
+  // keeps the rejection and loses the partial.
+  openidm.create(FIXTURE, null, { userName: "bob", sn: "b" });
+  openidm.create(FIXTURE, null, {
+    // @ts-expect-error `userNam` is not a property of the object
+    userNam: "bob",
+  });
+
+  // `update` and `patch` take the RECORD path, and `create` the collection
+  // path — different branches of ManagedRecordOf/ManagedCollectionOf.
+  openidm.update(`${FIXTURE}/${id}`, null, { sn: "smith" });
+  openidm.update(`${FIXTURE}/${id}`, null, {
+    // @ts-expect-error same narrowing on the record path
+    surname: "smith",
+  });
+  openidm.patch(`${FIXTURE}/${id}`, null, [
+    { operation: "replace", field: "sn", value: "smith" },
+  ]);
 }
 
 test("the openidm type tours are declared but never executed", () => {

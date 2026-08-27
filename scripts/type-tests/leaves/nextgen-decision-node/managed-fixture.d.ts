@@ -1,5 +1,6 @@
 // Stand-in for the managed-object declarations `aic workspace update` writes
-// from a live tenant (`types/managed/<object>.d.ts` + `openidm-map.d.ts`).
+// from a live tenant (`types/managed/_shared.d.ts`, `<object>.d.ts` and
+// `openidm-map.d.ts`, all three collapsed into one file here).
 //
 // The type-test leaves need one because `interface ManagedObjects` ships EMPTY:
 // with nothing merged into it, every conditional in the `openidm` signatures
@@ -7,13 +8,16 @@
 // never instantiated. A leaf without this file parses `Projected`,
 // `SelectedMembers` and `ExpansionOf` and exercises none of them.
 //
-// A FIXTURE, not a copy of a tenant: it pins one relationship of each
-// cardinality and one optional scalar, which no particular tenant is obliged to
-// have. Mirrors the generated shape — `RelationshipRef` as `_shared.d.ts`
-// emits it, `_id`/`_rev` optional exactly as `render_object` leaves them,
-// because the same interface types an onCreate draft that has neither yet.
+// This is a test augmentation, NOT a subset of a shipped template — the Rust
+// subset assertion covers a leaf's `types` manifest and cannot see this file.
+// `managed_fixture_matches_what_the_generator_emits` is what ties it to
+// `managed_types.rs` instead, and it also holds the two copies identical.
 //
-// The name is deliberately un-tenant-like so it cannot collide with a real
+// TWO objects, with disjoint properties. One is not enough: a fixture with a
+// single managed object cannot tell correct path parsing in `ManagedRecordOf`
+// from "return the only type there is".
+//
+// Names are deliberately un-tenant-like so they cannot collide with a real
 // object and trip declaration merging.
 
 interface RelationshipRef {
@@ -23,13 +27,16 @@ interface RelationshipRef {
   _refProperties?: { _id?: string; _rev?: string } & Record<string, any>;
 }
 
+/** `_id`/`_rev` are optional exactly as `render_object` leaves them: the same
+ * interface types an onCreate draft, which has neither yet. `StoredRecord` is
+ * what puts them back on a read. */
 interface AicFixtureUser {
   _id?: string;
   _rev?: string;
   userName: string;
   sn: string;
   mail: string;
-  /** Optional in the schema, so a projection returns it as `string | null`. */
+  /** Schema-optional, so a projection returns it as `string | null`. */
   telephoneNumber?: string;
   /** Single-valued: unset comes back as `null`, never absent. */
   manager?: RelationshipRef;
@@ -37,6 +44,18 @@ interface AicFixtureUser {
   authzRoles?: RelationshipRef[];
 }
 
+/** Disjoint from AicFixtureUser on every property, so a record path that
+ * resolves to the wrong interface fails rather than silently agreeing. */
+interface AicFixtureDevice {
+  _id?: string;
+  _rev?: string;
+  deviceId: string;
+  model: string;
+  serialNumber?: string;
+  owner?: RelationshipRef;
+}
+
 interface ManagedObjects {
   "managed/__aic_fixture_user": AicFixtureUser;
+  "managed/__aic_fixture_device": AicFixtureDevice;
 }

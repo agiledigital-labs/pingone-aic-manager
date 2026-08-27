@@ -8,54 +8,67 @@ logger.error(msg, 1, 2);
 logger.info(`user ${realm} said {}`, "hi");
 
 // --- managed-record projection ---------------------------------------------
-// Every line drives a branch of Projected / SelectedMembers / ExpansionOf /
-// MetaMemberOf / ManagedRecordOf, which an empty `ManagedObjects` would leave
+// Every line drives a branch that an EMPTY `ManagedObjects` would leave
 // uninstantiated. Behaviour verified live in docs/api/10-managed-objects.md.
+//
+// Guarded reads are not enough on their own: `if (rec.manager) { … }` compiles
+// under a correct projection AND under a broken one. Each block below either
+// pins a shape by assignment or has a matching UNGUARDED case in reject.cjs.
 
-// A record read always carries _id and _rev, whatever the interface says.
+// StoredRecord: a read always carries `_id` and `_rev`, and they are strings —
+// not the optional ones the interface declares for an onCreate draft.
 var whole = openidm.read("managed/__aic_fixture_user/alice");
 if (whole) {
-  logger.info("read {} rev {}", whole._id, whole._rev);
-  logger.info("user {}", whole.userName);
+  /** @type {string} */
+  var wholeId = whole._id;
+  /** @type {string} */
+  var wholeRev = whole._rev;
+  logger.info("read {} rev {}", wholeId, wholeRev);
 }
 
-// A `fields` projection narrows the result and STILL keeps _id/_rev.
-var picked = openidm.read("managed/__aic_fixture_user/alice", undefined, [
+// ManagedRecordOf: a record path resolves to ITS OWN object, not to whichever
+// interface the map happens to hold.
+var device = openidm.read("managed/__aic_fixture_device/d-1");
+if (device) {
+  logger.info("device {} model {}", device.deviceId, device.model);
+}
+
+// SelectedMembers: a schema-optional property projects as a REQUIRED key whose
+// value MAY be null. The annotation pins requiredness; the reject file pins the
+// nullability, because `string` is assignable to `string | null` and this line
+// alone would survive losing the `| null`.
+var projected = openidm.read("managed/__aic_fixture_user/alice", undefined, [
   "userName",
   "telephoneNumber",
 ]);
-if (picked) {
-  logger.info("id {} name {}", picked._id, picked.userName);
-  // A schema-optional property comes back as a REQUIRED key holding null.
-  logger.info(
-    "phone {}",
-    picked.telephoneNumber === null ? "none" : picked.telephoneNumber
-  );
+if (projected) {
+  /** @type {string | null} */
+  var phone = projected.telephoneNumber;
+  /** @type {string} */
+  var required = projected.userName;
+  logger.info("{} {}", required, phone === null ? "none" : phone);
 }
 
-// A relationship path upgrades the parent key to the expansion envelope, and
-// cardinality decides the shape: single-valued is `expansion | null`.
-var expanded = openidm.read("managed/__aic_fixture_user/alice", undefined, [
-  "userName",
-  "manager/displayName",
-]);
-if (expanded && expanded.manager) {
-  logger.info("manager ref {}", expanded.manager._ref);
-}
-// Multi-valued is an ARRAY — `[]` when unset, never null.
-var multi = openidm.read("managed/__aic_fixture_user/alice", undefined, [
+// ExpansionOf, multi-valued: an array, never null, so `.length` needs no guard.
+var roles = openidm.read("managed/__aic_fixture_user/alice", undefined, [
   "authzRoles/name",
 ]);
-if (multi) {
-  logger.info("roles {}", multi.authzRoles.length);
+if (roles) {
+  logger.info("role count {}", roles.authzRoles.length);
 }
 
-// `_meta` is a relationship in its own right.
-var meta = openidm.read("managed/__aic_fixture_user/alice", undefined, [
+// MetaMemberOf: both spellings add the expansion.
+var metaPath = openidm.read("managed/__aic_fixture_user/alice", undefined, [
   "_meta/lastChanged",
 ]);
-if (meta && meta._meta) {
-  logger.info("meta {}", meta._meta["lastChanged"]);
+if (metaPath && metaPath._meta) {
+  logger.info("meta {}", metaPath._meta["lastChanged"]);
+}
+var metaBare = openidm.read("managed/__aic_fixture_user/alice", undefined, [
+  "_meta",
+]);
+if (metaBare && metaBare._meta) {
+  logger.info("meta bare {}", metaBare._meta._ref);
 }
 
 // `*` keeps the whole record.
@@ -64,70 +77,48 @@ if (star) {
   logger.info("star {}", star.sn);
 }
 
-// query projects every row the same way.
+// query projects every row the same way a read does.
 var rows = openidm.query(
   "managed/__aic_fixture_user",
   { _queryFilter: 'userName eq "alice"' },
   ["userName"]
 );
-for (var i = 0; i < rows.result.length; i++) {
-  // `noUncheckedIndexedAccess` is on, so the element needs binding and a guard
-  // before its projected members are readable.
-  var row = rows.result[i];
-  if (row) {
-    logger.info("row {} {}", row._id, row.userName);
-  }
+// `noUncheckedIndexedAccess` is on, so the element needs binding and a guard.
+var row = rows.result[0];
+if (row) {
+  /** @type {string} */
+  var rowId = row._id;
+  logger.info("row {} {}", rowId, row.userName);
 }
 
-// An unknown path keeps the loose fallback: `fields` is free-form, result any.
+// An unknown path keeps the loose fallback: free-form fields, `any` result.
 var other = openidm.read("internal/role/openidm-admin", undefined, ["name"]);
 logger.info("other {}", other);
 
-// Writes take a Partial of the object.
+// ContentArg: a write takes a PARTIAL of the object, on both the collection
+// path (create) and the record path (update/patch).
 openidm.create("managed/__aic_fixture_user", null, {
   userName: "bob",
   sn: "b",
 });
+openidm.update("managed/__aic_fixture_user/alice", null, { sn: "smith" });
 openidm.patch("managed/__aic_fixture_user/alice", null, [
   { operation: "replace", field: "sn", value: "smith" },
 ]);
+openidm.create("managed/__aic_fixture_device", null, { deviceId: "d-2" });
 
 // --- Lookup<T>: a Java collection takes a JS string literal ------------------
 // The other small conditional in the ambient declarations. Every family reaches
 // a Java collection with a plain literal — `scopes.contains("openid")` — and
 // typing the parameter as the collection's own element type rejected all of
 // them. The widening has to stay conditional: `any` would take anything.
-
-var headers = requestHeaders["content-type"];
-if (headers) {
-  logger.info("ct {}", String(headers[0]));
-}
-var params = requestParameters["realm"];
-if (params && params.includes("alpha")) {
+//
+// It has to go through `.get(...)`, whose declared return is
+// `JavaArray<JavaString> | null`. Indexing `requestParameters["realm"]` is
+// implicit `any` here (`RequestMap` has no index signature and `noImplicitAny`
+// is false), so an indexed version of this test passes whatever `Lookup<T>`
+// does — it touches the conditional without pinning it.
+var realmParam = requestParameters.get("realm");
+if (realmParam && realmParam.includes("alpha")) {
   logger.info("realm param present");
-}
-
-// --- discriminating shape checks -------------------------------------------
-// The guards above compile under a CORRECT projection and under a broken one,
-// so on their own they prove nothing. These lines pin the exact shapes, and
-// each fails if the corresponding property is lost:
-
-// A schema-optional property projects as a REQUIRED key holding `string | null`
-// — not an optional key, and not non-null. `Pick` was wrong here twice.
-var projected = openidm.read("managed/__aic_fixture_user/alice", undefined, [
-  "telephoneNumber",
-]);
-if (projected) {
-  /** @type {string | null} */
-  var phone = projected.telephoneNumber;
-  logger.info("phone {}", phone);
-}
-
-// A MULTI-valued relationship is an array and is never null, so `.length` needs
-// no guard. If cardinality handling collapses, this line stops compiling.
-var roles = openidm.read("managed/__aic_fixture_user/alice", undefined, [
-  "authzRoles/name",
-]);
-if (roles) {
-  logger.info("role count {}", roles.authzRoles.length);
 }

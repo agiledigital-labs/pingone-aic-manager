@@ -118,10 +118,14 @@ jobs:
       # `{}`-placeholder arity check, the managed-record `fields` projection —
       # and no cargo gate compiles any of it: the Rust tests check the strings
       # that emit those files, never what tsc makes of them.
+      # 22, not 20: the TypeScript endpoint project declares
+      # `"engines": { "node": "^22.18.0 || >=23.6.0" }`, and installing it under
+      # an unsupported runtime is not a faithful run of the thing being gated
+      # even while npm only warns about it.
       - name: Install Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install TypeScript
         run: npm install --no-save typescript@5
