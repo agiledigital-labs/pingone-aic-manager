@@ -352,6 +352,69 @@ and it is the acting client's copy that counts. `resource` is ignored even with
 the flag on: there is no RFC 8707 resource-indicator support in this schema.
 See [Setting the `aud` claim](#setting-the-aud-claim--the-audience-whitelist).
 
+### `requested_token_type` is the one extra parameter AM rejects
+
+Everything else the RFC and `draft-ietf-oauth-transaction-tokens-11` add to the
+request is accepted. `requested_token_type` is not, unless it names a token type
+AM actually issues — and the failure is the same opaque
+`invalid_request: Invalid token exchange.` as every other misconfiguration.
+
+Bisected 2026-08-28 against a throwaway exchange pair in `bravo`, one parameter
+at a time, with a working vanilla exchange as the control:
+
+| Added to a working exchange | Result |
+| --- | --- |
+| *(control — nothing extra)* | 200 |
+| `requested_token_type=…:token-type:access_token` | 200 |
+| `requested_token_type=…:token-type:txn_token` | **`invalid_request`** |
+| `audience=acme-internal` | 200 (and ignored — see above) |
+| `request_details={…}` and `request_context={…}` | 200 |
+
+So a transaction-token-shaped exchange can carry the draft's own parameters, but
+must ask for an access token. The response then says
+`issued_token_type: …:token-type:access_token` and `token_type: "Bearer"`,
+neither of which is settable.
+
+### Arbitrary request parameters reach the token-modification script
+
+`request_details` and `request_context` — or anything else you post — arrive in
+the access-token-modification script as
+`requestProperties.requestParams.<name>`, each one a **single-element array of
+strings**, not the parsed JSON:
+
+```javascript
+var raw = requestProperties.requestParams.request_details; // ['{"cost_cents":45000}']
+var proposed = JSON.parse(String(raw[0]));
+```
+
+On an exchange the full parameter set the script sees is `grant_type`, `scope`,
+`subject_token`, `subject_token_type`, plus whatever you added.
+
+### `setField("aud", …)` beats the audience whitelist
+
+The `audience` request parameter needs
+`acceptAudienceParametersInTokenExchangeRequests` and a whitelist, and even then
+only accepts registered values. An access-token-modification script can simply
+overwrite the claim:
+
+```javascript
+accessToken.setField("aud", "acme-internal");
+```
+
+Verified 2026-08-28: the emitted JWT carried `"aud": "acme-internal"` with the
+realm flag off and no whitelist entry. That is the shortest path to an `aud`
+that is a trust domain rather than a client id — at the cost of the audience no
+longer being anything AM itself will enforce.
+
+### The JWT header is not scriptable
+
+`typ` is always `"JWT"`. The context that would change it,
+`OAUTH2_SCRIPTED_JWT_ISSUER[_NEXT_GEN]`, has schema metadata but **no
+configuration hook anywhere in AIC** — see
+[`12-script-bindings-matrix.md`](12-script-bindings-matrix.md). A profile that
+requires its own `typ` (`txntoken+jwt`, `at+jwt`) cannot be met by AM-issued
+tokens.
+
 ### The issued token's lifetime is the acting client's
 
 There is no per-exchange lifetime parameter — see
@@ -359,6 +422,16 @@ There is no per-exchange lifetime parameter — see
 a capability token with `expires_in: 59` from a 900s identity token.
 
 ## Verified against
+
+- Date: 2026-08-28 — realm `bravo`, throwaway `ZZProbe_sub` / `ZZProbe_atm`
+  client pair plus two throwaway scripts, all deleted afterwards.
+- Calls: one exchange per row of the `requested_token_type` table above, each
+  against the same working control, so the rejection is attributable to that
+  one parameter. Plus an access-token-modification script that dumped
+  `requestProperties.requestParams` on the exchange, set `aud` by `setField`
+  with the realm audience flag off, and emitted a nested `tctx` object with a
+  boxed integer. `capability-tokens`' `chain.sh` was re-run afterwards to
+  confirm the realm was left as it was found.
 
 - Sandbox tenant, realms **`alpha`** and **`bravo`**, **2026-08-27**,
   service-account bearer. AM reports `9.0.0-SNAPSHOT` (build 2026-August-14).

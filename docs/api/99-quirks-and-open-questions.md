@@ -1132,3 +1132,36 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   Also: stock resource types share UUIDs across realms while holding different
   content (`URL` is the same uuid in `alpha` and `bravo`, with 210 vs 475
   patterns). A matching uuid is not evidence of a shared object.
+
+## 2026-08-28 — `setField` integer boxing only works one level down
+
+`12-script-bindings-matrix.md` advised boxing with `java.lang.Integer.valueOf`
+to stop `accessToken.setField` coercing a number to a double. Probing all four
+cells showed that is only true **inside a nested object**: at top level the
+boxed value is coerced to `45000.0` exactly like the plain one. The doc has
+been corrected with the 2x2 table.
+
+Two things made the original claim easy to get wrong and are worth knowing.
+`java.lang.Integer.valueOf(n)` presents to Rhino as an ordinary JS number —
+calling `getClass()` on it is a `TypeError` — so there is no way to check the
+boxing worked except by reading the claim out of the emitted JWT. And the rest
+of `java.*` is not reachable: `java.lang.Long.valueOf` and
+`new java.math.BigInteger(…)` both fail with `[JavaPackage …] is not a
+function`, so `Integer` is the only boxing type on offer.
+
+## 2026-08-28 — the token exchange rejects exactly one extra parameter
+
+Bisecting the RFC 8693 and `draft-ietf-oauth-transaction-tokens-11` parameters
+against a working control exchange: `audience`, `request_details` and
+`request_context` are all accepted, and only `requested_token_type` naming a
+type AM does not issue (`…:token-type:txn_token`) fails. It fails as
+`invalid_request: Invalid token exchange.` — the same opaque message as a
+missing `may_act`, so without the control it reads as "the exchange is broken"
+rather than "that one parameter is unsupported". Recorded in
+`22-token-exchange.md`.
+
+Corollary worth its own line: an access-token-modification script can set
+`aud` to anything with `setField`, with `acceptAudienceParametersInTokenExchangeRequests`
+off and no whitelist entry — so the audience whitelist constrains the *request
+parameter*, not the claim.
+
