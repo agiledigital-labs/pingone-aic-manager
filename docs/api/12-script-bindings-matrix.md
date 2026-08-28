@@ -808,9 +808,35 @@ would have gotten wrong:
   `Client-side token's ID cannot be changed`; on a CTS client it returns the new
   id. This is the one difference the flavour control DID find, which is what
   makes the three preceding rows trustworthy.
-- **`setField` coerces numbers to doubles.** `setField("n", 42)` reads back
-  `42.0`, the same coercion `httpClient` applies to request bodies. Box with
-  `java.lang.Integer.valueOf`.
+- **`setField` coerces numbers to doubles — and boxing only helps one level
+  down.** `setField("n", 42)` reads back `42.0`, the same coercion `httpClient`
+  applies to request bodies. This file used to say "box with
+  `java.lang.Integer.valueOf`"; that is only half true, corrected 2026-08-28
+  after probing all four cells:
+
+  |                             | top-level `setField`  | inside a nested object |
+  | --------------------------- | --------------------- | ---------------------- |
+  | plain JS number             | `45000.0`             | `45000.0`              |
+  | `java.lang.Integer.valueOf` | `45000.0`             | **`45000`**            |
+
+  So an integer claim is reachable **only** as a boxed value inside an object:
+  `setField("tctx", { cost_cents: java.lang.Integer.valueOf(45000) })` emits
+  `45000`, while the same call at top level does not. If the claim has to be a
+  bare integer, there is no way — send a string.
+
+  Two adjacent traps found in the same run. `java.lang.Integer.valueOf(n)`
+  returns something Rhino presents as a **plain JS number** — `getClass` on the
+  result is `TypeError: Cannot find function getClass in object 45000` — so
+  there is no way to confirm the boxing worked except by reading the emitted
+  claim. And the wider `java.*` surface is not reachable at all:
+  `java.lang.Long.valueOf` and `new java.math.BigInteger(…)` both fail with
+  `[JavaPackage …] is not a function, it is object`, so `Integer` is the only
+  boxing type available.
+
+- **`setField` takes nested objects, and they survive to the JWT.** A claim set
+  to `{a: 1, nested: {deeper: true}}` arrives in the token with its structure
+  intact. That is what makes a `tctx`/`rctx`-shaped token possible from a
+  script.
 
 Absent (`typeof undefined`, or a call that threw): `getType`, `getValue`,
 `getCreationTime`, `getSubject`, `getExtraData`, `setExtraData`, `getIssuer`,
