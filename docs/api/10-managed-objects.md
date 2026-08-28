@@ -801,6 +801,59 @@ error. Do not offer `ne` or `in` in script-template query validation.
 
 ## Quirks
 
+### A property added to a Ping-shipped object must be named `custom_*` (verified 2026-08-28)
+
+`bravo_user` ships with 70 properties, and AIC refuses to let you add a
+71st under an arbitrary name:
+
+```
+400 Bad Request
+Request content includes unprefixed attributes for bravo_user: ["myClients"]
+```
+
+The message says "unprefixed" and means one specific prefix. **`custom_` is the
+one that works** — and the realm prefix does *not*: `bravo_zzprobeClients` is
+rejected with the same error as the bare name, which makes the message
+actively misleading if you guess from the object's own name. `custom_*`
+properties are **not indexed**, so filter on them at your peril; expanding one
+by `_id` (below) is unaffected.
+
+This matters most for a **reverse relationship**: the reverse property lives on
+the *target*, so a custom object pointing at `bravo_user` can only declare
+`reversePropertyName: "custom_<something>"`.
+
+```bash
+aic managed relationship set bravo_client.accountManager \
+    --target bravo_user --forward one --reverse many \
+    --reverse-key custom_clients
+```
+
+### Two traps around a has-many reverse (verified 2026-08-28)
+
+Both found while proving out an in-script relationship read; both are silent.
+
+**A relationship created before the reverse property exists is not
+retro-linked.** Add the reverse first, then the records. A link written while
+the source declared `reverseRelationship: false` stays invisible from the target
+side even after the reverse is added — the target read simply omits it, with no
+error. Consistent with "no server-side cascade" above, but the failure mode is
+missing data rather than a rejected write.
+
+**After a `config/managed` write, a relationship expansion through AM's
+`openidm` script binding returns nothing for a few seconds.** Not an error —
+an empty list. A token-modification script that reads a user's roles or clients
+to build a claim will happily mint a token with that claim **empty**, and every
+downstream authorization decision then denies for no visible reason.
+Recovered on its own within ~15s. This is the read-your-writes problem in
+[Q14](99-quirks-and-open-questions.md) pointed at a consumer that cannot see it:
+the REST API answered correctly throughout the same window, so the usual
+`GET`-until-it-appears check does not detect it.
+
+The practical rule: **after Terraform touches `config/managed`, wait before
+exercising anything whose authorization depends on a relationship-derived
+claim** — or have the script treat an empty expansion as a failure rather than
+as "this user has none".
+
 ### A managed **record** creates with `PUT` and then refuses one (verified 2026-08-25)
 
 `PUT /openidm/managed/{obj}/{id}` with a caller-chosen 36-char UUID creates the
@@ -876,6 +929,20 @@ on create, or when actually rotating it.
   script calls as well as REST ones.
 
 ## Verified against
+
+- Date: 2026-08-28 — realm `bravo`, throwaway `bravo_zzprobeClient` type with a
+  has-one `accountManager` to `bravo_user` and a has-many `custom_zzprobeClients`
+  reverse, three records, all deleted afterwards.
+- Calls: `aic managed object create` / `relationship set` / `field add`; the
+  reverse-key rejection reproduced with both the bare name and the realm prefix
+  before `custom_` was accepted; three records created by
+  `POST ?_action=create` (201 each) and read back through the reverse in one
+  `GET managed/bravo_user/{id}?_fields=custom_zzprobeClients/*` (3 of 3). The
+  same read then run from inside an `OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN`
+  script on a throwaway client, which returned all three into a token claim.
+  `capability-tokens`' `chain.sh` was run before and after; the run immediately
+  after the schema deletes returned empty role claims and the next run, ~15s
+  later, was correct — which is the staleness note above.
 
 - Tenant: `<your-tenant>.forgeblocks.com`
 - Date: 2026-08-25 (managed **records** in `bravo`, writes: a repeat `PUT` to an

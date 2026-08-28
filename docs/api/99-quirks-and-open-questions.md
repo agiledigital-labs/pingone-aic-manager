@@ -1165,3 +1165,34 @@ Corollary worth its own line: an access-token-modification script can set
 off and no whitelist entry — so the audience whitelist constrains the *request
 parameter*, not the claim.
 
+## 2026-08-28 — a stale relationship expansion mints a token with an empty claim
+
+The known read-your-writes lag on `config/managed` has a consumer that cannot
+detect it. For a few seconds after a managed-config write, a relationship
+expansion through AM's `openidm` script binding returns an **empty list** rather
+than an error, while the REST API answers correctly throughout the same window.
+
+A token-modification script that builds a claim from a user's roles or
+relationships therefore mints a token with that claim empty, and every
+authorization decision downstream denies with no visible cause. Observed
+directly: `capability-tokens`' `chain.sh` returned `demoRoles: []` and denied
+all three capabilities immediately after two managed-type deletes, then ran
+correctly ~15 seconds later with nothing changed in between.
+
+The usual mitigation — `GET` until the change appears — does not work here,
+because REST was never wrong. Either wait after a `config/managed` apply, or
+have the script treat an empty expansion as a failure rather than as "this user
+has none". Recorded in `10-managed-objects.md`.
+
+## 2026-08-28 — custom properties on a Ping-shipped managed object need `custom_`
+
+Adding a property to `bravo_user` fails with `Request content includes
+unprefixed attributes for bravo_user: ["…"]`. Only `custom_` satisfies it; the
+realm prefix (`bravo_`) is rejected with the identical message, which makes the
+error misleading if you infer the expected prefix from the object's own name.
+`custom_*` properties are not indexed.
+
+This is the binding constraint on **reverse relationships** into a shipped
+object: the reverse property lives on the target, so a custom type pointing at
+`bravo_user` can only name its reverse `custom_<something>`.
+
