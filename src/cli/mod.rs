@@ -31,6 +31,23 @@ use crate::config::{self, ProjectConfig};
 use crate::vault::auth;
 use crate::{Error, Result};
 
+/// The trailing section of `aic --help`.
+///
+/// Two of these are resolved BEFORE clap parses, so they are not discoverable
+/// from a flag's own `[env: …]` annotation alone: `AIC_PROJECT` roots the
+/// process, and `AIC_NO_PROMPT` is applied by `apply_no_prompt_env` after
+/// parsing rather than by clap. Listing them here is the only place a reader
+/// sees the whole set.
+const AFTER_HELP: &str = "\
+Environment:
+  AIC_PROJECT     Project directory to root at; same as --project, which wins.
+  AIC_NO_PROMPT   Set to 1/true/yes to imply --no-prompt.
+  AIC_EDIT_LOG    Log level for .aic/agent.log (default: info).
+
+aic roots itself at the nearest ancestor directory containing .aic/, so it works
+from any subdirectory of a project. Use --project (or AIC_PROJECT) to run it
+from somewhere else entirely.";
+
 #[derive(Parser, Debug)]
 #[command(
     name = "aic",
@@ -38,8 +55,22 @@ use crate::{Error, Result};
     about = "AIC tenant TUI + CLI",
     long_about = None,
     disable_help_subcommand = true,
+    after_help = AFTER_HELP,
 )]
 pub struct Cli {
+    /// Run as if aic had started in <DIR> instead of the current directory.
+    ///
+    /// For callers that cannot choose their working directory: a script in a
+    /// sibling repo, an editor task, a CI step. It stands in for the cwd, so
+    /// the walk up to the project root and the `workspace/<tenant>/` tenant
+    /// inference both start there. Pointing it outside a project is an error,
+    /// not a fallback to the cwd — a typo must not silently act on a different
+    /// tenant.
+    ///
+    /// Also settable as AIC_PROJECT; this flag wins.
+    #[arg(long, value_name = "DIR", global = true)]
+    pub project: Option<PathBuf>,
+
     /// Disable all interactive prompts and fail when input is required.
     #[arg(long, global = true)]
     pub no_prompt: bool,
@@ -536,10 +567,12 @@ fn unknown_setting(key: &str) -> Error {
 /// Decide where to root the process, without touching it — the testable half
 /// of [`bootstrap_project_root`].
 ///
-/// `explicit` is `$AIC_PROJECT`. It stands in for the working directory, for
-/// callers that cannot set one: a script in a sibling repo, an editor task, a
-/// CI step. Everything else behaves as if the user had `cd`'d there, including
-/// the walk up to the project root and the `workspace/<tenant>/` inference.
+/// `explicit` is `--project` or `$AIC_PROJECT`, whichever was given (`source`
+/// names which, so the error says the thing the caller actually typed). It
+/// stands in for the working directory, for callers that cannot set one: a
+/// script in a sibling repo, an editor task, a CI step. Everything else behaves
+/// as if the user had `cd`'d there, including the walk up to the project root
+/// and the `workspace/<tenant>/` inference.
 ///
 /// Returns the project root to chdir to, paired with the directory the search
 /// started from (which the workspace-context inference needs). `Ok(None)` means
@@ -550,6 +583,7 @@ fn unknown_setting(key: &str) -> Error {
 /// refusing.
 fn resolve_project_root(
     explicit: Option<&std::ffi::OsStr>,
+    source: &str,
     cwd: &Path,
 ) -> Result<Option<(PathBuf, PathBuf)>> {
     let Some(explicit) = explicit.filter(|v| !v.is_empty()) else {
@@ -559,14 +593,14 @@ fn resolve_project_root(
     let start = PathBuf::from(explicit);
     if !start.is_dir() {
         return Err(Error::Config(format!(
-            "AIC_PROJECT={} is not a directory",
+            "{source}{} is not a directory",
             start.display()
         )));
     }
     match config::find_project_root(&start) {
         Some(root) => Ok(Some((root, start))),
         None => Err(Error::Config(format!(
-            "AIC_PROJECT={} is not inside a project: no .aic/ there or in any parent",
+            "{source}{} is not inside a project: no .aic/ there or in any parent",
             start.display()
         ))),
     }
@@ -578,12 +612,76 @@ fn resolve_project_root(
 /// `workspace/<tenant>/<realm>/` path, then chdir to the root so every
 /// project-relative path (config, keystore, agent socket) resolves the same no
 /// matter which subdirectory the command was invoked from.
+/// Pull `--project <DIR>` (or `--project=<DIR>`) out of raw argv.
+///
+/// It cannot be read off the parsed [`Cli`], even though it is declared there:
+/// [`bootstrap_project_root`] must chdir BEFORE clap parses, because
+/// [`parse_with_defaults`] bakes the resolved tenant into every `--tenant`
+/// default and resolving it reads the project's own config. So the flag is
+/// declared on `Cli` for `--help` and for rejecting a misspelling, and its
+/// value is taken from here.
+///
+/// `global = true` means the flag is also accepted after a subcommand, so the
+/// whole of argv is scanned rather than just the leading options. A bare `--`
+/// ends the scan: past it, `--project` is an operand belonging to a subcommand,
+/// not this flag.
+///
+/// It deliberately does NOT model which other flags take values, so a literal
+/// `--project` passed as some other option's value (`--message --project`)
+/// would be picked up here. clap rejects a value that looks like a flag anyway,
+/// so the invocation fails either way; the only cost is that the rooting error
+/// arrives before clap's, which is the same ordering `AIC_PROJECT` already has.
+fn project_flag(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<std::ffi::OsString> {
+    let mut args = args.into_iter().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            return None;
+        }
+        let Some(text) = arg.to_str() else { continue };
+        if let Some(value) = text.strip_prefix("--project=") {
+            return Some(std::ffi::OsString::from(value));
+        }
+        if text == "--project" {
+            // A missing value is clap's error to report, not ours: returning
+            // None here lets parsing reach it and print the real diagnostic.
+            return args.next();
+        }
+    }
+    None
+}
+
+/// Did the caller ask for help or the version, rather than for work to be done?
+///
+/// Same argv scan and same `--` rule as [`project_flag`]; clap owns both `-h`
+/// and `-V` globally, so no subcommand can mean something else by them.
+fn wants_help_or_version(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    args.into_iter()
+        .skip(1)
+        .take_while(|arg| arg != "--")
+        .any(|arg| matches!(arg.to_str(), Some("-h" | "--help" | "-V" | "--version")))
+}
+
 pub fn bootstrap_project_root() -> Result<()> {
     let Ok(cwd) = std::env::current_dir() else {
         return Ok(());
     };
-    let explicit = std::env::var_os("AIC_PROJECT");
-    let Some((root, start)) = resolve_project_root(explicit.as_deref(), &cwd)? else {
+    // The flag wins over the variable: an explicit argument is the more
+    // specific statement of intent, and the one a reader of the command line
+    // can see.
+    let (explicit, source) = match project_flag(std::env::args_os()) {
+        Some(flag) => (Some(flag), "--project "),
+        None => (std::env::var_os("AIC_PROJECT"), "AIC_PROJECT="),
+    };
+    let resolved = match resolve_project_root(explicit.as_deref(), source, &cwd) {
+        // `--help` is what you reach for when you have just got a flag wrong,
+        // so it must print even when the flag it would explain is the broken
+        // one. Rooting is still ATTEMPTED — a help page for a valid project
+        // carries that project's `--tenant` default, which is most of why it is
+        // worth reading — and only the failure is dropped.
+        Err(_) if wants_help_or_version(std::env::args_os()) => return Ok(()),
+        other => other?,
+    };
+    let Some((root, start)) = resolved else {
         return Ok(());
     };
     config::set_workspace_context(config::detect_workspace_context(&root, &start));
@@ -1367,7 +1465,122 @@ mod tests {
     }
 
     fn resolved(explicit: Option<&Path>, cwd: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
-        resolve_project_root(explicit.map(|p| p.as_os_str()), cwd)
+        resolve_project_root(explicit.map(|p| p.as_os_str()), "AIC_PROJECT=", cwd)
+    }
+
+    fn flag(args: &[&str]) -> Option<String> {
+        // argv[0] is the program name, which the scan skips.
+        let argv = std::iter::once("aic".to_string())
+            .chain(args.iter().map(|a| a.to_string()))
+            .map(std::ffi::OsString::from);
+        project_flag(argv).map(|v| v.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn the_project_flag_is_read_in_both_spellings() {
+        assert_eq!(flag(&["--project", "/tmp/x"]).as_deref(), Some("/tmp/x"));
+        assert_eq!(flag(&["--project=/tmp/x"]).as_deref(), Some("/tmp/x"));
+    }
+
+    #[test]
+    fn the_project_flag_is_found_after_a_subcommand() {
+        // It is `global = true`, so this is a real invocation and not a
+        // curiosity: scanning only the leading options would miss it and the
+        // command would silently run against the wrong project.
+        assert_eq!(
+            flag(&["esv", "list", "--project", "/tmp/x"]).as_deref(),
+            Some("/tmp/x")
+        );
+        assert_eq!(
+            flag(&["script", "sync", "--project=/tmp/x", "--dry-run"]).as_deref(),
+            Some("/tmp/x")
+        );
+    }
+
+    #[test]
+    fn the_project_flag_is_not_confused_by_a_lookalike() {
+        // Prefix and suffix neighbours must not match. `--project-dir` in
+        // particular would otherwise be read as the flag plus a value.
+        assert_eq!(flag(&["--project-dir", "/tmp/x"]), None);
+        assert_eq!(flag(&["--no-project", "/tmp/x"]), None);
+        assert_eq!(flag(&["--projects", "/tmp/x"]), None);
+    }
+
+    #[test]
+    fn the_project_flag_stops_at_a_bare_double_dash() {
+        // Past `--` it is an operand for a subcommand, not this flag.
+        assert_eq!(flag(&["script", "--", "--project", "/tmp/x"]), None);
+    }
+
+    #[test]
+    fn a_project_flag_with_no_value_is_left_for_clap_to_report() {
+        // Returning None lets parsing continue and produce clap's own "a value
+        // is required" diagnostic, instead of a rooting error about a directory
+        // the user never named.
+        assert_eq!(flag(&["--project"]), None);
+    }
+
+    #[test]
+    fn the_project_flag_error_names_the_flag_and_the_variable_names_the_variable() {
+        // The message has to quote the thing the caller actually typed.
+        let missing = std::env::temp_dir().join(format!("aic-absent-{}", uuid::Uuid::new_v4()));
+        let from_flag =
+            resolve_project_root(Some(missing.as_os_str()), "--project ", &project_tree())
+                .unwrap_err()
+                .to_string();
+        assert!(from_flag.contains("--project "), "unhelpful: {from_flag}");
+        assert!(
+            !from_flag.contains("AIC_PROJECT"),
+            "misleading: {from_flag}"
+        );
+
+        let from_env = resolve_project_root(Some(missing.as_os_str()), "AIC_PROJECT=", &bare_dir())
+            .unwrap_err()
+            .to_string();
+        assert!(from_env.contains("AIC_PROJECT="), "unhelpful: {from_env}");
+    }
+
+    #[test]
+    fn help_and_version_survive_a_broken_project_flag() {
+        fn wants(args: &[&str]) -> bool {
+            let argv = std::iter::once("aic".to_string())
+                .chain(args.iter().map(|a| a.to_string()))
+                .map(std::ffi::OsString::from);
+            wants_help_or_version(argv)
+        }
+        for args in [
+            &["--help"][..],
+            &["-h"][..],
+            &["--version"][..],
+            &["-V"][..],
+            &["--project", "/nope", "--help"][..],
+            &["esv", "list", "-h"][..],
+        ] {
+            assert!(wants(args), "help not detected in {args:?}");
+        }
+        // Real work, even where a lookalike appears.
+        for args in [&["ctx", "list"][..], &["script", "--", "--help"][..]] {
+            assert!(!wants(args), "help wrongly detected in {args:?}");
+        }
+    }
+
+    #[test]
+    fn the_help_names_every_environment_variable_the_binary_reads() {
+        // `--project` and `--no-prompt` are both resolved outside clap, so a
+        // flag's own annotation cannot document them and this block is the only
+        // place the set appears. It went undiscovered for exactly that reason.
+        for var in ["AIC_PROJECT", "AIC_NO_PROMPT", "AIC_EDIT_LOG"] {
+            assert!(
+                AFTER_HELP.contains(var),
+                "`aic --help` never mentions {var}"
+            );
+        }
+        let rendered = Cli::command().render_help().to_string();
+        assert!(rendered.contains("--project"), "--project is not in --help");
+        assert!(
+            rendered.contains("AIC_PROJECT"),
+            "AIC_PROJECT is not in --help"
+        );
     }
 
     #[test]

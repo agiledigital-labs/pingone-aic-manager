@@ -215,7 +215,7 @@ fn ensure_project_for_agent(dir: &Path) -> Result<()> {
     }
     Err(Error::Config(format!(
         "no project here ({} does not exist), so there is no agent to start; \
-         run aic from a project directory, or set AIC_PROJECT=<dir>",
+         run aic from a project directory, or pass --project <dir>",
         dir.display()
     )))
 }
@@ -273,7 +273,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("no project here"), "unhelpful error: {msg}");
         assert!(
-            msg.contains("AIC_PROJECT"),
+            msg.contains("--project"),
             "the error should name the way out: {msg}"
         );
         assert!(
