@@ -2,9 +2,10 @@
 # release.sh — bump, commit, annotated-tag, push, and publish a GitHub release.
 #
 # Usage:
-#   scripts/release.sh <version> <notes-file>
+#   scripts/release.sh <version> <notes-file> [--dry-run]
 #   scripts/release.sh 0.3.1 /tmp/notes.md
 #   scripts/release.sh 0.4.0 /tmp/notes.md --dry-run
+#   scripts/release.sh --dry-run 0.4.0 /tmp/notes.md   # flags go anywhere
 #
 # <version> is bare (no leading v). <notes-file> is markdown; it becomes both
 # the annotated tag message and the GitHub release body.
@@ -27,12 +28,53 @@ die() {
   exit 1
 }
 
-VERSION="${1:-}"
-NOTES="${2:-}"
-DRY_RUN=false
-[ "${3:-}" = "--dry-run" ] && DRY_RUN=true
+USAGE="usage: scripts/release.sh <version> <notes-file> [--dry-run]"
 
-[ -n "$VERSION" ] && [ -n "$NOTES" ] || die "usage: scripts/release.sh <version> <notes-file> [--dry-run]"
+# Flags are accepted in any position; positionals keep their order. An
+# unrecognised argument is a hard error — this used to test only $3 against the
+# literal string, so a typo'd --dry-run was silently ignored and published a
+# real release.
+VERSION=""
+NOTES=""
+DRY_RUN=false
+positional=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=true ;;
+    -h | --help)
+      echo "$USAGE"
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*) die "unknown flag '$1'
+$USAGE" ;;
+    *)
+      positional=$((positional + 1))
+      case $positional in
+        1) VERSION="$1" ;;
+        2) NOTES="$1" ;;
+        *) die "unexpected argument '$1'
+$USAGE" ;;
+      esac
+      ;;
+  esac
+  shift
+done
+# Anything after `--` is positional, whatever it looks like.
+for arg in "$@"; do
+  positional=$((positional + 1))
+  case $positional in
+    1) VERSION="$arg" ;;
+    2) NOTES="$arg" ;;
+    *) die "unexpected argument '$arg'
+$USAGE" ;;
+  esac
+done
+
+[ -n "$VERSION" ] && [ -n "$NOTES" ] || die "$USAGE"
 
 # --- validate (no mutations past this block) ---------------------------------
 
