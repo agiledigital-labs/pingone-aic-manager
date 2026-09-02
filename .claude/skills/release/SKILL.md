@@ -84,6 +84,13 @@ indistinguishable from a one-line fix unless the notes say otherwise.
 
 ## Gotchas
 
+- **`release.sh` is live from the first argument.** There is no confirmation
+  prompt: given a clean tree and a valid version it bumps, tags, pushes and
+  publishes. Never point it at the repo to test its behaviour — a case that
+  omits `--dry-run` publishes. If you must exercise its argument handling, pass
+  a nonexistent notes path so validation stops it regardless (learned the hard
+  way on 2026-09-02, which published an unintended v0.10.2).
+
 - `v0.1.0`–`v0.2.1` are **lightweight** tags with **empty** GitHub release
   bodies. Leave them alone — retagging published refs breaks anyone who has
   fetched them. `v0.3.0` onward are annotated with written notes.
