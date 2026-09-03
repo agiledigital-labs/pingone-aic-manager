@@ -24,7 +24,7 @@ send `Accept-API-Version: protocol=2.1,resource=1.0`.
 | List     | `GET`    | `/am/json{realm-path}/realm-config/agents/OAuth2Client?_queryFilter=true` | Use `_fields=_id` for id-only lists; pass a large `_pageSize` and follow non-empty `pagedResultsCookie` with `_pagedResultsCookie`. |
 | Read     | `GET`    | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}`              | `id` is the client_id string.                                                                                                       |
 | Template | `POST`   | `/am/json{realm-path}/realm-config/agents/OAuth2Client?_action=template`  | Body `{}`. Returns all tenant-default client fields in six config groups.                                                           |
-| Schema   | `POST`   | `/am/json{realm-path}/realm-config/agents/OAuth2Client?_action=schema`    | Body `{}`. Live enum choices are under field `enum` or array-field `items.enum`.                                                     |
+| Schema   | `POST`   | `/am/json{realm-path}/realm-config/agents/OAuth2Client?_action=schema`    | Body `{}`. Live enum choices are under field `enum` or array-field `items.enum`.                                                    |
 | Upsert   | `PUT`    | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}`              | See "Update quirks" below.                                                                                                          |
 | Delete   | `DELETE` | `/am/json{realm-path}/realm-config/agents/OAuth2Client/{id}`              |                                                                                                                                     |
 
@@ -101,17 +101,16 @@ The 2026-08-06 template has 115 fields across six groups:
 
 ### Create defaults
 
-`aic oauth create` writes
-`advancedOAuth2ClientConfig.tokenEndpointAuthMethod` explicitly as
-`client_secret_post`; it does not inherit the value from the live template,
-which defaults to `client_secret_basic`. The explicit value is chosen to match
-`aic auth`'s default so the two commands agree without a flag — not because AM
-requires the two to match (it was observed accepting either; see
-[17](17-jwt-bearer-user-tokens.md)). `--token-endpoint-auth-method <value>` overrides the
-create default and is checked against the live schema when that field exposes
-an enum. A `--from` seed that supplies the field wins over the create default;
-an explicit flag still overrides the seed, consistently with the other create
-flags.
+`aic oauth create` writes `advancedOAuth2ClientConfig.tokenEndpointAuthMethod`
+explicitly as `client_secret_post`; it does not inherit the value from the live
+template, which defaults to `client_secret_basic`. The explicit value is chosen
+to match `aic auth`'s default so the two commands agree without a flag — not
+because AM requires the two to match (it was observed accepting either; see
+[17](17-jwt-bearer-user-tokens.md)). `--token-endpoint-auth-method <value>`
+overrides the create default and is checked against the live schema when that
+field exposes an enum. A `--from` seed that supplies the field wins over the
+create default; an explicit flag still overrides the seed, consistently with the
+other create flags.
 
 ## OIDC provider service shape (real, from sandbox)
 
@@ -174,7 +173,7 @@ required** or the whole block is ignored:
   the effect straight out of the access-token JWT.
 - **The override block is all-or-nothing, and that has teeth (2026-08-25).**
   Flipping `providerOverridesEnabled` to `true` stops the client inheriting the
-  realm for *every* field in the block, not just the ones you set — so all the
+  realm for _every_ field in the block, not just the ones you set — so all the
   block's own defaults take effect at once. Two bite immediately:
   `statelessTokensEnabled` defaults to **`false`**, silently turning a client
   that was issuing stateless JWTs into one issuing opaque tokens; and
@@ -204,15 +203,15 @@ When mutating an OAuth2 client, before sending the `PUT` body:
    echo behavior is version-dependent.
 3. **Use plain `PUT` for create and update.** No `If-Match` or `If-None-Match`
    header is needed. `PUT` to a new id creates the client and returns 201; `PUT`
-   to an existing id updates and returns 200.
-   **`PUT` replaces the whole object — AM does not re-apply defaults to groups
-   you omit (2026-08-25).** A create body carrying only
-   `coreOAuth2ClientConfig`, `advancedOAuth2ClientConfig` and
+   to an existing id updates and returns 200. **`PUT` replaces the whole object
+   — AM does not re-apply defaults to groups you omit (2026-08-25).** A create
+   body carrying only `coreOAuth2ClientConfig`, `advancedOAuth2ClientConfig` and
    `coreOpenIDClientConfig` returned 201 with an empty
    `signEncOAuth2ClientConfig`, and every subsequent token request for that
-   client failed `400 {"error":"invalid_request","error_description":"Unknown
-   Signing Algorithm"}` — a failure that reads like a realm problem and is
-   nowhere near the client you just wrote. Build the body from
+   client failed
+   `400 {"error":"invalid_request","error_description":"Unknown Signing Algorithm"}`
+   — a failure that reads like a realm problem and is nowhere near the client
+   you just wrote. Build the body from
    `POST …/agents/OAuth2Client?_action=template` and override fields on top of
    it, or read-modify-write an existing client.
 4. **Decide on `userpassword` etc.**: if the corresponding `-encrypted` was
@@ -271,6 +270,25 @@ $SCRIPTS/verify-endpoint.sh \
   --header "Accept-API-Version: protocol=2.1,resource=1.0"
 ```
 
+## Redirect URIs
+
+`coreOAuth2ClientConfig.redirectionUris` is the allow-list for
+`authorization_code`. The `redirect_uri` on `/authorize` and `/access_token`
+must match a registered value **exactly** (scheme, host, port, path).
+
+**Plain `http` is accepted, including a non-localhost host.** A confidential
+client whose only redirect URI was `http://` on a non-loopback host stored that
+value and read it back (GET 200, 2026-09-03). No HTTPS is required for the URI
+to register. Matching is still exact: changing the host the browser uses without
+rewriting this list fails at the token exchange with `invalid_redirect_uri`.
+
+`0.0.0.0` is not a usable redirect host — the browser is never redirected to it.
+
+The authorize endpoint itself is
+`POST`/`GET /am/oauth2/realms/root/realms/{realm}/authorize`. Driving it from a
+session cookie is in
+[09-journeys.md](09-journeys.md#turning-tokenid-into-an-authorization-code).
+
 ## Quirks
 
 - **Inherited values.** A field shown as `{"inherited": true, "value": [...]}`
@@ -285,10 +303,10 @@ $SCRIPTS/verify-endpoint.sh \
 - **`coreUmaClientConfig`** present even on non-UMA clients with empty fields —
   don't strip it.
 - **`advancedOAuth2ClientConfig.allowedResourceServerAudienceValues` is the only
-  way to get a caller-chosen `aud`** into an access token without a
-  modification script — and it works **only** on token-exchange requests, gated
-  by `acceptAudienceParametersInTokenExchangeRequests`. Ordinary grants ignore
-  an `audience` parameter silently. Full behaviour, including which of the two
+  way to get a caller-chosen `aud`** into an access token without a modification
+  script — and it works **only** on token-exchange requests, gated by
+  `acceptAudienceParametersInTokenExchangeRequests`. Ordinary grants ignore an
+  `audience` parameter silently. Full behaviour, including which of the two
   clients in an exchange the fields are read from, is in
   [22-token-exchange.md](22-token-exchange.md#setting-the-aud-claim--the-audience-whitelist)
   (verified 2026-08-27). Not to be confused with the provider's
@@ -297,24 +315,30 @@ $SCRIPTS/verify-endpoint.sh \
 
 ## Verified against
 
+- Tenant: `<your-tenant>.forgeblocks.com`, realm `bravo`
+- Date: 2026-09-03
+- Calls: `GET …/OAuth2Client/TxnDemo_web` (200).
+  `coreOAuth2ClientConfig.redirectionUris.value[0]` is `http://` with a
+  non-localhost host and path `/callback`.
+  `advancedOAuth2ClientConfig.grantTypes.value` is `["authorization_code"]`
+  only. `treeName` is `"[Empty]"`.
 - Tenant: `<your-tenant>.forgeblocks.com`, realm `alpha`
 - Date: 2026-08-15
 - Calls: `POST …/OAuth2Client?_action=template` still returns the 115-field,
   six-group body. `POST …?_action=schema` matches the template except
-  `advancedOAuth2ClientConfig.introspectionPolicySets`, which is in the
-  template (default `[]`) and on 9/45 live clients as
-  `{"inherited":false,"value":[]}`, but is **absent from the schema**. A GET
-  of every OAuth2 client in `alpha` (45/45) produced no top-level keys and no
-  group fields outside the 115-field template; no `*-encrypted` siblings were
-  present on this tenant version. `PUT` of the raw template (no inherited
-  wrappers, no `_id`/`_rev`/`_type`/`_provider`) to a new id
-  `Terraform_oauth_probe_<ts>` returned 201; the subsequent GET wrapped the
-  five non-override groups as `{inherited,value}` and left
-  `overrideOAuth2ClientConfig` raw; `userpassword` read back `null`. `DELETE`
-  of that probe returned 200 and a follow-up GET returned 404. Original
-  clients were not modified. A subsequent create of
-  `Terraform_TestAccessToken` from the typed catalog showed that the
-  template defaults `allowedResourceServerAudienceValues: [""]` and
+  `advancedOAuth2ClientConfig.introspectionPolicySets`, which is in the template
+  (default `[]`) and on 9/45 live clients as `{"inherited":false,"value":[]}`,
+  but is **absent from the schema**. A GET of every OAuth2 client in `alpha`
+  (45/45) produced no top-level keys and no group fields outside the 115-field
+  template; no `*-encrypted` siblings were present on this tenant version. `PUT`
+  of the raw template (no inherited wrappers, no
+  `_id`/`_rev`/`_type`/`_provider`) to a new id `Terraform_oauth_probe_<ts>`
+  returned 201; the subsequent GET wrapped the five non-override groups as
+  `{inherited,value}` and left `overrideOAuth2ClientConfig` raw; `userpassword`
+  read back `null`. `DELETE` of that probe returned 200 and a follow-up GET
+  returned 404. Original clients were not modified. A subsequent create of
+  `Terraform_TestAccessToken` from the typed catalog showed that the template
+  defaults `allowedResourceServerAudienceValues: [""]` and
   `customProperties: [""]` are stored and read back as `[]`. The original
   `TestAccessToken` client was not modified.
 - Date: 2026-08-07
@@ -330,10 +354,10 @@ $SCRIPTS/verify-endpoint.sh \
   were deleted and a client-list read confirmed none remained.
 - Date: 2026-08-06
 - Calls: `POST …/realm-config/agents/OAuth2Client?_action=template` with `{}`
-  returned 200 and the 115-field, six-group body/counts above; `POST
-  …?_action=schema` with `{}` returned 200 and exposed scalar choices under
-  `enum` and array choices under `items.enum`. The three lifetime-field names
-  above were present in the live template.
+  returned 200 and the 115-field, six-group body/counts above;
+  `POST …?_action=schema` with `{}` returned 200 and exposed scalar choices
+  under `enum` and array choices under `items.enum`. The three lifetime-field
+  names above were present in the live template.
 - Date: 2026-06-14
 - Calls: `PUT …/realm-config/agents/OAuth2Client/test_oauth_probe` with no
   `If-Match` created the throwaway client (201), a second plain `PUT` updated it

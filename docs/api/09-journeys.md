@@ -159,10 +159,10 @@ A node field can hold an ESV placeholder — `&{esv.some.name}` — and **the wi
 shape depends on the field, not on the value**. Established by decoding every
 node in both realms (1,119 of them) and tallying every placeholder:
 
-| Shape | Fields seen carrying it |
-| ----- | ----------------------- |
-| `{"$string": "&{esv.…}"}` | `PersistentCookieDecisionNode.hmacSigningKey`, `SetPersistentCookieNode.hmacSigningKey` |
-| `{"$int": "&{esv.…}"}` | `RetryLimitDecisionNode.retryLimit` |
+| Shape                         | Fields seen carrying it                                                                                                                                                                               |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{"$string": "&{esv.…}"}`     | `PersistentCookieDecisionNode.hmacSigningKey`, `SetPersistentCookieNode.hmacSigningKey`                                                                                                               |
+| `{"$int": "&{esv.…}"}`        | `RetryLimitDecisionNode.retryLimit`                                                                                                                                                                   |
 | bare `"&{esv.…}"`, no wrapper | `product-CaptchaNode.{siteKey,secretKey,scoreThreshold}`, `product-ReCaptchaNode.{siteKey,secretKey}`, `product-Saml2Node.idpEntityId`, `PushRegistrationNode.issuer`, `SetSuccessUrlNode.successUrl` |
 
 Three consequences for a client:
@@ -185,8 +185,8 @@ Three consequences for a client:
 from that type's `?_action=schema` **and** from its `?_action=template`. A
 client that treats the schema as the allowlist rejects the node.
 
-So validate a client's field list against **live nodes**, not against the
-schema endpoint. The schema is a good starting point and an incomplete one.
+So validate a client's field list against **live nodes**, not against the schema
+endpoint. The schema is a good starting point and an incomplete one.
 
 Related: several types have no `properties` at all — `RecoveryCodeDisplayNode`,
 `OathDeviceStorageNode`, `product-WriteFederationInformationNode`,
@@ -201,7 +201,7 @@ name itself is tenant-specific and cannot be written into shared tooling. The
 sandbox has one, used by 16 nodes, whose `name` is `null` and whose entire
 schema is a single `toggle` boolean.
 
-Their per-type schema *is* fetchable at
+Their per-type schema _is_ fetchable at
 `…/authenticationtrees/nodes/designer-<id>?_action=schema`, so a client can
 handle them — but only by discovering them at run time, never from a static
 table.
@@ -210,23 +210,24 @@ table.
 
 Three types that work together — collect a profile, compare it to the saved
 ones, save the new one — captured because a full-realm generate stopped on each
-in turn. Field names and defaults are from each type's own `?_action=schema`
-and `?_action=template`, cross-checked against the live nodes in `bravo`.
+in turn. Field names and defaults are from each type's own `?_action=schema` and
+`?_action=template`, cross-checked against the live nodes in `bravo`.
 
-| Type | Fields (template default) |
-| ---- | ------------------------- |
-| `DeviceProfileCollectorNode` | `maximumSize` (`"3"`), `deviceMetadata` (`true`), `deviceLocation` (`false`), `message` (`{}`) |
-| `DeviceMatchNode` | `script` (`01e1a3c0-…328cff`), `useScript` (`false`), `acceptableVariance` (`0`), `expiration` (`30`) |
-| `DeviceSaveNode` | `maxSavedProfiles` (`5`), `saveDeviceMetadata` (`true`), `saveDeviceLocation` (`true`), `variableName` (`""`) |
+| Type                         | Fields (template default)                                                                                     |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `DeviceProfileCollectorNode` | `maximumSize` (`"3"`), `deviceMetadata` (`true`), `deviceLocation` (`false`), `message` (`{}`)                |
+| `DeviceMatchNode`            | `script` (`01e1a3c0-…328cff`), `useScript` (`false`), `acceptableVariance` (`0`), `expiration` (`30`)         |
+| `DeviceSaveNode`             | `maxSavedProfiles` (`5`), `saveDeviceMetadata` (`true`), `saveDeviceLocation` (`true`), `variableName` (`""`) |
 
 Three things in there are easy to get wrong:
 
 - **`maximumSize` is a string**, not a number. The template ships `"3"`.
 - **`DeviceMatchNode.script` is always sent**, whether or not `useScript` is
-  true, and its default is the Ping-shipped `Authentication Tree Decision Node
-  Script`. That id is `01e1a3c0-038b-4c16-956a-6c9d89328cff` in **both** `alpha`
-  and `bravo`, and the script is `default: true`, so it is a stock id rather
-  than a per-tenant one — checked in both realms rather than assumed.
+  true, and its default is the Ping-shipped
+  `Authentication Tree Decision Node Script`. That id is
+  `01e1a3c0-038b-4c16-956a-6c9d89328cff` in **both** `alpha` and `bravo`, and
+  the script is `default: true`, so it is a stock id rather than a per-tenant
+  one — checked in both realms rather than assumed.
 - **`variableName` is in the schema and the template but absent from every live
   node.** AM drops the key rather than storing an empty string, so a client that
   treats "absent" as "unmodelled" will reject a perfectly ordinary node.
@@ -371,9 +372,9 @@ occur, not what the API forbids.
 | `annotations` | 6 of 36  | a **string** containing JSON — `{"forNodes":{},"structural":[]}` on all 6 |
 
 No other `uiConfig` key occurred on any of the 36 trees. The survey establishes
-the wire type, not the field's semantics: `annotations` is a JSON-encoded string,
-not a nested object. Preserve it unchanged; a typed decoder must not model it as
-an object.
+the wire type, not the field's semantics: `annotations` is a JSON-encoded
+string, not a nested object. Preserve it unchanged; a typed decoder must not
+model it as an object.
 
 **This bites fail-closed consumers.** The sibling
 `terraform-provider-pingone-aic` allowlisted `categories` as the only permitted
@@ -437,29 +438,29 @@ $SCRIPTS/verify-endpoint.sh \
 Verified 2026-08-13 on the sandbox: a journey **can** detect that it was started
 from the hosted login UI and bounce the browser to a custom UI.
 
-Hosted login on this tenant is the `@forgerock/platform-login` SPA. `/`
-301s to `/login/`; `/login/` and `/am/XUI/` serve the same HTML. The SPA POSTs
+Hosted login on this tenant is the `@forgerock/platform-login` SPA. `/` 301s to
+`/login/`; `/login/` and `/am/XUI/` serve the same HTML. The SPA POSTs
 `/am/json/realms/root/realms/{realm}/authenticate`. That request carries the
 browser `Origin` / `Referer`, which a next-gen scripted decision can read.
 
 ### What the script sees
 
 `requestHeaders` is a case-insensitive multimap. `String(requestHeaders)` dumps
-every key; `requestHeaders.get("origin")` / `.get("referer")` return a Java
-list (use `.get(0)`). `keySet()` is blocked by the next-gen Java allow-list.
+every key; `requestHeaders.get("origin")` / `.get("referer")` return a Java list
+(use `.get(0)`). `keySet()` is blocked by the next-gen Java allow-list.
 
 When the client sends the headers, both arrive verbatim:
 
-| Client `Origin` | `requestHeaders.get("origin").get(0)` |
-|---|---|
-| _(omitted — curl / native SDK)_ | `null` |
-| `https://tenant.example.com` | same (hosted UI) |
-| `https://journeys.example.com` | same (custom UI; already in CORS) |
-| `https://evil.example.com` | same (AM does **not** filter Origin) |
+| Client `Origin`                 | `requestHeaders.get("origin").get(0)` |
+| ------------------------------- | ------------------------------------- |
+| _(omitted — curl / native SDK)_ | `null`                                |
+| `https://tenant.example.com`    | same (hosted UI)                      |
+| `https://journeys.example.com`  | same (custom UI; already in CORS)     |
+| `https://evil.example.com`      | same (AM does **not** filter Origin)  |
 
-`Host` is always the tenant hostname and cannot distinguish the two UIs.
-Hosted pages send `referrer-policy: origin`, so do not rely on the Referer
-_path_ (`/login` vs `/am/XUI`).
+`Host` is always the tenant hostname and cannot distinguish the two UIs. Hosted
+pages send `referrer-policy: origin`, so do not rely on the Referer _path_
+(`/login` vs `/am/XUI`).
 
 ### Emitting the bounce
 
@@ -484,11 +485,11 @@ Verified by reading the live `/login/js/*.js` chunks.
 
 An origin-gated first node, invoked three ways against `AIC-Rhino-Let-Probe`:
 
-| `Origin` | Result |
-|---|---|
-| custom UI origin | `HiddenValueCallback` only — journey continues |
-| tenant origin | `RedirectCallback` + hidden — hosted UI would navigate away |
-| omitted | `HiddenValueCallback` only — do **not** bounce API/SDK callers |
+| `Origin`         | Result                                                         |
+| ---------------- | -------------------------------------------------------------- |
+| custom UI origin | `HiddenValueCallback` only — journey continues                 |
+| tenant origin    | `RedirectCallback` + hidden — hosted UI would navigate away    |
+| omitted          | `HiddenValueCallback` only — do **not** bounce API/SDK callers |
 
 Sketch:
 
@@ -500,7 +501,7 @@ if (hosted) {
   callbacksBuilder.redirectCallback(
     "https://journeys.example.com/login",
     {},
-    "GET"
+    "GET",
   );
 }
 outcome = hosted ? "redirect" : "continue";
@@ -511,16 +512,16 @@ the custom host, so the same node must not redirect again.
 
 ### Related, not substitutes
 
-- **`RequestHeaderNode`** (`allowedHeaders`) can copy `origin` into shared
-  state if you would rather keep the test out of the first script.
-- **`SetSuccessUrlNode` / `SetFailureUrlNode`** fire only at journey end, not
-  on first paint.
+- **`RequestHeaderNode`** (`allowedHeaders`) can copy `origin` into shared state
+  if you would rather keep the test out of the first script.
+- **`SetSuccessUrlNode` / `SetFailureUrlNode`** fire only at journey end, not on
+  first paint.
 - **Theme `journeyFooterScriptTag`** (see `#user-theme-script-container` in
   `/login/` HTML) runs only inside hosted pages, so it can redirect without
   reading Origin — but it applies to every journey that uses that theme unless
   the script itself inspects the journey name in the URL.
-- **`platformSettings.loginUrl`** in `/openidm/config/ui/configuration` is
-  empty on this tenant and is the end-user-app login override, not a per-journey
+- **`platformSettings.loginUrl`** in `/openidm/config/ui/configuration` is empty
+  on this tenant and is the end-user-app login override, not a per-journey
   bounce.
 - Custom UI origins still need a CORS configuration. The sandbox already has
   `SSPWebPortal`, `Omni-Test`, and `customer-web-portal` configs covering
@@ -541,24 +542,29 @@ at least a helpful error. The human-readable label is `displayName` on the
 **Every tree connects to the same two built-in endpoints**, which are not nodes
 you create:
 
-```
+```text
 success  70e691a5-1e33-4ac3-a356-e7b6d60d92e0
 failure  e301438c-0bd0-429c-ab0c-66126501069a
 ```
 
 **Next-gen scripted decision has no `action.send`.** The `action` binding
 exposes `goTo`, `withErrorMessage`, `withHeader`, `suspend` and friends — no
-send. Callbacks are *accumulated* on `callbacksBuilder`, and AM sends whatever
+send. Callbacks are _accumulated_ on `callbacksBuilder`, and AM sends whatever
 was built if the script does not `goTo`:
 
 ```javascript
 if (callbacks.isEmpty()) {
   callbacksBuilder.nameCallback("Email address");
   callbacksBuilder.passwordCallback("Password", false);
-  callbacksBuilder.stringAttributeInputCallback("roles", "Roles", "orders.reader", true);
+  callbacksBuilder.stringAttributeInputCallback(
+    "roles",
+    "Roles",
+    "orders.reader",
+    true,
+  );
 } else {
   // …read them, do the work…
-  nodeState.putShared("username", email);   // or success has no subject
+  nodeState.putShared("username", email); // or success has no subject
   action.goTo("created");
 }
 ```
@@ -581,9 +587,9 @@ action.goTo("created");        // …and this is the outcome AM acts on
 
 The create failed, the node reported `created`, **AM issued a session, and the
 `/authenticate` response carried a `tokenId` for a user that does not exist.**
-The failure then surfaced one step later, as `invalid_grant: Resource owner
-authentication failed` from the token endpoint — pointing squarely at the wrong
-component. `return` after the `goTo`.
+The failure then surfaced one step later, as
+`invalid_grant: Resource owner authentication failed` from the token endpoint —
+pointing squarely at the wrong component. `return` after the `goTo`.
 
 That combination is worth naming because it defeats the obvious check: a caller
 that treats `tokenId` as proof the journey did its work will believe a node that
@@ -593,14 +599,15 @@ did nothing.
 not a callback object:
 
 ```javascript
-var email = String(callbacks.getNameCallbacks().get(0));           // works
-var email = callbacks.getNameCallbacks().get(0).getName();         // TypeError
+var email = String(callbacks.getNameCallbacks().get(0)); // works
+var email = callbacks.getNameCallbacks().get(0).getName(); // TypeError
 ```
 
-The error is explicit about it — `Cannot find function getName in object
-carol@captoken.demo` — but only if you are reading the tree's logs, which lag
-several minutes. Faster to build a `textOutputCallback` with the diagnostics in
-it and read them straight out of the `/authenticate` response.
+The error is explicit about it —
+`Cannot find function getName in object carol@captoken.demo` — but only if you
+are reading the tree's logs, which lag several minutes. Faster to build a
+`textOutputCallback` with the diagnostics in it and read them straight out of
+the `/authenticate` response.
 
 **Driving it** is two posts: one with no body to collect the callbacks, then the
 same document back with `callbacks[n].input[0].value` filled in.
@@ -616,6 +623,77 @@ echo "$STEP" | jq '.callbacks[0].input[0].value="carol@example.com"' |
 ```
 
 No `authId` juggling is needed — post the whole document back as it came.
+
+A username+password PageNode (`UsernameCollector` + `PasswordCollector`) returns
+both callbacks in that first response:
+
+```json
+{
+  "authId": "…",
+  "callbacks": [
+    {
+      "type": "NameCallback",
+      "output": [{ "name": "prompt", "value": "User Name" }],
+      "input": [{ "name": "IDToken1", "value": "" }]
+    },
+    {
+      "type": "PasswordCallback",
+      "output": [{ "name": "prompt", "value": "Password" }],
+      "input": [{ "name": "IDToken2", "value": "" }]
+    }
+  ]
+}
+```
+
+Fill `input[0].value` on each, POST the whole body back, get `tokenId`.
+`Accept-API-Version: protocol=1.0,resource=2.1` is what we send; `resource=2.0`
+returns the same shape.
+
+### Session cookie name
+
+`tokenId` is the session cookie **value**. The **name** is tenant-specific and
+must be discovered, not hardcoded:
+
+```http
+GET /am/json/serverinfo/*
+```
+
+`cookieName` is a hex string (15 chars on this tenant). A 200 is returned with
+or without `Accept-API-Version`; we send `protocol=1.0,resource=1.1`. Putting
+the name in source is one more thing that breaks on another tenancy.
+
+### Turning `tokenId` into an authorization code
+
+With a session in hand, the OAuth authorize endpoint can be driven without a
+browser. Do **not** follow the redirect — the code is in `Location`.
+
+```http
+POST /am/oauth2/realms/root/realms/{realm}/authorize
+Cookie: <cookieName>=<tokenId>
+Content-Type: application/x-www-form-urlencoded
+
+client_id=…
+response_type=code
+redirect_uri=…          # must match a registered URI exactly
+scope=openid …
+state=…
+decision=allow
+csrf=<tokenId>
+```
+
+A 302 `Location` to the `redirect_uri` with `?code=` is success. Then
+`POST …/access_token` with `grant_type=authorization_code`. PKCE
+(`code_challenge` / `code_verifier`) is optional for a confidential client; the
+browser path should send it, a headless caller that never exposes the redirect
+does not need it.
+
+**Do not set `treeName` on the client if you pre-authenticate.** Pinning the
+journey there makes `/authorize` demand `TransactionConditionAdvice` even when
+the caller just completed that tree: 302 to `/am/UI/Login` with
+`authIndexType=composite_advice`, no code (verified 2026-09-03). Select the tree
+on the authorize URL instead (`authIndexType=service&authIndexValue=<tree>`),
+which is what an unauthenticated browser needs, and omit `treeName`
+(`"[Empty]"`).
 
 ## Quirks
 
@@ -662,26 +740,25 @@ No `authId` juggling is needed — post the whole document back as it came.
 - Date: 2026-08-13
 - Calls: next-gen scripted decision on `AIC-Rhino-Let-Probe` dumped
   `requestHeaders` / `requestParameters` (Origin and Referer arrive when the
-  client sends them; `Host` is always the tenant). `callbacksBuilder.redirectCallback`
-  returned a `RedirectCallback` on `POST …/authenticate`. An origin-gated script
-  redirected only when `Origin` was the tenant. Hosted `/login/` JS chunks
-  contain `handleRedirectCallback` → `location.assign`. Probe script restored
-  afterwards.
+  client sends them; `Host` is always the tenant).
+  `callbacksBuilder.redirectCallback` returned a `RedirectCallback` on
+  `POST …/authenticate`. An origin-gated script redirected only when `Origin`
+  was the tenant. Hosted `/login/` JS chunks contain `handleRedirectCallback` →
+  `location.assign`. Probe script restored afterwards.
 - Date: 2026-08-26 (second pass) — realms `bravo` and `alpha`, read-only.
 - Calls: `?_queryFilter=true` on the node collection of all 53 node types the
-  sibling Terraform provider models, in both realms — **1,119 node instances**
-  — each decoded against that provider's typed catalog. Two gaps found and
-  named above: the `{"$int": …}` ESV wrapper on `RetryLimitDecisionNode`
-  (4 nodes, previously unreadable) and `ConfigProviderNode.nodeVersion`
-  (absent from schema and template, present on every read). Also
-  `?_action=schema` and `?_action=template` on `AuthLevelDecisionNode`,
-  `ConfigProviderNode`, `CookiePresenceDecisionNode`, `EmailTemplateNode`,
-  `OathDeviceStorageNode`, `OathRegistrationNode`, `OathTokenVerifierNode`,
-  `product-CaptchaNode`, `product-ReCaptchaNode`, `product-Saml2Node`,
-  `product-WriteFederationInformationNode`,
-  `RecoveryCodeCollectorDecisionNode`, `RecoveryCodeDisplayNode`,
-  `SetCustomCookieNode`, `WebAuthnAuthenticationNode`,
-  `WebAuthnRegistrationNode`, and `designer-<id>`.
+  sibling Terraform provider models, in both realms — **1,119 node instances** —
+  each decoded against that provider's typed catalog. Two gaps found and named
+  above: the `{"$int": …}` ESV wrapper on `RetryLimitDecisionNode` (4 nodes,
+  previously unreadable) and `ConfigProviderNode.nodeVersion` (absent from
+  schema and template, present on every read). Also `?_action=schema` and
+  `?_action=template` on `AuthLevelDecisionNode`, `ConfigProviderNode`,
+  `CookiePresenceDecisionNode`, `EmailTemplateNode`, `OathDeviceStorageNode`,
+  `OathRegistrationNode`, `OathTokenVerifierNode`, `product-CaptchaNode`,
+  `product-ReCaptchaNode`, `product-Saml2Node`,
+  `product-WriteFederationInformationNode`, `RecoveryCodeCollectorDecisionNode`,
+  `RecoveryCodeDisplayNode`, `SetCustomCookieNode`,
+  `WebAuthnAuthenticationNode`, `WebAuthnRegistrationNode`, and `designer-<id>`.
 - Date: 2026-08-26 — realms `bravo` and `alpha`, read-only.
 - Calls: `?_action=schema` and `?_action=template` on `DeviceMatchNode`,
   `DeviceSaveNode` and `DeviceProfileCollectorNode`; `?_queryFilter=true` on
@@ -689,15 +766,27 @@ No `authId` juggling is needed — post the whole document back as it came.
   live wire shapes against the schemas; `GET …/scripts/01e1a3c0-…` in both
   realms to establish that `DeviceMatchNode`'s default script id is stock
   (`default: true`, same id, same name) rather than tenant-specific.
+- Date: 2026-09-03 — realm `bravo`, `TxnDemoLogin`.
+- Calls: `GET /am/json/serverinfo/*` (200, `cookieName` present).
+  `POST …/authenticate?authIndexType=service&authIndexValue=TxnDemoLogin` with
+  `protocol=1.0,resource=2.1` returned `NameCallback` + `PasswordCallback`;
+  posting them back returned `tokenId` and `successUrl`.
+  `POST …/oauth2/…/authorize` with `Cookie: <cookieName>=<tokenId>`,
+  `decision=allow`, `csrf=<tokenId>` and no redirect following returned 302 with
+  `code` in `Location`. Setting the client's `treeName` to the same tree made
+  that authorize 302 to `/am/UI/Login?authIndexType=composite_advice` with
+  `TransactionConditionAdvice` instead; clearing `treeName` restored the code.
+  `GET …/trees/TxnDemoLogin` (200, PageNode + DataStoreDecisionNode,
+  `identityResource=managed/bravo_user`).
 - Date: 2026-08-25 — realm `bravo`, `CapTokenDemoRegister`.
 - Calls: two-post `/authenticate` conversations against the tree, with and
   without values on the `NameCallback`. A submission with a blank name reached
-  the `catch` branch's `action.withErrorMessage(...).goTo("error")` and **still**
-  returned a `tokenId` with `successUrl`, because the script continued to a
-  second `goTo("created")`; a `GET managed/bravo_user?_queryFilter=…` confirmed
-  no record was created. With a `return` added after the first `goTo`, the same
-  submission returns the error and a valid submission creates the user with the
-  chosen role. Probe users were deleted afterwards.
+  the `catch` branch's `action.withErrorMessage(...).goTo("error")` and
+  **still** returned a `tokenId` with `successUrl`, because the script continued
+  to a second `goTo("created")`; a `GET managed/bravo_user?_queryFilter=…`
+  confirmed no record was created. With a `return` added after the first `goTo`,
+  the same submission returns the error and a valid submission creates the user
+  with the chosen role. Probe users were deleted afterwards.
 - Date: 2026-08-14 — realm `alpha`, contributed by the sibling
   `terraform-provider-pingone-aic` project.
 - Calls: `GET …/authenticationtrees/trees/{name}` for **every** tree in the
