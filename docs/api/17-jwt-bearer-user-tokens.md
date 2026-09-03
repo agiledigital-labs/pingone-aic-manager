@@ -268,9 +268,18 @@ not cache this field, so narrowing a list takes effect at once.
   as proof that the method must match — it is not reproducible, and it was made
   while the realm's JWKS cache was in a known-stale state, so elapsed time
   cannot be separated from the auth method. A separate agent-run 2×2 reporting
-  both crossed pairings failing did not reproduce either. Treat the auth method
-  as _not_ established to be load-bearing until someone probes it on a realm
-  with a known-good cache.
+  both crossed pairings failing did not reproduce either.
+
+  **Settled 2026-09-03 for the two `client_secret` methods.** Re-probed on a
+  design that removes the cache from the question entirely: two clients created
+  fresh in `bravo` for the probe, differing only in `tokenEndpointAuthMethod`,
+  each minting by `client_credentials` — no assertion, no JWKS, nothing that
+  can go stale. Both clients minted from POST-body credentials **and** from a
+  Basic header; all four combinations returned an `access_token`. Both probe
+  clients were deleted. So the field does not gate which presentation AM
+  accepts, and `--client-auth` remains a matter of explicitness. This says
+  nothing about other tenants or AM versions: keep config and callers in
+  agreement rather than relying on the leniency.
 
 ## Current implementation
 
@@ -376,6 +385,19 @@ a `subjects list` before anyone needs either under time pressure.
 
 ## Verified against
 
+- Tenant: `<your-tenant>.forgeblocks.com`, realm `bravo`
+- Date: 2026-09-03
+- Calls: two OAuth2 clients created for the probe
+  (`Terraform_probe_client_secret_post`, `…_basic`), identical but for
+  `tokenEndpointAuthMethod`, each `client_credentials` with scope
+  `probe.scope` (201 create each). Four `POST
+  /am/oauth2/realms/root/realms/bravo/access_token` calls — POST-body
+  credentials and `Authorization: Basic`, against each client — all four
+  returned an `access_token`. `DELETE` of both returned 200. No assertion and
+  no JWKS is involved in `client_credentials`, which is the point: the
+  2026-08-07 runs could not separate the auth method from a stale key cache.
+  Settles the retraction above for the two `client_secret` methods on this
+  tenant.
 - Tenant: `<your-tenant>.forgeblocks.com`, realm `alpha`
 - Date: 2026-08-06
 - Auth: service-account bearer only (`fr:am:*` + `fr:idm:*`), no admin session.
