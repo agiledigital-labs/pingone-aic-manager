@@ -687,13 +687,13 @@ A 302 `Location` to the `redirect_uri` with `?code=` is success. Then
 browser path should send it, a headless caller that never exposes the redirect
 does not need it.
 
-**Do not set `treeName` on the client if you pre-authenticate.** Pinning the
-journey there makes `/authorize` demand `TransactionConditionAdvice` even when
-the caller just completed that tree: 302 to `/am/UI/Login` with
-`authIndexType=composite_advice`, no code (verified 2026-09-03). Select the tree
-on the authorize URL instead (`authIndexType=service&authIndexValue=<tree>`),
-which is what an unauthenticated browser needs, and omit `treeName`
-(`"[Empty]"`).
+This recipe works **only while the client has no `treeName`**. Pinning the
+journey on the client turns `/authorize` into a transactional-authorization
+challenge, and a pre-authenticated session no longer satisfies it — the
+three-step flow that does is in
+[05-oauth2-oidc.md](05-oauth2-oidc.md#pinning-the-sign-in-journey-treename)
+(verified 2026-09-03). `authIndexType`/`authIndexValue` on the authorize URL do
+**not** select the tree for a browser; only `treeName` does.
 
 ## Quirks
 
