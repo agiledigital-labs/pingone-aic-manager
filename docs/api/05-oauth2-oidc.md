@@ -289,6 +289,111 @@ The authorize endpoint itself is
 session cookie is in
 [09-journeys.md](09-journeys.md#turning-tokenid-into-an-authorization-code).
 
+## Pinning the sign-in journey (`treeName`)
+
+`advancedOAuth2ClientConfig.treeName` is how an application chooses which
+journey its users sign in with. It matters more than it looks, and it changes
+how the client can be tested — this is the section to read before wiring an app
+to a demo-owned tree.
+
+### It is the only thing that selects the journey
+
+Passing `authIndexType=service&authIndexValue=<tree>` on the authorize URL does
+**not** work for a browser. AM's 302 from `/authorize` to the hosted login UI
+keeps those parameters only inside `goto`, so the UI runs the realm's **Default**
+journey — a different tree on every tenancy, which is exactly the failure this
+field exists to prevent.
+
+Measured 2026-09-03, one variable at a time, on `GET /authorize` with no
+session, `authIndexType`/`authIndexValue` present and absent in each arm:
+
+- `treeName` is `"[Empty]"` → `302 /am/UI/Login?realm=/{realm}&goto=…`. No
+  journey is named, so the hosted UI runs the realm's Default.
+- `treeName` is `"TxnDemoLogin"` → `302 /am/UI/Login` with
+  `authIndexType=composite_advice`, `authIndexValue=<Advices>…</Advices>`,
+  `goto=<the original authorize URL>` and `oauthObjectKey=…`.
+
+The `authIndexType`/`authIndexValue` on the request made **no difference** in
+either arm.
+
+### AM implements the pin as transactional authorization
+
+The advice is a `TransactionConditionAdvice`, not an
+`AuthenticateToServiceConditionAdvice`:
+
+```xml
+<Advices>
+    <AttributeValuePair>
+        <Attribute name="TransactionConditionAdvice"/>
+        <Value>bae1ab86-6d26-4648-9d9c-0bf2afe53e0b</Value>
+    </AttributeValuePair>
+</Advices>
+```
+
+The transaction is bound to **that one authorize request**, not to the session
+and not to the tree. Two consequences, both measured:
+
+- **A pre-authenticated session does not satisfy it.** Authenticate against the
+  tree by name, then `POST /authorize` with the cookie, and AM answers with a
+  fresh advice and no code — the recipe in
+  [09-journeys.md](09-journeys.md#turning-tokenid-into-an-authorization-code)
+  stops working the moment `treeName` is set. This is the thing that keeps
+  catching us out.
+- **The advice must be resumed, not re-requested.** Satisfying the advice and
+  then issuing a _new_ `/authorize` produces another advice, indefinitely.
+
+### Driving a tree-pinned client headlessly
+
+Three steps. `<advice>` is the `authIndexValue` from step 1, URL-encoded.
+
+```http
+1.  GET /am/oauth2/realms/root/realms/{realm}/authorize?client_id=…&response_type=code
+        &redirect_uri=…&scope=…&state=…
+    -> 302 /am/UI/Login?authIndexType=composite_advice&authIndexValue=<advice>
+            &goto=<the original authorize URL>&oauthObjectKey=…
+
+2.  POST /am/json/realms/root/realms/{realm}/authenticate
+         ?authIndexType=composite_advice&authIndexValue=<advice>
+    accept-api-version: protocol=1.0,resource=2.1
+    -> the pinned tree's callbacks; fill and re-POST -> tokenId
+
+3.  POST <goto>
+    Cookie: <cookieName>=<tokenId>
+    decision=allow&csrf=<tokenId>
+    -> 302 <redirect_uri>?code=…
+```
+
+Step 3 posts the **`goto` URL** — it already carries every authorize parameter,
+so do not rebuild it. **Do not resend `oauthObjectKey`**: including it in the
+step-3 body re-issues the advice and returns no code (measured 2026-09-03; the
+same request without it returns the code).
+
+A `GET` of `goto` instead of a `POST` returns AM's `OAuth2 Authorization Server`
+HTML shell — a browser resolves that client-side, a script cannot. Post the
+decision.
+
+Reading the resulting token by hand, with `jq` alone:
+
+```sh
+jq -R 'split(".") | .[0], .[1]
+       | gsub("-"; "+") | gsub("_"; "/")
+       | @base64d | fromjson'
+```
+
+The two `gsub`s are not optional: `@base64d` in jq 1.8.2 takes the standard
+alphabet only, and a JWT part containing base64url's `-` or `_` fails with
+`is not valid base64 data` (measured 2026-09-03). Missing padding it handles by
+itself.
+
+### Terraform
+
+`pingoneaic_oauth2_client`'s `advanced.tree_name` carries it, and
+`resource_prefix` is applied on the wire — so point it at the journey resource
+(`tree_name = pingoneaic_journey.login.name`) rather than repeating the literal.
+It defaults to `"[Empty]"`, which means **an apply clears a `treeName` somebody
+set in the console**. If the field is not in the configuration, Terraform owns
+it as unset.
+
 ## Quirks
 
 - **Inherited values.** A field shown as `{"inherited": true, "value": [...]}`
@@ -321,7 +426,13 @@ session cookie is in
   `coreOAuth2ClientConfig.redirectionUris.value[0]` is `http://` with a
   non-localhost host and path `/callback`.
   `advancedOAuth2ClientConfig.grantTypes.value` is `["authorization_code"]`
-  only. `treeName` is `"[Empty]"`.
+  only. `treeName` was flipped `"[Empty]"` <-> `"TxnDemoLogin"` (two
+  `aic oauth pull`/`push` round-trips, then a `terraform apply`) and
+  `GET /authorize` re-run in each state, with and without
+  `authIndexType`/`authIndexValue`: see
+  [Pinning the sign-in journey](#pinning-the-sign-in-journey-treename). The
+  three-step advice flow was driven to a `code` and an `access_token`; adding
+  `oauthObjectKey` to step 3 returned an advice instead.
 - Tenant: `<your-tenant>.forgeblocks.com`, realm `alpha`
 - Date: 2026-08-15
 - Calls: `POST …/OAuth2Client?_action=template` still returns the 115-field,
