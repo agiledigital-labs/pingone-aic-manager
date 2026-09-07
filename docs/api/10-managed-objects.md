@@ -601,6 +601,63 @@ triggering request gets **HTTP 500** and the write rolls back. Any uncaught hook
 exception surfaces the same way. Probe with `typeof <name>`, never by
 enumerating scope.
 
+### Relationship properties on `onUpdate`'s `object` (verified 2026-09-07)
+
+`object` and `oldObject` do not unconditionally contain relationship
+properties. Their presence is governed by the relationship property's
+`returnByDefault` setting, just as it is for an ordinary unprojected read.
+
+A live probe put two otherwise-identical has-one relationships on a throwaway
+custom type, patched an unrelated scalar, and recorded what the `onUpdate` hook
+saw:
+
+| Relationship configuration | On `object` | On `oldObject` | Related target's requested field |
+| -------------------------- | ----------- | -------------- | -------------------------------- |
+| `returnByDefault: false`   | absent      | absent         | n/a                              |
+| `returnByDefault: true`    | present     | present        | absent                           |
+
+The value returned by default is the relationship envelope/reference, not an
+expanded related object. Setting `returnByDefault: true` is therefore enough
+when the hook only needs the relationship itself (for example its `_ref`), but
+it does **not** make arbitrary target fields available on `object`.
+
+**Performance:** the supported API does not expose an internal query plan, so
+do not turn this observation into a claim that the implementation issues
+exactly one extra DJ query (or none). What is observable is narrower:
+`returnByDefault` makes IDM resolve and serialize that relationship field on
+every ordinary read and in every update binding; it does **not** retrieve the
+target's ordinary fields. For a local has-one reference this is normally a
+small amount of extra work and is likely cheaper than making an unconditional
+second `openidm.read` from the hook. For a has-many or reverse relationship it
+can be material: inline relationship fields are not pageable or filterable, so
+the work and response/binding size grow with cardinality. Ping recommends the
+relationship sub-resource query for large sets because it can filter and page.
+
+Practical rule: if every update needs a has-one `_ref`, `returnByDefault: true`
+is reasonable. If only one branch needs it, or the relationship can be large,
+leave it false and retrieve it explicitly only on that branch (or query the
+relationship sub-resource when paging matters). Benchmark with production-like
+cardinality before enabling it on a hot object; this small probe is not a
+meaningful performance benchmark.
+
+For target data, explicitly project the relationship path in a script-side
+read. Both relationships below returned the target's `label`, independently of
+their `returnByDefault` setting:
+
+```javascript
+var current = openidm.read(String(resourceName), null, [
+  "relDefaultFalse/label",
+  "relDefaultTrue/label",
+]);
+```
+
+This probe patched a property unrelated to either relationship, so the read and
+the hook bindings referred to the same relationship state. If the update itself
+changes the relationship, remember that `onUpdate` runs before persistence: do
+not assume a separate read of the same resource has already observed the
+incoming relationship change. The reproducible probe is
+`scripts/experiment-managed-hook-relationships.sh`.
+
 ## Examples
 
 ```bash
@@ -930,6 +987,15 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-09-07 — two throwaway custom types
+  (`test_hook_relationship_probe` and `test_hook_relationship_target`), one
+  target and one source record, both deleted afterward; both type definitions
+  were removed in a fresh read-modify-write. An unrelated scalar PATCH fired
+  `onUpdate` and showed `returnByDefault:false` absent from both
+  `object`/`oldObject`,
+  `returnByDefault:true` present on both but without the target's `label`, and
+  an explicit `openidm.read(..., ["relationship/label"])` returning the label
+  for both. Reproduce with `scripts/experiment-managed-hook-relationships.sh`.
 - Date: 2026-08-28 — realm `bravo`, throwaway `bravo_zzprobeClient` type with a
   has-one `accountManager` to `bravo_user` and a has-many `custom_zzprobeClients`
   reverse, three records, all deleted afterwards.
@@ -1037,6 +1103,10 @@ on create, or when actually rotating it.
 
 ## Source citations
 
+- PingIDM, [Configuring
+  relationships](https://docs.pingidentity.com/pingidm/8/objects-guide/relationships.html)
+  — inline relationship fields cannot be filtered or paged; use the
+  relationship endpoint for large result sets.
 - frodo-lib: `src/api/cloud/IdmApi.ts` (and `src/ops/IdmConfigOps.ts`).
 - fr-config-manager: `packages/fr-config-pull/src/scripts/managed.js`,
   `packages/fr-config-push/src/scripts/update-managed-objects.js`.
