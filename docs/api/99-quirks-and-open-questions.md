@@ -1196,3 +1196,23 @@ This is the binding constraint on **reverse relationships** into a shipped
 object: the reverse property lives on the target, so a custom type pointing at
 `bravo_user` can only name its reverse `custom_<something>`.
 
+## 2026-09-07 — relationship defaults in `onUpdate`
+
+An `onUpdate` hook's `object` and `oldObject` follow the relationship's
+`returnByDefault` flag. An otherwise-identical relationship with the flag off
+was absent from both bindings; with it on, the relationship envelope was
+present on both, but a target `label` was not expanded. A projected
+`openidm.read(String(resourceName), null, ["relationship/label"])` returned the
+target field for either setting. This resolves the practical choice: enable
+`returnByDefault` if the reference itself should always ride along; explicitly
+read a relationship path when the hook needs target data.
+
+The API does not expose whether that default expansion is literally an extra
+repository query. It does not fetch ordinary target fields, but it does make
+every read/update resolve and serialize the relationship envelope. That is
+usually modest for a local has-one relationship; it can be substantial for a
+has-many/reverse because inline relationship reads cannot filter or page. Use
+the relationship sub-resource for large sets, and prefer a conditional explicit
+read when only one hook branch needs the relationship. The two probe types and
+their records were removed. Reproducer:
+`scripts/experiment-managed-hook-relationships.sh`.
