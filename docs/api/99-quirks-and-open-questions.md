@@ -1216,3 +1216,15 @@ the relationship sub-resource for large sets, and prefer a conditional explicit
 read when only one hook branch needs the relationship. The two probe types and
 their records were removed. Reproducer:
 `scripts/experiment-managed-hook-relationships.sh`.
+
+## 2026-09-07 — nested fields on generic custom objects query and index
+
+A throwaway custom type held `name: {first, middle, last}`.
+`_queryFilter=/name/last eq "Smith"` selected the right records and
+`_sortKeys=name/last,_id` sorted them correctly. AIC custom types are generic
+objects whose JSON properties Ping documents as indexed, so the old blanket
+statement in `10-managed-objects.md` that every searchable property also
+requires a hand-authored `repo.ds` mapping was too broad. It remains true for
+explicit/hybrid mappings; notably, `custom_*` properties on the shipped user
+object are unindexed. The probe type and all three records were removed.
+Reproducer: `scripts/experiment-managed-nested-object-query.sh`.

@@ -856,6 +856,55 @@ rejects the word form `not (/description eq "lkj")` with HTTP 400
 fallback form either: `_queryFilter=/_id eq ["asdf"]` returns the same parse
 error. Do not offer `ne` or `in` in script-template query validation.
 
+### Querying a child of an object-valued property (verified 2026-09-07)
+
+Yes: use a slash-separated JSON path in the CREST filter. A throwaway custom
+type declared this ordinary object-valued property:
+
+```json
+{
+  "name": {
+    "type": "object",
+    "searchable": true,
+    "properties": {
+      "first": { "type": "string", "searchable": true },
+      "middle": { "type": "string", "searchable": true },
+      "last": { "type": "string", "searchable": true }
+    }
+  }
+}
+```
+
+With records for Alice Smith, Bob Jones and Carol Smith, this returned exactly
+Alice and Carol:
+
+```text
+GET /openidm/managed/test_nested_query_probe
+    ?_queryFilter=/name/last eq "Smith"
+    &_fields=_id,name
+```
+
+Nested sort keys work too: `_sortKeys=name/last,_id` ordered Jones before the
+two Smith records. Use `name/last`, not JavaScript-style `name.last`, in query
+and sort paths.
+
+**Indexing:** a custom managed-object type in AIC is a _generic_ object. Ping's
+AIC identity-schema documentation says generic custom objects are stored in an
+indexed JSON structure and that all of their custom properties are indexed.
+That includes a nested path such as `name/last`; no separate `repo.ds` entry is
+needed for each child property. `searchable: true` controls whether the
+property is offered as searchable by the product UI/schema surface; it is not a
+request to create a per-property DJ index on a generic custom object.
+
+Do not generalise this to a custom property on `alpha_user`/`bravo_user`.
+Those are hybrid objects: their `custom_*` JSON properties are unindexed, and a
+searchable user value must use one of the predefined indexed extension
+properties. The live POC proves filter/sort behaviour; physical index use is a
+repository characteristic rather than something a three-row query plan can
+prove. The index statement is corroborated by Ping's documented AIC storage
+model, linked under Source citations. Reproduce the query behaviour with
+`scripts/experiment-managed-nested-object-query.sh`.
+
 ## Quirks
 
 ### A property added to a Ping-shipped object must be named `custom_*` (verified 2026-08-28)
@@ -962,9 +1011,14 @@ on create, or when actually rotating it.
   last-write-wins.
 - **Inline vs file scripts.** Tooling should normalize to file form for storage;
   the API accepts either.
-- **`repo.ds`** is the source of truth for which managed properties are indexed
-  in DJ. Adding a searchable property requires updating both `managed` and
-  `repo.ds`.
+- **`repo.ds` is only the directly inspectable source for explicit/hybrid
+  mappings.** In AIC, custom managed-object types are generic objects backed by
+  the platform's indexed JSON structure; their individual properties do not
+  need explicit `repo.ds` mappings. User objects are the opposite case:
+  `custom_*` values live in their unindexed JSON extension, and searchable user
+  data must use a predefined indexed extension property. The old blanket rule
+  here ("every searchable property requires both `managed` and `repo.ds`") was
+  wrong for generic custom objects.
 - **Config read-back is immediate; hook runtime activation can lag.** A fresh
   `GET /openidm/config/managed` reflected a 200'd PUT on the first poll (~164
   ms, 2026-06-14). Separately, the running hook registry can catch up a beat
@@ -987,6 +1041,11 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-09-07 — throwaway custom type `test_nested_query_probe` with three
+  records, all deleted afterward; its type definition was removed in a fresh
+  read-modify-write. `_queryFilter=/name/last eq "Smith"` returned exactly two
+  Smith records; `_sortKeys=name/last,_id` ordered Jones before Smith. Reproduce
+  with `scripts/experiment-managed-nested-object-query.sh`.
 - Date: 2026-09-07 — two throwaway custom types
   (`test_hook_relationship_probe` and `test_hook_relationship_target`), one
   target and one source record, both deleted afterward; both type definitions
@@ -1103,6 +1162,13 @@ on create, or when actually rotating it.
 
 ## Source citations
 
+- Ping AIC, [Advanced Identity Cloud identity
+  schema](https://docs.pingidentity.com/pingoneaic/identities/identity-cloud-identity-schema.html)
+  — custom managed-object types are generic and their custom properties are
+  indexed; user `custom_*` properties are the contrasting unindexed case.
+- Ping AIC, [Customize managed object
+  types](https://docs.pingidentity.com/pingoneaic/identities/customize-object-types.html)
+  — object-valued properties and the `searchable` UI/schema setting.
 - PingIDM, [Configuring
   relationships](https://docs.pingidentity.com/pingidm/8/objects-guide/relationships.html)
   — inline relationship fields cannot be filtered or paged; use the
