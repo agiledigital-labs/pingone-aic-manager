@@ -658,6 +658,27 @@ not assume a separate read of the same resource has already observed the
 incoming relationship change. The reproducible probe is
 `scripts/experiment-managed-hook-relationships.sh`.
 
+### `postCreate` versus `postUpdate` routing (verified 2026-09-07)
+
+The post-hooks are operation-specific; `postUpdate` does **not** run after
+`onCreate`:
+
+| Request | Hook sequence |
+| ------- | ------------- |
+| create  | `onCreate` → repository create → `postCreate` |
+| update  | `onUpdate` → repository update → `postUpdate` |
+
+A live probe installed all four hooks on one throwaway custom type. Each hook
+created a uniquely named record in a second throwaway event type. Immediately
+after creating the subject, the event collection contained only `onCreate` and
+`postCreate`. After PATCHing it, the collection additionally contained
+`onUpdate` and `postUpdate`.
+
+The “post” distinction means after the corresponding repository operation, not
+“after either kind of write.” Both post-hooks run before any further implicit
+synchronization of targets. Reproduce with
+`scripts/experiment-managed-post-hook-routing.sh`.
+
 ## Examples
 
 ```bash
@@ -1041,6 +1062,11 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-09-07 — throwaway `test_post_hook_subject` carrying all four
+  create/update hooks plus `test_post_hook_event`. Create produced exactly
+  `onCreate` + `postCreate`; a subsequent PATCH added exactly `onUpdate` +
+  `postUpdate`. All records and both type definitions were removed. Reproduce
+  with `scripts/experiment-managed-post-hook-routing.sh`.
 - Date: 2026-09-07 — throwaway custom type `test_nested_query_probe` with three
   records, all deleted afterward; its type definition was removed in a fresh
   read-modify-write. `_queryFilter=/name/last eq "Smith"` returned exactly two
@@ -1173,6 +1199,10 @@ on create, or when actually rotating it.
   relationships](https://docs.pingidentity.com/pingidm/8/objects-guide/relationships.html)
   — inline relationship fields cannot be filtered or paged; use the
   relationship endpoint for large result sets.
+- PingIDM, [Managed objects
+  reference](https://docs.pingidentity.com/pingidm/7.2/objects-guide/appendix-managed-objects.html)
+  — defines `postCreate` after create and `postUpdate` after update, before
+  further target synchronization.
 - frodo-lib: `src/api/cloud/IdmApi.ts` (and `src/ops/IdmConfigOps.ts`).
 - fr-config-manager: `packages/fr-config-pull/src/scripts/managed.js`,
   `packages/fr-config-push/src/scripts/update-managed-objects.js`.
@@ -1185,8 +1215,9 @@ on create, or when actually rotating it.
   Partially resolved 2026-06-13: tooling sidesteps this by detecting hooks by
   value shape rather than key list; verify firing per-key before documenting any
   of the others as supported.
-- Hook bindings for `onDelete`/`post*` hooks are assumed to match the verified
-  `onCreate`/`onUpdate` surface; not yet probed.
+- Complete binding shapes for `onDelete`/`post*` hooks have not been enumerated.
+  `postCreate`/`postUpdate` event selection and access to `openidm` are verified
+  2026-09-07; `postDelete` runtime remains unprobed.
 - Should the **generated interfaces** declare an optional scalar as
   `name?: T | null` rather than `name?: T`? A plain read returns `null`, not
   absent, for an unset scalar (verified 2026-08-18), so `name?: T` is optimistic

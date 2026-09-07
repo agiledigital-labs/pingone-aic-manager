@@ -1228,3 +1228,13 @@ requires a hand-authored `repo.ds` mapping was too broad. It remains true for
 explicit/hybrid mappings; notably, `custom_*` properties on the shipped user
 object are unindexed. The probe type and all three records were removed.
 Reproducer: `scripts/experiment-managed-nested-object-query.sh`.
+
+## 2026-09-07 — managed post-hooks are operation-specific
+
+`postUpdate` does not follow `onCreate`. A throwaway subject with all four
+create/update hooks logged each invocation into a separate managed event type:
+create produced only `onCreate` + `postCreate`, then PATCH added `onUpdate` +
+`postUpdate`. In each pair the post-hook runs after its corresponding repository
+operation and before further implicit target synchronization. All records and
+both types were removed. Reproducer:
+`scripts/experiment-managed-post-hook-routing.sh`.
