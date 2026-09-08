@@ -56,3 +56,9 @@ TODO.md
 # Optional literal denylist for scripts/check-sensitive-metadata.sh.
 # Never committed: a list of client names IS the client names.
 /.ai/denylist.txt
+
+# Friction found while using `aic` on real tickets. `gaps/` is the raw inbox,
+# GAPS.md the ranked queue over it. Both are working notes with a finite life:
+# they shrink as the items land and go away entirely when the last one does.
+/GAPS.md
+/gaps/
