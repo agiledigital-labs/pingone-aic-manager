@@ -637,7 +637,9 @@ aic oauth delete <id> --force [--realm alpha]           # delete (requires --for
 `provider get` prints a compact realm-wide configuration summary. In
 particular, it always shows both the provider `grantTypes` and
 `tokenExchangeClasses`, because configured exchangers do not themselves enable
-the token-exchange grant. `--json` prints the raw provider document unchanged.
+the token-exchange grant. It also derives a direct `token-exchange granted`
+yes/no row; arrays and plugin settings render one value per row to avoid long
+wrapped JSON cells. `--json` prints the raw provider document unchanged.
 
 `create` exposes the common client settings (`--name`, repeatable scopes,
 redirect URIs, grants/response types, token auth, consent, and lifetimes); run

@@ -53,7 +53,10 @@ const PROVIDER_GROUPS: &[&str] = &[
     "cibaConfig",
     "deviceCodeConfig",
     "pluginsConfig",
+    "aiAgentsConfig",
 ];
+
+const TOKEN_EXCHANGE_GRANT: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 
 /// Project a provider document into compact, human-readable CLI rows.
 ///
@@ -65,29 +68,27 @@ pub fn provider_summary(doc: &Value) -> Vec<(String, String)> {
 
     for group in PROVIDER_GROUPS {
         rows.push((group.to_string(), provider_group_state(doc, group)));
-    }
-
-    for (group, field) in [
-        ("advancedOAuth2Config", "grantTypes"),
-        ("advancedOAuth2Config", "tokenExchangeClasses"),
-        (
-            "advancedOAuth2Config",
-            "acceptAudienceParametersInTokenExchangeRequests",
-        ),
-        ("coreOAuth2Config", "accessTokenMayActScript"),
-    ] {
-        rows.push((
-            format!("{group}.{field}"),
-            provider_field_value(doc, group, field),
-        ));
-    }
-
-    match provider_group(doc, "pluginsConfig") {
-        Some(Value::Object(config)) if !config.is_empty() => rows.push((
-            "pluginsConfig.values".to_string(),
-            provider_value_cell(&Value::Object(config.clone())),
-        )),
-        Some(_) | None => {}
+        match *group {
+            "advancedOAuth2Config" => {
+                rows.push((
+                    "  token-exchange granted".to_string(),
+                    token_exchange_granted(doc).to_string(),
+                ));
+                push_provider_field_rows(&mut rows, doc, group, "grantTypes");
+                push_provider_field_rows(&mut rows, doc, group, "tokenExchangeClasses");
+                push_provider_field_rows(
+                    &mut rows,
+                    doc,
+                    group,
+                    "acceptAudienceParametersInTokenExchangeRequests",
+                );
+            }
+            "coreOAuth2Config" => {
+                push_provider_field_rows(&mut rows, doc, group, "accessTokenMayActScript");
+            }
+            "pluginsConfig" => push_provider_group_fields(&mut rows, doc, group),
+            _ => {}
+        }
     }
 
     if let Some(groups) = doc.as_object() {
@@ -116,19 +117,68 @@ fn provider_group_state(doc: &Value, group: &str) -> String {
     }
 }
 
-fn provider_field_value(doc: &Value, group: &str, field: &str) -> String {
+fn push_provider_field_rows(
+    rows: &mut Vec<(String, String)>,
+    doc: &Value,
+    group: &str,
+    field: &str,
+) {
+    let label = format!("  {field}");
     match provider_group(doc, group) {
-        None => "<group absent>".to_string(),
-        Some(Value::Object(config)) => config
-            .get(field)
-            .map(provider_value_cell)
-            .unwrap_or_else(|| "<absent>".to_string()),
-        Some(_) => "<group is not an object>".to_string(),
+        None => rows.push((label, "<group absent>".to_string())),
+        Some(Value::Object(config)) => match config.get(field) {
+            Some(value) => push_provider_value_rows(rows, &label, value),
+            None => rows.push((label, "<absent>".to_string())),
+        },
+        Some(_) => rows.push((label, "<group is not an object>".to_string())),
+    }
+}
+
+fn push_provider_group_fields(rows: &mut Vec<(String, String)>, doc: &Value, group: &str) {
+    if let Some(Value::Object(config)) = provider_group(doc, group) {
+        for (field, value) in config {
+            push_provider_value_rows(rows, &format!("  {field}"), value);
+        }
+    }
+}
+
+fn push_provider_value_rows(rows: &mut Vec<(String, String)>, label: &str, value: &Value) {
+    match inherited_value(value) {
+        Value::Array(values) if values.is_empty() => {
+            rows.push((label.to_string(), "<empty>".to_string()));
+        }
+        Value::Array(values) => {
+            for value in values {
+                rows.push((label.to_string(), provider_value_cell(value)));
+            }
+        }
+        value => rows.push((label.to_string(), provider_value_cell(value))),
+    }
+}
+
+fn token_exchange_granted(doc: &Value) -> &'static str {
+    let Some(Value::Object(config)) = provider_group(doc, "advancedOAuth2Config") else {
+        return "no";
+    };
+    let Some(grants) = config.get("grantTypes") else {
+        return "no";
+    };
+    let Some(grants) = inherited_value(grants).as_array() else {
+        return "<unknown>";
+    };
+    if grants
+        .iter()
+        .any(|grant| grant.as_str() == Some(TOKEN_EXCHANGE_GRANT))
+    {
+        "yes"
+    } else {
+        "no"
     }
 }
 
 fn provider_value_cell(value: &Value) -> String {
     match normalized_inherited_value(value) {
+        Value::String(value) if value == "[Empty]" => "<not set>".to_string(),
         Value::String(value) => value,
         value => serde_json::to_string(&value).unwrap_or_else(|_| "<unprintable>".to_string()),
     }
@@ -608,24 +658,37 @@ mod tests {
             .unwrap_or_else(|| panic!("missing summary field {field}"))
     }
 
+    fn summary_values<'a>(rows: &'a [(String, String)], field: &str) -> Vec<&'a str> {
+        rows.iter()
+            .filter(|(name, _)| name == field)
+            .map(|(_, value)| value.as_str())
+            .collect()
+    }
+
     #[test]
     fn provider_summary_shows_token_exchange_grant_and_exchanger_together() {
         let provider = json!({
             "advancedOAuth2Config": {
-                "grantTypes": ["authorization_code"],
-                "tokenExchangeClasses": ["org.example.AccessTokenToAccessToken"]
+                "grantTypes": ["authorization_code", "refresh_token"],
+                "tokenExchangeClasses": [
+                    "org.example.AccessTokenToAccessToken",
+                    "org.example.IdTokenToIdToken"
+                ]
             }
         });
 
         let rows = provider_summary(&provider);
 
         assert_eq!(
-            summary_value(&rows, "advancedOAuth2Config.grantTypes"),
-            "[\"authorization_code\"]"
+            summary_values(&rows, "  grantTypes"),
+            ["authorization_code", "refresh_token"]
         );
         assert_eq!(
-            summary_value(&rows, "advancedOAuth2Config.tokenExchangeClasses"),
-            "[\"org.example.AccessTokenToAccessToken\"]"
+            summary_values(&rows, "  tokenExchangeClasses"),
+            [
+                "org.example.AccessTokenToAccessToken",
+                "org.example.IdTokenToIdToken"
+            ]
         );
     }
 
@@ -645,9 +708,26 @@ mod tests {
 
         let rows = provider_summary(&provider);
 
+        assert_eq!(summary_value(&rows, "  grantTypes"), token_exchange);
+    }
+
+    #[test]
+    fn provider_summary_derives_token_exchange_granted_from_the_grant_list() {
+        let granting = provider_summary(&json!({
+            "advancedOAuth2Config": {
+                "grantTypes": [TOKEN_EXCHANGE_GRANT]
+            }
+        }));
+        let not_granting = provider_summary(&json!({
+            "advancedOAuth2Config": {
+                "grantTypes": ["authorization_code"]
+            }
+        }));
+
+        assert_eq!(summary_value(&granting, "  token-exchange granted"), "yes");
         assert_eq!(
-            summary_value(&rows, "advancedOAuth2Config.grantTypes"),
-            format!("[\"{token_exchange}\"]")
+            summary_value(&not_granting, "  token-exchange granted"),
+            "no"
         );
     }
 
@@ -667,31 +747,32 @@ mod tests {
         });
 
         assert_eq!(provider_summary(&wrapped), provider_summary(&bare));
-        assert!(
-            !summary_value(
-                &provider_summary(&wrapped),
-                "advancedOAuth2Config.grantTypes"
-            )
-            .contains("inherited")
-        );
+        assert!(!summary_value(&provider_summary(&wrapped), "  grantTypes").contains("inherited"));
     }
 
     #[test]
     fn provider_summary_distinguishes_absent_empty_and_configured_groups() {
         let absent = provider_summary(&json!({}));
         let empty = provider_summary(&json!({"pluginsConfig": {}}));
-        let configured = provider_summary(&json!({"pluginsConfig": {"scope": "scripted"}}));
+        let configured = provider_summary(&json!({
+            "pluginsConfig": {
+                "scope": "scripted",
+                "scripts": ["script-one", "script-two"]
+            }
+        }));
 
         assert_eq!(summary_value(&absent, "pluginsConfig"), "<absent>");
         assert_eq!(summary_value(&empty, "pluginsConfig"), "<empty>");
         assert_eq!(summary_value(&configured, "pluginsConfig"), "<configured>");
+        assert_eq!(summary_value(&configured, "  scope"), "scripted");
         assert_eq!(
-            summary_value(&configured, "pluginsConfig.values"),
-            "{\"scope\":\"scripted\"}"
+            summary_values(&configured, "  scripts"),
+            ["script-one", "script-two"]
         );
 
         let dcr = provider_summary(&json!({
-            "clientDynamicRegistrationConfig": {"enabled": true}
+            "clientDynamicRegistrationConfig": {"enabled": true},
+            "aiAgentsConfig": {"aiAgentsEnabled": false}
         }));
         for group in PROVIDER_GROUPS {
             assert!(
@@ -702,6 +783,35 @@ mod tests {
         assert_eq!(
             summary_value(&dcr, "clientDynamicRegistrationConfig"),
             "<configured>"
+        );
+        assert_eq!(summary_value(&dcr, "aiAgentsConfig"), "<configured>");
+        assert!(
+            !dcr.iter()
+                .any(|(field, _)| field == "unknown.aiAgentsConfig")
+        );
+    }
+
+    #[test]
+    fn provider_summary_distinguishes_absent_unset_sentinel_and_real_script() {
+        let absent = provider_summary(&json!({"coreOAuth2Config": {}}));
+        let unset = provider_summary(&json!({
+            "coreOAuth2Config": {"accessTokenMayActScript": "[Empty]"}
+        }));
+        let configured = provider_summary(&json!({
+            "coreOAuth2Config": {"accessTokenMayActScript": "script-id"}
+        }));
+
+        assert_eq!(
+            summary_value(&absent, "  accessTokenMayActScript"),
+            "<absent>"
+        );
+        assert_eq!(
+            summary_value(&unset, "  accessTokenMayActScript"),
+            "<not set>"
+        );
+        assert_eq!(
+            summary_value(&configured, "  accessTokenMayActScript"),
+            "script-id"
         );
     }
 
