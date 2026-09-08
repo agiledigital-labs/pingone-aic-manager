@@ -144,9 +144,21 @@ other create flags.
   },
   "pluginsConfig": {
     /* scope plugins, etc. */
+  },
+  "aiAgentsConfig": {
+    /* aiAgentsEnabled, aiAgentsIdentityObjectMapping */
   }
 }
 ```
+
+`_type` is present at the top level alongside `_id` and `_rev`.
+`aiAgentsConfig` is **not** in older captures of this document — AIC added it —
+so treat this group list as open and degrade gracefully on an unknown group
+rather than rejecting the document.
+
+`grantTypes` and `tokenExchangeClasses` both live under `advancedOAuth2Config`,
+NOT `coreOAuth2Config`. The comments above previously said otherwise; see the
+2026-09-08 entry under [Verified against](#verified-against).
 
 ## Per-client script overrides (verified 2026-07-29)
 
@@ -419,6 +431,34 @@ it as unset.
   audiences accepted when verifying client-authentication JWTs.
 
 ## Verified against
+
+- Tenant: `<your-tenant>.forgeblocks.com`, realms `alpha` and `bravo`
+- Date: 2026-09-08
+- Calls: `GET …/realm-config/services/oauth-oidc` with
+  `Accept-API-Version: protocol=2.1,resource=1.0` in both realms (200 each).
+  **`grantTypes` is under `advancedOAuth2Config` (38 keys), not
+  `coreOAuth2Config` (11 keys)** — `coreOAuth2Config` has no `grantTypes` key
+  at all, and holds `accessTokenLifetime`, `accessTokenMayActScript`,
+  `oidcMayActScript`, `refreshTokenLifetime`, `scopesPolicySet`,
+  `statelessTokensEnabled`, `usePolicyEngineForScope` and four others. The
+  elided comment in the shape block above claimed `coreOAuth2Config` held
+  "grant types allowed" and was wrong; it is corrected.
+  `tokenExchangeClasses` and
+  `acceptAudienceParametersInTokenExchangeRequests` are also under
+  `advancedOAuth2Config`; `accessTokenMayActScript` is under
+  `coreOAuth2Config` and read `[Empty]` in alpha.
+  **The two realms are a discriminating pair**: both carry byte-identical
+  `tokenExchangeClasses` (all four exchangers — access→access, id→id,
+  access→id, id→access), while only bravo's `grantTypes` contains
+  `urn:ietf:params:oauth:grant-type:token-exchange`. So a configured exchanger
+  does **not** imply the grant is enabled, and `tokenExchangeClasses` alone
+  cannot answer "can this realm exchange" — it is constant across a realm that
+  can and one that cannot. This confirms the 2026-08-27 finding in
+  [22](22-token-exchange.md) from the provider side.
+  A tenth top-level group, `aiAgentsConfig`
+  (`aiAgentsEnabled: false`, `aiAgentsIdentityObjectMapping: []`), is present in
+  both realms and absent from every earlier capture. Read-only: no `PUT` was
+  attempted, so provider writes remain unverified.
 
 - Tenant: `<your-tenant>.forgeblocks.com`, realm `bravo`
 - Date: 2026-09-03
