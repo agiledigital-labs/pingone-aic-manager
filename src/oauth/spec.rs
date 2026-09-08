@@ -759,6 +759,73 @@ mod tests {
         );
     }
 
+    /// The rewrite is structural, not semantic. A mapping naming a token type
+    /// or an exchanger class nobody here has seen still shortens, and that is
+    /// deliberate — pinned so introducing an allow-list is a decision someone
+    /// makes rather than a behaviour that drifts in.
+    #[test]
+    fn provider_summary_shortens_unfamiliar_token_types_and_classes() {
+        let unfamiliar = concat!(
+            "urn:ietf:params:oauth:token-type:bogus=>",
+            "urn:ietf:params:oauth:token-type:other|",
+            "com.example.MysteryExchanger"
+        );
+        let no_package = concat!(
+            "urn:ietf:params:oauth:token-type:access_token=>",
+            "urn:ietf:params:oauth:token-type:id_token|",
+            ".Foo"
+        );
+        let rows = provider_summary(&json!({
+            "advancedOAuth2Config": {
+                "tokenExchangeClasses": [unfamiliar, no_package]
+            }
+        }));
+
+        assert_eq!(
+            summary_values(&rows, "  tokenExchangeClasses"),
+            [
+                "bogus => other (MysteryExchanger)",
+                "access_token => id_token (Foo)"
+            ]
+        );
+    }
+
+    /// Anything that does not parse must reach the reader whole. A partially
+    /// rewritten exchanger is worse than a long one: it reads as a configured
+    /// mapping while naming something the tenant does not have.
+    #[test]
+    fn provider_summary_prints_unparseable_exchangers_in_full() {
+        const P: &str = "urn:ietf:params:oauth:token-type:";
+        let cases = [
+            // no package, so there is no final dot to split the class on
+            format!("{P}access_token=>{P}id_token|ExchangerWithoutPackage"),
+            // trailing dot leaves the class name empty
+            format!("{P}access_token=>{P}id_token|org.example."),
+            // a second arrow: which half is the target token type?
+            format!("{P}access_token=>{P}id_token=>{P}refresh_token|org.example.C"),
+            // a second pipe: which half is the class?
+            format!("{P}access_token=>{P}id_token|org.example.C|extra"),
+            // target token type is not URN-prefixed, so stripping would lie
+            format!("{P}access_token=>id_token|org.example.C"),
+            // source is the bare prefix and therefore names nothing
+            format!("{P}=>{P}id_token|org.example.C"),
+        ];
+
+        for case in cases {
+            let rows = provider_summary(&json!({
+                "advancedOAuth2Config": {
+                    "tokenExchangeClasses": [case.clone()]
+                }
+            }));
+
+            assert_eq!(
+                summary_values(&rows, "  tokenExchangeClasses"),
+                [case.as_str()],
+                "should have been printed in full: {case}"
+            );
+        }
+    }
+
     #[test]
     fn provider_summary_reads_grants_from_advanced_group_not_populated_core_group() {
         let token_exchange = "urn:ietf:params:oauth:grant-type:token-exchange";
