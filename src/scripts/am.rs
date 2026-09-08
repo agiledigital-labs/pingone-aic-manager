@@ -376,6 +376,24 @@ fn am_slug(r: &RemoteRef) -> String {
     slug_for(r.context.as_deref(), r.evaluator_version.as_deref())
 }
 
+/// Does this script answer a `--context` filter? Case-insensitive substring,
+/// against both spellings a caller might have in hand: the AM context constant
+/// (`OAUTH2_VALIDATE_SCOPE_NEXT_GEN`) and the workspace folder slug
+/// (`oauth2-validate-scope-ng`). Substring rather than exact so the base name
+/// finds both engine generations, which is the question that gets asked —
+/// `OAUTH2_VALIDATE_SCOPE` returns the legacy context and its `_NEXT_GEN`
+/// sibling together.
+///
+/// `false` for a script with no context (every IDM kind), so a filtered
+/// listing is AM-only by construction.
+pub fn context_matches(r: &RemoteRef, needle: &str) -> bool {
+    let Some(context) = r.context.as_deref() else {
+        return false;
+    };
+    let needle = needle.to_ascii_lowercase();
+    context.to_ascii_lowercase().contains(&needle) || am_slug(r).contains(&needle)
+}
+
 pub fn workspace_subpath(r: &RemoteRef, realm: &str) -> PathBuf {
     PathBuf::from("am")
         .join(realm)
@@ -668,6 +686,63 @@ mod tests {
             is_default: false,
             evaluator_version: evaluator_version.map(|s| s.to_string()),
         }
+    }
+
+    #[test]
+    fn context_filter_finds_both_engine_generations() {
+        // The question the filter exists to answer: locate the validate-scope
+        // scripts without knowing which generation they were written for. The
+        // base constant has to reach the `_NEXT_GEN` sibling, or the caller is
+        // back to grepping.
+        let legacy = rref_v(Some("OAUTH2_VALIDATE_SCOPE"), Some("1.0"));
+        let next_gen = rref_v(Some("OAUTH2_VALIDATE_SCOPE_NEXT_GEN"), Some("2.0"));
+        assert!(context_matches(&legacy, "OAUTH2_VALIDATE_SCOPE"));
+        assert!(context_matches(&next_gen, "OAUTH2_VALIDATE_SCOPE"));
+        // Lowercase spelling of the same constant works too.
+        assert!(context_matches(&next_gen, "oauth2_validate_scope"));
+    }
+
+    #[test]
+    fn context_filter_does_not_match_a_neighbouring_context() {
+        // `EVALUATE` and `VALIDATE` differ by two letters and both are OAuth2
+        // scope contexts, so this is the pair a too-loose match would confuse.
+        let evaluate = rref(Some("OAUTH2_EVALUATE_SCOPE_NEXT_GEN"));
+        assert!(!context_matches(&evaluate, "OAUTH2_VALIDATE_SCOPE"));
+        assert!(!context_matches(&evaluate, "oauth2-validate-scope"));
+    }
+
+    #[test]
+    fn context_filter_accepts_the_workspace_slug() {
+        // The slug is the folder name the caller has been editing in, and it is
+        // NOT a substring of the AM constant — hyphens where the constant has
+        // underscores, and `-ng` where it has `_NEXT_GEN`. So a slug hit proves
+        // the second spelling is really being consulted.
+        let next_gen = rref_v(Some("OAUTH2_VALIDATE_SCOPE_NEXT_GEN"), Some("2.0"));
+        assert!(context_matches(&next_gen, "oauth2-validate-scope-ng"));
+        assert!(!next_gen.context.as_deref().unwrap().contains("-ng"));
+
+        // Same for the decision node, whose slug shares no spelling with its
+        // constant at all.
+        let decision = rref_v(Some("SCRIPTED_DECISION_NODE"), Some("2.0"));
+        assert!(context_matches(&decision, "decision-node"));
+        // ...and the legacy generation is reached by the same base slug, then
+        // narrowed by the longer one.
+        let decision_legacy = rref_v(Some("SCRIPTED_DECISION_NODE"), Some("1.0"));
+        assert!(context_matches(&decision_legacy, "decision-node"));
+        assert!(context_matches(&decision_legacy, "decision-node-legacy"));
+        assert!(!context_matches(&decision, "decision-node-legacy"));
+    }
+
+    #[test]
+    fn context_filter_excludes_scripts_that_have_no_context() {
+        // Every IDM kind carries `context: None`, so a filtered listing is
+        // AM-only rather than silently keeping rows the filter cannot judge.
+        let idm = RemoteRef {
+            kind: Kind::IdmEndpoint,
+            ..rref(None)
+        };
+        assert!(!context_matches(&idm, "oauth2"));
+        assert!(!context_matches(&idm, ""));
     }
 
     #[test]
