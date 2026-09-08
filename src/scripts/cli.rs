@@ -16,6 +16,27 @@ pub enum ScriptCommand {
     List {
         /// Namespace or full-name to filter by (default: everything).
         reference: Option<String>,
+        #[arg(
+            long,
+            value_name = "TEXT",
+            help = "Only AM scripts whose context or workspace slug contains TEXT"
+        )]
+        context: Option<String>,
+        /// Only the scripts AM ships (`default: true`), which is what the
+        /// DEFAULT column reports. This is NOT the realm's configured default
+        /// for a context — that lives in `aic oauth provider get`.
+        #[arg(
+            long,
+            conflicts_with = "no_default",
+            help = "Only product-shipped scripts (the DEFAULT column, not the realm's configured default)"
+        )]
+        default: bool,
+        /// The complement: everything someone added to this tenant.
+        #[arg(
+            long = "no-default",
+            help = "Exclude product-shipped scripts — everything added to this tenant"
+        )]
+        no_default: bool,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long, help = "Print scripts as JSON")]
@@ -200,12 +221,14 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
     match cmd {
         ScriptCommand::List {
             reference,
+            context,
+            default,
+            no_default,
             tenant,
             json,
         } => {
             let t = tenant_for(tenant)?;
-            let mut out = Vec::new();
-            let mut rows = Vec::new();
+            let mut listing = Vec::new();
             for job in parse_ref(reference)? {
                 for sref in job.ns.kind.list(&t, job.ns.realm_arg()).await? {
                     // A specific-name ref filters the listing to that script.
@@ -214,13 +237,25 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                             continue;
                         }
                     }
-                    rows.push(listed_row(&sref, &job.ns));
-                    out.push(listed(&sref, &job.ns));
+                    listing.push((sref, job.ns.clone()));
                 }
             }
+            let filter = ListFilter {
+                context: context.as_deref(),
+                default,
+                no_default,
+            };
+            let kept: Vec<_> = listing.iter().filter(|(r, _)| filter.keeps(r)).collect();
+            if kept.is_empty() && !listing.is_empty() {
+                // Silence here reads as "the tenant has none", which is the
+                // wrong conclusion when the needle was simply misspelled.
+                eprintln!("{}", no_match_hint(&filter, &listing));
+            }
             if json {
+                let out: Vec<_> = kept.iter().map(|(r, ns)| listed(r, ns)).collect();
                 print_json(&out)
             } else {
+                let rows: Vec<_> = kept.iter().map(|(r, ns)| listed_row(r, ns)).collect();
                 print_table(
                     &["REF", "KIND", "CONTEXT", "ENGINE", "DEFAULT", "ID"],
                     &rows,
@@ -1231,6 +1266,67 @@ fn require_workspace(tenant: &str) -> Result<()> {
 }
 
 /// Render a listed script as JSON, tagged with its copy-pasteable `ref`.
+/// The `script list` row filters. Held together so the "nothing matched"
+/// message can name whichever ones were actually in play.
+#[derive(Debug, Clone, Copy)]
+struct ListFilter<'a> {
+    context: Option<&'a str>,
+    default: bool,
+    no_default: bool,
+}
+
+impl ListFilter<'_> {
+    fn active(&self) -> bool {
+        self.context.is_some() || self.default || self.no_default
+    }
+
+    fn keeps(&self, r: &script::RemoteRef) -> bool {
+        if let Some(needle) = self.context
+            && !script::am::context_matches(r, needle)
+        {
+            return false;
+        }
+        if self.default && !r.is_default {
+            return false;
+        }
+        if self.no_default && r.is_default {
+            return false;
+        }
+        true
+    }
+}
+
+/// What to say when the tenant has scripts but the filter kept none. The
+/// context slugs come from the listing we already fetched, so the suggestion
+/// is what this tenant actually has rather than what AM ships.
+fn no_match_hint(filter: &ListFilter, listing: &[(script::RemoteRef, Namespace)]) -> String {
+    if !filter.active() {
+        return "no scripts matched".to_string();
+    }
+    let Some(needle) = filter.context else {
+        return "no scripts matched the filter".to_string();
+    };
+    let mut contexts: Vec<_> = listing
+        .iter()
+        .filter_map(|(r, _)| r.context.clone())
+        .collect();
+    contexts.sort();
+    contexts.dedup();
+    if contexts.is_empty() {
+        // `endpoint`/`schedule`/`managed`/`sync` carry no context at all, so
+        // the honest answer is that the flag cannot narrow this listing —
+        // naming an empty set of alternatives would read as a tenant with no
+        // scripts in it.
+        return format!(
+            "--context {needle:?} matched nothing: only AM scripts have a context, and this listing has none"
+        );
+    }
+    format!(
+        "no scripts matched --context {needle:?}; contexts on this tenant: {}",
+        contexts.join(", ")
+    )
+}
+
 fn listed(r: &script::RemoteRef, ns: &Namespace) -> serde_json::Value {
     let mut v = serde_json::to_value(r).unwrap_or(serde_json::Value::Null);
     if let Some(obj) = v.as_object_mut() {
@@ -2259,6 +2355,126 @@ mod tests {
         assert!(validate_copy(&alpha, "Foo", &alpha, "Foo").is_err());
         assert!(require_standalone(script::Kind::IdmManagedHook, "user.onCreate").is_err());
         assert!(require_standalone(script::Kind::IdmSyncMapping, "map.onUpdate").is_err());
+    }
+
+    fn amref(name: &str, context: Option<&str>, is_default: bool) -> script::RemoteRef {
+        script::RemoteRef {
+            kind: script::Kind::Am,
+            id: format!("id-{name}"),
+            name: name.into(),
+            context: context.map(|c| c.to_string()),
+            is_default,
+            evaluator_version: Some("2.0".into()),
+        }
+    }
+
+    #[test]
+    fn list_filters_are_off_unless_asked_for() {
+        let none = ListFilter {
+            context: None,
+            default: false,
+            no_default: false,
+        };
+        assert!(!none.active());
+        // An unfiltered listing must keep the rows a filtered one would drop —
+        // both an IDM script (no context to judge) and a product default.
+        assert!(none.keeps(&amref("Shipped", Some("OIDC_CLAIMS"), true)));
+        assert!(none.keeps(&script::RemoteRef {
+            kind: script::Kind::IdmEndpoint,
+            ..amref("hello", None, false)
+        }));
+    }
+
+    #[test]
+    fn default_and_no_default_are_opposites_over_the_same_rows() {
+        let rows = [
+            amref("Shipped", Some("OIDC_CLAIMS"), true),
+            amref("Mine", Some("OIDC_CLAIMS"), false),
+        ];
+        let only = ListFilter {
+            context: None,
+            default: true,
+            no_default: false,
+        };
+        let without = ListFilter {
+            context: None,
+            default: false,
+            no_default: true,
+        };
+        for r in &rows {
+            // Every row lands in exactly one of the two listings; a row kept by
+            // both, or by neither, would mean the pair no longer partitions.
+            assert_ne!(only.keeps(r), without.keeps(r), "{}", r.name);
+        }
+        assert!(only.keeps(&rows[0]));
+        assert!(without.keeps(&rows[1]));
+    }
+
+    #[test]
+    fn default_and_no_default_cannot_be_combined() {
+        use clap::Parser;
+        assert!(
+            crate::cli::Cli::try_parse_from(["aic", "script", "list", "--default", "--no-default"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn context_and_default_filters_compose() {
+        // Each filter alone keeps this row, so a conjunction bug would be
+        // invisible without a row that satisfies one and fails the other.
+        let shipped_claims = amref("Shipped", Some("OIDC_CLAIMS"), true);
+        let mine_claims = amref("Mine", Some("OIDC_CLAIMS"), false);
+        let f = ListFilter {
+            context: Some("oidc-claims"),
+            default: false,
+            no_default: true,
+        };
+        assert!(f.keeps(&mine_claims));
+        assert!(!f.keeps(&shipped_claims));
+    }
+
+    #[test]
+    fn empty_result_names_the_contexts_the_tenant_has() {
+        let ns = Namespace::parse("alpha").unwrap();
+        let listing = vec![
+            (amref("A", Some("OIDC_CLAIMS"), false), ns.clone()),
+            (
+                amref("B", Some("OAUTH2_VALIDATE_SCOPE_NEXT_GEN"), false),
+                ns,
+            ),
+        ];
+        let f = ListFilter {
+            context: Some("validate-scoped"),
+            default: false,
+            no_default: false,
+        };
+        let hint = no_match_hint(&f, &listing);
+        assert!(hint.contains("validate-scoped"), "{hint}");
+        assert!(hint.contains("OAUTH2_VALIDATE_SCOPE_NEXT_GEN"), "{hint}");
+        assert!(hint.contains("OIDC_CLAIMS"), "{hint}");
+    }
+
+    #[test]
+    fn empty_result_says_so_plainly_when_no_row_has_a_context() {
+        // Regression: this printed "contexts on this tenant: " with nothing
+        // after the colon, which reads as a tenant holding no scripts.
+        let ns = Namespace::parse("endpoint").unwrap();
+        let listing = vec![(
+            script::RemoteRef {
+                kind: script::Kind::IdmEndpoint,
+                ..amref("hello", None, false)
+            },
+            ns,
+        )];
+        let f = ListFilter {
+            context: Some("oauth2"),
+            default: false,
+            no_default: false,
+        };
+        let hint = no_match_hint(&f, &listing);
+        assert!(hint.contains("only AM scripts have a context"), "{hint}");
+        assert!(!hint.ends_with(": "), "{hint}");
     }
 
     #[test]

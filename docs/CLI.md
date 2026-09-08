@@ -848,7 +848,7 @@ resolves its namespace from your current directory. A bare namespace (`bravo`,
 ### Commands
 
 ```bash
-aic script list [<ref>] [--json]                # list scripts (each row tagged with its `ref`)
+aic script list [<ref>] [--context TEXT] [--default | --no-default] [--json]
 aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--tenant TENANT] [--yes]
 aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes]
 aic script delete <ref> --force [--tenant TENANT] [--yes]
@@ -861,6 +861,21 @@ aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```
 
+- `list` tags each row with its `ref` and narrows three ways.
+  `--context TEXT` keeps AM scripts whose context **or** workspace folder slug
+  contains `TEXT`, case-insensitively — so `--context OAUTH2_VALIDATE_SCOPE`
+  returns both the legacy context and its `_NEXT_GEN` sibling, and
+  `--context decision-node` returns both engine generations while
+  `--context decision-node-legacy` returns only the 1.0 ones. It matches no IDM
+  script, because only AM scripts have a context. When the filter keeps nothing,
+  the contexts the tenant actually has are printed on stderr.
+- `--default` / `--no-default` split the listing on the **DEFAULT** column,
+  which means _shipped with the product_ (AM's `default: true`) — the scripts
+  `script delete` refuses to remove. It does **not** mean "the script this realm
+  is configured to run". That question is answered by
+  `aic oauth provider get` (realm-wide, e.g. `validateScopeScript`) and by the
+  client's own `overrideOAuth2ClientConfig` (per-client). Both report a script
+  UUID; resolve it against the `ID` column of a listing.
 - `create`, `copy`, and `delete` apply only to standalone AM scripts, IDM
   endpoints, and IDM schedules. Managed hooks and sync-mapping scripts are slots
   in their owning configuration documents.
