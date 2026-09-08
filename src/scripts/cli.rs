@@ -9,6 +9,31 @@ use crate::config::{self, ProjectConfig, TenantTheme};
 use crate::scripts::{self as script, Namespace};
 use crate::{Error, Result};
 
+/// Map the CLI's opt-out flag onto the engine's gate.
+fn gate_for(no_syntax_check: bool) -> script::sync::SyntaxGate {
+    if no_syntax_check {
+        script::sync::SyntaxGate::Skip
+    } else {
+        script::sync::SyntaxGate::Check
+    }
+}
+
+/// Report a refused push. Shared by every surface so the remedy is worded
+/// once — and it names `--no-syntax-check` rather than `--force`, which does
+/// not (and must not) get past this.
+fn report_invalid(full: &str, errors: &[script::syntax::SyntaxError]) {
+    eprintln!("{full}: the tenant refused to parse this source — nothing was written");
+    for e in errors {
+        eprintln!("  {}", e.render());
+    }
+    if errors.iter().all(|e| e.line.is_none()) {
+        // IDM never reports coordinates for JavaScript, so say so rather than
+        // let the operator hunt for a line number that was never sent.
+        eprintln!("  (IDM reports no line number for JavaScript syntax errors)");
+    }
+    eprintln!("  fix the source, or pass --no-syntax-check to write it anyway");
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ScriptCommand {
     /// List scripts on the tenant. Optional <ref> narrows the listing:
@@ -60,6 +85,9 @@ pub enum ScriptCommand {
         tenant: Option<String>,
         #[arg(long, help = "Confirm the write")]
         yes: bool,
+        /// Write without asking the tenant to parse the source first.
+        #[arg(long)]
+        no_syntax_check: bool,
     },
     /// Copy a standalone script, including its complete raw config.
     Copy {
@@ -69,6 +97,9 @@ pub enum ScriptCommand {
         tenant: Option<String>,
         #[arg(long, help = "Confirm the write")]
         yes: bool,
+        /// Write without asking the tenant to parse the source first.
+        #[arg(long)]
+        no_syntax_check: bool,
     },
     /// Delete a standalone script, retaining its local source file.
     Delete {
@@ -106,11 +137,23 @@ pub enum ScriptCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         /// Push past a remote-drift conflict (overwrites remote).
+        ///
+        /// Does **not** override the syntax pre-flight: drift is a question of
+        /// whose content wins, an unparseable script is broken either way.
         #[arg(long)]
         force: bool,
         /// Confirm the write.
         #[arg(long)]
         yes: bool,
+        /// Write without asking the tenant to parse the source first.
+        ///
+        /// The pre-flight is cheap (~0.15s) and catches a class of failure
+        /// that otherwise surfaces far from the edit — a broken IDM endpoint
+        /// 404s at its runtime URL, and a broken AM script fails whenever its
+        /// journey next evaluates. Skip it only when the check itself is in
+        /// the way.
+        #[arg(long)]
+        no_syntax_check: bool,
     },
     /// Show the sync state of synced scripts. Optional <ref> filters by
     /// namespace (`bravo`, `endpoint`).
@@ -164,6 +207,15 @@ pub enum ScriptCommand {
         /// Confirm writes.
         #[arg(long)]
         yes: bool,
+        /// Write without asking the tenant to parse the source first.
+        ///
+        /// The pre-flight is cheap (~0.15s) and catches a class of failure
+        /// that otherwise surfaces far from the edit — a broken IDM endpoint
+        /// 404s at its runtime URL, and a broken AM script fails whenever its
+        /// journey next evaluates. Skip it only when the check itself is in
+        /// the way.
+        #[arg(long)]
+        no_syntax_check: bool,
     },
     /// Watch the workspace and push each `.cjs` you save back to the tenant
     /// (runs until Ctrl-C). Reacts to local saves only — run `sync`/`pull` to
@@ -174,6 +226,15 @@ pub enum ScriptCommand {
         /// Confirm writes.
         #[arg(long)]
         yes: bool,
+        /// Write without asking the tenant to parse the source first.
+        ///
+        /// The pre-flight is cheap (~0.15s) and catches a class of failure
+        /// that otherwise surfaces far from the edit — a broken IDM endpoint
+        /// 404s at its runtime URL, and a broken AM script fails whenever its
+        /// journey next evaluates. Skip it only when the check itself is in
+        /// the way.
+        #[arg(long)]
+        no_syntax_check: bool,
     },
     /// Diff a script (colored, via `git diff`). Default compares your local
     /// copy against the tenant. With no <ref>, opens a fuzzy picker over synced
@@ -272,7 +333,9 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             description,
             tenant,
             yes,
+            no_syntax_check,
         } => {
+            let gate = gate_for(no_syntax_check);
             let tenant = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&tenant)?;
             require_workspace(&tenant)?;
@@ -309,7 +372,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             }
             let new_script = ns.kind.new_script(&name, &source, &opts)?;
             let created =
-                prod_hint(sync::create_new(&tenant, ns.realm_arg(), &new_script, yes).await)?;
+                prod_hint(sync::create_new(&tenant, ns.realm_arg(), &new_script, yes, gate).await)?;
             let path = ProjectConfig::workspace_tree(&tenant).join(
                 created
                     .reference
@@ -338,7 +401,9 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             destination,
             tenant,
             yes,
+            no_syntax_check,
         } => {
+            let gate = gate_for(no_syntax_check);
             let tenant = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&tenant)?;
             require_workspace(&tenant)?;
@@ -365,6 +430,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     &fetched,
                     &destination_name,
                     yes,
+                    gate,
                 )
                 .await,
             )?;
@@ -496,11 +562,13 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             tenant,
             force,
             yes,
+            no_syntax_check,
         } => {
+            let gate = gate_for(no_syntax_check);
             let t = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             if reference.as_deref() == Some("all") {
-                return push_all(&t, force, yes).await;
+                return push_all(&t, force, yes, gate).await;
             }
             // No ref → fuzzy-pick one (changed scripts marked `!`, first).
             let (ns, name) = match reference {
@@ -510,7 +578,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     None => return Ok(()),
                 },
             };
-            push_one(&t, &ns, &name, force, yes).await?;
+            push_one(&t, &ns, &name, force, yes, gate).await?;
             workspace_update_hint(&t)?;
             Ok(())
         }
@@ -567,7 +635,9 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             resolve,
             tenant,
             yes,
+            no_syntax_check,
         } => {
+            let gate = gate_for(no_syntax_check);
             let t = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             let cands = select_synced(sync::push_candidates(&t)?, reference)?;
@@ -575,7 +645,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 println!("nothing synced to reconcile — `aic script pull …` first");
                 return Ok(());
             }
-            let (mut pushed, mut pulled, mut in_sync) = (0u32, 0u32, 0u32);
+            let (mut pushed, mut pulled, mut in_sync, mut invalid) = (0u32, 0u32, 0u32, 0u32);
             let mut conflicts: Vec<String> = Vec::new();
             let mut stopped = false;
             for c in cands {
@@ -587,8 +657,14 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     kind: c.kind,
                     realm: c.realm.clone(),
                 };
-                match prod_hint(sync::reconcile(&t, ns.realm_arg(), c.kind, &c.name, yes).await)? {
+                match prod_hint(
+                    sync::reconcile(&t, ns.realm_arg(), c.kind, &c.name, yes, gate).await,
+                )? {
                     sync::ReconcileOutcome::InSync => in_sync += 1,
+                    sync::ReconcileOutcome::Invalid(errors) => {
+                        invalid += 1;
+                        report_invalid(&full, &errors);
+                    }
                     sync::ReconcileOutcome::Pushed => {
                         pushed += 1;
                         println!("→ pushed {full}");
@@ -610,8 +686,16 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                         match choice {
                             ConflictChoice::Local => {
                                 prod_hint(
-                                    sync::push(&t, ns.realm_arg(), c.kind, &c.name, true, yes)
-                                        .await,
+                                    sync::push(
+                                        &t,
+                                        ns.realm_arg(),
+                                        c.kind,
+                                        &c.name,
+                                        true,
+                                        yes,
+                                        gate,
+                                    )
+                                    .await,
                                 )?;
                                 pushed += 1;
                                 println!("→ pushed {full} (resolved: local)");
@@ -642,9 +726,16 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 }
             }
             println!(
-                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {}",
+                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {}{}",
                 if stopped { " (stopped, partial)" } else { "" },
-                conflicts.len()
+                conflicts.len(),
+                if invalid > 0 {
+                    format!(" · refused {invalid}")
+                } else {
+                    // Stay off the happy-path line: a zero here would invite
+                    // reading its absence elsewhere as "checked and fine".
+                    String::new()
+                }
             );
             if !conflicts.is_empty() {
                 println!("unresolved (try `aic script diff <ref>`, then push/pull --force):");
@@ -655,10 +746,14 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             workspace_update_hint(&t)?;
             Ok(())
         }
-        ScriptCommand::Watch { tenant, yes } => {
+        ScriptCommand::Watch {
+            tenant,
+            yes,
+            no_syntax_check,
+        } => {
             let t = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
-            watch(&t, yes).await
+            watch(&t, yes, gate_for(no_syntax_check)).await
         }
         ScriptCommand::Diff {
             reference,
@@ -1535,7 +1630,7 @@ fn collect_cjs(
 /// Watch the tenant workspace and push each saved `.cjs` (debounced). Pushes a
 /// file only if it's a tracked (synced) script; remote drift is resolved with
 /// the same choices as `sync`. Runs until Ctrl-C.
-async fn watch(tenant: &str, yes: bool) -> Result<()> {
+async fn watch(tenant: &str, yes: bool, gate: script::sync::SyntaxGate) -> Result<()> {
     use notify::{RecursiveMode, Watcher};
     use script::sync::{LocalState, PushOutcome};
 
@@ -1613,11 +1708,14 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                     if ns.kind != script::Kind::IdmEndpoint || !declared.contains(&name) {
                         continue;
                     }
-                    match adopt_generated(tenant, &ns, &name, &full, &path, yes, &stop).await {
+                    match adopt_generated(tenant, &ns, &name, &path, yes, &stop, gate).await {
                         Ok(Adoption::Created) => {
                             println!("{}", watch_green(&format!("+ created {full}")));
                             continue;
                         }
+                        // Left untracked deliberately: the next save retries,
+                        // which is what the operator will do after fixing it.
+                        Ok(Adoption::Invalid) => continue,
                         // Now tracked, so fall through and let the ordinary
                         // push decide what to do with the local build.
                         Ok(Adoption::Adopted(backup)) => {
@@ -1681,11 +1779,15 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
             // stop is honoured at the top of the next iteration instead; the
             // transport's own timeout is what bounds the wait.
             let result = prod_hint(
-                script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes).await,
+                script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes, gate).await,
             );
             match result {
                 Ok(PushOutcome::Pushed) => println!("{}", watch_green(&format!("→ pushed {full}"))),
                 Ok(PushOutcome::Unchanged | PushOutcome::AlreadyInSync) => {}
+                // Keep watching: the operator's next save is the retry, and
+                // this is the case the whole gate exists for — a build that
+                // compiles locally can still be source the tenant refuses.
+                Ok(PushOutcome::Invalid(errors)) => report_invalid(&full, &errors),
                 // The push was uncancellable, so a stop may have landed while
                 // it ran. Do not open a prompt on the way out.
                 Ok(PushOutcome::Conflict(_)) if stop.stopped() => {
@@ -1707,6 +1809,7 @@ async fn watch(tenant: &str, yes: bool) -> Result<()> {
                                     &name,
                                     true,
                                     yes,
+                                    gate,
                                 )
                                 .await,
                             );
@@ -1784,6 +1887,9 @@ enum Adoption {
     Declined,
     /// The operator asked for the tenant's copy instead of ours.
     TakeRemote(script::RemoteRef),
+    /// The tenant refused to parse the local source, so there was nothing
+    /// valid to create. Still untracked; fixing the file and saving retries.
+    Invalid,
     /// Ctrl-C at the prompt. A variant rather than an error, because an error
     /// here is non-fatal and would print "stopped watching." and then carry on
     /// watching — which is the shape this whole commit is about.
@@ -1816,20 +1922,28 @@ async fn adopt_generated(
     tenant: &str,
     ns: &Namespace,
     name: &str,
-    full: &str,
     path: &std::path::Path,
     yes: bool,
     stop: &Stop,
+    gate: script::sync::SyntaxGate,
 ) -> Result<Adoption> {
+    // Derived rather than passed alongside `name`: the caller had both, and
+    // two parameters that must agree are one parameter too many.
+    let full = &script::full_name(ns.kind, ns.realm.as_deref(), name);
     let source =
         std::fs::read(path).map_err(|e| Error::Config(format!("read {}: {e}", path.display())))?;
     let new_script = ns
         .kind
         .new_script(name, &source, &script::NewScriptOpts::default())?;
-    let outcome = prod_hint(script::sync::create(tenant, ns.realm_arg(), &new_script, yes).await)?;
+    let outcome =
+        prod_hint(script::sync::create(tenant, ns.realm_arg(), &new_script, yes, gate).await)?;
     let existing = match outcome {
         script::sync::CreateOutcome::Created(_) => return Ok(Adoption::Created),
         script::sync::CreateOutcome::NameTaken(existing) => existing,
+        script::sync::CreateOutcome::Invalid(errors) => {
+            report_invalid(full, &errors);
+            return Ok(Adoption::Invalid);
+        }
     };
     // One fetch: the copy that is compared is the copy that becomes the
     // baseline, so a write landing between the two cannot be adopted unseen.
@@ -1991,11 +2105,24 @@ fn confirm_overwrite(prompt: &str) -> Result<Option<bool>> {
     confirm_destructive("script overwrite", prompt, "--force").map(Some)
 }
 
-async fn push_one(tenant: &str, ns: &Namespace, name: &str, force: bool, yes: bool) -> Result<()> {
+async fn push_one(
+    tenant: &str,
+    ns: &Namespace,
+    name: &str,
+    force: bool,
+    yes: bool,
+    gate: script::sync::SyntaxGate,
+) -> Result<()> {
     use script::sync::PushOutcome;
     let full = script::full_name(ns.kind, ns.realm.as_deref(), name);
-    match prod_hint(script::sync::push(tenant, ns.realm_arg(), ns.kind, name, force, yes).await)? {
+    match prod_hint(
+        script::sync::push(tenant, ns.realm_arg(), ns.kind, name, force, yes, gate).await,
+    )? {
         PushOutcome::Pushed => println!("pushed {full}"),
+        PushOutcome::Invalid(errors) => {
+            report_invalid(&full, &errors);
+            return Err(Error::Config(format!("{full} was not pushed")));
+        }
         PushOutcome::Unchanged => println!("{full}: no local changes to push"),
         PushOutcome::AlreadyInSync => {
             println!("{full}: remote already matched local; snapshot refreshed")
@@ -2007,7 +2134,8 @@ async fn push_one(tenant: &str, ns: &Namespace, name: &str, force: bool, yes: bo
             ))? {
                 Some(true) => {
                     prod_hint(
-                        script::sync::push(tenant, ns.realm_arg(), ns.kind, name, true, yes).await,
+                        script::sync::push(tenant, ns.realm_arg(), ns.kind, name, true, yes, gate)
+                            .await,
                     )?;
                     println!("pushed {full} (overwrote remote changes)");
                 }
@@ -2029,7 +2157,12 @@ async fn push_one(tenant: &str, ns: &Namespace, name: &str, force: bool, yes: bo
 /// are skipped (nothing to push); product defaults are skipped (push them
 /// explicitly with `--force`); remote-drift conflicts are reported and skipped
 /// rather than aborting the batch.
-async fn push_all(tenant: &str, force: bool, yes: bool) -> Result<()> {
+async fn push_all(
+    tenant: &str,
+    force: bool,
+    yes: bool,
+    gate: script::sync::SyntaxGate,
+) -> Result<()> {
     use script::sync::{LocalState, PushOutcome};
     let changed: Vec<_> = script::sync::push_candidates(tenant)?
         .into_iter()
@@ -2039,6 +2172,7 @@ async fn push_all(tenant: &str, force: bool, yes: bool) -> Result<()> {
         println!("nothing changed to push");
         return Ok(());
     }
+    let mut refused = 0u32;
     for c in changed {
         let full = full_of(&c);
         let ns = Namespace {
@@ -2046,16 +2180,27 @@ async fn push_all(tenant: &str, force: bool, yes: bool) -> Result<()> {
             realm: c.realm.clone(),
         };
         match prod_hint(
-            script::sync::push(tenant, ns.realm_arg(), c.kind, &c.name, force, yes).await,
+            script::sync::push(tenant, ns.realm_arg(), c.kind, &c.name, force, yes, gate).await,
         )? {
             PushOutcome::Pushed => println!("pushed {full}"),
             PushOutcome::Unchanged | PushOutcome::AlreadyInSync => {}
+            PushOutcome::Invalid(errors) => {
+                report_invalid(&full, &errors);
+                refused += 1;
+            }
             PushOutcome::Conflict(_) => {
                 println!("{full}: CONFLICT — skipped (`diff {full}`, or `push {full} --force`)")
             }
         }
     }
     workspace_update_hint(tenant)?;
+    if refused > 0 {
+        // A batch that left something unpushed must not exit 0, or a script
+        // calling `push all` reads the refusal as a success.
+        return Err(Error::Config(format!(
+            "{refused} script(s) were not pushed — the tenant refused to parse them"
+        )));
+    }
     Ok(())
 }
 

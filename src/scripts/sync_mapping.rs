@@ -23,6 +23,7 @@
 //!   (`{"type": ..., "file": "..."}`) reference server-side files the config
 //!   API cannot read or write, so they are skipped and treated as read-only.
 
+use super::syntax::SyntaxCheck;
 use super::{Kind, RemoteRef, RemoteScript};
 use crate::{Error, Result};
 use serde_json::Value;
@@ -424,6 +425,12 @@ pub fn encode_source(raw: &mut Value, source: &[u8]) -> Result<()> {
         .ok_or_else(|| Error::Config("sync mapping script config is not an object".into()))?;
     map.insert("source".into(), Value::String(s));
     Ok(())
+}
+
+/// Syntax-check the mapping script source before the read-modify-write of the
+/// shared `config/sync` document.
+pub async fn check_syntax(tenant: &str, script: &RemoteScript) -> Result<SyntaxCheck> {
+    super::syntax::idm_check_slot(tenant, Some(&script.raw_config)).await
 }
 
 fn attr_file_slug(attr: &str) -> String {

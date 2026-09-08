@@ -3,6 +3,7 @@
 //! `protocol=2.0,resource=1.0` header, base64 `script` body, and context→dir
 //! routing. See `docs/api/04-scripts.md`.
 
+use super::syntax::{self, SyntaxCheck};
 use super::{Kind, NewScriptOpts, RemoteRef, RemoteScript};
 use crate::{Error, Result};
 use base64::Engine as _;
@@ -271,6 +272,42 @@ pub async fn write(
         API_VERSION,
     )
     .await
+}
+
+/// Syntax-check a script through `?_action=validate` without storing it.
+///
+/// AM's write path does no parsing, so this is the only thing between a typo
+/// and a broken journey — and the action answers **HTTP 200 whether or not the
+/// script parses**, which is why the verdict comes from
+/// [`syntax::parse_am_validate`] and never from the status code.
+/// See `docs/api/04-scripts.md` ("Syntax validation").
+pub async fn check_syntax(tenant: &str, realm: &str, script: &RemoteScript) -> Result<SyntaxCheck> {
+    // Send exactly what the tenant stores. Re-encoding the decoded bytes would
+    // check a different string than the one about to be written whenever a
+    // legacy script keeps `script` as an array of lines.
+    let Some(script_b64) = script.raw_config.get("script").and_then(Value::as_str) else {
+        return Ok(SyntaxCheck::Skipped(
+            "no base64 `script` field to validate".into(),
+        ));
+    };
+    let language = script
+        .raw_config
+        .get("language")
+        .and_then(Value::as_str)
+        .unwrap_or("JAVASCRIPT");
+    // Note the trailing slash before `?` — the action route needs it.
+    let path = format!("{}/scripts/?_action=validate", realm_path(realm));
+    let body = crate::aic::api::post_versioned(
+        tenant,
+        &path,
+        syntax::am_validate_body(script_b64, language),
+        // A validate stores nothing, so it is not a tenant write and must not
+        // consume a production confirmation.
+        true,
+        API_VERSION,
+    )
+    .await?;
+    Ok(syntax::parse_am_validate(&body))
 }
 
 pub async fn delete(tenant: &str, realm: &str, id: &str, confirmed_prod: bool) -> Result<Value> {

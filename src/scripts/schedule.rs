@@ -4,6 +4,7 @@
 //! script-invoking schedules carry one (taskscanner/sync jobs don't). See
 //! `docs/api/11-idm-endpoints.md`.
 
+use super::syntax::SyntaxCheck;
 use super::{Kind, NewScriptOpts, RemoteRef, RemoteScript};
 use crate::{Error, Result};
 use serde_json::Value;
@@ -121,6 +122,12 @@ pub fn encode_source(raw: &mut Value, source: &[u8]) -> Result<()> {
         .ok_or_else(|| Error::Config("schedule has no invokeContext.script object".into()))?;
     script.insert("source".into(), Value::String(s));
     Ok(())
+}
+
+/// Syntax-check the schedule's script before writing. The source lives one
+/// level down at `invokeContext.script`, not at the config root.
+pub async fn check_syntax(tenant: &str, script: &RemoteScript) -> Result<SyntaxCheck> {
+    super::syntax::idm_check_slot(tenant, script.raw_config.pointer("/invokeContext/script")).await
 }
 
 pub fn workspace_subpath(r: &RemoteRef) -> PathBuf {

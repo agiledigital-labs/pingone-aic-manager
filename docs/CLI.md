@@ -853,7 +853,7 @@ aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evalu
 aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes]
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--force]               # pull; no ref → fuzzy picker
-aic script push [<ref>] [--force] [--yes]       # push local edits; no ref → fuzzy picker
+aic script push [<ref>] [--force] [--yes] [--no-syntax-check]  # push local edits
 aic script sync [<ref>] [--resolve local|remote] # reconcile: push local-only, pull remote-only
 aic script watch                                # auto-push each .cjs you save (Ctrl-C to stop; also creates generated endpoints)
 aic script status [<ref>]                       # in sync / modified / remote / conflict
@@ -918,6 +918,28 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   proceeds if the remote still matches what you last synced — even if the
   revision moved but the content reverted. If the remote content drifted, the
   push is blocked and a 3-way diff is shown; `--force` overrides.
+- **Every write is syntax-checked first.** Before `create`, `copy`, `push`,
+  `sync` and `watch` write anything, the tenant is asked to parse the source —
+  AM through `scripts?_action=validate`, IDM through `script?_action=compile`.
+  Neither write path does this itself: a `PUT` of a script that does not parse
+  succeeds with a 201, and the breakage then surfaces far from the edit. A
+  broken AM script fails whenever its journey or token flow next evaluates; a
+  broken IDM endpoint answers **404** at its runtime URL while its config
+  object still reads back 200, so it presents as an endpoint that was never
+  created.
+
+  A refusal writes nothing, leaves the snapshot alone, and exits non-zero, so
+  the local edit survives for you to fix and push again. AM reports the line
+  and column; **IDM reports neither for JavaScript** — its message is the bare
+  parser string ("syntax error") even when the fault is on line 40 — and the
+  output says so rather than leave you hunting for a coordinate that was never
+  sent.
+
+  `--force` does **not** override this, and that is deliberate: drift is a
+  question of whose content wins, while an unparseable script is broken
+  whoever wrote it. `--no-syntax-check` is the escape hatch, on every one of
+  those commands, for when the check itself is in the way. The pre-flight is
+  one extra call, ~0.15s.
 - **`status` filters.** `am`/`idm` are group aliases; anything else is a
   case-insensitive substring of the full-name (use a trailing slash, e.g.
   `alpha/`, to match only that AM realm and exclude `managed/alpha_user…`).
