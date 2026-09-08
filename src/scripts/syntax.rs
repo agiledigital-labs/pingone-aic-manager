@@ -32,17 +32,86 @@ use crate::{Error, Result};
 use serde_json::{Value, json};
 
 /// The verdict of a pre-push syntax check.
+///
+/// Two ways of having no verdict, deliberately separated, because they earn
+/// opposite answers. [`Unsupported`](SyntaxCheck::Unsupported) is decided
+/// **before** any request from the resource itself — nothing here is
+/// checkable, and refusing would only break a write that never had a check to
+/// lose. [`NoVerdict`](SyntaxCheck::NoVerdict) means the check ran and did not
+/// answer, and under the default gate that refuses the write: no verdict, no
+/// write. Inferring the first from a response code is what let a 503 outage
+/// authorise a write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyntaxCheck {
     /// The tenant parsed the source.
     Ok,
     /// The tenant refused it. Always at least one error.
     Invalid(Vec<SyntaxError>),
-    /// The check could not produce a verdict. Carries the reason for the
-    /// caller to surface. **Not** a failure: the push proceeds, because the
-    /// write path never checked syntax to begin with and blocking on an
-    /// unanswerable pre-flight would be a regression against no pre-flight.
-    Skipped(String),
+    /// This resource cannot be syntax-checked at all — established from what
+    /// it stores, with no request made. Carries the reason. The write goes
+    /// ahead, and the surface says it went unchecked.
+    Unsupported(String),
+    /// The check was attempted and produced no verdict: an unexpected body, a
+    /// status that does not decide, a slot with no source to send. Carries the
+    /// reason. Under [`SyntaxGate::Check`](crate::scripts::sync::SyntaxGate)
+    /// **nothing is written** — the only honest answer when the pre-flight
+    /// that exists to catch a typo could not run.
+    NoVerdict(String),
+}
+
+/// Why the gate refused a write. Both arms mean **nothing was written**, and
+/// both are recoverable: the local source survives and the snapshot is
+/// untouched, so the next push retries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// The tenant parsed the source and rejected it. Always at least one
+    /// error.
+    Rejected(Vec<SyntaxError>),
+    /// The check produced no verdict, so the write did not happen. Carries the
+    /// reason.
+    NoVerdict(String),
+}
+
+impl Refusal {
+    /// Why, in one clause and without the per-error detail. Every surface
+    /// leads with this, so a refusal reads the same in the CLI, in `watch` and
+    /// in the tab.
+    pub fn summary(&self) -> String {
+        match self {
+            Refusal::Rejected(_) => "the tenant refused to parse this source".into(),
+            Refusal::NoVerdict(reason) => {
+                format!("the syntax check gave no verdict — {reason}")
+            }
+        }
+    }
+
+    /// The detail under the summary, one string per line. Empty for
+    /// `NoVerdict`, which has no per-error detail to give.
+    pub fn detail(&self) -> Vec<String> {
+        match self {
+            Refusal::Rejected(errors) => {
+                let mut lines: Vec<String> = errors.iter().map(SyntaxError::render).collect();
+                if errors.iter().all(|e| e.line.is_none()) {
+                    // IDM never reports coordinates for JavaScript, so say so
+                    // rather than let the operator hunt for a line number that
+                    // was never sent.
+                    lines.push("(IDM reports no line number for JavaScript syntax errors)".into());
+                }
+                lines
+            }
+            Refusal::NoVerdict(_) => Vec::new(),
+        }
+    }
+
+    /// One line, for a surface with one line to spend (a toast, a `watch`
+    /// row): the summary plus the first detail, so coordinates survive the
+    /// squeeze.
+    pub fn headline(&self) -> String {
+        match self.detail().first() {
+            Some(first) => format!("{} — {first}", self.summary()),
+            None => self.summary(),
+        }
+    }
 }
 
 /// One parse error. `line`/`column` are 1-based and index the *decoded*
@@ -101,9 +170,10 @@ pub fn parse_am_validate(body: &Value) -> SyntaxCheck {
                 SyntaxCheck::Invalid(errors)
             }
         }
-        None => SyntaxCheck::Skipped(
-            "AM validate returned no `success` field — treating as unchecked".into(),
-        ),
+        // Not a verdict, and not something the resource told us in advance:
+        // AM answering without `success` means the action did not decide, so
+        // the write does not proceed on the strength of it.
+        None => SyntaxCheck::NoVerdict("AM validate answered without a `success` field".into()),
     }
 }
 
@@ -142,20 +212,117 @@ pub fn idm_compile_body(source: &str, script_type: &str) -> Value {
 pub fn parse_idm_compile(outcome: Result<Value>) -> Result<SyntaxCheck> {
     match outcome {
         Ok(Value::Bool(true)) => Ok(SyntaxCheck::Ok),
-        Ok(other) => Ok(SyntaxCheck::Skipped(format!(
-            "IDM compile returned {other} rather than `true` — treating as unchecked"
+        Ok(other) => Ok(SyntaxCheck::NoVerdict(format!(
+            "IDM compile answered {other} rather than `true`"
         ))),
         Err(Error::Api { status: 400, body }) => Ok(SyntaxCheck::Invalid(vec![idm_error(&body)])),
-        // A 503 from this endpoint means the script `type` is not one the
-        // engine recognises (`javascript`, `text/javascript`, `groovy` are the
-        // accepted spellings) — verified 2026-09-09, deterministic across
-        // repeats with a healthy call in between. It is not a transient, and
-        // it is not a syntax verdict either: the resource already carries that
-        // type, so warn and let the push through.
-        Err(Error::Api { status: 503, .. }) => Ok(SyntaxCheck::Skipped(
-            "IDM compile rejected the script `type` (503) — source left unchecked".into(),
+        // A 503 is what this endpoint answers for a script `type` it does not
+        // recognise — verified 2026-09-09, deterministic across repeats with a
+        // healthy call in between (`docs/api/11-idm-endpoints.md`). What that
+        // measurement establishes is `bad type -> 503`, and reading it
+        // backwards is how a genuine outage came to authorise a write: 503 is
+        // also just 503. The accepted spellings are known, so an unrecognised
+        // type is caught by [`resolve_slot`] before the request; anything that
+        // still answers 503 has not decided, and nothing gets written on it.
+        Err(Error::Api { status: 503, .. }) => Ok(SyntaxCheck::NoVerdict(
+            "IDM compile answered 503 (unrecognised script `type`, or the service is unwell)"
+                .into(),
         )),
         Err(e) => Err(e),
+    }
+}
+
+/// The one `type` spelling to send for a stored one, or `None` when the stored
+/// type names an engine `script?_action=compile` does not compile.
+///
+/// The action accepts exactly `javascript`, `text/javascript` and `groovy`;
+/// `JAVASCRIPT`, `text/groovy` and `text/python` all answer 503
+/// (`docs/api/11-idm-endpoints.md`, verified 2026-09-09). So **normalise**
+/// rather than forward. Forwarding was the earlier choice and it fails in both
+/// directions: `application/javascript` — which `sync_mapping::is_inline_script`
+/// accepts by substring, and which this tool's own Mappings tab writes for a
+/// mapping condition (`src/mappings/api.rs`) — is the same JavaScript in the
+/// same engine, so forwarding its spelling buys a 503 and no verdict, while
+/// refusing it outright would break a push that used to work.
+fn engine_for(stored: &str) -> Option<&'static str> {
+    let t = stored.trim().to_ascii_lowercase();
+    if t.contains("groovy") {
+        Some("groovy")
+    } else if t.contains("javascript") {
+        Some("text/javascript")
+    } else {
+        None
+    }
+}
+
+/// Types that discriminate the **config shape** rather than the script engine,
+/// so finding one says nothing about the language: an endpoint's `type` is
+/// `text/javascript` "also seen as `scripted`" and may be `table`/`jdbc`
+/// (`docs/api/11-idm-endpoints.md`), and a schedule's root `type` is its
+/// trigger (`cron`). Look past these to the next candidate rather than reading
+/// them as an unsupported engine.
+fn is_container_type(stored: &str) -> bool {
+    matches!(
+        stored.trim().to_ascii_lowercase().as_str(),
+        "scripted" | "cron" | "simple" | "table" | "jdbc"
+    )
+}
+
+/// What an IDM slot resolves to for the compile action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlotResolution<'a> {
+    /// Send this source under this (normalised) type.
+    Compile {
+        source: &'a str,
+        script_type: &'static str,
+    },
+    /// The slot names an engine the action does not compile. Recognised here,
+    /// before the request, rather than inferred from the 503 it would answer.
+    UnsupportedType(String),
+    /// No plaintext source in the slot at all — file-backed, table/jdbc, or a
+    /// shape this parser does not know.
+    NoSource,
+}
+
+/// Locate the plaintext source in an IDM script slot and decide what `type` to
+/// compile it as.
+///
+/// Two source shapes, both supported by every other seam and so both checked
+/// here: a direct string, and the nested `{ "source": …, "type": … }` form a
+/// scripted endpoint may store (`idm::has_inline_source`, `idm::decode_source`).
+/// Missing the nested one is not a cosmetic gap — it was the shape that got
+/// written unchecked while the tool reported a check.
+///
+/// The type is taken from the innermost level that names an engine, because
+/// that is the level the source belongs to; a container type there (`scripted`)
+/// defers to the outer one, and no engine information anywhere falls back to
+/// `text/javascript`, which is what every IDM script kind this tool syncs
+/// actually stores.
+pub fn resolve_slot(slot: &Value) -> SlotResolution<'_> {
+    let root_type = slot.get("type").and_then(Value::as_str);
+    let (source, nested_type) = match slot.get("source") {
+        Some(Value::String(s)) => (s.as_str(), None),
+        Some(Value::Object(o)) => match o.get("source").and_then(Value::as_str) {
+            Some(s) => (s, o.get("type").and_then(Value::as_str)),
+            None => return SlotResolution::NoSource,
+        },
+        _ => return SlotResolution::NoSource,
+    };
+    for candidate in [nested_type, root_type].into_iter().flatten() {
+        if is_container_type(candidate) {
+            continue;
+        }
+        return match engine_for(candidate) {
+            Some(script_type) => SlotResolution::Compile {
+                source,
+                script_type,
+            },
+            None => SlotResolution::UnsupportedType(candidate.to_string()),
+        };
+    }
+    SlotResolution::Compile {
+        source,
+        script_type: "text/javascript",
     }
 }
 
@@ -167,18 +334,30 @@ pub fn parse_idm_compile(outcome: Result<Value>) -> Result<SyntaxCheck> {
 /// there is identical across the IDM families, which all store plaintext
 /// JavaScript in the same two keys.
 pub async fn idm_check_slot(tenant: &str, slot: Option<&Value>) -> Result<SyntaxCheck> {
-    let Some(source) = slot.and_then(|v| v.get("source")).and_then(Value::as_str) else {
-        return Ok(SyntaxCheck::Skipped(
-            "no plaintext `source` field to compile".into(),
+    let Some(slot) = slot else {
+        return Ok(SyntaxCheck::NoVerdict(
+            "no script slot in this config to compile".into(),
         ));
     };
-    // Forward the stored `type` rather than assuming: an unrecognised spelling
-    // comes back as a 503 that `parse_idm_compile` turns into a warning, which
-    // is more honest than silently checking it as something it is not.
-    let script_type = slot
-        .and_then(|v| v.get("type"))
-        .and_then(Value::as_str)
-        .unwrap_or("text/javascript");
+    let (source, script_type) = match resolve_slot(slot) {
+        SlotResolution::Compile {
+            source,
+            script_type,
+        } => (source, script_type),
+        // Established from the resource, not from a status code: say so and
+        // let the write through, because there is no check to be had for this
+        // engine and there never was one.
+        SlotResolution::UnsupportedType(t) => {
+            return Ok(SyntaxCheck::Unsupported(format!(
+                "`script?_action=compile` does not compile type {t:?}"
+            )));
+        }
+        SlotResolution::NoSource => {
+            return Ok(SyntaxCheck::NoVerdict(
+                "no plaintext `source` field to compile".into(),
+            ));
+        }
+    };
     let outcome = crate::aic::api::post(
         tenant,
         "/openidm/script?_action=compile",
@@ -255,11 +434,19 @@ fn unescape_idm(s: &str) -> String {
 // Tests
 // ---------------------------------------------------------------------------
 //
-// Every fixture below is a body captured live from the sandbox on 2026-09-09
-// (see the `## Verified against` blocks in `docs/api/04-scripts.md` and
-// `docs/api/11-idm-endpoints.md`), pasted verbatim rather than constructed —
-// a hand-built body would only prove the parser agrees with my idea of the
-// wire format, which is the thing under test.
+// The bodies for the cases the sandbox actually produced on 2026-09-09 are
+// pasted verbatim from those calls — the AM pass/fail pair, the IDM bare
+// `true`, and the IDM JavaScript and Groovy 400s. Those are the fixtures that
+// carry weight, because a hand-built body would only prove the parser agrees
+// with my idea of the wire format, which is the thing under test. The
+// `## Verified against` blocks in `docs/api/04-scripts.md` and
+// `docs/api/11-idm-endpoints.md` record exactly those calls.
+//
+// The rest are **constructed**, and say so here rather than borrowing the
+// captured fixtures' provenance: the malformed/missing-field bodies, the
+// non-`true` 200, the 401, and every `resolve_slot` input. They pin policy for
+// responses the tenant was never observed to send — which is the point, since
+// policy for an answer nobody has seen is precisely where fail-open hid.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,9 +499,12 @@ mod tests {
     }
 
     #[test]
-    fn am_missing_success_field_is_skipped_not_ok() {
+    fn am_missing_success_field_is_no_verdict_not_ok() {
         let body: Value = serde_json::from_str(r#"{"unexpected": 1}"#).unwrap();
-        assert!(matches!(parse_am_validate(&body), SyntaxCheck::Skipped(_)));
+        assert!(matches!(
+            parse_am_validate(&body),
+            SyntaxCheck::NoVerdict(_)
+        ));
     }
 
     // -- IDM --------------------------------------------------------------
@@ -376,18 +566,24 @@ mod tests {
         assert_eq!((errs[0].line, errs[0].column), (Some(2), Some(8)));
     }
 
-    /// 503 means "unrecognised `type`", verified deterministic. It is neither
-    /// a syntax verdict nor a transient, so it must not block the push and
-    /// must not read as a pass.
+    /// A 503 is what an unrecognised `type` earns — but it is also just a
+    /// 503, and the measurement only ever established `bad type -> 503`. So it
+    /// must land as `NoVerdict` (nothing written), **not** as `Unsupported`
+    /// (written anyway): reading the implication backwards is what let an
+    /// outage authorise a write. An unrecognised type is caught by
+    /// `resolve_slot` before the request instead.
     #[test]
-    fn idm_503_is_skipped_not_invalid_and_not_ok() {
+    fn idm_503_yields_no_verdict_and_never_authorises_a_write() {
         let check = parse_idm_compile(Err(Error::Api {
             status: 503,
             body: r#"{"code":503,"reason":"Service Unavailable","message":"Service Unavailable"}"#
                 .into(),
         }))
         .unwrap();
-        assert!(matches!(check, SyntaxCheck::Skipped(_)));
+        assert!(
+            matches!(check, SyntaxCheck::NoVerdict(_)),
+            "503 must not be reported as a checkable-shape decision: {check:?}"
+        );
     }
 
     /// Anything else is a real transport failure and belongs to the caller —
@@ -402,11 +598,100 @@ mod tests {
     }
 
     #[test]
-    fn idm_non_true_body_is_skipped() {
+    fn idm_non_true_body_is_no_verdict() {
         assert!(matches!(
             parse_idm_compile(Ok(json!({"unexpected": true}))).unwrap(),
-            SyntaxCheck::Skipped(_)
+            SyntaxCheck::NoVerdict(_)
         ));
+    }
+
+    // -- slot resolution --------------------------------------------------
+    //
+    // These drive the same `resolve_slot` `idm_check_slot` calls, so an
+    // implementation that goes back to forwarding the stored `type`, or to
+    // reading only a string-valued `source`, fails here.
+
+    fn compiled(slot: Value) -> (String, &'static str) {
+        match resolve_slot(&slot) {
+            SlotResolution::Compile {
+                source,
+                script_type,
+            } => (source.to_string(), script_type),
+            other => panic!("expected Compile, got {other:?}"),
+        }
+    }
+
+    /// The nested form is the hole that mattered: `idm::has_inline_source` and
+    /// `idm::decode_source` both accept it, so a scripted endpoint stored this
+    /// way was written unchecked while the tool reported a check.
+    #[test]
+    fn nested_endpoint_source_is_found_and_typed_from_the_inner_level() {
+        assert_eq!(
+            compiled(json!({
+                "_id": "endpoint/nested",
+                "type": "scripted",
+                "source": {"type": "text/javascript", "source": "(function(){})();"}
+            })),
+            ("(function(){})();".to_string(), "text/javascript")
+        );
+    }
+
+    /// The discriminating case for normalisation. `application/javascript` is
+    /// accepted by mapping detection and written by our own Mappings tab, and
+    /// it is **not** one of the three spellings the action takes — forwarding
+    /// it earns a 503 and (now) a refused write, so it must be normalised.
+    #[test]
+    fn unmeasured_javascript_spellings_are_normalised_not_forwarded() {
+        for stored in [
+            "application/javascript",
+            "JAVASCRIPT",
+            "javascript",
+            "text/javascript",
+        ] {
+            let (_, sent) = compiled(json!({"type": stored, "source": "var x = 1;"}));
+            assert_eq!(sent, "text/javascript", "stored type {stored:?}");
+        }
+        // `text/groovy` is a measured 503; `groovy` is the accepted spelling.
+        let (_, sent) = compiled(json!({"type": "text/groovy", "source": "def x = 1"}));
+        assert_eq!(sent, "groovy");
+    }
+
+    /// A container type says nothing about the engine, so it must not be
+    /// mistaken for one — and must not shadow a real type further out.
+    #[test]
+    fn container_types_fall_through_to_the_default() {
+        assert_eq!(
+            compiled(json!({"type": "scripted", "source": "var x = 1;"})),
+            ("var x = 1;".to_string(), "text/javascript")
+        );
+        assert_eq!(
+            compiled(json!({"type": "cron", "source": {"source": "var x = 1;"}})),
+            ("var x = 1;".to_string(), "text/javascript")
+        );
+    }
+
+    /// An engine the action does not compile is recognised *here*, with no
+    /// request made — the structured, visible decision that replaces inferring
+    /// it from a 503.
+    #[test]
+    fn an_engine_the_action_cannot_compile_is_named_before_the_request() {
+        assert_eq!(
+            resolve_slot(&json!({"type": "text/python", "source": "x = 1"})),
+            SlotResolution::UnsupportedType("text/python".into())
+        );
+    }
+
+    #[test]
+    fn a_slot_with_no_plaintext_source_resolves_to_no_source() {
+        assert_eq!(
+            resolve_slot(&json!({"type": "text/javascript", "file": "sync/onUpdate.js"})),
+            SlotResolution::NoSource
+        );
+        // Nested, but not a string underneath.
+        assert_eq!(
+            resolve_slot(&json!({"source": {"source": 7}})),
+            SlotResolution::NoSource
+        );
     }
 
     // -- helpers ----------------------------------------------------------

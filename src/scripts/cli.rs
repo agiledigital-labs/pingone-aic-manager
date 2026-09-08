@@ -18,20 +18,51 @@ fn gate_for(no_syntax_check: bool) -> script::sync::SyntaxGate {
     }
 }
 
-/// Report a refused push. Shared by every surface so the remedy is worded
+/// Report a refused write. Shared by every CLI verb so the remedy is worded
 /// once — and it names `--no-syntax-check` rather than `--force`, which does
-/// not (and must not) get past this.
-fn report_invalid(full: &str, errors: &[script::syntax::SyntaxError]) {
-    eprintln!("{full}: the tenant refused to parse this source — nothing was written");
-    for e in errors {
-        eprintln!("  {}", e.render());
+/// not (and must not) get past this. `create` and `copy` reach it too: they
+/// used to print whatever `Error::Config` the engine had folded the refusal
+/// into, which named neither the missing coordinates nor the remedy.
+fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
+    use script::syntax::Refusal;
+    eprintln!("{full}: {} — nothing was written", refusal.summary());
+    for line in refusal.detail() {
+        eprintln!("  {line}");
     }
-    if errors.iter().all(|e| e.line.is_none()) {
-        // IDM never reports coordinates for JavaScript, so say so rather than
-        // let the operator hunt for a line number that was never sent.
-        eprintln!("  (IDM reports no line number for JavaScript syntax errors)");
+    eprintln!(
+        "  {}",
+        match refusal {
+            Refusal::Rejected(_) => "fix the source, or pass --no-syntax-check to write it anyway",
+            // A no-verdict refusal may be a tenant having a bad minute, so
+            // retrying is the first thing to try — unlike a rejection, where
+            // retrying the same bytes gets the same answer.
+            Refusal::NoVerdict(_) => "retry, or pass --no-syntax-check to write it unchecked",
+        }
+    );
+}
+
+/// One clause for a push outcome that is neither a plain write nor a refusal.
+/// Enough for a batch line: a forced retry that stopped short has to say so,
+/// and a catch-all that says nothing is how a refusal came to be reported as a
+/// successful push.
+fn push_outcome_note(outcome: &script::sync::PushOutcome) -> String {
+    use script::sync::PushOutcome;
+    match outcome {
+        PushOutcome::Pushed { .. } => "pushed".into(),
+        PushOutcome::Unchanged => "no local changes to push".into(),
+        PushOutcome::AlreadyInSync => "remote already matched local; snapshot refreshed".into(),
+        PushOutcome::Conflict(_) => "remote changed again — re-run to resolve".into(),
+        PushOutcome::Refused(refusal) => refusal.headline(),
     }
-    eprintln!("  fix the source, or pass --no-syntax-check to write it anyway");
+}
+
+/// Say when a write went ahead without a verdict. Only reachable for a
+/// resource nothing can check (see `syntax::SyntaxCheck::Unsupported`); on
+/// stderr rather than stdout so it does not land in a piped listing.
+fn note_unchecked(full: &str, unchecked: &Option<String>) {
+    if let Some(reason) = unchecked {
+        eprintln!("warning: {full} was written without a syntax check — {reason}");
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -371,15 +402,23 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 }
             }
             let new_script = ns.kind.new_script(&name, &source, &opts)?;
-            let created =
-                prod_hint(sync::create_new(&tenant, ns.realm_arg(), &new_script, yes, gate).await)?;
+            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
+            let (created, unchecked) = match prod_hint(
+                sync::create_new(&tenant, ns.realm_arg(), &new_script, yes, gate).await,
+            )? {
+                sync::Creation::Created { script, unchecked } => (script, unchecked),
+                sync::Creation::Refused(refusal) => {
+                    report_refusal(&full, &refusal);
+                    return Err(Error::Config(format!("{full} was not created")));
+                }
+            };
+            note_unchecked(&full, &unchecked);
             let path = ProjectConfig::workspace_tree(&tenant).join(
                 created
                     .reference
                     .kind
                     .workspace_subpath(&created.reference, ns.realm_arg()),
             );
-            let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
             if ns.kind == script::Kind::Am {
                 println!(
                     "created {full} ({}, {}) -> {}",
@@ -423,7 +462,12 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 .kind
                 .fetch(&tenant, source_ns.realm_arg(), &source_ref.id)
                 .await?;
-            prod_hint(
+            let destination_full = script::full_name(
+                destination_ns.kind,
+                destination_ns.realm.as_deref(),
+                &destination_name,
+            );
+            match prod_hint(
                 sync::copy(
                     &tenant,
                     destination_ns.realm_arg(),
@@ -433,15 +477,18 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     gate,
                 )
                 .await,
-            )?;
+            )? {
+                sync::Creation::Created { unchecked, .. } => {
+                    note_unchecked(&destination_full, &unchecked)
+                }
+                sync::Creation::Refused(refusal) => {
+                    report_refusal(&destination_full, &refusal);
+                    return Err(Error::Config(format!("{destination_full} was not created")));
+                }
+            }
             println!(
-                "copied {} -> {}",
+                "copied {} -> {destination_full}",
                 script::full_name(source_ns.kind, source_ns.realm.as_deref(), &source_name),
-                script::full_name(
-                    destination_ns.kind,
-                    destination_ns.realm.as_deref(),
-                    &destination_name
-                )
             );
             Ok(())
         }
@@ -661,12 +708,13 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     sync::reconcile(&t, ns.realm_arg(), c.kind, &c.name, yes, gate).await,
                 )? {
                     sync::ReconcileOutcome::InSync => in_sync += 1,
-                    sync::ReconcileOutcome::Invalid(errors) => {
+                    sync::ReconcileOutcome::Refused(refusal) => {
                         invalid += 1;
-                        report_invalid(&full, &errors);
+                        report_refusal(&full, &refusal);
                     }
-                    sync::ReconcileOutcome::Pushed => {
+                    sync::ReconcileOutcome::Pushed { unchecked } => {
                         pushed += 1;
+                        note_unchecked(&full, &unchecked);
                         println!("→ pushed {full}");
                     }
                     sync::ReconcileOutcome::Pulled => {
@@ -685,7 +733,12 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                         };
                         match choice {
                             ConflictChoice::Local => {
-                                prod_hint(
+                                // The first attempt returned `Conflict`
+                                // *before* the syntax check ran, so this
+                                // forced retry is the first place a refusal
+                                // can appear — and dropping the outcome here
+                                // reported a push that never happened.
+                                match prod_hint(
                                     sync::push(
                                         &t,
                                         ns.realm_arg(),
@@ -696,9 +749,24 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                                         gate,
                                     )
                                     .await,
-                                )?;
-                                pushed += 1;
-                                println!("→ pushed {full} (resolved: local)");
+                                )? {
+                                    sync::PushOutcome::Refused(refusal) => {
+                                        invalid += 1;
+                                        report_refusal(&full, &refusal);
+                                    }
+                                    sync::PushOutcome::Pushed { unchecked } => {
+                                        pushed += 1;
+                                        note_unchecked(&full, &unchecked);
+                                        println!("→ pushed {full} (resolved: local)");
+                                    }
+                                    // Nothing to write after all (the local
+                                    // edit matched, or someone landed the same
+                                    // content), or the remote moved again
+                                    // between the two calls.
+                                    other => {
+                                        println!("= {full}: {}", push_outcome_note(&other));
+                                    }
+                                }
                             }
                             ConflictChoice::Remote => {
                                 sync::pull(
@@ -744,6 +812,15 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 }
             }
             workspace_update_hint(&t)?;
+            if invalid > 0 {
+                // The summary is printed first, then the failure: a batch that
+                // left something unpushed must not exit 0, or a caller reads
+                // the refusal as a success (`docs/CLI.md`). `push all` has
+                // always done this; `sync` counted refusals and exited 0.
+                return Err(Error::Config(format!(
+                    "{invalid} script(s) were not pushed — the syntax check refused them"
+                )));
+            }
             Ok(())
         }
         ScriptCommand::Watch {
@@ -1782,12 +1859,15 @@ async fn watch(tenant: &str, yes: bool, gate: script::sync::SyntaxGate) -> Resul
                 script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes, gate).await,
             );
             match result {
-                Ok(PushOutcome::Pushed) => println!("{}", watch_green(&format!("→ pushed {full}"))),
+                Ok(PushOutcome::Pushed { unchecked }) => {
+                    note_unchecked(&full, &unchecked);
+                    println!("{}", watch_green(&format!("→ pushed {full}")))
+                }
                 Ok(PushOutcome::Unchanged | PushOutcome::AlreadyInSync) => {}
                 // Keep watching: the operator's next save is the retry, and
                 // this is the case the whole gate exists for — a build that
                 // compiles locally can still be source the tenant refuses.
-                Ok(PushOutcome::Invalid(errors)) => report_invalid(&full, &errors),
+                Ok(PushOutcome::Refused(refusal)) => report_refusal(&full, &refusal),
                 // The push was uncancellable, so a stop may have landed while
                 // it ran. Do not open a prompt on the way out.
                 Ok(PushOutcome::Conflict(_)) if stop.stopped() => {
@@ -1814,11 +1894,24 @@ async fn watch(tenant: &str, yes: bool, gate: script::sync::SyntaxGate) -> Resul
                                 .await,
                             );
                             match result {
-                                Ok(PushOutcome::Pushed) => println!(
+                                Ok(PushOutcome::Pushed { unchecked }) => {
+                                    note_unchecked(&full, &unchecked);
+                                    println!(
+                                        "{}",
+                                        watch_green(&format!("→ pushed {full} (resolved: local)"))
+                                    )
+                                }
+                                // The first attempt conflicted *before* the
+                                // syntax check ran, so this is the first place
+                                // a refusal can surface. A catch-all here
+                                // swallowed it and left the row looking clean.
+                                Ok(PushOutcome::Refused(refusal)) => {
+                                    report_refusal(&full, &refusal)
+                                }
+                                Ok(other) => eprintln!(
                                     "{}",
-                                    watch_green(&format!("→ pushed {full} (resolved: local)"))
+                                    watch_red(&format!("! {full}: {}", push_outcome_note(&other)))
                                 ),
-                                Ok(_) => {}
                                 Err(e) if is_fatal_watch_error(&e) => {
                                     eprintln!("! watch stopped: {e}");
                                     return Err(e);
@@ -1938,10 +2031,13 @@ async fn adopt_generated(
     let outcome =
         prod_hint(script::sync::create(tenant, ns.realm_arg(), &new_script, yes, gate).await)?;
     let existing = match outcome {
-        script::sync::CreateOutcome::Created(_) => return Ok(Adoption::Created),
+        script::sync::CreateOutcome::Created { unchecked, .. } => {
+            note_unchecked(full, &unchecked);
+            return Ok(Adoption::Created);
+        }
         script::sync::CreateOutcome::NameTaken(existing) => existing,
-        script::sync::CreateOutcome::Invalid(errors) => {
-            report_invalid(full, &errors);
+        script::sync::CreateOutcome::Refused(refusal) => {
+            report_refusal(full, &refusal);
             return Ok(Adoption::Invalid);
         }
     };
@@ -2118,9 +2214,12 @@ async fn push_one(
     match prod_hint(
         script::sync::push(tenant, ns.realm_arg(), ns.kind, name, force, yes, gate).await,
     )? {
-        PushOutcome::Pushed => println!("pushed {full}"),
-        PushOutcome::Invalid(errors) => {
-            report_invalid(&full, &errors);
+        PushOutcome::Pushed { unchecked } => {
+            note_unchecked(&full, &unchecked);
+            println!("pushed {full}")
+        }
+        PushOutcome::Refused(refusal) => {
+            report_refusal(&full, &refusal);
             return Err(Error::Config(format!("{full} was not pushed")));
         }
         PushOutcome::Unchanged => println!("{full}: no local changes to push"),
@@ -2133,11 +2232,24 @@ async fn push_one(
                 "{full} changed on the tenant since you last synced — overwrite the remote?"
             ))? {
                 Some(true) => {
-                    prod_hint(
+                    // The conflict came back before the syntax check ran, so
+                    // the forced retry is the first attempt that can be
+                    // refused — and it was the one place the outcome was
+                    // thrown away and a push reported regardless.
+                    match prod_hint(
                         script::sync::push(tenant, ns.realm_arg(), ns.kind, name, true, yes, gate)
                             .await,
-                    )?;
-                    println!("pushed {full} (overwrote remote changes)");
+                    )? {
+                        PushOutcome::Pushed { unchecked } => {
+                            note_unchecked(&full, &unchecked);
+                            println!("pushed {full} (overwrote remote changes)");
+                        }
+                        PushOutcome::Refused(refusal) => {
+                            report_refusal(&full, &refusal);
+                            return Err(Error::Config(format!("{full} was not pushed")));
+                        }
+                        other => println!("{full}: {}", push_outcome_note(&other)),
+                    }
                 }
                 Some(false) => println!("{full}: skipped (remote changed)"),
                 None => {
@@ -2182,10 +2294,13 @@ async fn push_all(
         match prod_hint(
             script::sync::push(tenant, ns.realm_arg(), c.kind, &c.name, force, yes, gate).await,
         )? {
-            PushOutcome::Pushed => println!("pushed {full}"),
+            PushOutcome::Pushed { unchecked } => {
+                note_unchecked(&full, &unchecked);
+                println!("pushed {full}")
+            }
             PushOutcome::Unchanged | PushOutcome::AlreadyInSync => {}
-            PushOutcome::Invalid(errors) => {
-                report_invalid(&full, &errors);
+            PushOutcome::Refused(refusal) => {
+                report_refusal(&full, &refusal);
                 refused += 1;
             }
             PushOutcome::Conflict(_) => {
@@ -2198,7 +2313,7 @@ async fn push_all(
         // A batch that left something unpushed must not exit 0, or a script
         // calling `push all` reads the refusal as a success.
         return Err(Error::Config(format!(
-            "{refused} script(s) were not pushed — the tenant refused to parse them"
+            "{refused} script(s) were not pushed — the syntax check refused them"
         )));
     }
     Ok(())
@@ -2441,6 +2556,68 @@ mod tests {
         assert!(write_diff_file(&dir, "left", "replacement").is_err());
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The gate is opt-out, so every write verb must default to checking —
+    /// and must actually carry the flag, which the synopsis in `docs/CLI.md`
+    /// once disagreed with. Driving `gate_for` through a real parse is what
+    /// makes this discriminating: an inverted mapping fails, a missing
+    /// `--no-syntax-check` on any of these verbs fails to parse, and a clap
+    /// default of `true` fails.
+    #[test]
+    fn every_write_verb_checks_by_default_and_opts_out_only_when_asked() {
+        fn gate(verb: &[&str], opt_out: bool) -> script::sync::SyntaxGate {
+            let mut argv = vec!["aic", "script"];
+            argv.extend_from_slice(verb);
+            if opt_out {
+                argv.push("--no-syntax-check");
+            }
+            let parsed = crate::cli::Cli::try_parse_from(&argv)
+                .unwrap_or_else(|e| panic!("{argv:?} did not parse: {e}"));
+            let Some(crate::cli::Command::Script { command }) = parsed.command else {
+                panic!("expected a script command");
+            };
+            // Reading the parsed flag, not restating the rule: `gate_for` is
+            // the function under test.
+            let flag = match command {
+                ScriptCommand::Create {
+                    no_syntax_check, ..
+                }
+                | ScriptCommand::Copy {
+                    no_syntax_check, ..
+                }
+                | ScriptCommand::Push {
+                    no_syntax_check, ..
+                }
+                | ScriptCommand::Sync {
+                    no_syntax_check, ..
+                }
+                | ScriptCommand::Watch {
+                    no_syntax_check, ..
+                } => no_syntax_check,
+                other => panic!("not a write verb: {other:?}"),
+            };
+            gate_for(flag)
+        }
+
+        for verb in [
+            vec!["create", "alpha/Foo", "--context", "decision-node"],
+            vec!["copy", "alpha/Foo", "bravo/Foo"],
+            vec!["push", "alpha/Foo"],
+            vec!["sync"],
+            vec!["watch"],
+        ] {
+            assert_eq!(
+                gate(&verb, false),
+                script::sync::SyntaxGate::Check,
+                "{verb:?} must syntax-check by default"
+            );
+            assert_eq!(
+                gate(&verb, true),
+                script::sync::SyntaxGate::Skip,
+                "{verb:?} --no-syntax-check must skip the check"
+            );
+        }
     }
 
     #[test]

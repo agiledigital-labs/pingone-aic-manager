@@ -274,6 +274,23 @@ pub async fn write(
     .await
 }
 
+/// The base64 `script` to hand `?_action=validate`, or `None` when the config
+/// carries no `script` field at all.
+///
+/// The stored string is sent **verbatim** where there is one, so the bytes
+/// checked are the bytes about to be written. The legacy array-of-lines form
+/// has no such string, and skipping it was a hole rather than a decision:
+/// [`decode_source`] supports the form, so the source it represents is known
+/// exactly — join it the same way and base64 it, and the check covers the same
+/// bytes a `push` of that script would send.
+fn validate_payload(raw: &Value) -> Result<Option<String>> {
+    match raw.get("script") {
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(Value::Array(_)) => Ok(Some(B64.encode(decode_source(raw)?))),
+        _ => Ok(None),
+    }
+}
+
 /// Syntax-check a script through `?_action=validate` without storing it.
 ///
 /// AM's write path does no parsing, so this is the only thing between a typo
@@ -282,12 +299,12 @@ pub async fn write(
 /// [`syntax::parse_am_validate`] and never from the status code.
 /// See `docs/api/04-scripts.md` ("Syntax validation").
 pub async fn check_syntax(tenant: &str, realm: &str, script: &RemoteScript) -> Result<SyntaxCheck> {
-    // Send exactly what the tenant stores. Re-encoding the decoded bytes would
-    // check a different string than the one about to be written whenever a
-    // legacy script keeps `script` as an array of lines.
-    let Some(script_b64) = script.raw_config.get("script").and_then(Value::as_str) else {
-        return Ok(SyntaxCheck::Skipped(
-            "no base64 `script` field to validate".into(),
+    let Some(script_b64) = validate_payload(&script.raw_config)? else {
+        // Neither shape `decode_source` understands, so there is nothing to
+        // send — and nothing this write should proceed on either, because a
+        // config with no `script` field is not a config we recognise.
+        return Ok(SyntaxCheck::NoVerdict(
+            "no `script` field to validate".into(),
         ));
     };
     let language = script
@@ -300,7 +317,7 @@ pub async fn check_syntax(tenant: &str, realm: &str, script: &RemoteScript) -> R
     let body = crate::aic::api::post_versioned(
         tenant,
         &path,
-        syntax::am_validate_body(script_b64, language),
+        syntax::am_validate_body(&script_b64, language),
         // A validate stores nothing, so it is not a tenant write and must not
         // consume a production confirmation.
         true,
@@ -892,6 +909,33 @@ mod tests {
     fn legacy_array_script_decodes_as_lines() {
         let raw = json!({"script": ["line1", "line2"]});
         assert_eq!(decode_source(&raw).unwrap(), b"line1\nline2\n");
+    }
+
+    /// The array form is what `check_syntax` used to skip, so this is the
+    /// discriminating case: the payload must be the base64 of the same bytes
+    /// `decode_source` (and therefore the push) produces, not absent.
+    #[test]
+    fn legacy_array_script_is_validated_as_the_source_it_decodes_to() {
+        let raw = json!({"script": ["line1", "line2"]});
+        let payload = validate_payload(&raw)
+            .unwrap()
+            .expect("array form has a payload");
+        assert_eq!(B64.decode(payload).unwrap(), decode_source(&raw).unwrap());
+    }
+
+    /// The string form is sent byte-for-byte: re-encoding it would check a
+    /// different string than the one about to be written.
+    #[test]
+    fn stored_base64_is_sent_verbatim() {
+        let raw = json!({"script": "dmFyIHggPSAxOw=="});
+        assert_eq!(
+            validate_payload(&raw).unwrap().as_deref(),
+            Some("dmFyIHggPSAxOw==")
+        );
+        assert_eq!(
+            validate_payload(&json!({"name": "no script"})).unwrap(),
+            None
+        );
     }
 
     #[test]
