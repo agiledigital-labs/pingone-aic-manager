@@ -9,6 +9,34 @@ use crate::config::{self, ProjectConfig, TenantTheme};
 use crate::scripts::{self as script, Namespace};
 use crate::{Error, Result};
 
+/// Whether a per-script failure should abandon the rest of a batch.
+///
+/// A batch reports and carries on by default. `sync` and `push all` used to
+/// put a bare `?` on the per-script call, so one stale snapshot entry whose
+/// remote had been deleted — a 404 on fetch — abandoned every script queued
+/// behind it, having already written the ones before it. The operator saw a
+/// transport error and no summary, which is the same shape as discarding an
+/// outcome: a per-script result escaping as a whole-run verdict.
+///
+/// The exceptions are failures about the *caller* rather than the script.
+/// Without authority, or past a rate limit, the remaining scripts cannot
+/// succeed either, and retrying each one is pointless work — for 429 it
+/// actively makes things worse, and AIC's write limits are tighter than its
+/// read limits (`.ai/core.md` §8). A missing prod confirmation is the same:
+/// the answer will not change per script.
+fn batch_fatal(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Api {
+            status: 401 | 403 | 429,
+            ..
+        } | Error::Auth(_)
+            | Error::AuthRequired
+            | Error::AgentProtocolMismatch
+            | Error::ProdConfirmRequired
+    )
+}
+
 /// Map the CLI's opt-out flag onto the engine's gate.
 fn gate_for(no_syntax_check: bool) -> script::sync::SyntaxGate {
     if no_syntax_check {
@@ -684,6 +712,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 return Ok(());
             }
             let (mut pushed, mut pulled, mut in_sync, mut invalid) = (0u32, 0u32, 0u32, 0u32);
+            let mut failed = 0u32;
             let mut conflicts: Vec<String> = Vec::new();
             let mut stopped = false;
             for c in cands {
@@ -695,9 +724,18 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     kind: c.kind,
                     realm: c.realm.clone(),
                 };
-                match prod_hint(
+                let outcome = match prod_hint(
                     sync::reconcile(&t, ns.realm_arg(), c.kind, &c.name, yes, gate).await,
-                )? {
+                ) {
+                    Ok(o) => o,
+                    Err(e) if batch_fatal(&e) => return Err(e),
+                    Err(e) => {
+                        eprintln!("! {full}: {e}");
+                        failed += 1;
+                        continue;
+                    }
+                };
+                match outcome {
                     sync::ReconcileOutcome::InSync => in_sync += 1,
                     sync::ReconcileOutcome::Refused(refusal) => {
                         invalid += 1;
@@ -783,7 +821,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 }
             }
             println!(
-                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {}{}",
+                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {}{}{}",
                 if stopped { " (stopped, partial)" } else { "" },
                 conflicts.len(),
                 if invalid > 0 {
@@ -791,6 +829,11 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 } else {
                     // Stay off the happy-path line: a zero here would invite
                     // reading its absence elsewhere as "checked and fine".
+                    String::new()
+                },
+                if failed > 0 {
+                    format!(" · failed {failed}")
+                } else {
                     String::new()
                 }
             );
@@ -801,16 +844,23 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 }
             }
             workspace_update_hint(&t)?;
-            if invalid > 0 {
-                // The summary is printed first, then the failure: a batch that
-                // left something unpushed must not exit 0, or a caller reads
-                // the refusal as a success (`docs/CLI.md`). `push all` has
-                // always done this; `sync` counted refusals and exited 0.
-                return Err(Error::Config(format!(
-                    "{invalid} script(s) were not pushed — the syntax check refused them"
-                )));
+            // The summary is printed first, then the failure: a batch that
+            // left something unpushed must not exit 0, or a caller reads the
+            // refusal as a success (`docs/CLI.md`). `push all` has always done
+            // this; `sync` counted refusals and exited 0.
+            match (invalid, failed) {
+                (0, 0) => Ok(()),
+                (0, f) => Err(Error::Config(format!(
+                    "{f} script(s) could not be reconciled — see the `!` lines above"
+                ))),
+                (i, 0) => Err(Error::Config(format!(
+                    "{i} script(s) were not pushed — the syntax check refused them"
+                ))),
+                (i, f) => Err(Error::Config(format!(
+                    "{i} script(s) were not pushed (the syntax check refused them) \
+                     and {f} could not be reconciled"
+                ))),
             }
-            Ok(())
         }
         ScriptCommand::Watch {
             tenant,
@@ -2243,8 +2293,8 @@ async fn push_one(
 
 /// Push every synced script with local changes. Clean / never-pulled scripts
 /// are skipped (nothing to push); product defaults are skipped (push them
-/// explicitly with `--force`); remote-drift conflicts are reported and skipped
-/// rather than aborting the batch.
+/// explicitly with `--force`); remote-drift conflicts, refusals and per-script
+/// failures are all reported and skipped rather than aborting the batch.
 async fn push_all(
     tenant: &str,
     force: bool,
@@ -2261,15 +2311,27 @@ async fn push_all(
         return Ok(());
     }
     let mut refused = 0u32;
+    let mut failed = 0u32;
     for c in changed {
         let full = full_of(&c);
         let ns = Namespace {
             kind: c.kind,
             realm: c.realm.clone(),
         };
-        match prod_hint(
+        // Same reason as `sync`: one script's transport failure is that
+        // script's result, not the batch's.
+        let outcome = match prod_hint(
             script::sync::push(tenant, ns.realm_arg(), c.kind, &c.name, force, yes, gate).await,
-        )? {
+        ) {
+            Ok(o) => o,
+            Err(e) if batch_fatal(&e) => return Err(e),
+            Err(e) => {
+                eprintln!("! {full}: {e}");
+                failed += 1;
+                continue;
+            }
+        };
+        match outcome {
             PushOutcome::Pushed => println!("pushed {full}"),
             PushOutcome::Unchanged | PushOutcome::AlreadyInSync => {}
             PushOutcome::Refused { refusal, .. } => {
@@ -2282,14 +2344,21 @@ async fn push_all(
         }
     }
     workspace_update_hint(tenant)?;
-    if refused > 0 {
-        // A batch that left something unpushed must not exit 0, or a script
-        // calling `push all` reads the refusal as a success.
-        return Err(Error::Config(format!(
-            "{refused} script(s) were not pushed — the syntax check refused them"
-        )));
+    // A batch that left something unpushed must not exit 0, or a script
+    // calling `push all` reads the refusal as a success.
+    match (refused, failed) {
+        (0, 0) => Ok(()),
+        (0, f) => Err(Error::Config(format!(
+            "{f} script(s) could not be pushed — see the `!` lines above"
+        ))),
+        (r, 0) => Err(Error::Config(format!(
+            "{r} script(s) were not pushed — the syntax check refused them"
+        ))),
+        (r, f) => Err(Error::Config(format!(
+            "{r} script(s) were not pushed (the syntax check refused them) \
+             and {f} failed"
+        ))),
     }
-    Ok(())
 }
 
 /// Refuse to operate when a pre-redesign per-realm workspace is present, so we
@@ -2424,6 +2493,55 @@ mod tests {
     use super::*;
     use clap::Parser;
     use std::os::unix::fs::PermissionsExt;
+
+    /// The discriminating case is the one that caused the bug: a **404** must
+    /// not be fatal. A stale snapshot entry pointing at a script someone
+    /// deleted on the tenant 404s on fetch, and that used to abandon every
+    /// script queued behind it mid-batch, after writing the ones before it.
+    ///
+    /// The 401 case is what stops the fix over-correcting into "continue
+    /// through anything": with no authority the remaining scripts cannot
+    /// succeed, so N more requests is pointless work. An implementation that
+    /// answered the same way for both — in either direction — fails here.
+    #[test]
+    fn only_caller_level_failures_abandon_a_batch() {
+        let per_script = [
+            Error::Api {
+                status: 404,
+                body: "{}".into(),
+            },
+            Error::Api {
+                status: 500,
+                body: "{}".into(),
+            },
+            Error::Config("snapshot missing — pull again".into()),
+        ];
+        for e in &per_script {
+            assert!(
+                !batch_fatal(e),
+                "{e} is one script's problem; the batch must report it and carry on"
+            );
+        }
+
+        let caller_level = [
+            Error::Api {
+                status: 401,
+                body: "{}".into(),
+            },
+            Error::Api {
+                status: 429,
+                body: "{}".into(),
+            },
+            Error::AuthRequired,
+            Error::ProdConfirmRequired,
+        ];
+        for e in &caller_level {
+            assert!(
+                batch_fatal(e),
+                "{e} will not change per script; continuing is wasted requests"
+            );
+        }
+    }
 
     #[test]
     fn history_window_is_capped_at_the_servers_one_day_limit() {
