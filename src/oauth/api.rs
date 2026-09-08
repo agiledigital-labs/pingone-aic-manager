@@ -19,6 +19,10 @@ fn clients_path(realm: &str) -> String {
     format!("{}/realm-config/agents/OAuth2Client", realm_path(realm))
 }
 
+fn provider_path(realm: &str) -> String {
+    format!("{}/realm-config/services/oauth-oidc", realm_path(realm))
+}
+
 fn validate_client_id(id: &str) -> Result<()> {
     if id.chars().any(is_separator) {
         return Err(Error::Config(format!(
@@ -80,6 +84,11 @@ pub async fn read_client(tenant: &str, realm: &str, id: &str) -> Result<Value> {
     validate_client_id(id)?;
     let path = format!("{}/{}", clients_path(realm), id);
     crate::aic::api::get_versioned(tenant, &path, API_VERSION).await
+}
+
+/// Read the realm-wide OAuth2 / OIDC provider service configuration.
+pub async fn read_provider(tenant: &str, realm: &str) -> Result<Value> {
+    crate::aic::api::get_versioned(tenant, &provider_path(realm), API_VERSION).await
 }
 
 /// Fetch the tenant's complete default OAuth2 client body.

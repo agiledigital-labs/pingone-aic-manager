@@ -115,6 +115,20 @@ pub enum GrantCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum ProviderCommand {
+    /// Show the realm-wide OAuth2 / OIDC provider configuration.
+    Get {
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Print the unmodified provider document as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum OauthCommand {
     /// List OAuth2 client ids in a realm.
     List {
@@ -136,6 +150,11 @@ pub enum OauthCommand {
     Grant {
         #[command(subcommand)]
         command: GrantCommand,
+    },
+    /// Inspect the realm-wide OAuth2 / OIDC provider service.
+    Provider {
+        #[command(subcommand)]
+        command: ProviderCommand,
     },
     /// Pull an OAuth2 client into the workspace as JSON.
     Pull {
@@ -512,6 +531,27 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 run_grant_change(args, spec::GrantOperation::Remove).await
             }
         },
+        OauthCommand::Provider { command } => match command {
+            ProviderCommand::Get {
+                realm,
+                tenant,
+                json,
+            } => {
+                let tenant = tenant_for(tenant)?;
+                let realm = realm_arg("oauth", realm)?;
+                let provider = api::read_provider(&tenant, &realm).await?;
+                if json {
+                    print_json(&provider)
+                } else {
+                    let rows = spec::provider_summary(&provider)
+                        .into_iter()
+                        .map(|(field, value)| vec![field, value])
+                        .collect::<Vec<_>>();
+                    print_table(&["FIELD", "VALUE"], &rows);
+                    Ok(())
+                }
+            }
+        },
         OauthCommand::Pull { id, realm, tenant } => {
             let tenant = tenant_for(tenant)?;
             let realm = realm_arg("oauth", realm)?;
@@ -756,6 +796,32 @@ mod tests {
             crate::cli::Cli::try_parse_from(["aic", "oauth", "grant", "remove", "existing-client"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn provider_get_parses_json_and_realm_selection() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "aic", "oauth", "provider", "get", "--realm", "bravo", "--tenant", "sandbox", "--json",
+        ])
+        .unwrap();
+
+        let Some(crate::cli::Command::Oauth {
+            command:
+                OauthCommand::Provider {
+                    command:
+                        ProviderCommand::Get {
+                            realm,
+                            tenant,
+                            json,
+                        },
+                },
+        }) = cli.command
+        else {
+            panic!("expected oauth provider get");
+        };
+        assert_eq!(realm.as_deref(), Some("bravo"));
+        assert_eq!(tenant.as_deref(), Some("sandbox"));
+        assert!(json);
     }
 
     #[test]

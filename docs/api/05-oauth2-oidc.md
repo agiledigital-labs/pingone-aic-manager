@@ -125,10 +125,10 @@ other create flags.
     /* base OIDC */
   },
   "advancedOAuth2Config": {
-    /* token signing, refresh policy */
+    /* token signing, refresh policy, grant types allowed */
   },
   "coreOAuth2Config": {
-    /* access token lifetime, grant types allowed */
+    /* access token lifetime */
   },
   "clientDynamicRegistrationConfig": {
     /* DCR */

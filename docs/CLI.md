@@ -618,12 +618,13 @@ comma-separated list, so `--method read` finds a rule whose `methods` is
 
 ---
 
-## `aic oauth` — OAuth2 clients
+## `aic oauth` — OAuth2 clients and provider configuration
 
 Realm-scoped. Clients pull/push as JSON under the workspace.
 
 ```bash
 aic oauth list [--realm alpha] [--json]                 # client ids
+aic oauth provider get [--realm alpha] [--tenant T] [--json] # realm-wide OAuth2/OIDC provider
 aic oauth create <id> [common flags] [--from FILE]      # create from live tenant defaults
 aic oauth grant list <id> [--realm alpha]              # grant types on one client
 aic oauth grant add <id> <grant>... [--realm alpha] [--yes]
@@ -632,6 +633,11 @@ aic oauth pull <id> [--realm alpha]                     # one client → workspa
 aic oauth push <id> [--realm alpha] [--force]           # push a workspace client JSON back
 aic oauth delete <id> --force [--realm alpha]           # delete (requires --force)
 ```
+
+`provider get` prints a compact realm-wide configuration summary. In
+particular, it always shows both the provider `grantTypes` and
+`tokenExchangeClasses`, because configured exchangers do not themselves enable
+the token-exchange grant. `--json` prints the raw provider document unchanged.
 
 `create` exposes the common client settings (`--name`, repeatable scopes,
 redirect URIs, grants/response types, token auth, consent, and lifetimes); run
