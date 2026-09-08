@@ -106,7 +106,7 @@ purpose-specific role.
 | Create      | `PUT`    | `/openidm/config/endpoint/{name}`   | none required      | Returns **201** + echoes the object on create.                              |
 | Update      | `PUT`    | `/openidm/config/endpoint/{name}`   | none required      | Returns **200** on replace of an existing object.                           |
 | Delete      | `DELETE` | `/openidm/config/endpoint/{name}`   | none required      | Returns **200** + echoes the deleted object. Subsequent `GET` → 404.        |
-| Compile     | `POST`   | `/openidm/script?_action=compile`   | none required      | Syntax-checks `source` **without storing it**. **200** `true` or **400**.   |
+| Compile     | `POST`   | `/openidm/script?_action=compile`   | none required      | Syntax-checks `source` **without storing it**. **200** `true`, **400** with a message, or **503** for a `type` it does not know. |
 
 The path segment after `/config/` is `endpoint/{name}` (e.g.
 `/openidm/config/endpoint/test`). In the list response each object's `_id` is
@@ -490,13 +490,39 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
   or a literal `&amp;#39;` in the source becomes a quote it never had.
 - **`source` is plain text, not base64** (the opposite of AM scripts). Don't
   base64-encode on write.
-- **An unrecognised script `type` returns 503, not 400.**
-  `script?_action=compile` answers `503 Service Unavailable` for `JAVASCRIPT`,
-  `text/groovy` or
-  `text/python`; the accepted spellings are `javascript`, `text/javascript` and
-  `groovy` (verified 2026-09-09, twice, with a valid call immediately after to
-  prove the tenant was healthy). What that measures is **`bad type` → 503**,
-  one way. It does **not** license reading a 503 as "bad type": 503 is also
+- **An unrecognised script `type` returns 503, not 400.** The accepted set is
+  narrower than the spellings that appear in stored config, and it is **not
+  symmetric between the two engines** — three MIME-ish spellings work for
+  JavaScript, but only the bare word works for Groovy. Measured 2026-09-09 by
+  sending each spelling with source known to compile:
+
+  | `type` sent                             | result           |
+  | --------------------------------------- | ---------------- |
+  | `javascript`                            | **200** `true`   |
+  | `text/javascript`                       | **200** `true`   |
+  | `application/javascript`                | **200** `true`   |
+  | `groovy`                                | **200** `true`   |
+  | `text/groovy`                           | 503              |
+  | `application/groovy`                    | 503              |
+  | `scripted`, `cron` (container types)    | 503              |
+  | `text/python` (unknown engine)          | 503              |
+  | `JAVASCRIPT`                            | 503              |
+  | `text/javascript` + a missing brace     | 400 with message |
+
+  The last row is the **control**: broken source under an accepted type comes
+  back 400 with a message, so the `200 true` rows mean the engine actually
+  parsed rather than waving the request through. Without it, "200" would be
+  consistent with the endpoint ignoring `source` entirely.
+
+  Two practical consequences. Normalising a Groovy `type` to bare `groovy` is
+  **load-bearing** — both other spellings 503 — whereas normalising
+  `application/javascript` is harmless but unnecessary, since it is accepted as
+  sent. And a **container type** (`scripted` for an endpoint, `cron` for a
+  schedule) is indistinguishable from an unknown engine in the response, so a
+  caller must look past it to the nested slot's own `type` rather than send it
+  and interpret the 503.
+
+  What all of this measures is **`bad type` → 503**, one way. It does **not** license reading a 503 as "bad type": 503 is also
   what an unwell service answers, and nothing was measured that distinguishes
   the two from the response alone. So normalise the `type` to one of the three
   accepted spellings **before** the call — a caller that knows the accepted set
@@ -647,6 +673,28 @@ Object shape (real example, `schedule/UpdateReviewList`):
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-09-09, second pass (the **type-spelling matrix** above, and the
+  syntax gate end-to-end). Ten `compile` calls, one per row, each with source
+  known to compile except the deliberate 400 control: `javascript`,
+  `text/javascript`, `application/javascript`, `groovy` → 200 `true`;
+  `text/groovy`, `application/groovy`, `scripted`, `cron`, `text/python` → 503;
+  `text/javascript` with a missing brace → 400 `missing } after function body`.
+  That last call is what makes the 200s meaningful — it is the case that would
+  have come out the same had the endpoint not been parsing at all.
+  **This corrects the earlier entry below**, which listed three accepted
+  spellings: `application/javascript` is accepted too, and
+  `application/groovy` is not (only the earlier `text/groovy` was tested, so
+  the asymmetry between the engines was missed).
+  Gate wiring was exercised with throwaway objects, all since deleted:
+  `alpha/GateProbeValid` + `alpha/GateProbeBroken` (AM `?_action=validate`) and
+  `endpoint/gate-probe` + `endpoint/gate-probe-nested` + `endpoint/sync-probe`
+  (IDM). Broken source was refused on create and on push for both families,
+  with the remote confirmed unchanged by `script diff` afterwards; the same
+  source with `--no-syntax-check` was stored with a 201, which re-measures
+  "nothing on the write path checks syntax" and proves the refusal came from
+  the gate. `endpoint/gate-probe-nested` was created by raw `PUT` with root
+  `type: "scripted"` and a nested `{source, type}`, to check the container-type
+  path against a real stored shape rather than a fixture.
 - Date: 2026-09-09 (`script?_action=compile` — valid source returned 200 with a
   bare `true`; a missing brace returned `400 {"message": "syntax error"}`. The
   no-line-numbers claim was established by placing the error on line 40 of a
@@ -660,7 +708,9 @@ Object shape (real example, `schedule/UpdateReviewList`):
   was probed at 6.8 KB, 62 KB and 248 KB of source, all 200 — a bundled
   endpoint is ~50 KB, so there is headroom. Type spellings tested:
   `javascript`, `text/javascript`, `groovy` → 200; `JAVASCRIPT`, `text/groovy`,
-  `text/python` → 503. Throwaway `endpoint/aic-preflight-{ok,bad}-DELETEME`
+  `text/python` → 503 — **incomplete, see the second-pass entry above**: this
+  set does not distinguish "MIME-ish spellings work" from "they work for
+  JavaScript only". Throwaway `endpoint/aic-preflight-{ok,bad}-DELETEME`
   created (201 each), invoked, and deleted (200), confirming the valid/broken
   404 control table above. One `compile` call measured 0.12-0.16s wall including
   process start.)
