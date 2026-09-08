@@ -258,16 +258,21 @@ pub fn parse_idm_compile(outcome: Result<Value>) -> Result<SyntaxCheck> {
 /// here is `Unsupported`, which refuses the write and names the opt-out, so an
 /// unknown spelling costs an explicit decision rather than a silent one.
 ///
-/// `application/javascript` is the one alias here on **compatibility** rather
-/// than measurement. `sync_mapping::is_inline_script` accepts any `type`
-/// containing `javascript`, so a tenant that stores that spelling is already
-/// syncable, and it is unambiguously the same engine — but no live call has
-/// confirmed the compile action's answer for source stored that way, and this
-/// tool has no production path that writes it.
+/// Every arm below is measured (2026-09-09, table in
+/// `docs/api/11-idm-endpoints.md`), and the two engines are **not symmetric**,
+/// which is the whole reason this normalises rather than forwarding:
+///
+/// - all three JavaScript spellings are accepted by the compile action as
+///   sent, so mapping them is harmless but not strictly required;
+/// - only bare `groovy` is accepted — `text/groovy` **and**
+///   `application/groovy` both 503 — so mapping those two is load-bearing.
+///   Forwarding a stored `text/groovy` would refuse a script that compiles.
+///
+/// An earlier round called `application/javascript` a compatibility alias on
+/// the grounds that no live call had confirmed it. One has now; it returns
+/// `200 true`.
 fn engine_for(stored: &str) -> Option<&'static str> {
     match stored.trim().to_ascii_lowercase().as_str() {
-        // Measured-accepted, plus the spellings measured to 503 that name the
-        // same engine unambiguously, plus the one compatibility alias above.
         "javascript" | "text/javascript" | "application/javascript" => Some("text/javascript"),
         "groovy" | "text/groovy" | "application/groovy" => Some("groovy"),
         _ => None,
