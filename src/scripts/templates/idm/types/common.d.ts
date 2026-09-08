@@ -50,10 +50,19 @@ interface IdmContext {
   http?: {
     method: string;
     path: string;
+    // Single-valued, unlike AM's `requestHeaders` multimap: a duplicated
+    // header arrives comma-joined into one string, indistinguishable from one
+    // header sent with a comma in it. Lookup is case-insensitive, but
+    // `Object.keys()` returns the case as stored (`Accept` and `Host`
+    // capitalised, ingress-added `x-…` names lowercase) — so never key off
+    // enumeration case. Verified 2026-09-08 (docs/api/11).
     headers: Record<string, string>;
     // Raw HTTP-layer query-param map: ALL query params, incl. `_`-prefixed
     // ones. (Contrast `request.additionalParameters`, the CREST-layer map of
-    // NON-`_` params only.) Verified 2026-07-21.
+    // NON-`_` params only.) Verified 2026-07-21. Single-valued, and enforced as
+    // such: CREST rejects a repeated query parameter with `400 "Multiple values
+    // provided for a single-valued request parameter."` before the script runs,
+    // so there is no arity to guard. Verified 2026-09-08.
     parameters: Record<string, string>;
   };
   security?: {

@@ -449,6 +449,13 @@ browser `Origin` / `Referer`, which a next-gen scripted decision can read.
 every key; `requestHeaders.get("origin")` / `.get("referer")` return a Java list
 (use `.get(0)`). `keySet()` is blocked by the next-gen Java allow-list.
 
+The list is not a formality: a client that sends the same header twice produces
+a **2-element** list, in the order sent (verified 2026-09-08 —
+`docs/api/12-script-bindings-matrix.md`). So `.get(0)` on an origin test means
+"whichever `Origin` the caller listed first", and a caller can list two. For a
+security decision, check `.size()` first and treat >1 as a request to refuse
+rather than one to disambiguate.
+
 When the client sends the headers, both arrive verbatim:
 
 | Client `Origin`                 | `requestHeaders.get("origin").get(0)` |
@@ -737,6 +744,12 @@ three-step flow that does is in
   content-derived `_rev`; `DELETE …/trees/test_push_probe` returned 200 and
   follow-up `GET` returned 404. Throwaway `test_push_probe` tree and node were
   cleaned up.
+- Date: 2026-09-08
+- Calls: next-gen and legacy scripted decisions on `AIC-Rhino-Let-Probe` /
+  `AIC-Rhino-Legacy-Probe`, invoked with one header and one query parameter each
+  sent **twice** (`run-journey-multivalue.sh`). Both engines reported 2-element
+  lists in send order; the single-valued and comma-joined controls on the same
+  request reported 1 element each.
 - Date: 2026-08-13
 - Calls: next-gen scripted decision on `AIC-Rhino-Let-Probe` dumped
   `requestHeaders` / `requestParameters` (Origin and Referer arrive when the

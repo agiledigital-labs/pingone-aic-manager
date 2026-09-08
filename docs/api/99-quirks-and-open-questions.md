@@ -1238,3 +1238,30 @@ create produced only `onCreate` + `postCreate`, then PATCH added `onUpdate` +
 operation and before further implicit target synchronization. All records and
 both types were removed. Reproducer:
 `scripts/experiment-managed-post-hook-routing.sh`.
+
+## 2026-09-08 — duplicated headers/parameters: AM keeps both, IDM does not
+
+The same question, asked of the two engines, has three different answers, and
+the AM one is the only place the duplication survives intact.
+
+- **AM scripted decision (both `evaluatorVersion`s).** `requestHeaders` /
+  `requestParameters` values hold one element per occurrence, in send order. A
+  comma-joined single header stays one element, so the arity distinguishes
+  "sent twice" from "sent once with a comma". `x-forwarded-for` already arrives
+  with two elements on an ordinary request, so the >1 case is not hypothetical.
+- **IDM endpoint, query parameter.** CREST refuses the request: `400 "Multiple
+  values provided for a single-valued request parameter."` — the endpoint script
+  never runs. Note that AM's `/am/json/…/authenticate` accepts the same
+  duplication happily, so "the platform rejects duplicated parameters" is true
+  of exactly one half of the tenant.
+- **IDM endpoint, header.** Comma-joined into a single string, which is
+  **indistinguishable** from one header sent with a comma in it. This is the
+  lossy case: an endpoint cannot detect that a header was duplicated at all.
+
+The practical trap is reading element 0 as though it were the value. A fronting
+proxy that honours the last occurrence and a script that reads the first
+disagree about what the request said, and on IDM the disagreement is invisible.
+Documented in `docs/api/12-script-bindings-matrix.md` (AM) and
+`docs/api/11-idm-endpoints.md` (IDM). Reproducers:
+`scripts/rhino-script-tester/run-journey-multivalue.sh` with
+`fixtures/request-multivalue.script.js`.

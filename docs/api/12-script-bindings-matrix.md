@@ -533,7 +533,7 @@ workspace routing slug from `src/aic/script/am.rs::slug_for`.
 | `action`                                 | via `Action` class                                         | binding                              | **D/I**   | Next-gen: `action.goTo(...)` chainable `ActionWrapper`. Legacy: static `Action.goTo()` (`ActionBuilder`). Used in 106 `src/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `callbacks` / `callbacksBuilder`         | `callbacks`                                                | `callbacksBuilder`                   | **D/I**   | Legacy reads `callbacks`; next-gen builds via `callbacksBuilder.*`. Both names appear (~142 each).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `idRepository`                           | direct attr methods + `getIdentity()` → `ScriptedIdentity` | `getIdentity()` → `ScriptedIdentity` | **D/V/I** | `getIdentity()` exists on both engines. Legacy also has direct `getAttribute(user,attr)`. Used in 40 `src/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `requestHeaders`/`requestParameters`     | yes                                                        | yes                                  | **D/I**   | `Map<String,String[]>`-ish `.get()` (case-insensitive). `Origin` and `Referer` are passed through when the client sends them — used for hosted-UI vs custom-UI branching (verified 2026-08-13; see `docs/api/09-journeys.md`). `keySet()` is blocked; iterate with `for…in` or `String(map)`.                                                                                                                                                                                                                                                                                                                                             |
+| `requestHeaders`/`requestParameters`     | yes                                                        | yes                                  | **D/V/I** | `Map<String,String[]>`-ish `.get()` (case-insensitive on headers). **The lists really do hold more than one element**: repeat a header or a query parameter and you get one element per occurrence, in the order sent — and `x-forwarded-for` arrives with two without anyone duplicating anything (verified 2026-09-08 on both engines, below). `Origin` and `Referer` are passed through when the client sends them — used for hosted-UI vs custom-UI branching (verified 2026-08-13; see `docs/api/09-journeys.md`). `keySet()` is blocked; iterate with `for…in` or `String(map)`.                                                                                                                                                                                                                                                                                                                                             |
 | `requestCookies`                         | no                                                         | yes                                  | **D**     | Next-gen only (migrate doc).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `existingSession` / `resumedFromSuspend` | yes                                                        | yes                                  | **D**     |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `cacheManager`                           | no                                                         | yes                                  | **D**     | Next-gen scripted decision only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -682,6 +682,61 @@ Consequences (applied to the type layering):
   `OAuthApplication` spelling live there too because the metadata cannot
   describe them. `am::leaf_tsconfig`'s unit tests read the binding artifacts
   directly, so a newly captured context fails until the file is regenerated.
+
+### `requestHeaders` / `requestParameters` arity — BOTH engines (verified 2026-09-08)
+
+Those bindings hand back a list per key, and the list **does** hold more than
+one element: a caller can send the same header twice, or the same query
+parameter twice, and the script sees every occurrence.
+
+`fixtures/request-multivalue.script.js` (next-gen) and
+`fixtures-legacy/legacy-request-multivalue.script.js` (legacy) enumerate both
+maps and report each value's element count; `run-journey-multivalue.sh` invokes
+the probe journey with a duplicated header and a duplicated query parameter
+alongside single-valued controls. **Both engines answered identically:**
+
+| Sent                                        | What the binding holds        |
+| ------------------------------------------- | ----------------------------- |
+| `X-Aic-Probe: alpha` + `X-Aic-Probe: bravo` | 2 elements — `alpha`, `bravo` |
+| `?probeq=alpha&probeq=bravo`                | 2 elements — `alpha`, `bravo` |
+| `X-Aic-Probe-Single: solo`                  | 1 element — `solo`            |
+| `X-Aic-Probe-Joined: alpha,bravo`           | 1 element — `alpha,bravo`     |
+
+What follows from that:
+
+- **Order is send order, not sorted.** Sending `zulu` then `alpha` returns
+  `zulu`, `alpha`. So `.get(0)` means "whichever one the client put first" — a
+  client-controlled choice, not a normalisation.
+- **A comma-joined single header is not split.** It stays one element containing
+  the comma, so on AM the element count really does distinguish "sent twice"
+  from "sent once with a comma". IDM cannot make that distinction — see
+  `docs/api/11-idm-endpoints.md`.
+- **You reach the multi-element case without anyone duplicating a thing.**
+  `x-forwarded-for` came back with **2 elements** on a request that sent it
+  zero times: the tenant's ingress appends its own hop. Any script reading it in
+  production is already in the >1 case.
+- **`.get()` is case-insensitive on headers, and iteration lowercases the
+  keys.** `for…in` over `requestHeaders` yielded `x-aic-probe`, while both
+  `.get("X-Aic-Probe")` and `.get("x-aic-probe")` returned the 2-element list.
+  The two maps are disjoint: `requestParameters.get("x-aic-probe")` is `null`,
+  and `requestHeaders.get("probeq")` likewise.
+- **Check the arity before you read element 0** of anything you make a decision
+  with. Two values means the request is ambiguous, and for an authorization or
+  origin test the safe answer is to refuse rather than to pick one — a fronting
+  proxy that honours the *last* occurrence and a script that reads the first
+  disagree about what the request said. No type can catch this: `.get()` returns
+  a list either way, populated or not.
+
+`getClass()` is refused on these maps on **both** engines (`InternalError:
+Access to Java class "java.lang.Class" is prohibited`), which is why the probe
+reports element counts rather than naming the concrete Java multimap class.
+
+**Not covered:** the OAuth2 token-endpoint contexts'
+`requestProperties.requestHeaders` / `.requestParams`. They are the same
+multimap shape in the types (`Record<string, JavaArray<JavaString>>`), but
+arity was not probed there: the OAuth2 lane records only what the *client* sees,
+so it has no way to return a count, and it needs the probe client's secret.
+Status **U** — do not assume this section carries over.
 
 ### Method surfaces verified 2026-06-04 (legacy engine)
 
@@ -1283,7 +1338,7 @@ IDM scripts are tenant-global (no realm). The IDM **endpoint**
 | `logger`         | yes      | yes      | **I**   | slf4j-style.                                                                                                                                                                                                                                                                                                                                        |
 | `identityServer` | yes      | yes      | **D/V** | `getProperty(name, defaultValue?, substitute?)`; a missing ESV/property returns `null` when no default is supplied, or the supplied default. Endpoint behavior verified 2026-07-22 below.                                                                                                                                                           |
 | `request`        | yes      | no       | **V**   | Discriminated union per CREST method (read/create/update/patch/delete/action/query). `docs/api/11`.                                                                                                                                                                                                                                                 |
-| `context`        | yes      | no       | **V**   | `context.http` = {method,path,headers,parameters}; `context.security` = {authenticationId,authorization}; `context.oauth2` = {scopes (a `JavaSet` — use `.contains()`), rawInfo, token, expiresAt}, present only behind `rsFilter`; `rawInfo` is AM's 15-key introspection record (`client_id`, `user_id`, `exp`, …) — full table in `docs/api/11`. |
+| `context`        | yes      | no       | **V**   | `context.http` = {method,path,headers,parameters}; `context.security` = {authenticationId,authorization}; `context.oauth2` = {scopes (a `JavaSet` — use `.contains()`), rawInfo, token, expiresAt}, present only behind `rsFilter`; `rawInfo` is AM's 15-key introspection record (`client_id`, `user_id`, `exp`, …) — full table in `docs/api/11`. `context.http.headers` and `.parameters` are single-valued **strings**, unlike AM's lists — a duplicated query parameter is rejected with `400` before the script runs and a duplicated header is comma-joined (verified 2026-09-08; `docs/api/11`). |
 
 ### IDM `identityServer.getProperty` missing ESV behavior (verified 2026-07-22)
 
@@ -1368,7 +1423,10 @@ binding _presence_ (see the legacy section above; the tester now takes
    for `httpClient.send(...).get()`: `ok`, `status`, `statusText` and `text()`
    are runtime-verified (`fixtures/httpclient-body-coercion.script.js`), as is
    the request-side body serializer (see the section above). `json()` and the
-   `headers` shape are still unverified.
+   `headers` shape are still unverified. Also still unverified: whether
+   `requestProperties.requestHeaders` / `.requestParams` in the OAuth2
+   token-endpoint contexts can hold more than one element per key, the way the
+   scripted-decision bindings demonstrably can (2026-09-08 section above).
 2. ~~`require()` of a real library from a next-gen scripted decision~~ RESOLVED
    — end-to-end library imports are verified from a next-gen scripted decision
    (2026-07-13/14 rows above) and from next-gen access-token modification

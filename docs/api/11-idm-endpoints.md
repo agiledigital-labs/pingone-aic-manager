@@ -219,6 +219,39 @@ caller receives.
   `{ authenticationId, authorization: { id, component, roles } }`. Many other
   contexts exist (`oauth2`, `transactionId`, `session`, `current`, `parent`, …)
   and vary by call.
+- **`context.http.headers` and `context.http.parameters` are single-valued —
+  and the duplicate cases are handled at two different layers** (verified
+  2026-09-08). This is the opposite of AM, where the same-named bindings are
+  multimaps whose values can hold several elements
+  (`docs/api/12-script-bindings-matrix.md`):
+  - **A duplicated query parameter never reaches the script.** CREST rejects
+    the request outright:
+
+    ```json
+    {
+      "code": 400,
+      "reason": "Bad Request",
+      "message": "Multiple values provided for a single-valued request parameter."
+    }
+    ```
+
+    So `context.http.parameters` and `request.additionalParameters` are
+    genuinely `Record<string, string>`; there is no arity to guard.
+  - **A duplicated header is comma-joined into one string.** Two
+    `X-Aic-Probe: alpha` / `X-Aic-Probe: bravo` headers arrive as the single
+    value `"alpha,bravo"` — **indistinguishable** from one header sent as
+    `alpha,bravo`. An endpoint that makes a decision from a header therefore
+    cannot tell a duplicated header from a comma-bearing one, and splitting on
+    `,` cannot tell them apart either. If that distinction matters, make the
+    test in AM (where the arity survives) or reject any value containing a
+    comma.
+  - **Lookup is case-insensitive; enumeration is not normalised.**
+    `headers["Accept"]`, `headers["accept"]` and `headers["X-AIC-PROBE"]` all
+    resolve, and a name that was not sent is `undefined` (the control that makes
+    the first claim mean something). But `Object.keys(headers)` returns the case
+    as stored — `Accept`, `Authorization`, `Host`, `User-Agent`, `Via`,
+    `X-Forwarded-For`, `X-Forwarded-Proto` capitalised, and the ingress-added
+    `x-…` ones lowercase — so never key off enumeration case.
 - **Validated OAuth scopes are at `context.oauth2.scopes`.** Ping's backing
   `AccessTokenInfo` API defines this as a Java `Set<String>`, so endpoint code
   can use `context.oauth2.scopes.contains("scope-name")`. The same scopes are
@@ -511,6 +544,15 @@ Object shape (real example, `schedule/UpdateReviewList`):
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-09-08 (`context.http` header/parameter arity — throwaway
+  `endpoint/aic-probe-http-arity` created (201), invoked three times, deleted
+  (200) and confirmed 404. A duplicated query parameter returned `400 "Multiple
+  values provided for a single-valued request parameter."` and the script did
+  not run; the single-parameter control on the same request returned 200, which
+  is what makes the 400 attributable to the duplication. A duplicated header
+  arrived as `"alpha,bravo"`, matching the comma-joined control byte for byte.
+  Case-insensitive lookup was checked against an unsent header name, which came
+  back `undefined`.)
 - Date: 2026-06-01 (CRUD); 2026-06-04 (`request`/`context` runtime shapes per
   method, via `endpoint/rhino-probe` echo — created, probed read/create/update/
   patch/delete/action/query, deleted); 2026-06-22 (bundled `require('lib/*')`
