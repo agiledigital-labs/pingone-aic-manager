@@ -639,7 +639,9 @@ particular, it always shows both the provider `grantTypes` and
 `tokenExchangeClasses`, because configured exchangers do not themselves enable
 the token-exchange grant. It also derives a direct `token-exchange granted`
 yes/no row; arrays and plugin settings render one value per row to avoid long
-wrapped JSON cells. `--json` prints the raw provider document unchanged.
+wrapped JSON cells. Token-exchange class mappings omit their repeated token-type
+URN and Java-package prefixes; an unrecognised mapping is printed in full.
+`--json` prints the raw provider document unchanged.
 
 `create` exposes the common client settings (`--name`, repeatable scopes,
 redirect URIs, grants/response types, token auth, consent, and lifetimes); run

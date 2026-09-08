@@ -57,6 +57,7 @@ const PROVIDER_GROUPS: &[&str] = &[
 ];
 
 const TOKEN_EXCHANGE_GRANT: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+const TOKEN_TYPE_PREFIX: &str = "urn:ietf:params:oauth:token-type:";
 
 /// Project a provider document into compact, human-readable CLI rows.
 ///
@@ -123,11 +124,21 @@ fn push_provider_field_rows(
     group: &str,
     field: &str,
 ) {
-    let label = format!("  {field}");
+    let label = match field {
+        "acceptAudienceParametersInTokenExchangeRequests" => {
+            "  accept audience parameters".to_string()
+        }
+        field => format!("  {field}"),
+    };
+    let render = if field == "tokenExchangeClasses" {
+        token_exchange_class_cell
+    } else {
+        provider_value_cell
+    };
     match provider_group(doc, group) {
         None => rows.push((label, "<group absent>".to_string())),
         Some(Value::Object(config)) => match config.get(field) {
-            Some(value) => push_provider_value_rows(rows, &label, value),
+            Some(value) => push_provider_value_rows(rows, &label, value, render),
             None => rows.push((label, "<absent>".to_string())),
         },
         Some(_) => rows.push((label, "<group is not an object>".to_string())),
@@ -137,22 +148,27 @@ fn push_provider_field_rows(
 fn push_provider_group_fields(rows: &mut Vec<(String, String)>, doc: &Value, group: &str) {
     if let Some(Value::Object(config)) = provider_group(doc, group) {
         for (field, value) in config {
-            push_provider_value_rows(rows, &format!("  {field}"), value);
+            push_provider_value_rows(rows, &format!("  {field}"), value, provider_value_cell);
         }
     }
 }
 
-fn push_provider_value_rows(rows: &mut Vec<(String, String)>, label: &str, value: &Value) {
+fn push_provider_value_rows(
+    rows: &mut Vec<(String, String)>,
+    label: &str,
+    value: &Value,
+    render: fn(&Value) -> String,
+) {
     match inherited_value(value) {
         Value::Array(values) if values.is_empty() => {
             rows.push((label.to_string(), "<empty>".to_string()));
         }
         Value::Array(values) => {
             for value in values {
-                rows.push((label.to_string(), provider_value_cell(value)));
+                rows.push((label.to_string(), render(value)));
             }
         }
-        value => rows.push((label.to_string(), provider_value_cell(value))),
+        value => rows.push((label.to_string(), render(value))),
     }
 }
 
@@ -182,6 +198,33 @@ fn provider_value_cell(value: &Value) -> String {
         Value::String(value) => value,
         value => serde_json::to_string(&value).unwrap_or_else(|_| "<unprintable>".to_string()),
     }
+}
+
+fn token_exchange_class_cell(value: &Value) -> String {
+    let fallback = provider_value_cell(value);
+    inherited_value(value)
+        .as_str()
+        .and_then(summarize_token_exchange_class)
+        .unwrap_or(fallback)
+}
+
+fn summarize_token_exchange_class(value: &str) -> Option<String> {
+    let (mapping, class) = value.split_once('|')?;
+    if class.contains('|') {
+        return None;
+    }
+    let (from, to) = mapping.split_once("=>")?;
+    if to.contains("=>") {
+        return None;
+    }
+    let from = from.strip_prefix(TOKEN_TYPE_PREFIX)?;
+    let to = to.strip_prefix(TOKEN_TYPE_PREFIX)?;
+    let (_, class) = class.rsplit_once('.')?;
+    if from.is_empty() || to.is_empty() || class.is_empty() {
+        return None;
+    }
+
+    Some(format!("{from} => {to} ({class})"))
 }
 
 fn normalized_inherited_value(value: &Value) -> Value {
@@ -688,6 +731,30 @@ mod tests {
             [
                 "org.example.AccessTokenToAccessToken",
                 "org.example.IdTokenToIdToken"
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_summary_shortens_structured_exchangers_and_preserves_malformed_values() {
+        let structured = concat!(
+            "urn:ietf:params:oauth:token-type:access_token=>",
+            "urn:ietf:params:oauth:token-type:id_token|",
+            "org.forgerock.oauth2.core.tokenexchange.accesstoken.",
+            "AccessTokenToIdTokenExchanger"
+        );
+        let malformed = "custom-exchanger-without-delimiters";
+        let rows = provider_summary(&json!({
+            "advancedOAuth2Config": {
+                "tokenExchangeClasses": [structured, malformed]
+            }
+        }));
+
+        assert_eq!(
+            summary_values(&rows, "  tokenExchangeClasses"),
+            [
+                "access_token => id_token (AccessTokenToIdTokenExchanger)",
+                malformed
             ]
         );
     }

@@ -543,11 +543,9 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 if json {
                     print_json(&provider)
                 } else {
-                    let rows = spec::provider_summary(&provider)
-                        .into_iter()
-                        .map(|(field, value)| vec![field, value])
-                        .collect::<Vec<_>>();
-                    print_table(&["FIELD", "VALUE"], &rows);
+                    for (field, value) in spec::provider_summary(&provider) {
+                        println!("{field}: {value}");
+                    }
                     Ok(())
                 }
             }
