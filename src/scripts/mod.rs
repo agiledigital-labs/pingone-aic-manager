@@ -35,6 +35,7 @@ pub mod screen;
 pub mod sync;
 pub mod sync_mapping;
 pub mod sync_types;
+pub mod syntax;
 pub mod ts_project;
 pub mod view;
 pub mod workspace;
@@ -187,6 +188,30 @@ impl Kind {
             Kind::IdmSyncMapping => {
                 sync_mapping::write(tenant, realm, script, confirmed_prod).await
             }
+        }
+    }
+
+    /// Ask the tenant whether this source parses, **without** storing it.
+    ///
+    /// Neither family's write path parses — a `PUT` of an unbalanced-paren
+    /// script returns 201 on both — so this is the whole safety net. The two
+    /// actions are unrelated endpoints with opposite conventions, and their
+    /// engines accept different syntax, so a `Kind` may only ever use its own
+    /// family's action. See `syntax` for the comparison table.
+    ///
+    /// A `SyntaxCheck::Skipped` is not a failure; see the variant's docs.
+    pub async fn check_syntax(
+        self,
+        tenant: &str,
+        realm: &str,
+        script: &RemoteScript,
+    ) -> Result<syntax::SyntaxCheck> {
+        match self {
+            Kind::Am => am::check_syntax(tenant, realm, script).await,
+            Kind::IdmEndpoint => idm::check_syntax(tenant, script).await,
+            Kind::IdmSchedule => schedule::check_syntax(tenant, script).await,
+            Kind::IdmManagedHook => managed_hooks::check_syntax(tenant, script).await,
+            Kind::IdmSyncMapping => sync_mapping::check_syntax(tenant, script).await,
         }
     }
 

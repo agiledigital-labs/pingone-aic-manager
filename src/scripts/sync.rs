@@ -11,6 +11,7 @@
 //! each entry on `realm: Option<String>` (Some for AM, None for IDM) so a
 //! same-named script in alpha and bravo never collide.
 
+use super::syntax::{SyntaxCheck, SyntaxError};
 use super::{Kind, RemoteRef, RemoteScript};
 use crate::config::ProjectConfig;
 use crate::{Error, Result};
@@ -63,6 +64,10 @@ pub enum PushOutcome {
     /// Remote drifted from the snapshot and doesn't match local. Blocked
     /// unless `--force`. Carries the 3-way texts for display.
     Conflict(ThreeWay),
+    /// The tenant refused to parse the local source, so nothing was written.
+    /// Distinct from `Conflict`: `--force` must not override this, because the
+    /// script would be stored broken (AM) or become un-routable (IDM).
+    Invalid(Vec<SyntaxError>),
 }
 
 /// The three sides of a content conflict, as decoded UTF-8 (lossy) text.
@@ -476,6 +481,8 @@ pub enum CreateOutcome {
     /// The tenant already had a script by that name. Carries its reference so
     /// the caller can [`adopt`] it rather than only report the refusal.
     NameTaken(RemoteRef),
+    /// The tenant refused to parse the source; nothing was created.
+    Invalid(Vec<SyntaxError>),
 }
 
 /// What to tell someone whose chosen name is already on the tenant. Not "use
@@ -501,6 +508,7 @@ pub async fn create(
     realm: &str,
     script: &RemoteScript,
     confirmed_prod: bool,
+    gate: SyntaxGate,
 ) -> Result<CreateOutcome> {
     let kind = script.reference.kind;
     if let Some(existing) = kind
@@ -511,7 +519,9 @@ pub async fn create(
     {
         return Ok(CreateOutcome::NameTaken(existing));
     }
-    kind.write(tenant, realm, script, confirmed_prod).await?;
+    if let Err(errors) = write_checked(kind, tenant, realm, script, confirmed_prod, gate).await? {
+        return Ok(CreateOutcome::Invalid(errors));
+    }
     // Pull it straight back so the workspace file, generated extras, and the
     // snapshot are exactly what a plain `pull` would have produced — the server
     // normalises fields we sent (AM rewrites `context`), so its copy is the
@@ -539,9 +549,19 @@ pub async fn create_new(
     realm: &str,
     script: &RemoteScript,
     confirmed_prod: bool,
+    gate: SyntaxGate,
 ) -> Result<RemoteScript> {
-    match create(tenant, realm, script, confirmed_prod).await? {
+    match create(tenant, realm, script, confirmed_prod, gate).await? {
         CreateOutcome::Created(created) => Ok(created),
+        CreateOutcome::Invalid(errors) => Err(Error::Config(format!(
+            "the tenant refused to parse {}: {}",
+            script.reference.name,
+            errors
+                .iter()
+                .map(SyntaxError::render)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ))),
         CreateOutcome::NameTaken(existing) => Err(Error::Config(name_taken_message(
             existing.kind,
             realm,
@@ -632,6 +652,7 @@ pub async fn copy(
     source: &RemoteScript,
     destination_name: &str,
     confirmed_prod: bool,
+    gate: SyntaxGate,
 ) -> Result<RemoteScript> {
     let kind = source.reference.kind;
     let raw_config = copy_body(
@@ -654,7 +675,7 @@ pub async fn copy(
         },
         raw_config,
     };
-    create_new(tenant, realm, &script, confirmed_prod).await
+    create_new(tenant, realm, &script, confirmed_prod, gate).await
 }
 
 /// Delete a remote standalone script and remove only its local sync metadata.
@@ -703,6 +724,59 @@ fn back_up(store: &SnapshotStore, r: &RemoteRef, local: &[u8]) -> Result<PathBuf
 }
 
 // ---------------------------------------------------------------------------
+// The one tenant-write path
+// ---------------------------------------------------------------------------
+
+/// Whether a write runs the pre-flight syntax check.
+///
+/// A distinct type rather than a `bool` on purpose: `push` and `reconcile`
+/// already carry `force` and `confirmed_prod`, and a third adjacent bool would
+/// be transposable at a call site — with the failure being a silently
+/// unchecked push or a spuriously skipped guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxGate {
+    /// Ask the tenant to parse the source first; refuse the write if it will
+    /// not. The default everywhere.
+    Check,
+    /// Write without asking. For when the check itself is in the way — the
+    /// escape hatch exists because the write path never checked syntax before
+    /// this gate did, so it must always be possible to get back to that.
+    Skip,
+}
+
+/// Every tenant write in this engine goes through here, so that adding a
+/// fourth write site cannot silently skip the syntax gate.
+///
+/// **Do not call `Kind::write` directly from this module.** There is no
+/// compiler check for that; `write_is_only_reached_through_write_checked`
+/// below is the guard.
+async fn write_checked(
+    kind: Kind,
+    tenant: &str,
+    realm: &str,
+    script: &RemoteScript,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Result<std::result::Result<(), Vec<SyntaxError>>> {
+    if gate == SyntaxGate::Check {
+        match kind.check_syntax(tenant, realm, script).await? {
+            SyntaxCheck::Ok => {}
+            SyntaxCheck::Invalid(errors) => return Ok(Err(errors)),
+            // Not a verdict, so not a refusal — but say so, because a silent
+            // skip would let the operator believe a check happened.
+            SyntaxCheck::Skipped(reason) => {
+                eprintln!(
+                    "warning: {} not syntax-checked: {reason}",
+                    script.reference.name
+                );
+            }
+        }
+    }
+    kind.write(tenant, realm, script, confirmed_prod).await?;
+    Ok(Ok(()))
+}
+
+// ---------------------------------------------------------------------------
 // Push
 // ---------------------------------------------------------------------------
 
@@ -716,6 +790,7 @@ pub async fn push(
     name: &str,
     force: bool,
     confirmed_prod: bool,
+    gate: SyntaxGate,
 ) -> Result<PushOutcome> {
     let store = SnapshotStore::open(tenant);
     let entry = store.lookup(kind, name, realm)?.ok_or_else(|| {
@@ -775,7 +850,11 @@ pub async fn push(
         reference: r.clone(),
         raw_config: raw,
     };
-    kind.write(tenant, realm, &to_push, confirmed_prod).await?;
+    if let Err(errors) = write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate).await? {
+        // Nothing was written and the snapshot is untouched, so the local edit
+        // survives for the operator to fix and push again.
+        return Ok(PushOutcome::Invalid(errors));
+    }
 
     // Refresh the snapshot to exactly what we just pushed.
     store.record(&to_push, realm)?;
@@ -906,6 +985,9 @@ pub enum ReconcileOutcome {
     Converged,
     /// Both sides changed differently — the caller resolves.
     Conflict(ThreeWay),
+    /// Only local changed, but the tenant refused to parse it. Nothing was
+    /// written and the snapshot is unchanged, so the next reconcile retries.
+    Invalid(Vec<SyntaxError>),
 }
 
 /// Reconcile one synced script (one remote fetch): push if only local changed,
@@ -918,6 +1000,7 @@ pub async fn reconcile(
     kind: Kind,
     name: &str,
     confirmed_prod: bool,
+    gate: SyntaxGate,
 ) -> Result<ReconcileOutcome> {
     let store = SnapshotStore::open(tenant);
     let entry = store
@@ -961,7 +1044,11 @@ pub async fn reconcile(
                 reference: r.clone(),
                 raw_config: raw,
             };
-            kind.write(tenant, realm, &to_push, confirmed_prod).await?;
+            if let Err(errors) =
+                write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate).await?
+            {
+                return Ok(ReconcileOutcome::Invalid(errors));
+            }
             store.record(&to_push, realm)?;
             Ok(ReconcileOutcome::Pushed)
         }
@@ -1230,5 +1317,37 @@ mod tests {
         assert!(Selector::All.matches(&r));
         assert!(Selector::Name("Widget".into()).matches(&r));
         assert!(!Selector::Name("Other".into()).matches(&r));
+    }
+
+    /// The syntax gate lives in `write_checked`, and nothing but the compiler
+    /// stops a fourth write site from calling `Kind::write` directly and
+    /// skipping it. So assert it structurally, over this module's own source.
+    ///
+    /// The needle is assembled at runtime rather than written as a literal:
+    /// spelled out, this test's own body would contain the pattern and the
+    /// assertion would fail on itself the moment it was added — the same
+    /// self-match that makes a `pgrep -f` monitor never terminate.
+    #[test]
+    fn write_is_only_reached_through_write_checked() {
+        let source = include_str!("sync.rs");
+        let needle = format!("kind{}write(", ".");
+        let offenders: Vec<&str> = source
+            .lines()
+            .filter(|l| l.contains(&needle))
+            // The one sanctioned call, inside `write_checked` itself.
+            .filter(|l| !l.contains("    kind.write(tenant, realm, script, confirmed_prod)"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "a tenant write bypasses the syntax gate in write_checked: {offenders:?}\n\
+             route it through `write_checked` instead of calling `Kind::write`."
+        );
+    }
+
+    /// The gate is opt-out, so the default must be the checking one. A flipped
+    /// default would be invisible: every push would succeed, just unchecked.
+    #[test]
+    fn check_and_skip_are_distinct() {
+        assert_ne!(SyntaxGate::Check, SyntaxGate::Skip);
     }
 }

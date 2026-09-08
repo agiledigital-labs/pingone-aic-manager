@@ -518,17 +518,37 @@ pub fn execute_push(
     let label = format!("push {full}");
     let full_for_event = full.clone();
     tokio::spawn(async move {
-        let result = sync::push(&tenant, &realm, kind, &name, false, confirmed_prod)
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|outcome| match outcome {
-                PushOutcome::Pushed => Ok(format!("pushed {full}")),
-                PushOutcome::Unchanged => Ok(format!("{full}: no local changes")),
-                PushOutcome::AlreadyInSync => Ok(format!("{full}: already in sync")),
-                PushOutcome::Conflict(_) => Err(format!(
-                    "{full}: remote changed since last pull — resolve with `aic script diff {full}`"
-                )),
-            });
+        let result = sync::push(
+            &tenant,
+            &realm,
+            kind,
+            &name,
+            false,
+            confirmed_prod,
+            // No opt-out in the TUI: the CLI's `--no-syntax-check` exists for
+            // scripted use, and there is no keybind worth spending on writing
+            // source the tenant has just said it cannot parse.
+            sync::SyntaxGate::Check,
+        )
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|outcome| match outcome {
+            PushOutcome::Pushed => Ok(format!("pushed {full}")),
+            PushOutcome::Unchanged => Ok(format!("{full}: no local changes")),
+            PushOutcome::AlreadyInSync => Ok(format!("{full}: already in sync")),
+            PushOutcome::Conflict(_) => Err(format!(
+                "{full}: remote changed since last pull — resolve with `aic script diff {full}`"
+            )),
+            // One toast line, so lead with the coordinates when there are
+            // any; the full list is in `aic script push`.
+            PushOutcome::Invalid(errors) => Err(format!(
+                "{full}: the tenant refused to parse it — {}",
+                errors
+                    .first()
+                    .map(script::syntax::SyntaxError::render)
+                    .unwrap_or_else(|| "syntax error".into())
+            )),
+        });
         let _ = tx.send(AppEvent::Scripts(Event::OpResult {
             tenant,
             full: full_for_event,

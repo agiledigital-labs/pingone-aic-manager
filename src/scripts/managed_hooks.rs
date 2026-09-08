@@ -21,6 +21,7 @@
 //!   (`{"type": …, "file": "…"}`) reference server-side files the config API
 //!   cannot read or write — they are skipped, never converted or dropped.
 
+use super::syntax::SyntaxCheck;
 use super::{Kind, RemoteRef, RemoteScript};
 use crate::{Error, Result};
 use serde_json::Value;
@@ -243,6 +244,13 @@ pub fn encode_source(raw: &mut Value, source: &[u8]) -> Result<()> {
         .ok_or_else(|| Error::Config("managed hook config is not an object".into()))?;
     map.insert("source".into(), Value::String(s));
     Ok(())
+}
+
+/// Syntax-check the hook source before the read-modify-write of the shared
+/// `config/managed` document. Worth more here than elsewhere: the write
+/// carries every other object's hooks with it.
+pub async fn check_syntax(tenant: &str, script: &RemoteScript) -> Result<SyntaxCheck> {
+    super::syntax::idm_check_slot(tenant, Some(&script.raw_config)).await
 }
 
 /// `idm/managed/<object>/<hookKey>.cjs` — one folder per managed object.

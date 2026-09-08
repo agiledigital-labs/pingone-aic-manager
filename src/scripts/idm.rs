@@ -3,6 +3,7 @@
 //! realm, no `Accept-API-Version`), plaintext `source` (not base64), and
 //! name-derived-from-`_id`. See `docs/api/11-idm-endpoints.md`.
 
+use super::syntax::SyntaxCheck;
 use super::{Kind, NewScriptOpts, RemoteRef, RemoteScript};
 use crate::{Error, Result};
 use serde_json::Value;
@@ -119,6 +120,15 @@ pub fn encode_source(raw: &mut Value, source: &[u8]) -> Result<()> {
         .ok_or_else(|| Error::Config("IDM raw config is not an object".into()))?;
     obj.insert("source".into(), Value::String(s));
     Ok(())
+}
+
+/// Syntax-check the endpoint source before it is written. `PUT` stores source
+/// that does not parse, and the resulting endpoint answers **404** at its
+/// runtime URL while its config object reads back 200 — so without this the
+/// symptom is an endpoint that looks like it was never created.
+/// See `docs/api/11-idm-endpoints.md` ("Syntax validation").
+pub async fn check_syntax(tenant: &str, script: &RemoteScript) -> Result<SyntaxCheck> {
+    super::syntax::idm_check_slot(tenant, Some(&script.raw_config)).await
 }
 
 pub fn workspace_subpath(r: &RemoteRef) -> PathBuf {
