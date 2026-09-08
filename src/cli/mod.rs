@@ -1696,6 +1696,26 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// `docs/CLI.md` documents `logs search|sync|compact`, and released binaries
+    /// are built without the `logs-store` feature that implements them. They
+    /// must therefore still PARSE in a default build, so the caller gets a
+    /// message naming the feature instead of `unrecognized subcommand`. Holds
+    /// in both builds: with the feature these are the real commands, without it
+    /// they are stubs that error at dispatch.
+    #[test]
+    fn log_store_commands_parse_even_when_the_feature_is_off() {
+        for args in [
+            vec!["aic", "logs", "search", "--contains", "boom"],
+            vec!["aic", "logs", "sync"],
+            vec!["aic", "logs", "compact"],
+        ] {
+            assert!(
+                Cli::try_parse_from(&args).is_ok(),
+                "{args:?} must be a known subcommand in every build"
+            );
+        }
+    }
+
     #[test]
     fn session_groups_agent_lifecycle_commands() {
         let cli = Cli::try_parse_from(["aic", "session", "status"]).unwrap();

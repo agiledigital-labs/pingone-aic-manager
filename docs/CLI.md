@@ -298,6 +298,20 @@ but this standalone command does not set `operator.name`.
 
 ### Local store
 
+> **Build-gated, and not in the binary you downloaded.** The three commands
+> below need the `logs-store` cargo feature. The release workflow runs
+> `cargo build --release --locked --bin aic` with no features, so a released
+> `aic` does not have them: `aic logs search` fails with
+> `error: unrecognized subcommand 'search'`, which says nothing about a feature
+> and reads as a missing command. Build your own with:
+>
+> ```sh
+> cargo build --release --features logs-store
+> ```
+>
+> Everything earlier in this section is in every build. DuckDB is why these
+> three are opt-in.
+
 | Command                                                                                                                                                                                                          | What it does                                                                                                                   |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `aic logs search [--tenant <name>] [--tx <id>] [--source <source>] [--event <name>] [--user <id>] [--level <level>] [--begin <iso>] [--end <iso>] [--contains <text>] [--limit <n>] [--count] [--output <path>]` | Query the synced DuckDB store offline. `--count` prints only the match count; `--output` writes JSON results.                  |
