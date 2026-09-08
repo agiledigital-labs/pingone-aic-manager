@@ -54,6 +54,40 @@ The script is created as a next-gen scripted decision script:
 
 Override `BASE`, `REALM_PATH`, `TENANT`, `SCRIPT_NAME`, `TREE_NAME`, `SCRIPT_ID`, or `NODE_ID` if needed.
 
+## The OAuth2 lane (`fixtures-oauth2/`)
+
+A second, independent lane for the next-gen **`OAUTH2_VALIDATE_SCOPE`** context.
+The journey harness cannot reach it: a validate-scope script is invoked by a
+token request, not by an authentication tree.
+
+```bash
+SECRET_FILE=/path/to/secret scripts/rhino-script-tester/run-oauth2-probes.sh
+```
+
+It swaps one throwaway script's body per fixture and records what the **client**
+sees — HTTP status, whether a token was issued, and the granted `scope` — so a
+denial that still issues a token shows up as one. Results land in
+`tmp/rhino-script-tester/oauth2-probe-results.json`.
+
+Two things about this lane are deliberate:
+
+- **Per-client, never realm-wide.** The script is attached through
+  `overrideOAuth2ClientConfig` on a throwaway `client_credentials` client. The
+  realm default would apply to every client in the tenant.
+- **Ids are minted, not chosen.** Both objects are created with `aic oauth
+  create` / `aic script create`, which generate fresh UUIDs, so this lane cannot
+  reproduce the clobber described above. It takes no id from the reserved
+  `…a1c0a11e7xxx` family.
+
+`control-passthrough.script.js` is a positive control and is worth running first
+— every denial fixture is only meaningful against a baseline that issues a token
+with the scope present.
+
+**Scope count changes the answer.** `deny-narrowed-list` narrows to the empty
+list and AM refuses with `403`; `deny-narrowed-list-partial` drops one scope of
+two and AM issues a `200` with the scope quietly missing. Run both, or the safe
+result hides the dangerous one.
+
 ## One-Time Setup
 
 Run this only when the tenant resources are missing or the journey shape changes:

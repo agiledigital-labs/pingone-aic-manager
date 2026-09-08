@@ -1019,6 +1019,54 @@ Other observations worth keeping:
 - `identity` was not exercised: a `client_credentials` grant has no resource
   owner.
 
+#### How a validate-scope script denies a scope (2026-09-08)
+
+`scopeValidatorHelper` ships with no useful metadata —
+`bindings/oauth2-validate-scope-next.json` publishes it as
+`{"name": "scopeValidatorHelper", "javaScriptType": "unknown"}`, no `javaClass`
+and no `elements` — so its members were enumerated live. A `for...in` yields the
+inherited `java.lang.Object` members as well, and reading one gives `undefined`,
+so filter on `typeof`:
+
+| Member                                                                               | `typeof`    |
+| ------------------------------------------------------------------------------------ | ----------- |
+| `throwInvalidScope`                                                                  | `function`  |
+| `inheritAccessTokenScopesOnRefresh`                                                  | `function`  |
+| `class`, `equals`, `getClass`, `hashCode`, `notify`, `notifyAll`, `toString`, `wait` | `undefined` |
+
+**Only `throwInvalidScope` denies a scope. The obvious alternatives do not, and
+one of them fails open.** Measured on a throwaway `client_credentials` client,
+one scope per row denied out of what was requested:
+
+| How the script denies                                                         | Client sees                                               | Verdict          |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------- | ---------------- |
+| `scopeValidatorHelper.throwInvalidScope(msg)`                                 | `400 invalid_scope`, `error_description: msg`             | correct          |
+| `throw new Error(msg)`                                                        | `500 server_error`                                        | obviously broken |
+| return the requested list minus the denied scope, **another scope surviving** | **`200`**, token issued, denied scope absent from `scope` | **fails open**   |
+| return the requested list minus the denied scope, **nothing surviving**       | `403 authorization_declined`, no token                    | safe by accident |
+
+The third row is the trap, and the fourth is why it hides. Returning a narrowed
+list is the intuitive reading of a function called "validate scope", and the
+denial _appears_ to work when the denied scope is the only one requested —
+that is the shape a probe naturally takes, and it refuses cleanly. Add a second
+scope, which is what production looks like, and the same script issues a token
+with the denied scope quietly missing. A caller that does not re-read the
+response's `scope` field believes it holds a scope it was just refused.
+
+Two details that matter when writing the denial:
+
+- The `throwInvalidScope` message is passed to the client **verbatim** as
+  `error_description`. Do not put internal detail in it.
+- `throw new Error(...)` does not merely produce a `500`: the log's root cause is
+  `class org.mozilla.javascript.NativeError cannot be cast to class
+  org.mozilla.javascript.NativeJavaObject`, because AM expects a thrown Java
+  object here, not a JavaScript one. So a plain `throw` is never the answer in
+  this context.
+
+Fixtures: `scripts/rhino-script-tester/fixtures-oauth2/`, driven by
+`run-oauth2-probes.sh` — the journey harness cannot reach this context, since a
+validate-scope script is invoked by a token request rather than by a tree.
+
 **`OAUTH2_SCRIPTED_JWT_ISSUER_NEXT_GEN` has metadata but nowhere to attach it.**
 Searched every script/plugin field on the OAuth2 provider service
 (`realm-config/services/oauth-oidc`), the OAuth2 client override block, and the
