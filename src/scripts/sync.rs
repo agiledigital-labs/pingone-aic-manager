@@ -11,7 +11,9 @@
 //! each entry on `realm: Option<String>` (Some for AM, None for IDM) so a
 //! same-named script in alpha and bravo never collide.
 
-use super::syntax::{Refusal, SyntaxCheck};
+pub use super::gate::SyntaxGate;
+use super::gate::{Gated, write_checked};
+use super::syntax::Refusal;
 use super::{Kind, RemoteRef, RemoteScript};
 use crate::config::ProjectConfig;
 use crate::{Error, Result};
@@ -780,94 +782,6 @@ fn back_up(store: &SnapshotStore, r: &RemoteRef, local: &[u8]) -> Result<PathBuf
 }
 
 // ---------------------------------------------------------------------------
-// The one tenant-write path
-// ---------------------------------------------------------------------------
-
-/// Whether a write runs the pre-flight syntax check.
-///
-/// A distinct type rather than a `bool` on purpose: `push` and `reconcile`
-/// already carry `force` and `confirmed_prod`, and a third adjacent bool would
-/// be transposable at a call site — with the failure being a silently
-/// unchecked push or a spuriously skipped guard.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SyntaxGate {
-    /// Ask the tenant to parse the source first; refuse the write if it will
-    /// not. The default everywhere.
-    Check,
-    /// Write without asking. For when the check itself is in the way — the
-    /// escape hatch exists because the write path never checked syntax before
-    /// this gate did, so it must always be possible to get back to that.
-    Skip,
-}
-
-/// What the gate did about one write.
-#[derive(Debug)]
-enum Gated {
-    /// The write happened, and the source was parsed first (or the gate was
-    /// off, at the caller's explicit request).
-    Written,
-    /// Nothing was written.
-    Refused(Refusal),
-}
-
-/// Every tenant write in this engine goes through here, so that adding a
-/// fourth write site cannot silently skip the syntax gate.
-///
-/// **Do not call `Kind::write` directly from this module.** There is no
-/// compiler check for that; `write_is_only_reached_through_write_checked`
-/// below is the guard.
-///
-/// Under [`SyntaxGate::Check`] this fails **closed**, with no exceptions: only
-/// a pass writes. It used to warn and write anyway whenever it had no verdict,
-/// on the reasoning that blocking on an unanswerable pre-flight was a
-/// regression against having no pre-flight — which is wrong twice over.
-/// `--no-syntax-check` is that regression, on request; and the shapes that
-/// reached the fail-open path were mostly ones this gate could check and did
-/// not (a nested endpoint `source`, a legacy array-form AM `script`), so it
-/// reproduced exactly the distant-failure the feature exists to prevent, while
-/// reporting a successful push.
-///
-/// The narrower version of the same mistake is worth naming because it looked
-/// principled: letting a resource nothing *can* check write anyway, on the
-/// grounds that the decision came from the resource rather than from a
-/// response. It is still unparsed source, `idm::list` will happily sync an
-/// endpoint declaring any engine at all, and in a batch such a write did not
-/// even count as a refusal. Where the decision came from belongs in the
-/// message and the remedy, not in the permission.
-///
-/// Presentation is the caller's: this returns the outcome and prints nothing.
-/// The engine is shared with the TUI, where a stray `eprintln!` lands on the
-/// alternate screen.
-async fn write_checked(
-    kind: Kind,
-    tenant: &str,
-    realm: &str,
-    script: &RemoteScript,
-    confirmed_prod: bool,
-    gate: SyntaxGate,
-) -> Result<Gated> {
-    if gate == SyntaxGate::Check {
-        if let Err(refusal) = decide(kind.check_syntax(tenant, realm, script).await?) {
-            return Ok(Gated::Refused(refusal));
-        }
-    }
-    kind.write(tenant, realm, script, confirmed_prod).await?;
-    Ok(Gated::Written)
-}
-
-/// Whether a verdict permits the write. Split out of [`write_checked`] because
-/// it is the whole fail-closed rule and the only part of it a test can reach
-/// without a tenant.
-fn decide(verdict: SyntaxCheck) -> std::result::Result<(), Refusal> {
-    match verdict {
-        SyntaxCheck::Ok => Ok(()),
-        SyntaxCheck::Invalid(errors) => Err(Refusal::Rejected(errors)),
-        SyntaxCheck::NoVerdict(reason) => Err(Refusal::NoVerdict(reason)),
-        SyntaxCheck::Unsupported(reason) => Err(Refusal::Unsupported(reason)),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Push
 // ---------------------------------------------------------------------------
 
@@ -1173,7 +1087,6 @@ pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scripts::syntax::SyntaxError;
 
     #[test]
     fn local_reads_only_treat_not_found_as_missing() {
@@ -1417,69 +1330,5 @@ mod tests {
         assert!(Selector::All.matches(&r));
         assert!(Selector::Name("Widget".into()).matches(&r));
         assert!(!Selector::Name("Other".into()).matches(&r));
-    }
-
-    /// A **tripwire, not an invariant.** The syntax gate lives in
-    /// `write_checked`, and nothing stops a new write site from calling
-    /// `Kind::write` directly and skipping it — this catches the obvious way
-    /// of doing that — the one literal spelling this module used to make —
-    /// and nothing else (and this sentence may not spell it, or the scan would
-    /// match its own explanation). It does not see a call split across lines, `kind`
-    /// bound to another name, a raw per-kind writer called directly
-    /// (`am::write` is `pub`), or any file but this one, because `Kind::write`
-    /// is `pub`. Compiler enforcement would need a permit token that only a
-    /// private guard module can mint; until then, this is a reminder for
-    /// someone editing `sync.rs`, and reviewing a new write site is the real
-    /// control.
-    ///
-    /// The needle is assembled at runtime rather than written as a literal:
-    /// spelled out, this test's own body would contain the pattern and the
-    /// assertion would fail on itself the moment it was added — the same
-    /// self-match that makes a `pgrep -f` monitor never terminate.
-    #[test]
-    fn write_is_only_reached_through_write_checked() {
-        let source = include_str!("sync.rs");
-        let needle = format!("kind{}write(", ".");
-        let offenders: Vec<&str> = source
-            .lines()
-            .filter(|l| l.contains(&needle))
-            // The one sanctioned call, inside `write_checked` itself.
-            .filter(|l| !l.contains("    kind.write(tenant, realm, script, confirmed_prod)"))
-            .collect();
-        assert!(
-            offenders.is_empty(),
-            "a tenant write bypasses the syntax gate in write_checked: {offenders:?}\n\
-             route it through `write_checked` instead of calling `Kind::write`."
-        );
-    }
-
-    /// The gate fails **closed**: `Ok` is the only verdict that writes. The
-    /// two no-verdict arms are the discriminating cases — each in turn used to
-    /// write with a warning, which is what let an IDM 503, an unparsed nested
-    /// `source`, and an endpoint declaring an unknown engine through while the
-    /// tool reported a successful push. Their arms differ only so the remedy
-    /// can differ.
-    #[test]
-    fn only_a_pass_may_write() {
-        assert_eq!(decide(SyntaxCheck::Ok), Ok(()));
-        assert_eq!(
-            decide(SyntaxCheck::NoVerdict("503".into())),
-            Err(Refusal::NoVerdict("503".into())),
-            "a check with no verdict must not authorise a write"
-        );
-        assert_eq!(
-            decide(SyntaxCheck::Unsupported("no engine for it".into())),
-            Err(Refusal::Unsupported("no engine for it".into())),
-            "a resource nothing can check must not authorise a write either"
-        );
-        let errors = vec![SyntaxError {
-            line: Some(3),
-            column: None,
-            message: "boom".into(),
-        }];
-        assert_eq!(
-            decide(SyntaxCheck::Invalid(errors.clone())),
-            Err(Refusal::Rejected(errors))
-        );
     }
 }

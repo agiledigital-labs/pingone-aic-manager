@@ -142,11 +142,15 @@ pub async fn fetch(tenant: &str, _realm: &str, id: &str) -> Result<RemoteScript>
     })
 }
 
-pub async fn write(
+/// Only reachable from [`super::gate::write_checked`]: the `permit` is
+/// unconstructable elsewhere, and this endpoint does not parse what it
+/// stores.
+pub(super) async fn write(
     tenant: &str,
     _realm: &str,
     script: &RemoteScript,
     confirmed_prod: bool,
+    _permit: &super::gate::WritePermit,
 ) -> Result<Value> {
     let name = name_from_id(&script.reference.id);
     let (object, hook) = parse_name(name)?;
