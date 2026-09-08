@@ -35,8 +35,11 @@ fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
             Refusal::Rejected(_) => "fix the source, or pass --no-syntax-check to write it anyway",
             // A no-verdict refusal may be a tenant having a bad minute, so
             // retrying is the first thing to try — unlike a rejection, where
-            // retrying the same bytes gets the same answer.
+            // retrying the same bytes gets the same answer, or an unsupported
+            // engine, where no retry can ever help.
             Refusal::NoVerdict(_) => "retry, or pass --no-syntax-check to write it unchecked",
+            Refusal::Unsupported(_) =>
+                "pass --no-syntax-check to write it unchecked (retrying cannot help)",
         }
     );
 }
@@ -48,20 +51,11 @@ fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
 fn push_outcome_note(outcome: &script::sync::PushOutcome) -> String {
     use script::sync::PushOutcome;
     match outcome {
-        PushOutcome::Pushed { .. } => "pushed".into(),
+        PushOutcome::Pushed => "pushed".into(),
         PushOutcome::Unchanged => "no local changes to push".into(),
         PushOutcome::AlreadyInSync => "remote already matched local; snapshot refreshed".into(),
         PushOutcome::Conflict(_) => "remote changed again — re-run to resolve".into(),
-        PushOutcome::Refused(refusal) => refusal.headline(),
-    }
-}
-
-/// Say when a write went ahead without a verdict. Only reachable for a
-/// resource nothing can check (see `syntax::SyntaxCheck::Unsupported`); on
-/// stderr rather than stdout so it does not land in a piped listing.
-fn note_unchecked(full: &str, unchecked: &Option<String>) {
-    if let Some(reason) = unchecked {
-        eprintln!("warning: {full} was written without a syntax check — {reason}");
+        PushOutcome::Refused { refusal, .. } => refusal.headline(),
     }
 }
 
@@ -403,16 +397,15 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             }
             let new_script = ns.kind.new_script(&name, &source, &opts)?;
             let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
-            let (created, unchecked) = match prod_hint(
+            let created = match prod_hint(
                 sync::create_new(&tenant, ns.realm_arg(), &new_script, yes, gate).await,
             )? {
-                sync::Creation::Created { script, unchecked } => (script, unchecked),
+                sync::Creation::Created(script) => script,
                 sync::Creation::Refused(refusal) => {
                     report_refusal(&full, &refusal);
                     return Err(Error::Config(format!("{full} was not created")));
                 }
             };
-            note_unchecked(&full, &unchecked);
             let path = ProjectConfig::workspace_tree(&tenant).join(
                 created
                     .reference
@@ -478,9 +471,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 )
                 .await,
             )? {
-                sync::Creation::Created { unchecked, .. } => {
-                    note_unchecked(&destination_full, &unchecked)
-                }
+                sync::Creation::Created(_) => {}
                 sync::Creation::Refused(refusal) => {
                     report_refusal(&destination_full, &refusal);
                     return Err(Error::Config(format!("{destination_full} was not created")));
@@ -712,9 +703,8 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                         invalid += 1;
                         report_refusal(&full, &refusal);
                     }
-                    sync::ReconcileOutcome::Pushed { unchecked } => {
+                    sync::ReconcileOutcome::Pushed => {
                         pushed += 1;
-                        note_unchecked(&full, &unchecked);
                         println!("→ pushed {full}");
                     }
                     sync::ReconcileOutcome::Pulled => {
@@ -750,13 +740,12 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                                     )
                                     .await,
                                 )? {
-                                    sync::PushOutcome::Refused(refusal) => {
+                                    sync::PushOutcome::Refused { refusal, .. } => {
                                         invalid += 1;
                                         report_refusal(&full, &refusal);
                                     }
-                                    sync::PushOutcome::Pushed { unchecked } => {
+                                    sync::PushOutcome::Pushed => {
                                         pushed += 1;
-                                        note_unchecked(&full, &unchecked);
                                         println!("→ pushed {full} (resolved: local)");
                                     }
                                     // Nothing to write after all (the local
@@ -1859,15 +1848,12 @@ async fn watch(tenant: &str, yes: bool, gate: script::sync::SyntaxGate) -> Resul
                 script::sync::push(tenant, ns.realm_arg(), ns.kind, &name, false, yes, gate).await,
             );
             match result {
-                Ok(PushOutcome::Pushed { unchecked }) => {
-                    note_unchecked(&full, &unchecked);
-                    println!("{}", watch_green(&format!("→ pushed {full}")))
-                }
+                Ok(PushOutcome::Pushed) => println!("{}", watch_green(&format!("→ pushed {full}"))),
                 Ok(PushOutcome::Unchanged | PushOutcome::AlreadyInSync) => {}
                 // Keep watching: the operator's next save is the retry, and
                 // this is the case the whole gate exists for — a build that
                 // compiles locally can still be source the tenant refuses.
-                Ok(PushOutcome::Refused(refusal)) => report_refusal(&full, &refusal),
+                Ok(PushOutcome::Refused { refusal, .. }) => report_refusal(&full, &refusal),
                 // The push was uncancellable, so a stop may have landed while
                 // it ran. Do not open a prompt on the way out.
                 Ok(PushOutcome::Conflict(_)) if stop.stopped() => {
@@ -1894,18 +1880,15 @@ async fn watch(tenant: &str, yes: bool, gate: script::sync::SyntaxGate) -> Resul
                                 .await,
                             );
                             match result {
-                                Ok(PushOutcome::Pushed { unchecked }) => {
-                                    note_unchecked(&full, &unchecked);
-                                    println!(
-                                        "{}",
-                                        watch_green(&format!("→ pushed {full} (resolved: local)"))
-                                    )
-                                }
+                                Ok(PushOutcome::Pushed) => println!(
+                                    "{}",
+                                    watch_green(&format!("→ pushed {full} (resolved: local)"))
+                                ),
                                 // The first attempt conflicted *before* the
                                 // syntax check ran, so this is the first place
                                 // a refusal can surface. A catch-all here
                                 // swallowed it and left the row looking clean.
-                                Ok(PushOutcome::Refused(refusal)) => {
+                                Ok(PushOutcome::Refused { refusal, .. }) => {
                                     report_refusal(&full, &refusal)
                                 }
                                 Ok(other) => eprintln!(
@@ -2031,10 +2014,7 @@ async fn adopt_generated(
     let outcome =
         prod_hint(script::sync::create(tenant, ns.realm_arg(), &new_script, yes, gate).await)?;
     let existing = match outcome {
-        script::sync::CreateOutcome::Created { unchecked, .. } => {
-            note_unchecked(full, &unchecked);
-            return Ok(Adoption::Created);
-        }
+        script::sync::CreateOutcome::Created(_) => return Ok(Adoption::Created),
         script::sync::CreateOutcome::NameTaken(existing) => existing,
         script::sync::CreateOutcome::Refused(refusal) => {
             report_refusal(full, &refusal);
@@ -2214,11 +2194,8 @@ async fn push_one(
     match prod_hint(
         script::sync::push(tenant, ns.realm_arg(), ns.kind, name, force, yes, gate).await,
     )? {
-        PushOutcome::Pushed { unchecked } => {
-            note_unchecked(&full, &unchecked);
-            println!("pushed {full}")
-        }
-        PushOutcome::Refused(refusal) => {
+        PushOutcome::Pushed => println!("pushed {full}"),
+        PushOutcome::Refused { refusal, .. } => {
             report_refusal(&full, &refusal);
             return Err(Error::Config(format!("{full} was not pushed")));
         }
@@ -2240,11 +2217,10 @@ async fn push_one(
                         script::sync::push(tenant, ns.realm_arg(), ns.kind, name, true, yes, gate)
                             .await,
                     )? {
-                        PushOutcome::Pushed { unchecked } => {
-                            note_unchecked(&full, &unchecked);
+                        PushOutcome::Pushed => {
                             println!("pushed {full} (overwrote remote changes)");
                         }
-                        PushOutcome::Refused(refusal) => {
+                        PushOutcome::Refused { refusal, .. } => {
                             report_refusal(&full, &refusal);
                             return Err(Error::Config(format!("{full} was not pushed")));
                         }
@@ -2294,12 +2270,9 @@ async fn push_all(
         match prod_hint(
             script::sync::push(tenant, ns.realm_arg(), c.kind, &c.name, force, yes, gate).await,
         )? {
-            PushOutcome::Pushed { unchecked } => {
-                note_unchecked(&full, &unchecked);
-                println!("pushed {full}")
-            }
+            PushOutcome::Pushed => println!("pushed {full}"),
             PushOutcome::Unchanged | PushOutcome::AlreadyInSync => {}
-            PushOutcome::Refused(refusal) => {
+            PushOutcome::Refused { refusal, .. } => {
                 report_refusal(&full, &refusal);
                 refused += 1;
             }

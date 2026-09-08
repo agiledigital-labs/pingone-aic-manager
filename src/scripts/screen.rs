@@ -87,8 +87,15 @@ pub enum Event {
 pub enum OpOutcome {
     /// Toast this, and clear any standing issue for the script.
     Ok(String),
-    /// The syntax gate refused the write; nothing was written.
-    Refused(script::syntax::Refusal),
+    /// The syntax gate refused the write; nothing was written. `source`
+    /// identifies the bytes that were checked, carried from the push rather
+    /// than re-read here — the operator may have saved a fix while the request
+    /// was in flight, and a refusal pinned to that fix would claim the tenant
+    /// rejected source it never saw.
+    Refused {
+        refusal: script::syntax::Refusal,
+        source: sync::SourceId,
+    },
     /// The op itself failed (transport, locked agent, …).
     Failed(String),
 }
@@ -174,21 +181,20 @@ pub struct Refused {
     pub summary: String,
     /// Per-error lines, coordinates included.
     pub detail: Vec<String>,
-    /// Digest of the local source that was refused. The strip is stale once
-    /// this changes — that is the "until the source changes" half of the rule,
-    /// and it is checked on refresh because that is when the tab re-reads the
-    /// workspace.
-    pub source: Option<u64>,
+    /// The source that was refused, as reported by the push itself. The strip
+    /// is stale once the workspace no longer holds these bytes — that is the
+    /// "until the source changes" half of the rule, and it is evaluated on
+    /// refresh because that is when the tab re-reads the workspace.
+    pub source: sync::SourceId,
 }
 
-/// Digest of a script's local source, for deciding whether a held refusal
-/// still describes what is on disk.
-fn source_digest(tenant: &str, c: &Candidate) -> Option<u64> {
-    use std::hash::{Hash, Hasher};
-    let src = sync::preview_source(tenant, c)?;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    src.hash(&mut h);
-    Some(h.finish())
+/// Whether a held refusal still describes what is in the workspace.
+///
+/// A missing local file counts as changed: there is nothing left for the
+/// refusal to be about, and a strip against a file that is gone cannot be
+/// acted on.
+fn refusal_is_current(held: &Refused, on_disk: Option<sync::SourceId>) -> bool {
+    on_disk == Some(held.source)
 }
 
 impl Default for State {
@@ -373,7 +379,7 @@ fn apply_refresh(
                     return true;
                 }
                 match items.iter().find(|c| State::full_of(c) == *full) {
-                    Some(c) => source_digest(&tenant, c) == held.source,
+                    Some(c) => refusal_is_current(held, sync::local_source_id(&tenant, c)),
                     None => false,
                 }
             });
@@ -592,10 +598,7 @@ pub fn execute_push(
         .await
         {
             Err(e) => OpOutcome::Failed(e.to_string()),
-            Ok(PushOutcome::Pushed { unchecked }) => OpOutcome::Ok(match unchecked {
-                None => format!("pushed {full}"),
-                Some(reason) => format!("pushed {full} — unchecked: {reason}"),
-            }),
+            Ok(PushOutcome::Pushed) => OpOutcome::Ok(format!("pushed {full}")),
             Ok(PushOutcome::Unchanged) => OpOutcome::Ok(format!("{full}: no local changes")),
             Ok(PushOutcome::AlreadyInSync) => OpOutcome::Ok(format!("{full}: already in sync")),
             Ok(PushOutcome::Conflict(_)) => OpOutcome::Failed(format!(
@@ -604,7 +607,7 @@ pub fn execute_push(
             // Held as an inline issue, not spent on one toast line: the
             // coordinate and the reason are what the operator needs while
             // fixing the source.
-            Ok(PushOutcome::Refused(refusal)) => OpOutcome::Refused(refusal),
+            Ok(PushOutcome::Refused { refusal, source }) => OpOutcome::Refused { refusal, source },
         };
         let _ = tx.send(AppEvent::Scripts(Event::OpResult {
             tenant,
@@ -627,10 +630,7 @@ fn apply_op_result(app: &mut App, tenant: String, full: String, label: String, o
             app.push_toast(ToastKind::Success, msg);
         }
         OpOutcome::Failed(e) => app.push_toast(ToastKind::Error, format!("{label} failed: {e}")),
-        OpOutcome::Refused(refusal) => {
-            let source = selected_by_full(app, &tenant, &full)
-                .as_ref()
-                .and_then(|c| source_digest(&tenant, c));
+        OpOutcome::Refused { refusal, source } => {
             app.push_toast(ToastKind::Error, format!("{full}: {}", refusal.headline()));
             app.scripts.refused.insert(
                 key,
@@ -644,14 +644,6 @@ fn apply_op_result(app: &mut App, tenant: String, full: String, label: String, o
     }
     // Refresh only the tenant we touched, even if the user has since switched.
     refresh_named(app, &tenant);
-}
-
-/// The loaded candidate for a full-name, if the tenant's list is loaded.
-fn selected_by_full(app: &App, tenant: &str, full: &str) -> Option<Candidate> {
-    match app.scripts.data.get(tenant) {
-        Some(LoadState::Loaded(items)) => items.iter().find(|c| State::full_of(c) == full).cloned(),
-        _ => None,
-    }
 }
 
 /// Force-refresh a specific tenant by name (used by op completions).
@@ -692,5 +684,47 @@ fn pull_status(status: &sync::PullStatus) -> &'static str {
         sync::PullStatus::Updated => "updated",
         sync::PullStatus::Unchanged => "already up to date",
         sync::PullStatus::LocalBackedUp(_) => "pulled (local backed up)",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scripts::syntax::{Refusal, SyntaxError};
+
+    fn held(source: sync::SourceId) -> Refused {
+        let refusal = Refusal::Rejected(vec![SyntaxError {
+            line: Some(3),
+            column: Some(15),
+            message: "missing ) in parenthetical".into(),
+        }]);
+        Refused {
+            summary: refusal.summary(),
+            detail: refusal.detail(),
+            source,
+        }
+    }
+
+    /// The strip stands until the source changes — and "the source" is the
+    /// bytes the tenant was asked about, which is why the push reports them
+    /// instead of the tab re-reading the file afterwards. Re-reading loses the
+    /// discriminating case below: the operator saves a fix while the request
+    /// is in flight, and the refusal would then be pinned to source the tenant
+    /// never saw.
+    #[test]
+    fn a_held_refusal_survives_only_while_the_source_it_judged_is_on_disk() {
+        let broken = sync::source_id(b"var x = (1;");
+        let fixed = sync::source_id(b"var x = 1;");
+        let held = held(broken);
+
+        assert!(refusal_is_current(&held, Some(broken)));
+        assert!(
+            !refusal_is_current(&held, Some(fixed)),
+            "an edit must clear the strip"
+        );
+        assert!(
+            !refusal_is_current(&held, None),
+            "a file that is gone leaves nothing for the strip to be about"
+        );
     }
 }

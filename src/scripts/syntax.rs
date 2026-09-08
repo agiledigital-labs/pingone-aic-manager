@@ -33,14 +33,13 @@ use serde_json::{Value, json};
 
 /// The verdict of a pre-push syntax check.
 ///
-/// Two ways of having no verdict, deliberately separated, because they earn
-/// opposite answers. [`Unsupported`](SyntaxCheck::Unsupported) is decided
-/// **before** any request from the resource itself — nothing here is
-/// checkable, and refusing would only break a write that never had a check to
-/// lose. [`NoVerdict`](SyntaxCheck::NoVerdict) means the check ran and did not
-/// answer, and under the default gate that refuses the write: no verdict, no
-/// write. Inferring the first from a response code is what let a 503 outage
-/// authorise a write.
+/// Only [`Ok`](SyntaxCheck::Ok) authorises a write under the default gate. The
+/// other three all refuse, including the two that carry no verdict: whether
+/// the check could not answer or could never have answered, the source about
+/// to be stored is unparsed either way, and `--no-syntax-check` is the one
+/// sanctioned way to store unparsed source. What the two no-verdict arms are
+/// *for* is diagnosis and remedy — retrying helps one and can never help the
+/// other — not permission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyntaxCheck {
     /// The tenant parsed the source.
@@ -48,28 +47,33 @@ pub enum SyntaxCheck {
     /// The tenant refused it. Always at least one error.
     Invalid(Vec<SyntaxError>),
     /// This resource cannot be syntax-checked at all — established from what
-    /// it stores, with no request made. Carries the reason. The write goes
-    /// ahead, and the surface says it went unchecked.
+    /// it stores, with no request made. Carries the reason. Retrying will
+    /// never change it, so the remedy named is the explicit opt-out.
     Unsupported(String),
     /// The check was attempted and produced no verdict: an unexpected body, a
     /// status that does not decide, a slot with no source to send. Carries the
-    /// reason. Under [`SyntaxGate::Check`](crate::scripts::sync::SyntaxGate)
-    /// **nothing is written** — the only honest answer when the pre-flight
-    /// that exists to catch a typo could not run.
+    /// reason, and may well be a tenant having a bad minute, so retrying is
+    /// worth suggesting.
     NoVerdict(String),
 }
 
-/// Why the gate refused a write. Both arms mean **nothing was written**, and
-/// both are recoverable: the local source survives and the snapshot is
+/// Why the gate refused a write. Every arm means **nothing was written**, and
+/// all are recoverable: the local source survives and the snapshot is
 /// untouched, so the next push retries.
+///
+/// The arms exist to word the remedy, not to decide the outcome — the outcome
+/// is the same for all three.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// The tenant parsed the source and rejected it. Always at least one
-    /// error.
+    /// error. Retrying the same bytes gets the same answer.
     Rejected(Vec<SyntaxError>),
-    /// The check produced no verdict, so the write did not happen. Carries the
-    /// reason.
+    /// The check produced no verdict. Carries the reason. May be transient, so
+    /// retrying is the first thing to try.
     NoVerdict(String),
+    /// Nothing can check this resource, decided before the request was made.
+    /// Retrying can never help; the explicit opt-out is the only way past it.
+    Unsupported(String),
 }
 
 impl Refusal {
@@ -82,6 +86,9 @@ impl Refusal {
             Refusal::NoVerdict(reason) => {
                 format!("the syntax check gave no verdict — {reason}")
             }
+            Refusal::Unsupported(reason) => {
+                format!("the source cannot be syntax-checked — {reason}")
+            }
         }
     }
 
@@ -92,14 +99,17 @@ impl Refusal {
             Refusal::Rejected(errors) => {
                 let mut lines: Vec<String> = errors.iter().map(SyntaxError::render).collect();
                 if errors.iter().all(|e| e.line.is_none()) {
-                    // IDM never reports coordinates for JavaScript, so say so
-                    // rather than let the operator hunt for a line number that
-                    // was never sent.
-                    lines.push("(IDM reports no line number for JavaScript syntax errors)".into());
+                    // Say that no coordinate was sent rather than let the
+                    // operator hunt for one. Deliberately **not** attributed
+                    // to IDM-and-JavaScript, which is the common cause but not
+                    // derivable here: `Refusal` carries neither family nor
+                    // engine, and AM synthesises a coordinate-free error of
+                    // its own for a `success:false` with an empty `errors`.
+                    lines.push("(the tenant reported no line number for this error)".into());
                 }
                 lines
             }
-            Refusal::NoVerdict(_) => Vec::new(),
+            Refusal::NoVerdict(_) | Refusal::Unsupported(_) => Vec::new(),
         }
     }
 
@@ -233,25 +243,34 @@ pub fn parse_idm_compile(outcome: Result<Value>) -> Result<SyntaxCheck> {
 }
 
 /// The one `type` spelling to send for a stored one, or `None` when the stored
-/// type names an engine `script?_action=compile` does not compile.
+/// type is not a spelling of an engine this has been taught.
 ///
 /// The action accepts exactly `javascript`, `text/javascript` and `groovy`;
 /// `JAVASCRIPT`, `text/groovy` and `text/python` all answer 503
 /// (`docs/api/11-idm-endpoints.md`, verified 2026-09-09). So **normalise**
-/// rather than forward. Forwarding was the earlier choice and it fails in both
-/// directions: `application/javascript` — which `sync_mapping::is_inline_script`
-/// accepts by substring, and which this tool's own Mappings tab writes for a
-/// mapping condition (`src/mappings/api.rs`) — is the same JavaScript in the
-/// same engine, so forwarding its spelling buys a 503 and no verdict, while
-/// refusing it outright would break a push that used to work.
+/// rather than forward: `text/groovy` is the same Groovy engine spelled a way
+/// the action rejects, and forwarding it buys a 503 and no verdict.
+///
+/// The alias set is **exact and reviewed**, not a substring test. A substring
+/// test reads `application/x-not-javascript` as JavaScript and certifies it
+/// under an engine nobody chose — and it is the compile call, so a wrong
+/// engine means a wrong verdict, not just a wrong label. Anything not listed
+/// here is `Unsupported`, which refuses the write and names the opt-out, so an
+/// unknown spelling costs an explicit decision rather than a silent one.
+///
+/// `application/javascript` is the one alias here on **compatibility** rather
+/// than measurement. `sync_mapping::is_inline_script` accepts any `type`
+/// containing `javascript`, so a tenant that stores that spelling is already
+/// syncable, and it is unambiguously the same engine — but no live call has
+/// confirmed the compile action's answer for source stored that way, and this
+/// tool has no production path that writes it.
 fn engine_for(stored: &str) -> Option<&'static str> {
-    let t = stored.trim().to_ascii_lowercase();
-    if t.contains("groovy") {
-        Some("groovy")
-    } else if t.contains("javascript") {
-        Some("text/javascript")
-    } else {
-        None
+    match stored.trim().to_ascii_lowercase().as_str() {
+        // Measured-accepted, plus the spellings measured to 503 that name the
+        // same engine unambiguously, plus the one compatibility alias above.
+        "javascript" | "text/javascript" | "application/javascript" => Some("text/javascript"),
+        "groovy" | "text/groovy" | "application/groovy" => Some("groovy"),
+        _ => None,
     }
 }
 
@@ -344,12 +363,12 @@ pub async fn idm_check_slot(tenant: &str, slot: Option<&Value>) -> Result<Syntax
             source,
             script_type,
         } => (source, script_type),
-        // Established from the resource, not from a status code: say so and
-        // let the write through, because there is no check to be had for this
-        // engine and there never was one.
+        // Established from the resource, not from a status code — so the
+        // message can name the type and skip the pointless retry advice. It
+        // still refuses the write: unparsed source is unparsed source.
         SlotResolution::UnsupportedType(t) => {
             return Ok(SyntaxCheck::Unsupported(format!(
-                "`script?_action=compile` does not compile type {t:?}"
+                "no compile engine is known for script type {t:?}"
             )));
         }
         SlotResolution::NoSource => {
@@ -678,6 +697,14 @@ mod tests {
         assert_eq!(
             resolve_slot(&json!({"type": "text/python", "source": "x = 1"})),
             SlotResolution::UnsupportedType("text/python".into())
+        );
+        // The discriminating case against a substring test, which would
+        // certify this as JavaScript and compile it as an engine nobody chose
+        // — and it is the compile call, so the wrong engine is a wrong
+        // verdict, not a wrong label.
+        assert_eq!(
+            resolve_slot(&json!({"type": "application/x-not-javascript", "source": "x"})),
+            SlotResolution::UnsupportedType("application/x-not-javascript".into())
         );
     }
 
