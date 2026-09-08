@@ -56,6 +56,22 @@ interface JavaMap<Key = JavaString, Value = JavaString> {
 // Request header/parameter/cookie bindings are Java multimaps surfaced without
 // enumerated methods in the editor metadata; this is the shape scripts use.
 interface RequestMap {
+  /**
+   * The list really is a list: a caller that sends the same header or query
+   * parameter twice produces one element per occurrence, **in the order sent**
+   * (verified 2026-09-08 on both engines — docs/api/12-script-bindings-matrix.md).
+   * `x-forwarded-for` arrives with two elements on an ordinary request, because
+   * the tenant ingress appends its own hop.
+   *
+   * So `.get(0)` is "whichever value the caller put first", not a
+   * normalisation. Before making an authorization or origin decision from one,
+   * check `.size()` and treat >1 as an ambiguous request to refuse: a fronting
+   * proxy that honours the last occurrence and a script that reads the first do
+   * not agree about what the request said.
+   *
+   * Header keys are matched case-insensitively; a single header whose value
+   * contains a comma stays ONE element (it is not split).
+   */
   get(key: StringLike): JavaArray<JavaString> | null;
   containsKey(key: StringLike): boolean;
 }

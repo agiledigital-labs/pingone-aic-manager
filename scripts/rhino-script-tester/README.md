@@ -308,6 +308,34 @@ Full matrix with provenance: `docs/api/12-script-bindings-matrix.md`. Summary:
   `existingSession`, and all Node globals (`console`, `process`, `Buffer`,
   `setTimeout`).
 
+## Duplicated headers and query parameters
+
+`run-journey.sh` sends each header and query parameter once, so it cannot answer
+whether `requestHeaders` / `requestParameters` values ever hold more than one
+element. `run-journey-multivalue.sh` is the same invoke with `X-Aic-Probe` sent
+twice and `probeq=` sent twice, plus single-valued and comma-joined controls,
+and it pairs with `fixtures/request-multivalue.script.js` (next-gen) or
+`fixtures-legacy/legacy-request-multivalue.script.js` (legacy), which report
+each value's ELEMENT COUNT:
+
+```bash
+BASE=https://<tenant>.forgeblocks.com \
+  scripts/rhino-script-tester/update-script.sh \
+  "$PWD/scripts/rhino-script-tester/fixtures/request-multivalue.script.js"
+BASE=https://<tenant>.forgeblocks.com \
+  scripts/rhino-script-tester/run-journey-multivalue.sh
+```
+
+Answer (2026-09-08, both engines): **yes** — two occurrences give two elements,
+in send order, while a comma-joined single header stays one element. Full
+findings in `docs/api/12-script-bindings-matrix.md`; the IDM endpoint side
+answers differently and is in `docs/api/11-idm-endpoints.md`.
+
+The fixtures report values in full only for keys named `x-aic-probe*` /
+`probeq*` and report an element COUNT for every other key, so a live request's
+`authorization` and `cookie` values never reach the callback payload. Keep that
+split if you extend them.
+
 ## Legacy engine probes (evaluatorVersion 1.0)
 
 `setup.sh` and `update-script.sh` take `EVALUATOR_VERSION` (default `2.0`). To
