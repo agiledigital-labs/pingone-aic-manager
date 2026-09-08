@@ -106,6 +106,7 @@ purpose-specific role.
 | Create      | `PUT`    | `/openidm/config/endpoint/{name}`   | none required      | Returns **201** + echoes the object on create.                              |
 | Update      | `PUT`    | `/openidm/config/endpoint/{name}`   | none required      | Returns **200** on replace of an existing object.                           |
 | Delete      | `DELETE` | `/openidm/config/endpoint/{name}`   | none required      | Returns **200** + echoes the deleted object. Subsequent `GET` → 404.        |
+| Compile     | `POST`   | `/openidm/script?_action=compile`   | none required      | Syntax-checks `source` **without storing it**. **200** `true` or **400**.   |
 
 The path segment after `/config/` is `endpoint/{name}` (e.g.
 `/openidm/config/endpoint/test`). In the list response each object's `_id` is
@@ -115,6 +116,82 @@ prefix.
 **No `Accept-API-Version` header is needed** — every call above was exercised
 without one and succeeded. (Sending the AM `protocol=2.0,resource=1.0` value is
 wrong here; omit it for `/openidm`.)
+
+## Syntax validation (`script?_action=compile`)
+
+Verified live 2026-09-09. `PUT /openidm/config/endpoint/{name}` stores source
+that does not parse, and the resulting endpoint is **un-routable**, so this
+action is the only pre-write syntax check available.
+
+```http
+POST /openidm/script?_action=compile
+Content-Type: application/json
+
+{ "type": "text/javascript", "source": "(function(){ return 1; })();" }
+```
+
+`_action` accepts exactly two values. Any other returns
+`400 "Expecting String containing one of: compile eval"` — so `compile` and
+`eval` are the whole surface, and `eval` **runs** the script (not used by `aic`;
+`compile` is the safe half).
+
+Success is **HTTP 200 with a bare JSON `true`** — not an object:
+
+```json
+true
+```
+
+Failure is **HTTP 400** with the parser's message and nothing else:
+
+```json
+{ "code": 400, "reason": "Bad Request", "message": "syntax error" }
+```
+
+### No line numbers for JavaScript
+
+This is the important limitation. The `message` is the raw Rhino parser string
+with **no line or column**, and no `detail` field carries them. Verified by
+putting the error on line 40 of a 40-line source: the response was still the
+bare `"syntax error"`. Observed messages include `syntax error`,
+`missing ) in parenthetical`, `identifier is a reserved word: class`,
+`missing ; before statement` and `missing ) after formal parameters` — some name
+the construct, none say where it is.
+
+**Groovy is the exception** and returns a fully-formatted, multi-line message
+with line, column and a caret:
+
+```text
+startup failed:
+<hash>:script-reg-svc: 2: Unexpected input: 'x' @ line 2, column 8.
+   return x
+          ^
+```
+
+Note it embeds an internal registry hash and a service name; treat the message
+as opaque text to surface, not to parse.
+
+Do **not** try to recover JavaScript line numbers by sending the same source to
+AM's `scripts?_action=validate`, which does report them — the two engines accept
+different syntax and AM is the stricter. The measured divergence table is in
+`04-scripts.md` ("Do not validate IDM source through this action").
+
+### A broken endpoint is a 404, not a 500
+
+Verified 2026-09-09 with a control, because the obvious reading is registration
+lag:
+
+| Endpoint source | `PUT` config    | `GET /openidm/endpoint/{name}` |
+| --------------- | --------------- | ------------------------------ |
+| valid           | 201             | **200**, immediately           |
+| syntax error    | 201             | **404** `Resource … not found` |
+
+The valid endpoint answered on the very next request, so the 404 is caused by
+the syntax error and not by timing (the broken one was also given 5s and still
+404'd). Meanwhile `GET /openidm/config/endpoint/{name}` returns **200** for the
+broken one — the config object exists, only the route does not. So the symptom
+of a syntax error is an endpoint that looks like it was never created, which is
+precisely the wrong place to start debugging. Same underlying behaviour as the
+trailing-comma ban in Quirks below.
 
 ## Object shape (real example: `endpoint/test`)
 
@@ -405,6 +482,17 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
   or the caller reads entities.
 - **`source` is plain text, not base64** (the opposite of AM scripts). Don't
   base64-encode on write.
+- **An unrecognised script `type` returns 503, not 400.**
+  `script?_action=compile` answers `503 Service Unavailable` for `JAVASCRIPT`,
+  `text/groovy` or
+  `text/python`; the accepted spellings are `javascript`, `text/javascript` and
+  `groovy` (verified 2026-09-09, twice, with a valid call immediately after to
+  prove the tenant was healthy). A 503 from this endpoint means "bad type", so
+  do not retry it as a transient.
+- **Nothing on the write path checks syntax.**
+  `PUT /openidm/config/endpoint/{name}` stores unparseable `source` with a 201;
+  the endpoint is then un-routable
+  (404). Use `script?_action=compile` first.
 - **No `_rev`** — content-based conflict detection only.
 - **No `Accept-API-Version`** — `/openidm` config does not require (or want) the
   AM versioning header.
@@ -544,6 +632,23 @@ Object shape (real example, `schedule/UpdateReviewList`):
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-09-09 (`script?_action=compile` — valid source returned 200 with a
+  bare `true`; a missing brace returned `400 {"message": "syntax error"}`. The
+  no-line-numbers claim was established by placing the error on line 40 of a
+  40-line source and getting the same bare `"syntax error"`, and the Groovy
+  contrast by sending a two-line Groovy error and receiving line/column/caret —
+  so the absence is JavaScript-specific, not a property of the endpoint. An
+  undefined variable and a typo'd `openidm.raed(...)` both returned 200, which
+  fixes the check as syntax-only and is the discriminating case for how much a
+  pre-flight can catch. `_action` enumeration came from a bogus action name
+  returning `"Expecting String containing one of: compile eval"`. Payload size
+  was probed at 6.8 KB, 62 KB and 248 KB of source, all 200 — a bundled
+  endpoint is ~50 KB, so there is headroom. Type spellings tested:
+  `javascript`, `text/javascript`, `groovy` → 200; `JAVASCRIPT`, `text/groovy`,
+  `text/python` → 503. Throwaway `endpoint/aic-preflight-{ok,bad}-DELETEME`
+  created (201 each), invoked, and deleted (200), confirming the valid/broken
+  404 control table above. One `compile` call measured 0.12-0.16s wall including
+  process start.)
 - Date: 2026-09-08 (`context.http` header/parameter arity — throwaway
   `endpoint/aic-probe-http-arity` created (201), invoked three times, deleted
   (200) and confirmed 404. A duplicated query parameter returned `400 "Multiple

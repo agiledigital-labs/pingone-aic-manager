@@ -26,6 +26,7 @@ send `Accept-API-Version: protocol=2.0,resource=1.0`.
 | Upsert | `PUT`    | `/am/json{realm-path}/scripts/{id}`                     | Full body. `script` MUST be base64. **201** when `{id}` is new, **200** on replace. See "Creating scripts" below.                                                                                                            |
 | Create | `POST`   | `/am/json{realm-path}/scripts/?_action=create`          | **201**; server assigns the UUID. Same body as `PUT`, minus `_id`. Note the trailing slash before `?`.                                                                                                                       |
 | Delete | `DELETE` | `/am/json{realm-path}/scripts/{id}`                     | **200** + echoes nothing useful; permanent. **404** if already gone. Default scripts **403** (see Quirks).                                                                                                                   |
+| Validate | `POST` | `/am/json{realm-path}/scripts/?_action=validate`      | Syntax-checks a script **without storing it**. Always **200**; the body says pass or fail. Note the trailing slash before `?`. See "Syntax validation" below.                                                                |
 
 ## Creating scripts
 
@@ -99,6 +100,70 @@ come from the server's canonical form.
 **`_id` need not be a UUID.** `PUT …/scripts/test_aic_named_id` created a script
 whose `_id` is that literal string (201). `aic` still mints UUIDs, to match what
 the console and frodo produce.
+
+## Syntax validation (`?_action=validate`)
+
+Verified live 2026-09-09 (sandbox, realm `alpha`). AM will **store a script that
+does not parse**, so this action is the only thing standing between a typo and a
+broken journey. The console does not call it as a gate either: it validates for
+display and still lets you save.
+
+```http
+POST /am/json/realms/root/realms/alpha/scripts/?_action=validate
+Content-Type: application/json
+Accept-API-Version: protocol=2.0,resource=1.0
+
+{ "script": "<base64 of the source>", "language": "JAVASCRIPT" }
+```
+
+Only `script` and `language` are needed — no `name`, no `context`, no `_id`.
+`language` takes the same values as the field on a script object (`JAVASCRIPT`,
+`GROOVY`).
+
+The action returns **HTTP 200 in both cases**; the outcome is in the body, so
+never read the status code as the verdict:
+
+```json
+{ "success": true }
+```
+
+```json
+{
+  "success": false,
+  "errors": [{ "line": 2, "column": 14, "message": "syntax error" }]
+}
+```
+
+`errors` carries **line and column** for both languages, which is what makes it
+usable as a push gate — the coordinates are 1-based and refer to the decoded
+source, so they map straight onto a workspace file.
+
+**AM stores an invalid script regardless.** Verified 2026-09-09: the same source
+that returns `success: false` above was then `PUT` to
+`…/scripts/aic-preflight-probe-DELETEME` and returned **201** with the object
+echoed back (throwaway deleted afterwards, `GET` confirmed 404). Nothing on the
+write path parses the script. That is the whole argument for a pre-flight —
+without one, the failure surfaces at journey-evaluation time, in a place that
+does not mention the script.
+
+### Do not validate IDM source through this action
+
+The AM and IDM script engines are **not the same ES level**, so borrowing AM's
+line-numbered errors for an IDM endpoint reports failures that IDM accepts.
+Measured 2026-09-09, same source to both:
+
+| Source                        | AM `?_action=validate`             | IDM `script?_action=compile` |
+| ----------------------------- | ---------------------------------- | ---------------------------- |
+| `let q = 1;`                  | ❌ `missing ; before statement`    | ✅ compiles                  |
+| `var {a, b} = {a:1, b:2};`    | ❌ `missing : after property id`   | ✅ compiles                  |
+| `class Foo { }`               | ❌ `missing ; before statement`    | ❌ `reserved word: class`    |
+| arrow fn + template literal   | ✅ compiles                        | ✅ compiles                  |
+| `function f(a, b = 2) {}`     | ❌ `missing ) after formal params` | ❌ same message              |
+| `for (const v of [1,2]) {}`   | ❌ `syntax error`                  | ❌ `syntax error`            |
+| `var b = [...a];`             | ❌ `syntax error`                  | ❌ `syntax error`            |
+
+AM is the stricter of the two: it rejects `let` and destructuring that IDM
+compiles. Use each family's own action — `04`/`12` for AM, `11` for IDM.
 
 ## Script context enumeration
 
@@ -548,10 +613,27 @@ curl -X PUT "$TENANT_BASE_URL/am/json/realms/root/realms/alpha/scripts/$ID" \
 - **Realm-scoped storage.** A script ID can exist in alpha but not bravo, or
   with totally different content in each. Always include realm in any local
   cache key.
+- **Nothing on the write path checks syntax.** `PUT`/`POST` store a script that
+  does not parse (201, verified 2026-09-09). `?_action=validate` is a separate,
+  opt-in call — and it answers **200 with `success: false`**, not a 4xx, so a
+  caller that only checks the status code sees every script as valid.
 
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-09-09 (`?_action=validate` — a valid script returned
+  `{"success": true}`; a three-line source with an unbalanced paren returned
+  `{"success": false, "errors": [{"line": 3, "column": 15, "message": "missing
+  ) in parenthetical"}]}`, and a Groovy source with an error on line 2 returned
+  line 2 column 8, so coordinates are reported for both languages. Both
+  outcomes were HTTP 200, which is what makes reading the status code as the
+  verdict wrong. The same failing source was then `PUT` to a throwaway
+  `aic-preflight-probe-DELETEME` and stored with **201**, then `DELETE`d (200)
+  and confirmed 404 — that create is the control proving the write path does no
+  parsing. The nine-row engine-divergence table above was measured by sending
+  each source to both this action and IDM's `script?_action=compile` in the same
+  pass; `let` and destructuring are the discriminating rows, accepted by IDM and
+  rejected here.)
 - Date: 2026-05-17
 - Calls: `GET …/scripts?_queryFilter=true&_pageSize=1` (200 OK, base64 body
   confirmed by decoding first 30 chars to JS comment header),
