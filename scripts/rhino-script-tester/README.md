@@ -124,6 +124,28 @@ list and AM refuses with `403`; `deny-narrowed-list-partial` drops one scope of
 two and AM issues a `200` with the scope quietly missing. Run both, or the safe
 result hides the dangerous one.
 
+`request-properties-multivalue.script.js` asks whether
+`requestProperties.requestHeaders` / `.requestParams` hold more than one element
+per key. It is a passthrough, so it doubles as a control, and it reports through
+`logger.error("AICPROBE-MV …")` — read it the way the next section describes.
+The runner sends everything once, so send the duplicates by hand:
+
+```sh
+curl -sS -X POST "$BASE/am/oauth2/realms/root/realms/alpha/access_token" \
+  -H "X-Aic-Probe: alpha" -H "X-Aic-Probe: bravo" \
+  -H "X-Aic-Probe-Joined: alpha,bravo" \
+  --data-urlencode grant_type=client_credentials \
+  --data-urlencode client_id=aic-probe-scopevalidator \
+  --data-urlencode "client_secret=$(cat "$SECRET_FILE")" \
+  --data-urlencode "scope=aicedit-probe aicedit-probe-keep" -D -
+```
+
+Answer (2026-09-08): 2 elements for a header sent twice, and 2 for a parameter
+sent twice from either the form body or the query string — but AM resolved a
+duplicated `scope` to its FIRST occurrence and issued a token for that alone,
+so the script and the platform can read the same request differently. Details in
+`docs/api/12-script-bindings-matrix.md`.
+
 ### Reading a probe's output
 
 The runner records only what the **client** sees. A fixture that logs — the
