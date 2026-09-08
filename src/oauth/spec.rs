@@ -43,6 +43,113 @@ pub struct GrantUpdate {
     pub changed: bool,
 }
 
+const PROVIDER_GROUPS: &[&str] = &[
+    "advancedOIDCConfig",
+    "coreOIDCConfig",
+    "advancedOAuth2Config",
+    "coreOAuth2Config",
+    "clientDynamicRegistrationConfig",
+    "consent",
+    "cibaConfig",
+    "deviceCodeConfig",
+    "pluginsConfig",
+];
+
+/// Project a provider document into compact, human-readable CLI rows.
+///
+/// This intentionally accepts the untyped service document: its documented
+/// shape is a skeleton and AM may add groups. Inherited field wrappers are
+/// unwrapped so equivalent effective values render identically.
+pub fn provider_summary(doc: &Value) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+
+    for group in PROVIDER_GROUPS {
+        rows.push((group.to_string(), provider_group_state(doc, group)));
+    }
+
+    for (group, field) in [
+        ("advancedOAuth2Config", "grantTypes"),
+        ("advancedOAuth2Config", "tokenExchangeClasses"),
+        (
+            "advancedOAuth2Config",
+            "acceptAudienceParametersInTokenExchangeRequests",
+        ),
+        ("coreOAuth2Config", "accessTokenMayActScript"),
+    ] {
+        rows.push((
+            format!("{group}.{field}"),
+            provider_field_value(doc, group, field),
+        ));
+    }
+
+    match provider_group(doc, "pluginsConfig") {
+        Some(Value::Object(config)) if !config.is_empty() => rows.push((
+            "pluginsConfig.values".to_string(),
+            provider_value_cell(&Value::Object(config.clone())),
+        )),
+        Some(_) | None => {}
+    }
+
+    if let Some(groups) = doc.as_object() {
+        for (name, value) in groups {
+            if !name.starts_with('_') && !PROVIDER_GROUPS.contains(&name.as_str()) {
+                rows.push((format!("unknown.{name}"), provider_value_cell(value)));
+            }
+        }
+    } else {
+        rows.push(("document".to_string(), provider_value_cell(doc)));
+    }
+
+    rows
+}
+
+fn provider_group<'a>(doc: &'a Value, group: &str) -> Option<&'a Value> {
+    doc.as_object()?.get(group).map(inherited_value)
+}
+
+fn provider_group_state(doc: &Value, group: &str) -> String {
+    match provider_group(doc, group) {
+        None => "<absent>".to_string(),
+        Some(Value::Object(config)) if config.is_empty() => "<empty>".to_string(),
+        Some(Value::Object(_)) => "<configured>".to_string(),
+        Some(value) => format!("<not an object: {}>", provider_value_cell(value)),
+    }
+}
+
+fn provider_field_value(doc: &Value, group: &str, field: &str) -> String {
+    match provider_group(doc, group) {
+        None => "<group absent>".to_string(),
+        Some(Value::Object(config)) => config
+            .get(field)
+            .map(provider_value_cell)
+            .unwrap_or_else(|| "<absent>".to_string()),
+        Some(_) => "<group is not an object>".to_string(),
+    }
+}
+
+fn provider_value_cell(value: &Value) -> String {
+    match normalized_inherited_value(value) {
+        Value::String(value) => value,
+        value => serde_json::to_string(&value).unwrap_or_else(|_| "<unprintable>".to_string()),
+    }
+}
+
+fn normalized_inherited_value(value: &Value) -> Value {
+    let value = inherited_value(value);
+    match value {
+        Value::Array(values) => {
+            Value::Array(values.iter().map(normalized_inherited_value).collect())
+        }
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), normalized_inherited_value(value)))
+                .collect(),
+        ),
+        value => value.clone(),
+    }
+}
+
 /// Build a create body from live defaults, an optional JSON seed, and common
 /// inputs. Object seeds merge recursively so a partial seed retains tenant
 /// defaults; arrays and scalar values replace their template counterparts.
@@ -493,6 +600,123 @@ fn validate_enum_target(body: &Value, schema: &Value, target: &EnumTarget) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn summary_value<'a>(rows: &'a [(String, String)], field: &str) -> &'a str {
+        rows.iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, value)| value.as_str())
+            .unwrap_or_else(|| panic!("missing summary field {field}"))
+    }
+
+    #[test]
+    fn provider_summary_shows_token_exchange_grant_and_exchanger_together() {
+        let provider = json!({
+            "advancedOAuth2Config": {
+                "grantTypes": ["authorization_code"],
+                "tokenExchangeClasses": ["org.example.AccessTokenToAccessToken"]
+            }
+        });
+
+        let rows = provider_summary(&provider);
+
+        assert_eq!(
+            summary_value(&rows, "advancedOAuth2Config.grantTypes"),
+            "[\"authorization_code\"]"
+        );
+        assert_eq!(
+            summary_value(&rows, "advancedOAuth2Config.tokenExchangeClasses"),
+            "[\"org.example.AccessTokenToAccessToken\"]"
+        );
+    }
+
+    #[test]
+    fn provider_summary_reads_grants_from_advanced_group_not_populated_core_group() {
+        let token_exchange = "urn:ietf:params:oauth:grant-type:token-exchange";
+        let provider = json!({
+            "coreOAuth2Config": {
+                "accessTokenLifetime": 900,
+                "accessTokenMayActScript": "may-act-script-id"
+            },
+            "advancedOAuth2Config": {
+                "grantTypes": [token_exchange],
+                "tokenExchangeClasses": ["org.example.AccessTokenToAccessToken"]
+            }
+        });
+
+        let rows = provider_summary(&provider);
+
+        assert_eq!(
+            summary_value(&rows, "advancedOAuth2Config.grantTypes"),
+            format!("[\"{token_exchange}\"]")
+        );
+    }
+
+    #[test]
+    fn provider_summary_unwraps_inherited_fields_like_bare_fields() {
+        let wrapped = json!({
+            "advancedOAuth2Config": {
+                "grantTypes": {"inherited": false, "value": ["client_credentials"]},
+                "tokenExchangeClasses": {"inherited": true, "value": ["exchanger"]}
+            }
+        });
+        let bare = json!({
+            "advancedOAuth2Config": {
+                "grantTypes": ["client_credentials"],
+                "tokenExchangeClasses": ["exchanger"]
+            }
+        });
+
+        assert_eq!(provider_summary(&wrapped), provider_summary(&bare));
+        assert!(
+            !summary_value(
+                &provider_summary(&wrapped),
+                "advancedOAuth2Config.grantTypes"
+            )
+            .contains("inherited")
+        );
+    }
+
+    #[test]
+    fn provider_summary_distinguishes_absent_empty_and_configured_groups() {
+        let absent = provider_summary(&json!({}));
+        let empty = provider_summary(&json!({"pluginsConfig": {}}));
+        let configured = provider_summary(&json!({"pluginsConfig": {"scope": "scripted"}}));
+
+        assert_eq!(summary_value(&absent, "pluginsConfig"), "<absent>");
+        assert_eq!(summary_value(&empty, "pluginsConfig"), "<empty>");
+        assert_eq!(summary_value(&configured, "pluginsConfig"), "<configured>");
+        assert_eq!(
+            summary_value(&configured, "pluginsConfig.values"),
+            "{\"scope\":\"scripted\"}"
+        );
+
+        let dcr = provider_summary(&json!({
+            "clientDynamicRegistrationConfig": {"enabled": true}
+        }));
+        for group in PROVIDER_GROUPS {
+            assert!(
+                dcr.iter().any(|(field, _)| field == group),
+                "missing state row for {group}"
+            );
+        }
+        assert_eq!(
+            summary_value(&dcr, "clientDynamicRegistrationConfig"),
+            "<configured>"
+        );
+    }
+
+    #[test]
+    fn provider_summary_includes_unknown_top_level_groups() {
+        let rows = provider_summary(&json!({
+            "advancedOAuth2Config": {},
+            "futureProviderConfig": {"enabled": true}
+        }));
+
+        assert_eq!(
+            summary_value(&rows, "unknown.futureProviderConfig"),
+            "{\"enabled\":true}"
+        );
+    }
 
     fn template() -> Value {
         json!({
