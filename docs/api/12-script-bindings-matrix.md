@@ -264,16 +264,26 @@ partial guide:
   notably **omits `java.util.HashMap`** while including
   `java.util.HashMap$KeyIterator` and `java.util.AbstractMap$*`. Enforcement
   matches: the listed classes work, `HashMap` is blocked.
-- `library-next.json`, `oauth2-atm-next.json` and `oidc-claims-next.json` each
-  list only **three** entries (`java.lang.Object` plus the two
-  `org.forgerock.util.promise` types). Enforcement does **not** match: a
-  `LIBRARY` script reaches `java.util.HashSet` and `ArrayList` perfectly well.
+- `library-next.json`, `oauth2-atm-next.json`, `oidc-claims-next.json` and
+  `oauth2-validate-scope-next.json` each list only **three** entries
+  (`java.lang.Object` plus the two `org.forgerock.util.promise` types).
+  Enforcement matches neither the three nor the 51, and **differs between these
+  contexts**: a `LIBRARY` script reaches `java.util.HashSet` and `ArrayList`
+  perfectly well, while a next-gen validate-scope script cannot name
+  `java.util` at all. `oauth2-atm-next` and `oidc-claims-next` are unprobed.
 
 Read the per-context list as "classes this context's metadata bothered to
-declare", not as the sandbox boundary. The enforced boundary appears uniform
-across next-gen contexts and to correspond to the 51-entry decision-node list.
-This is the same metadata-is-not-behaviour trap already recorded for context
-usability and invocation contracts in `docs/api/13-script-contexts.md`.
+declare", not as the sandbox boundary. This is the same metadata-is-not-behaviour
+trap already recorded for context usability and invocation contracts in
+`docs/api/13-script-contexts.md`.
+
+> **Corrected 2026-09-08.** This section used to end "the enforced boundary
+> appears uniform across next-gen contexts and … correspond[s] to the 51-entry
+> decision-node list". That was inference from two contexts whose reachable
+> classes (`HashSet`, `ArrayList`) are on the 51 anyway, so neither probe could
+> have distinguished a uniform boundary from a per-context one. The
+> validate-scope measurements in the next section falsify it. See
+> [The Java class shutter](#the-java-class-shutter-verified-2026-09-08).
 
 Fixtures: `fixtures/java-collections.script.js` (next-gen decision node),
 `fixtures/lib-java-collections-probe.lib.js` +
@@ -281,6 +291,167 @@ Fixtures: `fixtures/java-collections.script.js` (next-gen decision node),
 `rhino-lib-java-collections-probe`, id `…7408`). The legacy `HashMap` row comes
 from `fixtures-legacy/legacy-es2015-globals.script.js`. Cells marked `—` were
 not probed in that context.
+
+## The Java class shutter (verified 2026-09-08)
+
+`docs/api/14-am-identity-attributes.md` used to be the only place this was
+written down, as a one-line note about reading an identity attribute. It is not
+a property of that binding. Rhino runs behind a **class shutter** that decides,
+per class and per script context, whether a Java class is visible at all — and
+it fires on any object of a hidden class, however it reached the script.
+
+Fixtures: `fixtures/java-class-shutter.script.js` and
+`fixtures/for-each-java-collection.script.js` (next-gen scripted decision node),
+`fixtures-oauth2/java-class-shutter.script.js`,
+`for-each-requested-scopes.script.js` and `stringify-uncaught.script.js`
+(next-gen `OAUTH2_VALIDATE_SCOPE`).
+
+### Two failure shapes, and only one says "prohibited"
+
+| How the class is hidden                       | What you get                                                             |
+| --------------------------------------------- | ------------------------------------------------------------------------ |
+| You name it yourself (`new java.util.Date()`) | `TypeError: [JavaPackage java.util.Date] is not a function, it is object.` |
+| A call or binding hands you one               | `InternalError: Access to Java class "java.util.ArrayList$Itr" is prohibited.` |
+
+The first is the one to recognise: a hidden name does not throw a security
+error, it simply never resolves past the package object, so the failure is a
+`TypeError` at the construction site and reads like a typo. A static field on a
+hidden class is worse — it is silent. In validate-scope,
+`String(java.util.concurrent.TimeUnit.SECONDS)` returns the plausible-looking
+string `[JavaPackage java.util.concurrent.TimeUnit.SECONDS]` rather than
+failing.
+
+### The boundary is per context
+
+Measured by running the same constructions in both contexts. `—` means not
+probed in that context, following the convention of the section above; the
+decision-node cells that are filled come from `fixtures/java-collections.script.js`
+and `fixtures/java-class-shutter.script.js`.
+
+| Construction                                 | Next-gen decision node | Next-gen `OAUTH2_VALIDATE_SCOPE` |
+| -------------------------------------------- | ---------------------- | -------------------------------- |
+| `new java.lang.Object()`                     | —                      | ✅                               |
+| `new java.lang.String("a")`                  | —                      | ✅                               |
+| `new java.lang.Integer(7)`                   | —                      | ✅                               |
+| `java.lang.Math.max(1, 2)`                   | — (on the 51)          | ❌ hidden                        |
+| `new java.lang.StringBuilder()`              | —                      | ❌ hidden                        |
+| `new java.util.ArrayList()`                  | ✅                     | ❌ hidden                        |
+| `new java.util.HashSet()`                    | ✅                     | ❌ hidden                        |
+| `new java.util.LinkedHashSet()`              | ✅                     | ❌ hidden                        |
+| `new java.util.HashMap()`                    | ❌ hidden              | ❌ hidden                        |
+| `new java.util.Date()`                       | — (on the 51)          | ❌ hidden                        |
+| `java.util.Collections.*`                    | ✅                     | ❌ hidden                        |
+| `java.util.concurrent.TimeUnit.SECONDS`      | — (on the 51)          | ❌ hidden, **silently**          |
+| `new java.text.SimpleDateFormat("yyyy")`     | —                      | ❌ hidden                        |
+| `java.security.MessageDigest.getInstance(…)` | —                      | ❌ hidden                        |
+| `new java.io.File("probe")`                  | —                      | ❌ hidden                        |
+| `org.forgerock.util.promise.PromiseImpl`     | —                      | ✅                               |
+
+So **a next-gen validate-scope script gets no `java.util` whatsoever** — no
+list, no set, no map, no `Collections`. `java` and `JavaImporter` are both still
+present (`typeof` `object` and `function`), which is what makes the failure a
+`TypeError` rather than a `ReferenceError`.
+
+`java.lang.String` and `java.lang.Integer` resolve in validate-scope although
+neither is in that context's declared `allowLists`; `java.lang.Math` and
+`java.lang.StringBuilder` do not. Recorded as measured — the rule behind that
+split is not established.
+
+> **`typeof` cannot test this.** A hidden class stays a `JavaPackage` **object**,
+> so `typeof java.util.Date` answers `"object"` for a hidden class and for a
+> live package alike. Only a construction or a call distinguishes them. An
+> earlier pass of the validate-scope fixture read nine such `"object"`s as
+> evidence of nine reachable classes; six of them were hidden.
+
+### `.iterator()` — the rule is the iterator's class, not iteration
+
+`ArrayList$Itr` is not on the decision node's 51-entry list. `HashMap$KeyIterator`
+and `Collections$UnmodifiableCollection$1` are. Enforcement follows exactly that,
+which means "iterators are banned" is the wrong model. Next-gen decision node
+unless the row says otherwise:
+
+| Call                                                 | Result                                             |
+| ---------------------------------------------------- | -------------------------------------------------- |
+| `new java.util.ArrayList().iterator()`               | ❌ `java.util.ArrayList$Itr` prohibited            |
+| `new java.util.HashSet().iterator()`                 | ✅ works                                            |
+| `new java.util.LinkedHashSet().iterator()`           | ❌ `java.util.LinkedHashMap$LinkedKeyIterator`      |
+| `new java.util.TreeSet().iterator()`                 | ❌ `java.util.TreeMap$KeyIterator`                  |
+| `Collections.singletonMap("a",1).keySet().iterator()`| ✅ works                                            |
+| `Collections.unmodifiableList(list).iterator()`      | ✅ works                                            |
+| `requestedScopes.iterator()` (validate-scope)        | ❌ `java.util.ArrayList$Itr` prohibited             |
+
+The last row is the point of the section: a binding AM handed us, in a context
+with no identity involved, fails with the identical error the identity-attributes
+page reported. **The rule is general.**
+
+### `for each` is not sugar for `.iterator()`
+
+| Loop                                             | Result                                        |
+| ------------------------------------------------ | --------------------------------------------- |
+| `for each (v in ["a","b"])`                      | ✅ both contexts                              |
+| `for each (v in new java.util.ArrayList())`      | ✅ decision node                              |
+| `for each (v in new java.util.HashSet())`        | ❌ decision node, `java.lang.Class` prohibited |
+| `for each (v in requestedScopes)`                | ✅ validate-scope, returns both scopes        |
+
+`for each` over a Java **List** iterates fine even where `.iterator()` on the
+same list is prohibited. Over a **Set** it trips `java.lang.Class`, because
+deciding how to iterate an unindexed object reaches for the class object.
+
+### What to reach for instead
+
+`requestedScopes` is a Java `List`, and Rhino surfaces those as array-like:
+`.length` is `2`, `[0]` is the first scope, `.forEach` is a function, and so are
+`.toArray` and `.size` — while `Array.isArray` is `false`. So an **index loop is
+the portable answer** for a List, and `.toArray()` is what you need for a Set,
+which has no index.
+
+The generated type leaf already rejects the dangerous call: `requestedScopes` is
+declared `any[]`, so `requestedScopes.iterator()` is `TS2339: Property 'iterator'
+does not exist on type 'any[]'` (verified 2026-09-08 against
+`src/scripts/templates/am/types/`). It also rejects `.toArray()`, which does
+work at runtime — harmless, because the index loop it steers you to is correct.
+
+### Debugging moves that are unsafe
+
+- **`getClass()` is prohibited** — `java.lang.Class`, in both contexts. The
+  reflex "what is this thing" call is the one that cannot answer.
+- **`JSON.stringify` is safe until the walk reaches a hidden class.** It is not
+  a blanket hazard, and it is not blanket safe either:
+
+  | Value                                    | Decision node   | Validate-scope                            |
+  | ---------------------------------------- | --------------- | ----------------------------------------- |
+  | `java.util.ArrayList`                    | ✅ `["a","b"]`  | n/a (cannot construct one)                |
+  | `java.util.LinkedHashSet`                | ✅ `["a"]`      | n/a                                       |
+  | `Collections.singletonMap("a",1)`        | ✅ `{"a":1}`    | n/a                                       |
+  | `requestedScopes`                        | n/a             | ✅ `["aicedit-probe","aicedit-probe-keep"]` |
+  | `requestProperties`                      | n/a             | ✅ 1065 chars                             |
+  | `clientProperties`                       | n/a             | ❌ `java.util.LinkedHashSet` prohibited   |
+
+  `clientProperties` fails because stringify descends into its values and one of
+  them is a `LinkedHashSet` — a class that is reachable in a decision node and
+  hidden here. So the same call on the same class succeeds or fails depending on
+  the context it runs in.
+
+- **An uncaught one costs the whole request.** Letting the
+  `JSON.stringify(clientProperties)` error propagate out of
+  `validateAccessTokenScope` returns **`500 server_error: Error while running
+  validate scope script`** and issues no token
+  (`fixtures-oauth2/stringify-uncaught.script.js`, against
+  `control-passthrough.script.js`'s `200` on the identical request). A logging
+  line added to debug something else becomes the outage.
+
+- **`String(x)` is the safe probe**, and `for…in` gives you the keys.
+  `String(requestedScopes)` → `[aicedit-probe, aicedit-probe-keep]`. The two
+  property bags enumerate as:
+
+  | Binding             | Keys                                                                                          |
+  | ------------------- | --------------------------------------------------------------------------------------------- |
+  | `clientProperties`  | `allowedGrantTypes`, `allowedResponseTypes`, `allowedScopes`, `clientId`, `customProperties`, `redirectUris` |
+  | `requestProperties` | `realm`, `requestHeaders`, `requestParams`, `requestUri`                                      |
+
+  Do not log the **values** of either: the request carried `client_secret`, and
+  the client profile is the same one whose `userpassword` leaks through
+  `identity.getAttributes()` in the legacy ATM context.
 
 ## `httpClient.send` body serialization (verified 2026-07-30)
 

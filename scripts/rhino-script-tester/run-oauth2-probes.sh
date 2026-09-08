@@ -21,10 +21,13 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TENANT="${TENANT:-sandbox}"
 REALM="${REALM:-alpha}"
 AIC_BIN="${AIC_BIN:-$ROOT/target/debug/aic}"
-CLIENT_ID="${CLIENT_ID:-aic-probe-d1-scopevalidator}"
-SCRIPT_REF="${SCRIPT_REF:-$REALM/AIC-D1-ScopeValidator-Probe}"
-WORKSPACE_CJS="${WORKSPACE_CJS:-$ROOT/workspace/$TENANT/am/$REALM/oauth2-validate-scope-ng/AIC-D1-ScopeValidator-Probe.cjs}"
-SCOPE="${SCOPE:-aicedit-probe}"
+CLIENT_ID="${CLIENT_ID:-aic-probe-scopevalidator}"
+SCRIPT_REF="${SCRIPT_REF:-$REALM/AIC-ScopeValidator-Probe}"
+WORKSPACE_CJS="${WORKSPACE_CJS:-$ROOT/workspace/$TENANT/am/$REALM/oauth2-validate-scope-ng/AIC-ScopeValidator-Probe.cjs}"
+# Two scopes, deliberately: `deny-narrowed-list-partial` needs one scope to
+# survive the narrowing, and a single-scope request hides the dangerous case
+# behind a clean 403.
+SCOPE="${SCOPE:-aicedit-probe aicedit-probe-keep}"
 FIXTURES_DIR="${FIXTURES_DIR:-$SCRIPT_DIR/fixtures-oauth2}"
 OUT_DIR="${OUT_DIR:-$ROOT/tmp/rhino-script-tester}"
 

@@ -38,7 +38,14 @@ with `fixtures-legacy/legacy-idrepository-methods.script.js`
   "unset" from "invalid". Positive hits on populated fields are the proof.
 - **Rhino sandbox:** `Set.iterator()` is blocked
   (`java.util.ArrayList$Itr … prohibited`); use `.toArray()[0]` to read a value
-  in a probe.
+  in a probe. This is **not** a quirk of identity attributes — it is a
+  general per-class, per-context class shutter, and the same error appears on
+  bindings with no identity anywhere near them. `getClass()` and, in some
+  contexts, `JSON.stringify` are blocked by the same mechanism, which makes the
+  two obvious "what is this object" probes the two that fail. See
+  [The Java class shutter](./12-script-bindings-matrix.md#the-java-class-shutter-verified-2026-09-08) for the measured boundary, the two
+  distinct failure shapes, and which iterators are actually allowed
+  (`HashSet`'s is).
 - **Legacy decision nodes also expose `idRepository.getIdentity`.** The legacy
   engine reports `getIdentity`, `getAttribute`, `setAttribute`, and
   `addAttribute` as functions. The direct methods remain legacy-specific; the
