@@ -71,8 +71,26 @@ pub enum Event {
         tenant: String,
         full: String,
         label: String,
-        result: std::result::Result<String, String>,
+        outcome: OpOutcome,
     },
+}
+
+/// How a finished pull/push is surfaced.
+///
+/// A refusal is its own arm rather than an `Err(String)` because the two want
+/// different surfaces: a transient event is a toast, and a refusal is
+/// actionable state that has to survive the toast's few seconds
+/// (`docs/DESIGN.md`, "Issue surfacing"). It is also why the shared sync
+/// engine no longer prints: presentation is per-surface, and an `eprintln!`
+/// from a background task lands on the alternate screen.
+#[derive(Debug)]
+pub enum OpOutcome {
+    /// Toast this, and clear any standing issue for the script.
+    Ok(String),
+    /// The syntax gate refused the write; nothing was written.
+    Refused(script::syntax::Refusal),
+    /// The op itself failed (transport, locked agent, …).
+    Failed(String),
 }
 
 pub fn apply_event(app: &mut App, event: Event) {
@@ -82,8 +100,8 @@ pub fn apply_event(app: &mut App, event: Event) {
             tenant,
             full,
             label,
-            result,
-        } => apply_op_result(app, tenant, full, label, result),
+            outcome,
+        } => apply_op_result(app, tenant, full, label, outcome),
     }
 }
 
@@ -141,6 +159,36 @@ pub struct State {
     pub scroll: usize,
     /// (tenant, full-name) for pull/push ops in flight — gates re-spawns.
     pub in_flight: HashSet<(String, String)>,
+    /// Writes the syntax gate refused, keyed by (tenant, full-name). Kept here
+    /// rather than left to a toast because it is actionable and stays true
+    /// until the operator does something about it; the view renders it as an
+    /// inline strip. Cleared by a successful op on the same script, or by the
+    /// next refresh once the local source has changed.
+    pub refused: HashMap<(String, String), Refused>,
+}
+
+/// A refusal held for display, with the source it was about.
+#[derive(Debug, Clone)]
+pub struct Refused {
+    /// Why, in one clause.
+    pub summary: String,
+    /// Per-error lines, coordinates included.
+    pub detail: Vec<String>,
+    /// Digest of the local source that was refused. The strip is stale once
+    /// this changes — that is the "until the source changes" half of the rule,
+    /// and it is checked on refresh because that is when the tab re-reads the
+    /// workspace.
+    pub source: Option<u64>,
+}
+
+/// Digest of a script's local source, for deciding whether a held refusal
+/// still describes what is on disk.
+fn source_digest(tenant: &str, c: &Candidate) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let src = sync::preview_source(tenant, c)?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    src.hash(&mut h);
+    Some(h.finish())
 }
 
 impl Default for State {
@@ -153,6 +201,7 @@ impl Default for State {
             selected: 0,
             scroll: 0,
             in_flight: HashSet::new(),
+            refused: HashMap::new(),
         }
     }
 }
@@ -316,6 +365,18 @@ fn apply_refresh(
     let is_active = app.active_tenant().is_some_and(|t| t.name == tenant);
     match result {
         Ok(items) => {
+            // Drop a held refusal whose source has since changed (or whose
+            // script has gone), so the strip cannot outlive the edit that
+            // answers it.
+            app.scripts.refused.retain(|(t, full), held| {
+                if *t != tenant {
+                    return true;
+                }
+                match items.iter().find(|c| State::full_of(c) == *full) {
+                    Some(c) => source_digest(&tenant, c) == held.source,
+                    None => false,
+                }
+            });
             app.scripts
                 .data
                 .insert(tenant.clone(), LoadState::Loaded(items));
@@ -399,18 +460,18 @@ pub fn pull_selected(app: &mut App) {
     let tx = app.events.tx.clone();
     let label = format!("pull {full}");
     tokio::spawn(async move {
-        let result = sync::pull(&tenant, &realm, kind, &Selector::Name(name), false)
-            .await
-            .map(|outs| match outs.first() {
+        let outcome = match sync::pull(&tenant, &realm, kind, &Selector::Name(name), false).await {
+            Ok(outs) => OpOutcome::Ok(match outs.first() {
                 Some(o) => format!("{full}: {}", pull_status(&o.status)),
                 None => format!("{full}: nothing to pull"),
-            })
-            .map_err(|e| e.to_string());
+            }),
+            Err(e) => OpOutcome::Failed(e.to_string()),
+        };
         let _ = tx.send(AppEvent::Scripts(Event::OpResult {
             tenant,
             full: full.clone(),
             label,
-            result,
+            outcome,
         }));
     });
 }
@@ -447,18 +508,16 @@ pub fn pull_all(app: &mut App) {
                 }
             }
         }
-        let result = if errors == 0 {
-            Ok(format!("pulled {pulled} scripts"))
+        let outcome = OpOutcome::Ok(if errors == 0 {
+            format!("pulled {pulled} scripts")
         } else {
-            Ok(format!(
-                "pulled {pulled} scripts ({errors} namespace(s) failed)"
-            ))
-        };
+            format!("pulled {pulled} scripts ({errors} namespace(s) failed)")
+        });
         let _ = tx.send(AppEvent::Scripts(Event::OpResult {
             tenant,
             full,
             label,
-            result,
+            outcome,
         }));
     });
 }
@@ -518,7 +577,7 @@ pub fn execute_push(
     let label = format!("push {full}");
     let full_for_event = full.clone();
     tokio::spawn(async move {
-        let result = sync::push(
+        let outcome = match sync::push(
             &tenant,
             &realm,
             kind,
@@ -531,49 +590,68 @@ pub fn execute_push(
             sync::SyntaxGate::Check,
         )
         .await
-        .map_err(|e| e.to_string())
-        .and_then(|outcome| match outcome {
-            PushOutcome::Pushed => Ok(format!("pushed {full}")),
-            PushOutcome::Unchanged => Ok(format!("{full}: no local changes")),
-            PushOutcome::AlreadyInSync => Ok(format!("{full}: already in sync")),
-            PushOutcome::Conflict(_) => Err(format!(
+        {
+            Err(e) => OpOutcome::Failed(e.to_string()),
+            Ok(PushOutcome::Pushed { unchecked }) => OpOutcome::Ok(match unchecked {
+                None => format!("pushed {full}"),
+                Some(reason) => format!("pushed {full} — unchecked: {reason}"),
+            }),
+            Ok(PushOutcome::Unchanged) => OpOutcome::Ok(format!("{full}: no local changes")),
+            Ok(PushOutcome::AlreadyInSync) => OpOutcome::Ok(format!("{full}: already in sync")),
+            Ok(PushOutcome::Conflict(_)) => OpOutcome::Failed(format!(
                 "{full}: remote changed since last pull — resolve with `aic script diff {full}`"
             )),
-            // One toast line, so lead with the coordinates when there are
-            // any; the full list is in `aic script push`.
-            PushOutcome::Invalid(errors) => Err(format!(
-                "{full}: the tenant refused to parse it — {}",
-                errors
-                    .first()
-                    .map(script::syntax::SyntaxError::render)
-                    .unwrap_or_else(|| "syntax error".into())
-            )),
-        });
+            // Held as an inline issue, not spent on one toast line: the
+            // coordinate and the reason are what the operator needs while
+            // fixing the source.
+            Ok(PushOutcome::Refused(refusal)) => OpOutcome::Refused(refusal),
+        };
         let _ = tx.send(AppEvent::Scripts(Event::OpResult {
             tenant,
             full: full_for_event,
             label,
-            result,
+            outcome,
         }));
     });
 }
 
 /// Apply a finished pull/push. Clears the in-flight marker, toasts the
 /// outcome, and refreshes the list so local-state markers update.
-fn apply_op_result(
-    app: &mut App,
-    tenant: String,
-    full: String,
-    label: String,
-    result: std::result::Result<String, String>,
-) {
-    app.scripts.in_flight.remove(&(tenant.clone(), full));
-    match result {
-        Ok(msg) => app.push_toast(ToastKind::Success, msg),
-        Err(e) => app.push_toast(ToastKind::Error, format!("{label} failed: {e}")),
+fn apply_op_result(app: &mut App, tenant: String, full: String, label: String, outcome: OpOutcome) {
+    let key = (tenant.clone(), full.clone());
+    app.scripts.in_flight.remove(&key);
+    match outcome {
+        OpOutcome::Ok(msg) => {
+            // Any successful op on this script answers a standing refusal.
+            app.scripts.refused.remove(&key);
+            app.push_toast(ToastKind::Success, msg);
+        }
+        OpOutcome::Failed(e) => app.push_toast(ToastKind::Error, format!("{label} failed: {e}")),
+        OpOutcome::Refused(refusal) => {
+            let source = selected_by_full(app, &tenant, &full)
+                .as_ref()
+                .and_then(|c| source_digest(&tenant, c));
+            app.push_toast(ToastKind::Error, format!("{full}: {}", refusal.headline()));
+            app.scripts.refused.insert(
+                key,
+                Refused {
+                    summary: refusal.summary(),
+                    detail: refusal.detail(),
+                    source,
+                },
+            );
+        }
     }
     // Refresh only the tenant we touched, even if the user has since switched.
     refresh_named(app, &tenant);
+}
+
+/// The loaded candidate for a full-name, if the tenant's list is loaded.
+fn selected_by_full(app: &App, tenant: &str, full: &str) -> Option<Candidate> {
+    match app.scripts.data.get(tenant) {
+        Some(LoadState::Loaded(items)) => items.iter().find(|c| State::full_of(c) == full).cloned(),
+        _ => None,
+    }
 }
 
 /// Force-refresh a specific tenant by name (used by op completions).

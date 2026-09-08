@@ -199,7 +199,9 @@ impl Kind {
     /// engines accept different syntax, so a `Kind` may only ever use its own
     /// family's action. See `syntax` for the comparison table.
     ///
-    /// A `SyntaxCheck::Skipped` is not a failure; see the variant's docs.
+    /// Only `SyntaxCheck::Unsupported` lets a write through without a
+    /// verdict, and only because it is decided from the resource rather than
+    /// from a response; `NoVerdict` refuses the write. See the variants' docs.
     pub async fn check_syntax(
         self,
         tenant: &str,

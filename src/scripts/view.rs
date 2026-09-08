@@ -195,13 +195,43 @@ fn draw_preview(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area:
         ""
     };
 
-    let rows = Layout::vertical([
+    // The syntax gate's refusal is actionable state, so it gets an inline
+    // strip and not a toast that expires while the operator is still reading
+    // the source (`docs/DESIGN.md`, "Issue surfacing"). It survives until a
+    // push succeeds or the source changes; `screen::apply_refresh` drops it.
+    let refused = app
+        .scripts
+        .refused
+        .get(&(tenant.to_string(), m.full.clone()));
+    let strip: Vec<Line> = match refused {
+        None => Vec::new(),
+        Some(held) => {
+            let red = Style::default().fg(Color::Red);
+            let mut lines = vec![Line::from(Span::styled(
+                format!("✗ not pushed — {}", held.summary),
+                red.add_modifier(Modifier::BOLD),
+            ))];
+            lines.extend(
+                held.detail
+                    .iter()
+                    .take(3)
+                    .map(|d| Line::from(Span::styled(format!("  {d}"), red))),
+            );
+            lines
+        }
+    };
+
+    let mut constraints = vec![
         Constraint::Length(1), // full-name
         Constraint::Length(1), // status
-        Constraint::Length(1), // gap
-        Constraint::Min(0),    // source
-    ])
-    .split(inner);
+    ];
+    if !strip.is_empty() {
+        constraints.push(Constraint::Length(strip.len() as u16));
+    }
+    constraints.push(Constraint::Length(1)); // gap
+    constraints.push(Constraint::Min(0)); // source
+    let rows = Layout::vertical(constraints).split(inner);
+    let body_row = rows[rows.len() - 1];
 
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -219,11 +249,14 @@ fn draw_preview(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area:
         ])),
         rows[1],
     );
+    if !strip.is_empty() {
+        f.render_widget(Paragraph::new(strip), rows[2]);
+    }
 
     let source = crate::scripts::sync::preview_source(tenant, candidate);
     let body = match source {
         Some(src) => {
-            let max = rows[3].height as usize;
+            let max = body_row.height as usize;
             let lines: Vec<Line> = src
                 .lines()
                 .take(max)
@@ -241,5 +274,5 @@ fn draw_preview(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area:
             Style::default().fg(Color::DarkGray),
         ))),
     };
-    f.render_widget(body, rows[3]);
+    f.render_widget(body, body_row);
 }
