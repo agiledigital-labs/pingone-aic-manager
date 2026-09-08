@@ -79,6 +79,42 @@ Two things about this lane are deliberate:
   reproduce the clobber described above. It takes no id from the reserved
   `…a1c0a11e7xxx` family.
 
+### Recreating the two tenant objects
+
+Both are throwaway and get deleted when a probe run is finished, so expect to
+recreate them. Neither id is chosen — `create` mints them — so this cannot
+clobber anything (see the reserved-id warning above).
+
+```sh
+# 1. the script. The _NEXT_GEN context name is what sets evaluatorVersion 2.0;
+#    --evaluator-version does not (see GAPS T8).
+aic script create alpha/AIC-ScopeValidator-Probe \
+  --context OAUTH2_VALIDATE_SCOPE_NEXT_GEN \
+  --from scripts/rhino-script-tester/fixtures-oauth2/control-passthrough.script.js --yes
+aic script list alpha | grep AIC-ScopeValidator-Probe   # note the id
+
+# 2. the client. Two scopes, because one scope hides the interesting case.
+aic oauth create aic-probe-scopevalidator \
+  --client-type Confidential --grant client_credentials \
+  --scope aicedit-probe --scope aicedit-probe-keep \
+  --token-endpoint-auth-method client_secret_post --generate-secret
+
+# 3. attach the script to the client. There is no flag for the override block
+#    (GAPS T1/T13), so pull, edit, push.
+aic oauth pull aic-probe-scopevalidator
+#    in workspace/sandbox/oauth/alpha/aic-probe-scopevalidator.json set
+#    overrideOAuth2ClientConfig.providerOverridesEnabled = true
+#                              .validateScopePluginType  = "SCRIPTED"
+#                              .validateScopeScript      = "<the script id>"
+aic oauth push aic-probe-scopevalidator
+```
+
+Put the printed secret in a file **outside the repo** and pass it as
+`SECRET_FILE`. It is shown once and cannot be read back.
+
+The two scopes must exist on the client, not just in the request: AM refuses an
+unregistered scope before the script ever runs.
+
 `control-passthrough.script.js` is a positive control and is worth running first
 — every denial fixture is only meaningful against a baseline that issues a token
 with the scope present.
@@ -87,6 +123,30 @@ with the scope present.
 list and AM refuses with `403`; `deny-narrowed-list-partial` drops one scope of
 two and AM issues a `200` with the scope quietly missing. Run both, or the safe
 result hides the dangerous one.
+
+### Reading a probe's output
+
+The runner records only what the **client** sees. A fixture that logs — the
+whole `java-class-shutter` battery does — needs a second step, because a
+validate-scope script has no other return channel:
+
+```sh
+aic logs tx "$(jq -r '.[] | select(.fixture=="java-class-shutter") | .txid' \
+  tmp/rhino-script-tester/oauth2-probe-results.json)" \
+  | jq -r '.[] | .payload.message? // empty' | grep AICEDIT-D4
+```
+
+Allow **~60s** for ingestion. An empty result a few seconds after the run means
+the events have not landed yet, not that the script did not log (GAPS T11).
+
+Two rules for anything that logs from this context:
+
+- **Never log the value of `clientProperties` or `requestProperties`** — the
+  request carried `client_secret` and the client profile carries
+  `userpassword`. Log key names, lengths, and success/failure.
+- **Wrap each probe in its own try/catch.** An uncaught throw returns `500` and
+  takes every later probe in the fixture with it — which is itself worth
+  measuring, and `stringify-uncaught.script.js` is the fixture that does it.
 
 ## One-Time Setup
 
