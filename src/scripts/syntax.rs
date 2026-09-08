@@ -709,6 +709,40 @@ mod tests {
         assert_eq!(unescape_idm("a &lt;&#61; b"), "a <= b");
     }
 
+    /// The refusal wording is shared by the CLI, `watch` and the tab, so it is
+    /// pinned once here. The discriminating part is the IDM note: it must
+    /// appear only when *no* error carried a coordinate — printing it beside a
+    /// line number would tell the operator to stop looking at the line number
+    /// they were just given.
+    #[test]
+    fn refusal_wording_says_where_when_it_can_and_says_why_not_when_it_cannot() {
+        let with_line = Refusal::Rejected(vec![SyntaxError {
+            line: Some(3),
+            column: Some(15),
+            message: "missing ) in parenthetical".into(),
+        }]);
+        assert_eq!(
+            with_line.detail(),
+            ["3:15: missing ) in parenthetical".to_string()]
+        );
+        assert!(with_line.headline().contains("3:15"));
+
+        let no_line = Refusal::Rejected(vec![SyntaxError {
+            line: None,
+            column: None,
+            message: "syntax error".into(),
+        }]);
+        assert_eq!(no_line.detail().len(), 2);
+        assert!(no_line.detail()[1].contains("no line number"));
+
+        // A no-verdict refusal has no per-error detail, so the reason has to
+        // be in the summary or it is lost entirely.
+        let none = Refusal::NoVerdict("IDM compile answered 503".into());
+        assert!(none.detail().is_empty());
+        assert!(none.summary().contains("503"));
+        assert_eq!(none.headline(), none.summary());
+    }
+
     #[test]
     fn render_degrades_with_partial_coordinates() {
         let only_line = SyntaxError {
