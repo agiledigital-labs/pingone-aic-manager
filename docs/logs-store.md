@@ -9,6 +9,14 @@ source taxonomy, event payload shapes, journey join key) lives in
 [`docs/api/08-logs.md`](api/08-logs.md) — read that first for anything that
 touches the wire.
 
+> **All three commands are behind the `logs-store` cargo feature, and released
+> binaries do not carry it.** Build with
+> `cargo build --release --features logs-store`. The gate exists because DuckDB
+> is a heavy dependency the rest of `aic` has no use for. Both halves of the
+> feature are still gated in CI — `cargo clippy --all-targets --features
+> logs-store` and `cargo test --features logs-store` — so this code is checked
+> on every change even though it is not shipped by default.
+
 Why a local store at all: AIC retains logs for only **30 days** server-side.
 Syncing locally gives offline history past that window, offline search, and a
 compacted journey model that survives raw-event pruning.

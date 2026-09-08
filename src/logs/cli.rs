@@ -76,6 +76,29 @@ pub enum LogsCommand {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
+    // Without the feature these three would simply not exist, and clap would
+    // answer `unrecognized subcommand 'search'` — which reads as "no such
+    // command" when the truth is "not in this build". docs/CLI.md documents
+    // them, and released binaries are built without the feature, so that error
+    // is the one a reader is most likely to hit.
+    #[cfg(not(feature = "logs-store"))]
+    /// Search the local synced log store. Needs the `logs-store` build feature.
+    Search {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        args: Vec<String>,
+    },
+    #[cfg(not(feature = "logs-store"))]
+    /// Roll up and prune the local store. Needs the `logs-store` build feature.
+    Compact {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        args: Vec<String>,
+    },
+    #[cfg(not(feature = "logs-store"))]
+    /// Sync logs into the local store. Needs the `logs-store` build feature.
+    Sync {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        args: Vec<String>,
+    },
     #[cfg(feature = "logs-store")]
     /// Search the local synced log store (offline; reads the DuckDB file).
     Search {
@@ -253,6 +276,15 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             )
             .await?;
             write_json(&result, output.as_deref())
+        }
+        #[cfg(not(feature = "logs-store"))]
+        LogsCommand::Search { .. } | LogsCommand::Compact { .. } | LogsCommand::Sync { .. } => {
+            Err(crate::Error::Config(
+                "this build has no local log store: rebuild with \
+             `cargo build --release --features logs-store`. Released binaries \
+             are built without it; `aic logs tx|range|query` work in every build"
+                    .into(),
+            ))
         }
         #[cfg(feature = "logs-store")]
         LogsCommand::Search {
