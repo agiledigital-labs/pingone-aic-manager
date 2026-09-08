@@ -1285,3 +1285,43 @@ itself has already picked one. Documented in
 `fixtures/request-multivalue.script.js`, and
 `fixtures-oauth2/request-properties-multivalue.script.js` for the token
 endpoint.
+
+## 2026-09-09 — both script families store source that does not parse
+
+Neither write path parses. `PUT /am/json{realm}/scripts/{id}` and
+`PUT /openidm/config/endpoint/{name}` each returned **201** for a source with an
+unbalanced paren (throwaways created and deleted, 404 confirmed). Each family
+has an opt-in syntax action that the write path does not call, and the console
+does not gate saving on it either:
+
+| Family | Action                                          | Pass                 | Fail                                         | Line/col?                     |
+| ------ | ----------------------------------------------- | -------------------- | -------------------------------------------- | ----------------------------- |
+| AM     | `POST …/scripts/?_action=validate`              | `200 {success:true}` | **`200`** `{success:false, errors:[…]}`      | ✅ both languages             |
+| IDM    | `POST /openidm/script?_action=compile`          | `200 true`           | `400 {message:"…"}`                          | ❌ JS, ✅ Groovy (in message) |
+
+Three traps in that table, and they point in opposite directions:
+
+- **AM answers 200 on failure.** A caller that checks the status code sees every
+  script as valid. The verdict is `success` in the body.
+- **IDM answers 400 on failure but has no coordinates.** For JavaScript the
+  message is the bare Rhino string — `"syntax error"` even when the fault is on
+  line 40. Only Groovy gets line/column, formatted into the message text.
+- **The engines are not the same ES level**, so the tempting fix — route IDM
+  source through AM to get line numbers — reports failures IDM accepts. `let`
+  and destructuring are the discriminating cases: AM rejects both, IDM compiles
+  both. AM is the stricter of the two.
+
+The failure mode this prevents is worth naming because it does not look like a
+syntax error. A broken IDM endpoint's **runtime URL returns 404** while its
+config object reads back 200 — it presents as an endpoint that was never
+created. Confirmed against a valid-source control that answered 200 on the next
+request, so it is not registration lag. A broken AM script instead surfaces
+whenever the journey or token flow that references it next evaluates, in a place
+that does not mention the script.
+
+Also: `script?_action=compile` returns **503** for an unrecognised `type` (e.g.
+`JAVASCRIPT`, `text/groovy`) rather than a 400 — reproduced twice with a healthy
+call in between, so it is deterministic and must not be retried as transient.
+
+Documented in `docs/api/04-scripts.md` ("Syntax validation") and
+`docs/api/11-idm-endpoints.md` ("Syntax validation").
