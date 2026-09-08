@@ -162,8 +162,13 @@ Measured 2026-09-09, same source to both:
 | `for (const v of [1,2]) {}`   | ❌ `syntax error`                  | ❌ `syntax error`            |
 | `var b = [...a];`             | ❌ `syntax error`                  | ❌ `syntax error`            |
 
-AM is the stricter of the two: it rejects `let` and destructuring that IDM
-compiles. Use each family's own action — `04`/`12` for AM, `11` for IDM.
+The two acceptance sets are **not the same** — which is the whole point, and
+all these seven probes establish. AM rejected two things IDM compiled (`let`,
+destructuring) and nothing went the other way, so on this sample AM is the
+stricter; seven sources is not enough to claim its acceptance set is smaller in
+general, and one source going the other way would undo it. Use each family's
+own action — `04`/`12` for AM, `11` for IDM — and do not treat a pass from one
+as a pass for the other in either direction.
 
 ## Script context enumeration
 
@@ -630,10 +635,11 @@ curl -X PUT "$TENANT_BASE_URL/am/json/realms/root/realms/alpha/scripts/$ID" \
   verdict wrong. The same failing source was then `PUT` to a throwaway
   `aic-preflight-probe-DELETEME` and stored with **201**, then `DELETE`d (200)
   and confirmed 404 — that create is the control proving the write path does no
-  parsing. The nine-row engine-divergence table above was measured by sending
+  parsing. The seven-row engine-divergence table above was measured by sending
   each source to both this action and IDM's `script?_action=compile` in the same
   pass; `let` and destructuring are the discriminating rows, accepted by IDM and
-  rejected here.)
+  rejected here. Seven sources establish that the two acceptance sets differ,
+  not their relative size in general.)
 - Date: 2026-05-17
 - Calls: `GET …/scripts?_queryFilter=true&_pageSize=1` (200 OK, base64 body
   confirmed by decoding first 30 chars to JS comment header),

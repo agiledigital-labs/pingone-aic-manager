@@ -1309,7 +1309,10 @@ Three traps in that table, and they point in opposite directions:
 - **The engines are not the same ES level**, so the tempting fix — route IDM
   source through AM to get line numbers — reports failures IDM accepts. `let`
   and destructuring are the discriminating cases: AM rejects both, IDM compiles
-  both. AM is the stricter of the two.
+  both. The seven measured sources prove the two acceptance sets **differ** and
+  that two of them are IDM-only; they do not establish that AM's set is smaller
+  in general, so do not substitute one action for the other in either
+  direction.
 
 The failure mode this prevents is worth naming because it does not look like a
 syntax error. A broken IDM endpoint's **runtime URL returns 404** while its

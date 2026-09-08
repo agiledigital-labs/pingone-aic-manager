@@ -849,13 +849,13 @@ resolves its namespace from your current directory. A bare namespace (`bravo`,
 
 ```bash
 aic script list [<ref>] [--context TEXT] [--default | --no-default] [--json]
-aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--tenant TENANT] [--yes]
-aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes]
+aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--tenant TENANT] [--yes] [--no-syntax-check]
+aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--no-syntax-check]
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--force]               # pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--yes] [--no-syntax-check]  # push local edits
-aic script sync [<ref>] [--resolve local|remote] # reconcile: push local-only, pull remote-only
-aic script watch                                # auto-push each .cjs you save (Ctrl-C to stop; also creates generated endpoints)
+aic script sync [<ref>] [--resolve local|remote] [--tenant TENANT] [--yes] [--no-syntax-check]   # reconcile: push local-only, pull remote-only
+aic script watch [--tenant TENANT] [--yes] [--no-syntax-check]   # auto-push each .cjs you save (Ctrl-C to stop; also creates generated endpoints)
 aic script status [<ref>]                       # in sync / modified / remote / conflict
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
@@ -929,11 +929,22 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   created.
 
   A refusal writes nothing, leaves the snapshot alone, and exits non-zero, so
-  the local edit survives for you to fix and push again. AM reports the line
-  and column; **IDM reports neither for JavaScript** — its message is the bare
-  parser string ("syntax error") even when the fault is on line 40 — and the
-  output says so rather than leave you hunting for a coordinate that was never
-  sent.
+  the local edit survives for you to fix and push again. That includes a batch:
+  `push all` and `sync` finish the run and print their summary, then exit
+  non-zero if anything was refused. AM reports the line and column; **IDM
+  reports neither for JavaScript** — its message is the bare parser string
+  ("syntax error") even when the fault is on line 40 — and the output says so
+  rather than leave you hunting for a coordinate that was never sent.
+
+  **No verdict is also a refusal.** If the check cannot answer — an unexpected
+  body, or a 503 from IDM's compile action, which is what it returns for a
+  script `type` it does not recognise _and_ what an unwell service returns —
+  nothing is written and the message says the check gave no verdict rather than
+  that the source was rejected. Retrying is the first thing to try, since it
+  may be a bad minute on the tenant; `--no-syntax-check` writes it unchecked.
+  The one case that writes anyway is a resource nothing can check at all (a
+  script engine the compile action does not compile), decided before the call
+  is made: that write goes ahead and says on stderr that it was not checked.
 
   `--force` does **not** override this, and that is deliberate: drift is a
   question of whose content wins, while an unparseable script is broken

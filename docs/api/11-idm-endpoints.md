@@ -480,6 +480,14 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
   backtick becomes `&#96;`. Nested `detail` strings are escaped too. Write error
   messages in plain words — `must be at most 100`, `Unknown action: explode` —
   or the caller reads entities.
+- **The escaping applies to the compiler's own messages, `@` included.** A
+  Groovy syntax error's position suffix arrives as
+  `&#64; line 2, column 8.` — `@` is `&#64;`, so a decoder that covers the
+  quote entities and stops there leaves the suffix unmatched and **loses the
+  only coordinates IDM ever reports** (JavaScript failures carry none). The
+  captured 2026-09-09 body reads
+  `Unexpected input: &#39;x&#39; &#64; line 2, column 8.`; expand `&amp;` last,
+  or a literal `&amp;#39;` in the source becomes a quote it never had.
 - **`source` is plain text, not base64** (the opposite of AM scripts). Don't
   base64-encode on write.
 - **An unrecognised script `type` returns 503, not 400.**
@@ -487,8 +495,15 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
   `text/groovy` or
   `text/python`; the accepted spellings are `javascript`, `text/javascript` and
   `groovy` (verified 2026-09-09, twice, with a valid call immediately after to
-  prove the tenant was healthy). A 503 from this endpoint means "bad type", so
-  do not retry it as a transient.
+  prove the tenant was healthy). What that measures is **`bad type` → 503**,
+  one way. It does **not** license reading a 503 as "bad type": 503 is also
+  what an unwell service answers, and nothing was measured that distinguishes
+  the two from the response alone. So normalise the `type` to one of the three
+  accepted spellings **before** the call — a caller that knows the accepted set
+  never needs to interpret a 503 — and treat a 503 that still arrives as _no
+  verdict_, which is neither a pass nor a syntax failure. `aic` refuses the
+  write on one rather than storing source it could not check
+  (`--no-syntax-check` is the way past it).
 - **Nothing on the write path checks syntax.**
   `PUT /openidm/config/endpoint/{name}` stores unparseable `source` with a 201;
   the endpoint is then un-routable
