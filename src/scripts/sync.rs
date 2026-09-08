@@ -74,14 +74,7 @@ pub fn source_id(bytes: &[u8]) -> SourceId {
 /// and the snapshot is not the operator's copy.
 pub fn local_source_id(tenant: &str, c: &Candidate) -> Option<SourceId> {
     let realm = c.realm.as_deref().unwrap_or_default();
-    let r = RemoteRef {
-        kind: c.kind,
-        id: String::new(),
-        name: c.name.clone(),
-        context: c.context.clone(),
-        is_default: c.is_default,
-        evaluator_version: c.evaluator_version.clone(),
-    };
+    let r = ref_of(c);
     read_local(&workspace_file(tenant, realm, &r))
         .ok()
         .flatten()
@@ -418,19 +411,26 @@ pub fn push_candidates(tenant: &str) -> Result<Vec<Candidate>> {
     Ok(out)
 }
 
-/// A candidate's source for preview: the local workspace file if present
-/// (what a push would send), else the last-synced snapshot, else `None`
-/// (never pulled — nothing local to show). Cheap; no network.
-pub fn preview_source(tenant: &str, c: &Candidate) -> Option<String> {
-    let realm = c.realm.as_deref().unwrap_or_default();
-    let r = RemoteRef {
+/// The [`RemoteRef`] a candidate addresses locally. `id` is empty because
+/// nothing local keys on it — the workspace path and the snapshot path are
+/// both derived from kind/name/context.
+fn ref_of(c: &Candidate) -> RemoteRef {
+    RemoteRef {
         kind: c.kind,
         id: String::new(),
         name: c.name.clone(),
         context: c.context.clone(),
         is_default: c.is_default,
         evaluator_version: c.evaluator_version.clone(),
-    };
+    }
+}
+
+/// A candidate's source for preview: the local workspace file if present
+/// (what a push would send), else the last-synced snapshot, else `None`
+/// (never pulled — nothing local to show). Cheap; no network.
+pub fn preview_source(tenant: &str, c: &Candidate) -> Option<String> {
+    let realm = c.realm.as_deref().unwrap_or_default();
+    let r = ref_of(c);
     if let Ok(Some(bytes)) = read_local(&workspace_file(tenant, realm, &r)) {
         return Some(lossy(&bytes));
     }
