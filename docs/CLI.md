@@ -634,14 +634,19 @@ aic oauth push <id> [--realm alpha] [--force]           # push a workspace clien
 aic oauth delete <id> --force [--realm alpha]           # delete (requires --force)
 ```
 
-`provider get` prints a compact realm-wide configuration summary. In
-particular, it always shows both the provider `grantTypes` and
-`tokenExchangeClasses`, because configured exchangers do not themselves enable
-the token-exchange grant. It also derives a direct `token-exchange granted`
-yes/no row; arrays and plugin settings render one value per row to avoid long
-wrapped JSON cells. Token-exchange class mappings omit their repeated token-type
-URN and Java-package prefixes; an unrecognised mapping is printed in full.
-`--json` prints the raw provider document unchanged.
+`provider get` prints a compact realm-wide configuration summary. It always
+shows a row for both the provider `grantTypes` and `tokenExchangeClasses` —
+`<absent>` when the tenant does not set one — because configured exchangers do
+not themselves enable the token-exchange grant. It also derives a direct
+`token-exchange granted` yes/no row, from `grantTypes` alone. Arrays inside the
+known configuration groups expand to one value per row and the `[Empty]`
+sentinel prints as `<not set>`; a group this command does not know about, and an
+object-valued plugin setting, still print as a single JSON cell. Token-exchange
+class mappings drop their repeated token-type URN and Java-package prefixes.
+That rewrite is purely structural, so a mapping that does not parse is printed
+in full — but one naming an unfamiliar token type or exchanger class is
+shortened like any other. `--json` prints the same document the API returned,
+re-serialised rather than passed through byte-for-byte.
 
 `create` exposes the common client settings (`--name`, repeatable scopes,
 redirect URIs, grants/response types, token auth, consent, and lifetimes); run
