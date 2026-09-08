@@ -257,11 +257,15 @@ pub async fn fetch(tenant: &str, realm: &str, id: &str) -> Result<RemoteScript> 
     })
 }
 
-pub async fn write(
+/// Only reachable from [`super::gate::write_checked`]: the `permit` is
+/// unconstructable elsewhere, and this endpoint does not parse what it
+/// stores.
+pub(super) async fn write(
     tenant: &str,
     realm: &str,
     script: &RemoteScript,
     confirmed_prod: bool,
+    _permit: &super::gate::WritePermit,
 ) -> Result<Value> {
     let path = format!("{}/scripts/{}", realm_path(realm), script.reference.id);
     crate::aic::api::put_versioned(

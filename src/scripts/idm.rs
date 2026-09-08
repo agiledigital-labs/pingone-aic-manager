@@ -81,11 +81,15 @@ pub async fn fetch(tenant: &str, _realm: &str, id: &str) -> Result<RemoteScript>
     })
 }
 
-pub async fn write(
+/// Only reachable from [`super::gate::write_checked`]: the `permit` is
+/// unconstructable elsewhere, and this endpoint does not parse what it
+/// stores.
+pub(super) async fn write(
     tenant: &str,
     _realm: &str,
     script: &RemoteScript,
     confirmed_prod: bool,
+    _permit: &super::gate::WritePermit,
 ) -> Result<Value> {
     let path = format!("/openidm/config/{}", script.reference.id);
     crate::aic::api::put(tenant, &path, script.raw_config.clone(), confirmed_prod).await

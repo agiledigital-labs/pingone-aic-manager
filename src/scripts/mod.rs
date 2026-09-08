@@ -27,6 +27,7 @@
 pub mod am;
 pub mod authorship;
 pub mod cli;
+pub mod gate;
 pub mod idm;
 pub mod managed_hooks;
 pub mod managed_types;
@@ -171,22 +172,31 @@ impl Kind {
         }
     }
 
-    pub async fn write(
+    /// Store this source on the tenant, unparsed.
+    ///
+    /// The `permit` is what makes this reachable only from
+    /// [`gate::write_checked`], which is the only thing that parses the source
+    /// first — neither family's write endpoint does. See `gate` for why that is
+    /// a compiler check rather than a convention.
+    pub(crate) async fn write(
         self,
         tenant: &str,
         realm: &str,
         script: &RemoteScript,
         confirmed_prod: bool,
+        permit: &gate::WritePermit,
     ) -> Result<serde_json::Value> {
         match self {
-            Kind::Am => am::write(tenant, realm, script, confirmed_prod).await,
-            Kind::IdmEndpoint => idm::write(tenant, realm, script, confirmed_prod).await,
-            Kind::IdmSchedule => schedule::write(tenant, realm, script, confirmed_prod).await,
+            Kind::Am => am::write(tenant, realm, script, confirmed_prod, permit).await,
+            Kind::IdmEndpoint => idm::write(tenant, realm, script, confirmed_prod, permit).await,
+            Kind::IdmSchedule => {
+                schedule::write(tenant, realm, script, confirmed_prod, permit).await
+            }
             Kind::IdmManagedHook => {
-                managed_hooks::write(tenant, realm, script, confirmed_prod).await
+                managed_hooks::write(tenant, realm, script, confirmed_prod, permit).await
             }
             Kind::IdmSyncMapping => {
-                sync_mapping::write(tenant, realm, script, confirmed_prod).await
+                sync_mapping::write(tenant, realm, script, confirmed_prod, permit).await
             }
         }
     }
