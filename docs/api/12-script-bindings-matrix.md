@@ -727,16 +727,45 @@ What follows from that:
   disagree about what the request said. No type can catch this: `.get()` returns
   a list either way, populated or not.
 
-`getClass()` is refused on these maps on **both** engines (`InternalError:
-Access to Java class "java.lang.Class" is prohibited`), which is why the probe
-reports element counts rather than naming the concrete Java multimap class.
+The probe reports element counts rather than naming the concrete Java multimap
+class because `getClass()` on these maps is refused on **both** engines —
+`InternalError: Access to Java class "java.lang.Class" is prohibited` — the
+handed-you-one shape described under **The Java class shutter** above.
 
-**Not covered:** the OAuth2 token-endpoint contexts'
-`requestProperties.requestHeaders` / `.requestParams`. They are the same
-multimap shape in the types (`Record<string, JavaArray<JavaString>>`), but
-arity was not probed there: the OAuth2 lane records only what the *client* sees,
-so it has no way to return a count, and it needs the probe client's secret.
-Status **U** — do not assume this section carries over.
+### `requestProperties` arity — next-gen validate scope (verified 2026-09-08)
+
+The token-endpoint contexts reach the same two maps through
+`requestProperties`, and they answer the same way — with differences worth
+knowing before porting a decision between the two families.
+`fixtures-oauth2/request-properties-multivalue.script.js` is a passthrough
+validate-scope script that logs the element counts; the answer is the LOG LINE
+(`aic logs tx <txid>` for `AICPROBE-MV`), because this context has no callback
+to emit a payload through.
+
+| Sent on `POST …/access_token`               | `requestProperties` value        |
+| ------------------------------------------- | -------------------------------- |
+| `X-Aic-Probe: alpha` + `X-Aic-Probe: bravo` | `requestHeaders` — **2** elements |
+| `X-Aic-Probe-Joined: alpha,bravo`           | `requestHeaders` — 1 element     |
+| `scope=a` + `scope=b` (form body, twice)    | `requestParams` — **2** elements |
+| `?probeq=alpha&probeq=bravo` (query string) | `requestParams` — **2** elements |
+| `scope=a b` (once, space-delimited)         | `requestParams` — 1 element      |
+
+- **Query and form parameters land in the same map.** An unknown query
+  parameter on the token endpoint is not rejected (`200`) and arrives in
+  `requestParams` alongside the form fields. `client_secret` is still absent
+  from the map, as the legacy section below records.
+- **AM and the script can disagree about a duplicated `scope`.** With `scope`
+  sent twice, `requestParams.scope` held both values while AM's own
+  `requestedScopes` held only the **first** — and the token came back carrying
+  only that scope. So the platform resolves the duplication to element 0 and a
+  script that reads the whole list is reasoning about a request AM has already
+  decided differently. This is the concrete version of the warning above.
+- **Key case is NOT normalised here**, unlike the scripted-decision map.
+  Iteration yielded `Content-Type`, `Content-Length`, `X-Forwarded-For` and
+  `X-ForgeRock-TransactionId` capitalised alongside lowercase `host` / `via` /
+  `x-client-*`. Lookup is still case-insensitive
+  (`requestHeaders["X-Aic-Probe"]` and `["x-aic-probe"]` both returned the
+  2-element list), so read by name and never off the enumerated case.
 
 ### Method surfaces verified 2026-06-04 (legacy engine)
 
@@ -1423,10 +1452,7 @@ binding _presence_ (see the legacy section above; the tester now takes
    for `httpClient.send(...).get()`: `ok`, `status`, `statusText` and `text()`
    are runtime-verified (`fixtures/httpclient-body-coercion.script.js`), as is
    the request-side body serializer (see the section above). `json()` and the
-   `headers` shape are still unverified. Also still unverified: whether
-   `requestProperties.requestHeaders` / `.requestParams` in the OAuth2
-   token-endpoint contexts can hold more than one element per key, the way the
-   scripted-decision bindings demonstrably can (2026-09-08 section above).
+   `headers` shape are still unverified.
 2. ~~`require()` of a real library from a next-gen scripted decision~~ RESOLVED
    — end-to-end library imports are verified from a next-gen scripted decision
    (2026-07-13/14 rows above) and from next-gen access-token modification

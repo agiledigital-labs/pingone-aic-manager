@@ -356,6 +356,14 @@ ruled out, in this order:
   the CTS tokens' one-hour lifetime. Same refusal. That theory is dead;
 - the other realms: `bravo` 404, root 403.
 
+**2026-09-08 — the refusal is not the general rule.** A next-gen
+`OAUTH2_VALIDATE_SCOPE` probe script was created, attached to a throwaway
+client, **executed** by four token requests, and then deleted cleanly
+(`aic script delete`, client deleted first). So "a script that has run cannot be
+deleted" is too broad a reading of this entry: whatever `…7201` is stuck on is
+specific to it, not a property of having executed. Q17 stays open on that
+narrower question.
+
 No explanation survives. `?_action=getUsage` and `?_action=usage` are 403, so
 AM's own usage count cannot be inspected, and the script record carries no
 usage field.
@@ -1241,8 +1249,8 @@ both types were removed. Reproducer:
 
 ## 2026-09-08 — duplicated headers/parameters: AM keeps both, IDM does not
 
-The same question, asked of the two engines, has three different answers, and
-the AM one is the only place the duplication survives intact.
+The same question, asked of three surfaces, has three different answers, and
+AM is the only place the duplication survives into the script.
 
 - **AM scripted decision (both `evaluatorVersion`s).** `requestHeaders` /
   `requestParameters` values hold one element per occurrence, in send order. A
@@ -1257,11 +1265,23 @@ the AM one is the only place the duplication survives intact.
 - **IDM endpoint, header.** Comma-joined into a single string, which is
   **indistinguishable** from one header sent with a comma in it. This is the
   lossy case: an endpoint cannot detect that a header was duplicated at all.
+- **AM OAuth2 token endpoint (next-gen validate scope).** Same answer as the
+  decision node — 2 elements for a header sent twice, and for a parameter sent
+  twice from either the form body or the query string. But this is where the
+  trap becomes concrete: with `scope` sent twice, `requestParams.scope` held
+  both values while AM's own `requestedScopes` held only the **first**, and the
+  token came back carrying only that scope. The platform resolved the
+  duplication to element 0; a script reading the list is reasoning about a
+  request AM has already decided differently.
 
-The practical trap is reading element 0 as though it were the value. A fronting
-proxy that honours the last occurrence and a script that reads the first
-disagree about what the request said, and on IDM the disagreement is invisible.
-Documented in `docs/api/12-script-bindings-matrix.md` (AM) and
+The practical trap is reading element 0 as though it were the value — or
+reading past it as though the platform had. A fronting proxy that honours the
+last occurrence and a script that reads the first disagree about what the
+request said; on IDM the disagreement is invisible; and on the token endpoint AM
+itself has already picked one. Documented in
+`docs/api/12-script-bindings-matrix.md` (AM) and
 `docs/api/11-idm-endpoints.md` (IDM). Reproducers:
 `scripts/rhino-script-tester/run-journey-multivalue.sh` with
-`fixtures/request-multivalue.script.js`.
+`fixtures/request-multivalue.script.js`, and
+`fixtures-oauth2/request-properties-multivalue.script.js` for the token
+endpoint.
