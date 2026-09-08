@@ -936,15 +936,19 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   ("syntax error") even when the fault is on line 40 — and the output says so
   rather than leave you hunting for a coordinate that was never sent.
 
-  **No verdict is also a refusal.** If the check cannot answer — an unexpected
-  body, or a 503 from IDM's compile action, which is what it returns for a
-  script `type` it does not recognise _and_ what an unwell service returns —
-  nothing is written and the message says the check gave no verdict rather than
-  that the source was rejected. Retrying is the first thing to try, since it
-  may be a bad minute on the tenant; `--no-syntax-check` writes it unchecked.
-  The one case that writes anyway is a resource nothing can check at all (a
-  script engine the compile action does not compile), decided before the call
-  is made: that write goes ahead and says on stderr that it was not checked.
+  **No verdict is also a refusal, with no exceptions.** If the check cannot
+  answer — an unexpected body, or a 503 from IDM's compile action, which is
+  what it returns for a script `type` it does not recognise _and_ what an
+  unwell service returns — nothing is written, and the message says the check
+  gave no verdict rather than that the source was rejected. Retrying is the
+  first thing to try, since it may be a bad minute on the tenant.
+
+  The same goes for source nothing _can_ check, such as an endpoint declaring
+  a script engine the compile action does not compile: that is recognised
+  before the call is made, so the message names the type and skips the useless
+  retry advice — but it still writes nothing, because unparsed source is
+  unparsed source however the gate found out. `--no-syntax-check` is the one
+  way to store source the tenant has not parsed.
 
   `--force` does **not** override this, and that is deliberate: drift is a
   question of whose content wins, while an unparseable script is broken

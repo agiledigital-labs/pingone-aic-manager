@@ -53,13 +53,46 @@ pub struct PullOutcome {
     pub status: PullStatus,
 }
 
+/// Identifies the exact source bytes an operation acted on, so a surface
+/// holding a stale result can tell that the file has moved on. A digest rather
+/// than the bytes: this is only ever compared for equality, and a refusal may
+/// outlive the push that produced it by minutes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SourceId(u64);
+
+/// The [`SourceId`] of some source bytes.
+pub fn source_id(bytes: &[u8]) -> SourceId {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    SourceId(hasher.finish())
+}
+
+/// The [`SourceId`] of what is in the workspace for `c` right now, or `None`
+/// when there is no local file. Deliberately *not* the snapshot fallback that
+/// [`preview_source`] uses: this answers "has the operator edited it since",
+/// and the snapshot is not the operator's copy.
+pub fn local_source_id(tenant: &str, c: &Candidate) -> Option<SourceId> {
+    let realm = c.realm.as_deref().unwrap_or_default();
+    let r = RemoteRef {
+        kind: c.kind,
+        id: String::new(),
+        name: c.name.clone(),
+        context: c.context.clone(),
+        is_default: c.is_default,
+        evaluator_version: c.evaluator_version.clone(),
+    };
+    read_local(&workspace_file(tenant, realm, &r))
+        .ok()
+        .flatten()
+        .map(|bytes| source_id(&bytes))
+}
+
 /// Per-script outcome of a push.
+#[must_use = "a discarded push outcome reports a refusal as a successful push"]
 #[derive(Debug, Clone)]
 pub enum PushOutcome {
-    /// Written. `unchecked` is `Some(reason)` when the gate was on and this
-    /// resource turned out not to be checkable at all — the surface says so,
-    /// because a silent pass would let the operator believe a check happened.
-    Pushed { unchecked: Option<String> },
+    Pushed,
     /// Local matches the last-synced snapshot — nothing to push.
     Unchanged,
     /// Remote already equals local — snapshot refreshed, no write needed.
@@ -70,7 +103,17 @@ pub enum PushOutcome {
     /// The gate refused the write, so nothing was written. Distinct from
     /// `Conflict`: `--force` must not override this, because the script would
     /// be stored broken (AM) or become un-routable (IDM).
-    Refused(Refusal),
+    ///
+    /// `source` identifies the bytes that were checked — **not** whatever is
+    /// on disk when this is read. A surface that holds the refusal has to know
+    /// which source it was about: the operator can save a fix while the push
+    /// is still in flight, and a refusal re-identified by re-reading the file
+    /// afterwards would be pinned to the corrected source it says nothing
+    /// about.
+    Refused {
+        refusal: Refusal,
+        source: SourceId,
+    },
 }
 
 /// The three sides of a content conflict, as decoded UTF-8 (lossy) text.
@@ -478,13 +521,10 @@ pub async fn pull(
 }
 
 /// What [`create`] found when it went to make the script.
+#[must_use = "a discarded create outcome reports a refusal as a successful create"]
 #[derive(Debug, Clone)]
 pub enum CreateOutcome {
-    Created {
-        script: RemoteScript,
-        /// See [`PushOutcome::Pushed`].
-        unchecked: Option<String>,
-    },
+    Created(RemoteScript),
     /// The tenant already had a script by that name. Carries its reference so
     /// the caller can [`adopt`] it rather than only report the refusal.
     NameTaken(RemoteRef),
@@ -495,13 +535,10 @@ pub enum CreateOutcome {
 /// The outcome of a create that will not take an existing name — what
 /// `aic script new` and `aic script copy` want. A taken name is an `Err`
 /// there, so only two cases are left.
+#[must_use = "a discarded create outcome reports a refusal as a successful create"]
 #[derive(Debug)]
 pub enum Creation {
-    Created {
-        script: RemoteScript,
-        /// See [`PushOutcome::Pushed`].
-        unchecked: Option<String>,
-    },
+    Created(RemoteScript),
     /// The gate refused the write; nothing was created.
     Refused(Refusal),
 }
@@ -540,10 +577,10 @@ pub async fn create(
     {
         return Ok(CreateOutcome::NameTaken(existing));
     }
-    let unchecked = match write_checked(kind, tenant, realm, script, confirmed_prod, gate).await? {
-        Gated::Written { unchecked } => unchecked,
+    match write_checked(kind, tenant, realm, script, confirmed_prod, gate).await? {
+        Gated::Written => {}
         Gated::Refused(refusal) => return Ok(CreateOutcome::Refused(refusal)),
-    };
+    }
     // Pull it straight back so the workspace file, generated extras, and the
     // snapshot are exactly what a plain `pull` would have produced — the server
     // normalises fields we sent (AM rewrites `context`), so its copy is the
@@ -559,10 +596,9 @@ pub async fn create(
     // Every kind honours the id we wrote to (AM: the URL uuid; IDM: the
     // name-derived config id — both verified), so re-read it directly rather
     // than listing the namespace again to rediscover it.
-    Ok(CreateOutcome::Created {
-        script: kind.fetch(tenant, realm, &script.reference.id).await?,
-        unchecked,
-    })
+    Ok(CreateOutcome::Created(
+        kind.fetch(tenant, realm, &script.reference.id).await?,
+    ))
 }
 
 /// [`create`], refusing a name the tenant already has. What `aic script new` and
@@ -580,7 +616,7 @@ pub async fn create_new(
     gate: SyntaxGate,
 ) -> Result<Creation> {
     match create(tenant, realm, script, confirmed_prod, gate).await? {
-        CreateOutcome::Created { script, unchecked } => Ok(Creation::Created { script, unchecked }),
+        CreateOutcome::Created(created) => Ok(Creation::Created(created)),
         CreateOutcome::Refused(refusal) => Ok(Creation::Refused(refusal)),
         CreateOutcome::NameTaken(existing) => Err(Error::Config(name_taken_message(
             existing.kind,
@@ -767,9 +803,9 @@ pub enum SyntaxGate {
 /// What the gate did about one write.
 #[derive(Debug)]
 enum Gated {
-    /// The write happened. `unchecked` carries the reason when it happened
-    /// without a verdict because this resource cannot be checked at all.
-    Written { unchecked: Option<String> },
+    /// The write happened, and the source was parsed first (or the gate was
+    /// off, at the caller's explicit request).
+    Written,
     /// Nothing was written.
     Refused(Refusal),
 }
@@ -781,14 +817,23 @@ enum Gated {
 /// compiler check for that; `write_is_only_reached_through_write_checked`
 /// below is the guard.
 ///
-/// Under [`SyntaxGate::Check`] this fails **closed**: no verdict means no
-/// write. It used to warn and write anyway, on the reasoning that blocking on
-/// an unanswerable pre-flight was a regression against having no pre-flight —
-/// which is wrong twice over. `--no-syntax-check` is that regression, on
-/// request; and the shapes that reached the fail-open path were mostly ones
-/// this gate could check and did not (a nested endpoint `source`, a legacy
-/// array-form AM `script`), so it reproduced exactly the distant-failure the
-/// feature exists to prevent, while reporting a successful push.
+/// Under [`SyntaxGate::Check`] this fails **closed**, with no exceptions: only
+/// a pass writes. It used to warn and write anyway whenever it had no verdict,
+/// on the reasoning that blocking on an unanswerable pre-flight was a
+/// regression against having no pre-flight — which is wrong twice over.
+/// `--no-syntax-check` is that regression, on request; and the shapes that
+/// reached the fail-open path were mostly ones this gate could check and did
+/// not (a nested endpoint `source`, a legacy array-form AM `script`), so it
+/// reproduced exactly the distant-failure the feature exists to prevent, while
+/// reporting a successful push.
+///
+/// The narrower version of the same mistake is worth naming because it looked
+/// principled: letting a resource nothing *can* check write anyway, on the
+/// grounds that the decision came from the resource rather than from a
+/// response. It is still unparsed source, `idm::list` will happily sync an
+/// endpoint declaring any engine at all, and in a batch such a write did not
+/// even count as a refusal. Where the decision came from belongs in the
+/// message and the remedy, not in the permission.
 ///
 /// Presentation is the caller's: this returns the outcome and prints nothing.
 /// The engine is shared with the TUI, where a stray `eprintln!` lands on the
@@ -801,29 +846,24 @@ async fn write_checked(
     confirmed_prod: bool,
     gate: SyntaxGate,
 ) -> Result<Gated> {
-    let mut unchecked = None;
     if gate == SyntaxGate::Check {
-        match decide(kind.check_syntax(tenant, realm, script).await?) {
-            Ok(reason) => unchecked = reason,
-            Err(refusal) => return Ok(Gated::Refused(refusal)),
+        if let Err(refusal) = decide(kind.check_syntax(tenant, realm, script).await?) {
+            return Ok(Gated::Refused(refusal));
         }
     }
     kind.write(tenant, realm, script, confirmed_prod).await?;
-    Ok(Gated::Written { unchecked })
+    Ok(Gated::Written)
 }
 
-/// Whether a verdict permits the write, and with what to say about it. Split
-/// out of [`write_checked`] because it is the whole fail-closed rule and the
-/// only part of it a test can reach without a tenant.
-fn decide(verdict: SyntaxCheck) -> std::result::Result<Option<String>, Refusal> {
+/// Whether a verdict permits the write. Split out of [`write_checked`] because
+/// it is the whole fail-closed rule and the only part of it a test can reach
+/// without a tenant.
+fn decide(verdict: SyntaxCheck) -> std::result::Result<(), Refusal> {
     match verdict {
-        SyntaxCheck::Ok => Ok(None),
+        SyntaxCheck::Ok => Ok(()),
         SyntaxCheck::Invalid(errors) => Err(Refusal::Rejected(errors)),
         SyntaxCheck::NoVerdict(reason) => Err(Refusal::NoVerdict(reason)),
-        // Nothing about this resource is checkable, and that was decided from
-        // the resource rather than from a response — so the write goes ahead
-        // and the caller says it went unchecked.
-        SyntaxCheck::Unsupported(reason) => Ok(Some(reason)),
+        SyntaxCheck::Unsupported(reason) => Err(Refusal::Unsupported(reason)),
     }
 }
 
@@ -901,17 +941,23 @@ pub async fn push(
         reference: r.clone(),
         raw_config: raw,
     };
-    let unchecked = match write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate).await?
-    {
-        Gated::Written { unchecked } => unchecked,
-        // Nothing was written and the snapshot is untouched, so the local
-        // edit survives for the operator to fix and push again.
-        Gated::Refused(refusal) => return Ok(PushOutcome::Refused(refusal)),
-    };
+    match write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate).await? {
+        Gated::Written => {}
+        // Nothing was written and the snapshot is untouched, so the local edit
+        // survives for the operator to fix and push again. The refusal is
+        // stamped with the source it was about, taken from the bytes read at
+        // the top of this function rather than re-read afterwards.
+        Gated::Refused(refusal) => {
+            return Ok(PushOutcome::Refused {
+                refusal,
+                source: source_id(&local_src),
+            });
+        }
+    }
 
     // Refresh the snapshot to exactly what we just pushed.
     store.record(&to_push, realm)?;
-    Ok(PushOutcome::Pushed { unchecked })
+    Ok(PushOutcome::Pushed)
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,12 +1076,10 @@ pub async fn diff(
 
 /// Outcome of reconciling one synced script.
 #[derive(Debug, Clone)]
+#[must_use = "a discarded reconcile outcome reports a refusal as a successful push"]
 pub enum ReconcileOutcome {
     InSync,
-    /// See [`PushOutcome::Pushed`] for `unchecked`.
-    Pushed {
-        unchecked: Option<String>,
-    },
+    Pushed,
     Pulled,
     /// Both sides changed to the same content; snapshot refreshed.
     Converged,
@@ -1100,13 +1144,12 @@ pub async fn reconcile(
                 reference: r.clone(),
                 raw_config: raw,
             };
-            let unchecked =
-                match write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate).await? {
-                    Gated::Written { unchecked } => unchecked,
-                    Gated::Refused(refusal) => return Ok(ReconcileOutcome::Refused(refusal)),
-                };
+            match write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate).await? {
+                Gated::Written => {}
+                Gated::Refused(refusal) => return Ok(ReconcileOutcome::Refused(refusal)),
+            }
             store.record(&to_push, realm)?;
-            Ok(ReconcileOutcome::Pushed { unchecked })
+            Ok(ReconcileOutcome::Pushed)
         }
         (true, true) if local == remote => {
             store.record(&remote_script, realm)?;
@@ -1410,22 +1453,24 @@ mod tests {
         );
     }
 
-    /// The gate fails **closed**: only `Ok` and the pre-request `Unsupported`
-    /// decision may write, and `Unsupported` must say so. `NoVerdict` is the
-    /// discriminating case — it used to write with a warning, which is what
-    /// let an IDM 503 and an unparsed nested `source` through while the tool
-    /// reported a successful push.
+    /// The gate fails **closed**: `Ok` is the only verdict that writes. The
+    /// two no-verdict arms are the discriminating cases — each in turn used to
+    /// write with a warning, which is what let an IDM 503, an unparsed nested
+    /// `source`, and an endpoint declaring an unknown engine through while the
+    /// tool reported a successful push. Their arms differ only so the remedy
+    /// can differ.
     #[test]
-    fn only_a_verdict_or_an_uncheckable_resource_may_write() {
-        assert_eq!(decide(SyntaxCheck::Ok), Ok(None));
-        assert_eq!(
-            decide(SyntaxCheck::Unsupported("no engine for it".into())),
-            Ok(Some("no engine for it".into()))
-        );
+    fn only_a_pass_may_write() {
+        assert_eq!(decide(SyntaxCheck::Ok), Ok(()));
         assert_eq!(
             decide(SyntaxCheck::NoVerdict("503".into())),
             Err(Refusal::NoVerdict("503".into())),
             "a check with no verdict must not authorise a write"
+        );
+        assert_eq!(
+            decide(SyntaxCheck::Unsupported("no engine for it".into())),
+            Err(Refusal::Unsupported("no engine for it".into())),
+            "a resource nothing can check must not authorise a write either"
         );
         let errors = vec![SyntaxError {
             line: Some(3),

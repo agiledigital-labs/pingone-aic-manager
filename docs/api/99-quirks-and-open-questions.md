@@ -1324,7 +1324,13 @@ that does not mention the script.
 
 Also: `script?_action=compile` returns **503** for an unrecognised `type` (e.g.
 `JAVASCRIPT`, `text/groovy`) rather than a 400 — reproduced twice with a healthy
-call in between, so it is deterministic and must not be retried as transient.
+call in between, so **re-probing a known-bad type** deterministically returns
+503. That is the whole of it, and it does not invert: a 503 arriving on a call
+you believed was well-formed cannot be classified from the response, because
+503 is also what an unwell service answers. Send only a type from the accepted
+set (`javascript`, `text/javascript`, `groovy`) and a 503 stops being ambiguous
+by construction; treat one that still arrives as _no verdict_ — worth
+retrying, and not a syntax failure.
 
 Documented in `docs/api/04-scripts.md` ("Syntax validation") and
 `docs/api/11-idm-endpoints.md` ("Syntax validation").

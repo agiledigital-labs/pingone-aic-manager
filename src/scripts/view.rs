@@ -205,19 +205,43 @@ fn draw_preview(f: &mut Frame, app: &App, tenant: &str, matches: &[Match], area:
         .get(&(tenant.to_string(), m.full.clone()));
     let strip: Vec<Line> = match refused {
         None => Vec::new(),
+        // Wrapped rather than clipped, and the height allocated to match. At
+        // the 80-column design width this pane is ~48 columns, and a
+        // no-verdict refusal has no detail lines — so ratatui's silent clip
+        // would take the only actionable text with it (`docs/DESIGN.md`,
+        // "Terminal size"). Long refusals are cut to half the pane and say so.
         Some(held) => {
             let red = Style::default().fg(Color::Red);
-            let mut lines = vec![Line::from(Span::styled(
-                format!("✗ not pushed — {}", held.summary),
-                red.add_modifier(Modifier::BOLD),
-            ))];
-            lines.extend(
-                held.detail
-                    .iter()
-                    .take(3)
-                    .map(|d| Line::from(Span::styled(format!("  {d}"), red))),
-            );
-            lines
+            let width = inner.width;
+            let mut rows: Vec<Line> = Vec::new();
+            for (i, row) in crate::tui::list_chrome::wrap_lines(
+                &format!("✗ not pushed — {}", held.summary),
+                width,
+            )
+            .into_iter()
+            .enumerate()
+            {
+                let style = if i == 0 {
+                    red.add_modifier(Modifier::BOLD)
+                } else {
+                    red
+                };
+                rows.push(Line::from(Span::styled(row, style)));
+            }
+            for detail in held.detail.iter().take(3) {
+                for row in crate::tui::list_chrome::wrap_lines(&format!("  {detail}"), width) {
+                    rows.push(Line::from(Span::styled(row, red)));
+                }
+            }
+            let budget = usize::from(inner.height / 2).max(2);
+            if rows.len() > budget {
+                rows.truncate(budget.saturating_sub(1));
+                rows.push(Line::from(Span::styled(
+                    "  … (full list: `aic script push <ref>`)",
+                    red,
+                )));
+            }
+            rows
         }
     };
 
