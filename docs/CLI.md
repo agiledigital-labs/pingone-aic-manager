@@ -725,10 +725,12 @@ elsewhere suggest a floor on the subject token, and
 `docs/api/22-token-exchange.md` records it as untested. The column reports the
 number, not an interpretation of it. `AUDIENCE` is
 `allowedResourceServerAudienceValues` — empty means the client cannot be asked
-for an `audience` at all. Note the neighbouring
-`acceptAudienceParametersInTokenExchangeRequests` lives in the **override**
-block and so is governed by the master switch, while these two do not; `--json`
-reports the configured and the effective value separately.
+for an `audience` at all. `ACCEPT_AUD` is the client's override of
+`acceptAudienceParametersInTokenExchangeRequests`, which lives in the
+**override** block and so is governed by the master switch (the other two are
+not); `-` means the override does not decide it and the realm's value applies.
+The pair is worth reading together, because a client that accepts no audience
+parameters silently ignores an `audience=` it is sent rather than rejecting it.
 
 The warnings are why the command exists. Each names a prerequisite that is
 visibly unmet, and every one of them surfaces at the token endpoint as the same
@@ -754,18 +756,27 @@ not end it. In particular there is no field naming *which* actor a subject
 permits — the may-act script decides that at mint time — so the relationship is
 only fully readable by reading the script this command names.
 
-A projected field that is **present with an unusable type** is reported rather
-than read as "not set". It matters here more than elsewhere: a `grantTypes`
-that stopped being an array would quietly turn an actor into a bystander in
-the one view whose job is to say who can act. An *absent* field stays silent,
-because absent really does mean not set.
+A projected field that is **present with an unusable type** is reported, and
+the answer it feeds is withheld rather than defaulted. It matters here more
+than elsewhere: a `grantTypes` that stopped being an array would quietly turn
+an actor into a bystander in the one view whose job is to say who can act, and
+a warning printed under "no client holds the grant" does not make that sentence
+true. So an unreadable grant list gives `actor?` and suppresses the no-actor
+finding; an unreadable `providerOverridesEnabled` gives `subject?` and
+suppresses the deny-by-default finding; the realm document gets the same
+treatment, where it matters more rather than less. An *absent* field stays
+silent, because absent really does mean not set.
 
 `--json` carries the realm's half, the projected rows and the findings. The
-warnings also go to stderr, so a piped `--json` loses nothing. Note
-`acceptAudienceParametersOverride` is the **client's override**, not the
-runtime value: with the block dormant the realm's
-`realmAcceptAudienceParameters` governs, and with the block live but the field
-absent the block's own default does — a value this projection never sees.
+warnings also go to stderr, so a piped `--json` loses nothing.
+
+Two JSON fields need care. `acceptAudienceParametersOverride` is the
+**client's override**, never the runtime value — with the block dormant the
+realm's `realmAcceptAudienceParameters` governs, and with the block live but
+the field absent the block's own default does, which this projection never
+sees. And `tokenExchangeGranted`, `actor` and `overridesLive` are all
+nullable: `null` means the document did not say, which is not `false`. The
+table spells that `actor?` / `subject?`.
 
 `get` prints one client as a compact table and **writes nothing** — reading a
 client used to mean `pull`, which drops a JSON file in the workspace and
