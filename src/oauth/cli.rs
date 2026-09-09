@@ -379,13 +379,18 @@ fn auth_level_cell(row: &spec::ExchangeRow) -> String {
         .map_or_else(|| "-".to_string(), |level| level.to_string())
 }
 
-/// The audience allow-list, or `?` when it was present and unreadable — an
-/// empty list means "cannot be asked for an audience", which is a claim.
+/// The audience allow-list, marked when part of it could not be read.
+///
+/// An empty list is a claim — "this client cannot be asked for an audience" —
+/// so an empty *and* unreadable list is `?`. But a list with one bad element
+/// still has readable ones, and replacing the whole cell with `?` threw away
+/// values the row deliberately keeps. Partial data is shown as partial.
 fn audience_cell(row: &spec::ExchangeRow) -> String {
-    if !row.audience_values_readable {
-        return "?".to_string();
+    match (row.audience_values_readable, row.audience_values.is_empty()) {
+        (true, _) => exchange_cell(&row.audience_values),
+        (false, true) => "?".to_string(),
+        (false, false) => format!("{}, ?", exchange_cell(&row.audience_values)),
     }
-    exchange_cell(&row.audience_values)
 }
 
 /// The client's override of `acceptAudienceParametersInTokenExchangeRequests`.
@@ -429,7 +434,9 @@ fn accept_audience_cell(row: &spec::ExchangeRow) -> String {
 ///   only string you can go looking with.
 fn may_act_cell(row: &spec::ExchangeRow, names: &spec::ScriptNames) -> String {
     if row.may_act.is_empty() {
-        return "-".to_string();
+        // `-` means "not set" in every other cell here, and an unreadable
+        // field has not said that. The role column already reads `subject?`.
+        return if row.may_act_readable { "-" } else { "?" }.to_string();
     }
     // Preserve first-seen order rather than sorting: `MAY_ACT_FIELDS` fixes it
     // already, and `access` before `oidc` is the order they are set in.
@@ -449,6 +456,12 @@ fn may_act_cell(row: &spec::ExchangeRow, names: &spec::ScriptNames) -> String {
         .map(|(id, fields)| format!("{}={}", fields.join("+"), names.name_or(id)))
         .collect::<Vec<_>>()
         .join(", ");
+    let scripts = if row.may_act_readable {
+        scripts
+    } else {
+        // Some entries read, at least one did not.
+        format!("{scripts}, ?")
+    };
     if row.may_act_dormant() {
         format!("(dormant) {scripts}")
     } else {
@@ -1627,6 +1640,37 @@ mod tests {
         let row = exchange_row("client", false, &[("accessTokenMayActScript", id)], true);
 
         assert_eq!(may_act_cell(&row, &names), format!("access={id}"));
+    }
+
+    /// The renderer is where a readability flag actually reaches a reader, and
+    /// the row-level tests stop short of it. Two cells, four cases: empty and
+    /// unreadable is `?` rather than the `-` that means "not set"; partly
+    /// readable keeps the values it has and marks the gap, because replacing
+    /// the cell wholesale threw away data the row deliberately preserves.
+    #[test]
+    fn an_unreadable_cell_is_a_question_mark_and_a_partial_one_keeps_its_values() {
+        let names = spec::ScriptNames::new([("s1", "MayActOne")]);
+        let mut empty_unreadable = exchange_row("a", false, &[], true);
+        empty_unreadable.may_act_readable = false;
+        let mut partly_read = exchange_row("b", false, &[("accessTokenMayActScript", "s1")], true);
+        partly_read.may_act_readable = false;
+
+        assert_eq!(may_act_cell(&empty_unreadable, &names), "?");
+        assert_eq!(may_act_cell(&partly_read, &names), "access=MayActOne, ?");
+        // The readable neighbour still says "not set", not "unknown".
+        assert_eq!(
+            may_act_cell(&exchange_row("c", false, &[], true), &names),
+            "-"
+        );
+
+        let mut audience = exchange_row("d", false, &[], true);
+        audience.audience_values = vec!["https://sp-a.example.com".to_string()];
+        audience.audience_values_readable = false;
+        assert_eq!(audience_cell(&audience), "https://sp-a.example.com, ?");
+        audience.audience_values.clear();
+        assert_eq!(audience_cell(&audience), "?");
+        audience.audience_values_readable = true;
+        assert_eq!(audience_cell(&audience), "-");
     }
 
     #[test]
