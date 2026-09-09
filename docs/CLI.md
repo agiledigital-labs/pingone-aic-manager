@@ -650,7 +650,8 @@ aic oauth diff <id> [--local-vs-snapshot | --snapshot-vs-remote]  # compare two 
 aic oauth delete <id> --force [--realm alpha]           # delete (requires --force)
 ```
 
-`provider get` prints a compact realm-wide configuration summary. It always
+`provider get` prints a compact realm-wide configuration summary, resolving
+script ids to names the same way `get` does. It always
 shows a row for both the provider `grantTypes` and `tokenExchangeClasses` —
 `<absent>` when the tenant does not set one — because configured exchangers do
 not themselves enable the token-exchange grant. It also derives a direct
@@ -703,7 +704,20 @@ in it live at once — including ones you never set. Entries that say "inherit"
 (the `[Empty]` sentinel, `null`, an empty array, a `…PluginType` of
 `PROVIDER`, a `…Class` still on AM's `Default…` implementation) are suppressed
 and **counted** on a final row, so nothing is dropped without saying so.
-Script ids print as the bare UUIDs AM stores.
+A script id prints as `name (uuid)` where the realm has a script with that id,
+and as the bare UUID where it does not — an id naming a script that is not
+there is a finding, and replacing it with a placeholder would remove the value
+you need to chase it. Resolution needs a second request; if that fails you get
+the UUIDs and a warning saying why.
+
+After the table, `get` warns on stderr about each `…Script` that cannot run:
+one set while its `…PluginType` is still `PROVIDER` (or `JAVA`) is ignored by
+AM, and a `…PluginType` of `SCRIPTED` with no script runs nothing. Both are
+accepted silently by the tenant, which is what makes them expensive. The
+may-act fields have no `…PluginType` companion — setting the id is enough —
+and are correctly never reported. A warning from a dormant block is prefixed
+`(dormant)`: it is not biting yet, and enabling the block is what would make
+it bite.
 
 `create` exposes the common client settings (`--name`, repeatable scopes,
 redirect URIs, grants/response types, token auth, consent, and lifetimes); run

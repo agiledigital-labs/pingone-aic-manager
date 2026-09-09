@@ -228,6 +228,25 @@ pub enum OauthCommand {
     },
 }
 
+/// Script ids to names, for the config documents that reference scripts by
+/// bare UUID.
+///
+/// Best-effort on purpose. Failing a read-only `get` because a *second*,
+/// cosmetic request did not come back would be the wrong trade — the UUIDs
+/// are still printed, and a warning says why they were not resolved.
+async fn script_names(tenant: &str, realm: &str) -> spec::ScriptNames {
+    match crate::scripts::am::list(tenant, realm).await {
+        Ok(refs) => spec::ScriptNames::new(
+            refs.into_iter()
+                .map(|reference| (reference.id, reference.name)),
+        ),
+        Err(error) => {
+            eprintln!("warning: could not resolve script ids to names: {error}");
+            spec::ScriptNames::default()
+        }
+    }
+}
+
 /// A field the tenant does not set, as the `-` the other tables here use.
 ///
 /// Presentation only: `ClientRow` keeps the empty string, so `--filter -` does
@@ -900,12 +919,17 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             let client = api::read_client(&tenant, &realm, &id).await?;
             if json {
                 print_json(&client)?;
-            } else {
-                let rows = spec::client_summary(&client)
-                    .into_iter()
-                    .map(|(field, value)| vec![field, value])
-                    .collect::<Vec<_>>();
-                print_table(&["FIELD", "VALUE"], &rows);
+                return Ok(());
+            }
+            let mut summary = spec::client_summary(&client);
+            spec::resolve_script_ids(&mut summary, &script_names(&tenant, &realm).await);
+            let rows = summary
+                .into_iter()
+                .map(|(field, value)| vec![field, value])
+                .collect::<Vec<_>>();
+            print_table(&["FIELD", "VALUE"], &rows);
+            for fault in spec::override_faults(&client) {
+                eprintln!("warning: {fault}");
             }
             Ok(())
         }
@@ -996,7 +1020,9 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 if json {
                     print_json(&provider)
                 } else {
-                    for (field, value) in spec::provider_summary(&provider) {
+                    let mut summary = spec::provider_summary(&provider);
+                    spec::resolve_script_ids(&mut summary, &script_names(&tenant, &realm).await);
+                    for (field, value) in summary {
                         println!("{field}: {value}");
                     }
                     Ok(())
