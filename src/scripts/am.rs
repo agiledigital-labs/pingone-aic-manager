@@ -52,6 +52,96 @@ fn parse_contexts(body: &Value) -> Result<Vec<String>> {
     Ok(contexts)
 }
 
+/// Which `evaluatorVersion` values this context accepts for JavaScript.
+///
+/// The per-realm contexts endpoint answers this before anything is written,
+/// which matters because the scripts endpoint does not: a `PUT` naming a
+/// legacy-only context with `"evaluatorVersion": "2.0"` returns **201 echoing
+/// `"1.0"`** — no error, no warning (`docs/api/04-scripts.md`). The script then
+/// runs under the legacy evaluator with legacy bindings, and the first sign of
+/// it is a runtime failure.
+pub async fn evaluator_versions(tenant: &str, realm: &str, context: &str) -> Result<Vec<String>> {
+    let path = format!("/am/json/realms/root/realms/{realm}/contexts/{context}");
+    let body = crate::aic::api::get_versioned(tenant, &path, API_VERSION).await?;
+    Ok(body
+        .get("evaluatorVersions")
+        .and_then(|versions| versions.get("JAVASCRIPT"))
+        .and_then(Value::as_array)
+        .map(|versions| {
+            versions
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// The next-gen context that replaces `context`, if the tenant has one.
+///
+/// Three spellings, all measured on the live context list 2026-09-09:
+/// most append `_NEXT_GEN`; the two SAML adapters append `_NEXTGEN` with no
+/// underscore inside the word; and the scripted-decision pair is an outright
+/// rename, from
+/// `AUTHENTICATION_TREE_DECISION_NODE` to `SCRIPTED_DECISION_NODE`.
+///
+/// `AUTHENTICATION_CLIENT_SIDE` and `AUTHENTICATION_SERVER_SIDE` have none —
+/// they are the pre-tree authentication modules — so this correctly answers
+/// `None` and the caller refuses rather than inventing a context id.
+pub fn next_gen_sibling(context: &str, contexts: &[String]) -> Option<String> {
+    let candidates = if context == "AUTHENTICATION_TREE_DECISION_NODE" {
+        vec!["SCRIPTED_DECISION_NODE".to_string()]
+    } else {
+        vec![format!("{context}_NEXT_GEN"), format!("{context}_NEXTGEN")]
+    };
+    candidates
+        .into_iter()
+        .find(|candidate| contexts.iter().any(|context| context == candidate))
+}
+
+/// What to do with a `--context` whose engine version is not the one wanted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnginePlan {
+    /// The context already supports the wanted version.
+    Keep,
+    /// Create under the next-gen sibling instead, and say so.
+    Redirect(String),
+    /// No context on this tenant can serve the request.
+    Refuse(String),
+}
+
+/// Decide, from versions already fetched, whether a create can proceed.
+///
+/// Pure so the three outcomes are testable without a tenant. `sibling` is
+/// `None` when the context has no next-gen replacement, and carries the
+/// sibling's own supported versions otherwise — assuming a sibling named
+/// `_NEXT_GEN` is next-gen would be the same guess this whole function exists
+/// to stop making.
+pub fn plan_engine(
+    context: &str,
+    wanted: &str,
+    supported: &[String],
+    sibling: Option<(&str, &[String])>,
+) -> EnginePlan {
+    if supported.iter().any(|version| version == wanted) {
+        return EnginePlan::Keep;
+    }
+    if let Some((name, sibling_supported)) = sibling
+        && sibling_supported.iter().any(|version| version == wanted)
+    {
+        return EnginePlan::Redirect(name.to_string());
+    }
+    let has = if supported.is_empty() {
+        "nothing this tenant reports".to_string()
+    } else {
+        format!("only {}", supported.join(", "))
+    };
+    EnginePlan::Refuse(format!(
+        "context {context} does not support evaluatorVersion {wanted} — it supports {has}, and this tenant has no next-gen replacement for it. AM would accept the create and silently store a {} script, so this refuses instead.",
+        supported.first().map(String::as_str).unwrap_or("legacy")
+    ))
+}
+
 /// Resolve a context constant or workspace slug using the tenant's live list.
 /// Returns the AM context plus an `evaluatorVersion` the slug forces, if any.
 pub fn resolve_context(input: &str, contexts: &[String]) -> Result<(String, Option<String>)> {
@@ -812,6 +902,103 @@ mod tests {
         assert_eq!(raw["script"], json!(B64.encode(body)));
         // and decodes back to the same bytes
         assert_eq!(decode_source(&raw).unwrap(), body);
+    }
+
+    /// The three spellings on the live context list, measured 2026-09-09.
+    /// The discriminating case is the last: `AUTHENTICATION_TREE_DECISION_NODE`
+    /// is not renamed by suffix at all, and the two SAML adapters drop the
+    /// underscore — a `format!("{context}_NEXT_GEN")` alone finds neither.
+    #[test]
+    fn the_next_gen_sibling_is_found_under_all_three_spellings() {
+        let contexts: Vec<String> = [
+            "OAUTH2_VALIDATE_SCOPE",
+            "OAUTH2_VALIDATE_SCOPE_NEXT_GEN",
+            "SAML2_SP_ADAPTER",
+            "SAML2_SP_ADAPTER_NEXTGEN",
+            "AUTHENTICATION_TREE_DECISION_NODE",
+            "SCRIPTED_DECISION_NODE",
+            "AUTHENTICATION_SERVER_SIDE",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+
+        assert_eq!(
+            next_gen_sibling("OAUTH2_VALIDATE_SCOPE", &contexts).as_deref(),
+            Some("OAUTH2_VALIDATE_SCOPE_NEXT_GEN")
+        );
+        assert_eq!(
+            next_gen_sibling("SAML2_SP_ADAPTER", &contexts).as_deref(),
+            Some("SAML2_SP_ADAPTER_NEXTGEN")
+        );
+        assert_eq!(
+            next_gen_sibling("AUTHENTICATION_TREE_DECISION_NODE", &contexts).as_deref(),
+            Some("SCRIPTED_DECISION_NODE")
+        );
+        // The pre-tree authentication modules have no next-gen form at all,
+        // and inventing an id for them would 404 at create time.
+        assert_eq!(
+            next_gen_sibling("AUTHENTICATION_SERVER_SIDE", &contexts),
+            None
+        );
+    }
+
+    /// A sibling is only a redirect target if it *reports* the version. The
+    /// discriminating case is the second: `SAML2_SP_ADAPTER` is JavaScript-only
+    /// and still 1.0-only (measured 2026-09-09), so "JavaScript-only means
+    /// next-gen" — the cheap proxy that would have saved a round trip — is
+    /// false, and a rule that assumed a `_NEXT_GEN` name meant 2.0 could be
+    /// wrong the same way.
+    #[test]
+    fn a_redirect_needs_the_sibling_to_report_the_version() {
+        let two = ["2.0".to_string()];
+        let one = ["1.0".to_string()];
+
+        assert_eq!(
+            plan_engine("SCRIPTED_DECISION_NODE", "2.0", &two, None),
+            EnginePlan::Keep
+        );
+        assert_eq!(
+            plan_engine(
+                "OAUTH2_VALIDATE_SCOPE",
+                "2.0",
+                &one,
+                Some(("OAUTH2_VALIDATE_SCOPE_NEXT_GEN", &two))
+            ),
+            EnginePlan::Redirect("OAUTH2_VALIDATE_SCOPE_NEXT_GEN".into())
+        );
+        assert!(matches!(
+            plan_engine("SOMETHING", "2.0", &one, Some(("SOMETHING_NEXT_GEN", &one))),
+            EnginePlan::Refuse(_)
+        ));
+    }
+
+    /// The refusal has to say what the context does support and why it is a
+    /// refusal rather than a create — AM would take the create and store the
+    /// wrong engine, which is the behaviour this replaces.
+    #[test]
+    fn a_context_with_no_next_gen_form_refuses_and_explains() {
+        let EnginePlan::Refuse(message) = plan_engine(
+            "AUTHENTICATION_SERVER_SIDE",
+            "2.0",
+            &["1.0".to_string()],
+            None,
+        ) else {
+            panic!("expected a refusal");
+        };
+
+        assert!(message.contains("AUTHENTICATION_SERVER_SIDE"), "{message}");
+        assert!(message.contains("only 1.0"), "{message}");
+        assert!(message.contains("silently"), "{message}");
+    }
+
+    /// A tenant that reports nothing must not read as "supports everything".
+    #[test]
+    fn an_empty_version_list_refuses_rather_than_assuming() {
+        assert!(matches!(
+            plan_engine("MYSTERY", "2.0", &[], None),
+            EnginePlan::Refuse(_)
+        ));
     }
 
     #[test]

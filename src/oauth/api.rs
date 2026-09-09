@@ -67,7 +67,15 @@ pub async fn list_client_rows(tenant: &str, realm: &str) -> Result<Vec<Value>> {
                 status: 0,
                 body: format!("unexpected oauth client list shape: {body}"),
             })?;
-        rows.extend(result.iter().cloned());
+        // A row with no `_id` names nothing and cannot be fetched, filtered or
+        // acted on — the id-only listing dropped those, and a row here would
+        // print as a blank first column.
+        rows.extend(
+            result
+                .iter()
+                .filter(|row| row.get("_id").and_then(Value::as_str).is_some())
+                .cloned(),
+        );
 
         cookie = body
             .get("pagedResultsCookie")
@@ -199,21 +207,6 @@ pub async fn delete_client(tenant: &str, realm: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// The suffix AM puts on a cluster-local AES-wrapped value. `sanitize_for_write`
-/// strips these from every PUT; here they are redacted from every *rendering*.
-const ENCRYPTED_SUFFIX: &str = "-encrypted";
-
-/// The write-only client secret. AM reads it back as `null`, so it reaches a
-/// rendering only from a **local** file someone authored — which is exactly
-/// the side `diff` prints, and the one case where the value is plaintext
-/// rather than AES-wrapped.
-const SECRET_FIELD: &str = "userpassword";
-
-/// Does this key hold secret material that must not be rendered?
-pub(crate) fn is_secret_key(key: &str) -> bool {
-    key.ends_with(ENCRYPTED_SUFFIX) || key == SECRET_FIELD
-}
-
 fn strip_revs(value: &Value) -> Value {
     match value {
         Value::Array(values) => Value::Array(values.iter().map(strip_revs).collect()),
@@ -253,7 +246,7 @@ pub(crate) fn redact_secrets(value: &Value) -> Value {
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(key, value)| {
-                    if is_secret_key(key) && !value.is_null() {
+                    if crate::oauth::spec::is_secret_key(key) && !value.is_null() {
                         (key.clone(), json!(encrypted_digest(value)))
                     } else {
                         (key.clone(), redact_secrets(value))

@@ -306,41 +306,83 @@ pub fn looks_dynamically_registered(id: &str) -> bool {
 /// remember: the field report's ticket said `ParticipantMobileApplicationV2`
 /// and the tenant had `ParticipantMobileAppV2`.
 pub fn row_matches(row: &ClientRow, needle: &str) -> bool {
-    let needle = needle.to_ascii_lowercase();
-    row.id.to_ascii_lowercase().contains(&needle) || row.name.to_ascii_lowercase().contains(&needle)
+    // `to_lowercase`, not `to_ascii_lowercase`: the docs promise
+    // case-insensitive without qualification, and a client named `ÄBC` should
+    // answer `--filter äbc`.
+    let needle = needle.to_lowercase();
+    row.id.to_lowercase().contains(&needle) || row.name.to_lowercase().contains(&needle)
+}
+
+/// The projection's value for `field`, unwrapped if it ever arrives wrapped.
+///
+/// The measured response is raw, and `inherited_value` is a no-op on a raw
+/// value — so paying for it costs nothing and removes a silent failure mode:
+/// were the collection endpoint to start returning `{inherited, value}` like
+/// the single-client `GET`, a raw-only reader would not error, it would print
+/// an empty column.
+fn projected<'a>(group: Option<&'a Value>, field: &str) -> Option<&'a Value> {
+    group
+        .map(inherited_value)
+        .and_then(|group| group.get(field))
+        .map(inherited_value)
 }
 
 fn plain_string(group: Option<&Value>, field: &str) -> String {
-    group
-        .and_then(|group| group.get(field))
+    projected(group, field)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
 }
 
-/// `clientName` is an array with at most one useful value.
+/// `clientName` is an array with at most one useful value — but a bare string
+/// reads as itself rather than as nothing, so a shape change costs a wrong
+/// arity rather than a blank column.
 fn first_string(group: Option<&Value>, field: &str) -> String {
-    group
-        .and_then(|group| group.get(field))
-        .and_then(Value::as_array)
-        .and_then(|values| values.first())
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
+    let Some(value) = projected(group, field) else {
+        return String::new();
+    };
+    match value {
+        Value::Array(values) => values
+            .first()
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        Value::String(text) => text.clone(),
+        _ => String::new(),
+    }
 }
 
 fn join_strings(group: Option<&Value>, field: &str) -> String {
-    let Some(values) = group
-        .and_then(|group| group.get(field))
-        .and_then(Value::as_array)
-    else {
+    let Some(value) = projected(group, field) else {
         return String::new();
     };
-    values
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>()
-        .join(", ")
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", "),
+        Value::String(text) => text.clone(),
+        _ => String::new(),
+    }
+}
+
+/// The suffix AM puts on a cluster-local AES-wrapped value.
+const ENCRYPTED_SUFFIX: &str = "-encrypted";
+
+/// The write-only client secret. AM reads it back as `null`, so it reaches a
+/// rendering only from a **local** file someone authored — which is the one
+/// case where the value is plaintext rather than AES-wrapped.
+const SECRET_FIELD: &str = "userpassword";
+
+/// Does this key hold secret material that must not be rendered?
+///
+/// Lives here rather than beside any one surface because all three need the
+/// same answer and only differ in what they substitute: the CLI diff uses a
+/// digest so a rotation still shows as a change, while the summary table and
+/// the TUI detail pane use a constant, having nothing to compare against.
+pub fn is_secret_key(key: &str) -> bool {
+    key.ends_with(ENCRYPTED_SUFFIX) || key == SECRET_FIELD
 }
 
 const CLIENT_OVERRIDES: &str = "overrideOAuth2ClientConfig";
@@ -375,6 +417,11 @@ const CLIENT_CORE_FIELDS: &[(&str, &str)] = &[
 /// `<not set>` and an `{inherited, value}` wrapper renders as its effective
 /// value on both surfaces.
 pub fn client_summary(doc: &Value) -> Vec<(String, String)> {
+    // Before anything is projected, not per-field. The override block renders
+    // through the generic value path rather than the core allowlist, so a
+    // `*-encrypted` key someone adds there — or one AM adds — reached a row
+    // as its raw value until this walked the whole document.
+    let doc = &mask_secret_values(doc);
     let mut rows = Vec::new();
 
     rows.push((
@@ -391,6 +438,28 @@ pub fn client_summary(doc: &Value) -> Vec<(String, String)> {
 
     push_override_rows(&mut rows, doc);
     rows
+}
+
+/// Replace every secret value with a constant, at any depth.
+///
+/// A constant rather than the digest `aic oauth diff` uses: a table row has
+/// nothing to compare itself against, so the digest would be noise.
+fn mask_secret_values(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.iter().map(mask_secret_values).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    if is_secret_key(key) && !value.is_null() {
+                        (key.clone(), Value::String("<secret>".into()))
+                    } else {
+                        (key.clone(), mask_secret_values(value))
+                    }
+                })
+                .collect(),
+        ),
+        value => value.clone(),
+    }
 }
 
 fn push_client_field_rows(rows: &mut Vec<(String, String)>, doc: &Value, group: &str, field: &str) {
@@ -1005,6 +1074,49 @@ mod tests {
         assert_eq!(row.grants, "");
     }
 
+    /// The projection was measured raw, and the reader is deliberately built
+    /// to survive it not staying that way. A wrapped value or a scalar where
+    /// an array was measured would otherwise print a blank column — a silent
+    /// wrong answer rather than an error.
+    #[test]
+    fn a_row_survives_a_projection_that_changes_shape() {
+        let wrapped = client_row(&json!({
+            "_id": "wrapped",
+            "coreOAuth2ClientConfig": {
+                "inherited": false,
+                "value": {
+                    "clientName": {"inherited": false, "value": ["Wrapped"]},
+                    "clientType": {"inherited": false, "value": "Confidential"}
+                }
+            },
+            "advancedOAuth2ClientConfig": {
+                "grantTypes": {"inherited": false, "value": ["client_credentials"]}
+            }
+        }));
+        assert_eq!(wrapped.name, "Wrapped");
+        assert_eq!(wrapped.client_type, "Confidential");
+        assert_eq!(wrapped.grants, "client_credentials");
+
+        let scalar = client_row(&json!({
+            "_id": "scalar",
+            "coreOAuth2ClientConfig": {"clientName": "Just A String"},
+            "advancedOAuth2ClientConfig": {"grantTypes": "client_credentials"}
+        }));
+        assert_eq!(scalar.name, "Just A String");
+        assert_eq!(scalar.grants, "client_credentials");
+    }
+
+    /// The docs promise case-insensitive without qualification, so ASCII-only
+    /// folding would make them wrong rather than merely limited.
+    #[test]
+    fn the_filter_folds_case_beyond_ascii() {
+        let row = client_row(&json!({
+            "_id": "client",
+            "coreOAuth2ClientConfig": {"clientName": ["ÄBC Pty Ltd"]}
+        }));
+        assert!(row_matches(&row, "äbc"));
+    }
+
     /// The filter searches both id and name because they disagree in
     /// practice, and either is the one you remember. The discriminating case
     /// is the third: the ticket said `ParticipantMobileApplicationV2` and the
@@ -1112,6 +1224,11 @@ mod tests {
         let mut client = a_client();
         client["coreOAuth2ClientConfig"]["userpassword"] = json!("plaintext-secret");
         client["coreOAuth2ClientConfig"]["userpassword-encrypted"] = json!("AQICwrapped");
+        // The override block renders through the generic value path, not the
+        // core allowlist, so a test that only injects into `core…` proves the
+        // narrower claim that those fields are not listed — not that no secret
+        // can reach a row.
+        client["overrideOAuth2ClientConfig"]["something-encrypted"] = json!("AQICwrapped");
 
         let rows = client_summary(&client);
 
