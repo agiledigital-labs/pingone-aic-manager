@@ -971,7 +971,9 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   `AUTHENTICATION_CLIENT_SIDE` — it refuses and names what the context does
   support. Do not infer the engine from the context's name or its language
   list: `SAML2_SP_ADAPTER` is JavaScript-only and still `1.0`-only (measured
-  2026-09-09), which is why this is a live question and not a table.
+  2026-09-09), which is why this is a live question and not a table. The check
+  is keyed on the language the create will send, so `--language GROOVY`
+  refuses everywhere — every next-gen context advertises JavaScript alone.
 - `watch` normally pushes only **tracked** scripts, and silently skips an
   untracked file. The one exception is an endpoint the TypeScript project
   declares it owns in `typescript/.aic-ts-manifest.json`: that has no snapshot

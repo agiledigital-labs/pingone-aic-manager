@@ -460,9 +460,16 @@ struct LocalArtefacts {
 
 impl LocalArtefacts {
     fn on_disk(tenant: &str, realm: &str, id: &str) -> Result<Self> {
+        // `try_exists`, not `exists`: the latter answers `false` for a path it
+        // could not stat at all, so an unreadable directory would read as
+        // "nothing here to lose" and the note would offer a `pull` over it.
+        let present = |path: &Path| -> Result<bool> {
+            path.try_exists()
+                .map_err(|error| Error::Config(format!("check {}: {error}", path.display())))
+        };
         Ok(Self {
-            local: export_path(tenant, realm, id)?.exists(),
-            snapshot: snapshot_path(tenant, realm, id)?.exists(),
+            local: present(&export_path(tenant, realm, id)?)?,
+            snapshot: present(&snapshot_path(tenant, realm, id)?)?,
         })
     }
 

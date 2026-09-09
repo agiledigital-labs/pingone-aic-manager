@@ -60,12 +60,31 @@ fn parse_contexts(body: &Value) -> Result<Vec<String>> {
 /// `"1.0"`** — no error, no warning (`docs/api/04-scripts.md`). The script then
 /// runs under the legacy evaluator with legacy bindings, and the first sign of
 /// it is a runtime failure.
-pub async fn evaluator_versions(tenant: &str, realm: &str, context: &str) -> Result<Vec<String>> {
+pub async fn evaluator_versions(
+    tenant: &str,
+    realm: &str,
+    context: &str,
+    language: &str,
+) -> Result<Vec<String>> {
     let path = format!("/am/json/realms/root/realms/{realm}/contexts/{context}");
     let body = crate::aic::api::get_versioned(tenant, &path, API_VERSION).await?;
-    Ok(body
-        .get("evaluatorVersions")
-        .and_then(|versions| versions.get("JAVASCRIPT"))
+    Ok(parse_evaluator_versions(&body, language))
+}
+
+/// The versions the response reports for one language.
+///
+/// Keyed by the language the create will actually send, not by JavaScript:
+/// the next-gen contexts advertise JavaScript only, so a Groovy create
+/// preflighted as JavaScript would be told the next-gen sibling was fine and
+/// then send `GROOVY` with `evaluatorVersion: 2.0` to a context that has no
+/// such combination. Asking for the real language makes those refuse, which
+/// is also this project's standing answer on Groovy.
+///
+/// A body with no `evaluatorVersions`, or none for this language, yields an
+/// empty list — and an empty list refuses. Silence is not permission.
+fn parse_evaluator_versions(body: &Value, language: &str) -> Vec<String> {
+    body.get("evaluatorVersions")
+        .and_then(|versions| versions.get(language))
         .and_then(Value::as_array)
         .map(|versions| {
             versions
@@ -74,7 +93,7 @@ pub async fn evaluator_versions(tenant: &str, realm: &str, context: &str) -> Res
                 .map(ToOwned::to_owned)
                 .collect()
         })
-        .unwrap_or_default())
+        .unwrap_or_default()
 }
 
 /// The next-gen context that replaces `context`, if the tenant has one.
@@ -136,9 +155,19 @@ pub fn plan_engine(
     } else {
         format!("only {}", supported.join(", "))
     };
+    // Only the downgrade is silent. Asking for 2.0 and getting 1.0 is the trap
+    // this exists for; asking for 1.0 is refused by policy, and saying AM
+    // "would silently store 2.0" there would be an invented mechanism.
+    let why = if wanted == "2.0" {
+        format!(
+            " AM would accept the create and silently store a {} script, so this refuses instead.",
+            supported.first().map(String::as_str).unwrap_or("legacy")
+        )
+    } else {
+        String::new()
+    };
     EnginePlan::Refuse(format!(
-        "context {context} does not support evaluatorVersion {wanted} — it supports {has}, and this tenant has no next-gen replacement for it. AM would accept the create and silently store a {} script, so this refuses instead.",
-        supported.first().map(String::as_str).unwrap_or("legacy")
+        "context {context} does not support evaluatorVersion {wanted} — it supports {has}, and this tenant has no replacement context for it.{why}"
     ))
 }
 
@@ -904,6 +933,47 @@ mod tests {
         assert_eq!(decode_source(&raw).unwrap(), body);
     }
 
+    /// The response parser, keyed by language.
+    ///
+    /// The discriminating case is the second: a next-gen context advertises
+    /// JavaScript only, so a Groovy create must come back with an empty list
+    /// and refuse — not read JavaScript's `2.0` and sail through. A parser
+    /// hardcoded to `JAVASCRIPT` passes every other assertion here.
+    #[test]
+    fn evaluator_versions_are_read_for_the_language_that_will_be_sent() {
+        // The real shape, from `GET .../contexts/OAUTH2_VALIDATE_SCOPE_NEXT_GEN`.
+        let next_gen = json!({
+            "_id": "OAUTH2_VALIDATE_SCOPE_NEXT_GEN",
+            "evaluatorVersions": {"JAVASCRIPT": ["2.0"]}
+        });
+        let legacy = json!({
+            "_id": "OAUTH2_VALIDATE_SCOPE",
+            "evaluatorVersions": {"JAVASCRIPT": ["1.0"], "GROOVY": ["1.0"]}
+        });
+
+        assert_eq!(parse_evaluator_versions(&next_gen, "JAVASCRIPT"), ["2.0"]);
+        assert!(parse_evaluator_versions(&next_gen, "GROOVY").is_empty());
+        assert_eq!(parse_evaluator_versions(&legacy, "GROOVY"), ["1.0"]);
+    }
+
+    /// Silence is not permission: a body missing the field, or one whose
+    /// shape changed, must produce an empty list — which `plan_engine`
+    /// refuses on — rather than an optimistic default.
+    #[test]
+    fn an_unreadable_context_response_reports_no_versions() {
+        for body in [
+            json!({}),
+            json!({"evaluatorVersions": {}}),
+            json!({"evaluatorVersions": {"JAVASCRIPT": "2.0"}}),
+            json!({"evaluatorVersions": null}),
+        ] {
+            assert!(
+                parse_evaluator_versions(&body, "JAVASCRIPT").is_empty(),
+                "{body}"
+            );
+        }
+    }
+
     /// The three spellings on the live context list, measured 2026-09-09.
     /// The discriminating case is the last: `AUTHENTICATION_TREE_DECISION_NODE`
     /// is not renamed by suffix at all, and the two SAML adapters drop the
@@ -990,6 +1060,16 @@ mod tests {
         assert!(message.contains("AUTHENTICATION_SERVER_SIDE"), "{message}");
         assert!(message.contains("only 1.0"), "{message}");
         assert!(message.contains("silently"), "{message}");
+
+        // The other direction is a policy refusal, not a silent downgrade, so
+        // it must not claim AM would have stored something behind your back.
+        let EnginePlan::Refuse(downgrade) =
+            plan_engine("SCRIPTED_DECISION_NODE", "1.0", &["2.0".to_string()], None)
+        else {
+            panic!("expected a refusal");
+        };
+        assert!(!downgrade.contains("silently"), "{downgrade}");
+        assert!(downgrade.contains("only 2.0"), "{downgrade}");
     }
 
     /// A tenant that reports nothing must not read as "supports everything".
