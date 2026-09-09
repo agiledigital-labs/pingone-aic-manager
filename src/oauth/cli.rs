@@ -8,6 +8,7 @@ use clap::{Args, Subcommand};
 use rand::RngCore;
 use serde_json::Value;
 
+use crate::cli::diff::show_diff;
 use crate::cli::{print_json, print_table, prod_hint, read_password_line, realm_arg, tenant_for};
 use crate::config::ProjectConfig;
 use crate::oauth::{api, spec};
@@ -176,6 +177,24 @@ pub enum OauthCommand {
         #[arg(long)]
         tenant: Option<String>,
     },
+    /// Diff an OAuth2 client (colored, via `git diff`). Default compares the
+    /// tenant against your local workspace file.
+    Diff {
+        /// OAuth2 client id.
+        id: String,
+        /// Diff your local file against the last-synced snapshot (your edits
+        /// only). Makes no tenant request.
+        #[arg(long, conflicts_with = "snapshot_vs_remote")]
+        local_vs_snapshot: bool,
+        /// Diff the last-synced snapshot against the tenant (remote drift) —
+        /// the comparison `push` refuses on.
+        #[arg(long)]
+        snapshot_vs_remote: bool,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long)]
+        tenant: Option<String>,
+    },
     /// Delete an OAuth2 client from AIC. Requires --force.
     Delete {
         /// OAuth2 client id.
@@ -253,6 +272,98 @@ fn push_decision(
     }
 }
 
+/// Which two versions `aic oauth diff` compares. Same three modes and the same
+/// flag names as `aic script diff`, because the question is the same one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffMode {
+    /// Your edits only. Makes no tenant request.
+    LocalVsSnapshot,
+    /// Tenant drift only — the comparison `push` refuses on.
+    SnapshotVsRemote,
+    /// Current tenant content against your local file.
+    RemoteVsLocal,
+}
+
+/// One of the three places a client document lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Local,
+    Snapshot,
+    Remote,
+}
+
+impl Side {
+    fn label(self) -> &'static str {
+        match self {
+            Side::Local => "local",
+            Side::Snapshot => "snapshot",
+            Side::Remote => "tenant",
+        }
+    }
+}
+
+impl DiffMode {
+    fn from_flags(local_vs_snapshot: bool, snapshot_vs_remote: bool) -> Self {
+        if local_vs_snapshot {
+            DiffMode::LocalVsSnapshot
+        } else if snapshot_vs_remote {
+            DiffMode::SnapshotVsRemote
+        } else {
+            DiffMode::RemoteVsLocal
+        }
+    }
+
+    /// `-` is the left (older) side, `+` is the right (newer) side.
+    fn sides(self) -> (Side, Side) {
+        match self {
+            DiffMode::LocalVsSnapshot => (Side::Snapshot, Side::Local),
+            DiffMode::SnapshotVsRemote => (Side::Snapshot, Side::Remote),
+            DiffMode::RemoteVsLocal => (Side::Remote, Side::Local),
+        }
+    }
+
+    /// Does this comparison read that side at all?
+    ///
+    /// Worth asking rather than loading all three: it keeps
+    /// `--local-vs-snapshot` offline, and it stops an unparseable file the
+    /// comparison never looks at from failing it. A corrupt local export used
+    /// to be able to break `--snapshot-vs-remote`, which is the one mode you
+    /// reach for when the local copy is the thing you distrust.
+    fn uses(self, side: Side) -> bool {
+        let (left, right) = self.sides();
+        left == side || right == side
+    }
+}
+
+/// Two absent sides are equal, and reporting them as "identical" is a false
+/// reassurance — it is the answer a mistyped client id gets, at exit 0. Refuse
+/// instead, and say that nothing was compared.
+fn nothing_to_compare(id: &str, sides: &DiffSides) -> Option<String> {
+    (sides.left_text.is_none() && sides.right_text.is_none()).then(|| {
+        format!(
+            "nothing to compare for oauth client {id}: neither {} nor {} has it",
+            sides.left.label(),
+            sides.right.label()
+        )
+    })
+}
+
+/// A side that does not exist renders as empty, which in a diff is
+/// indistinguishable from a side that exists and is empty. Say which it was.
+fn absent_side_note(id: &str, side: Side, tenant: &str, realm: &str) -> String {
+    match side {
+        Side::Local => format!(
+            "note: no local export for oauth client {id} — run `aic oauth pull {id}`; shown as empty"
+        ),
+        Side::Snapshot => format!(
+            "note: no snapshot for oauth client {id} — run `aic oauth pull {id}`; shown as empty"
+        ),
+        Side::Remote => {
+            format!("note: oauth client {id} does not exist on {tenant}/{realm}; shown as empty")
+        }
+    }
+}
+
 fn push_block_message(id: &str, reason: &PushBlockReason) -> String {
     match reason {
         PushBlockReason::MissingSnapshot => format!(
@@ -261,6 +372,82 @@ fn push_block_message(id: &str, reason: &PushBlockReason) -> String {
         PushBlockReason::RemoteDrift => format!(
             "remote oauth client {id} changed since you last pulled; re-pull or pass --force"
         ),
+    }
+}
+
+/// The two sides of a rendered comparison. `None` text means the side does not
+/// exist at all — no local export, no snapshot, or no such client on the
+/// tenant — which the renderer reports rather than passing off as empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiffSides {
+    left: Side,
+    left_text: Option<String>,
+    right: Side,
+    right_text: Option<String>,
+}
+
+/// Pick the two sides `mode` names out of the three documents.
+///
+/// Pure, and takes all three, so `push` can render its refusal from the values
+/// it already fetched rather than re-reading the tenant — a second read could
+/// disagree with the one the refusal was decided on.
+fn diff_sides_from(
+    mode: DiffMode,
+    local: Option<&Value>,
+    snapshot: Option<&Value>,
+    remote: Option<&Value>,
+) -> DiffSides {
+    let text = |side: Side| -> Option<String> {
+        match side {
+            Side::Local => local,
+            Side::Snapshot => snapshot,
+            Side::Remote => remote,
+        }
+        .map(api::content_text)
+    };
+    let (left, right) = mode.sides();
+    DiffSides {
+        left,
+        left_text: text(left),
+        right,
+        right_text: text(right),
+    }
+}
+
+fn render_diff_sides(id: &str, tenant: &str, realm: &str, sides: &DiffSides) -> Result<()> {
+    // Ahead of the per-side notes: when neither side exists they would say
+    // twice, at length, what the refusal says once.
+    if let Some(message) = nothing_to_compare(id, sides) {
+        return Err(Error::Config(message));
+    }
+    for (side, text) in [
+        (sides.left, &sides.left_text),
+        (sides.right, &sides.right_text),
+    ] {
+        if text.is_none() {
+            eprintln!("{}", absent_side_note(id, side, tenant, realm));
+        }
+    }
+    show_diff(
+        id,
+        sides.left.label(),
+        sides.left_text.as_deref().unwrap_or_default(),
+        sides.right.label(),
+        sides.right_text.as_deref().unwrap_or_default(),
+    )
+}
+
+/// `read_export`, but a missing file is a side that does not exist rather than
+/// an error — a diff against nothing is the honest answer, and it is what shows
+/// you the file you deleted.
+fn read_export_opt(path: &Path, id: &str) -> Result<Option<Value>> {
+    match std::fs::metadata(path) {
+        Ok(_) => read_export(path, id).map(Some),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Error::Config(format!(
+            "read oauth client export {}: {error}",
+            path.display()
+        ))),
     }
 }
 
@@ -595,6 +782,24 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     Ok(())
                 }
                 PushDecision::Blocked(reason) => {
+                    // Show what the refusal is about before refusing. The
+                    // report this closes describes reaching for `--force`
+                    // blind and nearly pushing the wrong grant types; the
+                    // whole point is that the drift is knowable without it.
+                    // Rendered from the values the decision was made on, so
+                    // the diff cannot describe a different tenant state than
+                    // the refusal does.
+                    let mode = match reason {
+                        PushBlockReason::RemoteDrift => DiffMode::SnapshotVsRemote,
+                        PushBlockReason::MissingSnapshot => DiffMode::RemoteVsLocal,
+                    };
+                    let sides =
+                        diff_sides_from(mode, Some(&local), snapshot_value.as_ref(), Some(&remote));
+                    // A renderer failure (no `git` on PATH, say) must not
+                    // replace the refusal with a story about temp files.
+                    if let Err(error) = render_diff_sides(&id, &tenant, &realm, &sides) {
+                        eprintln!("warning: could not render the diff: {error}");
+                    }
                     Err(Error::Config(push_block_message(&id, &reason)))
                 }
                 PushDecision::Push => {
@@ -605,6 +810,38 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     Ok(())
                 }
             }
+        }
+        OauthCommand::Diff {
+            id,
+            local_vs_snapshot,
+            snapshot_vs_remote,
+            realm,
+            tenant,
+        } => {
+            let tenant = tenant_for(tenant)?;
+            let realm = realm_arg("oauth", realm)?;
+            let mode = DiffMode::from_flags(local_vs_snapshot, snapshot_vs_remote);
+            let local = if mode.uses(Side::Local) {
+                read_export_opt(&export_path(&tenant, &realm, &id)?, &id)?
+            } else {
+                None
+            };
+            let snapshot = if mode.uses(Side::Snapshot) {
+                read_snapshot(&snapshot_path(&tenant, &realm, &id)?)?
+            } else {
+                None
+            };
+            let remote = if mode.uses(Side::Remote) {
+                match api::read_client(&tenant, &realm, &id).await {
+                    Ok(client) => Some(client),
+                    Err(error) if api_not_found(&error) => None,
+                    Err(error) => return Err(error),
+                }
+            } else {
+                None
+            };
+            let sides = diff_sides_from(mode, local.as_ref(), snapshot.as_ref(), remote.as_ref());
+            render_diff_sides(&id, &tenant, &realm, &sides)
         }
         OauthCommand::Delete {
             id,
@@ -921,6 +1158,138 @@ mod tests {
         assert_eq!(
             push_decision(&local, &remote, None, true),
             PushDecision::Push
+        );
+    }
+
+    /// `-` is the older side and `+` the newer one in all three modes, so a
+    /// diff always reads "this is what changed to get here". Getting a pair
+    /// backwards renders a correct diff describing the change in reverse,
+    /// which no compiler and no green suite would catch.
+    #[test]
+    fn every_mode_puts_the_older_side_on_the_left() {
+        assert_eq!(
+            DiffMode::LocalVsSnapshot.sides(),
+            (Side::Snapshot, Side::Local)
+        );
+        assert_eq!(
+            DiffMode::SnapshotVsRemote.sides(),
+            (Side::Snapshot, Side::Remote)
+        );
+        assert_eq!(DiffMode::RemoteVsLocal.sides(), (Side::Remote, Side::Local));
+    }
+
+    /// The default must be the mode that needs no flags to answer the everyday
+    /// question, and each flag must select its own mode.
+    #[test]
+    fn diff_flags_select_the_mode_they_name() {
+        assert_eq!(
+            DiffMode::from_flags(false, false),
+            DiffMode::RemoteVsLocal,
+            "default"
+        );
+        assert_eq!(DiffMode::from_flags(true, false), DiffMode::LocalVsSnapshot);
+        assert_eq!(
+            DiffMode::from_flags(false, true),
+            DiffMode::SnapshotVsRemote
+        );
+    }
+
+    /// The discriminating case is `--local-vs-snapshot`: it must not read the
+    /// tenant, or the one mode advertised as offline silently is not.
+    #[test]
+    fn only_the_modes_naming_the_tenant_read_it() {
+        assert!(!DiffMode::LocalVsSnapshot.uses(Side::Remote));
+        assert!(DiffMode::SnapshotVsRemote.uses(Side::Remote));
+        assert!(DiffMode::RemoteVsLocal.uses(Side::Remote));
+
+        assert!(!DiffMode::SnapshotVsRemote.uses(Side::Local));
+        assert!(!DiffMode::RemoteVsLocal.uses(Side::Snapshot));
+    }
+
+    #[test]
+    fn diff_modes_are_mutually_exclusive_at_the_parser() {
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "aic",
+                "oauth",
+                "diff",
+                "a-client",
+                "--local-vs-snapshot",
+                "--snapshot-vs-remote",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn diff_takes_the_text_of_the_two_sides_its_mode_names() {
+        let local = json!({"_rev": "l", "v": "local"});
+        let snapshot = json!({"_rev": "s", "v": "snapshot"});
+        let remote = json!({"_rev": "r", "v": "remote"});
+
+        let sides = diff_sides_from(
+            DiffMode::SnapshotVsRemote,
+            Some(&local),
+            Some(&snapshot),
+            Some(&remote),
+        );
+
+        assert_eq!(sides.left, Side::Snapshot);
+        assert_eq!(sides.right, Side::Remote);
+        assert!(sides.left_text.as_ref().unwrap().contains("snapshot"));
+        assert!(sides.right_text.as_ref().unwrap().contains("remote"));
+        // Normalised the same way the drift check normalises, so a `_rev`
+        // that always differs never renders as drift.
+        assert!(!sides.left_text.as_ref().unwrap().contains("_rev"));
+    }
+
+    /// A side that does not exist stays `None` rather than becoming an empty
+    /// document, because the renderer says which of the two it was — and an
+    /// empty side and a missing side read identically in a diff.
+    #[test]
+    fn a_missing_side_is_absent_not_empty() {
+        let remote = json!({"v": "remote"});
+        let sides = diff_sides_from(DiffMode::RemoteVsLocal, None, None, Some(&remote));
+
+        assert_eq!(sides.right, Side::Local);
+        assert!(sides.right_text.is_none());
+        assert!(sides.left_text.is_some());
+    }
+
+    /// A mistyped client id has no tenant document and no local file, and two
+    /// empty sides compare equal — so without this the answer is "identical"
+    /// at exit 0, which is the most confident wrong answer the command can
+    /// give. The discriminating case is the second: one real side must still
+    /// render a diff rather than being swept up by the same guard.
+    #[test]
+    fn comparing_two_things_that_do_not_exist_is_refused_not_called_identical() {
+        let both_absent = diff_sides_from(DiffMode::RemoteVsLocal, None, None, None);
+        let message = nothing_to_compare("typo-client", &both_absent).expect("refusal");
+        assert!(message.contains("nothing to compare"), "{message}");
+        assert!(message.contains("tenant"), "{message}");
+        assert!(message.contains("local"), "{message}");
+
+        let remote = json!({"v": 1});
+        let one_side = diff_sides_from(DiffMode::RemoteVsLocal, None, None, Some(&remote));
+        assert!(nothing_to_compare("a-client", &one_side).is_none());
+    }
+
+    /// Each side's note has to name that side's own remedy: pointing at
+    /// `oauth pull` when the client simply is not on the tenant sends someone
+    /// to run a command that cannot succeed.
+    #[test]
+    fn each_absent_side_names_its_own_cause() {
+        let local = absent_side_note("a-client", Side::Local, "sandbox", "alpha");
+        let snapshot = absent_side_note("a-client", Side::Snapshot, "sandbox", "alpha");
+        let remote = absent_side_note("a-client", Side::Remote, "sandbox", "alpha");
+
+        assert!(local.contains("no local export"), "{local}");
+        assert!(local.contains("aic oauth pull a-client"), "{local}");
+        assert!(snapshot.contains("no snapshot"), "{snapshot}");
+        assert!(remote.contains("sandbox/alpha"), "{remote}");
+        assert!(
+            !remote.contains("oauth pull"),
+            "a client that is not there cannot be pulled: {remote}"
         );
     }
 }

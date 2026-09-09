@@ -161,6 +161,21 @@ pub(crate) fn content_equal(a: &Value, b: &Value) -> bool {
     strip_revs(a) == strip_revs(b)
 }
 
+/// The text `aic oauth diff` renders — one side of a comparison, normalised
+/// exactly the way [`content_equal`] normalises.
+///
+/// The two must agree or the tool contradicts itself: `push` decides drift with
+/// `content_equal`, so a diff that showed a `_rev` line would report a change
+/// on a client `push` calls unchanged. Keys sort because `serde_json`'s map is
+/// a `BTreeMap` here (no `preserve_order` feature), so the ordering is stable
+/// across a pull, a snapshot and a fetch rather than following insertion.
+pub(crate) fn content_text(value: &Value) -> String {
+    // A `Value` always serialises, so the fallible form would only add an
+    // unreachable error path to every caller.
+    serde_json::to_string_pretty(&strip_revs(value))
+        .unwrap_or_else(|_| strip_revs(value).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -311,5 +326,37 @@ mod tests {
         });
 
         assert!(!content_equal(&a, &b));
+    }
+
+    /// The invariant that keeps `diff` and `push` from contradicting each
+    /// other. The discriminating pair is the first one: it differs only in
+    /// `_rev`, so a `content_text` that pretty-printed the raw value would
+    /// render a change on a client `push` reports as already matching.
+    #[test]
+    fn diff_text_says_equal_exactly_when_the_drift_check_does() {
+        let pairs = [
+            (
+                json!({"_rev": "one", "a": {"_rev": "x", "v": 1}}),
+                json!({"_rev": "two", "a": {"_rev": "y", "v": 1}}),
+            ),
+            (json!({"a": {"v": 1}}), json!({"a": {"v": 2}})),
+            (json!({"a": 1, "b": 2}), json!({"b": 2, "a": 1})),
+            (json!({"a": [1, 2]}), json!({"a": [2, 1]})),
+        ];
+        for (a, b) in pairs {
+            assert_eq!(
+                content_equal(&a, &b),
+                content_text(&a) == content_text(&b),
+                "{a} vs {b}"
+            );
+        }
+    }
+
+    /// Pretty-printed, so a diff is line-oriented rather than one long line
+    /// git reports as wholly changed.
+    #[test]
+    fn diff_text_is_one_key_per_line() {
+        let text = content_text(&json!({"a": 1, "b": 2}));
+        assert_eq!(text.lines().count(), 4, "{text}");
     }
 }
