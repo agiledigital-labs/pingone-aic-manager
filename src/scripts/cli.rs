@@ -429,8 +429,22 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 // warning. Ask the contexts endpoint first, which answers
                 // before anything is written.
                 let wanted = opts.evaluator_version.as_deref().unwrap_or("2.0");
+                // The language the create will actually send, not JavaScript:
+                // a Groovy body preflighted as JavaScript gets told a
+                // JavaScript-only next-gen context is fine, and then sends
+                // GROOVY with evaluatorVersion 2.0 to a context that has no
+                // such combination.
+                let language = opts.language.as_deref().unwrap_or("JAVASCRIPT");
                 opts.context = Some(
-                    resolve_engine(&tenant, ns.realm_arg(), &resolved, wanted, &contexts).await?,
+                    resolve_engine(
+                        &tenant,
+                        ns.realm_arg(),
+                        &resolved,
+                        wanted,
+                        language,
+                        &contexts,
+                    )
+                    .await?,
                 );
             }
             let new_script = ns.kind.new_script(&name, &source, &opts)?;
@@ -924,11 +938,12 @@ async fn resolve_engine(
     realm: &str,
     context: &str,
     wanted: &str,
+    language: &str,
     contexts: &[String],
 ) -> Result<String> {
     use script::am::{EnginePlan, evaluator_versions, next_gen_sibling, plan_engine};
 
-    let supported = evaluator_versions(tenant, realm, context).await?;
+    let supported = evaluator_versions(tenant, realm, context, language).await?;
     if supported.iter().any(|version| version == wanted) {
         return Ok(context.to_string());
     }
@@ -939,7 +954,7 @@ async fn resolve_engine(
     // still being 1.0-only, which is how this whole class of bug looks.
     let sibling = match next_gen_sibling(context, contexts) {
         Some(name) => {
-            let versions = evaluator_versions(tenant, realm, &name).await?;
+            let versions = evaluator_versions(tenant, realm, &name, language).await?;
             Some((name, versions))
         }
         None => None,
