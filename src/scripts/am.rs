@@ -158,13 +158,17 @@ pub fn plan_engine(
     // Only the downgrade is silent. Asking for 2.0 and getting 1.0 is the trap
     // this exists for; asking for 1.0 is refused by policy, and saying AM
     // "would silently store 2.0" there would be an invented mechanism.
-    let why = if wanted == "2.0" {
-        format!(
-            " AM would accept the create and silently store a {} script, so this refuses instead.",
-            supported.first().map(String::as_str).unwrap_or("legacy")
-        )
-    } else {
-        String::new()
+    // Only claim the silent downgrade where we know what AM would store. With
+    // an empty list the endpoint told us nothing, and asserting a mechanism
+    // there would be the same invented confidence this whole check replaces.
+    let why = match (wanted, supported.first()) {
+        ("2.0", Some(stored)) => format!(
+            " AM would accept the create and silently store a {stored} script, so this refuses instead."
+        ),
+        ("2.0", None) => {
+            " This tenant did not report any version for that context, so the create is refused rather than guessed at.".to_string()
+        }
+        _ => String::new(),
     };
     EnginePlan::Refuse(format!(
         "context {context} does not support evaluatorVersion {wanted} — it supports {has}, and this tenant has no replacement context for it.{why}"
@@ -328,7 +332,35 @@ fn str_field(raw: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// Every script id in the realm with its name — including the ones `list`
+/// drops.
+///
+/// `list` is the sync inventory, so it filters out Groovy and product-internal
+/// scripts: they cannot be pulled, and showing un-pullable rows is noise. But
+/// an OAuth2 client can legitimately point at one, and resolving *that* id to
+/// nothing would report an existing script as missing. Naming a script is not
+/// syncing it.
+pub async fn id_to_name(tenant: &str, realm: &str) -> Result<Vec<(String, String)>> {
+    Ok(list_raw(tenant, realm)
+        .await?
+        .iter()
+        .map(|raw| (str_field(raw, "_id"), str_field(raw, "name")))
+        .filter(|(id, _)| !id.is_empty())
+        .collect())
+}
+
 pub async fn list(tenant: &str, realm: &str) -> Result<Vec<RemoteRef>> {
+    Ok(list_raw(tenant, realm)
+        .await?
+        .iter()
+        // Only syncable scripts make it into `refs` — Groovy and
+        // product-internal ones are dropped.
+        .filter(|el| is_syncable(el))
+        .map(ref_from_config)
+        .collect())
+}
+
+async fn list_raw(tenant: &str, realm: &str) -> Result<Vec<Value>> {
     // The scripts endpoint paginates but returns a *null* `pagedResultsCookie`
     // (verified 2026-06-01), so cookie paging silently caps at `_pageSize`.
     // Page by offset instead and stop when the server reports none remaining.
@@ -349,10 +381,11 @@ pub async fn list(tenant: &str, realm: &str) -> Result<Vec<RemoteRef>> {
                 status: 0,
                 body: format!("unexpected scripts list shape: {body}"),
             })?;
+        // `n` (the server's page size) drives paging; filtering happens above
+        // this, per caller, because "what the tool syncs" and "what exists" are
+        // different questions.
         let n = arr.len();
-        // `n` (the server's page size) drives paging; only syncable scripts
-        // make it into `refs` — Groovy and product-internal ones are dropped.
-        refs.extend(arr.iter().filter(|el| is_syncable(el)).map(ref_from_config));
+        refs.extend(arr.iter().cloned());
         // `remainingPagedResults` is authoritative here; `-1` (unknown) falls
         // back to "stop once a page comes back empty".
         let remaining = body

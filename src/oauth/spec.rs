@@ -65,6 +65,10 @@ const TOKEN_TYPE_PREFIX: &str = "urn:ietf:params:oauth:token-type:";
 /// shape is a skeleton and AM may add groups. Inherited field wrappers are
 /// unwrapped so equivalent effective values render identically.
 pub fn provider_summary(doc: &Value) -> Vec<(String, String)> {
+    // Same reason `client_summary` does it: `pluginsConfig` and any group this
+    // command does not know are printed as whole JSON cells, so a
+    // `*-encrypted` value inside one would reach the terminal verbatim.
+    let doc = &mask_secret_values(doc);
     let mut rows = Vec::new();
 
     for group in PROVIDER_GROUPS {
@@ -330,7 +334,20 @@ impl ScriptNames {
     }
 }
 
-/// Rewrite every cell that is a bare UUID we have a name for.
+/// Does this row's label name a field that holds a script id?
+///
+/// Every one of them ends in `Script` — the five plugin pairs and the two
+/// may-act fields alike (`docs/api/05-oauth2-oidc.md`). Asking the label is
+/// what stops a coincidence from being rewritten: a client `_id`, a scope, a
+/// `pluginsConfig` value or an unknown group's contents can all be
+/// UUID-shaped, and one that happened to equal a real script id would print
+/// as that script's name — including, worst of all, on the `id` row, which
+/// would stop showing the client you asked for.
+fn labels_a_script_field(label: &str) -> bool {
+    label.trim().ends_with("Script")
+}
+
+/// Rewrite every script-id cell that is a bare UUID we have a name for.
 ///
 /// A post-pass over finished rows rather than a hook inside each renderer, so
 /// `client_summary` and `provider_summary` gain it identically and neither has
@@ -340,11 +357,12 @@ impl ScriptNames {
 /// realm does not have is a real finding, and rewriting it to `<unknown>`
 /// would erase the id you need in order to go looking.
 pub fn resolve_script_ids(rows: &mut [(String, String)], names: &ScriptNames) {
-    for (_, value) in rows.iter_mut() {
-        if is_uuid(value)
-            && let Some(label) = names.label(value)
+    for (label, value) in rows.iter_mut() {
+        if labels_a_script_field(label)
+            && is_uuid(value)
+            && let Some(named) = names.label(value)
         {
-            *value = label;
+            *value = named;
         }
     }
 }
@@ -1201,6 +1219,50 @@ mod tests {
         );
         assert_eq!(rows[1].1, "Confidential");
         assert_eq!(rows[2].1, "00000000-1111-2222-3333-444444444444");
+    }
+
+    /// Only a row whose label names a script field. The `id` row is the case
+    /// that matters most: a client whose id happened to equal a script's would
+    /// have stopped showing the client you asked for. A scope, a client name
+    /// and an unknown provider group can all be UUID-shaped too.
+    #[test]
+    fn a_uuid_somewhere_that_is_not_a_script_field_is_left_alone() {
+        let uuid = "f65303d2-f1ff-4beb-8787-57f9a432c5ce";
+        let names = ScriptNames::new([(uuid, "SomeScript")]);
+        let mut rows = vec![
+            ("id".to_string(), uuid.to_string()),
+            ("clientName".to_string(), uuid.to_string()),
+            ("scopes".to_string(), uuid.to_string()),
+            ("unknown.someGroup".to_string(), uuid.to_string()),
+            ("  validateScopeScript".to_string(), uuid.to_string()),
+            ("  accessTokenMayActScript".to_string(), uuid.to_string()),
+        ];
+
+        resolve_script_ids(&mut rows, &names);
+
+        for (label, value) in &rows[..4] {
+            assert_eq!(value, uuid, "{label} was rewritten");
+        }
+        // Both script fields, including the may-act one that has no
+        // `…PluginType` companion.
+        assert_eq!(rows[4].1, format!("SomeScript ({uuid})"));
+        assert_eq!(rows[5].1, format!("SomeScript ({uuid})"));
+    }
+
+    /// The provider summary prints `pluginsConfig` and any group it does not
+    /// know as whole JSON cells, so a secret nested in one reached the
+    /// terminal verbatim until this masked the document first.
+    #[test]
+    fn a_secret_in_an_unknown_provider_group_never_reaches_a_row() {
+        let rows = provider_summary(&json!({
+            "pluginsConfig": {"something-encrypted": "AQICWrappedBytes"},
+            "someGroupAmAddedLater": {"userpassword": "plaintext"}
+        }));
+
+        for (label, value) in &rows {
+            assert!(!value.contains("AQICWrappedBytes"), "{label} = {value}");
+            assert!(!value.contains("plaintext"), "{label} = {value}");
+        }
     }
 
     /// The two ways a `…Script` and its `…PluginType` disagree, both of which

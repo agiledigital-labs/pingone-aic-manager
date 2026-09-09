@@ -235,11 +235,11 @@ pub enum OauthCommand {
 /// cosmetic request did not come back would be the wrong trade — the UUIDs
 /// are still printed, and a warning says why they were not resolved.
 async fn script_names(tenant: &str, realm: &str) -> spec::ScriptNames {
-    match crate::scripts::am::list(tenant, realm).await {
-        Ok(refs) => spec::ScriptNames::new(
-            refs.into_iter()
-                .map(|reference| (reference.id, reference.name)),
-        ),
+    // `id_to_name`, not `list`: `list` is the *sync* inventory and drops Groovy
+    // and product-internal scripts, so an override legitimately pointing at
+    // one would print as an unresolved UUID and read as a missing script.
+    match crate::scripts::am::id_to_name(tenant, realm).await {
+        Ok(entries) => spec::ScriptNames::new(entries),
         Err(error) => {
             eprintln!("warning: could not resolve script ids to names: {error}");
             spec::ScriptNames::default()
@@ -414,13 +414,24 @@ impl DiffMode {
 /// Two absent sides are equal, and reporting them as "identical" is a false
 /// reassurance — it is the answer a mistyped client id gets, at exit 0. Refuse
 /// instead, and say that nothing was compared.
-fn nothing_to_compare(id: &str, sides: &DiffSides, pull: Option<&str>) -> Option<String> {
+fn nothing_to_compare(
+    id: &str,
+    sides: &DiffSides,
+    pull: Option<&str>,
+    artefacts: LocalArtefacts,
+) -> Option<String> {
     (sides.left_text.is_none() && sides.right_text.is_none()).then(|| {
         let remedy = match pull {
-            // Nothing local survives, by definition of this branch, so the
-            // suggestion is safe here — and this is where it is most useful.
             Some(pull) => format!("; run `{pull}` if the client exists on the tenant"),
-            None => String::new(),
+            // The two compared sides are both gone, but a *third* file can
+            // still exist — `--snapshot-vs-remote` never looks at the local
+            // export, and the default mode never looks at the snapshot. Saying
+            // "neither side has it" and stopping there reads as nothing left
+            // at all, right before someone reaches for `pull`.
+            None => format!(
+                "; the {} is still there, and `aic oauth pull` would overwrite it",
+                pull_cost(artefacts)
+            ),
         };
         format!(
             "nothing to compare for oauth client {id}: neither {} nor {} has it{remedy}",
@@ -651,7 +662,7 @@ fn render_diff_sides(
     // twice, at length, what the refusal says once.
     let pull = safe_pull_suggestion(artefacts, id, tenant, realm);
     let cost = pull_cost(artefacts);
-    if let Some(message) = nothing_to_compare(id, sides, pull.as_deref()) {
+    if let Some(message) = nothing_to_compare(id, sides, pull.as_deref(), artefacts) {
         return Err(Error::Config(message));
     }
     for (side, text) in [
@@ -1568,14 +1579,15 @@ mod tests {
     #[test]
     fn comparing_two_things_that_do_not_exist_is_refused_not_called_identical() {
         let both_absent = diff_sides_from(DiffMode::RemoteVsLocal, None, None, None);
-        let message = nothing_to_compare("typo-client", &both_absent, None).expect("refusal");
+        let message = nothing_to_compare("typo-client", &both_absent, None, LocalArtefacts::none())
+            .expect("refusal");
         assert!(message.contains("nothing to compare"), "{message}");
         assert!(message.contains("tenant"), "{message}");
         assert!(message.contains("local"), "{message}");
 
         let remote = json!({"v": 1});
         let one_side = diff_sides_from(DiffMode::RemoteVsLocal, None, None, Some(&remote));
-        assert!(nothing_to_compare("a-client", &one_side, None).is_none());
+        assert!(nothing_to_compare("a-client", &one_side, None, LocalArtefacts::none()).is_none());
     }
 
     /// An unfiltered listing says the plain count; a filtered one has to say
@@ -1775,8 +1787,26 @@ mod tests {
 
         let neither = diff_sides_from(DiffMode::RemoteVsLocal, None, None, None);
         let pull = safe_pull_suggestion(LocalArtefacts::none(), "a-client", "staging", "bravo");
-        let refusal = nothing_to_compare("a-client", &neither, pull.as_deref()).unwrap();
+        let refusal = nothing_to_compare(
+            "a-client",
+            &neither,
+            pull.as_deref(),
+            LocalArtefacts::none(),
+        )
+        .unwrap();
         assert!(refusal.contains("--tenant staging"), "{refusal}");
+
+        // Both compared sides gone but a third file still on disk: the
+        // refusal has to name it, or "neither side has it" reads as nothing
+        // left at all — right before someone reaches for `pull`.
+        let survivor = LocalArtefacts {
+            local: true,
+            snapshot: false,
+        };
+        let pull = safe_pull_suggestion(survivor, "a-client", "staging", "bravo");
+        let refusal = nothing_to_compare("a-client", &neither, pull.as_deref(), survivor).unwrap();
+        assert!(refusal.contains("local file is still there"), "{refusal}");
+        assert!(refusal.contains("would overwrite it"), "{refusal}");
     }
 
     /// A tenant name is not restricted to a safe character set, so a
