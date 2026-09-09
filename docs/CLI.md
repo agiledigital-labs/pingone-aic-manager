@@ -637,7 +637,7 @@ comma-separated list, so `--method read` finds a rule whose `methods` is
 Realm-scoped. Clients pull/push as JSON under the workspace.
 
 ```bash
-aic oauth list [--realm alpha] [--json]                 # client ids
+aic oauth list [--filter TEXT] [--no-dynamic] [--realm alpha] [--json]
 aic oauth get <id> [--realm alpha] [--tenant T] [--json]  # one client, read-only
 aic oauth provider get [--realm alpha] [--tenant T] [--json] # realm-wide OAuth2/OIDC provider
 aic oauth create <id> [common flags] [--from FILE]      # create from live tenant defaults
@@ -663,6 +663,23 @@ That rewrite is purely structural, so a mapping that does not parse is printed
 in full — but one naming an unfamiliar token type or exchanger class is
 shortened like any other. `--json` prints the same document the API returned,
 re-serialised rather than passed through byte-for-byte.
+
+`list` prints one row per client: id, client name, type, status and grant
+types. A field the tenant does not set shows as `-` — some clients really do
+have `status: null`. `--filter TEXT` keeps the clients whose id **or** client
+name contains TEXT, case-insensitively; both, because the two disagree in
+practice and either can be the one you remember.
+
+`--no-dynamic` hides clients whose id is a bare UUID, which is what AM mints
+for a client registered through dynamic registration — on a tenant with a
+thousand DCR clients that is the flag that makes the list readable. It tests
+the **id**, not the provenance: AM records nothing saying a client came from
+DCR, so a hand-made client given a UUID id is hidden too, and a dynamic
+registration that supplied its own `client_id` is not. That is why a filtered
+listing always reports how many rows were hidden and by which flag.
+
+`--json` still prints ids alone, not the new columns, so anything piping it
+into another command keeps working.
 
 `get` prints one client as a compact table and **writes nothing** — reading a
 client used to mean `pull`, which drops a JSON file in the workspace and
