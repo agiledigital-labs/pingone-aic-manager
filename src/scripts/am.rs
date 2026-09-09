@@ -341,36 +341,51 @@ fn str_field(raw: &Value, key: &str) -> String {
 /// nothing would report an existing script as missing. Naming a script is not
 /// syncing it.
 pub async fn id_to_name(tenant: &str, realm: &str) -> Result<Vec<(String, String)>> {
-    Ok(list_raw(tenant, realm)
-        .await?
-        .iter()
-        .map(|raw| (str_field(raw, "_id"), str_field(raw, "name")))
-        .filter(|(id, _)| !id.is_empty())
-        .collect())
+    // Ids and names only — measured 2026-09-09 that `_fields` works on this
+    // collection. A full listing carries every script's base64 body, and this
+    // call runs on `aic oauth get`, which wants nothing but the names.
+    list_paged(tenant, realm, Some("_id,name"), |raw| {
+        let id = str_field(raw, "_id");
+        (!id.is_empty()).then(|| (id, str_field(raw, "name")))
+    })
+    .await
 }
 
 pub async fn list(tenant: &str, realm: &str) -> Result<Vec<RemoteRef>> {
-    Ok(list_raw(tenant, realm)
-        .await?
-        .iter()
-        // Only syncable scripts make it into `refs` — Groovy and
-        // product-internal ones are dropped.
-        .filter(|el| is_syncable(el))
-        .map(ref_from_config)
-        .collect())
+    // No `_fields`: a `RemoteRef` needs `context`, `default`,
+    // `evaluatorVersion` and `language`, and `is_syncable` needs the last two.
+    list_paged(tenant, realm, None, |raw| {
+        // Only syncable scripts become refs — Groovy and product-internal ones
+        // are dropped.
+        is_syncable(raw).then(|| ref_from_config(raw))
+    })
+    .await
 }
 
-async fn list_raw(tenant: &str, realm: &str) -> Result<Vec<Value>> {
+/// Page the scripts collection, projecting **each page as it arrives**.
+///
+/// The projection is not a convenience: without it every script's base64 body
+/// stays resident for the length of the call, because this endpoint returns
+/// whole documents. An earlier version collected `Vec<Value>` and let each
+/// caller map it, which held a realm's entire script corpus in memory to
+/// produce a list of names.
+async fn list_paged<T>(
+    tenant: &str,
+    realm: &str,
+    fields: Option<&str>,
+    project: impl Fn(&Value) -> Option<T>,
+) -> Result<Vec<T>> {
     // The scripts endpoint paginates but returns a *null* `pagedResultsCookie`
     // (verified 2026-06-01), so cookie paging silently caps at `_pageSize`.
     // Page by offset instead and stop when the server reports none remaining.
     // A large page keeps it to a single request for typical realms.
     const PAGE: usize = 1000;
-    let mut refs = Vec::new();
+    let fields = fields.map(|f| format!("&_fields={f}")).unwrap_or_default();
+    let mut out = Vec::new();
     let mut offset = 0usize;
     loop {
         let path = format!(
-            "{}/scripts?_queryFilter=true&_pageSize={PAGE}&_pagedResultsOffset={offset}",
+            "{}/scripts?_queryFilter=true&_pageSize={PAGE}&_pagedResultsOffset={offset}{fields}",
             realm_path(realm)
         );
         let body = crate::aic::api::get_versioned(tenant, &path, API_VERSION).await?;
@@ -381,11 +396,11 @@ async fn list_raw(tenant: &str, realm: &str) -> Result<Vec<Value>> {
                 status: 0,
                 body: format!("unexpected scripts list shape: {body}"),
             })?;
-        // `n` (the server's page size) drives paging; filtering happens above
-        // this, per caller, because "what the tool syncs" and "what exists" are
-        // different questions.
+        // `n` is the server's page size and drives paging — count the rows it
+        // sent, not the ones the projection kept, or a page the caller filters
+        // out entirely would look like the end of the collection.
         let n = arr.len();
-        refs.extend(arr.iter().cloned());
+        out.extend(arr.iter().filter_map(&project));
         // `remainingPagedResults` is authoritative here; `-1` (unknown) falls
         // back to "stop once a page comes back empty".
         let remaining = body
@@ -397,7 +412,7 @@ async fn list_raw(tenant: &str, realm: &str) -> Result<Vec<Value>> {
         }
         offset += n;
     }
-    Ok(refs)
+    Ok(out)
 }
 
 pub async fn fetch(tenant: &str, realm: &str, id: &str) -> Result<RemoteScript> {
