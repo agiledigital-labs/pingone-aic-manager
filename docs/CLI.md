@@ -698,21 +698,32 @@ client.
 The subject half is the **effective** answer, not the configured one, and the
 three cases differ:
 
-- a live client override — shown as `subject`;
-- no live override while the realm sets `accessTokenMayActScript` — shown as
-  `subject (realm)`. A realm script makes *every* client a subject, so the
-  header says it once rather than the table saying it a thousand times;
+- a live client override with a script — shown as `subject`;
+- **no live override** while the realm sets `accessTokenMayActScript` — shown
+  as `subject (realm)`. A realm script makes *every* such client a subject, so
+  the header says it once rather than the table saying it a thousand times;
 - a `(dormant)` override — configured under a `providerOverridesEnabled` that
-  is not `true`, so it stamps nothing. With a realm script the realm's runs
-  instead; without one, that client's tokens cannot be exchanged at all.
+  is not `true`, so it stamps nothing and the realm's script applies instead.
+  Without a realm script, that client's tokens cannot be exchanged at all;
+- a **live** override that sets no script — `providerOverridesEnabled: true`
+  with the field on `[Empty]`. This is not silence: enabling the block stops
+  inheritance for every field in it at once, so the realm's script does *not*
+  apply and nothing stamps the claim.
+
+Because the default view lists clients with exchange configuration **of their
+own**, a client that is a subject only by inheritance does not appear without
+`--all`. The header line is what tells you it exists.
 
 `MAY-ACT SCRIPT` names the script per field — `access` and `oidc` stamp the
 claim on different token types, and they collapse to `access+oidc` when they
 name the same script. It prints a resolved script's **name** alone to keep the
 row inside a terminal; an *unresolved* id keeps its full UUID, because that
 case is a finding, and `--json` carries every id regardless. `AUTH_LEVEL` is
-`tokenExchangeAuthLevel`, the minimum auth level a subject token must carry;
-`0` is AM's default and imposes nothing. `AUDIENCE` is
+`tokenExchangeAuthLevel` verbatim. `0` is AM's default; what a non-zero value
+does is **not verified here** — the name and AM's use of "auth level"
+elsewhere suggest a floor on the subject token, and
+`docs/api/22-token-exchange.md` records it as untested. The column reports the
+number, not an interpretation of it. `AUDIENCE` is
 `allowedResourceServerAudienceValues` — empty means the client cannot be asked
 for an `audience` at all. Note the neighbouring
 `acceptAudienceParametersInTokenExchangeRequests` lives in the **override**
@@ -743,8 +754,18 @@ not end it. In particular there is no field naming *which* actor a subject
 permits — the may-act script decides that at mint time — so the relationship is
 only fully readable by reading the script this command names.
 
+A projected field that is **present with an unusable type** is reported rather
+than read as "not set". It matters here more than elsewhere: a `grantTypes`
+that stopped being an array would quietly turn an actor into a bystander in
+the one view whose job is to say who can act. An *absent* field stays silent,
+because absent really does mean not set.
+
 `--json` carries the realm's half, the projected rows and the findings. The
-warnings also go to stderr, so a piped `--json` loses nothing.
+warnings also go to stderr, so a piped `--json` loses nothing. Note
+`acceptAudienceParametersOverride` is the **client's override**, not the
+runtime value: with the block dormant the realm's
+`realmAcceptAudienceParameters` governs, and with the block live but the field
+absent the block's own default does — a value this projection never sees.
 
 `get` prints one client as a compact table and **writes nothing** — reading a
 client used to mean `pull`, which drops a JSON file in the workspace and

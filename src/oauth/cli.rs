@@ -133,7 +133,10 @@ pub enum ProviderCommand {
 pub enum ExchangeCommand {
     /// Show which clients take part in RFC 8693 token exchange.
     List {
-        /// Include every client, not only the ones that act or stamp `may_act`.
+        /// Include every client, not only the ones with exchange configuration
+        /// of their own. A client that is a subject purely by inheriting the
+        /// realm's `accessTokenMayActScript` is hidden without this — the
+        /// header says so once, since that is true of every client.
         #[arg(long)]
         all: bool,
         #[arg(long)]
@@ -315,8 +318,10 @@ fn exchange_tally(total: usize, kept: usize, all: bool) -> String {
         return format!("{total} oauth clients");
     }
     let _ = all;
+    // "have exchange configuration of their own", not "take part": a client
+    // that inherits the realm's may-act script does take part, and is hidden.
     format!(
-        "{kept} of {total} oauth clients take part in token exchange ({} hidden; --all shows every client)",
+        "{kept} of {total} oauth clients carry their own token-exchange configuration ({} hidden; --all shows every client)",
         total - kept
     )
 }
@@ -406,6 +411,9 @@ fn exchange_json(provider: &Value, rows: &[spec::ExchangeRow], findings: &[Strin
         "tokenExchangeGranted": spec::provider_grants_token_exchange(provider),
         "exchangers": spec::provider_exchange_classes(provider),
         "realmMayActScript": realm_may_act,
+        // The realm's copy of the audience switch, so a reader can resolve a
+        // client whose override is dormant.
+        "realmAcceptAudienceParameters": spec::provider_accept_audience(provider),
         // The warnings are the point of the command, so the machine-readable
         // form carries them too. An earlier version returned before computing
         // them, which handed automation the half without the diagnosis.
@@ -425,12 +433,17 @@ fn exchange_json(provider: &Value, rows: &[spec::ExchangeRow], findings: &[Strin
                     .iter()
                     .map(|(field, id)| serde_json::json!({"field": field, "script": id}))
                     .collect::<Vec<_>>(),
-                "providerOverridesEnabled": row.overrides_live,
+                "overridesLive": row.overrides_live,
                 "mayActDormant": row.may_act_dormant(),
                 "tokenExchangeAuthLevel": row.auth_level,
                 "allowedResourceServerAudienceValues": row.audience_values,
                 "acceptAudienceParametersInTokenExchangeRequests": row.accept_audience,
-                "effectiveAcceptAudienceParameters": row.effective_accept_audience(),
+                // The client's override, not the runtime value — which this
+                // projection cannot compute. With the block dormant the realm
+                // decides; with it live but the field absent, the block's own
+                // default does, and that default is not in the projection.
+                "acceptAudienceParametersOverride": row.accept_audience_override(),
+                "shapeFaults": row.shape_faults,
             }))
             .collect::<Vec<_>>(),
     })
@@ -1449,6 +1462,7 @@ mod tests {
             auth_level: Some(0),
             audience_values: Vec::new(),
             accept_audience: None,
+            shape_faults: Vec::new(),
         }
     }
 
