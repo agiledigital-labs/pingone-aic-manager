@@ -496,6 +496,10 @@ pub struct ExchangeRow {
     /// `advancedOAuth2ClientConfig`, where it does not exist, and therefore
     /// always answered `None`.
     pub accept_audience: Option<bool>,
+    /// False when the field was present and unreadable, so `accept_audience:
+    /// None` under a live block means "could not tell" rather than "absent,
+    /// so the block's default applies".
+    pub accept_audience_readable: bool,
     /// Fields that were **present** in the projection with a type this reader
     /// cannot use.
     ///
@@ -563,12 +567,16 @@ impl ExchangeRow {
     ///   exactly that;
     /// * it sets its own audience or auth-level values;
     /// * something in its projection could not be read.
-    pub fn participates(&self, realm_stamps: bool) -> bool {
+    pub fn participates(&self, realm_stamps: Option<bool>) -> bool {
+        // A live block is an exception to *any* script the realm might have,
+        // so an unknown realm keeps it too — `None` here means "there may be
+        // one", not "there is none".
+        let realm_may_stamp = realm_stamps != Some(false);
         self.actor != Some(false)
             || !self.may_act.is_empty()
             || self.has_own_exchange_settings()
             || !self.shape_faults.is_empty()
-            || (realm_stamps && self.overrides_live != Some(false))
+            || (realm_may_stamp && self.overrides_live != Some(false))
     }
 }
 
@@ -596,15 +604,22 @@ pub enum MayActSource {
     Unknown,
 }
 
-pub fn may_act_source(row: &ExchangeRow, realm_stamps: bool) -> MayActSource {
-    match row.overrides_live {
-        // A live block answers the question either way. `[Empty]` under it is
-        // an explicit "no script", not a request to inherit.
-        Some(true) if row.may_act.is_empty() => MayActSource::None,
-        Some(true) => MayActSource::Client,
-        Some(false) if realm_stamps => MayActSource::Realm,
-        Some(false) => MayActSource::None,
-        None => MayActSource::Unknown,
+/// `realm_stamps` is `None` when the realm's own may-act script could not be
+/// read. That has to travel: collapsing it to `false` at the call site
+/// published `"none"` for a client whose answer was simply not known, which is
+/// the failure this enum exists to prevent — one level up from where it was
+/// last fixed.
+pub fn may_act_source(row: &ExchangeRow, realm_stamps: Option<bool>) -> MayActSource {
+    match (row.overrides_live, realm_stamps) {
+        // A live block answers the question either way, whatever the realm
+        // holds. `[Empty]` under it is an explicit "no script", not a request
+        // to inherit.
+        (Some(true), _) if row.may_act.is_empty() => MayActSource::None,
+        (Some(true), _) => MayActSource::Client,
+        // Inheritance applies, so the realm's answer is the answer.
+        (Some(false), Some(true)) => MayActSource::Realm,
+        (Some(false), Some(false)) => MayActSource::None,
+        (Some(false), None) | (None, _) => MayActSource::Unknown,
     }
 }
 
@@ -819,6 +834,8 @@ pub fn exchange_row(value: &Value) -> ExchangeRow {
         "acceptAudienceParametersInTokenExchangeRequests",
         projected(overrides, "acceptAudienceParametersInTokenExchangeRequests"),
     );
+    let accept_audience_readable =
+        overrides_readable && !faults.mentions("acceptAudienceParametersInTokenExchangeRequests");
 
     ExchangeRow {
         actor,
@@ -827,6 +844,7 @@ pub fn exchange_row(value: &Value) -> ExchangeRow {
         auth_level,
         audience_values,
         accept_audience,
+        accept_audience_readable,
         shape_faults: faults.0,
         id,
     }
@@ -855,6 +873,10 @@ pub struct RealmExchange {
     /// False when the class list was unreadable, so an empty `exchangers`
     /// means "could not tell" rather than "none configured".
     pub exchangers_readable: bool,
+    /// False when the realm's audience switch or its group was unreadable, so
+    /// `accept_audience: None` means "could not tell" rather than "not set" —
+    /// and a client cell reading `realm` then resolves to nothing knowable.
+    pub accept_audience_readable: bool,
     /// The realm's `acceptAudienceParametersInTokenExchangeRequests`, so a
     /// reader can resolve what a `null` client-side override means.
     pub accept_audience: Option<bool>,
@@ -870,6 +892,7 @@ impl Default for RealmExchange {
             exchangers: Vec::new(),
             exchangers_readable: true,
             accept_audience: None,
+            accept_audience_readable: true,
             shape_faults: Vec::new(),
         }
     }
@@ -904,11 +927,26 @@ pub fn realm_exchange(doc: &Value) -> RealmExchange {
         .and_then(|config| config.get("grantTypes"))
         .map(inherited_value)
     {
-        Some(Value::Array(grants)) => Some(
-            grants
+        // Same rule as a client's grant list: a match is a match whatever else
+        // the array holds, but an unreadable element may have *been* the
+        // grant, so absence among the readable ones cannot answer "no".
+        Some(Value::Array(grants)) => {
+            let mut any_unreadable = false;
+            for grant in grants.iter().filter(|grant| !grant.is_string()) {
+                faults.note(PROVIDER_ADVANCED, "grantTypes[]", grant, "a string");
+                any_unreadable = true;
+            }
+            if grants
                 .iter()
-                .any(|grant| grant.as_str() == Some(TOKEN_EXCHANGE_GRANT)),
-        ),
+                .any(|grant| grant.as_str() == Some(TOKEN_EXCHANGE_GRANT))
+            {
+                Some(true)
+            } else if any_unreadable {
+                None
+            } else {
+                Some(false)
+            }
+        }
         Some(other) => {
             faults.note(PROVIDER_ADVANCED, "grantTypes", other, "an array");
             None
@@ -922,7 +960,30 @@ pub fn realm_exchange(doc: &Value) -> RealmExchange {
         .map(inherited_value)
     {
         Some(Value::Array(values)) => {
-            (values.iter().map(token_exchange_class_cell).collect(), true)
+            // An element must at least be a string. A non-string rendered as
+            // an exchanger, which both invented a configured class and
+            // suppressed the "no exchangers" finding. The string's *content*
+            // stays unvalidated on purpose — custom classes are supported and
+            // `token_exchange_class_cell` already falls back to printing one
+            // it cannot parse.
+            let mut readable = true;
+            for value in values.iter().filter(|value| !value.is_string()) {
+                faults.note(
+                    PROVIDER_ADVANCED,
+                    "tokenExchangeClasses[]",
+                    value,
+                    "a string",
+                );
+                readable = false;
+            }
+            (
+                values
+                    .iter()
+                    .filter(|value| value.is_string())
+                    .map(token_exchange_class_cell)
+                    .collect(),
+                readable,
+            )
         }
         Some(other) => {
             faults.note(PROVIDER_ADVANCED, "tokenExchangeClasses", other, "an array");
@@ -938,6 +999,8 @@ pub fn realm_exchange(doc: &Value) -> RealmExchange {
             .and_then(|config| config.get("acceptAudienceParametersInTokenExchangeRequests"))
             .map(inherited_value),
     );
+    let accept_audience_readable =
+        advanced_readable && !faults.mentions("acceptAudienceParametersInTokenExchangeRequests");
 
     let core = match provider_group(doc, PROVIDER_CORE) {
         Some(Value::Object(config)) => Some(config),
@@ -968,6 +1031,7 @@ pub fn realm_exchange(doc: &Value) -> RealmExchange {
         exchangers,
         exchangers_readable,
         accept_audience,
+        accept_audience_readable,
         shape_faults: faults.0,
     }
 }
@@ -991,16 +1055,16 @@ pub fn exchange_findings(realm: &RealmExchange, rows: &[ExchangeRow]) -> Vec<Str
     let realm_stamps = realm.stamps();
     let actors = rows.iter().filter(|row| row.actor == Some(true)).count();
     let unknown_actors = rows.iter().filter(|row| row.actor.is_none()).count();
-    // **Every** client, not only the actors. Acting and stamping are separate
-    // roles held by different clients: the subject whose tokens an actor
-    // exchanges is, by construction, some other client — and filtering by
-    // actor status removed exactly the clients that could disprove this.
-    let none_stamped = realm_stamps.is_some_and(|realm_stamps| {
-        !rows.is_empty()
-            && rows
-                .iter()
-                .all(|row| may_act_source(row, realm_stamps) == MayActSource::None)
-    });
+    // **Every** client, not only the actors. Acting and stamping are
+    // independent roles — one client can hold both, and the sandbox has one
+    // that does — so a client's actor status says nothing about whether it is
+    // a subject, and filtering on it removed exactly the rows that could
+    // disprove this.
+    let none_stamped = realm_stamps.is_some()
+        && !rows.is_empty()
+        && rows
+            .iter()
+            .all(|row| may_act_source(row, realm_stamps) == MayActSource::None);
 
     if realm.granted == Some(false) && actors > 0 {
         findings.push(format!(
@@ -2368,10 +2432,10 @@ mod tests {
         ));
 
         assert_eq!(actor.actor, Some(true), "the grant holder is the actor");
-        assert!(actor.participates(false));
+        assert!(actor.participates(Some(false)));
         assert_eq!(bystander.actor, Some(false));
         assert!(
-            !bystander.participates(false),
+            !bystander.participates(Some(false)),
             "a client with neither the grant nor a may-act script is not in the exchange"
         );
     }
@@ -2393,7 +2457,7 @@ mod tests {
         ));
 
         assert!(row.may_act.is_empty());
-        assert!(!row.participates(false));
+        assert!(!row.participates(Some(false)));
         assert!(
             !row.may_act_dormant(),
             "nothing is configured, so nothing is dormant"
@@ -2584,8 +2648,11 @@ mod tests {
             json!({ "providerOverridesEnabled": false }),
         ));
 
-        assert_eq!(may_act_source(&live_but_empty, true), MayActSource::None);
-        assert_eq!(may_act_source(&dormant, true), MayActSource::Realm);
+        assert_eq!(
+            may_act_source(&live_but_empty, Some(true)),
+            MayActSource::None
+        );
+        assert_eq!(may_act_source(&dormant, Some(true)), MayActSource::Realm);
 
         let findings = exchange_findings(&realm(Some("realm-script")), &[live_but_empty]);
         assert!(
@@ -2683,8 +2750,8 @@ mod tests {
         ));
 
         assert_eq!(row.overrides_live, None);
-        assert_eq!(may_act_source(&row, true), MayActSource::Unknown);
-        assert_eq!(may_act_source(&row, false), MayActSource::Unknown);
+        assert_eq!(may_act_source(&row, Some(true)), MayActSource::Unknown);
+        assert_eq!(may_act_source(&row, Some(false)), MayActSource::Unknown);
         // An unknown subject is not a "nothing stamps may_act" realm either.
         let findings = exchange_findings(&realm(None), &[row]);
         assert!(
@@ -2711,7 +2778,7 @@ mod tests {
         ));
 
         assert!(row.may_act.is_empty());
-        assert_eq!(may_act_source(&row, true), MayActSource::None);
+        assert_eq!(may_act_source(&row, Some(true)), MayActSource::None);
         assert_eq!(
             row.shape_faults,
             ["overrideOAuth2ClientConfig.accessTokenMayActScript is a boolean, expected a string"]
@@ -2841,7 +2908,7 @@ mod tests {
 
         assert_eq!(row.actor, None);
         assert_eq!(row.overrides_live, None);
-        assert_eq!(may_act_source(&row, true), MayActSource::Unknown);
+        assert_eq!(may_act_source(&row, Some(true)), MayActSource::Unknown);
         assert_eq!(row.shape_faults.len(), 2, "{:?}", row.shape_faults);
     }
 
@@ -2866,6 +2933,108 @@ mod tests {
         );
     }
 
+    /// An unreadable realm may-act script has to reach the row, not stop at
+    /// the call site. Collapsing it to "does not stamp" published `none` for a
+    /// client whose answer was simply not known — the same failure the enum
+    /// exists to prevent, one level further out.
+    #[test]
+    fn an_unreadable_realm_script_makes_an_inheriting_client_unknown() {
+        let inheriting = exchange_row(&exchange_projection(
+            "web",
+            &["password"],
+            json!({ "providerOverridesEnabled": false }),
+        ));
+        let overriding = exchange_row(&exchange_projection(
+            "own",
+            &["password"],
+            json!({
+                "providerOverridesEnabled": true,
+                "accessTokenMayActScript": "script-1",
+            }),
+        ));
+
+        assert_eq!(may_act_source(&inheriting, None), MayActSource::Unknown);
+        // A live block answers for itself whatever the realm holds, so it is
+        // the case that must NOT become unknown.
+        assert_eq!(may_act_source(&overriding, None), MayActSource::Client);
+        // ...and a client that inherits is only shown as a subject when the
+        // realm is known to stamp.
+        assert_eq!(may_act_source(&inheriting, Some(true)), MayActSource::Realm);
+        assert_eq!(may_act_source(&inheriting, Some(false)), MayActSource::None);
+
+        // A live block is an exception to any script the realm *might* have,
+        // so an unknown realm keeps it visible.
+        let live_empty = exchange_row(&exchange_projection(
+            "empty",
+            &["password"],
+            json!({ "providerOverridesEnabled": true }),
+        ));
+        assert!(live_empty.participates(None));
+        assert!(!live_empty.participates(Some(false)));
+    }
+
+    /// The realm's own arrays get the client rule: a non-string element makes
+    /// a negative answer unknown, and an exchanger that is not a string is not
+    /// an exchanger.
+    #[test]
+    fn a_non_string_element_in_a_realm_array_is_not_configuration() {
+        let realm = realm_exchange(&json!({
+            "advancedOAuth2Config": {
+                "grantTypes": ["authorization_code", 7],
+                "tokenExchangeClasses": [7],
+            },
+        }));
+
+        assert_eq!(
+            realm.granted, None,
+            "the unreadable element may be the grant"
+        );
+        assert!(realm.exchangers.is_empty(), "{:?}", realm.exchangers);
+        assert!(!realm.exchangers_readable);
+        // Neither the "does not grant" nor the "no exchangers" finding may be
+        // stated from an array nobody could read.
+        let actors = vec![exchange_row(&exchange_projection(
+            "caller",
+            &[EXCHANGE],
+            json!({}),
+        ))];
+        let findings = exchange_findings(&realm, &actors);
+        assert!(
+            !findings.iter().any(|f| f.contains("does not grant")),
+            "{findings:?}"
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.contains("no tokenExchangeClasses")),
+            "{findings:?}"
+        );
+    }
+
+    /// A present-but-unreadable client audience switch is not an absent one,
+    /// so it must not read as the block's default.
+    #[test]
+    fn an_unreadable_client_audience_switch_is_not_an_absent_one() {
+        let unreadable = exchange_row(&exchange_projection(
+            "broken",
+            &["password"],
+            json!({
+                "providerOverridesEnabled": true,
+                "acceptAudienceParametersInTokenExchangeRequests": "true",
+            }),
+        ));
+        let absent = exchange_row(&exchange_projection(
+            "plain",
+            &["password"],
+            json!({ "providerOverridesEnabled": true }),
+        ));
+
+        assert!(!unreadable.accept_audience_readable);
+        assert!(absent.accept_audience_readable);
+        assert_eq!(unreadable.accept_audience, None);
+        assert_eq!(absent.accept_audience, None);
+    }
+
     /// A live override block is an **exception** to a realm-wide script, so
     /// hiding it hides the one client the realm header does not describe. The
     /// discriminating pair is the realm: the same client is worth listing when
@@ -2882,11 +3051,11 @@ mod tests {
         ));
 
         assert!(
-            exception.participates(true),
+            exception.participates(Some(true)),
             "it stops the realm's script stamping for this client"
         );
         assert!(
-            !exception.participates(false),
+            !exception.participates(Some(false)),
             "with no realm script it is an exception to nothing"
         );
     }
@@ -2910,8 +3079,8 @@ mod tests {
                 .any(|f| f.contains("nothing stamps may_act")),
             "{findings:?}"
         );
-        assert_eq!(may_act_source(&rows[0], true), MayActSource::Realm);
-        assert_eq!(may_act_source(&rows[0], false), MayActSource::None);
+        assert_eq!(may_act_source(&rows[0], Some(true)), MayActSource::Realm);
+        assert_eq!(may_act_source(&rows[0], Some(false)), MayActSource::None);
     }
 
     #[test]
