@@ -371,13 +371,22 @@ fn exchange_role_cell(row: &spec::ExchangeRow, realm_stamps: bool) -> String {
 ///
 /// A column rather than a JSON-only field because it is one of the reasons a
 /// client is listed at all: a row that differs from the realm only here would
-/// otherwise appear with every visible cell empty and no explanation. `-`
-/// means the override does not decide it and the realm's value applies.
+/// otherwise appear with every visible cell empty and no explanation.
+///
+/// Four states, not two. Collapsing the last three onto `-` said "the realm
+/// applies" about two cases where it does not: a live block with the field
+/// absent falls back to the *block's* own default, which this projection never
+/// sees, and an unreadable switch means nobody knows.
 fn accept_audience_cell(row: &spec::ExchangeRow) -> String {
-    match row.accept_audience_override() {
-        Some(true) => "yes".to_string(),
-        Some(false) => "no".to_string(),
-        None => "-".to_string(),
+    match (row.overrides_live, row.accept_audience) {
+        (Some(true), Some(true)) => "yes".to_string(),
+        (Some(true), Some(false)) => "no".to_string(),
+        // Live block, field absent: the block's own default governs, and it is
+        // not the realm's value.
+        (Some(true), None) => "block default".to_string(),
+        // Dormant: the realm's value governs, and the header prints it.
+        (Some(false), _) => "realm".to_string(),
+        (None, _) => "?".to_string(),
     }
 }
 
@@ -433,7 +442,7 @@ fn exchange_json(
     rows: &[spec::ExchangeRow],
     findings: &[String],
 ) -> Value {
-    let realm_stamps = realm.may_act_script.is_some();
+    let realm_stamps = realm.stamps().unwrap_or(false);
     serde_json::json!({
         // `null` where the realm's grant list could not be read — which is not
         // the same answer as `false`.
@@ -443,6 +452,8 @@ fn exchange_json(
         // The realm's copy of the audience switch, so a reader can resolve a
         // client whose override is dormant.
         "realmAcceptAudienceParameters": realm.accept_audience,
+        "realmMayActReadable": realm.may_act_readable,
+        "realmExchangersReadable": realm.exchangers_readable,
         "realmShapeFaults": realm.shape_faults,
         // The warnings are the point of the command, so the machine-readable
         // form carries them too. An earlier version returned before computing
@@ -1255,7 +1266,10 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     .map(spec::exchange_row)
                     .collect::<Vec<_>>();
                 let realm_exchange = spec::realm_exchange(&provider);
-                let realm_stamps = realm_exchange.may_act_script.is_some();
+                // Unreadable counts as "does not stamp" for the *filter* only
+                // — showing a client is cheap, and every such row also carries
+                // the fault that says why.
+                let realm_stamps = realm_exchange.stamps().unwrap_or(false);
                 let kept = rows
                     .iter()
                     .filter(|row| all || row.participates(realm_stamps))
@@ -1303,6 +1317,16 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                         "  (so every client without a live override stamps may_act from the realm)"
                     );
                 }
+                // The other half of the ACCEPT_AUD column: a cell reading
+                // `realm` means nothing without this line.
+                println!(
+                    "  realm acceptAudienceParameters: {}",
+                    match realm_exchange.accept_audience {
+                        Some(true) => "yes",
+                        Some(false) => "no",
+                        None => "<not set>",
+                    }
+                );
                 println!();
 
                 let table = kept
