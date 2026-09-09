@@ -196,10 +196,11 @@ fn redact_encrypted(value: &Value) -> Value {
 }
 
 fn encrypted_digest(value: &Value) -> String {
-    let digest = crate::access::spec::digest(value);
-    // A prefix is enough to tell "changed" from "unchanged", which is all a
-    // diff line needs, and it keeps the row short.
-    format!("<encrypted: sha256:{}>", &digest[..16])
+    // The whole digest, not a prefix. A truncated one is shorter to read and
+    // makes the agreement with `content_equal` merely probable: two unequal
+    // blobs sharing a 64-bit prefix would render identically while `push`
+    // still saw drift. The line is long; the invariant is exact.
+    format!("<encrypted: sha256:{}>", crate::access::spec::digest(value))
 }
 
 pub(crate) fn content_equal(a: &Value, b: &Value) -> bool {
@@ -429,6 +430,32 @@ mod tests {
         assert!(text.contains("<encrypted: sha256:"), "{text}");
         // The key stays, so the diff still says which field changed.
         assert!(text.contains("userpassword-encrypted"), "{text}");
+    }
+
+    /// Not one special-cased key: the rule is the suffix, at any depth,
+    /// including inside an array — which is where an implementation that only
+    /// walked objects at the top level would leak. The negative case is the
+    /// point of the suffix rule: `userinfoEncryptedResponseAlg` is an
+    /// algorithm name, and masking it would hide real configuration.
+    #[test]
+    fn redaction_follows_the_suffix_wherever_it_appears() {
+        let text = content_text(&json!({
+            "signEncOAuth2ClientConfig": {
+                "userinfoEncryptedResponseAlg": "RSA-OAEP-256",
+                "jwks": [
+                    {"kid": "one", "key-encrypted": "AQICNestedInAnArray"}
+                ]
+            },
+            "another-encrypted": "AQICSecondKey",
+            "nulls-encrypted": null
+        }));
+
+        assert!(!text.contains("AQICNestedInAnArray"), "{text}");
+        assert!(!text.contains("AQICSecondKey"), "{text}");
+        assert!(text.contains("RSA-OAEP-256"), "{text}");
+        // A null is already the absence of a secret; masking it would invent
+        // one, and hide that the field is unset.
+        assert!(text.contains("\"nulls-encrypted\": null"), "{text}");
     }
 
     /// Rotating the secret must still show up as a changed line — a constant

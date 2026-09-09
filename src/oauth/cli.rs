@@ -360,21 +360,64 @@ fn nothing_to_compare(id: &str, sides: &DiffSides) -> Option<String> {
     })
 }
 
+/// Quote a value for a command line we are telling someone to run.
+///
+/// Tenant names are not restricted to a safe character set — `tenant_file_name`
+/// maps the unsafe ones for paths rather than rejecting them — so a name with a
+/// space produces a suggestion that runs as two arguments when pasted.
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// The `pull` that would restore a missing side — or nothing, when `pull` is
+/// the wrong advice.
+///
+/// `pull` writes **both** the local export and the snapshot from the tenant, so
+/// it is only safe to suggest when neither of those is something you would
+/// mind losing. With a snapshot present and the local file gone it does not
+/// restore the local file from the snapshot, it replaces the snapshot too and
+/// throws away the drift signal; with local edits present and the snapshot
+/// gone it overwrites the edits. Suggesting a command that destroys the thing
+/// the operator still has is worse than suggesting nothing.
+fn safe_pull_suggestion(sides: &DiffSides, id: &str, tenant: &str, realm: &str) -> Option<String> {
+    let other_side_survives = sides.left_text.is_some() || sides.right_text.is_some();
+    if other_side_survives {
+        return None;
+    }
+    Some(format!(
+        "aic oauth pull {} --tenant {} --realm {}",
+        shell_quote(id),
+        shell_quote(tenant),
+        shell_quote(realm)
+    ))
+}
+
 /// A side that does not exist renders as empty, which in a diff is
 /// indistinguishable from a side that exists and is empty. Say which it was.
 ///
-/// The suggested command carries the coordinates the diff itself used. Both
+/// Any command suggested carries the coordinates the diff itself used: both
 /// flags default, so a bare `aic oauth pull <id>` is only right when you are
 /// on the default tenant and realm — advising it after
 /// `--tenant staging --realm bravo` sends you to pull a different client.
-fn absent_side_note(id: &str, side: Side, tenant: &str, realm: &str) -> String {
-    let pull = format!("aic oauth pull {id} --tenant {tenant} --realm {realm}");
+fn absent_side_note(id: &str, side: Side, tenant: &str, realm: &str, pull: Option<&str>) -> String {
+    let remedy = match pull {
+        Some(pull) => format!("run `{pull}`"),
+        // Naming what `pull` would cost is more use than naming `pull`.
+        None => "`aic oauth pull` would overwrite the side you still have".to_string(),
+    };
     match side {
         Side::Local => {
-            format!("note: no local export for oauth client {id} — run `{pull}`; shown as empty")
+            format!("note: no local export for oauth client {id} — {remedy}; shown as empty")
         }
         Side::Snapshot => {
-            format!("note: no snapshot for oauth client {id} — run `{pull}`; shown as empty")
+            format!("note: no snapshot for oauth client {id} — {remedy}; shown as empty")
         }
         Side::Remote => {
             format!("note: oauth client {id} does not exist on {tenant}/{realm}; shown as empty")
@@ -395,13 +438,22 @@ fn blocked_push_diff_mode(reason: &PushBlockReason) -> DiffMode {
     }
 }
 
-fn push_block_message(id: &str, reason: &PushBlockReason) -> String {
+fn push_block_message(id: &str, reason: &PushBlockReason, tenant: &str, realm: &str) -> String {
+    // Coordinates included for the same reason the diff notes carry them: both
+    // flags default, so a bare `pull` after `--realm bravo` re-pulls a
+    // different client and reports success.
+    let pull = format!(
+        "aic oauth pull {} --tenant {} --realm {}",
+        shell_quote(id),
+        shell_quote(tenant),
+        shell_quote(realm)
+    );
     match reason {
         PushBlockReason::MissingSnapshot => format!(
-            "no snapshot for oauth client {id:?}; run `aic oauth pull {id}` first or pass --force"
+            "no snapshot for oauth client {id:?}; run `{pull}` first (it overwrites your local file) or pass --force"
         ),
         PushBlockReason::RemoteDrift => format!(
-            "remote oauth client {id} changed since you last pulled; re-pull or pass --force"
+            "remote oauth client {id} changed since you last pulled; re-pull with `{pull}` (it overwrites your local file) or pass --force"
         ),
     }
 }
@@ -451,12 +503,16 @@ fn render_diff_sides(id: &str, tenant: &str, realm: &str, sides: &DiffSides) -> 
     if let Some(message) = nothing_to_compare(id, sides) {
         return Err(Error::Config(message));
     }
+    let pull = safe_pull_suggestion(sides, id, tenant, realm);
     for (side, text) in [
         (sides.left, &sides.left_text),
         (sides.right, &sides.right_text),
     ] {
         if text.is_none() {
-            eprintln!("{}", absent_side_note(id, side, tenant, realm));
+            eprintln!(
+                "{}",
+                absent_side_note(id, side, tenant, realm, pull.as_deref())
+            );
         }
     }
     show_diff(
@@ -471,9 +527,9 @@ fn render_diff_sides(id: &str, tenant: &str, realm: &str, sides: &DiffSides) -> 
 /// `read_export`, but a missing file is a side that does not exist rather than
 /// an error — a diff against nothing is the honest answer, and it is what shows
 /// you the file you deleted.
-fn read_export_opt(path: &Path, id: &str) -> Result<Option<Value>> {
+fn read_export_opt(path: &Path, id: &str, tenant: &str, realm: &str) -> Result<Option<Value>> {
     match std::fs::metadata(path) {
-        Ok(_) => read_export(path, id).map(Some),
+        Ok(_) => read_export(path, id, tenant, realm).map(Some),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(Error::Config(format!(
             "read oauth client export {}: {error}",
@@ -521,12 +577,15 @@ fn read_seed(path: &Path) -> Result<Value> {
     parse_client_value(value, &path.display().to_string())
 }
 
-fn read_export(path: &Path, id: &str) -> Result<Value> {
+fn read_export(path: &Path, id: &str, tenant: &str, realm: &str) -> Result<Value> {
     let bytes = std::fs::read(path).map_err(|error| {
         if error.kind() == ErrorKind::NotFound {
             Error::Config(format!(
-                "local oauth client export missing: {}; run `aic oauth pull {id}` first",
-                path.display()
+                "local oauth client export missing: {}; run `aic oauth pull {} --tenant {} --realm {}` first",
+                path.display(),
+                shell_quote(id),
+                shell_quote(tenant),
+                shell_quote(realm)
             ))
         } else {
             Error::Config(format!(
@@ -811,7 +870,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             let realm = realm_arg("oauth", realm)?;
             let path = export_path(&tenant, &realm, &id)?;
             let snapshot = snapshot_path(&tenant, &realm, &id)?;
-            let local = read_export(&path, &id)?;
+            let local = read_export(&path, &id, &tenant, &realm)?;
             let remote = match api::read_client(&tenant, &realm, &id).await {
                 Ok(client) => Some(client),
                 Err(error) if api_not_found(&error) => None,
@@ -852,7 +911,9 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     if let Err(error) = render_diff_sides(&id, &tenant, &realm, &sides) {
                         eprintln!("warning: could not render the diff: {error}");
                     }
-                    Err(Error::Config(push_block_message(&id, &reason)))
+                    Err(Error::Config(push_block_message(
+                        &id, &reason, &tenant, &realm,
+                    )))
                 }
                 PushDecision::Push => {
                     api::upsert_client(&tenant, &realm, &id, local, false).await?;
@@ -874,7 +935,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             let realm = realm_arg("oauth", realm)?;
             let mode = DiffMode::from_flags(local_vs_snapshot, snapshot_vs_remote);
             let local = if mode.uses(Side::Local) {
-                read_export_opt(&export_path(&tenant, &realm, &id)?, &id)?
+                read_export_opt(&export_path(&tenant, &realm, &id)?, &id, &tenant, &realm)?
             } else {
                 None
             };
@@ -1354,9 +1415,13 @@ mod tests {
     /// different client into a different workspace and reports success.
     #[test]
     fn the_suggested_pull_carries_the_coordinates_the_diff_used() {
-        let note = absent_side_note("a-client", Side::Local, "staging", "bravo");
-        assert!(note.contains("--tenant staging"), "{note}");
-        assert!(note.contains("--realm bravo"), "{note}");
+        let sides = diff_sides_from(DiffMode::RemoteVsLocal, None, None, None);
+        let pull = safe_pull_suggestion(&sides, "a-client", "staging", "bravo").unwrap();
+        for side in [Side::Local, Side::Snapshot] {
+            let note = absent_side_note("a-client", side, "staging", "bravo", Some(&pull));
+            assert!(note.contains("--tenant staging"), "{note}");
+            assert!(note.contains("--realm bravo"), "{note}");
+        }
     }
 
     /// The mode a refusal explains itself with. Swapping the two renders a
@@ -1385,14 +1450,15 @@ mod tests {
         assert!(error.to_string().contains("nothing to compare"), "{error}");
     }
 
-    /// Each side's note has to name that side's own remedy: pointing at
+    /// Each side's note has to name that side's own cause: pointing at
     /// `oauth pull` when the client simply is not on the tenant sends someone
     /// to run a command that cannot succeed.
     #[test]
     fn each_absent_side_names_its_own_cause() {
-        let local = absent_side_note("a-client", Side::Local, "sandbox", "alpha");
-        let snapshot = absent_side_note("a-client", Side::Snapshot, "sandbox", "alpha");
-        let remote = absent_side_note("a-client", Side::Remote, "sandbox", "alpha");
+        let pull = Some("aic oauth pull a-client --tenant sandbox --realm alpha");
+        let local = absent_side_note("a-client", Side::Local, "sandbox", "alpha", pull);
+        let snapshot = absent_side_note("a-client", Side::Snapshot, "sandbox", "alpha", pull);
+        let remote = absent_side_note("a-client", Side::Remote, "sandbox", "alpha", pull);
 
         assert!(local.contains("no local export"), "{local}");
         assert!(local.contains("aic oauth pull a-client"), "{local}");
@@ -1402,5 +1468,60 @@ mod tests {
             !remote.contains("oauth pull"),
             "a client that is not there cannot be pulled: {remote}"
         );
+    }
+
+    /// `pull` writes **both** the local export and the snapshot, so it is only
+    /// safe advice when neither survives. The three discriminating cases are
+    /// the ones where something does: suggesting it then destroys the side the
+    /// operator still has — their local edits, or the snapshot that is the
+    /// only record of what the tenant looked like when they pulled.
+    #[test]
+    fn pull_is_only_suggested_when_it_cannot_destroy_the_surviving_side() {
+        let doc = json!({"v": 1});
+
+        let neither = diff_sides_from(DiffMode::LocalVsSnapshot, None, None, None);
+        assert!(safe_pull_suggestion(&neither, "a-client", "sandbox", "alpha").is_some());
+
+        for (local, snapshot) in [(Some(&doc), None), (None, Some(&doc))] {
+            let sides = diff_sides_from(DiffMode::LocalVsSnapshot, local, snapshot, None);
+            assert!(
+                safe_pull_suggestion(&sides, "a-client", "sandbox", "alpha").is_none(),
+                "{sides:?}"
+            );
+        }
+
+        // …and the note then says what pull would cost instead of naming it.
+        let survivor = diff_sides_from(DiffMode::LocalVsSnapshot, None, Some(&doc), None);
+        let pull = safe_pull_suggestion(&survivor, "a-client", "sandbox", "alpha");
+        let note = absent_side_note("a-client", Side::Local, "sandbox", "alpha", pull.as_deref());
+        assert!(note.contains("would overwrite"), "{note}");
+    }
+
+    /// A tenant name is not restricted to a safe character set, so a
+    /// suggestion has to survive being pasted. The discriminating case is the
+    /// space: unquoted, it runs as two arguments.
+    #[test]
+    fn a_suggested_command_survives_being_pasted() {
+        assert_eq!(shell_quote("sandbox"), "sandbox");
+        assert_eq!(shell_quote("client-a.v2_x"), "client-a.v2_x");
+        assert_eq!(shell_quote("two words"), "'two words'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    /// The refusals are the messages someone actually copies out of a failed
+    /// push, so they carry coordinates too — and say what re-pulling costs,
+    /// because it overwrites the local file the refusal just protected.
+    #[test]
+    fn a_refusal_names_the_tenant_and_realm_it_refused_for() {
+        for reason in [
+            PushBlockReason::RemoteDrift,
+            PushBlockReason::MissingSnapshot,
+        ] {
+            let message = push_block_message("a-client", &reason, "staging", "bravo");
+            assert!(message.contains("--tenant staging"), "{message}");
+            assert!(message.contains("--realm bravo"), "{message}");
+            assert!(message.contains("overwrites your local file"), "{message}");
+        }
     }
 }

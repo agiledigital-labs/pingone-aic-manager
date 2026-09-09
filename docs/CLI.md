@@ -728,14 +728,19 @@ change. `--local-vs-snapshot` is your own edits, and makes no tenant request.
 `push` refuses on.
 
 Both sides are normalised exactly the way the drift check normalises — `_rev`
-stripped, keys sorted — so `diff` and `push` can never disagree about whether a
-client changed. `*-encrypted` values are replaced by a digest of themselves:
-`pull` already writes those AES-wrapped blobs to the workspace, but a rendered
-diff also reaches your scrollback, your pager's history and any CI log, and the
-digest still changes when the secret is rotated. A side that does not exist is
-reported on stderr and rendered as empty, and a comparison where **neither**
-side exists (a mistyped client id) fails rather than reporting the two absences
-as identical.
+stripped, keys sorted, `-0.0` and `0.0` collapsed — so `diff` and `push` do not
+disagree about whether a client changed. `*-encrypted` values are replaced by
+their full SHA-256: `pull` already writes those AES-wrapped blobs to the
+workspace, but a rendered diff also reaches your scrollback, your pager's
+history and any CI log, and a digest still changes when the secret is rotated.
+The OAuth tab masks the same fields in its detail pane.
+
+A side that does not exist is reported on stderr and rendered as empty, and a
+comparison where **neither** side exists (a mistyped client id) fails rather
+than reporting the two absences as identical. `pull` is suggested as the remedy
+only when nothing would be lost by running it — it rewrites both the local file
+and the snapshot, so when one of them survives the note says what `pull` would
+cost instead of naming it.
 
 `push` prints the relevant diff before it refuses. On remote drift that is
 snapshot-vs-tenant — what changed under you; with no snapshot at all it is

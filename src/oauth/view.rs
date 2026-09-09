@@ -268,12 +268,12 @@ fn section_header(label: &str) -> Line<'static> {
 
 fn push_value_lines(lines: &mut Vec<Line<'static>>, indent: usize, label: &str, value: &Value) {
     if is_inherited_wrapper(value) || !value.is_object() {
-        lines.push(leaf_line(indent, label, render_leaf_value(value)));
+        lines.push(leaf_line(indent, label, named_leaf_value(label, value)));
         return;
     }
 
     let Some(map) = value.as_object() else {
-        lines.push(leaf_line(indent, label, render_leaf_value(value)));
+        lines.push(leaf_line(indent, label, named_leaf_value(label, value)));
         return;
     };
     if map.is_empty() {
@@ -293,7 +293,7 @@ fn push_value_lines(lines: &mut Vec<Line<'static>>, indent: usize, label: &str, 
     for key in keys {
         let child = &map[key];
         if is_inherited_wrapper(child) || !child.is_object() {
-            lines.push(leaf_line(indent, key, render_leaf_value(child)));
+            lines.push(leaf_line(indent, key, named_leaf_value(key, child)));
         } else {
             lines.push(Line::from(vec![
                 Span::raw("  ".repeat(indent)),
@@ -322,6 +322,22 @@ fn leaf_line(indent: usize, label: &str, display: LeafDisplay) -> Line<'static> 
 
 fn is_inherited_wrapper(value: &Value) -> bool {
     value.get("inherited").and_then(Value::as_bool).is_some() && value.get("value").is_some()
+}
+
+/// A leaf rendered knowing its own key, so a `*-encrypted` value is masked.
+///
+/// Those are AES-wrapped secret material AM returns on a plain `GET`. The
+/// detail pane is a screen someone screen-shares or screenshots into a ticket,
+/// and no reader can do anything with the blob anyway. Unlike the CLI diff,
+/// there is nothing here to compare against, so a constant beats a digest.
+pub(crate) fn named_leaf_value(label: &str, value: &Value) -> LeafDisplay {
+    if label.ends_with("-encrypted") && !value.is_null() {
+        return LeafDisplay {
+            text: "<encrypted>".into(),
+            inherited: false,
+        };
+    }
+    render_leaf_value(value)
 }
 
 pub(crate) fn render_leaf_value(value: &Value) -> LeafDisplay {
@@ -358,6 +374,32 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// The detail pane shows a whole client document, and AM returns
+    /// `userpassword-encrypted` on a plain GET. The discriminating case is
+    /// the second assertion: a mask keyed on the *value* rather than the key
+    /// would leave an ordinary string looking encrypted, and one keyed on a
+    /// substring would mask `userinfoEncryptedResponseAlg`, which is an
+    /// algorithm name.
+    #[test]
+    fn an_encrypted_leaf_is_masked_by_its_key() {
+        assert_eq!(
+            named_leaf_value("userpassword-encrypted", &json!("AQICWrappedBytes")).text,
+            "<encrypted>"
+        );
+        assert_eq!(
+            named_leaf_value("clientName", &json!("AQICWrappedBytes")).text,
+            "AQICWrappedBytes"
+        );
+        assert_eq!(
+            named_leaf_value(
+                "userinfoEncryptedResponseAlg",
+                &json!({"inherited": false, "value": "RSA-OAEP-256"})
+            )
+            .text,
+            "RSA-OAEP-256"
+        );
+    }
 
     #[test]
     fn render_leaf_value_unwraps_inherited_string() {
