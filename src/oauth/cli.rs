@@ -367,6 +367,27 @@ fn exchange_role_cell(row: &spec::ExchangeRow, realm_stamps: Option<bool>) -> St
     }
 }
 
+/// `tokenExchangeAuthLevel`, or `?` when it was present and unreadable.
+///
+/// `-` has to keep meaning "not set". Printing it for a value nobody could
+/// read is the same flattening this command has now removed five times.
+fn auth_level_cell(row: &spec::ExchangeRow) -> String {
+    if !row.auth_level_readable {
+        return "?".to_string();
+    }
+    row.auth_level
+        .map_or_else(|| "-".to_string(), |level| level.to_string())
+}
+
+/// The audience allow-list, or `?` when it was present and unreadable — an
+/// empty list means "cannot be asked for an audience", which is a claim.
+fn audience_cell(row: &spec::ExchangeRow) -> String {
+    if !row.audience_values_readable {
+        return "?".to_string();
+    }
+    exchange_cell(&row.audience_values)
+}
+
 /// The client's override of `acceptAudienceParametersInTokenExchangeRequests`.
 ///
 /// A column rather than a JSON-only field because it is one of the reasons a
@@ -480,10 +501,13 @@ fn exchange_json(
                     .iter()
                     .map(|(field, id)| serde_json::json!({"field": field, "script": id}))
                     .collect::<Vec<_>>(),
+                "mayActReadable": row.may_act_readable,
                 "overridesLive": row.overrides_live,
                 "mayActDormant": row.may_act_dormant(),
                 "tokenExchangeAuthLevel": row.auth_level,
+                "tokenExchangeAuthLevelReadable": row.auth_level_readable,
                 "allowedResourceServerAudienceValues": row.audience_values,
+                "allowedResourceServerAudienceValuesReadable": row.audience_values_readable,
                 "acceptAudienceParametersInTokenExchangeRequests": row.accept_audience,
                 // The client's override, not the runtime value — which this
                 // projection cannot compute. With the block dormant the realm
@@ -1351,9 +1375,8 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                             row.id.clone(),
                             exchange_role_cell(row, realm_stamps),
                             may_act_cell(row, &names),
-                            row.auth_level
-                                .map_or_else(|| "-".to_string(), |level| level.to_string()),
-                            exchange_cell(&row.audience_values),
+                            auth_level_cell(row),
+                            audience_cell(row),
                             accept_audience_cell(row),
                         ]
                     })
@@ -1536,9 +1559,12 @@ mod tests {
                 .iter()
                 .map(|(field, script)| ((*field).to_string(), (*script).to_string()))
                 .collect(),
+            may_act_readable: true,
             overrides_live: Some(overrides_live),
             auth_level: Some(0),
+            auth_level_readable: true,
             audience_values: Vec::new(),
+            audience_values_readable: true,
             accept_audience: None,
             accept_audience_readable: true,
             shape_faults: Vec::new(),
