@@ -645,6 +645,7 @@ aic oauth grant add <id> <grant>... [--realm alpha] [--yes]
 aic oauth grant remove <id> <grant>... [--realm alpha] [--yes]
 aic oauth pull <id> [--realm alpha]                     # one client → workspace JSON
 aic oauth push <id> [--realm alpha] [--force]           # push a workspace client JSON back
+aic oauth diff <id> [--local-vs-snapshot | --snapshot-vs-remote]  # compare two versions
 aic oauth delete <id> --force [--realm alpha]           # delete (requires --force)
 ```
 
@@ -694,6 +695,26 @@ available; if the schema cannot be read, AM performs the validation. The
 commands require `--yes` on production-themed tenants. Adding the JWT-bearer
 grant emits a security note because a Trusted JWT Issuer with empty
 `allowedSubjects` can then mint a token as any user in the realm.
+
+`diff` renders two versions of one client through `git diff`, so your pager and
+colour theme apply and `aic oauth diff <id> | <tool>` still pipes plain unified
+diff. Three versions exist and it compares two of them: your workspace file
+(`local`), the copy `pull` recorded (`snapshot`), and the tenant's current
+document (`tenant`). The default is tenant-vs-local — what a `push` would
+change. `--local-vs-snapshot` is your own edits, and makes no tenant request.
+`--snapshot-vs-remote` is drift on the tenant since you pulled: the comparison
+`push` refuses on.
+
+Both sides are normalised exactly the way the drift check normalises — `_rev`
+stripped, keys sorted — so `diff` and `push` can never disagree about whether
+a client changed. A side that does not exist is reported on stderr and rendered
+as empty, and a comparison where **neither** side exists (a mistyped client id)
+fails rather than reporting the two absences as identical.
+
+`push` prints the relevant diff before it refuses. On remote drift that is
+snapshot-vs-tenant — what changed under you; with no snapshot at all it is
+tenant-vs-local — what `--force` would overwrite. Rendering failures (no `git`
+on PATH) degrade to a warning so the refusal itself still reaches you.
 
 > `*-encrypted` fields are cluster-local and stripped from every client PUT;
 > server-managed metadata is also removed and `_rev` is ignored (plain PUT). See

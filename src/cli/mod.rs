@@ -14,6 +14,8 @@
 //! The required flows mix browser cookies, interactive TOTP, and RSA
 //! keygen; we haven't tried to script them. Run the TUI once per tenant.
 
+pub(crate) mod diff;
+
 use std::io::{BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
