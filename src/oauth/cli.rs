@@ -350,17 +350,36 @@ fn nothing_to_compare(id: &str, sides: &DiffSides) -> Option<String> {
 
 /// A side that does not exist renders as empty, which in a diff is
 /// indistinguishable from a side that exists and is empty. Say which it was.
+///
+/// The suggested command carries the coordinates the diff itself used. Both
+/// flags default, so a bare `aic oauth pull <id>` is only right when you are
+/// on the default tenant and realm — advising it after
+/// `--tenant staging --realm bravo` sends you to pull a different client.
 fn absent_side_note(id: &str, side: Side, tenant: &str, realm: &str) -> String {
+    let pull = format!("aic oauth pull {id} --tenant {tenant} --realm {realm}");
     match side {
-        Side::Local => format!(
-            "note: no local export for oauth client {id} — run `aic oauth pull {id}`; shown as empty"
-        ),
-        Side::Snapshot => format!(
-            "note: no snapshot for oauth client {id} — run `aic oauth pull {id}`; shown as empty"
-        ),
+        Side::Local => {
+            format!("note: no local export for oauth client {id} — run `{pull}`; shown as empty")
+        }
+        Side::Snapshot => {
+            format!("note: no snapshot for oauth client {id} — run `{pull}`; shown as empty")
+        }
         Side::Remote => {
             format!("note: oauth client {id} does not exist on {tenant}/{realm}; shown as empty")
         }
+    }
+}
+
+/// Which comparison explains a refusal.
+///
+/// Drift is a change on the tenant, so the useful view is what the tenant did
+/// since you pulled — not your own edits, which you already know about. With
+/// no snapshot there is nothing to have drifted from, so the useful view is
+/// what `--force` would overwrite.
+fn blocked_push_diff_mode(reason: &PushBlockReason) -> DiffMode {
+    match reason {
+        PushBlockReason::RemoteDrift => DiffMode::SnapshotVsRemote,
+        PushBlockReason::MissingSnapshot => DiffMode::RemoteVsLocal,
     }
 }
 
@@ -789,12 +808,12 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     // Rendered from the values the decision was made on, so
                     // the diff cannot describe a different tenant state than
                     // the refusal does.
-                    let mode = match reason {
-                        PushBlockReason::RemoteDrift => DiffMode::SnapshotVsRemote,
-                        PushBlockReason::MissingSnapshot => DiffMode::RemoteVsLocal,
-                    };
-                    let sides =
-                        diff_sides_from(mode, Some(&local), snapshot_value.as_ref(), Some(&remote));
+                    let sides = diff_sides_from(
+                        blocked_push_diff_mode(&reason),
+                        Some(&local),
+                        snapshot_value.as_ref(),
+                        Some(&remote),
+                    );
                     // A renderer failure (no `git` on PATH, say) must not
                     // replace the refusal with a story about temp files.
                     if let Err(error) = render_diff_sides(&id, &tenant, &realm, &sides) {
@@ -1272,6 +1291,43 @@ mod tests {
         let remote = json!({"v": 1});
         let one_side = diff_sides_from(DiffMode::RemoteVsLocal, None, None, Some(&remote));
         assert!(nothing_to_compare("a-client", &one_side).is_none());
+    }
+
+    /// The remedy must name the coordinates the diff used, not the defaults.
+    /// The discriminating case is a non-default pair: a bare
+    /// `aic oauth pull <id>` after `--tenant staging --realm bravo` pulls a
+    /// different client into a different workspace and reports success.
+    #[test]
+    fn the_suggested_pull_carries_the_coordinates_the_diff_used() {
+        let note = absent_side_note("a-client", Side::Local, "staging", "bravo");
+        assert!(note.contains("--tenant staging"), "{note}");
+        assert!(note.contains("--realm bravo"), "{note}");
+    }
+
+    /// The mode a refusal explains itself with. Swapping the two renders a
+    /// correct diff that answers the wrong question — on drift it would show
+    /// your own edits, which are not what changed.
+    #[test]
+    fn a_refusal_shows_the_comparison_that_caused_it() {
+        assert_eq!(
+            blocked_push_diff_mode(&PushBlockReason::RemoteDrift),
+            DiffMode::SnapshotVsRemote
+        );
+        assert_eq!(
+            blocked_push_diff_mode(&PushBlockReason::MissingSnapshot),
+            DiffMode::RemoteVsLocal
+        );
+    }
+
+    /// Through the renderer rather than the guard alone: a `render_diff_sides`
+    /// that forgot to consult `nothing_to_compare` would pass the guard's own
+    /// test and still shell out to `git` on two empty files, printing
+    /// "identical" at exit 0.
+    #[test]
+    fn the_renderer_refuses_before_diffing_two_absent_sides() {
+        let sides = diff_sides_from(DiffMode::RemoteVsLocal, None, None, None);
+        let error = render_diff_sides("typo-client", "sandbox", "alpha", &sides).unwrap_err();
+        assert!(error.to_string().contains("nothing to compare"), "{error}");
     }
 
     /// Each side's note has to name that side's own remedy: pointing at

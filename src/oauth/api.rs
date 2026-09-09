@@ -144,6 +144,10 @@ pub async fn delete_client(tenant: &str, realm: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The suffix AM puts on a cluster-local AES-wrapped value. `sanitize_for_write`
+/// strips these from every PUT; here they are redacted from every *rendering*.
+const ENCRYPTED_SUFFIX: &str = "-encrypted";
+
 fn strip_revs(value: &Value) -> Value {
     match value {
         Value::Array(values) => Value::Array(values.iter().map(strip_revs).collect()),
@@ -153,8 +157,49 @@ fn strip_revs(value: &Value) -> Value {
                 .map(|(key, value)| (key.clone(), strip_revs(value)))
                 .collect(),
         ),
+        // `serde_json::Value` compares `-0.0` and `0.0` equal but serialises
+        // them differently, which would be the one input where the drift check
+        // and the rendered diff disagreed. Collapse the sign so they cannot.
+        Value::Number(number) if number.as_f64() == Some(0.0) && !number.is_i64() => {
+            json!(0.0_f64)
+        }
         value => value.clone(),
     }
+}
+
+/// Replace every `*-encrypted` value with a digest of itself.
+///
+/// The blobs are AES-wrapped secret material. `pull` already writes them to
+/// the workspace, so this is not about the bytes existing on disk — it is that
+/// a rendered diff goes to a terminal, a pager's history, a CI log, or a
+/// pasted snippet, which the workspace file does not.
+///
+/// A digest rather than a constant, so a rotated secret still shows as a
+/// changed line. That also keeps `content_text` agreeing with
+/// [`content_equal`]: equal blobs digest equally, and unequal ones do not.
+fn redact_encrypted(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.iter().map(redact_encrypted).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    if key.ends_with(ENCRYPTED_SUFFIX) && !value.is_null() {
+                        (key.clone(), json!(encrypted_digest(value)))
+                    } else {
+                        (key.clone(), redact_encrypted(value))
+                    }
+                })
+                .collect(),
+        ),
+        value => value.clone(),
+    }
+}
+
+fn encrypted_digest(value: &Value) -> String {
+    let digest = crate::access::spec::digest(value);
+    // A prefix is enough to tell "changed" from "unchanged", which is all a
+    // diff line needs, and it keeps the row short.
+    format!("<encrypted: sha256:{}>", &digest[..16])
 }
 
 pub(crate) fn content_equal(a: &Value, b: &Value) -> bool {
@@ -170,10 +215,10 @@ pub(crate) fn content_equal(a: &Value, b: &Value) -> bool {
 /// a `BTreeMap` here (no `preserve_order` feature), so the ordering is stable
 /// across a pull, a snapshot and a fetch rather than following insertion.
 pub(crate) fn content_text(value: &Value) -> String {
+    let rendered = redact_encrypted(&strip_revs(value));
     // A `Value` always serialises, so the fallible form would only add an
     // unreachable error path to every caller.
-    serde_json::to_string_pretty(&strip_revs(value))
-        .unwrap_or_else(|_| strip_revs(value).to_string())
+    serde_json::to_string_pretty(&rendered).unwrap_or_else(|_| rendered.to_string())
 }
 
 #[cfg(test)]
@@ -342,6 +387,21 @@ mod tests {
             (json!({"a": {"v": 1}}), json!({"a": {"v": 2}})),
             (json!({"a": 1, "b": 2}), json!({"b": 2, "a": 1})),
             (json!({"a": [1, 2]}), json!({"a": [2, 1]})),
+            // The counterexample the reviewer found: `Value` compares these
+            // equal and `serde_json` serialises them differently, so an
+            // un-normalised `content_text` would render drift on a client
+            // `push` reports as unchanged.
+            (json!({"a": -0.0}), json!({"a": 0.0})),
+            // The same value under a `*-encrypted` key must survive redaction
+            // as equal, and a different one must not.
+            (
+                json!({"userpassword-encrypted": "AQIC-one"}),
+                json!({"userpassword-encrypted": "AQIC-one"}),
+            ),
+            (
+                json!({"userpassword-encrypted": "AQIC-one"}),
+                json!({"userpassword-encrypted": "AQIC-two"}),
+            ),
         ];
         for (a, b) in pairs {
             assert_eq!(
@@ -350,6 +410,34 @@ mod tests {
                 "{a} vs {b}"
             );
         }
+    }
+
+    /// `pull` writes these blobs to the workspace, but a rendered diff reaches
+    /// a terminal, a pager history and a CI log, which the workspace file does
+    /// not. The digest keeps a rotated secret visible as a changed line
+    /// without printing either value.
+    #[test]
+    fn an_encrypted_value_never_reaches_the_rendered_text() {
+        let text = content_text(&json!({
+            "coreOAuth2ClientConfig": {
+                "userpassword": null,
+                "userpassword-encrypted": "AQICSecretWrappedBytes"
+            }
+        }));
+
+        assert!(!text.contains("AQICSecretWrappedBytes"), "{text}");
+        assert!(text.contains("<encrypted: sha256:"), "{text}");
+        // The key stays, so the diff still says which field changed.
+        assert!(text.contains("userpassword-encrypted"), "{text}");
+    }
+
+    /// Rotating the secret must still show up as a changed line — a constant
+    /// mask would hide the one thing a diff of that field is for.
+    #[test]
+    fn a_rotated_encrypted_value_still_renders_as_a_change() {
+        let before = content_text(&json!({"userpassword-encrypted": "AQIC-before"}));
+        let after = content_text(&json!({"userpassword-encrypted": "AQIC-after"}));
+        assert_ne!(before, after);
     }
 
     /// Pretty-printed, so a diff is line-oriented rather than one long line
