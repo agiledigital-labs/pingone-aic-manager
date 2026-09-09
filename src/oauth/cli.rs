@@ -318,10 +318,11 @@ fn exchange_tally(total: usize, kept: usize, all: bool) -> String {
         return format!("{total} oauth clients");
     }
     let _ = all;
-    // "have exchange configuration of their own", not "take part": a client
-    // that inherits the realm's may-act script does take part, and is hidden.
+    // Not "take part": a client inheriting the realm's may-act script does
+    // take part and is hidden. What the hidden ones have in common is that
+    // they say nothing the realm header has not already said.
     format!(
-        "{kept} of {total} oauth clients carry their own token-exchange configuration ({} hidden; --all shows every client)",
+        "{kept} of {total} oauth clients differ from the realm's token-exchange defaults ({} hidden; --all shows every client)",
         total - kept
     )
 }
@@ -348,12 +349,35 @@ fn exchange_role_cell(row: &spec::ExchangeRow, realm_stamps: bool) -> String {
         spec::MayActSource::Client => Some("subject"),
         spec::MayActSource::Realm => Some("subject (realm)"),
         spec::MayActSource::None => None,
+        // A question mark, not a blank: the difference between "this client
+        // stamps nothing" and "this document did not say" is the whole point
+        // of carrying the third state.
+        spec::MayActSource::Unknown => Some("subject?"),
     };
-    match (row.actor, subject) {
-        (true, Some(subject)) => format!("actor, {subject}"),
-        (true, None) => "actor".to_string(),
-        (false, Some(subject)) => subject.to_string(),
-        (false, None) => "-".to_string(),
+    let actor = match row.actor {
+        Some(true) => Some("actor"),
+        Some(false) => None,
+        None => Some("actor?"),
+    };
+    match (actor, subject) {
+        (Some(actor), Some(subject)) => format!("{actor}, {subject}"),
+        (Some(actor), None) => actor.to_string(),
+        (None, Some(subject)) => subject.to_string(),
+        (None, None) => "-".to_string(),
+    }
+}
+
+/// The client's override of `acceptAudienceParametersInTokenExchangeRequests`.
+///
+/// A column rather than a JSON-only field because it is one of the reasons a
+/// client is listed at all: a row that differs from the realm only here would
+/// otherwise appear with every visible cell empty and no explanation. `-`
+/// means the override does not decide it and the realm's value applies.
+fn accept_audience_cell(row: &spec::ExchangeRow) -> String {
+    match row.accept_audience_override() {
+        Some(true) => "yes".to_string(),
+        Some(false) => "no".to_string(),
+        None => "-".to_string(),
     }
 }
 
@@ -404,16 +428,22 @@ fn may_act_cell(row: &spec::ExchangeRow, names: &spec::ScriptNames) -> String {
 /// answer the table gives — who acts, who stamps — and the raw documents are
 /// already reachable through `oauth get --json` and `oauth provider get
 /// --json`.
-fn exchange_json(provider: &Value, rows: &[spec::ExchangeRow], findings: &[String]) -> Value {
-    let realm_may_act = spec::provider_may_act_script(provider);
-    let realm_stamps = realm_may_act.is_some();
+fn exchange_json(
+    realm: &spec::RealmExchange,
+    rows: &[spec::ExchangeRow],
+    findings: &[String],
+) -> Value {
+    let realm_stamps = realm.may_act_script.is_some();
     serde_json::json!({
-        "tokenExchangeGranted": spec::provider_grants_token_exchange(provider),
-        "exchangers": spec::provider_exchange_classes(provider),
-        "realmMayActScript": realm_may_act,
+        // `null` where the realm's grant list could not be read — which is not
+        // the same answer as `false`.
+        "tokenExchangeGranted": realm.granted,
+        "exchangers": realm.exchangers,
+        "realmMayActScript": realm.may_act_script,
         // The realm's copy of the audience switch, so a reader can resolve a
         // client whose override is dormant.
-        "realmAcceptAudienceParameters": spec::provider_accept_audience(provider),
+        "realmAcceptAudienceParameters": realm.accept_audience,
+        "realmShapeFaults": realm.shape_faults,
         // The warnings are the point of the command, so the machine-readable
         // form carries them too. An earlier version returned before computing
         // them, which handed automation the half without the diagnosis.
@@ -427,6 +457,7 @@ fn exchange_json(provider: &Value, rows: &[spec::ExchangeRow], findings: &[Strin
                     spec::MayActSource::Client => "client",
                     spec::MayActSource::Realm => "realm",
                     spec::MayActSource::None => "none",
+                    spec::MayActSource::Unknown => "unknown",
                 },
                 "mayAct": row
                     .may_act
@@ -1223,23 +1254,21 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     .iter()
                     .map(spec::exchange_row)
                     .collect::<Vec<_>>();
+                let realm_exchange = spec::realm_exchange(&provider);
+                let realm_stamps = realm_exchange.may_act_script.is_some();
                 let kept = rows
                     .iter()
-                    .filter(|row| all || row.participates())
+                    .filter(|row| all || row.participates(realm_stamps))
                     .cloned()
                     .collect::<Vec<_>>();
 
-                let granted = spec::provider_grants_token_exchange(&provider);
-                let exchangers = spec::provider_exchange_classes(&provider);
-                let realm_may_act = spec::provider_may_act_script(&provider);
                 // Over `rows`, not `kept`: a hidden client still holds the
                 // grant, and hiding it must not hide the realm-level finding
                 // it contributes to.
-                let findings =
-                    spec::exchange_findings(granted, realm_may_act.as_deref(), &exchangers, &rows);
+                let findings = spec::exchange_findings(&realm_exchange, &rows);
 
                 if json {
-                    print_json(&exchange_json(&provider, &kept, &findings))?;
+                    print_json(&exchange_json(&realm_exchange, &kept, &findings))?;
                     return Ok(());
                 }
 
@@ -1248,16 +1277,24 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 println!("realm {realm}");
                 println!(
                     "  token-exchange granted: {}",
-                    if granted { "yes" } else { "no" }
+                    match realm_exchange.granted {
+                        Some(true) => "yes",
+                        Some(false) => "no",
+                        None => "<unreadable>",
+                    }
                 );
-                println!("  exchangers: {}", exchange_cell(&exchangers));
+                println!(
+                    "  exchangers: {}",
+                    exchange_cell(&realm_exchange.exchangers)
+                );
                 println!(
                     "  realm accessTokenMayActScript: {}",
-                    realm_may_act
+                    realm_exchange
+                        .may_act_script
                         .as_deref()
                         .map_or_else(|| "<not set>".to_string(), |id| names.label_or(id))
                 );
-                if realm_may_act.is_some() {
+                if realm_stamps {
                     // Said once here rather than on every row: with a realm
                     // script every client is a subject, which is a fact about
                     // the realm. The table below lists the clients that say
@@ -1273,11 +1310,12 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     .map(|row| {
                         vec![
                             row.id.clone(),
-                            exchange_role_cell(row, realm_may_act.is_some()),
+                            exchange_role_cell(row, realm_stamps),
                             may_act_cell(row, &names),
                             row.auth_level
                                 .map_or_else(|| "-".to_string(), |level| level.to_string()),
                             exchange_cell(&row.audience_values),
+                            accept_audience_cell(row),
                         ]
                     })
                     .collect::<Vec<_>>();
@@ -1288,6 +1326,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                         "MAY-ACT SCRIPT",
                         "AUTH_LEVEL",
                         "AUDIENCE",
+                        "ACCEPT_AUD",
                     ],
                     &table,
                 );
@@ -1453,12 +1492,12 @@ mod tests {
     ) -> spec::ExchangeRow {
         spec::ExchangeRow {
             id: id.to_string(),
-            actor,
+            actor: Some(actor),
             may_act: may_act
                 .iter()
                 .map(|(field, script)| ((*field).to_string(), (*script).to_string()))
                 .collect(),
-            overrides_live,
+            overrides_live: Some(overrides_live),
             auth_level: Some(0),
             audience_values: Vec::new(),
             accept_audience: None,
@@ -1586,11 +1625,11 @@ mod tests {
     /// which an earlier version returned before ever computing.
     #[test]
     fn the_exchange_json_keeps_the_script_id_and_the_findings() {
-        let provider = json!({
+        let provider = spec::realm_exchange(&json!({
             "advancedOAuth2Config": {
                 "grantTypes": ["urn:ietf:params:oauth:grant-type:token-exchange"],
             },
-        });
+        }));
         let rows = [exchange_row(
             "caller",
             true,
