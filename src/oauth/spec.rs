@@ -292,12 +292,107 @@ pub fn client_row(value: &Value) -> ClientRow {
 /// UUID-shaped, 2026-09-09), so this rests on the field report's description
 /// of a 1002-client tenant "dominated by dynamically-registered UUID clients".
 pub fn looks_dynamically_registered(id: &str) -> bool {
-    let groups: Vec<&str> = id.split('-').collect();
+    is_uuid(id)
+}
+
+/// The canonical 8-4-4-4-12 hex form, and nothing else.
+pub fn is_uuid(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
     groups.len() == 5
         && [8, 4, 4, 4, 12] == groups.iter().map(|g| g.len()).collect::<Vec<_>>()[..]
         && groups
             .iter()
             .all(|group| group.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// Script ids to script names, for turning a bare UUID in a config document
+/// into something a reader recognises.
+#[derive(Debug, Default, Clone)]
+pub struct ScriptNames(std::collections::BTreeMap<String, String>);
+
+impl ScriptNames {
+    pub fn new<I, K, V>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        Self(
+            entries
+                .into_iter()
+                .map(|(id, name)| (id.into(), name.into()))
+                .collect(),
+        )
+    }
+
+    fn label(&self, id: &str) -> Option<String> {
+        self.0.get(id).map(|name| format!("{name} ({id})"))
+    }
+}
+
+/// Rewrite every cell that is a bare UUID we have a name for.
+///
+/// A post-pass over finished rows rather than a hook inside each renderer, so
+/// `client_summary` and `provider_summary` gain it identically and neither has
+/// to grow a lookup parameter it would then have to thread everywhere.
+///
+/// An id with no match is left exactly as it was: a UUID naming a script this
+/// realm does not have is a real finding, and rewriting it to `<unknown>`
+/// would erase the id you need in order to go looking.
+pub fn resolve_script_ids(rows: &mut [(String, String)], names: &ScriptNames) {
+    for (_, value) in rows.iter_mut() {
+        if is_uuid(value)
+            && let Some(label) = names.label(value)
+        {
+            *value = label;
+        }
+    }
+}
+
+/// The `…Script` / `…PluginType` pairs in an override block, and the two ways
+/// they disagree — each of which AM accepts and then quietly does the opposite
+/// of what the document appears to say.
+///
+/// Pairing is derived from the keys present rather than a hardcoded list, so
+/// the may-act fields (which have **no** `…PluginType` companion — setting the
+/// id is enough) correctly produce no finding, and a pair AM adds later is
+/// covered without an edit here.
+pub fn override_faults(doc: &Value) -> Vec<String> {
+    let Some(Value::Object(config)) = doc.get(CLIENT_OVERRIDES).map(inherited_value) else {
+        return Vec::new();
+    };
+
+    // A dormant block's faults are latent, not live — enabling the block is
+    // what makes them bite. Saying so beats both alternatives: suppressing
+    // them hides a problem you are about to create, and reporting them flatly
+    // sends someone hunting a runtime effect that is not happening.
+    let dormant = overrides_enabled(doc) != Some(true);
+    let prefix = if dormant { "(dormant) " } else { "" };
+
+    let mut faults = Vec::new();
+    for (field, value) in config {
+        let Some(base) = field.strip_suffix("Script") else {
+            continue;
+        };
+        let companion = format!("{base}PluginType");
+        let Some(plugin_type) = config.get(&companion) else {
+            continue;
+        };
+        let scripted = inherited_value(plugin_type).as_str() == Some("SCRIPTED");
+        let has_script = !override_entry_inherits(field, value);
+
+        if has_script && !scripted {
+            let plugin_type = provider_value_cell(plugin_type);
+            faults.push(format!(
+                "{prefix}{field} is set but {companion} is {plugin_type}, not SCRIPTED — AM ignores the script"
+            ));
+        } else if scripted && !has_script {
+            faults.push(format!(
+                "{prefix}{companion} is SCRIPTED but {field} is not set — nothing runs"
+            ));
+        }
+    }
+    faults
 }
 
 /// Case-insensitive substring over the id and the client name.
@@ -1072,6 +1167,127 @@ mod tests {
         assert_eq!(row.status, "");
         assert_eq!(row.client_type, "");
         assert_eq!(row.grants, "");
+    }
+
+    /// A bare UUID becomes `name (uuid)`; anything else is left alone.
+    ///
+    /// The discriminating case is the last: an id with no match keeps its
+    /// UUID. A script id naming something this realm does not have is a real
+    /// finding, and rewriting it to a placeholder would erase the one value
+    /// you need to go looking with.
+    #[test]
+    fn a_known_script_id_gains_its_name_and_an_unknown_one_keeps_its_id() {
+        let names = ScriptNames::new([(
+            "f65303d2-f1ff-4beb-8787-57f9a432c5ce",
+            "TestAccessTokenModification",
+        )]);
+        let mut rows = vec![
+            (
+                "  accessTokenModificationScript".to_string(),
+                "f65303d2-f1ff-4beb-8787-57f9a432c5ce".to_string(),
+            ),
+            ("  clientType".to_string(), "Confidential".to_string()),
+            (
+                "  oidcClaimsScript".to_string(),
+                "00000000-1111-2222-3333-444444444444".to_string(),
+            ),
+        ];
+
+        resolve_script_ids(&mut rows, &names);
+
+        assert_eq!(
+            rows[0].1,
+            "TestAccessTokenModification (f65303d2-f1ff-4beb-8787-57f9a432c5ce)"
+        );
+        assert_eq!(rows[1].1, "Confidential");
+        assert_eq!(rows[2].1, "00000000-1111-2222-3333-444444444444");
+    }
+
+    /// The two ways a `…Script` and its `…PluginType` disagree, both of which
+    /// AM accepts and then quietly does the opposite of what the document
+    /// says. `JAVA` is in here because the sandbox really has clients set that
+    /// way — the rule is "not SCRIPTED", not "is PROVIDER".
+    #[test]
+    fn a_script_that_cannot_run_is_reported_with_its_reason() {
+        let doc = json!({
+            "overrideOAuth2ClientConfig": {
+                "providerOverridesEnabled": true,
+                "oidcClaimsScript": "3cde9333-4516-4561-a734-3429c83ec570",
+                "oidcClaimsPluginType": "PROVIDER",
+                "validateScopeScript": "9c98f803-f352-480a-99d6-e57428f075a5",
+                "validateScopePluginType": "JAVA",
+                "evaluateScopeScript": "[Empty]",
+                "evaluateScopePluginType": "SCRIPTED"
+            }
+        });
+
+        let faults = override_faults(&doc);
+
+        assert_eq!(faults.len(), 3, "{faults:#?}");
+        assert!(
+            faults.iter().any(|f| f.contains("oidcClaimsScript is set")
+                && f.contains("is PROVIDER, not SCRIPTED")),
+            "{faults:#?}"
+        );
+        assert!(
+            faults.iter().any(|f| f.contains("is JAVA, not SCRIPTED")),
+            "{faults:#?}"
+        );
+        assert!(
+            faults
+                .iter()
+                .any(|f| f.contains("evaluateScopePluginType is SCRIPTED")
+                    && f.contains("nothing runs")),
+            "{faults:#?}"
+        );
+    }
+
+    /// A configuration that agrees with itself produces nothing — and neither
+    /// do the may-act fields, which have **no** `…PluginType` companion at
+    /// all. Pairing off the keys present is what gets that right; a hardcoded
+    /// list of five pairs would have needed the exception written down.
+    #[test]
+    fn a_consistent_block_and_the_companionless_fields_report_nothing() {
+        let doc = json!({
+            "overrideOAuth2ClientConfig": {
+                "providerOverridesEnabled": true,
+                "accessTokenModificationScript": "f65303d2-f1ff-4beb-8787-57f9a432c5ce",
+                "accessTokenModificationPluginType": "SCRIPTED",
+                "validateScopeScript": "[Empty]",
+                "validateScopePluginType": "PROVIDER",
+                "accessTokenMayActScript": "9c98f803-f352-480a-99d6-e57428f075a5",
+                "oidcMayActScript": "[Empty]"
+            }
+        });
+
+        assert!(
+            override_faults(&doc).is_empty(),
+            "{:#?}",
+            override_faults(&doc)
+        );
+    }
+
+    /// A dormant block's faults are latent, and saying which is the point:
+    /// suppressing them hides what enabling the block would create, and
+    /// reporting them flatly sends someone hunting a runtime effect that is
+    /// not happening.
+    #[test]
+    fn a_dormant_blocks_faults_are_marked_as_not_yet_biting() {
+        let mut doc = json!({
+            "overrideOAuth2ClientConfig": {
+                "providerOverridesEnabled": false,
+                "oidcClaimsScript": "3cde9333-4516-4561-a734-3429c83ec570",
+                "oidcClaimsPluginType": "PROVIDER"
+            }
+        });
+
+        let dormant = override_faults(&doc);
+        assert_eq!(dormant.len(), 1);
+        assert!(dormant[0].starts_with("(dormant) "), "{dormant:?}");
+
+        doc["overrideOAuth2ClientConfig"]["providerOverridesEnabled"] = json!(true);
+        let live = override_faults(&doc);
+        assert!(!live[0].starts_with("(dormant)"), "{live:?}");
     }
 
     /// The projection was measured raw, and the reader is deliberately built
