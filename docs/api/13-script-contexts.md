@@ -95,6 +95,18 @@ Cross-context shape facts (worth knowing before hand-writing types):
   family; 64 members).
 - `identity` is byte-identical across the five contexts that have it (7 members,
   `ScriptedIdentityScriptWrapper`), and matches `OIDC_CLAIMS_NEXT_GEN`.
+  **Identical shape is not identical usefulness.** In the token-endpoint
+  contexts the binding is present and its inner `AMIdentity` is `null`, so the
+  first method call throws
+  `InternalError: Cannot invoke "…AMIdentity.getName()" because "this.amIdentity"
+  is null` and takes the whole token request with it. Measured on
+  `OAUTH2_VALIDATE_SCOPE_NEXT_GEN` for `client_credentials` and token exchange
+  (2026-09-10) and for `password` (2026-08-25,
+  [22-token-exchange.md](22-token-exchange.md#identity-is-bound-but-empty-use-requestproperties));
+  `authorization_code`, which has a real session, is **unprobed**. Recover the
+  resource owner from `requestProperties.requestParams` instead. A binding list
+  says which names exist, never that a name is populated on the grant you are
+  serving.
 - `emailService` (two `send` overloads) is identical in all six and appears
   **only** in the OAuth2 family — not in scripted decision, library, or OIDC
   claims.

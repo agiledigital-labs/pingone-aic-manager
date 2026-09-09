@@ -146,6 +146,91 @@ duplicated `scope` to its FIRST occurrence and issued a token for that alone,
 so the script and the platform can read the same request differently. Details in
 `docs/api/12-script-bindings-matrix.md`.
 
+## The token-exchange lane (`fixtures-exchange/`)
+
+A third lane, for RFC 8693. The OAuth2 lane drives one client on
+`client_credentials`; an exchange needs **two** — a subject client whose tokens
+carry `may_act`, and an actor client holding the token-exchange grant — so this
+is a separate runner rather than a flag.
+
+```bash
+SUBJECT_SECRET_FILE=/path/to/subject ACTOR_SECRET_FILE=/path/to/actor \
+  scripts/rhino-script-tester/run-exchange-probes.sh [case ...]
+```
+
+**It runs in `bravo`, and only bravo.** The sandbox's `alpha` realm configures
+the same four `tokenExchangeClasses` but omits the grant from
+`advancedOAuth2Config.grantTypes`, so every exchange there fails
+`unsupported_grant_type` before any script runs — every case would look
+identical and prove nothing. `aic oauth exchange list --realm alpha` says so in
+one line, and is worth running first.
+
+Four cases, and the two controls are what make the other two mean anything:
+
+| Case | may-act | validate-scope | Grant | What it settles |
+| ---- | ------- | -------------- | ----- | ---------------- |
+| `control-cc` | stamps | identity probe | `client_credentials` | The wiring works, **and** what `identity` is on a grant that is not an exchange |
+| `control-exchange` | stamps | passthrough | exchange | The exchange itself works with this client pair |
+| `identity` | stamps | identity probe | exchange | D3 — compare its log line with `control-cc`'s |
+| `no-may-act` | **silent** | passthrough | exchange | D6 — one line removed, nothing else changed |
+
+`no-may-act` is the discriminating case for the whole feature: same clients,
+same scopes, same validate-scope script, and only the `setMayAct` call gone.
+Answer (2026-09-10): `200` with the scope intact becomes
+`400 invalid_request: Invalid token exchange.`, while the subject token is
+issued normally in both runs.
+
+`control-cc` earned its place immediately. The gap report framed the empty
+`identity` as a token-exchange quirk; the control logged the **identical**
+`this.amIdentity is null` on `client_credentials`, so the real rule is about
+the absence of a resource owner, not about the exchange. Without the control
+the wrong conclusion would have looked verified.
+
+### Recreating the four tenant objects
+
+All throwaway, all minted ids, all deleted when a run is finished — so none of
+this can clobber a reserved id (see the warning above). Note `create` picks the
+`_NEXT_GEN` context for you now, so the context name below is the plain one.
+
+```sh
+# 1. the two scripts
+aic script create bravo/AIC-MayAct-Probe --context OAUTH2_MAY_ACT_NEXT_GEN \
+  --from scripts/rhino-script-tester/fixtures-exchange/mayact-silent.mayact.js --yes
+aic script create bravo/AIC-XchgScope-Probe --context OAUTH2_VALIDATE_SCOPE_NEXT_GEN \
+  --from scripts/rhino-script-tester/fixtures-exchange/control-passthrough.validate.js --yes
+aic script list bravo --no-default | grep AIC-        # note both ids
+
+# 2. the two clients
+aic oauth create aic-probe-xchg-subject --realm bravo --client-type Confidential \
+  --grant client_credentials --scope aicedit-probe --scope aicedit-probe-keep \
+  --token-endpoint-auth-method client_secret_post --generate-secret
+aic oauth create aic-probe-xchg-actor --realm bravo --client-type Confidential \
+  --grant urn:ietf:params:oauth:grant-type:token-exchange \
+  --scope aicedit-probe --scope aicedit-probe-keep \
+  --token-endpoint-auth-method client_secret_post --generate-secret
+
+# 3. attach the scripts. Still no flag for the override block (GAPS T1/T13):
+#    pull, edit, push. On BOTH clients set
+#      overrideOAuth2ClientConfig.providerOverridesEnabled = true
+#                                .validateScopePluginType  = "SCRIPTED"
+#                                .validateScopeScript      = "<AIC-XchgScope-Probe id>"
+#    and on the SUBJECT only
+#                                .accessTokenMayActScript  = "<AIC-MayAct-Probe id>"
+aic oauth pull aic-probe-xchg-subject --realm bravo   # edit, then push
+aic oauth push aic-probe-xchg-subject --realm bravo
+
+# 4. check the shape before probing anything
+aic oauth exchange list --realm bravo
+```
+
+Put each printed secret in a file **outside the repo**. The validate-scope
+script goes on both clients on purpose: the scope gate lives on the **acting**
+client, and `control-cc` needs it on the subject.
+
+`mayact-stamp.mayact.js` names the actor through the literal
+`AIC_ACTOR_CLIENT_ID`, which the runner substitutes. The committed fixture
+therefore carries no tenant-specific value.
+
 ### Reading a probe's output
 
 The runner records only what the **client** sees. A fixture that logs — the
