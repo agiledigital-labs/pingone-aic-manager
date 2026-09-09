@@ -699,7 +699,7 @@ non-zero auth level, or something in its configuration could not be read. The
 tally says how many were hidden; `--all` lists every client.
 
 The subject half is the **effective** answer, not the configured one, and the
-three cases differ:
+cases differ:
 
 - a live client override with a script — shown as `subject`;
 - **no live override** while the realm sets `accessTokenMayActScript` — shown
@@ -736,7 +736,7 @@ not). It has four values, because three of them are not the same answer:
 in which case the header's `realm acceptAudienceParameters` line is what
 applies; `block default` when the block is live but the field absent, where the
 override block's own default governs and this listing never sees it; and `?`
-when the master switch could not be read. Worth reading with `AUDIENCE`,
+when the master switch or the field itself could not be read. Worth reading with `AUDIENCE`,
 because a client that accepts no audience parameters silently **ignores** an
 `audience=` it is sent rather than rejecting it.
 

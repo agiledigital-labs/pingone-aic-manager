@@ -344,7 +344,7 @@ fn exchange_cell(values: &[String]) -> String {
 /// override stamps nothing, and a client with no override at all is a subject
 /// when the realm has a script. Reading the client alone got all three cases
 /// wrong.
-fn exchange_role_cell(row: &spec::ExchangeRow, realm_stamps: bool) -> String {
+fn exchange_role_cell(row: &spec::ExchangeRow, realm_stamps: Option<bool>) -> String {
     let subject = match spec::may_act_source(row, realm_stamps) {
         spec::MayActSource::Client => Some("subject"),
         spec::MayActSource::Realm => Some("subject (realm)"),
@@ -378,6 +378,10 @@ fn exchange_role_cell(row: &spec::ExchangeRow, realm_stamps: bool) -> String {
 /// absent falls back to the *block's* own default, which this projection never
 /// sees, and an unreadable switch means nobody knows.
 fn accept_audience_cell(row: &spec::ExchangeRow) -> String {
+    if !row.accept_audience_readable {
+        // Present and unreadable is not absent, so it is not `block default`.
+        return "?".to_string();
+    }
     match (row.overrides_live, row.accept_audience) {
         (Some(true), Some(true)) => "yes".to_string(),
         (Some(true), Some(false)) => "no".to_string(),
@@ -442,7 +446,7 @@ fn exchange_json(
     rows: &[spec::ExchangeRow],
     findings: &[String],
 ) -> Value {
-    let realm_stamps = realm.stamps().unwrap_or(false);
+    let realm_stamps = realm.stamps();
     serde_json::json!({
         // `null` where the realm's grant list could not be read — which is not
         // the same answer as `false`.
@@ -454,6 +458,7 @@ fn exchange_json(
         "realmAcceptAudienceParameters": realm.accept_audience,
         "realmMayActReadable": realm.may_act_readable,
         "realmExchangersReadable": realm.exchangers_readable,
+        "realmAcceptAudienceReadable": realm.accept_audience_readable,
         "realmShapeFaults": realm.shape_faults,
         // The warnings are the point of the command, so the machine-readable
         // form carries them too. An earlier version returned before computing
@@ -485,6 +490,7 @@ fn exchange_json(
                 // decides; with it live but the field absent, the block's own
                 // default does, and that default is not in the projection.
                 "acceptAudienceParametersOverride": row.accept_audience_override(),
+                "acceptAudienceParametersReadable": row.accept_audience_readable,
                 "shapeFaults": row.shape_faults,
             }))
             .collect::<Vec<_>>(),
@@ -1266,10 +1272,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     .map(spec::exchange_row)
                     .collect::<Vec<_>>();
                 let realm_exchange = spec::realm_exchange(&provider);
-                // Unreadable counts as "does not stamp" for the *filter* only
-                // — showing a client is cheap, and every such row also carries
-                // the fault that says why.
-                let realm_stamps = realm_exchange.stamps().unwrap_or(false);
+                let realm_stamps = realm_exchange.stamps();
                 let kept = rows
                     .iter()
                     .filter(|row| all || row.participates(realm_stamps))
@@ -1299,16 +1302,24 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 );
                 println!(
                     "  exchangers: {}",
-                    exchange_cell(&realm_exchange.exchangers)
+                    if realm_exchange.exchangers_readable {
+                        exchange_cell(&realm_exchange.exchangers)
+                    } else {
+                        "<unreadable>".to_string()
+                    }
                 );
                 println!(
                     "  realm accessTokenMayActScript: {}",
-                    realm_exchange
-                        .may_act_script
-                        .as_deref()
-                        .map_or_else(|| "<not set>".to_string(), |id| names.label_or(id))
+                    match (
+                        realm_exchange.may_act_readable,
+                        realm_exchange.may_act_script.as_deref(),
+                    ) {
+                        (true, Some(id)) => names.label_or(id),
+                        (true, None) => "<not set>".to_string(),
+                        (false, _) => "<unreadable>".to_string(),
+                    }
                 );
-                if realm_stamps {
+                if realm_stamps == Some(true) {
                     // Said once here rather than on every row: with a realm
                     // script every client is a subject, which is a fact about
                     // the realm. The table below lists the clients that say
@@ -1321,10 +1332,14 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 // `realm` means nothing without this line.
                 println!(
                     "  realm acceptAudienceParameters: {}",
-                    match realm_exchange.accept_audience {
-                        Some(true) => "yes",
-                        Some(false) => "no",
-                        None => "<not set>",
+                    match (
+                        realm_exchange.accept_audience_readable,
+                        realm_exchange.accept_audience,
+                    ) {
+                        (true, Some(true)) => "yes",
+                        (true, Some(false)) => "no",
+                        (true, None) => "<not set>",
+                        (false, _) => "<unreadable>",
                     }
                 );
                 println!();
@@ -1525,6 +1540,7 @@ mod tests {
             auth_level: Some(0),
             audience_values: Vec::new(),
             accept_audience: None,
+            accept_audience_readable: true,
             shape_faults: Vec::new(),
         }
     }
@@ -1601,17 +1617,17 @@ mod tests {
             exchange_row("both", true, &[("accessTokenMayActScript", "s1")], true);
 
         assert_eq!(
-            exchange_role_cell(&acts_and_stamps, false),
+            exchange_role_cell(&acts_and_stamps, Some(false)),
             "actor, subject"
         );
         assert_eq!(
-            exchange_role_cell(&exchange_row("a", true, &[], false), false),
+            exchange_role_cell(&exchange_row("a", true, &[], false), Some(false)),
             "actor"
         );
         assert_eq!(
             exchange_role_cell(
                 &exchange_row("s", false, &[("oidcMayActScript", "s1")], true),
-                false
+                Some(false)
             ),
             "subject"
         );
@@ -1626,12 +1642,12 @@ mod tests {
 
         // A dormant override stamps nothing. With no realm script it is not a
         // subject at all — the first version called it one.
-        assert_eq!(exchange_role_cell(&dormant, false), "-");
+        assert_eq!(exchange_role_cell(&dormant, Some(false)), "-");
         // ...and with a realm script it is a subject, but by inheritance.
-        assert_eq!(exchange_role_cell(&dormant, true), "subject (realm)");
+        assert_eq!(exchange_role_cell(&dormant, Some(true)), "subject (realm)");
         // A client with no override of its own was invisible before.
-        assert_eq!(exchange_role_cell(&bare, false), "-");
-        assert_eq!(exchange_role_cell(&bare, true), "subject (realm)");
+        assert_eq!(exchange_role_cell(&bare, Some(false)), "-");
+        assert_eq!(exchange_role_cell(&bare, Some(true)), "subject (realm)");
     }
 
     #[test]
