@@ -32,6 +32,61 @@ fn validate_client_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The fields a listing row is built from.
+///
+/// Measured 2026-09-09: `_fields` takes `group/field` paths on this collection
+/// and returns the nested values **unwrapped** — `"clientType": "Confidential"`
+/// rather than the `{inherited, value}` envelope a single-client `GET` returns.
+/// So a row reads these directly and must not be fed through `inherited_value`.
+const LIST_FIELDS: &str = "_id,coreOAuth2ClientConfig/clientName,coreOAuth2ClientConfig/clientType,coreOAuth2ClientConfig/status,advancedOAuth2ClientConfig/grantTypes";
+
+/// List clients as whole rows. See [`list_clients`] for the ids alone.
+pub async fn list_client_rows(tenant: &str, realm: &str) -> Result<Vec<Value>> {
+    let mut rows = Vec::new();
+    let mut cookie: Option<String> = None;
+
+    loop {
+        let query = {
+            let mut query = Serializer::new(String::new());
+            query
+                .append_pair("_queryFilter", "true")
+                .append_pair("_fields", LIST_FIELDS)
+                .append_pair("_pageSize", "1000");
+            if let Some(cookie) = cookie.as_deref() {
+                query.append_pair("_pagedResultsCookie", cookie);
+            }
+            query.finish()
+        };
+
+        let path = format!("{}?{}", clients_path(realm), query);
+        let body = crate::aic::api::get_versioned(tenant, &path, API_VERSION).await?;
+        let result = body
+            .get("result")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Api {
+                status: 0,
+                body: format!("unexpected oauth client list shape: {body}"),
+            })?;
+        rows.extend(result.iter().cloned());
+
+        cookie = body
+            .get("pagedResultsCookie")
+            .and_then(Value::as_str)
+            .filter(|cookie| !cookie.is_empty())
+            .map(str::to_owned);
+        if cookie.is_none() {
+            break;
+        }
+    }
+
+    rows.sort_by(|a, b| {
+        a.get("_id")
+            .and_then(Value::as_str)
+            .cmp(&b.get("_id").and_then(Value::as_str))
+    });
+    Ok(rows)
+}
+
 pub async fn list_clients(tenant: &str, realm: &str) -> Result<Vec<String>> {
     let mut ids = Vec::new();
     let mut cookie: Option<String> = None;

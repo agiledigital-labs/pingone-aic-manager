@@ -243,6 +243,106 @@ fn normalized_inherited_value(value: &Value) -> Value {
     }
 }
 
+/// One row of `aic oauth list`.
+///
+/// Built from the listing projection, whose nested values arrive **unwrapped**
+/// (measured 2026-09-09) — so no `inherited_value` here, unlike
+/// [`client_summary`], which reads a single-client `GET`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientRow {
+    pub id: String,
+    pub name: String,
+    pub client_type: String,
+    pub status: String,
+    pub grants: String,
+    /// AM mints a UUID `client_id` for a client registered through DCR, so a
+    /// UUID-shaped id is how a listing tells the dynamic ones from the ones
+    /// someone named. See [`looks_dynamically_registered`] for what that does
+    /// and does not prove.
+    pub uuid_id: bool,
+}
+
+pub fn client_row(value: &Value) -> ClientRow {
+    let core = value.get("coreOAuth2ClientConfig");
+    let advanced = value.get("advancedOAuth2ClientConfig");
+    let id = value
+        .get("_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    ClientRow {
+        uuid_id: looks_dynamically_registered(&id),
+        name: first_string(core, "clientName"),
+        client_type: plain_string(core, "clientType"),
+        status: plain_string(core, "status"),
+        grants: join_strings(advanced, "grantTypes"),
+        id,
+    }
+}
+
+/// Does this id have the shape AM generates for a dynamic registration?
+///
+/// It tests the **id**, not the provenance: AM records nothing that says a
+/// client came from DCR, so this is the observable, not the property. A
+/// hand-made client given a UUID id matches, and a dynamic registration that
+/// supplied its own `client_id` does not. That is why the CLI counts what the
+/// flag hid rather than quietly shortening the list.
+///
+/// Unverified against a real DCR client: the sandbox has none (0 of 46 ids are
+/// UUID-shaped, 2026-09-09), so this rests on the field report's description
+/// of a 1002-client tenant "dominated by dynamically-registered UUID clients".
+pub fn looks_dynamically_registered(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.len() == 5
+        && [8, 4, 4, 4, 12] == groups.iter().map(|g| g.len()).collect::<Vec<_>>()[..]
+        && groups
+            .iter()
+            .all(|group| group.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// Case-insensitive substring over the id and the client name.
+///
+/// Both, because the two disagree in practice and either can be the one you
+/// remember: the field report's ticket said `ParticipantMobileApplicationV2`
+/// and the tenant had `ParticipantMobileAppV2`.
+pub fn row_matches(row: &ClientRow, needle: &str) -> bool {
+    let needle = needle.to_ascii_lowercase();
+    row.id.to_ascii_lowercase().contains(&needle) || row.name.to_ascii_lowercase().contains(&needle)
+}
+
+fn plain_string(group: Option<&Value>, field: &str) -> String {
+    group
+        .and_then(|group| group.get(field))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `clientName` is an array with at most one useful value.
+fn first_string(group: Option<&Value>, field: &str) -> String {
+    group
+        .and_then(|group| group.get(field))
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn join_strings(group: Option<&Value>, field: &str) -> String {
+    let Some(values) = group
+        .and_then(|group| group.get(field))
+        .and_then(Value::as_array)
+    else {
+        return String::new();
+    };
+    values
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 const CLIENT_OVERRIDES: &str = "overrideOAuth2ClientConfig";
 const DEFAULT_PLUGIN_CLASS_PREFIX: &str = "org.forgerock.oauth2.core.plugins.registry.Default";
 const NOT_SET: &str = "[Empty]";
@@ -862,6 +962,86 @@ mod tests {
             .filter(|(name, _)| name == field)
             .map(|(_, value)| value.as_str())
             .collect()
+    }
+
+    /// The listing projection returns nested values **unwrapped** — measured
+    /// 2026-09-09 — unlike the single-client `GET`. The discriminating case is
+    /// the second row: feeding a listing row through `inherited_value` would
+    /// work on this shape and then silently print `{"inherited":...}` if the
+    /// projection ever changed, so the test pins the shape we measured.
+    #[test]
+    fn a_listing_row_reads_the_unwrapped_projection() {
+        let row = client_row(&json!({
+            "_id": "service_C1",
+            "_rev": "594475566",
+            "coreOAuth2ClientConfig": {
+                "clientName": ["service_C1"],
+                "clientType": "Confidential",
+                "status": "Active"
+            },
+            "advancedOAuth2ClientConfig": {
+                "grantTypes": ["client_credentials", "password"]
+            }
+        }));
+
+        assert_eq!(row.id, "service_C1");
+        assert_eq!(row.name, "service_C1");
+        assert_eq!(row.client_type, "Confidential");
+        assert_eq!(row.status, "Active");
+        assert_eq!(row.grants, "client_credentials, password");
+        assert!(!row.uuid_id);
+    }
+
+    /// `AicEdit` on the sandbox really has `status: null` and no client name,
+    /// so a row has to survive both without inventing a value. The empty
+    /// string is deliberate: the `-` is added at the table, so a filter
+    /// cannot match on it.
+    #[test]
+    fn a_row_with_nothing_set_reads_as_empty_not_as_a_placeholder() {
+        let row = client_row(&json!({
+            "_id": "AicEdit",
+            "coreOAuth2ClientConfig": {"clientName": null, "status": null}
+        }));
+
+        assert_eq!(row.name, "");
+        assert_eq!(row.status, "");
+        assert_eq!(row.client_type, "");
+        assert_eq!(row.grants, "");
+    }
+
+    /// The filter searches both id and name because they disagree in
+    /// practice, and either is the one you remember. The discriminating case
+    /// is the third: the ticket said `ParticipantMobileApplicationV2` and the
+    /// tenant had `ParticipantMobileAppV2`, so an id-only filter finds it from
+    /// a name and a name-only filter finds it from an id.
+    #[test]
+    fn the_filter_searches_the_id_and_the_name() {
+        let row = client_row(&json!({
+            "_id": "ParticipantMobileAppV2",
+            "coreOAuth2ClientConfig": {"clientName": ["Participant Mobile"]}
+        }));
+
+        assert!(row_matches(&row, "mobileapp"), "id, case-insensitively");
+        assert!(row_matches(&row, "Participant Mobile"), "name");
+        assert!(!row_matches(&row, "digital"));
+    }
+
+    /// What `--no-dynamic` tests is the id's shape. The discriminating cases
+    /// are the near-misses: a name that merely contains a UUID, and a
+    /// hex-length-correct id with a non-hex character.
+    #[test]
+    fn only_a_bare_uuid_id_reads_as_dynamically_registered() {
+        assert!(looks_dynamically_registered(
+            "004e86a1-1b7a-4cf7-9e2d-48e74a1bc1c0"
+        ));
+        assert!(!looks_dynamically_registered(
+            "client-004e86a1-1b7a-4cf7-9e2d-48e74a1bc1c0"
+        ));
+        assert!(!looks_dynamically_registered(
+            "004e86a1-1b7a-4cf7-9e2d-48e74a1bc1cg"
+        ));
+        assert!(!looks_dynamically_registered("ParticipantMobileAppV2"));
+        assert!(!looks_dynamically_registered(""));
     }
 
     fn summary_row(rows: &[(String, String)], label: &str) -> Vec<String> {

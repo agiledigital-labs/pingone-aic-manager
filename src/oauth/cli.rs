@@ -131,8 +131,16 @@ pub enum ProviderCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum OauthCommand {
-    /// List OAuth2 client ids in a realm.
+    /// List OAuth2 clients in a realm.
     List {
+        /// Only clients whose id or client name contains TEXT.
+        #[arg(long, value_name = "TEXT")]
+        filter: Option<String>,
+        /// Hide clients whose id is a bare UUID, which is what AM mints for a
+        /// dynamic registration. Tests the id, not the provenance — the count
+        /// of what it hid is printed.
+        #[arg(long = "no-dynamic")]
+        no_dynamic: bool,
         #[arg(long)]
         realm: Option<String>,
         #[arg(long)]
@@ -218,6 +226,43 @@ pub enum OauthCommand {
         #[arg(long)]
         tenant: Option<String>,
     },
+}
+
+/// A field the tenant does not set, as the `-` the other tables here use.
+///
+/// Presentation only: `ClientRow` keeps the empty string, so `--filter -` does
+/// not match every unnamed client. Some clients really have `status: null` —
+/// `AicEdit` on the sandbox does — and a blank cell reads as a bug.
+fn absent_cell(value: &str) -> String {
+    if value.is_empty() {
+        "-".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// What the listing did, in one line.
+///
+/// A filtered list that only says how many rows it printed is the version that
+/// gets misread: `--no-dynamic` on a tenant where a real client happens to
+/// have a UUID id hides it, and the operator has no way to notice. Say how
+/// many were hidden and by which flag.
+fn list_tally(total: usize, kept: usize, filter: &Option<String>, no_dynamic: bool) -> String {
+    if kept == total {
+        return format!("{total} oauth clients");
+    }
+    let mut by = Vec::new();
+    if let Some(needle) = filter {
+        by.push(format!("--filter {needle:?}"));
+    }
+    if no_dynamic {
+        by.push("--no-dynamic".to_string());
+    }
+    format!(
+        "{kept} of {total} oauth clients ({} hidden by {})",
+        total - kept,
+        by.join(" and ")
+    )
 }
 
 fn validate_client_id(id: &str) -> Result<()> {
@@ -714,23 +759,47 @@ async fn run_grant_change(args: GrantChangeArgs, operation: spec::GrantOperation
 pub async fn run(cmd: OauthCommand) -> Result<()> {
     match cmd {
         OauthCommand::List {
+            filter,
+            no_dynamic,
             realm,
             tenant,
             json,
         } => {
             let tenant = tenant_for(tenant)?;
             let realm = realm_arg("oauth", realm)?;
-            let clients = api::list_clients(&tenant, &realm).await?;
+            let all = api::list_client_rows(&tenant, &realm)
+                .await?
+                .iter()
+                .map(spec::client_row)
+                .collect::<Vec<_>>();
+            let kept = all
+                .iter()
+                .filter(|row| filter.as_deref().is_none_or(|n| spec::row_matches(row, n)))
+                .filter(|row| !(no_dynamic && row.uuid_id))
+                .collect::<Vec<_>>();
+
             if json {
-                print_json(&clients)?;
+                // Still ids, as before: `--json` on a list is what a script
+                // pipes into the next command, and widening it would break
+                // every one of those.
+                let ids = kept.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+                print_json(&ids)?;
             } else {
-                let rows = clients
+                let rows = kept
                     .iter()
-                    .map(|id| vec![id.clone()])
+                    .map(|row| {
+                        vec![
+                            row.id.clone(),
+                            absent_cell(&row.name),
+                            absent_cell(&row.client_type),
+                            absent_cell(&row.status),
+                            absent_cell(&row.grants),
+                        ]
+                    })
                     .collect::<Vec<_>>();
-                print_table(&["CLIENT_ID"], &rows);
+                print_table(&["CLIENT_ID", "NAME", "TYPE", "STATUS", "GRANTS"], &rows);
             }
-            eprintln!("{} oauth clients", clients.len());
+            eprintln!("{}", list_tally(all.len(), kept.len(), &filter, no_dynamic));
             Ok(())
         }
         OauthCommand::Get {
@@ -1385,6 +1454,41 @@ mod tests {
         let remote = json!({"v": 1});
         let one_side = diff_sides_from(DiffMode::RemoteVsLocal, None, None, Some(&remote));
         assert!(nothing_to_compare("a-client", &one_side).is_none());
+    }
+
+    /// An unfiltered listing says the plain count; a filtered one has to say
+    /// what it hid and which flag hid it. The discriminating case is the
+    /// third: `--no-dynamic` can hide a real client whose id happens to be a
+    /// UUID, and a tally that only reported the rows printed would give the
+    /// operator no way to notice.
+    #[test]
+    fn a_filtered_listing_says_what_it_hid_and_why() {
+        assert_eq!(list_tally(46, 46, &None, false), "46 oauth clients");
+        assert_eq!(
+            list_tally(46, 5, &Some("test".into()), false),
+            "5 of 46 oauth clients (41 hidden by --filter \"test\")"
+        );
+        assert_eq!(
+            list_tally(1002, 12, &None, true),
+            "12 of 1002 oauth clients (990 hidden by --no-dynamic)"
+        );
+        assert_eq!(
+            list_tally(1002, 3, &Some("participant".into()), true),
+            "3 of 1002 oauth clients (999 hidden by --filter \"participant\" and --no-dynamic)"
+        );
+    }
+
+    /// Presentation only. A `ClientRow` keeps the empty string so a filter
+    /// cannot match the placeholder — `--filter -` must not return every
+    /// unnamed client.
+    #[test]
+    fn an_unset_field_is_a_dash_in_the_table_and_empty_in_the_row() {
+        assert_eq!(absent_cell(""), "-");
+        assert_eq!(absent_cell("Active"), "Active");
+
+        let row = spec::client_row(&json!({"_id": "AicEdit"}));
+        assert_eq!(row.status, "");
+        assert!(!spec::row_matches(&row, "-"));
     }
 
     /// `get` exists because reading a client used to mean `pull`, which
