@@ -59,6 +59,25 @@ const LIST_FIELDS: &str = "_id,coreOAuth2ClientConfig/clientName,coreOAuth2Clien
 /// setting the script id is enough.
 const EXCHANGE_FIELDS: &str = "_id,advancedOAuth2ClientConfig/grantTypes,advancedOAuth2ClientConfig/tokenExchangeAuthLevel,advancedOAuth2ClientConfig/allowedResourceServerAudienceValues,overrideOAuth2ClientConfig/providerOverridesEnabled,overrideOAuth2ClientConfig/acceptAudienceParametersInTokenExchangeRequests,overrideOAuth2ClientConfig/accessTokenMayActScript,overrideOAuth2ClientConfig/oidcMayActScript";
 
+/// The cookie for the next page, or `None` when this was the last one.
+///
+/// Errors rather than stopping when the field is present with an unusable
+/// type: silently ending a listing early is how an incomplete population
+/// becomes a confident answer about "every client".
+fn next_page_cookie(body: &Value) -> Result<Option<String>> {
+    match body.get("pagedResultsCookie") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(cookie)) if cookie.is_empty() => Ok(None),
+        Some(Value::String(cookie)) => Ok(Some(cookie.clone())),
+        Some(other) => Err(Error::Api {
+            status: 0,
+            body: format!(
+                "oauth client listing returned a `pagedResultsCookie` that is not a string ({other}); refusing rather than silently stopping mid-listing"
+            ),
+        }),
+    }
+}
+
 /// List clients as whole rows. See [`list_clients`] for the ids alone.
 pub async fn list_client_rows(tenant: &str, realm: &str) -> Result<Vec<Value>> {
     list_projected_rows(tenant, realm, LIST_FIELDS).await
@@ -120,11 +139,12 @@ async fn list_projected_rows(tenant: &str, realm: &str, fields: &str) -> Result<
         }
         rows.extend(result.iter().cloned());
 
-        cookie = body
-            .get("pagedResultsCookie")
-            .and_then(Value::as_str)
-            .filter(|cookie| !cookie.is_empty())
-            .map(str::to_owned);
+        // A present cookie of the wrong type used to read as end-of-results,
+        // so a realm past one page silently handed a partial client list to
+        // findings that then spoke about "every client". Absent, null and the
+        // empty string are the real terminators; anything else is a shape this
+        // reader does not understand.
+        cookie = next_page_cookie(&body)?;
         if cookie.is_none() {
             break;
         }
@@ -172,11 +192,7 @@ pub async fn list_clients(tenant: &str, realm: &str) -> Result<Vec<String>> {
                 .map(str::to_owned),
         );
 
-        cookie = body
-            .get("pagedResultsCookie")
-            .and_then(Value::as_str)
-            .filter(|cookie| !cookie.is_empty())
-            .map(str::to_owned);
+        cookie = next_page_cookie(&body)?;
         if cookie.is_none() {
             break;
         }

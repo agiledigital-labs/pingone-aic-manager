@@ -765,15 +765,20 @@ permits — the may-act script decides that at mint time — so the relationship
 only fully readable by reading the script this command names.
 
 A projected field that is **present with an unusable type** is reported, and
-the answer it feeds is withheld rather than defaulted. It matters here more
+the answer it feeds is withheld rather than defaulted — `?` in a cell, `null`
+in JSON beside a `…Readable: false`, never the `-` that means "not set". It matters here more
 than elsewhere: a `grantTypes` that stopped being an array would quietly turn
 an actor into a bystander in the one view whose job is to say who can act, and
 a warning printed under "no client holds the grant" does not make that sentence
 true. So an unreadable grant list gives `actor?` and suppresses the no-actor
 finding; an unreadable `providerOverridesEnabled` gives `subject?` and
 suppresses the deny-by-default finding; the realm document gets the same
-treatment, where it matters more rather than less. An *absent* field stays
-silent, because absent really does mean not set.
+treatment, where it matters more rather than less. The same applies to a
+listing page that comes back with an unusable `_id` or `pagedResultsCookie`:
+both are refused rather than skipped, because a listing that quietly loses
+rows or stops early is how an incomplete population becomes a confident
+statement about every client. An *absent* field stays silent, because absent
+really does mean not set.
 
 `--json` carries the realm's half, the projected rows and the findings. The
 warnings also go to stderr, so a piped `--json` loses nothing.
