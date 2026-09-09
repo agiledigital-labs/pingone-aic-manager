@@ -203,6 +203,17 @@ pub async fn delete_client(tenant: &str, realm: &str, id: &str) -> Result<()> {
 /// strips these from every PUT; here they are redacted from every *rendering*.
 const ENCRYPTED_SUFFIX: &str = "-encrypted";
 
+/// The write-only client secret. AM reads it back as `null`, so it reaches a
+/// rendering only from a **local** file someone authored — which is exactly
+/// the side `diff` prints, and the one case where the value is plaintext
+/// rather than AES-wrapped.
+const SECRET_FIELD: &str = "userpassword";
+
+/// Does this key hold secret material that must not be rendered?
+pub(crate) fn is_secret_key(key: &str) -> bool {
+    key.ends_with(ENCRYPTED_SUFFIX) || key == SECRET_FIELD
+}
+
 fn strip_revs(value: &Value) -> Value {
     match value {
         Value::Array(values) => Value::Array(values.iter().map(strip_revs).collect()),
@@ -222,26 +233,30 @@ fn strip_revs(value: &Value) -> Value {
     }
 }
 
-/// Replace every `*-encrypted` value with a digest of itself.
+/// Replace every secret value with a digest of itself.
 ///
-/// The blobs are AES-wrapped secret material. `pull` already writes them to
-/// the workspace, so this is not about the bytes existing on disk — it is that
-/// a rendered diff goes to a terminal, a pager's history, a CI log, or a
-/// pasted snippet, which the workspace file does not.
+/// Two kinds reach a rendering: the `*-encrypted` blobs AM returns on a `GET`,
+/// which are AES-wrapped, and a plaintext `userpassword` in a **local** file
+/// someone authored (AM reads that field back as `null`, so it is only ever
+/// on the local side — which is the side `diff` prints).
+///
+/// `pull` already writes both to the workspace, so this is not about the bytes
+/// existing on disk — it is that a rendered diff goes to a terminal, a pager's
+/// history, a CI log, or a pasted snippet, which the workspace file does not.
 ///
 /// A digest rather than a constant, so a rotated secret still shows as a
 /// changed line. That also keeps `content_text` agreeing with
-/// [`content_equal`]: equal blobs digest equally, and unequal ones do not.
-fn redact_encrypted(value: &Value) -> Value {
+/// [`content_equal`]: equal values digest equally, and unequal ones do not.
+pub(crate) fn redact_secrets(value: &Value) -> Value {
     match value {
-        Value::Array(values) => Value::Array(values.iter().map(redact_encrypted).collect()),
+        Value::Array(values) => Value::Array(values.iter().map(redact_secrets).collect()),
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(key, value)| {
-                    if key.ends_with(ENCRYPTED_SUFFIX) && !value.is_null() {
+                    if is_secret_key(key) && !value.is_null() {
                         (key.clone(), json!(encrypted_digest(value)))
                     } else {
-                        (key.clone(), redact_encrypted(value))
+                        (key.clone(), redact_secrets(value))
                     }
                 })
                 .collect(),
@@ -271,7 +286,7 @@ pub(crate) fn content_equal(a: &Value, b: &Value) -> bool {
 /// a `BTreeMap` here (no `preserve_order` feature), so the ordering is stable
 /// across a pull, a snapshot and a fetch rather than following insertion.
 pub(crate) fn content_text(value: &Value) -> String {
-    let rendered = redact_encrypted(&strip_revs(value));
+    let rendered = redact_secrets(&strip_revs(value));
     // A `Value` always serialises, so the fallible form would only add an
     // unreachable error path to every caller.
     serde_json::to_string_pretty(&rendered).unwrap_or_else(|_| rendered.to_string())

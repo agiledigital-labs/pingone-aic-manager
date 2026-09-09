@@ -395,10 +395,16 @@ impl DiffMode {
 /// Two absent sides are equal, and reporting them as "identical" is a false
 /// reassurance — it is the answer a mistyped client id gets, at exit 0. Refuse
 /// instead, and say that nothing was compared.
-fn nothing_to_compare(id: &str, sides: &DiffSides) -> Option<String> {
+fn nothing_to_compare(id: &str, sides: &DiffSides, pull: Option<&str>) -> Option<String> {
     (sides.left_text.is_none() && sides.right_text.is_none()).then(|| {
+        let remedy = match pull {
+            // Nothing local survives, by definition of this branch, so the
+            // suggestion is safe here — and this is where it is most useful.
+            Some(pull) => format!("; run `{pull}` if the client exists on the tenant"),
+            None => String::new(),
+        };
         format!(
-            "nothing to compare for oauth client {id}: neither {} nor {} has it",
+            "nothing to compare for oauth client {id}: neither {} nor {} has it{remedy}",
             sides.left.label(),
             sides.right.label()
         )
@@ -421,27 +427,37 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-/// The `pull` that would restore a missing side — or nothing, when `pull` is
-/// the wrong advice.
-///
-/// `pull` writes **both** the local export and the snapshot from the tenant, so
-/// it is only safe to suggest when neither of those is something you would
-/// mind losing. With a snapshot present and the local file gone it does not
-/// restore the local file from the snapshot, it replaces the snapshot too and
-/// throws away the drift signal; with local edits present and the snapshot
-/// gone it overwrites the edits. Suggesting a command that destroys the thing
-/// the operator still has is worse than suggesting nothing.
-fn safe_pull_suggestion(sides: &DiffSides, id: &str, tenant: &str, realm: &str) -> Option<String> {
-    let other_side_survives = sides.left_text.is_some() || sides.right_text.is_some();
-    if other_side_survives {
-        return None;
-    }
-    Some(format!(
+fn pull_command(id: &str, tenant: &str, realm: &str) -> String {
+    format!(
         "aic oauth pull {} --tenant {} --realm {}",
         shell_quote(id),
         shell_quote(tenant),
         shell_quote(realm)
-    ))
+    )
+}
+
+/// The `pull` that would restore a missing side — or nothing, when `pull` is
+/// the wrong advice.
+///
+/// `pull` writes **both** the local export and the snapshot from the tenant.
+/// So it is safe advice exactly when this comparison has no surviving *local
+/// artefact* to destroy — the tenant side does not count, because `pull` never
+/// writes to the tenant. With a snapshot present and the local file gone it
+/// does not restore the local file from the snapshot, it replaces the snapshot
+/// too and throws away the drift signal; with local edits present and the
+/// snapshot gone it overwrites the edits.
+///
+/// An earlier version asked whether *either* side survived, which was wrong
+/// twice over: it suppressed the suggestion in the common
+/// tenant-exists-locally-missing case where `pull` is exactly right, and it
+/// only ever returned `Some` for the both-absent case that the renderer
+/// refuses before it gets here — so the suggestion was unreachable.
+fn safe_pull_suggestion(sides: &DiffSides, id: &str, tenant: &str, realm: &str) -> Option<String> {
+    let survives = |side: Side, text: &Option<String>| text.is_some() && side != Side::Remote;
+    if survives(sides.left, &sides.left_text) || survives(sides.right, &sides.right_text) {
+        return None;
+    }
+    Some(pull_command(id, tenant, realm))
 }
 
 /// A side that does not exist renders as empty, which in a diff is
@@ -454,8 +470,10 @@ fn safe_pull_suggestion(sides: &DiffSides, id: &str, tenant: &str, realm: &str) 
 fn absent_side_note(id: &str, side: Side, tenant: &str, realm: &str, pull: Option<&str>) -> String {
     let remedy = match pull {
         Some(pull) => format!("run `{pull}`"),
-        // Naming what `pull` would cost is more use than naming `pull`.
-        None => "`aic oauth pull` would overwrite the side you still have".to_string(),
+        // Naming what `pull` would cost is more use than naming `pull`. It is
+        // the local file or the snapshot that survives — never the tenant,
+        // which `pull` does not write.
+        None => "`aic oauth pull` would overwrite the local side you still have".to_string(),
     };
     match side {
         Side::Local => {
@@ -545,10 +563,10 @@ fn diff_sides_from(
 fn render_diff_sides(id: &str, tenant: &str, realm: &str, sides: &DiffSides) -> Result<()> {
     // Ahead of the per-side notes: when neither side exists they would say
     // twice, at length, what the refusal says once.
-    if let Some(message) = nothing_to_compare(id, sides) {
+    let pull = safe_pull_suggestion(sides, id, tenant, realm);
+    if let Some(message) = nothing_to_compare(id, sides, pull.as_deref()) {
         return Err(Error::Config(message));
     }
-    let pull = safe_pull_suggestion(sides, id, tenant, realm);
     for (side, text) in [
         (sides.left, &sides.left_text),
         (sides.right, &sides.right_text),
@@ -1446,14 +1464,14 @@ mod tests {
     #[test]
     fn comparing_two_things_that_do_not_exist_is_refused_not_called_identical() {
         let both_absent = diff_sides_from(DiffMode::RemoteVsLocal, None, None, None);
-        let message = nothing_to_compare("typo-client", &both_absent).expect("refusal");
+        let message = nothing_to_compare("typo-client", &both_absent, None).expect("refusal");
         assert!(message.contains("nothing to compare"), "{message}");
         assert!(message.contains("tenant"), "{message}");
         assert!(message.contains("local"), "{message}");
 
         let remote = json!({"v": 1});
         let one_side = diff_sides_from(DiffMode::RemoteVsLocal, None, None, Some(&remote));
-        assert!(nothing_to_compare("a-client", &one_side).is_none());
+        assert!(nothing_to_compare("a-client", &one_side, None).is_none());
     }
 
     /// An unfiltered listing says the plain count; a filtered one has to say
@@ -1513,21 +1531,6 @@ mod tests {
         );
     }
 
-    /// The remedy must name the coordinates the diff used, not the defaults.
-    /// The discriminating case is a non-default pair: a bare
-    /// `aic oauth pull <id>` after `--tenant staging --realm bravo` pulls a
-    /// different client into a different workspace and reports success.
-    #[test]
-    fn the_suggested_pull_carries_the_coordinates_the_diff_used() {
-        let sides = diff_sides_from(DiffMode::RemoteVsLocal, None, None, None);
-        let pull = safe_pull_suggestion(&sides, "a-client", "staging", "bravo").unwrap();
-        for side in [Side::Local, Side::Snapshot] {
-            let note = absent_side_note("a-client", side, "staging", "bravo", Some(&pull));
-            assert!(note.contains("--tenant staging"), "{note}");
-            assert!(note.contains("--realm bravo"), "{note}");
-        }
-    }
-
     /// The mode a refusal explains itself with. Swapping the two renders a
     /// correct diff that answers the wrong question — on drift it would show
     /// your own edits, which are not what changed.
@@ -1579,12 +1582,27 @@ mod tests {
     /// the ones where something does: suggesting it then destroys the side the
     /// operator still has — their local edits, or the snapshot that is the
     /// only record of what the tenant looked like when they pulled.
+    /// `pull` writes **both** the local export and the snapshot, so it is safe
+    /// advice exactly when no *local* artefact survives to be destroyed.
+    ///
+    /// Three discriminating cases. A surviving local file or snapshot must
+    /// suppress it — that is the data loss. A surviving **tenant** side must
+    /// not: `pull` never writes to the tenant, and this is the everyday case
+    /// (client exists, you have not pulled it) where `pull` is exactly the
+    /// right advice. The first version of this rule asked whether *either*
+    /// side survived and got that case backwards.
     #[test]
-    fn pull_is_only_suggested_when_it_cannot_destroy_the_surviving_side() {
+    fn pull_is_suggested_when_no_local_artefact_would_be_destroyed() {
         let doc = json!({"v": 1});
 
         let neither = diff_sides_from(DiffMode::LocalVsSnapshot, None, None, None);
         assert!(safe_pull_suggestion(&neither, "a-client", "sandbox", "alpha").is_some());
+
+        let tenant_only = diff_sides_from(DiffMode::RemoteVsLocal, None, None, Some(&doc));
+        assert!(
+            safe_pull_suggestion(&tenant_only, "a-client", "sandbox", "alpha").is_some(),
+            "pull does not write the tenant, so a tenant side is not at risk"
+        );
 
         for (local, snapshot) in [(Some(&doc), None), (None, Some(&doc))] {
             let sides = diff_sides_from(DiffMode::LocalVsSnapshot, local, snapshot, None);
@@ -1599,6 +1617,27 @@ mod tests {
         let pull = safe_pull_suggestion(&survivor, "a-client", "sandbox", "alpha");
         let note = absent_side_note("a-client", Side::Local, "sandbox", "alpha", pull.as_deref());
         assert!(note.contains("would overwrite"), "{note}");
+    }
+
+    /// The suggestion has to reach a user. It used to be produced only for the
+    /// both-absent case, which the renderer refuses *before* printing any
+    /// note — so the coordinate-bearing command existed and was unreachable.
+    /// This drives the renderer for the case that now carries it, and pins
+    /// that the refusal carries it too.
+    #[test]
+    fn the_coordinate_bearing_pull_actually_reaches_the_output() {
+        let doc = json!({"v": 1});
+
+        let tenant_only = diff_sides_from(DiffMode::RemoteVsLocal, None, None, Some(&doc));
+        let pull = safe_pull_suggestion(&tenant_only, "a-client", "staging", "bravo").unwrap();
+        let note = absent_side_note("a-client", Side::Local, "staging", "bravo", Some(&pull));
+        assert!(note.contains("--tenant staging"), "{note}");
+        assert!(note.contains("--realm bravo"), "{note}");
+
+        let neither = diff_sides_from(DiffMode::RemoteVsLocal, None, None, None);
+        let pull = safe_pull_suggestion(&neither, "a-client", "staging", "bravo");
+        let refusal = nothing_to_compare("a-client", &neither, pull.as_deref()).unwrap();
+        assert!(refusal.contains("--tenant staging"), "{refusal}");
     }
 
     /// A tenant name is not restricted to a safe character set, so a
