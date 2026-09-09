@@ -213,6 +213,12 @@ fn draw_detail_status(f: &mut Frame, area: Rect, id: &str, message: &str, color:
 }
 
 fn render_client_lines(client: &Value, fallback_id: &str) -> Vec<Line<'static>> {
+    // Once, over the whole document, rather than at each leaf. A leaf-level
+    // mask missed two paths: an array is rendered as a single JSON blob
+    // without walking into it, and a client with no section this pane knows
+    // about falls through to a pretty-printed dump of the entire document —
+    // and `docs/api/05-oauth2-oidc.md` says new groups are expected.
+    let client = &mask_secrets(client);
     let id = client
         .get("_id")
         .and_then(Value::as_str)
@@ -268,12 +274,12 @@ fn section_header(label: &str) -> Line<'static> {
 
 fn push_value_lines(lines: &mut Vec<Line<'static>>, indent: usize, label: &str, value: &Value) {
     if is_inherited_wrapper(value) || !value.is_object() {
-        lines.push(leaf_line(indent, label, named_leaf_value(label, value)));
+        lines.push(leaf_line(indent, label, render_leaf_value(value)));
         return;
     }
 
     let Some(map) = value.as_object() else {
-        lines.push(leaf_line(indent, label, named_leaf_value(label, value)));
+        lines.push(leaf_line(indent, label, render_leaf_value(value)));
         return;
     };
     if map.is_empty() {
@@ -293,7 +299,7 @@ fn push_value_lines(lines: &mut Vec<Line<'static>>, indent: usize, label: &str, 
     for key in keys {
         let child = &map[key];
         if is_inherited_wrapper(child) || !child.is_object() {
-            lines.push(leaf_line(indent, key, named_leaf_value(key, child)));
+            lines.push(leaf_line(indent, key, render_leaf_value(child)));
         } else {
             lines.push(Line::from(vec![
                 Span::raw("  ".repeat(indent)),
@@ -324,20 +330,30 @@ fn is_inherited_wrapper(value: &Value) -> bool {
     value.get("inherited").and_then(Value::as_bool).is_some() && value.get("value").is_some()
 }
 
-/// A leaf rendered knowing its own key, so a `*-encrypted` value is masked.
+/// Replace every secret value in the document with a constant.
 ///
-/// Those are AES-wrapped secret material AM returns on a plain `GET`. The
+/// The keys are the same ones the CLI redacts (`crate::oauth::api::is_secret_key`)
+/// — AES-wrapped `*-encrypted` blobs, and the write-only `userpassword`. The
 /// detail pane is a screen someone screen-shares or screenshots into a ticket,
-/// and no reader can do anything with the blob anyway. Unlike the CLI diff,
-/// there is nothing here to compare against, so a constant beats a digest.
-pub(crate) fn named_leaf_value(label: &str, value: &Value) -> LeafDisplay {
-    if label.ends_with("-encrypted") && !value.is_null() {
-        return LeafDisplay {
-            text: "<encrypted>".into(),
-            inherited: false,
-        };
+/// and no reader can do anything with the value anyway. Unlike the CLI diff
+/// there is nothing on screen to compare against, so a constant beats a
+/// digest.
+fn mask_secrets(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.iter().map(mask_secrets).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    if crate::oauth::api::is_secret_key(key) && !value.is_null() {
+                        (key.clone(), Value::String("<secret>".into()))
+                    } else {
+                        (key.clone(), mask_secrets(value))
+                    }
+                })
+                .collect(),
+        ),
+        value => value.clone(),
     }
-    render_leaf_value(value)
 }
 
 pub(crate) fn render_leaf_value(value: &Value) -> LeafDisplay {
@@ -376,28 +392,45 @@ mod tests {
     use super::*;
 
     /// The detail pane shows a whole client document, and AM returns
-    /// `userpassword-encrypted` on a plain GET. The discriminating case is
-    /// the second assertion: a mask keyed on the *value* rather than the key
-    /// would leave an ordinary string looking encrypted, and one keyed on a
-    /// substring would mask `userinfoEncryptedResponseAlg`, which is an
-    /// algorithm name.
+    /// `userpassword-encrypted` on a plain GET.
+    ///
+    /// The discriminating cases are the ones a leaf-level mask got wrong: a
+    /// secret **inside an array**, which this pane renders as one JSON blob
+    /// without walking into it, and a secret under a section this pane does
+    /// not know, which falls through to a dump of the whole document. The
+    /// negative cases matter as much: a mask keyed on the value would hide an
+    /// ordinary string, and one keyed on a substring would hide
+    /// `userinfoEncryptedResponseAlg`, which is an algorithm name.
     #[test]
-    fn an_encrypted_leaf_is_masked_by_its_key() {
-        assert_eq!(
-            named_leaf_value("userpassword-encrypted", &json!("AQICWrappedBytes")).text,
-            "<encrypted>"
+    fn every_secret_in_the_document_is_masked_before_it_is_rendered() {
+        let masked = mask_secrets(&json!({
+            "coreOAuth2ClientConfig": {
+                "userpassword": "plaintext-from-a-local-file",
+                "userpassword-encrypted": "AQICWrappedBytes",
+                "clientName": ["AQICLooksLikeABlobButIsAName"]
+            },
+            "signEncOAuth2ClientConfig": {
+                "userinfoEncryptedResponseAlg": {"inherited": false, "value": "RSA-OAEP-256"},
+                "jwks": [{"kid": "one", "key-encrypted": "AQICInsideAnArray"}]
+            },
+            "someFutureGroupAmAdds": {"secret-encrypted": "AQICUnknownSection"},
+            "nulls-encrypted": null
+        }));
+        let rendered = serde_json::to_string(&masked).unwrap();
+
+        assert!(!rendered.contains("AQICWrappedBytes"), "{rendered}");
+        assert!(
+            !rendered.contains("plaintext-from-a-local-file"),
+            "{rendered}"
         );
+        assert!(!rendered.contains("AQICInsideAnArray"), "{rendered}");
+        assert!(!rendered.contains("AQICUnknownSection"), "{rendered}");
+        assert!(rendered.contains("RSA-OAEP-256"), "{rendered}");
+        assert!(rendered.contains(r#""nulls-encrypted":null"#), "{rendered}");
+        // A value that merely looks like a blob, under an ordinary key, stays.
         assert_eq!(
-            named_leaf_value("clientName", &json!("AQICWrappedBytes")).text,
-            "AQICWrappedBytes"
-        );
-        assert_eq!(
-            named_leaf_value(
-                "userinfoEncryptedResponseAlg",
-                &json!({"inherited": false, "value": "RSA-OAEP-256"})
-            )
-            .text,
-            "RSA-OAEP-256"
+            masked["coreOAuth2ClientConfig"]["clientName"],
+            json!(["AQICLooksLikeABlobButIsAName"])
         );
     }
 

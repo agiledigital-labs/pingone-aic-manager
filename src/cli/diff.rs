@@ -29,11 +29,20 @@ impl DiffDir {
     /// `drop`. The `Drop` impl is the backstop for the paths that do not get
     /// here.
     fn remove(self) -> Result<()> {
-        let result = std::fs::remove_dir_all(&self.path)
-            .map_err(|e| Error::Config(format!("remove temp dir {}: {e}", self.path.display())));
-        // Do not let `drop` try again and mask the error we are returning.
-        std::mem::forget(self);
-        result
+        match std::fs::remove_dir_all(&self.path) {
+            Ok(()) => {
+                // Do not let `drop` try again on a path that is already gone.
+                std::mem::forget(self);
+                Ok(())
+            }
+            // Keep the guard alive so `drop` gets a second attempt: forgetting
+            // here abandoned a directory that was still on disk, which is the
+            // one case the guard exists for.
+            Err(e) => Err(Error::Config(format!(
+                "remove temp dir {}: {e}",
+                self.path.display()
+            ))),
+        }
     }
 }
 
@@ -184,5 +193,30 @@ mod tests {
 
         let error = guard.remove().unwrap_err();
         assert!(error.to_string().contains("remove temp dir"), "{error}");
+    }
+
+    /// A failed `remove` must not also disarm the backstop. The earlier
+    /// version called `mem::forget` on every path, so a directory that was
+    /// still on disk when removal failed was abandoned — the exact leak the
+    /// guard was added to prevent.
+    #[test]
+    fn a_failed_remove_leaves_the_backstop_armed() {
+        let outer = create_diff_dir().unwrap();
+        let path = outer.join("inner");
+        std::fs::DirBuilder::new().create(&path).unwrap();
+        let guard = DiffDir { path: path.clone() };
+
+        // Make removal fail without destroying the directory: a read-only
+        // parent refuses the unlink.
+        std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let outcome = guard.remove();
+        std::fs::set_permissions(&outer, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        // Only meaningful where the environment actually refuses it — as
+        // root, it would not, and the assertion would be vacuous either way.
+        if outcome.is_err() {
+            assert!(path.is_dir(), "the failing remove destroyed it after all");
+        }
+        std::fs::remove_dir_all(&outer).unwrap();
     }
 }

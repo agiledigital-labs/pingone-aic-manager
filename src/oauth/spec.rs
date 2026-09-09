@@ -412,8 +412,14 @@ fn push_client_field_rows(rows: &mut Vec<(String, String)>, doc: &Value, group: 
 /// it holds, and with it `true` the *whole* block applies at once, its own
 /// defaults included. Same JSON, two meanings — a summary that showed the
 /// entries without this row would be describing configuration that may not run.
+///
+/// An **absent** switch is not an enabled one. The doc's wording is that
+/// `true` is *required*, so anything else — including a document that never
+/// carries the key — leaves the block ignored. Reading `None` as "probably on"
+/// is the direction that misleads.
 fn overrides_enabled(doc: &Value) -> Option<bool> {
-    doc.get(CLIENT_OVERRIDES)?
+    let block = inherited_value(doc.get(CLIENT_OVERRIDES)?);
+    block
         .get("providerOverridesEnabled")
         .map(|value| inherited_value(value) == &Value::Bool(true))
 }
@@ -440,42 +446,32 @@ fn override_entry_inherits(field: &str, value: &Value) -> bool {
     }
 }
 
-/// With the block switched off, the only entries worth showing are the ones
-/// someone deliberately set and which are therefore doing nothing — a script
-/// id, or a plugin type flipped to something other than `PROVIDER`. Booleans
-/// are not: an ignored `false` is not a setting, it is the absence of one, and
-/// listing fifteen of them buries the two rows that matter.
-fn override_entry_is_a_dormant_setting(field: &str, value: &Value) -> bool {
-    if override_entry_inherits(field, value) {
-        return false;
-    }
-    field.ends_with("Script") || field.ends_with("PluginType") || field.ends_with("Class")
-}
-
 fn push_override_rows(rows: &mut Vec<(String, String)>, doc: &Value) {
     let Some(Value::Object(config)) = doc.get(CLIENT_OVERRIDES).map(inherited_value) else {
         rows.push((CLIENT_OVERRIDES.to_string(), "<absent>".to_string()));
         return;
     };
 
-    let enabled = overrides_enabled(doc);
     rows.push((
         CLIENT_OVERRIDES.to_string(),
-        match enabled {
+        match overrides_enabled(doc) {
             Some(true) => "<in effect: every field below applies, set or defaulted>".to_string(),
             Some(false) => {
-                "<ignored: providerOverridesEnabled is false, the realm applies>".to_string()
+                "<dormant: providerOverridesEnabled is false, the realm applies>".to_string()
             }
-            None => "<providerOverridesEnabled absent>".to_string(),
+            None => "<dormant: providerOverridesEnabled absent, so the realm applies>".to_string(),
         },
     ));
 
-    let show: fn(&str, &Value) -> bool = if enabled == Some(false) {
-        override_entry_is_a_dormant_setting
-    } else {
-        |field, value| !override_entry_inherits(field, value)
-    };
-
+    // One filter in both states, deliberately. An earlier version hid every
+    // boolean while the block was dormant, on the theory that an ignored value
+    // is not a setting. That is wrong for the question this command gets
+    // asked: "is it safe to enable this block?" A dormant
+    // `statelessTokensEnabled: true` is precisely what an operator attaching
+    // one script needs to see before flipping the switch turns it live — and
+    // the old version did worse than hide it, it counted it as "inherited or
+    // unset", which it is not. The header says whether the block runs; the
+    // rows say what is in it.
     let mut hidden = 0_usize;
     for (field, value) in config {
         // The switch itself is the section header above; counting it as
@@ -484,10 +480,10 @@ fn push_override_rows(rows: &mut Vec<(String, String)>, doc: &Value) {
         if field == "providerOverridesEnabled" {
             continue;
         }
-        if show(field, value) {
-            push_provider_value_rows(rows, &format!("  {field}"), value, provider_value_cell);
-        } else {
+        if override_entry_inherits(field, value) {
             hidden += 1;
+        } else {
+            push_provider_value_rows(rows, &format!("  {field}"), value, provider_value_cell);
         }
     }
     if hidden > 0 {
@@ -1138,20 +1134,63 @@ mod tests {
         let mut on = a_client();
         on["overrideOAuth2ClientConfig"]["providerOverridesEnabled"] = json!(true);
 
+        let mut absent = a_client();
+        absent["overrideOAuth2ClientConfig"]
+            .as_object_mut()
+            .unwrap()
+            .remove("providerOverridesEnabled");
+
         let off = summary_row(&client_summary(&off), "overrideOAuth2ClientConfig");
         let on = summary_row(&client_summary(&on), "overrideOAuth2ClientConfig");
+        let absent = summary_row(&client_summary(&absent), "overrideOAuth2ClientConfig");
 
-        assert!(off[0].contains("ignored"), "{off:?}");
+        assert!(off[0].contains("dormant"), "{off:?}");
         assert!(off[0].contains("realm applies"), "{off:?}");
         assert!(on[0].contains("in effect"), "{on:?}");
+        // An absent switch is not an enabled one: the doc's wording is that
+        // `true` is *required*. Reading a missing key as "probably on" would
+        // describe a client's live behaviour as the opposite of what it is.
+        assert!(absent[0].contains("dormant"), "{absent:?}");
     }
 
-    /// With the block switched off the only interesting entries are the ones
-    /// someone set that are therefore doing nothing. The discriminating case
-    /// is `issueRefreshToken: true`: a rule that showed every non-default
-    /// value would list it, and an ignored `true` is not a setting.
+    /// The switch can arrive inside an `{inherited, value}` envelope like any
+    /// other field, and the block itself can too. Reading either raw reports
+    /// the switch as absent — which, before the fix above, meant reporting a
+    /// disabled block as enabled.
     #[test]
-    fn a_disabled_override_block_shows_only_the_dormant_settings() {
+    fn the_switch_is_found_through_an_inherited_wrapper() {
+        let wrapped = json!({
+            "overrideOAuth2ClientConfig": {
+                "inherited": false,
+                "value": {
+                    "providerOverridesEnabled": {"inherited": false, "value": true},
+                    "validateScopeScript": "3482b626-5446-4734-a8a9-9a47e653de33"
+                }
+            }
+        });
+
+        let rows = client_summary(&wrapped);
+        let header = summary_row(&rows, "overrideOAuth2ClientConfig");
+
+        assert!(header[0].contains("in effect"), "{header:?}");
+        assert_eq!(
+            summary_row(&rows, "  validateScopeScript"),
+            ["3482b626-5446-4734-a8a9-9a47e653de33"]
+        );
+    }
+
+    /// A dormant block still shows what is in it.
+    ///
+    /// An earlier version hid every boolean while the switch was false, on the
+    /// theory that an ignored value is not a setting. That is wrong for the
+    /// question this command gets asked — "is it safe to enable this block?" —
+    /// and it did worse than hide them: it counted them as "inherited or
+    /// unset", which they are not. `statelessTokensEnabled` is the
+    /// discriminating case, because flipping the switch is what turns it live,
+    /// and the doc records it silently changing stateless JWTs into opaque
+    /// tokens.
+    #[test]
+    fn a_dormant_block_still_shows_the_values_that_would_become_live() {
         let mut client = a_client();
         client["overrideOAuth2ClientConfig"]["providerOverridesEnabled"] = json!(false);
         client["overrideOAuth2ClientConfig"]["validateScopeScript"] =
@@ -1163,8 +1202,14 @@ mod tests {
             summary_row(&rows, "  validateScopeScript"),
             ["3482b626-5446-4734-a8a9-9a47e653de33"]
         );
-        assert!(summary_row(&rows, "  issueRefreshToken").is_empty());
-        assert!(summary_row(&rows, "  statelessTokensEnabled").is_empty());
+        assert_eq!(summary_row(&rows, "  issueRefreshToken"), ["true"]);
+        assert_eq!(summary_row(&rows, "  statelessTokensEnabled"), ["false"]);
+        // The count is only ever the inherit-shaped entries now, in either
+        // state — `[Empty]`, `PROVIDER`, the `Default…` class, `null`, `[]`.
+        assert_eq!(
+            summary_row(&rows, "  (not shown)"),
+            ["4 inherited or unset — `--json` for the whole document"]
+        );
     }
 
     /// With the block enabled, `statelessTokensEnabled: false` is a live

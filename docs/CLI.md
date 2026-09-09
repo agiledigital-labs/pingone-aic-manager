@@ -692,15 +692,18 @@ fields print one value per row. `--json` prints the document the API returned.
 The last section is `overrideOAuth2ClientConfig`, whose 29 keys are only
 meaningful alongside one of them: `providerOverridesEnabled` is a master
 switch, so the section header says whether the block runs at all rather than
-echoing a boolean. With it **false** the realm applies and the block is
-ignored, so only entries someone actually set — a script id, a plugin type off
-`PROVIDER`, a non-default plugin class — are listed, as settings that are
-currently dormant. With it **true** every field in the block applies at once,
-its own defaults included, so a `false` is a live setting and is shown.
-Entries that say "inherit" (the `[Empty]` sentinel, `null`, an empty array, a
-`…PluginType` of `PROVIDER`, a `…Class` still on AM's `Default…`
-implementation) are suppressed and **counted** on a final row, so nothing is
-dropped without saying so. Script ids print as the bare UUIDs AM stores.
+echoing a boolean — `in effect` when the switch is true, `dormant` when it is
+false **or absent** (the switch has to be `true`; a missing one leaves the
+realm in charge).
+
+The rows are the same either way, deliberately. A dormant
+`statelessTokensEnabled: true` is exactly what you need to see before enabling
+the block to attach one script, because flipping the switch makes every value
+in it live at once — including ones you never set. Entries that say "inherit"
+(the `[Empty]` sentinel, `null`, an empty array, a `…PluginType` of
+`PROVIDER`, a `…Class` still on AM's `Default…` implementation) are suppressed
+and **counted** on a final row, so nothing is dropped without saying so.
+Script ids print as the bare UUIDs AM stores.
 
 `create` exposes the common client settings (`--name`, repeatable scopes,
 redirect URIs, grants/response types, token auth, consent, and lifetimes); run
@@ -746,18 +749,22 @@ change. `--local-vs-snapshot` is your own edits, and makes no tenant request.
 
 Both sides are normalised exactly the way the drift check normalises — `_rev`
 stripped, keys sorted, `-0.0` and `0.0` collapsed — so `diff` and `push` do not
-disagree about whether a client changed. `*-encrypted` values are replaced by
-their full SHA-256: `pull` already writes those AES-wrapped blobs to the
-workspace, but a rendered diff also reaches your scrollback, your pager's
-history and any CI log, and a digest still changes when the secret is rotated.
-The OAuth tab masks the same fields in its detail pane.
+disagree about whether a client changed. Secret values are replaced by their full
+SHA-256 — the `*-encrypted` blobs AM returns, and a plaintext `userpassword`,
+which only ever appears on the local side because AM reads that field back as
+`null`. `pull` already writes both to the workspace, but a rendered diff also
+reaches your scrollback, your pager's history and any CI log, and a digest
+still changes when the secret is rotated. The OAuth tab masks the same fields
+in its detail pane, everywhere in the document.
 
 A side that does not exist is reported on stderr and rendered as empty, and a
 comparison where **neither** side exists (a mistyped client id) fails rather
 than reporting the two absences as identical. `pull` is suggested as the remedy
-only when nothing would be lost by running it — it rewrites both the local file
-and the snapshot, so when one of them survives the note says what `pull` would
-cost instead of naming it.
+only when no **local** side would be lost by running it — it rewrites both the
+local file and the snapshot, and never the tenant, so it is the right advice
+when the client is simply not pulled yet and the wrong advice when your edits
+or your snapshot are the surviving side. In that case the note says what
+`pull` would cost instead of naming it.
 
 `push` prints the relevant diff before it refuses. On remote drift that is
 snapshot-vs-tenant — what changed under you; with no snapshot at all it is
