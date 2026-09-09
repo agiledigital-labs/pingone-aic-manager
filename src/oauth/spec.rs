@@ -243,6 +243,162 @@ fn normalized_inherited_value(value: &Value) -> Value {
     }
 }
 
+const CLIENT_OVERRIDES: &str = "overrideOAuth2ClientConfig";
+const DEFAULT_PLUGIN_CLASS_PREFIX: &str = "org.forgerock.oauth2.core.plugins.registry.Default";
+const NOT_SET: &str = "[Empty]";
+
+/// The client fields worth a row, in the order someone reads them: what the
+/// client is, how it authenticates, what it may ask for.
+///
+/// Deliberately not every field — the raw document is ~360 lines and `--json`
+/// is right there. Everything omitted is counted, never silently dropped.
+const CLIENT_CORE_FIELDS: &[(&str, &str)] = &[
+    ("coreOAuth2ClientConfig", "status"),
+    ("coreOAuth2ClientConfig", "clientName"),
+    ("coreOAuth2ClientConfig", "clientType"),
+    ("advancedOAuth2ClientConfig", "tokenEndpointAuthMethod"),
+    ("advancedOAuth2ClientConfig", "subjectType"),
+    ("advancedOAuth2ClientConfig", "grantTypes"),
+    ("advancedOAuth2ClientConfig", "responseTypes"),
+    ("coreOAuth2ClientConfig", "scopes"),
+    ("coreOAuth2ClientConfig", "defaultScopes"),
+    ("coreOAuth2ClientConfig", "redirectionUris"),
+    ("advancedOAuth2ClientConfig", "isConsentImplied"),
+    ("coreOAuth2ClientConfig", "accessTokenLifetime"),
+    ("coreOAuth2ClientConfig", "refreshTokenLifetime"),
+    ("coreOAuth2ClientConfig", "authorizationCodeLifetime"),
+];
+
+/// Project one OAuth2 client into compact CLI rows.
+///
+/// Reuses the provider summary's cell rendering, so `[Empty]` reads as
+/// `<not set>` and an `{inherited, value}` wrapper renders as its effective
+/// value on both surfaces.
+pub fn client_summary(doc: &Value) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+
+    rows.push((
+        "id".to_string(),
+        doc.get("_id")
+            .and_then(Value::as_str)
+            .unwrap_or("<absent>")
+            .to_string(),
+    ));
+
+    for (group, field) in CLIENT_CORE_FIELDS {
+        push_client_field_rows(&mut rows, doc, group, field);
+    }
+
+    push_override_rows(&mut rows, doc);
+    rows
+}
+
+fn push_client_field_rows(rows: &mut Vec<(String, String)>, doc: &Value, group: &str, field: &str) {
+    let label = field.to_string();
+    match doc.get(group).map(inherited_value) {
+        Some(Value::Object(config)) => match config.get(field) {
+            Some(value) => push_provider_value_rows(rows, &label, value, provider_value_cell),
+            None => rows.push((label, "<absent>".to_string())),
+        },
+        Some(_) => rows.push((label, "<group is not an object>".to_string())),
+        None => rows.push((label, "<group absent>".to_string())),
+    }
+}
+
+/// Is the client's whole override block in effect?
+///
+/// `providerOverridesEnabled` is a master switch, verified 2026-08-25: with it
+/// `false` every field in the block is inherited from the realm no matter what
+/// it holds, and with it `true` the *whole* block applies at once, its own
+/// defaults included. Same JSON, two meanings — a summary that showed the
+/// entries without this row would be describing configuration that may not run.
+fn overrides_enabled(doc: &Value) -> Option<bool> {
+    doc.get(CLIENT_OVERRIDES)?
+        .get("providerOverridesEnabled")
+        .map(|value| inherited_value(value) == &Value::Bool(true))
+}
+
+/// A `…PluginType` still on `PROVIDER`, a `…Class` still on AM's `Default…`
+/// implementation, the `[Empty]` sentinel, `null`, and an empty array all say
+/// the same thing: inherit. The `providerOverridesEnabled` row already says it
+/// once, so repeating it up to 29 times is the noise, not the signal.
+fn override_entry_inherits(field: &str, value: &Value) -> bool {
+    let value = inherited_value(value);
+    if field.ends_with("PluginType") {
+        return value.as_str() == Some("PROVIDER");
+    }
+    if field.ends_with("Class") {
+        return value
+            .as_str()
+            .is_some_and(|class| class.starts_with(DEFAULT_PLUGIN_CLASS_PREFIX));
+    }
+    match value {
+        Value::Null => true,
+        Value::String(text) => text == NOT_SET,
+        Value::Array(values) => values.is_empty(),
+        _ => false,
+    }
+}
+
+/// With the block switched off, the only entries worth showing are the ones
+/// someone deliberately set and which are therefore doing nothing — a script
+/// id, or a plugin type flipped to something other than `PROVIDER`. Booleans
+/// are not: an ignored `false` is not a setting, it is the absence of one, and
+/// listing fifteen of them buries the two rows that matter.
+fn override_entry_is_a_dormant_setting(field: &str, value: &Value) -> bool {
+    if override_entry_inherits(field, value) {
+        return false;
+    }
+    field.ends_with("Script") || field.ends_with("PluginType") || field.ends_with("Class")
+}
+
+fn push_override_rows(rows: &mut Vec<(String, String)>, doc: &Value) {
+    let Some(Value::Object(config)) = doc.get(CLIENT_OVERRIDES).map(inherited_value) else {
+        rows.push((CLIENT_OVERRIDES.to_string(), "<absent>".to_string()));
+        return;
+    };
+
+    let enabled = overrides_enabled(doc);
+    rows.push((
+        CLIENT_OVERRIDES.to_string(),
+        match enabled {
+            Some(true) => "<in effect: every field below applies, set or defaulted>".to_string(),
+            Some(false) => {
+                "<ignored: providerOverridesEnabled is false, the realm applies>".to_string()
+            }
+            None => "<providerOverridesEnabled absent>".to_string(),
+        },
+    ));
+
+    let show: fn(&str, &Value) -> bool = if enabled == Some(false) {
+        override_entry_is_a_dormant_setting
+    } else {
+        |field, value| !override_entry_inherits(field, value)
+    };
+
+    let mut hidden = 0_usize;
+    for (field, value) in config {
+        // The switch itself is the section header above; counting it as
+        // "not shown" would be wrong in both directions — it is shown, and
+        // it is not an inherited setting.
+        if field == "providerOverridesEnabled" {
+            continue;
+        }
+        if show(field, value) {
+            push_provider_value_rows(rows, &format!("  {field}"), value, provider_value_cell);
+        } else {
+            hidden += 1;
+        }
+    }
+    if hidden > 0 {
+        // Never drop rows silently: say how many and how to see them.
+        rows.push((
+            "  (not shown)".to_string(),
+            format!("{hidden} inherited or unset — `--json` for the whole document"),
+        ));
+    }
+}
+
 /// Build a create body from live defaults, an optional JSON seed, and common
 /// inputs. Object seeds merge recursively so a partial seed retains tenant
 /// defaults; arrays and scalar values replace their template counterparts.
@@ -706,6 +862,206 @@ mod tests {
             .filter(|(name, _)| name == field)
             .map(|(_, value)| value.as_str())
             .collect()
+    }
+
+    fn summary_row(rows: &[(String, String)], label: &str) -> Vec<String> {
+        rows.iter()
+            .filter(|(name, _)| name == label)
+            .map(|(_, value)| value.clone())
+            .collect()
+    }
+
+    fn a_client() -> Value {
+        json!({
+            "_id": "vKTest",
+            "_rev": "283006219",
+            "coreOAuth2ClientConfig": {
+                "clientName": {"inherited": false, "value": ["vKTest"]},
+                "clientType": {"inherited": false, "value": "Confidential"},
+                "status": {"inherited": false, "value": "Active"},
+                "scopes": {"inherited": false, "value": ["openid", "profile"]},
+                "defaultScopes": {"inherited": false, "value": ["openid"]},
+                "redirectionUris": {"inherited": false, "value": []},
+                "accessTokenLifetime": {"inherited": false, "value": 0},
+                "refreshTokenLifetime": {"inherited": false, "value": 0},
+                "authorizationCodeLifetime": {"inherited": false, "value": 0},
+                "userpassword": null
+            },
+            "advancedOAuth2ClientConfig": {
+                "grantTypes": {"inherited": false, "value": ["client_credentials"]},
+                "responseTypes": {"inherited": false, "value": ["token"]},
+                "subjectType": {"inherited": false, "value": "public"},
+                "tokenEndpointAuthMethod": {"inherited": false, "value": "client_secret_basic"},
+                "isConsentImplied": {"inherited": false, "value": false}
+            },
+            "overrideOAuth2ClientConfig": {
+                "providerOverridesEnabled": false,
+                "validateScopeScript": "[Empty]",
+                "validateScopePluginType": "PROVIDER",
+                "validateScopeClass":
+                    "org.forgerock.oauth2.core.plugins.registry.DefaultScopeValidator",
+                "issueRefreshToken": true,
+                "statelessTokensEnabled": false,
+                "overrideableOIDCClaims": [],
+                "remoteConsentServiceId": null
+            }
+        })
+    }
+
+    /// The fields the field report asked for, each unwrapped from its
+    /// `{inherited, value}` envelope, and a repeated array field one row per
+    /// value rather than a JSON blob.
+    #[test]
+    fn client_summary_answers_the_reconnaissance_questions() {
+        let rows = client_summary(&a_client());
+
+        assert_eq!(summary_row(&rows, "id"), ["vKTest"]);
+        assert_eq!(summary_row(&rows, "clientType"), ["Confidential"]);
+        assert_eq!(
+            summary_row(&rows, "tokenEndpointAuthMethod"),
+            ["client_secret_basic"]
+        );
+        assert_eq!(summary_row(&rows, "grantTypes"), ["client_credentials"]);
+        assert_eq!(summary_row(&rows, "scopes"), ["openid", "profile"]);
+        assert_eq!(summary_row(&rows, "defaultScopes"), ["openid"]);
+        assert_eq!(summary_row(&rows, "redirectionUris"), ["<empty>"]);
+    }
+
+    /// A secret must not reach a summary even when the tenant sends one. The
+    /// GET body returns `userpassword: null` today, but `-encrypted` siblings
+    /// are documented as reachable, and a summary is the surface most likely
+    /// to be pasted into a ticket.
+    #[test]
+    fn no_summary_row_can_carry_secret_material() {
+        let mut client = a_client();
+        client["coreOAuth2ClientConfig"]["userpassword"] = json!("plaintext-secret");
+        client["coreOAuth2ClientConfig"]["userpassword-encrypted"] = json!("AQICwrapped");
+
+        let rows = client_summary(&client);
+
+        for (label, value) in &rows {
+            assert!(!value.contains("plaintext-secret"), "{label} = {value}");
+            assert!(!value.contains("AQICwrapped"), "{label} = {value}");
+            assert!(!label.contains("userpassword"), "{label}");
+        }
+    }
+
+    /// The switch changes what the block *means*, so the row has to state the
+    /// consequence rather than echo a boolean. Verified 2026-08-25 and
+    /// recorded in `docs/api/05-oauth2-oidc.md`: with it false every field is
+    /// inherited whatever it holds; with it true the whole block applies at
+    /// once, its own defaults included.
+    #[test]
+    fn the_override_row_says_whether_the_block_runs_at_all() {
+        let mut off = a_client();
+        off["overrideOAuth2ClientConfig"]["providerOverridesEnabled"] = json!(false);
+        let mut on = a_client();
+        on["overrideOAuth2ClientConfig"]["providerOverridesEnabled"] = json!(true);
+
+        let off = summary_row(&client_summary(&off), "overrideOAuth2ClientConfig");
+        let on = summary_row(&client_summary(&on), "overrideOAuth2ClientConfig");
+
+        assert!(off[0].contains("ignored"), "{off:?}");
+        assert!(off[0].contains("realm applies"), "{off:?}");
+        assert!(on[0].contains("in effect"), "{on:?}");
+    }
+
+    /// With the block switched off the only interesting entries are the ones
+    /// someone set that are therefore doing nothing. The discriminating case
+    /// is `issueRefreshToken: true`: a rule that showed every non-default
+    /// value would list it, and an ignored `true` is not a setting.
+    #[test]
+    fn a_disabled_override_block_shows_only_the_dormant_settings() {
+        let mut client = a_client();
+        client["overrideOAuth2ClientConfig"]["providerOverridesEnabled"] = json!(false);
+        client["overrideOAuth2ClientConfig"]["validateScopeScript"] =
+            json!("3482b626-5446-4734-a8a9-9a47e653de33");
+
+        let rows = client_summary(&client);
+
+        assert_eq!(
+            summary_row(&rows, "  validateScopeScript"),
+            ["3482b626-5446-4734-a8a9-9a47e653de33"]
+        );
+        assert!(summary_row(&rows, "  issueRefreshToken").is_empty());
+        assert!(summary_row(&rows, "  statelessTokensEnabled").is_empty());
+    }
+
+    /// With the block enabled, `statelessTokensEnabled: false` is a live
+    /// setting — the doc records it silently turning stateless JWTs into
+    /// opaque tokens — so a `false` must not be filtered out as "unset".
+    #[test]
+    fn an_enabled_override_block_shows_a_false_that_is_now_in_effect() {
+        let mut client = a_client();
+        client["overrideOAuth2ClientConfig"]["providerOverridesEnabled"] = json!(true);
+
+        let rows = client_summary(&client);
+
+        assert_eq!(summary_row(&rows, "  statelessTokensEnabled"), ["false"]);
+        assert_eq!(summary_row(&rows, "  issueRefreshToken"), ["true"]);
+    }
+
+    /// The five ways an override entry says "inherit". Each is suppressed and
+    /// each is counted; the count is what keeps the suppression honest.
+    #[test]
+    fn every_inherit_shaped_override_entry_is_suppressed_and_counted() {
+        let mut client = a_client();
+        client["overrideOAuth2ClientConfig"] = json!({
+            "providerOverridesEnabled": true,
+            "validateScopeScript": "[Empty]",
+            "validateScopePluginType": "PROVIDER",
+            "validateScopeClass":
+                "org.forgerock.oauth2.core.plugins.registry.DefaultScopeValidator",
+            "overrideableOIDCClaims": [],
+            "remoteConsentServiceId": null
+        });
+
+        let rows = client_summary(&client);
+
+        assert!(
+            summary_row(&rows, "  validateScopeScript").is_empty(),
+            "{rows:?}"
+        );
+        assert_eq!(
+            summary_row(&rows, "  (not shown)"),
+            ["5 inherited or unset — `--json` for the whole document"]
+        );
+    }
+
+    /// A non-default plugin class is a real override and must survive the
+    /// `Default…` suppression, which would otherwise hide the one field that
+    /// says the client is not using AM's implementation.
+    #[test]
+    fn a_custom_plugin_class_is_not_mistaken_for_the_default_one() {
+        let mut client = a_client();
+        client["overrideOAuth2ClientConfig"]["providerOverridesEnabled"] = json!(true);
+        client["overrideOAuth2ClientConfig"]["validateScopeClass"] = json!("com.example.MyScopes");
+        client["overrideOAuth2ClientConfig"]["validateScopePluginType"] = json!("SCRIPTED");
+
+        let rows = client_summary(&client);
+
+        assert_eq!(
+            summary_row(&rows, "  validateScopeClass"),
+            ["com.example.MyScopes"]
+        );
+        assert_eq!(
+            summary_row(&rows, "  validateScopePluginType"),
+            ["SCRIPTED"]
+        );
+    }
+
+    /// A group the tenant does not send must read as absent rather than
+    /// vanish: a summary silently missing `grantTypes` is the one that gets
+    /// misread as "this client has no grants".
+    #[test]
+    fn a_missing_group_is_named_not_dropped() {
+        let rows = client_summary(&json!({"_id": "bare"}));
+
+        assert_eq!(summary_row(&rows, "grantTypes"), ["<group absent>"]);
+        assert_eq!(
+            summary_row(&rows, "overrideOAuth2ClientConfig"),
+            ["<absent>"]
+        );
     }
 
     #[test]
