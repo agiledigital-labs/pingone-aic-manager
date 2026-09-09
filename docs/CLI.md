@@ -959,8 +959,19 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   the workspace folder slug (such as `decision-node` or `lib`). `copy` is
   same-tenant only (including alpha-to-bravo cross-realm copies), retains the
   complete source config, and both create/copy pull the server's canonical form
-  into the workspace. `create` refuses legacy (`evaluatorVersion: "1.0"`)
-  scripts.
+  into the workspace.
+- `create` refuses legacy (`evaluatorVersion: "1.0"`) scripts, and it asks the
+  tenant which engines a context supports **before** writing anything. It has
+  to: the scripts endpoint accepts a legacy-only context with
+  `"evaluatorVersion": "2.0"` and stores `1.0` anyway — `201`, no warning — so
+  the refusal was previously unreachable for exactly the contexts it exists
+  for, and you found out at runtime. Now `--context OAUTH2_VALIDATE_SCOPE`
+  creates under `OAUTH2_VALIDATE_SCOPE_NEXT_GEN` and says so on stderr. Where a
+  context has no next-gen form at all — `AUTHENTICATION_SERVER_SIDE`,
+  `AUTHENTICATION_CLIENT_SIDE` — it refuses and names what the context does
+  support. Do not infer the engine from the context's name or its language
+  list: `SAML2_SP_ADAPTER` is JavaScript-only and still `1.0`-only (measured
+  2026-09-09), which is why this is a live question and not a table.
 - `watch` normally pushes only **tracked** scripts, and silently skips an
   untracked file. The one exception is an endpoint the TypeScript project
   declares it owns in `typescript/.aic-ts-manifest.json`: that has no snapshot

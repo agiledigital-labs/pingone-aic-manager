@@ -419,10 +419,19 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     .ok_or_else(|| Error::Config("AM script create requires --context".into()))?;
                 let contexts = script::am::list_contexts(&tenant).await?;
                 let (resolved, forced_version) = script::am::resolve_context(input, &contexts)?;
-                opts.context = Some(resolved);
                 if opts.evaluator_version.is_none() {
                     opts.evaluator_version = forced_version;
                 }
+                // `new_script` defaults to 2.0 and refuses 1.0, but that guard
+                // was never reached for the contexts it exists for: the
+                // scripts endpoint accepts a legacy-only context with
+                // `"evaluatorVersion": "2.0"` and stores 1.0 anyway, 201, no
+                // warning. Ask the contexts endpoint first, which answers
+                // before anything is written.
+                let wanted = opts.evaluator_version.as_deref().unwrap_or("2.0");
+                opts.context = Some(
+                    resolve_engine(&tenant, ns.realm_arg(), &resolved, wanted, &contexts).await?,
+                );
             }
             let new_script = ns.kind.new_script(&name, &source, &opts)?;
             let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
@@ -901,6 +910,53 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             show_diff(&full, ll, &pair.left, rl, &pair.right)?;
             Ok(())
         }
+    }
+}
+
+/// Pick the context that actually gives you the engine you asked for.
+///
+/// Costs one `GET` per create, and a second only when the first says the
+/// requested context cannot serve the version — cheap against the alternative,
+/// which is a script that looks created and fails at runtime, then costs a
+/// `delete --force` and a recreate to undo.
+async fn resolve_engine(
+    tenant: &str,
+    realm: &str,
+    context: &str,
+    wanted: &str,
+    contexts: &[String],
+) -> Result<String> {
+    use script::am::{EnginePlan, evaluator_versions, next_gen_sibling, plan_engine};
+
+    let supported = evaluator_versions(tenant, realm, context).await?;
+    if supported.iter().any(|version| version == wanted) {
+        return Ok(context.to_string());
+    }
+
+    // Only now is the second call worth making — and it is a real call, not an
+    // assumption from the name: a context spelled `…_NEXT_GEN` is next-gen in
+    // every case measured, but so was `SAML2_SP_ADAPTER` JavaScript-only while
+    // still being 1.0-only, which is how this whole class of bug looks.
+    let sibling = match next_gen_sibling(context, contexts) {
+        Some(name) => {
+            let versions = evaluator_versions(tenant, realm, &name).await?;
+            Some((name, versions))
+        }
+        None => None,
+    };
+    let sibling_ref = sibling
+        .as_ref()
+        .map(|(name, versions)| (name.as_str(), versions.as_slice()));
+
+    match plan_engine(context, wanted, &supported, sibling_ref) {
+        EnginePlan::Keep => Ok(context.to_string()),
+        EnginePlan::Redirect(name) => {
+            eprintln!(
+                "note: {context} runs the legacy engine on this tenant; creating under {name} for evaluatorVersion {wanted}"
+            );
+            Ok(name)
+        }
+        EnginePlan::Refuse(message) => Err(Error::Config(message)),
     }
 }
 

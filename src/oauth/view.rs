@@ -332,7 +332,7 @@ fn is_inherited_wrapper(value: &Value) -> bool {
 
 /// Replace every secret value in the document with a constant.
 ///
-/// The keys are the same ones the CLI redacts (`crate::oauth::api::is_secret_key`)
+/// The keys are the same ones the CLI redacts (`crate::oauth::spec::is_secret_key`)
 /// — AES-wrapped `*-encrypted` blobs, and the write-only `userpassword`. The
 /// detail pane is a screen someone screen-shares or screenshots into a ticket,
 /// and no reader can do anything with the value anyway. Unlike the CLI diff
@@ -344,7 +344,7 @@ fn mask_secrets(value: &Value) -> Value {
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(key, value)| {
-                    if crate::oauth::api::is_secret_key(key) && !value.is_null() {
+                    if crate::oauth::spec::is_secret_key(key) && !value.is_null() {
                         (key.clone(), Value::String("<secret>".into()))
                     } else {
                         (key.clone(), mask_secrets(value))
