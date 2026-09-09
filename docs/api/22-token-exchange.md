@@ -522,7 +522,10 @@ None. First-hand observation only.
    free. Whether a refresh token issued *with* the grant can outlive the subject
    token is still untested.
 4. **`tokenExchangeAuthLevel`** on `advancedOAuth2ClientConfig` — untouched;
-   presumably raises the bar on the subject token's `auth_level`.
+   presumably raises the bar on the subject token's `auth_level`. Still
+   presumed, 2026-09-10: `aic oauth exchange list` prints the number and
+   deliberately does not interpret it. Every client on the sandbox has `0`, so
+   there is not even an accidental observation to go on.
 5. **`oidcMayActScript`** — the id-token twin of the access-token may-act hook,
    untested.
 6. **Can `aud` hold only the resource server?** Ping's docs tie the leading
