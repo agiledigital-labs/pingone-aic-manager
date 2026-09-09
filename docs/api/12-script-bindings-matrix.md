@@ -1055,7 +1055,14 @@ would have gotten wrong:
   callable.** `Can't find method …setAct(object)`. Checked against BOTH token
   flavours by flipping `statelessTokensEnabled`, so it is the context and not
   the implementation: the error names `StatelessAccessToken` in one run and
-  `StatefulAccessToken` in the other.
+  `StatefulAccessToken` in the other. `setMayAct` **is** callable in
+  `OAUTH2_MAY_ACT_NEXT_GEN`, which is the only context that is meant to stamp
+  the claim — and stamping it is not decoration. `may_act` is what makes an
+  RFC 8693 token exchange legal at all: without a claim naming the acting
+  client, every exchange is refused with `400 invalid_request "Invalid token
+  exchange."`, the same message four unrelated causes produce. See
+  [22-token-exchange.md](22-token-exchange.md#may_act-is-the-gate-and-it-is-stamped-by-a-script),
+  and `aic oauth exchange list` for which clients in a realm actually stamp it.
 - **`setScope` wants a `java.util.Set`.** A JS array throws
   `Cannot convert org.mozilla.javascript.NativeArray to java.util.Set`.
   `new java.util.HashSet()` + `.add()` works.

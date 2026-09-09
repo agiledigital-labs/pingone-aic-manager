@@ -1,6 +1,12 @@
 # 22 — OAuth2 token exchange (RFC 8693) and the mint-time scope gate
 
-Implemented in: **nothing yet.** Discovery for the capability-token demo
+Implemented in: [`src/oauth/`](../../src/oauth/) — `aic oauth exchange list`
+reads this configuration (the realm's grant, its exchangers and its may-act
+script, plus each client's role) and names the misconfigurations that all
+collapse onto the one opaque error below. Read-only; there is no command that
+performs an exchange, and no `aic oauth provider set`. Probe lane:
+[`scripts/rhino-script-tester/run-exchange-probes.sh`](../../scripts/rhino-script-tester/run-exchange-probes.sh).
+Discovery for the capability-token demo
 (`../../../aic-demos/capability-tokens/PLAN.md`).
 
 ## Purpose
@@ -57,6 +63,16 @@ Response is an ordinary token response plus
 Without it: `400 {"error":"invalid_request","error_description":"Invalid token
 exchange."}` — the same message for every misconfiguration, so it tells you
 nothing about which one.
+
+**This is the deny-by-default rule, and it is worth isolating.** Verified
+2026-09-10 by a pair that differs in one line: the same two clients, the same
+scopes, the same validate-scope script, and a may-act script with and without
+its `setMayAct` call. With it, the exchange is `200` and the scope comes back
+intact; without it, `400 invalid_request`. Nothing else changes, and the
+subject token is issued normally in both runs — the failure appears only at the
+exchange. `run-exchange-probes.sh` runs both as `control-exchange` and
+`no-may-act`. `aic oauth exchange list` reports a realm where nothing stamps
+the claim, because that state is invisible until an exchange fails.
 
 `may_act` goes into the **subject** token when that token is issued, by an
 `OAUTH2_MAY_ACT[_NEXT_GEN]` script wired to
@@ -145,6 +161,18 @@ whose `AMIdentity` is null:
 InternalError: Cannot invoke "com.sun.identity.idm.AMIdentity.getName()"
 because "this.amIdentity" is null
 ```
+
+**And not only on those two.** Re-measured 2026-09-10 with an explicit control:
+the same probe script on the same client, run once on `client_credentials` and
+once on token exchange, logged the identical
+`bound but getName() threw: … "this.amIdentity" is null` both times. So this is
+not a peculiarity of the exchange — it is what `identity` does at the token
+endpoint whenever the request carries no resource-owner session, which so far
+is every grant measured. `authorization_code` remains unprobed and is the one
+case that might differ. The probe pair is
+`scripts/rhino-script-tester/fixtures-exchange/identity-probe.validate.js`
+against `control-passthrough.validate.js`; run it with
+`run-exchange-probes.sh`.
 
 The resource owner has to be recovered from the request instead.
 `requestProperties.requestParams` carries the grant's own parameters —
