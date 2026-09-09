@@ -47,7 +47,17 @@ const LIST_FIELDS: &str = "_id,coreOAuth2ClientConfig/clientName,coreOAuth2Clien
 /// A field absent from a client is simply absent from its row rather than
 /// null, so every reader here has to treat missing as "not set" and not as a
 /// shape error.
-const EXCHANGE_FIELDS: &str = "_id,advancedOAuth2ClientConfig/grantTypes,advancedOAuth2ClientConfig/tokenExchangeAuthLevel,advancedOAuth2ClientConfig/allowedResourceServerAudienceValues,advancedOAuth2ClientConfig/acceptAudienceParametersInTokenExchangeRequests,overrideOAuth2ClientConfig/providerOverridesEnabled,overrideOAuth2ClientConfig/accessTokenMayActScript,overrideOAuth2ClientConfig/accessTokenMayActPluginType,overrideOAuth2ClientConfig/oidcMayActScript,overrideOAuth2ClientConfig/oidcMayActPluginType";
+///
+/// Which group each field lives in is **not** guessable, and was read off the
+/// live `?_action=schema` on 2026-09-10 after a first attempt put one in the
+/// wrong place and got a permanently-absent column for it:
+/// `allowedResourceServerAudienceValues` and `tokenExchangeAuthLevel` are
+/// `advancedOAuth2ClientConfig`, while
+/// `acceptAudienceParametersInTokenExchangeRequests` and both may-act scripts
+/// are `overrideOAuth2ClientConfig` — and therefore governed by
+/// `providerOverridesEnabled`. There are no `…MayActPluginType` companions;
+/// setting the script id is enough.
+const EXCHANGE_FIELDS: &str = "_id,advancedOAuth2ClientConfig/grantTypes,advancedOAuth2ClientConfig/tokenExchangeAuthLevel,advancedOAuth2ClientConfig/allowedResourceServerAudienceValues,overrideOAuth2ClientConfig/providerOverridesEnabled,overrideOAuth2ClientConfig/acceptAudienceParametersInTokenExchangeRequests,overrideOAuth2ClientConfig/accessTokenMayActScript,overrideOAuth2ClientConfig/oidcMayActScript";
 
 /// List clients as whole rows. See [`list_clients`] for the ids alone.
 pub async fn list_client_rows(tenant: &str, realm: &str) -> Result<Vec<Value>> {
@@ -264,6 +274,16 @@ fn strip_revs(value: &Value) -> Value {
 /// A digest rather than a constant, so a rotated secret still shows as a
 /// changed line. That also keeps `content_text` agreeing with
 /// [`content_equal`]: equal values digest equally, and unequal ones do not.
+///
+/// The digest is **keyed on a random per-process value**, and that matters for
+/// the plaintext case. An unsalted SHA-256 of an AES-wrapped blob gives an
+/// attacker nothing, but a client secret a human chose is dictionary-testable
+/// from a pasted terminal line — so publishing one would have handed out
+/// exactly what the redaction exists to withhold. A per-process key keeps both
+/// sides of one comparison consistent, which is all the change-detection
+/// needs, and makes the printed value useless anywhere else. The cost is that
+/// two separate runs print different placeholders for the same secret; a diff
+/// only ever compares within one run.
 pub(crate) fn redact_secrets(value: &Value) -> Value {
     match value {
         Value::Array(values) => Value::Array(values.iter().map(redact_secrets).collect()),
@@ -282,12 +302,22 @@ pub(crate) fn redact_secrets(value: &Value) -> Value {
     }
 }
 
+/// A random value mixed into every secret digest, minted once per process.
+///
+/// Not persisted anywhere: persisting it would make the digests comparable
+/// across runs again, which is the property being removed.
+fn digest_key() -> &'static str {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
 fn encrypted_digest(value: &Value) -> String {
     // The whole digest, not a prefix. A truncated one is shorter to read and
     // makes the agreement with `content_equal` merely probable: two unequal
     // blobs sharing a 64-bit prefix would render identically while `push`
     // still saw drift. The line is long; the invariant is exact.
-    format!("<encrypted: sha256:{}>", crate::access::spec::digest(value))
+    let keyed = json!({ "key": digest_key(), "value": value });
+    format!("<redacted: sha256:{}>", crate::access::spec::digest(&keyed))
 }
 
 pub(crate) fn content_equal(a: &Value, b: &Value) -> bool {
@@ -514,9 +544,39 @@ mod tests {
         }));
 
         assert!(!text.contains("AQICSecretWrappedBytes"), "{text}");
-        assert!(text.contains("<encrypted: sha256:"), "{text}");
+        assert!(text.contains("<redacted: sha256:"), "{text}");
         // The key stays, so the diff still says which field changed.
         assert!(text.contains("userpassword-encrypted"), "{text}");
+    }
+
+    /// The redaction must not double as an offline oracle. A plaintext
+    /// `userpassword` is a value a human chose, so an unsalted digest of it is
+    /// dictionary-testable straight out of a pasted terminal line — which is
+    /// the thing the redaction exists to prevent. The discriminating pair:
+    /// within one process two equal secrets still render alike, so a diff
+    /// still detects a rotation, while the printed digest is not the plain
+    /// SHA-256 anyone can precompute.
+    #[test]
+    fn the_secret_digest_is_not_a_precomputable_hash_of_the_secret() {
+        let secret = json!("hunter2");
+        let text = content_text(&json!({
+            "coreOAuth2ClientConfig": { "userpassword": secret }
+        }));
+
+        assert!(!text.contains("hunter2"), "{text}");
+        assert!(
+            !text.contains(&crate::access::spec::digest(&secret)),
+            "the plain digest of the secret is in the output: {text}"
+        );
+        // ...and it still detects a change, which is why it is a digest at all.
+        let same = content_text(&json!({
+            "coreOAuth2ClientConfig": { "userpassword": "hunter2" }
+        }));
+        let rotated = content_text(&json!({
+            "coreOAuth2ClientConfig": { "userpassword": "hunter3" }
+        }));
+        assert_eq!(text, same);
+        assert_ne!(text, rotated);
     }
 
     /// Not one special-cased key: the rule is the suffix, at any depth,

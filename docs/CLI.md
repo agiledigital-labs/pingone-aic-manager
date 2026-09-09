@@ -691,23 +691,38 @@ grant exists at all, which token types have an exchanger, and which script
 stamps `may_act` by default; each client decides whether it holds the grant
 (making it an **actor**) and whether it stamps `may_act` on the tokens it
 issues (making it a usable **subject**). One client can be both. By default
-only the clients that take part are listed, and the tally says how many were
-hidden; `--all` lists every client.
+only the clients that hold the grant or carry a may-act override of their own
+are listed, and the tally says how many were hidden; `--all` lists every
+client.
 
-Three of the columns need a word. `MAY-ACT SCRIPT` names the script per field —
-`access` and `oidc` stamp the claim on different token types, and they collapse
-to `access+oidc` when they name the same script. It prints a resolved script's
-**name** alone to keep the row inside a terminal; an *unresolved* id keeps its
-full UUID, because that case is a finding, and `--json` carries every id
-regardless. A `(dormant)` prefix means the script is configured but
-`providerOverridesEnabled` is not `true`, so the realm's script runs instead.
-`AUTH_LEVEL` is `tokenExchangeAuthLevel`, the minimum auth level a subject
-token must carry; `0` is AM's default and imposes nothing.
+The subject half is the **effective** answer, not the configured one, and the
+three cases differ:
 
-The warnings are the point of the command. Every one of these produces the same
-opaque failure at the token endpoint — `unsupported_grant_type` for a missing
-grant, and `invalid_request: Invalid token exchange.` for everything else — so
-they are worth reading before anyone runs an exchange:
+- a live client override — shown as `subject`;
+- no live override while the realm sets `accessTokenMayActScript` — shown as
+  `subject (realm)`. A realm script makes *every* client a subject, so the
+  header says it once rather than the table saying it a thousand times;
+- a `(dormant)` override — configured under a `providerOverridesEnabled` that
+  is not `true`, so it stamps nothing. With a realm script the realm's runs
+  instead; without one, that client's tokens cannot be exchanged at all.
+
+`MAY-ACT SCRIPT` names the script per field — `access` and `oidc` stamp the
+claim on different token types, and they collapse to `access+oidc` when they
+name the same script. It prints a resolved script's **name** alone to keep the
+row inside a terminal; an *unresolved* id keeps its full UUID, because that
+case is a finding, and `--json` carries every id regardless. `AUTH_LEVEL` is
+`tokenExchangeAuthLevel`, the minimum auth level a subject token must carry;
+`0` is AM's default and imposes nothing. `AUDIENCE` is
+`allowedResourceServerAudienceValues` — empty means the client cannot be asked
+for an `audience` at all. Note the neighbouring
+`acceptAudienceParametersInTokenExchangeRequests` lives in the **override**
+block and so is governed by the master switch, while these two do not; `--json`
+reports the configured and the effective value separately.
+
+The warnings are why the command exists. Each names a prerequisite that is
+visibly unmet, and every one of them surfaces at the token endpoint as the same
+message — `unsupported_grant_type` for a missing grant, and
+`invalid_request: Invalid token exchange.` for the rest:
 
 - clients hold the grant but the realm does not grant the type;
 - the realm grants it but no client holds it;
@@ -718,9 +733,18 @@ they are worth reading before anyone runs an exchange:
   `true`;
 - the grant is on but no `tokenExchangeClasses` are configured.
 
-There is no field naming *which* actor a subject permits — the may-act script
-decides that at mint time — so the relationship is only fully readable by
-reading the script this command names.
+That list is **not** every way an exchange fails, and the difference matters
+when you are debugging one. A may-act script that names the wrong actor or
+throws, a `tokenExchangeAuthLevel` the subject token does not reach, an
+`audience` the acting client does not allow, an unconfigured subject/requested
+token-type *pair*, and a forged subject token are all invisible here and all
+produce the same message. Clearing these warnings narrows the search; it does
+not end it. In particular there is no field naming *which* actor a subject
+permits — the may-act script decides that at mint time — so the relationship is
+only fully readable by reading the script this command names.
+
+`--json` carries the realm's half, the projected rows and the findings. The
+warnings also go to stderr, so a piped `--json` loses nothing.
 
 `get` prints one client as a compact table and **writes nothing** — reading a
 client used to mean `pull`, which drops a JSON file in the workspace and
