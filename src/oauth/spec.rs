@@ -631,6 +631,24 @@ fn json_type_name(value: &Value) -> &'static str {
     }
 }
 
+/// A config group, or `None` when it is absent **or** present and not an
+/// object — the second case noted as a fault, because every field under it is
+/// then unreadable rather than unset.
+fn readable_group<'a>(
+    group: Option<&'a Value>,
+    name: &str,
+    faults: &mut ShapeFaults,
+) -> Option<&'a Value> {
+    let group = group?;
+    match inherited_value(group) {
+        Value::Object(_) => Some(group),
+        other => {
+            faults.note("client", name, other, "an object");
+            None
+        }
+    }
+}
+
 /// Collects "this field was present and unusable" notes for one document.
 #[derive(Default)]
 struct ShapeFaults(Vec<String>);
@@ -641,6 +659,10 @@ impl ShapeFaults {
             "{group}.{field} is {}, expected {expected}",
             json_type_name(value)
         ));
+    }
+
+    fn mentions(&self, needle: &str) -> bool {
+        self.0.iter().any(|fault| fault.contains(needle))
     }
 
     fn bool_at(&mut self, group: &str, field: &str, value: Option<&Value>) -> Option<bool> {
@@ -665,23 +687,42 @@ pub fn exchange_row(value: &Value) -> ExchangeRow {
         .to_string();
 
     let mut faults = ShapeFaults::default();
+    // A group that is present but not an object makes every field in it
+    // unreadable, and `projected` cannot tell that from the group being
+    // absent — which produced a confident `Some(false)` with no fault at all.
+    let advanced = readable_group(advanced, CLIENT_ADVANCED, &mut faults);
+    let overrides = readable_group(overrides, CLIENT_OVERRIDES, &mut faults);
+    let advanced_readable = advanced.is_some() || !faults.mentions(CLIENT_ADVANCED);
+    let overrides_readable = overrides.is_some() || !faults.mentions(CLIENT_OVERRIDES);
 
     let actor = match projected(advanced, "grantTypes") {
         Some(Value::Array(grants)) => {
-            for grant in grants.iter().filter(|grant| !grant.is_string()) {
+            let unreadable = grants.iter().filter(|grant| !grant.is_string());
+            let mut any_unreadable = false;
+            for grant in unreadable {
                 faults.note(CLIENT_ADVANCED, "grantTypes[]", grant, "a string");
+                any_unreadable = true;
             }
-            Some(
-                grants
-                    .iter()
-                    .any(|grant| grant.as_str() == Some(TOKEN_EXCHANGE_GRANT)),
-            )
+            if grants
+                .iter()
+                .any(|grant| grant.as_str() == Some(TOKEN_EXCHANGE_GRANT))
+            {
+                // Present is present, whatever else the list holds.
+                Some(true)
+            } else if any_unreadable {
+                // Absent from the elements that could be read is not absent:
+                // the unreadable one may have been the grant.
+                None
+            } else {
+                Some(false)
+            }
         }
         Some(other) => {
             faults.note(CLIENT_ADVANCED, "grantTypes", other, "an array");
             None
         }
-        None => Some(false),
+        None if advanced_readable => Some(false),
+        None => None,
     };
 
     let may_act = MAY_ACT_FIELDS
@@ -719,8 +760,10 @@ pub fn exchange_row(value: &Value) -> ExchangeRow {
             None
         }
         // Absent is not enabled — the doc's wording is that `true` is
-        // required — and that is a reading, not a failure to read.
-        None => Some(false),
+        // required — and that is a reading, not a failure to read. Unless the
+        // whole group was unreadable, in which case nothing was read.
+        None if overrides_readable => Some(false),
+        None => None,
     };
 
     let auth_level = match projected(advanced, "tokenExchangeAuthLevel") {
@@ -790,21 +833,54 @@ pub fn exchange_row(value: &Value) -> ExchangeRow {
 }
 
 /// The realm half of the answer, and what could not be read of it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// Each field that drives a categorical finding carries its own readability,
+/// because "the realm configures no exchangers" and "the exchanger list could
+/// not be read" are different sentences and only one of them is ever true.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RealmExchange {
     /// Does `advancedOAuth2Config.grantTypes` include the exchange grant?
-    /// `None` when the list could not be read — tenant-wide, so more worth
-    /// saying than a single client's, not less.
+    /// `None` when the list — or the group holding it — could not be read.
+    /// Tenant-wide, so more worth withholding than a single client's, not
+    /// less: a substituted `false` reports every actor in the realm as broken.
     pub granted: Option<bool>,
     /// `coreOAuth2Config.accessTokenMayActScript`, the fallback for every
     /// client whose override block is not live.
     pub may_act_script: Option<String>,
+    /// False when the may-act field or its group was unreadable, so
+    /// `may_act_script: None` means "could not tell" rather than "not set".
+    pub may_act_readable: bool,
     /// The `from => to` exchanges the realm has an exchanger class for.
     pub exchangers: Vec<String>,
+    /// False when the class list was unreadable, so an empty `exchangers`
+    /// means "could not tell" rather than "none configured".
+    pub exchangers_readable: bool,
     /// The realm's `acceptAudienceParametersInTokenExchangeRequests`, so a
     /// reader can resolve what a `null` client-side override means.
     pub accept_audience: Option<bool>,
     pub shape_faults: Vec<String>,
+}
+
+impl Default for RealmExchange {
+    fn default() -> Self {
+        Self {
+            granted: None,
+            may_act_script: None,
+            may_act_readable: true,
+            exchangers: Vec::new(),
+            exchangers_readable: true,
+            accept_audience: None,
+            shape_faults: Vec::new(),
+        }
+    }
+}
+
+impl RealmExchange {
+    /// Does the realm stamp `may_act` for the clients that inherit? `None`
+    /// when the answer could not be read.
+    pub fn stamps(&self) -> Option<bool> {
+        self.may_act_readable.then(|| self.may_act_script.is_some())
+    }
 }
 
 const PROVIDER_ADVANCED: &str = "advancedOAuth2Config";
@@ -815,11 +891,14 @@ pub fn realm_exchange(doc: &Value) -> RealmExchange {
     let advanced = match provider_group(doc, PROVIDER_ADVANCED) {
         Some(Value::Object(config)) => Some(config),
         Some(other) => {
-            faults.note("", PROVIDER_ADVANCED, other, "an object");
+            faults.note("provider", PROVIDER_ADVANCED, other, "an object");
             None
         }
         None => None,
     };
+    // Absent and unreadable are different: an absent group leaves the realm on
+    // AM's defaults, an unreadable one leaves us unable to say what it holds.
+    let advanced_readable = !faults.mentions(PROVIDER_ADVANCED);
 
     let granted = match advanced
         .and_then(|config| config.get("grantTypes"))
@@ -834,19 +913,22 @@ pub fn realm_exchange(doc: &Value) -> RealmExchange {
             faults.note(PROVIDER_ADVANCED, "grantTypes", other, "an array");
             None
         }
-        None => Some(false),
+        None if advanced_readable => Some(false),
+        None => None,
     };
 
-    let exchangers = match advanced
+    let (exchangers, exchangers_readable) = match advanced
         .and_then(|config| config.get("tokenExchangeClasses"))
         .map(inherited_value)
     {
-        Some(Value::Array(values)) => values.iter().map(token_exchange_class_cell).collect(),
+        Some(Value::Array(values)) => {
+            (values.iter().map(token_exchange_class_cell).collect(), true)
+        }
         Some(other) => {
             faults.note(PROVIDER_ADVANCED, "tokenExchangeClasses", other, "an array");
-            Vec::new()
+            (Vec::new(), false)
         }
-        None => Vec::new(),
+        None => (Vec::new(), advanced_readable),
     };
 
     let accept_audience = faults.bool_at(
@@ -857,25 +939,34 @@ pub fn realm_exchange(doc: &Value) -> RealmExchange {
             .map(inherited_value),
     );
 
-    let may_act_script = match provider_group(doc, PROVIDER_CORE) {
-        Some(Value::Object(config)) => match config.get("accessTokenMayActScript") {
-            Some(value) if override_entry_inherits("accessTokenMayActScript", value) => None,
-            Some(value) => match inherited_value(value) {
-                Value::String(script) => Some(script.clone()),
-                other => {
-                    faults.note(PROVIDER_CORE, "accessTokenMayActScript", other, "a string");
-                    None
-                }
-            },
-            None => None,
+    let core = match provider_group(doc, PROVIDER_CORE) {
+        Some(Value::Object(config)) => Some(config),
+        Some(other) => {
+            faults.note("provider", PROVIDER_CORE, other, "an object");
+            None
+        }
+        None => None,
+    };
+    let mut may_act_readable = !faults.mentions(PROVIDER_CORE);
+    let may_act_script = match core.and_then(|config| config.get("accessTokenMayActScript")) {
+        Some(value) if override_entry_inherits("accessTokenMayActScript", value) => None,
+        Some(value) => match inherited_value(value) {
+            Value::String(script) => Some(script.clone()),
+            other => {
+                faults.note(PROVIDER_CORE, "accessTokenMayActScript", other, "a string");
+                may_act_readable = false;
+                None
+            }
         },
-        _ => None,
+        None => None,
     };
 
     RealmExchange {
         granted,
         may_act_script,
+        may_act_readable,
         exchangers,
+        exchangers_readable,
         accept_audience,
         shape_faults: faults.0,
     }
@@ -897,16 +988,19 @@ pub fn realm_exchange(doc: &Value) -> RealmExchange {
 /// not make the sentence right.
 pub fn exchange_findings(realm: &RealmExchange, rows: &[ExchangeRow]) -> Vec<String> {
     let mut findings = Vec::new();
-    let realm_stamps = realm.may_act_script.is_some();
+    let realm_stamps = realm.stamps();
     let actors = rows.iter().filter(|row| row.actor == Some(true)).count();
     let unknown_actors = rows.iter().filter(|row| row.actor.is_none()).count();
-    let unstamped = rows
-        .iter()
-        .filter(|row| row.actor != Some(false))
-        .map(|row| may_act_source(row, realm_stamps))
-        .collect::<Vec<_>>();
-    let none_stamped =
-        !unstamped.is_empty() && unstamped.iter().all(|source| *source == MayActSource::None);
+    // **Every** client, not only the actors. Acting and stamping are separate
+    // roles held by different clients: the subject whose tokens an actor
+    // exchanges is, by construction, some other client — and filtering by
+    // actor status removed exactly the clients that could disprove this.
+    let none_stamped = realm_stamps.is_some_and(|realm_stamps| {
+        !rows.is_empty()
+            && rows
+                .iter()
+                .all(|row| may_act_source(row, realm_stamps) == MayActSource::None)
+    });
 
     if realm.granted == Some(false) && actors > 0 {
         findings.push(format!(
@@ -921,7 +1015,7 @@ pub fn exchange_findings(realm: &RealmExchange, rows: &[ExchangeRow]) -> Vec<Str
                 .to_string(),
         );
     }
-    if realm.granted == Some(true) && realm.exchangers.is_empty() {
+    if realm.granted == Some(true) && realm.exchangers.is_empty() && realm.exchangers_readable {
         findings.push(
             "the realm grants token-exchange but configures no tokenExchangeClasses, so no token type can be exchanged"
                 .to_string(),
@@ -937,9 +1031,12 @@ pub fn exchange_findings(realm: &RealmExchange, rows: &[ExchangeRow]) -> Vec<Str
         // What happens instead is the operative half, and it differs: with no
         // realm script this client's tokens cannot be exchanged at all, which
         // the earlier wording claimed the opposite of.
-        let instead = match realm.may_act_script.as_deref() {
-            Some(script) => format!("the realm's {script} runs instead"),
-            None => "the realm sets none either, so nothing stamps may_act for it".to_string(),
+        let instead = match (realm.may_act_readable, realm.may_act_script.as_deref()) {
+            (true, Some(script)) => format!("the realm's {script} runs instead"),
+            (true, None) => {
+                "the realm sets none either, so nothing stamps may_act for it".to_string()
+            }
+            (false, _) => "and the realm's own script could not be read".to_string(),
         };
         findings.push(format!(
             "{}: may-act script set but providerOverridesEnabled is not true, so it does not run — {instead}",
@@ -2253,8 +2350,7 @@ mod tests {
             granted: Some(true),
             may_act_script: may_act.map(ToOwned::to_owned),
             exchangers: vec!["a => b".to_string()],
-            accept_audience: None,
-            shape_faults: Vec::new(),
+            ..RealmExchange::default()
         }
     }
 
@@ -2649,6 +2745,124 @@ mod tests {
         assert!(
             findings.iter().any(|f| f.starts_with("realm: ")),
             "{findings:?}"
+        );
+    }
+
+    /// Acting and stamping are separate roles held by **different** clients:
+    /// the subject whose tokens an actor exchanges is, by construction, not
+    /// the actor. Restricting the population to actors removed exactly the
+    /// clients that could disprove the claim.
+    #[test]
+    fn a_non_actor_subject_counts_against_the_deny_by_default_finding() {
+        let rows = vec![
+            exchange_row(&exchange_projection("caller", &[EXCHANGE], json!({}))),
+            // Not an actor, and the only thing stamping may_act.
+            exchange_row(&exchange_projection(
+                "web",
+                &["password"],
+                json!({
+                    "providerOverridesEnabled": true,
+                    "accessTokenMayActScript": "script-1",
+                }),
+            )),
+        ];
+
+        let findings = exchange_findings(&realm(None), &rows);
+
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.contains("nothing stamps may_act")),
+            "the subject is a different client from the actor: {findings:?}"
+        );
+        // ...and with that client gone, the realm genuinely cannot exchange.
+        let alone = exchange_findings(&realm(None), &rows[..1]);
+        assert!(
+            alone.iter().any(|f| f.contains("nothing stamps may_act")),
+            "{alone:?}"
+        );
+    }
+
+    /// The realm's own readability, field by field. An empty exchanger list
+    /// that could not be read is not "none configured", and a may-act script
+    /// that could not be read is not "not set".
+    #[test]
+    fn an_unreadable_realm_field_withholds_the_finding_it_feeds() {
+        let unreadable = realm_exchange(&json!({
+            "advancedOAuth2Config": {
+                "grantTypes": ["urn:ietf:params:oauth:grant-type:token-exchange"],
+                "tokenExchangeClasses": "not-an-array",
+            },
+            "coreOAuth2Config": { "accessTokenMayActScript": 7 },
+        }));
+
+        assert!(!unreadable.exchangers_readable);
+        assert!(!unreadable.may_act_readable);
+        assert_eq!(unreadable.stamps(), None);
+
+        let findings = exchange_findings(&unreadable, &[]);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.contains("no tokenExchangeClasses")),
+            "{findings:?}"
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.contains("nothing stamps may_act")),
+            "{findings:?}"
+        );
+
+        // The discriminating neighbour: genuinely empty, and it is stated.
+        let empty = realm_exchange(&json!({
+            "advancedOAuth2Config": {
+                "grantTypes": ["urn:ietf:params:oauth:grant-type:token-exchange"],
+            },
+        }));
+        assert!(empty.exchangers_readable);
+        assert!(
+            exchange_findings(&empty, &[])
+                .iter()
+                .any(|f| f.contains("no tokenExchangeClasses")),
+        );
+    }
+
+    /// A group that is *present and not an object* makes every field under it
+    /// unreadable. `projected` cannot tell that from the group being absent,
+    /// which produced a confident `Some(false)` with no fault at all.
+    #[test]
+    fn a_config_group_that_is_not_an_object_makes_its_fields_unknown() {
+        let row = exchange_row(&json!({
+            "_id": "broken",
+            "advancedOAuth2ClientConfig": "not-an-object",
+            "overrideOAuth2ClientConfig": 7,
+        }));
+
+        assert_eq!(row.actor, None);
+        assert_eq!(row.overrides_live, None);
+        assert_eq!(may_act_source(&row, true), MayActSource::Unknown);
+        assert_eq!(row.shape_faults.len(), 2, "{:?}", row.shape_faults);
+    }
+
+    /// A grant list whose unreadable element might have *been* the grant
+    /// cannot answer "no".
+    #[test]
+    fn an_unreadable_element_stops_a_grant_list_saying_no() {
+        let maybe = exchange_row(&json!({
+            "_id": "maybe",
+            "advancedOAuth2ClientConfig": { "grantTypes": ["password", 7] },
+        }));
+        let definitely = exchange_row(&json!({
+            "_id": "definitely",
+            "advancedOAuth2ClientConfig": { "grantTypes": [EXCHANGE, 7] },
+        }));
+
+        assert_eq!(maybe.actor, None, "the unreadable element may be the grant");
+        assert_eq!(
+            definitely.actor,
+            Some(true),
+            "present is present, whatever else the list holds"
         );
     }
 

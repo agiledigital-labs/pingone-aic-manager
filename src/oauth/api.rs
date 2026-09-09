@@ -102,14 +102,23 @@ async fn list_projected_rows(tenant: &str, realm: &str, fields: &str) -> Result<
                 body: format!("unexpected oauth client list shape: {body}"),
             })?;
         // A row with no `_id` names nothing and cannot be fetched, filtered or
-        // acted on — the id-only listing dropped those, and a row here would
-        // print as a blank first column.
-        rows.extend(
-            result
-                .iter()
-                .filter(|row| row.get("_id").and_then(Value::as_str).is_some())
-                .cloned(),
-        );
+        // acted on. It used to be dropped silently, which is the worst of the
+        // three options: a listing that quietly loses rows can manufacture
+        // "no client holds the grant" out of an incomplete answer, and nothing
+        // says so. Refusing is loud, and a CREST collection row without an id
+        // is not a thing this API produces.
+        if let Some(nameless) = result
+            .iter()
+            .position(|row| row.get("_id").and_then(Value::as_str).is_none())
+        {
+            return Err(Error::Api {
+                status: 0,
+                body: format!(
+                    "oauth client listing returned a row with no string `_id` (at index {nameless} of this page); refusing rather than silently dropping it"
+                ),
+            });
+        }
+        rows.extend(result.iter().cloned());
 
         cookie = body
             .get("pagedResultsCookie")

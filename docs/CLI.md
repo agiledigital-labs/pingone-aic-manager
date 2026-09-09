@@ -690,10 +690,13 @@ to answer by reading: **who may act for whom.** The realm decides whether the
 grant exists at all, which token types have an exchanger, and which script
 stamps `may_act` by default; each client decides whether it holds the grant
 (making it an **actor**) and whether it stamps `may_act` on the tokens it
-issues (making it a usable **subject**). One client can be both. By default
-only the clients that hold the grant or carry a may-act override of their own
-are listed, and the tally says how many were hidden; `--all` lists every
-client.
+issues (making it a usable **subject**). One client can be both. By default a
+client is listed when it says something the realm header does not: it holds
+the grant (or that could not be determined), it configures a may-act script,
+it has a **live** override block while the realm sets a may-act script — an
+exception to the realm-wide one — it sets its own audience values or a
+non-zero auth level, or something in its configuration could not be read. The
+tally says how many were hidden; `--all` lists every client.
 
 The subject half is the **effective** answer, not the configured one, and the
 three cases differ:
@@ -728,9 +731,14 @@ number, not an interpretation of it. `AUDIENCE` is
 for an `audience` at all. `ACCEPT_AUD` is the client's override of
 `acceptAudienceParametersInTokenExchangeRequests`, which lives in the
 **override** block and so is governed by the master switch (the other two are
-not); `-` means the override does not decide it and the realm's value applies.
-The pair is worth reading together, because a client that accepts no audience
-parameters silently ignores an `audience=` it is sent rather than rejecting it.
+not). It has four values, because three of them are not the same answer:
+`yes`/`no` when the live block decides it; `realm` when the block is dormant,
+in which case the header's `realm acceptAudienceParameters` line is what
+applies; `block default` when the block is live but the field absent, where the
+override block's own default governs and this listing never sees it; and `?`
+when the master switch could not be read. Worth reading with `AUDIENCE`,
+because a client that accepts no audience parameters silently **ignores** an
+`audience=` it is sent rather than rejecting it.
 
 The warnings are why the command exists. Each names a prerequisite that is
 visibly unmet, and every one of them surfaces at the token endpoint as the same
