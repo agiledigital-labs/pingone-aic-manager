@@ -638,6 +638,7 @@ Realm-scoped. Clients pull/push as JSON under the workspace.
 
 ```bash
 aic oauth list [--realm alpha] [--json]                 # client ids
+aic oauth get <id> [--realm alpha] [--tenant T] [--json]  # one client, read-only
 aic oauth provider get [--realm alpha] [--tenant T] [--json] # realm-wide OAuth2/OIDC provider
 aic oauth create <id> [common flags] [--from FILE]      # create from live tenant defaults
 aic oauth grant list <id> [--realm alpha]              # grant types on one client
@@ -662,6 +663,27 @@ That rewrite is purely structural, so a mapping that does not parse is printed
 in full — but one naming an unfamiliar token type or exchanger class is
 shortened like any other. `--json` prints the same document the API returned,
 re-serialised rather than passed through byte-for-byte.
+
+`get` prints one client as a compact table and **writes nothing** — reading a
+client used to mean `pull`, which drops a JSON file in the workspace and
+overwrites the snapshot as a side effect. It shows what the client is (id,
+status, name, type), how it authenticates (`tokenEndpointAuthMethod`,
+`subjectType`), and what it may ask for (grant types, response types, scopes,
+default scopes, redirect URIs, implied consent, the three lifetimes). Array
+fields print one value per row. `--json` prints the document the API returned.
+
+The last section is `overrideOAuth2ClientConfig`, whose 29 keys are only
+meaningful alongside one of them: `providerOverridesEnabled` is a master
+switch, so the section header says whether the block runs at all rather than
+echoing a boolean. With it **false** the realm applies and the block is
+ignored, so only entries someone actually set — a script id, a plugin type off
+`PROVIDER`, a non-default plugin class — are listed, as settings that are
+currently dormant. With it **true** every field in the block applies at once,
+its own defaults included, so a `false` is a live setting and is shown.
+Entries that say "inherit" (the `[Empty]` sentinel, `null`, an empty array, a
+`…PluginType` of `PROVIDER`, a `…Class` still on AM's `Default…`
+implementation) are suppressed and **counted** on a final row, so nothing is
+dropped without saying so. Script ids print as the bare UUIDs AM stores.
 
 `create` exposes the common client settings (`--name`, repeatable scopes,
 redirect URIs, grants/response types, token auth, consent, and lifetimes); run

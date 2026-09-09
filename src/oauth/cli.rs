@@ -140,6 +140,18 @@ pub enum OauthCommand {
         #[arg(long, help = "Print client ids as JSON")]
         json: bool,
     },
+    /// Show one OAuth2 client. Reads only — writes nothing to the workspace.
+    Get {
+        /// OAuth2 client id.
+        id: String,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Print the unmodified client document as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Create an OAuth2 client from the tenant's live template.
     Create {
         /// OAuth2 client id.
@@ -660,6 +672,27 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 print_table(&["CLIENT_ID"], &rows);
             }
             eprintln!("{} oauth clients", clients.len());
+            Ok(())
+        }
+        OauthCommand::Get {
+            id,
+            realm,
+            tenant,
+            json,
+        } => {
+            let tenant = tenant_for(tenant)?;
+            let realm = realm_arg("oauth", realm)?;
+            validate_client_id(&id)?;
+            let client = api::read_client(&tenant, &realm, &id).await?;
+            if json {
+                print_json(&client)?;
+            } else {
+                let rows = spec::client_summary(&client)
+                    .into_iter()
+                    .map(|(field, value)| vec![field, value])
+                    .collect::<Vec<_>>();
+                print_table(&["FIELD", "VALUE"], &rows);
+            }
             Ok(())
         }
         OauthCommand::Create { id, options } => {
@@ -1291,6 +1324,28 @@ mod tests {
         let remote = json!({"v": 1});
         let one_side = diff_sides_from(DiffMode::RemoteVsLocal, None, None, Some(&remote));
         assert!(nothing_to_compare("a-client", &one_side).is_none());
+    }
+
+    /// `get` exists because reading a client used to mean `pull`, which
+    /// writes a workspace file and overwrites the snapshot. There is no flag
+    /// that makes it write, and no `--force`: the parse is the guarantee.
+    #[test]
+    fn get_reads_and_takes_no_write_flag() {
+        let cli =
+            crate::cli::Cli::try_parse_from(["aic", "oauth", "get", "a-client", "--json"]).unwrap();
+        let Some(crate::cli::Command::Oauth {
+            command: OauthCommand::Get { id, json, .. },
+        }) = cli.command
+        else {
+            panic!("expected oauth get");
+        };
+        assert_eq!(id, "a-client");
+        assert!(json);
+
+        assert!(
+            crate::cli::Cli::try_parse_from(["aic", "oauth", "get", "a-client", "--force"])
+                .is_err()
+        );
     }
 
     /// The remedy must name the coordinates the diff used, not the defaults.
