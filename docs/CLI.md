@@ -705,7 +705,12 @@ in it live at once — including ones you never set. Entries that say "inherit"
 `PROVIDER`, a `…Class` still on AM's `Default…` implementation) are suppressed
 and **counted** on a final row, so nothing is dropped without saying so.
 A script id prints as `name (uuid)` where the realm has a script with that id,
-and as the bare UUID where it does not — an id naming a script that is not
+and as the bare UUID where it does not. Only fields that hold a script id are
+rewritten — a scope or a client id that happened to be UUID-shaped keeps its
+value. The lookup covers **every** script in the realm, including the Groovy
+and product-internal ones `aic script list` hides, because an override can
+legitimately point at one and resolving it to nothing would report an existing
+script as missing — an id naming a script that is not
 there is a finding, and replacing it with a placeholder would remove the value
 you need to chase it. Resolution needs a second request; if that fails you get
 the UUIDs and a warning saying why.
