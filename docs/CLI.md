@@ -640,6 +640,7 @@ Realm-scoped. Clients pull/push as JSON under the workspace.
 aic oauth list [--filter TEXT] [--no-dynamic] [--realm alpha] [--json]
 aic oauth get <id> [--realm alpha] [--tenant T] [--json]  # one client, read-only
 aic oauth provider get [--realm alpha] [--tenant T] [--json] # realm-wide OAuth2/OIDC provider
+aic oauth exchange list [--all] [--realm alpha] [--json]  # who takes part in RFC 8693 token exchange
 aic oauth create <id> [common flags] [--from FILE]      # create from live tenant defaults
 aic oauth grant list <id> [--realm alpha]              # grant types on one client
 aic oauth grant add <id> <grant>... [--realm alpha] [--yes]
@@ -677,10 +678,49 @@ thousand DCR clients that is the flag that makes the list readable. It tests
 the **id**, not the provenance: AM records nothing saying a client came from
 DCR, so a hand-made client given a UUID id is hidden too, and a dynamic
 registration that supplied its own `client_id` is not. That is why a filtered
-listing always reports how many rows were hidden and by which flag.
+listing always reports how many rows were hidden and by which flag. Verified
+2026-09-10 against a real dynamic registration: the client AM created carried a
+UUID `client_id`, and `--no-dynamic` hid exactly that row.
 
 `--json` still prints ids alone, not the new columns, so anything piping it
 into another command keeps working.
+
+`exchange list` answers the question RFC 8693 configuration is spread too thin
+to answer by reading: **who may act for whom.** The realm decides whether the
+grant exists at all, which token types have an exchanger, and which script
+stamps `may_act` by default; each client decides whether it holds the grant
+(making it an **actor**) and whether it stamps `may_act` on the tokens it
+issues (making it a usable **subject**). One client can be both. By default
+only the clients that take part are listed, and the tally says how many were
+hidden; `--all` lists every client.
+
+Three of the columns need a word. `MAY-ACT SCRIPT` names the script per field —
+`access` and `oidc` stamp the claim on different token types, and they collapse
+to `access+oidc` when they name the same script. It prints a resolved script's
+**name** alone to keep the row inside a terminal; an *unresolved* id keeps its
+full UUID, because that case is a finding, and `--json` carries every id
+regardless. A `(dormant)` prefix means the script is configured but
+`providerOverridesEnabled` is not `true`, so the realm's script runs instead.
+`AUTH_LEVEL` is `tokenExchangeAuthLevel`, the minimum auth level a subject
+token must carry; `0` is AM's default and imposes nothing.
+
+The warnings are the point of the command. Every one of these produces the same
+opaque failure at the token endpoint — `unsupported_grant_type` for a missing
+grant, and `invalid_request: Invalid token exchange.` for everything else — so
+they are worth reading before anyone runs an exchange:
+
+- clients hold the grant but the realm does not grant the type;
+- the realm grants it but no client holds it;
+- **nothing stamps `may_act`** — no live client override and no realm
+  `accessTokenMayActScript`. Token exchange is deny-by-default: without the
+  claim naming the acting client, every exchange is refused;
+- a may-act script sitting under a `providerOverridesEnabled` that is not
+  `true`;
+- the grant is on but no `tokenExchangeClasses` are configured.
+
+There is no field naming *which* actor a subject permits — the may-act script
+decides that at mint time — so the relationship is only fully readable by
+reading the script this command names.
 
 `get` prints one client as a compact table and **writes nothing** — reading a
 client used to mean `pull`, which drops a JSON file in the workspace and
@@ -989,10 +1029,14 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   context has no next-gen form at all — `AUTHENTICATION_SERVER_SIDE`,
   `AUTHENTICATION_CLIENT_SIDE` — it refuses and names what the context does
   support. Do not infer the engine from the context's name or its language
-  list: `SAML2_SP_ADAPTER` is JavaScript-only and still `1.0`-only (measured
-  2026-09-09), which is why this is a live question and not a table. The check
-  is keyed on the language the create will send, so `--language GROOVY`
-  refuses everywhere — every next-gen context advertises JavaScript alone.
+  list. The global context list says `SAML2_SP_ADAPTER` is `JAVASCRIPT` only,
+  while the realm's own `contexts/SAML2_SP_ADAPTER` reports
+  `evaluatorVersions: {JAVASCRIPT: ["1.0"], GROOVY: ["1.0"]}` — the two AM
+  endpoints disagree, and only the second one answers the question being asked
+  (measured 2026-09-10). That is why this is a live call and not a table. The
+  check is keyed on the language the create will send, so `--language GROOVY`
+  refuses everywhere a next-gen engine is required — every next-gen context
+  advertises JavaScript alone.
 - `watch` normally pushes only **tracked** scripts, and silently skips an
   untracked file. The one exception is an endpoint the TypeScript project
   declares it owns in `typescript/.aic-ts-manifest.json`: that has no snapshot

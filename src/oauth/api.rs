@@ -40,8 +40,32 @@ fn validate_client_id(id: &str) -> Result<()> {
 /// So a row reads these directly and must not be fed through `inherited_value`.
 const LIST_FIELDS: &str = "_id,coreOAuth2ClientConfig/clientName,coreOAuth2ClientConfig/clientType,coreOAuth2ClientConfig/status,advancedOAuth2ClientConfig/grantTypes";
 
+/// The fields the token-exchange view is built from.
+///
+/// Same projection contract as [`LIST_FIELDS`] — measured 2026-09-10 against
+/// the sandbox's `bravo` realm, which is the realm that grants the exchange.
+/// A field absent from a client is simply absent from its row rather than
+/// null, so every reader here has to treat missing as "not set" and not as a
+/// shape error.
+const EXCHANGE_FIELDS: &str = "_id,advancedOAuth2ClientConfig/grantTypes,advancedOAuth2ClientConfig/tokenExchangeAuthLevel,advancedOAuth2ClientConfig/allowedResourceServerAudienceValues,advancedOAuth2ClientConfig/acceptAudienceParametersInTokenExchangeRequests,overrideOAuth2ClientConfig/providerOverridesEnabled,overrideOAuth2ClientConfig/accessTokenMayActScript,overrideOAuth2ClientConfig/accessTokenMayActPluginType,overrideOAuth2ClientConfig/oidcMayActScript,overrideOAuth2ClientConfig/oidcMayActPluginType";
+
 /// List clients as whole rows. See [`list_clients`] for the ids alone.
 pub async fn list_client_rows(tenant: &str, realm: &str) -> Result<Vec<Value>> {
+    list_projected_rows(tenant, realm, LIST_FIELDS).await
+}
+
+/// Every client projected down to its token-exchange configuration.
+pub async fn list_exchange_rows(tenant: &str, realm: &str) -> Result<Vec<Value>> {
+    list_projected_rows(tenant, realm, EXCHANGE_FIELDS).await
+}
+
+/// One paged pass over the client collection, keeping `fields` of each row.
+///
+/// Shared by the two projections above so paging, the `_id` guard and the
+/// ordering are decided once. It keeps whole rows because both callers want
+/// several fields; the id-only [`list_clients`] stays separate rather than
+/// projecting a `Vec<Value>` it would immediately throw away.
+async fn list_projected_rows(tenant: &str, realm: &str, fields: &str) -> Result<Vec<Value>> {
     let mut rows = Vec::new();
     let mut cookie: Option<String> = None;
 
@@ -50,7 +74,7 @@ pub async fn list_client_rows(tenant: &str, realm: &str) -> Result<Vec<Value>> {
             let mut query = Serializer::new(String::new());
             query
                 .append_pair("_queryFilter", "true")
-                .append_pair("_fields", LIST_FIELDS)
+                .append_pair("_fields", fields)
                 .append_pair("_pageSize", "1000");
             if let Some(cookie) = cookie.as_deref() {
                 query.append_pair("_pagedResultsCookie", cookie);

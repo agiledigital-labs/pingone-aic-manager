@@ -292,9 +292,12 @@ pub fn client_row(value: &Value) -> ClientRow {
 /// supplied its own `client_id` does not. That is why the CLI counts what the
 /// flag hid rather than quietly shortening the list.
 ///
-/// Unverified against a real DCR client: the sandbox has none (0 of 46 ids are
-/// UUID-shaped, 2026-09-09), so this rests on the field report's description
-/// of a 1002-client tenant "dominated by dynamically-registered UUID clients".
+/// Verified 2026-09-10 against a **real** dynamic registration: a client
+/// registered at `POST /am/oauth2{realm}/register` came back with
+/// `client_id` `53f39d30-3ed1-4fbf-9baa-b53bd5f8474f`, and `--no-dynamic` hid
+/// exactly that one row of 30. So AM does mint a UUID for a registration that
+/// supplies no `client_id`, which is the half of this that was inference
+/// before.
 pub fn looks_dynamically_registered(id: &str) -> bool {
     is_uuid(id)
 }
@@ -331,6 +334,22 @@ impl ScriptNames {
 
     fn label(&self, id: &str) -> Option<String> {
         self.0.get(id).map(|name| format!("{name} ({id})"))
+    }
+
+    /// The script's name alone, or the bare id when nothing resolves it.
+    ///
+    /// For the width-constrained surfaces. The id is not lost — it is what
+    /// `--json` carries and what `oauth get` prints beside the name.
+    pub fn name_or(&self, id: &str) -> String {
+        self.0.get(id).cloned().unwrap_or_else(|| id.to_string())
+    }
+
+    /// The named form, or the bare id when nothing resolves it.
+    ///
+    /// An unresolved id is a finding, not a formatting problem — printing
+    /// `<unknown>` would erase the one string you can go looking with.
+    pub fn label_or(&self, id: &str) -> String {
+        self.label(id).unwrap_or_else(|| id.to_string())
     }
 }
 
@@ -411,6 +430,199 @@ pub fn override_faults(doc: &Value) -> Vec<String> {
         }
     }
     faults
+}
+
+/// One client's part in the realm's token-exchange configuration.
+///
+/// Built from the exchange projection, whose nested values arrive **unwrapped**
+/// exactly as [`ClientRow`]'s do, and whose absent fields are absent rather
+/// than null — so every reader here treats missing as "not set".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExchangeRow {
+    pub id: String,
+    /// Holds `urn:ietf:params:oauth:grant-type:token-exchange`, so it can
+    /// present someone else's token and ask to act. This is the only thing in
+    /// AM that says which clients may act at all.
+    pub actor: bool,
+    /// The may-act script fields this client sets, as `(field, script id)`.
+    ///
+    /// A client with one of these stamps `may_act` on the tokens it issues,
+    /// which is what makes it a usable **subject** — the exchange is refused
+    /// unless the subject token carries the claim. There is no field naming
+    /// the actor: the script decides, so the relationship is only fully
+    /// readable by reading the script.
+    pub may_act: Vec<(String, String)>,
+    /// The may-act entries are configured but `providerOverridesEnabled` is
+    /// not `true`, so the realm's `accessTokenMayActScript` runs instead.
+    pub dormant: bool,
+    /// `tokenExchangeAuthLevel` — the minimum auth level a subject token must
+    /// carry. `0` is AM's default and imposes nothing.
+    pub auth_level: Option<i64>,
+    /// `allowedResourceServerAudienceValues`; empty means the client cannot be
+    /// asked for an `audience` at all.
+    pub audience_values: Vec<String>,
+    /// The client's own copy of
+    /// `acceptAudienceParametersInTokenExchangeRequests`. `None` when the
+    /// client does not carry the key and the realm's value applies.
+    pub accept_audience: Option<bool>,
+}
+
+impl ExchangeRow {
+    /// Does this client appear in the exchange at all?
+    ///
+    /// Being an actor or stamping `may_act` are the two ways to take part, and
+    /// a realm's clients are overwhelmingly neither — listing all of them
+    /// would bury the handful that matter.
+    pub fn participates(&self) -> bool {
+        self.actor || !self.may_act.is_empty()
+    }
+}
+
+/// The may-act fields, in the order they are shown.
+///
+/// Two, because AM stamps the claim separately for the two token types and a
+/// client can set one without the other; a deployment that exchanges access
+/// tokens and forgets `oidcMayActScript` still works, so this is a listing
+/// rather than a fault.
+const MAY_ACT_FIELDS: &[&str] = &["accessTokenMayActScript", "oidcMayActScript"];
+
+pub fn exchange_row(value: &Value) -> ExchangeRow {
+    let advanced = value.get("advancedOAuth2ClientConfig");
+    let overrides = value.get(CLIENT_OVERRIDES);
+    let id = value
+        .get("_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let actor = match projected(advanced, "grantTypes") {
+        Some(Value::Array(grants)) => grants
+            .iter()
+            .any(|grant| grant.as_str() == Some(TOKEN_EXCHANGE_GRANT)),
+        _ => false,
+    };
+
+    let may_act = MAY_ACT_FIELDS
+        .iter()
+        .filter_map(|field| {
+            let value = projected(overrides, field)?;
+            // The same "inherit" vocabulary the summary uses: `[Empty]`, null
+            // and an empty value all mean the field is not set, and AM writes
+            // `[Empty]` far more often than it omits the key.
+            (!override_entry_inherits(field, value))
+                .then(|| ((*field).to_string(), provider_value_cell(value)))
+        })
+        .collect::<Vec<_>>();
+
+    ExchangeRow {
+        // Only meaningful when something is configured: a client with no
+        // may-act entry is not "dormant", it is simply not a subject.
+        dormant: !may_act.is_empty() && !exchange_overrides_enabled(overrides),
+        may_act,
+        actor,
+        auth_level: projected(advanced, "tokenExchangeAuthLevel").and_then(Value::as_i64),
+        audience_values: match projected(advanced, "allowedResourceServerAudienceValues") {
+            Some(Value::Array(values)) => values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect(),
+            _ => Vec::new(),
+        },
+        accept_audience: projected(advanced, "acceptAudienceParametersInTokenExchangeRequests")
+            .and_then(Value::as_bool),
+        id,
+    }
+}
+
+/// The master switch, read from the projected override group rather than from
+/// a whole client document.
+///
+/// Same rule as [`overrides_enabled`]: absent is **not** enabled. The
+/// projection returns the key when the client has it, so an absent switch here
+/// means the client genuinely does not carry one.
+fn exchange_overrides_enabled(overrides: Option<&Value>) -> bool {
+    projected(overrides, "providerOverridesEnabled") == Some(&Value::Bool(true))
+}
+
+/// Whether the realm grants the token-exchange type at all.
+pub fn provider_grants_token_exchange(doc: &Value) -> bool {
+    token_exchange_granted(doc) == "yes"
+}
+
+/// The realm's `accessTokenMayActScript`, or `None` when it is not set.
+///
+/// This is the fallback every client without a live override uses, so it is
+/// the difference between "nothing stamps `may_act`" and "one script stamps it
+/// for the whole realm".
+pub fn provider_may_act_script(doc: &Value) -> Option<String> {
+    let Some(Value::Object(config)) = provider_group(doc, "coreOAuth2Config") else {
+        return None;
+    };
+    let value = config.get("accessTokenMayActScript")?;
+    (!override_entry_inherits("accessTokenMayActScript", value)).then(|| provider_value_cell(value))
+}
+
+/// The `from => to` exchanges the realm has an exchanger class for.
+pub fn provider_exchange_classes(doc: &Value) -> Vec<String> {
+    let Some(Value::Object(config)) = provider_group(doc, "advancedOAuth2Config") else {
+        return Vec::new();
+    };
+    let Some(Value::Array(values)) = config.get("tokenExchangeClasses").map(inherited_value) else {
+        return Vec::new();
+    };
+    values.iter().map(token_exchange_class_cell).collect()
+}
+
+/// The things that make a configured exchange fail, in the order they bite.
+///
+/// Each of these produces the same opaque error at the token endpoint, which
+/// is why they are worth stating before anyone runs one: a missing grant is
+/// `unsupported_grant_type`, and every other cause collapses onto
+/// `invalid_request: Invalid token exchange.`
+pub fn exchange_findings(
+    granted: bool,
+    realm_may_act: Option<&str>,
+    exchangers: &[String],
+    rows: &[ExchangeRow],
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    let actors = rows.iter().filter(|row| row.actor).count();
+    let live_subjects = rows
+        .iter()
+        .filter(|row| !row.may_act.is_empty() && !row.dormant)
+        .count();
+
+    if !granted && actors > 0 {
+        findings.push(format!(
+            "the realm does not grant {TOKEN_EXCHANGE_GRANT}, so all {actors} client(s) holding it fail with unsupported_grant_type"
+        ));
+    }
+    if granted && actors == 0 {
+        findings.push(
+            "the realm grants token-exchange but no client holds the grant, so nothing can act"
+                .to_string(),
+        );
+    }
+    if actors > 0 && live_subjects == 0 && realm_may_act.is_none() {
+        findings.push(
+            "nothing stamps may_act — no live client override and no realm accessTokenMayActScript — so every exchange is refused as invalid_request"
+                .to_string(),
+        );
+    }
+    for row in rows.iter().filter(|row| row.dormant) {
+        findings.push(format!(
+            "{}: may-act script set but providerOverridesEnabled is not true, so the realm's script runs instead",
+            row.id
+        ));
+    }
+    if granted && exchangers.is_empty() {
+        findings.push(
+            "the realm grants token-exchange but configures no tokenExchangeClasses, so no token type can be exchanged"
+                .to_string(),
+        );
+    }
+    findings
 }
 
 /// Case-insensitive substring over the id and the client name.
@@ -1682,6 +1894,239 @@ mod tests {
             summary_row(&rows, "overrideOAuth2ClientConfig"),
             ["<absent>"]
         );
+    }
+
+    /// The exchange projection, as the collection endpoint returns it:
+    /// nested values unwrapped, absent fields simply absent.
+    fn exchange_projection(id: &str, grants: &[&str], overrides: Value) -> Value {
+        json!({
+            "_id": id,
+            "advancedOAuth2ClientConfig": {
+                "grantTypes": grants,
+                "tokenExchangeAuthLevel": 0,
+            },
+            "overrideOAuth2ClientConfig": overrides,
+        })
+    }
+
+    const EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+
+    #[test]
+    fn an_actor_is_a_client_that_holds_the_grant() {
+        let actor = exchange_row(&exchange_projection(
+            "caller",
+            &[EXCHANGE],
+            json!({ "providerOverridesEnabled": true }),
+        ));
+        let bystander = exchange_row(&exchange_projection(
+            "web",
+            &["authorization_code"],
+            json!({ "providerOverridesEnabled": true }),
+        ));
+
+        assert!(actor.actor, "the grant holder is the actor");
+        assert!(actor.participates());
+        assert!(!bystander.actor);
+        assert!(
+            !bystander.participates(),
+            "a client with neither the grant nor a may-act script is not in the exchange"
+        );
+    }
+
+    /// The discriminating case for the whole subject column. AM writes
+    /// `[Empty]` into an unset script field far more often than it omits the
+    /// key, so a reader that only tested for the key's *presence* would call
+    /// every client in the realm a subject.
+    #[test]
+    fn the_empty_sentinel_is_not_a_may_act_script() {
+        let row = exchange_row(&exchange_projection(
+            "web",
+            &["authorization_code"],
+            json!({
+                "providerOverridesEnabled": true,
+                "accessTokenMayActScript": "[Empty]",
+                "oidcMayActScript": "[Empty]",
+            }),
+        ));
+
+        assert!(row.may_act.is_empty());
+        assert!(!row.participates());
+        assert!(!row.dormant, "nothing is configured, so nothing is dormant");
+    }
+
+    #[test]
+    fn a_may_act_script_under_a_switch_that_is_not_true_is_dormant() {
+        let live = exchange_row(&exchange_projection(
+            "live",
+            &[],
+            json!({
+                "providerOverridesEnabled": true,
+                "accessTokenMayActScript": "script-1",
+            }),
+        ));
+        let off = exchange_row(&exchange_projection(
+            "off",
+            &[],
+            json!({
+                "providerOverridesEnabled": false,
+                "accessTokenMayActScript": "script-1",
+            }),
+        ));
+        // The discriminating case: an *absent* switch is not an enabled one,
+        // and reading `None` as "probably on" is the direction that misleads.
+        let absent = exchange_row(&exchange_projection(
+            "absent",
+            &[],
+            json!({ "accessTokenMayActScript": "script-1" }),
+        ));
+
+        assert!(!live.dormant);
+        assert!(off.dormant);
+        assert!(absent.dormant);
+        for row in [&live, &off, &absent] {
+            assert_eq!(
+                row.may_act,
+                vec![(
+                    "accessTokenMayActScript".to_string(),
+                    "script-1".to_string()
+                )],
+                "dormant changes whether it runs, never whether it is configured"
+            );
+        }
+    }
+
+    /// The projection is measured raw, but a wrapped value must not silently
+    /// become an empty column — the same guard `client_row` carries.
+    #[test]
+    fn the_exchange_projection_survives_an_inherited_wrapper() {
+        let row = exchange_row(&json!({
+            "_id": "wrapped",
+            "advancedOAuth2ClientConfig": {
+                "inherited": false,
+                "value": {
+                    "grantTypes": { "inherited": false, "value": [EXCHANGE] },
+                    "tokenExchangeAuthLevel": { "inherited": false, "value": 7 },
+                },
+            },
+            "overrideOAuth2ClientConfig": {
+                "inherited": false,
+                "value": {
+                    "providerOverridesEnabled": { "inherited": false, "value": true },
+                    "accessTokenMayActScript": { "inherited": false, "value": "script-1" },
+                },
+            },
+        }));
+
+        assert!(row.actor);
+        assert_eq!(row.auth_level, Some(7));
+        assert_eq!(row.may_act.len(), 1);
+        assert!(!row.dormant);
+    }
+
+    #[test]
+    fn a_realm_that_does_not_grant_the_type_is_reported_against_its_actors() {
+        let actors = vec![exchange_row(&exchange_projection(
+            "caller",
+            &[EXCHANGE],
+            json!({}),
+        ))];
+
+        let findings = exchange_findings(false, None, &["a => b".to_string()], &actors);
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.contains("unsupported_grant_type")),
+            "{findings:?}"
+        );
+    }
+
+    /// D6: an exchange is refused unless something stamps `may_act`, and the
+    /// error names none of it. The discriminating case is the realm-level
+    /// script — a reader that only looked at clients would report a broken
+    /// realm that works.
+    #[test]
+    fn nothing_stamping_may_act_is_reported_unless_the_realm_stamps_it() {
+        let actors = vec![exchange_row(&exchange_projection(
+            "caller",
+            &[EXCHANGE],
+            json!({}),
+        ))];
+        let refused = |realm_script| exchange_findings(true, realm_script, &[], &actors);
+
+        assert!(
+            refused(None)
+                .iter()
+                .any(|finding| finding.contains("nothing stamps may_act")),
+            "no subject anywhere"
+        );
+        assert!(
+            !refused(Some("script-1"))
+                .iter()
+                .any(|finding| finding.contains("nothing stamps may_act")),
+            "the realm script is what stamps it when no client overrides"
+        );
+    }
+
+    /// A dormant subject is not a live one: it must still leave the
+    /// deny-by-default finding standing, or a realm that cannot exchange
+    /// anything reads as configured.
+    #[test]
+    fn a_dormant_subject_does_not_satisfy_the_may_act_requirement() {
+        let rows = vec![
+            exchange_row(&exchange_projection("caller", &[EXCHANGE], json!({}))),
+            exchange_row(&exchange_projection(
+                "web",
+                &[],
+                json!({
+                    "providerOverridesEnabled": false,
+                    "accessTokenMayActScript": "script-1",
+                }),
+            )),
+        ];
+
+        let findings = exchange_findings(true, None, &["a => b".to_string()], &rows);
+
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.contains("nothing stamps may_act")),
+            "{findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.starts_with("web: may-act script set")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_granting_realm_with_no_actor_and_no_exchanger_says_both() {
+        let findings = exchange_findings(true, Some("script-1"), &[], &[]);
+
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("no client holds the grant")),
+            "{findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("no tokenExchangeClasses")),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn the_realm_may_act_script_reads_through_the_empty_sentinel() {
+        let unset = json!({ "coreOAuth2Config": { "accessTokenMayActScript": "[Empty]" } });
+        let set = json!({ "coreOAuth2Config": { "accessTokenMayActScript": "script-1" } });
+
+        assert_eq!(provider_may_act_script(&unset), None);
+        assert_eq!(provider_may_act_script(&set), Some("script-1".to_string()));
+        assert_eq!(provider_may_act_script(&json!({})), None);
     }
 
     #[test]
