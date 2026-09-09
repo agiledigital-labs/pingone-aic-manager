@@ -228,6 +228,12 @@ cargo fmt
 cargo run             # no args → TUI; subcommands → CLI (see `aic --help`)
 ```
 
+`.envrc` prepends `target/debug` to `PATH`, so the `aic` you invoke in this repo
+is the **debug build in this checkout**, not an installed release. `cargo check`
+does not rebuild it: run `cargo build` before measuring any behaviour through
+`aic`, or you measure the previous build. `.ai/local.md` records the local
+detail and the wrong measurement this caused.
+
 **The gate CI enforces** (`.github/workflows/ci.yml`) — run all four before
 declaring a change green, because the DuckDB log-store lives behind an opt-in
 feature and rots silently otherwise:
