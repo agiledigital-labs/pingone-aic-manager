@@ -8,6 +8,41 @@
 
 use crate::{Error, Result};
 
+/// Removes the temp dir when it goes out of scope, including on an unwind.
+///
+/// The plain statement it replaces was skipped by any panic between creating
+/// the dir and reaching it. This still cannot survive a `SIGKILL`, an
+/// `abort`, or the machine losing power — a leaked `aic-diff-*` is 0700 with
+/// 0600 files, which is the mitigation for those.
+struct DiffDir {
+    path: std::path::PathBuf,
+}
+
+impl DiffDir {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            path: create_diff_dir()?,
+        })
+    }
+
+    /// Remove it now and report a failure, rather than swallowing it in
+    /// `drop`. The `Drop` impl is the backstop for the paths that do not get
+    /// here.
+    fn remove(self) -> Result<()> {
+        let result = std::fs::remove_dir_all(&self.path)
+            .map_err(|e| Error::Config(format!("remove temp dir {}: {e}", self.path.display())));
+        // Do not let `drop` try again and mask the error we are returning.
+        std::mem::forget(self);
+        result
+    }
+}
+
+impl Drop for DiffDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// A private, exclusively-created temp dir for the two sides. Private because
 /// the content is tenant configuration, and this lands in a world-readable
 /// `/tmp`.
@@ -53,7 +88,8 @@ pub(crate) fn show_diff(
         println!("{full}: {left_label} and {right_label} are identical");
         return Ok(());
     }
-    let dir = create_diff_dir()?;
+    let guard = DiffDir::new()?;
+    let dir = guard.path.clone();
     // `--no-prefix` makes the headers read `--- <name> (tenant)` etc.; `/` in
     // the full-name isn't path-safe, so swap it for `_`.
     let safe = full.replace('/', "_");
@@ -87,18 +123,12 @@ pub(crate) fn show_diff(
             )),
         }
     })();
-    let cleanup = std::fs::remove_dir_all(&dir);
+    let cleanup = guard.remove();
     match (render, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(e), Ok(())) => Err(e),
-        (Ok(()), Err(e)) => Err(Error::Config(format!(
-            "remove temp dir {}: {e}",
-            dir.display()
-        ))),
-        (Err(render), Err(cleanup)) => Err(Error::Config(format!(
-            "{render}; also couldn't remove temp dir {}: {cleanup}",
-            dir.display()
-        ))),
+        (Ok(()), Err(e)) => Err(e),
+        (Err(render), Err(cleanup)) => Err(Error::Config(format!("{render}; also {cleanup}"))),
     }
 }
 
@@ -124,5 +154,35 @@ mod tests {
         assert!(write_diff_file(&dir, "left", "replacement").is_err());
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The guard is the reason a panic between creating the dir and the
+    /// cleanup statement no longer leaves tenant configuration in `/tmp`.
+    /// The discriminating case is the unwind: the plain statement it replaced
+    /// would have been skipped entirely.
+    #[test]
+    fn the_temp_dir_is_removed_even_when_the_render_panics() {
+        let path = {
+            let guard = DiffDir::new().unwrap();
+            let path = guard.path.clone();
+            assert!(path.is_dir());
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = guard;
+                panic!("render blew up");
+            }));
+            assert!(unwound.is_err());
+            path
+        };
+        assert!(!path.exists(), "{} survived the unwind", path.display());
+    }
+
+    #[test]
+    fn removing_the_guard_reports_its_own_failure() {
+        let guard = DiffDir::new().unwrap();
+        let path = guard.path.clone();
+        std::fs::remove_dir_all(&path).unwrap();
+
+        let error = guard.remove().unwrap_err();
+        assert!(error.to_string().contains("remove temp dir"), "{error}");
     }
 }
