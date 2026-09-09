@@ -333,13 +333,22 @@ fn exchange_cell(values: &[String]) -> String {
 /// Which side of an exchange this client is on.
 ///
 /// Both is a real and useful configuration — a client that acts and also
-/// issues tokens someone else acts on — so this is not an enum of two.
-fn exchange_role_cell(row: &spec::ExchangeRow) -> String {
-    match (row.actor, !row.may_act.is_empty()) {
-        (true, true) => "actor, subject".to_string(),
-        (true, false) => "actor".to_string(),
-        (false, true) => "subject".to_string(),
-        (false, false) => "-".to_string(),
+/// issues tokens someone else acts on — so this is not an enum of two. The
+/// subject half is the **effective** answer, which needs the realm: a dormant
+/// override stamps nothing, and a client with no override at all is a subject
+/// when the realm has a script. Reading the client alone got all three cases
+/// wrong.
+fn exchange_role_cell(row: &spec::ExchangeRow, realm_stamps: bool) -> String {
+    let subject = match spec::may_act_source(row, realm_stamps) {
+        spec::MayActSource::Client => Some("subject"),
+        spec::MayActSource::Realm => Some("subject (realm)"),
+        spec::MayActSource::None => None,
+    };
+    match (row.actor, subject) {
+        (true, Some(subject)) => format!("actor, {subject}"),
+        (true, None) => "actor".to_string(),
+        (false, Some(subject)) => subject.to_string(),
+        (false, None) => "-".to_string(),
     }
 }
 
@@ -377,7 +386,7 @@ fn may_act_cell(row: &spec::ExchangeRow, names: &spec::ScriptNames) -> String {
         .map(|(id, fields)| format!("{}={}", fields.join("+"), names.name_or(id)))
         .collect::<Vec<_>>()
         .join(", ");
-    if row.dormant {
+    if row.may_act_dormant() {
         format!("(dormant) {scripts}")
     } else {
         scripts
@@ -390,25 +399,38 @@ fn may_act_cell(row: &spec::ExchangeRow, names: &spec::ScriptNames) -> String {
 /// answer the table gives — who acts, who stamps — and the raw documents are
 /// already reachable through `oauth get --json` and `oauth provider get
 /// --json`.
-fn exchange_json(provider: &Value, rows: &[spec::ExchangeRow]) -> Value {
+fn exchange_json(provider: &Value, rows: &[spec::ExchangeRow], findings: &[String]) -> Value {
+    let realm_may_act = spec::provider_may_act_script(provider);
+    let realm_stamps = realm_may_act.is_some();
     serde_json::json!({
         "tokenExchangeGranted": spec::provider_grants_token_exchange(provider),
         "exchangers": spec::provider_exchange_classes(provider),
-        "realmMayActScript": spec::provider_may_act_script(provider),
+        "realmMayActScript": realm_may_act,
+        // The warnings are the point of the command, so the machine-readable
+        // form carries them too. An earlier version returned before computing
+        // them, which handed automation the half without the diagnosis.
+        "findings": findings,
         "clients": rows
             .iter()
             .map(|row| serde_json::json!({
                 "id": row.id,
                 "actor": row.actor,
+                "mayActSource": match spec::may_act_source(row, realm_stamps) {
+                    spec::MayActSource::Client => "client",
+                    spec::MayActSource::Realm => "realm",
+                    spec::MayActSource::None => "none",
+                },
                 "mayAct": row
                     .may_act
                     .iter()
                     .map(|(field, id)| serde_json::json!({"field": field, "script": id}))
                     .collect::<Vec<_>>(),
-                "dormant": row.dormant,
+                "providerOverridesEnabled": row.overrides_live,
+                "mayActDormant": row.may_act_dormant(),
                 "tokenExchangeAuthLevel": row.auth_level,
                 "allowedResourceServerAudienceValues": row.audience_values,
                 "acceptAudienceParametersInTokenExchangeRequests": row.accept_audience,
+                "effectiveAcceptAudienceParameters": row.effective_accept_audience(),
             }))
             .collect::<Vec<_>>(),
     })
@@ -1194,14 +1216,20 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     .cloned()
                     .collect::<Vec<_>>();
 
-                if json {
-                    print_json(&exchange_json(&provider, &kept))?;
-                    return Ok(());
-                }
-
                 let granted = spec::provider_grants_token_exchange(&provider);
                 let exchangers = spec::provider_exchange_classes(&provider);
                 let realm_may_act = spec::provider_may_act_script(&provider);
+                // Over `rows`, not `kept`: a hidden client still holds the
+                // grant, and hiding it must not hide the realm-level finding
+                // it contributes to.
+                let findings =
+                    spec::exchange_findings(granted, realm_may_act.as_deref(), &exchangers, &rows);
+
+                if json {
+                    print_json(&exchange_json(&provider, &kept, &findings))?;
+                    return Ok(());
+                }
+
                 let names = script_names(&tenant, &realm).await;
 
                 println!("realm {realm}");
@@ -1216,6 +1244,15 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                         .as_deref()
                         .map_or_else(|| "<not set>".to_string(), |id| names.label_or(id))
                 );
+                if realm_may_act.is_some() {
+                    // Said once here rather than on every row: with a realm
+                    // script every client is a subject, which is a fact about
+                    // the realm. The table below lists the clients that say
+                    // something the realm does not.
+                    println!(
+                        "  (so every client without a live override stamps may_act from the realm)"
+                    );
+                }
                 println!();
 
                 let table = kept
@@ -1223,7 +1260,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     .map(|row| {
                         vec![
                             row.id.clone(),
-                            exchange_role_cell(row),
+                            exchange_role_cell(row, realm_may_act.is_some()),
                             may_act_cell(row, &names),
                             row.auth_level
                                 .map_or_else(|| "-".to_string(), |level| level.to_string()),
@@ -1242,9 +1279,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     &table,
                 );
 
-                for finding in
-                    spec::exchange_findings(granted, realm_may_act.as_deref(), &exchangers, &rows)
-                {
+                for finding in &findings {
                     eprintln!("warning: {finding}");
                 }
                 eprintln!("{}", exchange_tally(rows.len(), kept.len(), all));
@@ -1401,7 +1436,7 @@ mod tests {
         id: &str,
         actor: bool,
         may_act: &[(&str, &str)],
-        dormant: bool,
+        overrides_live: bool,
     ) -> spec::ExchangeRow {
         spec::ExchangeRow {
             id: id.to_string(),
@@ -1410,7 +1445,7 @@ mod tests {
                 .iter()
                 .map(|(field, script)| ((*field).to_string(), (*script).to_string()))
                 .collect(),
-            dormant,
+            overrides_live,
             auth_level: Some(0),
             audience_values: Vec::new(),
             accept_audience: None,
@@ -1431,7 +1466,7 @@ mod tests {
                 ("accessTokenMayActScript", "s1"),
                 ("oidcMayActScript", "s1"),
             ],
-            false,
+            true,
         );
         let different = exchange_row(
             "split",
@@ -1440,7 +1475,7 @@ mod tests {
                 ("accessTokenMayActScript", "s1"),
                 ("oidcMayActScript", "s2"),
             ],
-            false,
+            true,
         );
 
         assert_eq!(may_act_cell(&same, &names), "access+oidc=MayActOne");
@@ -1455,7 +1490,7 @@ mod tests {
     #[test]
     fn an_unresolved_may_act_script_prints_its_id() {
         let id = "88c529bd-45d3-46bf-a57a-65391cb2a2d9";
-        let row = exchange_row("client", false, &[("accessTokenMayActScript", id)], false);
+        let row = exchange_row("client", false, &[("accessTokenMayActScript", id)], true);
 
         assert_eq!(
             may_act_cell(&row, &spec::ScriptNames::default()),
@@ -1463,10 +1498,22 @@ mod tests {
         );
     }
 
+    /// The discriminating case for `name_or`: a script whose `name` came back
+    /// empty is not resolved. Treating it as resolved rendered `access=` and
+    /// threw away the only id the reader could search on.
+    #[test]
+    fn a_script_with_an_empty_name_counts_as_unresolved() {
+        let id = "88c529bd-45d3-46bf-a57a-65391cb2a2d9";
+        let names = spec::ScriptNames::new([(id, "")]);
+        let row = exchange_row("client", false, &[("accessTokenMayActScript", id)], true);
+
+        assert_eq!(may_act_cell(&row, &names), format!("access={id}"));
+    }
+
     #[test]
     fn a_dormant_may_act_cell_says_so_without_losing_the_script() {
         let names = spec::ScriptNames::new([("s1", "MayActOne")]);
-        let row = exchange_row("client", false, &[("accessTokenMayActScript", "s1")], true);
+        let row = exchange_row("client", false, &[("accessTokenMayActScript", "s1")], false);
 
         assert_eq!(may_act_cell(&row, &names), "(dormant) access=MayActOne");
     }
@@ -1474,22 +1521,40 @@ mod tests {
     #[test]
     fn a_client_can_be_both_sides_of_an_exchange() {
         let acts_and_stamps =
-            exchange_row("both", true, &[("accessTokenMayActScript", "s1")], false);
+            exchange_row("both", true, &[("accessTokenMayActScript", "s1")], true);
 
-        assert_eq!(exchange_role_cell(&acts_and_stamps), "actor, subject");
         assert_eq!(
-            exchange_role_cell(&exchange_row("a", true, &[], false)),
+            exchange_role_cell(&acts_and_stamps, false),
+            "actor, subject"
+        );
+        assert_eq!(
+            exchange_role_cell(&exchange_row("a", true, &[], false), false),
             "actor"
         );
         assert_eq!(
-            exchange_role_cell(&exchange_row(
-                "s",
-                false,
-                &[("oidcMayActScript", "s1")],
+            exchange_role_cell(
+                &exchange_row("s", false, &[("oidcMayActScript", "s1")], true),
                 false
-            )),
+            ),
             "subject"
         );
+    }
+
+    /// The three cases reading the client alone got wrong. Each differs from
+    /// its neighbour by one input, so nothing here passes by coincidence.
+    #[test]
+    fn the_role_is_the_effective_may_act_source_not_the_configured_one() {
+        let dormant = exchange_row("d", false, &[("accessTokenMayActScript", "s1")], false);
+        let bare = exchange_row("b", false, &[], false);
+
+        // A dormant override stamps nothing. With no realm script it is not a
+        // subject at all — the first version called it one.
+        assert_eq!(exchange_role_cell(&dormant, false), "-");
+        // ...and with a realm script it is a subject, but by inheritance.
+        assert_eq!(exchange_role_cell(&dormant, true), "subject (realm)");
+        // A client with no override of its own was invisible before.
+        assert_eq!(exchange_role_cell(&bare, false), "-");
+        assert_eq!(exchange_role_cell(&bare, true), "subject (realm)");
     }
 
     #[test]
@@ -1503,9 +1568,10 @@ mod tests {
     }
 
     /// `--json` carries the full script id, which is what makes the table's
-    /// name-only cell an acceptable compression.
+    /// name-only cell an acceptable compression — and it carries the findings,
+    /// which an earlier version returned before ever computing.
     #[test]
-    fn the_exchange_json_keeps_the_script_id_the_table_shortens() {
+    fn the_exchange_json_keeps_the_script_id_and_the_findings() {
         let provider = json!({
             "advancedOAuth2Config": {
                 "grantTypes": ["urn:ietf:params:oauth:grant-type:token-exchange"],
@@ -1518,16 +1584,19 @@ mod tests {
                 "accessTokenMayActScript",
                 "88c529bd-45d3-46bf-a57a-65391cb2a2d9",
             )],
-            false,
+            true,
         )];
+        let findings = ["something is wrong".to_string()];
 
-        let rendered = exchange_json(&provider, &rows);
+        let rendered = exchange_json(&provider, &rows, &findings);
 
         assert_eq!(rendered["tokenExchangeGranted"], json!(true));
         assert_eq!(
             rendered["clients"][0]["mayAct"][0]["script"],
             json!("88c529bd-45d3-46bf-a57a-65391cb2a2d9")
         );
+        assert_eq!(rendered["clients"][0]["mayActSource"], json!("client"));
+        assert_eq!(rendered["findings"], json!(["something is wrong"]));
     }
 
     #[test]
