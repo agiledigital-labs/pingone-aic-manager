@@ -205,6 +205,30 @@ pub fn object_content_equal(a: &Value, b: &Value) -> bool {
     a == b
 }
 
+/// An editable hook: an object-valued property with a string `source` and a
+/// `type` mentioning javascript. File-backed hooks (`file` instead of
+/// `source`) fail this test by design.
+///
+/// This is the single predicate for "a hook `aic script pull
+/// managed/<obj>.<hook>` can fetch". Callers that print a script reference
+/// or that list/write hook sources must use this rather than restating the
+/// shape, or `managed get` will print a reference to a script that
+/// `script pull` then refuses.
+pub fn is_inline_hook(value: &Value) -> bool {
+    value.is_object() && value.get("source").is_some_and(Value::is_string) && javascript_type(value)
+}
+
+fn is_file_hook(value: &Value) -> bool {
+    value.is_object() && value.get("file").is_some_and(Value::is_string) && javascript_type(value)
+}
+
+fn javascript_type(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|t| t.contains("javascript"))
+}
+
 /// Summary row for `aic managed list`.
 pub struct ObjectSummary {
     pub name: String,
@@ -230,19 +254,12 @@ pub fn summarize(doc: &Value) -> Result<Vec<ObjectSummary>> {
         let mut hooks_inline = Vec::new();
         let mut hooks_file = Vec::new();
         for (key, value) in map {
-            if key == "schema" || !value.is_object() {
+            if key == "schema" {
                 continue;
             }
-            let is_js = value
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t.contains("javascript"));
-            if !is_js {
-                continue;
-            }
-            if value.get("source").is_some_and(Value::is_string) {
+            if is_inline_hook(value) {
                 hooks_inline.push(key.clone());
-            } else if value.get("file").is_some_and(Value::is_string) {
+            } else if is_file_hook(value) {
                 hooks_file.push(key.clone());
             }
         }
@@ -263,6 +280,19 @@ pub fn summarize(doc: &Value) -> Result<Vec<ObjectSummary>> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hook_detection_is_value_shaped() {
+        assert!(is_inline_hook(
+            &json!({"type": "text/javascript", "source": "x"})
+        ));
+        // File-backed: read-only, must not be detected as editable.
+        assert!(!is_inline_hook(
+            &json!({"type": "text/javascript", "file": "roles/onDelete-roles.js"})
+        ));
+        assert!(!is_inline_hook(&json!({"source": "x"})));
+        assert!(!is_inline_hook(&json!("text")));
+    }
 
     #[test]
     fn summarize_classifies_hooks_and_counts_properties() {
