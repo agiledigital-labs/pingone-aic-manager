@@ -17,6 +17,12 @@ Verified against the sandbox 2026-06-13 with
 `fixtures/identity-attr-mapping.script.js` + `fixtures/identity-resolve-diag.script.js`
 (a next-gen scripted decision node, `evaluatorVersion: 2.0`).
 
+Return-container shapes verified 2026-09-10 with
+`fixtures/identity-getattribute-shape.script.js` (same next-gen node) and
+`fixtures-atm/identity-getattribute-shape.script.js` (legacy access-token
+modification, `evaluatorVersion: 1.0`, `client_credentials`). Both call every
+candidate member rather than `typeof`-ing it.
+
 Legacy scripted decision `idRepository` method presence verified 2026-07-06
 with `fixtures-legacy/legacy-idrepository-methods.script.js`
 (`evaluatorVersion: 1.0`).
@@ -29,10 +35,32 @@ with `fixtures-legacy/legacy-idrepository-methods.script.js`
   whose `amIdentity` is `null` and every `getAttributeValues(...)` throws
   `InternalError: … this.amIdentity is null`. Use the managed `_id` (uuid).
 - **Attribute access is by AM attribute name.** `getAttributeValues(<amName>)`
-  returns a `java.util.Set<String>` (size 0 when unset or when the name is
-  wrong). Values always come back as **string arrays**, regardless of the IDM
-  property's declared type — so a typed binding's value is `JavaArray<string>`;
-  the win is validating/autocompleting the **name**, not narrowing the return.
+  returns an **indexable Java collection**: `length` is a number, and `size()`,
+  `get(0)`, `[0]`, `toArray()` and `contains()` all resolve (size 0 when unset
+  or when the name is wrong). Values always come back as strings regardless of
+  the IDM property's declared type — so a typed binding's value is
+  `JavaArray<string>`; the win is validating/autocompleting the **name**, not
+  narrowing the return.
+
+  It is **not** a `java.util.Set`, which this file claimed until 2026-09-10 —
+  a Set has no `length` and no index access. Nor is it the `String[]` the AM
+  8.1.1 class file declares: `String(v)` is `[{}]`, the bracketed `toString` of
+  a collection, where a Java array stringifies as `[Ljava.lang.String;@…`.
+  `includes()` is the one array-ish member that does **not** exist here, so
+  `getAttributeValues(n).includes(x)` type-checks against `JavaArray` and throws
+  — use `contains()`.
+
+- **The next-gen binding has no `getAttribute` at all** (verified 2026-09-10).
+  `idRepository.getIdentity(uuid).getAttribute("fr-idm-custom-attrs")` throws
+  `TypeError: Cannot find function getAttribute in object
+  …ScriptedIdentityScriptWrapper`. The AM 8.1.1 `ScriptedIdentity` class does
+  declare `getAttribute(String) -> java.util.Set` as public, so this is the
+  **wrapper** withholding it, not the class lacking it — an on-prem class file
+  is evidence about what AM could expose, never about what AIC does.
+  `getAttribute` lives on the classic `AMIdentity` bindings instead (legacy OIDC
+  claims, legacy access-token modification), where it returns a
+  `java.util.HashSet` — see
+  [12-script-bindings-matrix.md](12-script-bindings-matrix.md#amidentitygetattribute-returns-a-hashset-verified-2026-09-10).
 - **Negative controls** `frGivenName` / `givenNameXYZ` returned size 0 (no
   throw) — wrong names are silently empty, so a 0 alone can't distinguish
   "unset" from "invalid". Positive hits on populated fields are the proof.
@@ -130,11 +158,29 @@ Multivalue 2FA profile attributes from the Ping reference:
 ### `fr-idm-custom-attrs`
 A single object-valued AM attribute holding **all** custom (tenant-added)
 managed-user properties — custom fields are nested inside it, not exposed as
-separate AM attributes. The value is a JSON-object **string** (parse it). On
-this sandbox it is `{}` (no custom user properties — matches the Phase-1
-managed schema, all-OOTB fields). Per-field typing of this object is possible
-where a tenant has custom props (join with the managed schema's non-OOTB
-properties); here there are none.
+separate AM attributes. On this sandbox it is `{}` (no custom user properties —
+matches the Phase-1 managed schema, all-OOTB fields). Per-field typing of this
+object is possible where a tenant has custom props (join with the managed
+schema's non-OOTB properties); here there are none.
+
+**The getter does not return a string.** It returns the same container every
+other attribute does, holding **one element** whose text is the JSON object —
+so it is `JSON.parse(String(v.toArray()[0]))`, never `JSON.parse(v)`. Measured
+2026-09-10 both ways: through the next-gen `getAttributeValues` (count 1,
+`String(v)` is `[{}]`, `charAt`/`substring` throw) and through the classic
+`AMIdentity.getAttribute` (a `HashSet`, count 0 on an agent identity that has
+no such attribute). Nothing about this attribute's object-ness changes the
+container — the shape is a property of the method, and the populated control
+(`com.forgerock.openam.oauth2provider.clientType`, count 1) reports the same
+members as the empty case.
+
+`fixtures/identity-attr-mapping.script.js` could not have caught a string: its
+`sizeOf` helper reads `.size()` **or** `.length` **or** `.toArray().length`, so
+it agrees with itself on a Set, a List and a bare string alike, and its
+key-extraction has a bracket-stripping fallback that parses either. The counts
+it reported are evidence about which NAMES are populated and not about the
+container. `fixtures/identity-getattribute-shape.script.js` is the
+discriminating half: it calls each candidate member and reports which throw.
 
 ### Relationship attributes are NOT exposed via scripted-decision `getAttributeValues` (verified)
 Probed with two purpose-built users — A (`probe-rpt-a`) with `manager` → B

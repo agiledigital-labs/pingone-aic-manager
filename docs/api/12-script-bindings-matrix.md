@@ -1111,9 +1111,10 @@ Absent (`typeof undefined`, or a call that threw): `getType`, `getValue`,
 
 - **`identity` is a classic `AMIdentity`** and it resolves: `getName`,
   `getUniversalId`, `getRealm` (a DN, not `/alpha`), `getType` (`IdType: user`
-  or `IdType: agentonly`), `isExists`, `isActive`, `getAttribute` (empty list,
+  or `IdType: agentonly`), `isExists`, `isActive`, `getAttribute` (empty set,
   never `null`), `getAttributes`, `store`. On a `password` grant
-  `getAttribute("mail")` returned the real address.
+  `getAttribute("mail")` returned the real address. What the two getters RETURN
+  is the next section.
 
   The next-gen spellings `exists`, `getAttributeValues`, `setAttribute` and
   `addAttribute` are all absent, as is `getMemberships`.
@@ -1152,6 +1153,64 @@ Absent (`typeof undefined`, or a call that threw): `getType`, `getValue`,
 > `the_legacy_token_modification_leaf_is_typed_from_calls_not_from_the_nextgen_overlay`
 > and the `legacy-access-token` leaf in `scripts/type-tests/`, whose reject
 > fixture asserts that each next-gen-only member is a compile error here.
+
+### `AMIdentity.getAttribute` returns a HashSet (verified 2026-09-10)
+
+The 2026-08-27 sweep proved the two getters **resolve**. It never asked what
+they hand back, and both were typed `JavaArray<JavaString>` on that silence —
+`oauth2-access-token.d.ts` and `oidc-claims.d.ts` alike, with
+`oidc-claims.d.ts` additionally calling `getAttributes()` a list. Measured now,
+with `fixtures-atm/identity-getattribute-shape.script.js` on a
+`client_credentials` grant (so the identity is the throwaway client's own agent
+profile and no user data is in reach).
+
+| Member on `getAttribute(name)` | Result |
+| --- | --- |
+| `size()`, `toArray()`, `contains(v)`, `iterator()` | resolve |
+| `length` | `undefined` — the property is simply not there |
+| `get(0)`, `includes(v)`, `charAt(0)`, `substring(0,1)` | `TypeError: Cannot find function …` |
+| `v[0]` | `InternalError: Java class "java.util.HashSet" has no public instance field or method named "0"` |
+| `String(v)` | `[]` empty, `[Confidential]` populated — a collection's bracketed `toString` |
+
+**AM names the class in its own error**, which is what makes this a measurement
+rather than an inference from the 8.1.1 `getAttribute(String) -> java.util.Set`
+signature. It is the same failure shape `scopes` gives in this context, and the
+same class shutter behaviour: `HashSet`'s iterator is allowed where
+`ArrayList$Itr` is not.
+
+Both the empty and the populated case were run — `fr-idm-custom-attrs` and a
+bogus name return an empty set, `com.forgerock.openam.oauth2provider.clientType`
+returns one element — and every member above reports identically for all three.
+So the wrapper follows the return **class**, not whether there is data in it,
+and a `size()` of 0 still cannot distinguish "unset" from "no such attribute".
+
+`getAttributes()` is a Java **`Map`** whose values are those same `HashSet`s:
+`size()`, `get(name)`, `containsKey(name)` and `entrySet()` resolve, `toArray`
+does not, `length` is `undefined`, and `keySet()` throws `Access to Java class
+"com.sun.identity.common…" is prohibited` — the class shutter again, so the
+attribute names cannot be enumerated from here. `JavaMap` gained `size()` and
+`isEmpty()` for this; `keySet()` was deliberately left off.
+
+Consequences for a script, and they are the reason this mattered:
+`String(v.toArray()[0])` is how a single-valued attribute is read, and the four
+things the old declaration promised — `.length`, `[0]`, `.get(0)`, `.includes()`
+— all throw. The `legacy-access-token` accept fixture had been demonstrating
+`.get(0)` since `TEMPLATES_VERSION` 86.
+
+Not measured through an OIDC flow: `oidc-claims.d.ts` was changed on the
+grounds that it binds the same `com.sun.identity.idm.AMIdentity` on the same
+engine (`evaluatorVersion 1.0`, Rhino 1.7.14), which is the class and the
+engine but not the context. Its `getAttributes(Set)` overload is typed from
+Java's parameter plus the measured `setScope` precedent (a JS array throws
+there), not from a call — the leaf declares no constructible
+`java.util.HashSet`, so there is no measured way to reach it from an OIDC claims
+script at all.
+
+One gap worth naming: numeric indexing of a `JavaSet` compiles clean. These
+fixtures are `.cjs` under `checkJs`, where tsc does not raise the implicit-any
+element-access error, so `identity.getAttribute("mail")[0]` and `scopes[0]`
+type-check and throw. `reject.cjs` records this rather than pretending to gate
+it.
 
 ### Library `require()` from next-gen access-token modification (verified 2026-07-29)
 

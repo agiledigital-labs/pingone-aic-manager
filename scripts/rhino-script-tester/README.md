@@ -146,6 +146,83 @@ duplicated `scope` to its FIRST occurrence and issued a token for that alone,
 so the script and the platform can read the same request differently. Details in
 `docs/api/12-script-bindings-matrix.md`.
 
+## The legacy access-token lane (`fixtures-atm/`)
+
+A fourth lane, for `OAUTH2_ACCESS_TOKEN_MODIFICATION` (`evaluatorVersion 1.0`).
+It exists because a classic **`AMIdentity`** — the binding with `getAttribute`
+— appears only here and in legacy OIDC claims. The journey lane binds a
+next-gen `ScriptedIdentity` (which has no `getAttribute` at all), and the OAuth2
+lane binds a next-gen `Identity`.
+
+```bash
+SECRET_FILE=/path/to/secret scripts/rhino-script-tester/run-atm-probes.sh
+```
+
+The return channel is a **token claim**, not a log line: the fixture calls
+`accessToken.setField("aicprobe", …)` and the runner decodes it out of the
+stateless JWT. No log API keys, no 60s ingestion wait. A `200` with no
+`aicprobe` claim means the script threw before `setField` — AM issues the token
+regardless, so the HTTP status alone tells you nothing, and the runner says so
+in that case.
+
+Results land in `tmp/rhino-script-tester/atm-probe-results.json`.
+
+**`client_credentials`, deliberately.** The identity is then the throwaway
+client's own agent profile, so a probe that reports attribute shapes has no user
+data in reach. That is enough for anything about a return CONTAINER — the
+wrapper follows the method's return class, and the populated control
+(`com.forgerock.openam.oauth2provider.clientType`) proves the members are the
+same as on an empty one. A question about a **user's** values needs a `password`
+grant and a throwaway `managed/alpha_user`, as the 2026-08-27 sweep used.
+
+> Do not probe `getAttribute("userpassword")` or emit anything from
+> `getAttributes()` beyond which accessors resolve: on an `agentonly` identity
+> that map holds the client's own secret.
+
+### Recreating the two tenant objects
+
+The script is **not** throwaway and already exists: `alpha/AIC ATM Legacy Probe`
+(`2e87a29c-0e30-4d85-bf0e-a1c0a11e7201`), the object the 2026-08-27 probe
+created by clobbering a script that had been there since July — see the
+reserved-id warning above and Q17. Do not recreate it; `aic script push` swaps
+its body per fixture, and it will not delete.
+
+The client is throwaway and gets deleted after a run:
+
+```sh
+aic oauth create aicatm-probe2 --client-type Confidential \
+  --grant client_credentials --scope aicedit-probe \
+  --token-endpoint-auth-method client_secret_post --generate-secret
+
+# No flag for the override block (GAPS T1/T13): pull, edit, push. Set
+#   overrideOAuth2ClientConfig.providerOverridesEnabled          = true
+#                             .accessTokenModificationPluginType = "SCRIPTED"
+#                             .accessTokenModificationScript     = "2e87a29c-0e30-4d85-bf0e-a1c0a11e7201"
+#                             .statelessTokensEnabled            = true
+aic oauth pull aicatm-probe2      # edit workspace/sandbox/oauth/alpha/aicatm-probe2.json
+aic oauth push aicatm-probe2
+```
+
+`statelessTokensEnabled` is what makes the claim readable; without it the token
+is opaque and the result would have to come back through the log API.
+
+Put the printed secret in a file **outside the repo** and pass it as
+`SECRET_FILE`. It is shown once and cannot be read back.
+
+### Writing a fixture for this lane
+
+Two rules, both learned by getting them wrong:
+
+- **Call every member; do not `typeof` it.** In this context `typeof` reports
+  `"function"` for a Rhino-wrapped Java method that does not exist (verified
+  2026-08-27). `typeof` is evidence only in the negative.
+- **Strip the receiver out of an error message before emitting it.** Rhino puts
+  the receiver's `toString()` into the text — `Cannot find function includes in
+  object [alice@example.com]` — so a probe that reports raw error strings leaks
+  exactly the values it was written not to echo. Split on `" in object "` and
+  keep the left half. The sibling journey fixture leaked a test address this way
+  on its first run.
+
 ## The token-exchange lane (`fixtures-exchange/`)
 
 A third lane, for RFC 8693. The OAuth2 lane drives one client on
@@ -316,10 +393,18 @@ The repo-local `tmp/` directory is ignored. Logs can be large, so summarize or f
 records structured results to `tmp/rhino-script-tester/probe-results.json`:
 
 ```bash
-scripts/rhino-script-tester/run-probes.sh                         # all fixtures
-scripts/rhino-script-tester/run-probes.sh fixtures/arrow-function.script.js
-FETCH_LOGS=1 scripts/rhino-script-tester/run-probes.sh ...        # also pull per-fixture logs
+BASE="$(aic ctx list --no-prompt | awk '/^\*/{print $4}')" \
+  scripts/rhino-script-tester/run-probes.sh                       # all fixtures
+BASE=... scripts/rhino-script-tester/run-probes.sh fixtures/arrow-function.script.js
+FETCH_LOGS=1 BASE=... scripts/rhino-script-tester/run-probes.sh ...  # also pull logs
 ```
+
+**`BASE` is not optional here.** This runner defaults it to the placeholder
+`https://tenant.example.com` (the newer `run-oauth2-probes.sh` and
+`run-atm-probes.sh` derive it from `aic ctx list` instead), so running it bare
+fails with `Could not resolve host: tenant.example.com` and a stack of `jq`
+errors about a missing response file — which reads like a broken harness rather
+than a missing variable.
 
 Each fixture probes ONE parse-sensitive feature in isolation (so a parse error
 is attributable) or one grouped runtime check. Result semantics:
