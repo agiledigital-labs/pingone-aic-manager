@@ -253,6 +253,20 @@ Two silent traps, encoded in the types rather than only documented:
   `String(...)` or `getBytes("UTF-8")`. Prefer `nfc(value)` /
   `normalize(value, form)`, which return a real `string`.
 
+- `java.security.SecureRandom` is reachable and fully functional. Three of
+  its behaviours are silent on the engine and are therefore encoded, not
+  merely noted: `nextBytes` on a JS array **fills nothing** (Rhino fills a
+  discarded conversion — 20 runs, 20 unchanged, against a control on a real
+  `byte[]` that changed 20 of 20), so the parameter is `JavaBytes` and the
+  only way to make one is
+  `java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, n)`;
+  `getAlgorithm()` returns a `java.lang.String`, so `=== "NativePRNG"` is
+  always false; and `nextLong()` was lossy in 100 of 100 draws, every one
+  above `Number.MAX_SAFE_INTEGER`, so it is never an identifier. Prefer
+  `new SecureRandom()` (`NativePRNG`) over `getInstanceStrong()`, which is
+  `NativePRNGBlocking` — it reads `/dev/random` and can stall a request path
+  with no timeout you control.
+
 `getBytes()` with no charset works on the engine (platform default). We
 omit that overload so a silent charset dependency is a compile error.
 
@@ -284,6 +298,16 @@ deleted): `Mac.getInstance` / `init` / `doFinal`, `new java.lang.String(s)`,
 byte `-9`), `openidm.hash` salting per call, no-arg `getBytes()` working,
 and a Normalizer result that is a `java.lang.String` with JS methods but
 not `===` the JS string.
+
+`SecureRandom` was measured 2026-09-10 on JDK 21.0.12.1, the same way. A
+random token, end to end:
+
+```typescript
+const rng = new java.security.SecureRandom();
+const bytes = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 32);
+rng.nextBytes(bytes);
+const token = bytesToHex(bytes);
+```
 
 ## How the build works, and why it is two tools
 

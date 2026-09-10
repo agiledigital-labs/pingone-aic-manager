@@ -1446,6 +1446,80 @@ linting and generated source must therefore use `let` for every binding declared
 in a `for`/`while`/`do-while` body or nested repeated block. Root-level
 immutable bindings remain safe as `const`.
 
+### IDM has no Java class shutter (verified 2026-09-10)
+
+AM enforces a per-context Java allow-list — the section above measures where
+that boundary sits, and it moves between contexts. **IDM has no such list.**
+`GET /openidm/config/script` declares an `ECMAScript` block, a `Groovy` block
+and a set of source directories, and nothing resembling AM's `allowLists`. So
+the boundary in an IDM script is the JVM's, not a configured one, and a class
+being absent from the types below means nobody has probed it — not that it is
+blocked.
+
+Measured on JDK **21.0.12.1**, in two IDM script contexts: a throwaway
+`endpoint/aicedit-securerandom-probe` (created and deleted) and
+`POST /openidm/script?_action=eval`.
+
+#### `java.security.SecureRandom` — reachable, with three silent traps
+
+Typed in `idm/types/java.d.ts` (all IDM families) and in the TypeScript
+endpoint project's `framework/java-globals.d.ts`. Every trap below is silent at
+runtime, and each is a compile error in both workspaces.
+
+| Trap                                             | What actually happens                                                                  |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `rng.nextBytes(jsArray)`                         | **Fills nothing.** 20 runs, 20 unchanged; control on a real `byte[]` changed 20 of 20. |
+| `String(rng.getAlgorithm()) === alg`             | `getAlgorithm()` is a `java.lang.String`, so `alg === "NativePRNG"` is always false.   |
+| `rng.nextLong()`                                 | Lossy in 100 of 100 draws — every value exceeded `Number.MAX_SAFE_INTEGER`.            |
+
+`nextBytes` is the one that matters most: Rhino converts a JS array to a fresh
+Java `byte[]`, fills that, and discards it. The only thing it fills is a real
+`byte[]`, and the sole way to make one on this engine is reflection:
+
+```js
+var bytes = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 32);
+new java.security.SecureRandom().nextBytes(bytes);
+```
+
+Measured behaviour:
+
+| Call                                   | Result                                                          |
+| -------------------------------------- | ---------------------------------------------------------------- |
+| `new SecureRandom()`                   | algorithm `NativePRNG`, provider `SUN`                          |
+| `getInstance("SHA1PRNG" \| "NativePRNG" \| "DRBG")` | all three resolve                                  |
+| `getInstanceStrong()`                  | `NativePRNGBlocking` — reads `/dev/random` and **can block**     |
+| `nextInt()` / `nextInt(bound)`         | exact; `bound <= 0` throws `IllegalArgumentException`            |
+| `nextInt(origin, bound)`               | present (JDK 17+); measured 10..19 for `nextInt(10, 20)`         |
+| `nextDouble()` / `nextBoolean()` / `nextGaussian()` | exact                                               |
+| `nextBytes(byte[])` / `generateSeed(n)` / `getSeed(n)` | signed elements (`-128..127`)                |
+| `setSeed(long)` / `setSeed(byte[])`    | accepted; supplements the seed, does not replace it              |
+
+`getInstanceStrong()` is the one to avoid in a request path: it is a blocking
+entropy source with no timeout the script controls. `new SecureRandom()` is
+non-blocking.
+
+Also reachable in the same probe, **not yet typed**: `java.lang.String`,
+`java.lang.reflect.Array`, `java.lang.Byte`, `java.security.MessageDigest`,
+`java.util.UUID.randomUUID`, `java.util.Base64`. Contrast the AM table above,
+where `MessageDigest` and most of `java.util` are hidden.
+
+#### Probe IDM with `script?_action=eval`, not a throwaway endpoint
+
+`docs/api/11-idm-endpoints.md` records `?_action=eval` as the half of that
+resource which **runs** the script rather than only parsing it. That makes it
+the cheapest IDM probe channel available — it returns the script's value and
+creates nothing, so there is no object to remember to delete. The
+`getAlgorithm()` and `nextInt(origin, bound)` rows above were measured with it.
+
+```bash
+curl -sS -X POST "$TENANT_BASE_URL/openidm/script?_action=eval" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"type":"text/javascript","source":"(function(){ return 1 + 1; })();"}'
+```
+
+Reach for a throwaway endpoint only when the question needs `request` or
+`context`, which `eval` does not provide.
+
 ## Open items still requiring runtime probes
 
 Resolved 2026-06-03 (next-gen scripted decision): all syntax rows above; binding

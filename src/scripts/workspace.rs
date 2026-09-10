@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 88;
+pub const TEMPLATES_VERSION: u32 = 89;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -152,6 +152,10 @@ const MANAGED: &[(&str, &str)] = &[
     (
         "idm/types/idm-libs.d.ts",
         include_str!("templates/idm/types/idm-libs.d.ts"),
+    ),
+    (
+        "idm/types/java.d.ts",
+        include_str!("templates/idm/types/java.d.ts"),
     ),
     (
         "idm/types/endpoint.d.ts",
@@ -1553,6 +1557,78 @@ mod tests {
                 .lines()
                 .any(|line| line == "typescript/src/generated/")
         );
+    }
+
+    /// The `idm/types/*.d.ts` files that are shared by every IDM family, as
+    /// opposed to the per-family overlay each leaf adds on top.
+    ///
+    /// There are FOUR sources of IDM leaf tsconfigs and only two of them are
+    /// templates: `managed_hooks::leaf_tsconfig` and
+    /// `sync_mapping::leaf_tsconfig` build theirs in Rust. Nothing makes the
+    /// four agree, so a shared type def added to three of them is invisible —
+    /// scripts in the fourth family simply do not see it, and the failure is a
+    /// "Cannot find name" in someone else's workspace weeks later. This list is
+    /// the single place that says what "shared" means; the tests below hold all
+    /// four leaves to it.
+    const IDM_SHARED_TYPE_DEFS: &[&str] = &[
+        "types/rhino-1.7.14.d.ts",
+        "types/common.d.ts",
+        "types/idm-libs.d.ts",
+        "types/java.d.ts",
+        "types/managed/*.d.ts",
+    ];
+
+    #[test]
+    fn every_idm_leaf_tsconfig_loads_every_shared_type_def() {
+        fn template(rel: &str) -> &'static str {
+            MANAGED
+                .iter()
+                .find(|(candidate, _)| *candidate == rel)
+                .unwrap_or_else(|| panic!("missing template: {rel}"))
+                .1
+        }
+
+        let managed_hook = crate::scripts::managed_hooks::leaf_tsconfig("user");
+        let sync_mapping =
+            crate::scripts::sync_mapping::leaf_tsconfig("managedUser_systemLdap", "source");
+        let leaves: [(&str, &str); 4] = [
+            (
+                "idm/endpoint/tsconfig.json",
+                template("idm/endpoint/tsconfig.json"),
+            ),
+            (
+                "idm/schedule/tsconfig.json",
+                template("idm/schedule/tsconfig.json"),
+            ),
+            ("managed_hooks::leaf_tsconfig", &managed_hook),
+            ("sync_mapping::leaf_tsconfig", &sync_mapping),
+        ];
+
+        for (name, contents) in leaves {
+            for shared in IDM_SHARED_TYPE_DEFS {
+                assert!(
+                    contents.contains(shared),
+                    "{name} does not include the shared type def {shared}"
+                );
+            }
+        }
+    }
+
+    /// Every entry of [`IDM_SHARED_TYPE_DEFS`] must be a template that actually
+    /// ships, or the leaves above name a file `workspace update` never writes
+    /// and tsc fails on the missing include.
+    #[test]
+    fn every_shared_idm_type_def_is_a_shipped_template() {
+        for shared in IDM_SHARED_TYPE_DEFS {
+            if shared.contains('*') {
+                continue; // generated per tenant, not a bundled template
+            }
+            let rel = format!("idm/{shared}");
+            assert!(
+                MANAGED.iter().any(|(candidate, _)| *candidate == rel),
+                "{rel} is listed as shared but is not in MANAGED"
+            );
+        }
     }
 
     #[test]
