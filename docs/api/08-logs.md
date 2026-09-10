@@ -78,8 +78,8 @@ session (onboarding); otherwise paste console-created keys.
 | Param                 | Type                              | Notes                                                                                                                                                                                           |
 | --------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `source`              | string (comma-separated)          | Required. e.g. `am-access`, `idm-everything`.                                                                                                                                                   |
-| `beginTime`           | ISO 8601 (`2026-05-17T10:00:00Z`) | ≤24h before `endTime`.                                                                                                                                                                          |
-| `endTime`             | ISO 8601                          | Required if `beginTime` set.                                                                                                                                                                    |
+| `beginTime`           | ISO 8601 (`2026-05-17T10:00:00Z`) | ≤24h before `endTime`; exclusive at an exact event timestamp.                                                                                                                                   |
+| `endTime`             | ISO 8601                          | Required if `beginTime` set; inclusive at an exact event timestamp.                                                                                                                             |
 | `transactionId`       | string                            | **Direct top-level param** — `&transactionId=<id>` filters to one transaction. This is the working path (verified via the `gt`-style call), not `_queryFilter`.                                 |
 | `_queryFilter`        | CREST filter                      | Barely usable — `payload/transactionId eq "abc"` works; most other `payload/*` fields return **500**. No array indexing. Prefer the `transactionId` param, then filter client-side. See Quirks. |
 | `_pageSize`           | int                               | Default 1000, max 1000.                                                                                                                                                                         |
@@ -204,6 +204,12 @@ curl -sS "$TENANT_BASE_URL/monitoring/logs/sources" \
   events stay queryable for roughly 30 days, so reaching an older one means
   _moving_ a ≤24h window back, never widening it. Anything offering a "history"
   over these logs has to paginate in day-sized steps.
+- **Time ranges are `(beginTime, endTime]`.** An event whose timestamp exactly
+  matched the shared boundary of two adjacent live queries appeared in the
+  first query (where it was `endTime`) and not the second (where it was
+  `beginTime`). Contiguous pollers can therefore carry the prior end forward as
+  the next begin without dropping or duplicating the boundary event (verified
+  2026-09-10).
 - **`/tail` first call** returns the last ~15s; subsequent calls with the
   returned `pagedResultsCookie` continue from where the last call left off. This
   is the streaming pattern.
@@ -409,6 +415,22 @@ that side of the audit trail.
   `CREATE|PUT|FAILED`, …). Their payload keys are
   `_id, client, eventName, http, level, request, response, roles, server, source, timestamp, topic, transactionId, userId`
   — `eventName: "access"`, no `component`, `userId` a bare uuid, plus `roles`.
+
+### Payload shape, ordering, and range boundaries — 2026-09-10
+
+Tenant `tenant.example.com`, queried live through the stored log API key (the
+bearer-only `verify-endpoint.sh` cannot authenticate to `/monitoring/logs`):
+
+- A 15-second `am-everything,idm-everything` range returned 2,034 events over
+  three pages: 86 object payloads and 1,948 raw-string payloads. Every event had
+  the documented top-level string `timestamp`.
+- The three-page response was already ascending by top-level `timestamp`, with
+  no adjacent descents, including across page boundaries. This sample does not
+  reproduce the earlier report of out-of-order transaction results; consumers
+  should still sort a page before presenting it.
+- Two adjacent `am-core` queries sharing an exact event timestamp returned that
+  event once: in the left `(beginTime, endTime]` window only. This confirms the
+  range-boundary behavior documented above.
 
 ## Source citations
 

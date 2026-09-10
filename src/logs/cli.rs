@@ -1,7 +1,7 @@
 //! `aic logs` parser and command implementation.
 
 use std::future::Future;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -83,6 +83,48 @@ pub enum LogsCommand {
         source: Option<String>,
         #[arg(long, value_name = "PATH", help = "Write the JSON result to a file")]
         output: Option<PathBuf>,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+    },
+    /// Find events whose payload contains a substring.
+    Grep {
+        pattern: String,
+        #[arg(long, value_name = "CSV", help = "Comma-separated log sources")]
+        source: Option<String>,
+        #[arg(
+            long,
+            value_name = "DURATION",
+            conflicts_with_all = ["begin", "end"],
+            help = "Recent window (s/m/h suffix; default: 15m)"
+        )]
+        since: Option<String>,
+        #[arg(
+            long,
+            value_name = "ISO-8601",
+            requires = "end",
+            conflicts_with = "since",
+            help = "Fixed range start (requires --end)"
+        )]
+        begin: Option<String>,
+        #[arg(
+            long,
+            value_name = "ISO-8601",
+            requires = "begin",
+            conflicts_with = "since",
+            help = "Fixed range end (requires --begin)"
+        )]
+        end: Option<String>,
+        #[arg(long, value_name = "PATH", help = "Write the JSON result to a file")]
+        output: Option<PathBuf>,
+        #[arg(long, help = "Tenant to target")]
+        tenant: Option<String>,
+    },
+    /// Follow new events until Ctrl-C (JSON Lines on stdout).
+    Tail {
+        #[arg(long, value_name = "CSV", help = "Comma-separated log sources")]
+        source: Option<String>,
+        #[arg(long, value_name = "TEXT", help = "Filter by payload substring")]
+        pattern: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
     },
@@ -304,6 +346,66 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             )
             .await?;
             write_json(&result, output.as_deref())
+        }
+        LogsCommand::Grep {
+            pattern,
+            source,
+            since,
+            begin,
+            end,
+            output,
+            tenant,
+        } => {
+            require_pattern(&pattern)?;
+            let (begin, end) = grep_range(
+                since.as_deref(),
+                begin.as_deref(),
+                end.as_deref(),
+                Utc::now(),
+            )?;
+            let sources = parse_sources(source.as_deref())?;
+            let context = ops::fetch_context(tenant).await?;
+            let writer: Box<dyn Write + Send> = match output {
+                Some(path) => Box::new(BufWriter::new(std::fs::File::create(path)?)),
+                None => Box::new(BufWriter::new(std::io::stdout())),
+            };
+            let mut output = JsonArrayWriter::new(writer);
+            let fetch_result = {
+                let mut on_page = |mut page: Vec<Value>| -> Result<()> {
+                    sort_events_by_timestamp(&mut page);
+                    for event in page {
+                        if payload_matches(&event, &pattern) {
+                            output.write(&event)?;
+                        }
+                    }
+                    Ok(())
+                };
+                api::fetch_range_streamed(
+                    &context.client,
+                    &context.base_url,
+                    &context.key,
+                    begin,
+                    end,
+                    &sources,
+                    None,
+                    &mut on_page,
+                )
+                .await
+            };
+            let finish_result = output.finish();
+            fetch_result.and(finish_result)
+        }
+        LogsCommand::Tail {
+            source,
+            pattern,
+            tenant,
+        } => {
+            if let Some(pattern) = pattern.as_deref() {
+                require_pattern(pattern)?;
+            }
+            let sources = parse_sources(source.as_deref())?;
+            let context = ops::fetch_context(tenant).await?;
+            tail(&context, &sources, pattern.as_deref()).await
         }
         #[cfg(not(feature = "logs-store"))]
         LogsCommand::Search { .. } | LogsCommand::Compact { .. } | LogsCommand::Sync { .. } => {
@@ -635,6 +737,223 @@ fn query_range(
     Ok((begin, end))
 }
 
+const DEFAULT_GREP_SINCE: &str = "15m";
+const TAIL_INITIAL_LOOKBACK_SECONDS: i64 = 15;
+
+fn parse_recent_duration(value: &str) -> Result<Duration> {
+    let value = value.trim();
+    let (amount, unit) = value.split_at(value.len().saturating_sub(1));
+    let amount = amount.parse::<i64>().map_err(|_| {
+        Error::Config(format!(
+            "invalid duration {value:?}; expected a positive integer with an s, m, or h suffix"
+        ))
+    })?;
+    if amount <= 0 {
+        return Err(Error::Config(format!(
+            "invalid duration {value:?}; duration must be greater than zero"
+        )));
+    }
+    let seconds = match unit {
+        "s" => Some(amount),
+        "m" => amount.checked_mul(60),
+        "h" => amount.checked_mul(60 * 60),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        Error::Config(format!(
+            "invalid duration {value:?}; expected a positive integer with an s, m, or h suffix"
+        ))
+    })?;
+    Duration::try_seconds(seconds)
+        .ok_or_else(|| Error::Config(format!("invalid duration {value:?}; duration is too large")))
+}
+
+fn grep_range(
+    since: Option<&str>,
+    begin: Option<&str>,
+    end: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
+    match (begin, end) {
+        (Some(begin), Some(end)) => {
+            let begin = parse_time(begin, "begin")?;
+            let end = parse_time(end, "end")?;
+            if end <= begin {
+                return Err(Error::Config(
+                    "log grep end must be after begin".to_string(),
+                ));
+            }
+            Ok((begin, end))
+        }
+        (None, None) => {
+            let duration = parse_recent_duration(since.unwrap_or(DEFAULT_GREP_SINCE))?;
+            let begin = now.checked_sub_signed(duration).ok_or_else(|| {
+                Error::Config("log grep duration is outside the supported timestamp range".into())
+            })?;
+            Ok((begin, now))
+        }
+        _ => Err(Error::Config(
+            "log grep fixed ranges require both --begin and --end".to_string(),
+        )),
+    }
+}
+
+fn require_pattern(pattern: &str) -> Result<()> {
+    if pattern.is_empty() {
+        Err(Error::Config("log payload pattern cannot be empty".into()))
+    } else {
+        Ok(())
+    }
+}
+
+fn normalized_payload_text(event: &Value) -> String {
+    match event.get("payload") {
+        Some(Value::String(payload)) => payload.clone(),
+        Some(payload) => serde_json::to_string(payload).expect("serialize serde_json::Value"),
+        None => String::new(),
+    }
+}
+
+fn payload_matches(event: &Value, pattern: &str) -> bool {
+    normalized_payload_text(event).contains(pattern)
+}
+
+fn event_timestamp(event: &Value) -> Option<DateTime<Utc>> {
+    event
+        .get("timestamp")?
+        .as_str()?
+        .parse::<DateTime<Utc>>()
+        .ok()
+}
+
+fn sort_events_by_timestamp(events: &mut [Value]) {
+    events.sort_by(
+        |left, right| match (event_timestamp(left), event_timestamp(right)) {
+            (Some(left), Some(right)) => left.cmp(&right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        },
+    );
+}
+
+struct JsonArrayWriter<W> {
+    writer: W,
+    wrote_event: bool,
+}
+
+impl<W: Write> JsonArrayWriter<W> {
+    fn new(writer: W) -> Self {
+        Self {
+            writer,
+            wrote_event: false,
+        }
+    }
+
+    fn write(&mut self, event: &Value) -> Result<()> {
+        if self.wrote_event {
+            self.writer.write_all(b",\n")?;
+        } else {
+            self.writer.write_all(b"[\n")?;
+            self.wrote_event = true;
+        }
+        serde_json::to_writer(&mut self.writer, event)?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<()> {
+        if self.wrote_event {
+            self.writer.write_all(b"\n]\n")?;
+        } else {
+            self.writer.write_all(b"[]\n")?;
+        }
+        self.writer.flush()?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct TailCursor {
+    next_begin: DateTime<Utc>,
+}
+
+impl TailCursor {
+    fn new(next_begin: DateTime<Utc>) -> Self {
+        Self { next_begin }
+    }
+
+    fn next_window(&mut self, end: DateTime<Utc>) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
+        if end <= self.next_begin {
+            return Err(Error::Config(
+                "system clock did not advance while following logs".to_string(),
+            ));
+        }
+        let begin = self.next_begin;
+        self.next_begin = end;
+        Ok((begin, end))
+    }
+}
+
+async fn tail(
+    context: &ops::FetchContext,
+    sources: &[String],
+    pattern: Option<&str>,
+) -> Result<()> {
+    let mut cursor = TailCursor::new(Utc::now() - Duration::seconds(TAIL_INITIAL_LOOKBACK_SECONDS));
+    let mut stdout = BufWriter::new(std::io::stdout());
+    let interrupted = tokio::signal::ctrl_c();
+    tokio::pin!(interrupted);
+    eprintln!(
+        "following logs for tenant {} (initial {}s window; Ctrl-C to stop)",
+        context.tenant, TAIL_INITIAL_LOOKBACK_SECONDS
+    );
+
+    loop {
+        let (begin, end) = cursor.next_window(Utc::now())?;
+        let mut seen = 0usize;
+        let mut matched = 0usize;
+        {
+            let mut on_page = |mut page: Vec<Value>| -> Result<()> {
+                seen += page.len();
+                sort_events_by_timestamp(&mut page);
+                for event in page {
+                    if pattern.is_none_or(|pattern| payload_matches(&event, pattern)) {
+                        serde_json::to_writer(&mut stdout, &event)?;
+                        stdout.write_all(b"\n")?;
+                        matched += 1;
+                    }
+                }
+                stdout.flush()?;
+                Ok(())
+            };
+            let fetch = api::fetch_range_streamed(
+                &context.client,
+                &context.base_url,
+                &context.key,
+                begin,
+                end,
+                sources,
+                None,
+                &mut on_page,
+            );
+            tokio::select! {
+                signal = &mut interrupted => {
+                    signal.map_err(Error::Io)?;
+                    eprintln!("stopped following logs");
+                    return Ok(());
+                }
+                result = fetch => result?,
+            }
+        }
+
+        if seen == 0 {
+            eprintln!("no new events");
+        } else if matched == 0 {
+            eprintln!("{seen} new events; none matched the payload pattern");
+        }
+    }
+}
+
 const ACCESS_OUTCOME: &str = "AM-ACCESS-OUTCOME";
 
 fn payload_event_name(event: &Value) -> Option<&str> {
@@ -787,6 +1106,182 @@ mod tests {
         assert_eq!(
             query_range(None, None, now).unwrap(),
             (now - Duration::hours(24), now)
+        );
+    }
+
+    #[test]
+    fn recent_durations_accept_seconds_minutes_and_hours() {
+        assert_eq!(parse_recent_duration("30s").unwrap(), Duration::seconds(30));
+        assert_eq!(parse_recent_duration("5m").unwrap(), Duration::minutes(5));
+        assert_eq!(parse_recent_duration("1h").unwrap(), Duration::hours(1));
+    }
+
+    #[test]
+    fn recent_durations_reject_zero_missing_and_unknown_units() {
+        for invalid in ["0s", "5", "1d", "soon", "", "9223372036854775807s"] {
+            assert!(
+                parse_recent_duration(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn grep_defaults_to_the_previous_fifteen_minutes() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
+        assert_eq!(
+            grep_range(None, None, None, now).unwrap(),
+            (now - Duration::minutes(15), now)
+        );
+        assert_eq!(
+            grep_range(Some("30s"), None, None, now).unwrap(),
+            (now - Duration::seconds(30), now)
+        );
+    }
+
+    #[test]
+    fn grep_fixed_range_requires_both_bounds_and_orders_them() {
+        let now = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
+        assert!(grep_range(None, Some("2026-09-10T11:00:00Z"), None, now).is_err());
+        assert!(
+            grep_range(
+                None,
+                Some("2026-09-10T12:00:00Z"),
+                Some("2026-09-10T11:00:00Z"),
+                now,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            grep_range(
+                None,
+                Some("2026-09-10T10:00:00Z"),
+                Some("2026-09-10T11:00:00Z"),
+                now,
+            )
+            .unwrap(),
+            (
+                Utc.with_ymd_and_hms(2026, 9, 10, 10, 0, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 9, 10, 11, 0, 0).unwrap(),
+            )
+        );
+    }
+
+    #[test]
+    fn payload_matching_normalizes_strings_and_objects() {
+        let raw = serde_json::json!({"payload": "raw needle text"});
+        let structured = serde_json::json!({"payload": {"message": "object needle text"}});
+        let absent = serde_json::json!({"source": "am-core"});
+
+        assert_eq!(normalized_payload_text(&raw), "raw needle text");
+        assert_eq!(
+            normalized_payload_text(&structured),
+            r#"{"message":"object needle text"}"#
+        );
+        assert!(payload_matches(&raw, "needle"));
+        assert!(payload_matches(&structured, "needle"));
+        assert!(!payload_matches(&absent, "needle"));
+    }
+
+    #[test]
+    fn events_are_sorted_by_top_level_timestamp_with_malformed_values_last() {
+        let mut events = vec![
+            serde_json::json!({"timestamp": "2026-09-10T12:00:02Z", "n": 2}),
+            serde_json::json!({"source": "missing-timestamp"}),
+            serde_json::json!({"timestamp": "2026-09-10T12:00:01Z", "n": 1}),
+        ];
+
+        sort_events_by_timestamp(&mut events);
+
+        assert_eq!(events[0]["n"], 1);
+        assert_eq!(events[1]["n"], 2);
+        assert_eq!(events[2]["source"], "missing-timestamp");
+    }
+
+    #[test]
+    fn consecutive_tail_windows_share_exactly_one_boundary() {
+        let t0 = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
+        let t1 = t0 + Duration::seconds(1);
+        let t2 = t1 + Duration::seconds(2);
+        let mut cursor = TailCursor::new(t0);
+
+        assert_eq!(cursor.next_window(t1).unwrap(), (t0, t1));
+        assert_eq!(cursor.next_window(t2).unwrap(), (t1, t2));
+    }
+
+    #[test]
+    fn json_array_writer_streams_valid_empty_and_populated_arrays() {
+        let mut populated = Vec::new();
+        {
+            let mut writer = JsonArrayWriter::new(&mut populated);
+            writer.write(&serde_json::json!({"n": 1})).unwrap();
+            writer.write(&serde_json::json!({"n": 2})).unwrap();
+            writer.finish().unwrap();
+        }
+        assert_eq!(
+            serde_json::from_slice::<Value>(&populated).unwrap(),
+            serde_json::json!([{"n": 1}, {"n": 2}])
+        );
+
+        let mut empty = Vec::new();
+        JsonArrayWriter::new(&mut empty).finish().unwrap();
+        assert_eq!(empty, b"[]\n");
+    }
+
+    #[test]
+    fn grep_and_tail_flags_parse_in_default_builds() {
+        let grep = crate::cli::Cli::try_parse_from([
+            "aic", "logs", "grep", "failure", "--since", "5m", "--source", "am-core",
+        ])
+        .unwrap();
+        match grep.command {
+            Some(crate::cli::Command::Logs {
+                command: LogsCommand::Grep { pattern, since, .. },
+            }) => {
+                assert_eq!(pattern, "failure");
+                assert_eq!(since.as_deref(), Some("5m"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let tail =
+            crate::cli::Cli::try_parse_from(["aic", "logs", "tail", "--pattern", "Exception"])
+                .unwrap();
+        assert!(matches!(
+            tail.command,
+            Some(crate::cli::Command::Logs {
+                command: LogsCommand::Tail { pattern: Some(pattern), .. },
+            }) if pattern == "Exception"
+        ));
+    }
+
+    #[test]
+    fn grep_since_and_fixed_range_flags_conflict() {
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "aic",
+                "logs",
+                "grep",
+                "failure",
+                "--since",
+                "5m",
+                "--begin",
+                "2026-09-10T10:00:00Z",
+                "--end",
+                "2026-09-10T11:00:00Z",
+            ])
+            .is_err()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "aic",
+                "logs",
+                "grep",
+                "failure",
+                "--begin",
+                "2026-09-10T10:00:00Z",
+            ])
+            .is_err()
         );
     }
 

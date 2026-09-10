@@ -289,12 +289,33 @@ but this standalone command does not set `operator.name`.
 
 ### Remote fetch
 
-| Command                                                                                                         | What it does                                                                                     |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `aic logs sources [--tenant <name>] [--json] [--output <path>]`                                                 | List available log source ids. `--json` prints the list as JSON; `--output` writes it to a file. |
-| `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>] [--wait] [--timeout <secs>]` | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list.    |
-| `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]`           | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter.                 |
-| `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]`    | Run a CREST filter over the logs API. Defaults to the most recent 24 hours.                      |
+| Command                                                                                                                                            | What it does                                                                                     |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `aic logs sources [--tenant <name>] [--json] [--output <path>]`                                                                                    | List available log source ids. `--json` prints the list as JSON; `--output` writes it to a file. |
+| `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>] [--wait] [--timeout <secs>]`                                    | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list.    |
+| `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]`                                              | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter.                 |
+| `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]`                                       | Run a CREST filter over the logs API. Defaults to the most recent 24 hours.                      |
+| `aic logs grep <pattern> [--since <duration> \| --begin <iso> --end <iso>] [--source <csv>] [--tenant <name>] [--output <path>]`                    | Fetch live logs and match a case-sensitive substring within each normalized payload.            |
+| `aic logs tail [--source <csv>] [--pattern <text>] [--tenant <name>]`                                                                              | Follow live logs until Ctrl-C, optionally filtering on the same payload substring match.         |
+
+`logs grep` defaults to `--since 15m`; durations accept positive whole seconds,
+minutes, or hours (`30s`, `5m`, `1h`). `--begin` and `--end` are an alternative
+fixed ISO-8601 window and must be supplied together. Matches form one JSON array
+on stdout, or in `--output`; pages are filtered and written as they arrive rather
+than accumulating the whole window in memory.
+
+`logs tail` begins with the most recent 15 seconds and then requests contiguous
+windows until Ctrl-C. Each matched event is one compact JSON value on stdout
+(JSON Lines). Startup, empty-poll/filter status, and the Ctrl-C acknowledgement
+go to stderr, so redirecting stdout produces a clean event stream. There is no
+separate polling-interval flag: all log requests already pass through the
+client's 1.05-second API throttle.
+
+Both commands inspect `payload`, which the live API returns as either a raw
+string (especially `idm-core`) or a JSON object. Objects are serialized to JSON
+before the case-sensitive substring match; the original event shape is emitted.
+Events are ordered by the documented top-level `timestamp` within each fetched
+page before matching and emission.
 
 Log ingestion can lag tens of seconds behind the request, so a short
 `aic logs tx` result is not proof the script never ran. After every `tx` fetch
