@@ -137,7 +137,7 @@ pub enum KeyCommand {
         /// Actually remove the key. Without this, only describe it.
         #[arg(long)]
         force: bool,
-        /// Confirm the write on a production-themed tenant.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]

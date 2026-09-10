@@ -63,6 +63,7 @@ pub enum ObjectCommand {
         description: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -73,6 +74,7 @@ pub enum ObjectCommand {
         new: String,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -82,6 +84,7 @@ pub enum ObjectCommand {
         name: String,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -99,6 +102,7 @@ pub enum FieldCommand {
         attrs: FieldAttrs,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -112,6 +116,7 @@ pub enum FieldCommand {
         force: OperationForce,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -122,6 +127,7 @@ pub enum FieldCommand {
         new_key: String,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -131,6 +137,7 @@ pub enum FieldCommand {
         field: String,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -173,6 +180,7 @@ pub enum HookCommand {
         hook: String,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -203,6 +211,7 @@ pub enum RelationshipCommand {
         ref_properties: Vec<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]
@@ -212,6 +221,7 @@ pub enum RelationshipCommand {
         field: String,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]

@@ -67,7 +67,7 @@ pub enum PolicyCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
-        /// Confirm a write to a production tenant.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -80,6 +80,7 @@ pub enum PolicyCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -142,6 +143,7 @@ pub enum SetCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -153,6 +155,7 @@ pub enum SetCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -195,6 +198,7 @@ pub enum RtCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -206,6 +210,7 @@ pub enum RtCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },

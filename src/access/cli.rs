@@ -126,6 +126,7 @@ pub struct AccessListArgs {
 pub struct AccessWriteArgs {
     #[arg(long)]
     if_digest: Option<String>,
+    /// Confirm a write to a production-themed tenant.
     #[arg(long)]
     yes: bool,
     #[arg(long)]

@@ -55,6 +55,7 @@ pub enum SecretCommand {
         description: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -65,6 +66,7 @@ pub enum SecretCommand {
         description: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -92,6 +94,7 @@ pub enum SecretCommand {
         value_stdin: bool,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -101,6 +104,7 @@ pub enum SecretCommand {
         version: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -110,6 +114,7 @@ pub enum SecretCommand {
         version: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -119,6 +124,7 @@ pub enum SecretCommand {
         version: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[command(flatten)]
@@ -129,6 +135,7 @@ pub enum SecretCommand {
         id: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[command(flatten)]

@@ -36,7 +36,7 @@ pub enum RoleCommand {
         description: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
-        /// Confirm the write on a production-themed tenant.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -47,7 +47,7 @@ pub enum RoleCommand {
         force: bool,
         #[arg(long)]
         tenant: Option<String>,
-        /// Confirm the write on a production-themed tenant.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -87,7 +87,7 @@ pub enum PrivilegeCommand {
         actions: Vec<String>,
         #[arg(long)]
         tenant: Option<String>,
-        /// Confirm the write on a production-themed tenant.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -98,7 +98,7 @@ pub enum PrivilegeCommand {
         path: String,
         #[arg(long)]
         tenant: Option<String>,
-        /// Confirm the write on a production-themed tenant.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },

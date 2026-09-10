@@ -164,7 +164,8 @@ pub enum ScriptCommand {
         description: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Confirm the write")]
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
         yes: bool,
         #[command(flatten)]
         force: SyntaxCheckForce,
@@ -175,7 +176,8 @@ pub enum ScriptCommand {
         destination: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Confirm the write")]
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
         yes: bool,
         #[command(flatten)]
         force: SyntaxCheckForce,
@@ -188,7 +190,8 @@ pub enum ScriptCommand {
         force: OperationForce,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Confirm the write")]
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
         yes: bool,
     },
     /// Pull script(s) into the workspace.
@@ -221,7 +224,7 @@ pub enum ScriptCommand {
         /// scripts or override the syntax pre-flight.
         #[command(flatten)]
         force: OperationAndSyntaxCheckForce,
-        /// Confirm the write.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -274,7 +277,7 @@ pub enum ScriptCommand {
         resolve: Option<Resolution>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        /// Confirm writes.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[command(flatten)]
@@ -286,7 +289,7 @@ pub enum ScriptCommand {
     Watch {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        /// Confirm writes.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[command(flatten)]
