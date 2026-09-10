@@ -70,6 +70,12 @@ pub fn draw(f: &mut Frame, app: &App) {
             toast::draw(f, app);
             return;
         }
+        InputMode::Scripts(crate::scripts::screen::Mode::PullConfirm) => {
+            crate::scripts::view::draw_pull_confirm(f, app);
+            draw_keybind_help(f, app);
+            toast::draw(f, app);
+            return;
+        }
         InputMode::Normal
         | InputMode::Esv(_)
         | InputMode::Secrets(_)

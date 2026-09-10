@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 
-use crate::cli::{print_json, print_table, realm_arg, tenant_for};
+use crate::cli::force::OperationAndBackupForce;
+use crate::cli::{confirm_destructive, print_json, print_table, realm_arg, tenant_for};
 use crate::config::ProjectConfig;
 use crate::policy::{api, spec};
 use crate::{Error, Result};
@@ -52,6 +53,8 @@ pub enum PolicyCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        #[command(flatten)]
+        force: OperationAndBackupForce,
     },
     /// Push a local policy, refusing when the remote drifted since the pull.
     Push {
@@ -126,6 +129,8 @@ pub enum SetCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        #[command(flatten)]
+        force: OperationAndBackupForce,
     },
     Push {
         name: String,
@@ -177,6 +182,8 @@ pub enum RtCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        #[command(flatten)]
+        force: OperationAndBackupForce,
     },
     Push {
         id: String,
@@ -274,6 +281,14 @@ impl Kind {
             Self::ResourceType => "policy rt",
         }
     }
+
+    fn backup_kind(self) -> &'static str {
+        match self {
+            Self::Policy => "policy",
+            Self::Set => "policy-set",
+            Self::ResourceType => "resource-type",
+        }
+    }
 }
 
 fn validate_file_name(kind: Kind, name: &str) -> Result<()> {
@@ -326,6 +341,96 @@ fn read_json(path: &Path) -> Result<Option<Value>> {
     let value = serde_json::from_slice(&bytes)
         .map_err(|error| Error::Config(format!("parse {}: {error}", path.display())))?;
     Ok(Some(value))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PullDecision {
+    Install,
+    Unchanged,
+    Protected,
+}
+
+fn pull_json(bytes: &[u8]) -> Option<Value> {
+    serde_json::from_slice(bytes).ok()
+}
+
+fn pull_decision(local: Option<&[u8]>, remote: &Value, snapshot: Option<&[u8]>) -> PullDecision {
+    let Some(local_bytes) = local else {
+        return PullDecision::Install;
+    };
+    let Some(local) = pull_json(local_bytes) else {
+        return PullDecision::Protected;
+    };
+    if spec::content_equal(&local, remote) {
+        return PullDecision::Unchanged;
+    }
+    match snapshot.and_then(pull_json) {
+        Some(snapshot) if spec::content_equal(&local, &snapshot) => PullDecision::Install,
+        _ => PullDecision::Protected,
+    }
+}
+
+fn pull_needs_consent(decision: PullDecision, operation_force: bool) -> bool {
+    decision == PullDecision::Protected && !operation_force
+}
+
+fn read_pull_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Error::Config(format!("read {}: {error}", path.display()))),
+    }
+}
+
+struct PullEntry {
+    name: String,
+    content: Value,
+    path: PathBuf,
+    snapshot: PathBuf,
+    local: Option<Vec<u8>>,
+    decision: PullDecision,
+}
+
+fn protected_references(kind: Kind, entries: &[PullEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|entry| entry.decision == PullDecision::Protected)
+        .map(|entry| format!("{} {}", kind.label(), entry.name))
+        .collect()
+}
+
+fn bulk_pull_block_message(protected: &[String]) -> String {
+    format!(
+        "pull would overwrite protected local edits; nothing was changed:\n  {}\nre-run with --force to authorize every listed overwrite",
+        protected.join("\n  ")
+    )
+}
+
+fn install_pull_entry(
+    kind: Kind,
+    realm: &str,
+    entry: &PullEntry,
+    backup_dir: &Path,
+    skip_backup: bool,
+) -> Result<Option<PathBuf>> {
+    let backup = match (&entry.local, entry.decision) {
+        (Some(original), PullDecision::Install | PullDecision::Protected) if !skip_backup => {
+            Some(crate::backup::create_in(
+                backup_dir,
+                kind.backup_kind(),
+                realm,
+                &entry.name,
+                "json",
+                original,
+            )?)
+        }
+        _ => None,
+    };
+    if entry.decision != PullDecision::Unchanged {
+        write_json(&entry.path, &entry.content)?;
+    }
+    write_json(&entry.snapshot, &entry.content)?;
+    Ok(backup)
 }
 
 // ------------------------------------------------------------ push policy
@@ -480,6 +585,7 @@ async fn pull(
     name: Option<String>,
     all: bool,
     set_filter: Option<String>,
+    force: OperationAndBackupForce,
 ) -> Result<()> {
     let tenant = tenant_for(tenant_arg)?;
     let realm = realm_arg("policy", realm_arg_value)?;
@@ -512,11 +618,58 @@ async fn pull(
         return Ok(());
     }
 
+    let mut entries = Vec::with_capacity(names.len());
     for name in &names {
         let remote = read_object(kind, &tenant, &realm, name).await?;
         let content = spec::content(&remote);
-        write_json(&object_path(kind, &tenant, &realm, name)?, &content)?;
-        write_json(&snapshot_path(kind, &tenant, &realm, name)?, &content)?;
+        let path = object_path(kind, &tenant, &realm, name)?;
+        let snapshot = snapshot_path(kind, &tenant, &realm, name)?;
+        let local = read_pull_file(&path)?;
+        let snapshot_bytes = read_pull_file(&snapshot)?;
+        let decision = pull_decision(local.as_deref(), &content, snapshot_bytes.as_deref());
+        entries.push(PullEntry {
+            name: name.clone(),
+            content,
+            path,
+            snapshot,
+            local,
+            decision,
+        });
+    }
+
+    let protected = protected_references(kind, &entries);
+    if entries
+        .iter()
+        .any(|entry| pull_needs_consent(entry.decision, force.operation()))
+    {
+        if all || entries.len() > 1 {
+            return Err(Error::Config(bulk_pull_block_message(&protected)));
+        }
+        let reference = &protected[0];
+        if !confirm_destructive(
+            "policy pull overwrite",
+            &format!(
+                "{reference} has local edits; overwrite them? (a backup is kept under .aic-sync/backups/)"
+            ),
+            "--force",
+        )? {
+            return Err(Error::Config(format!(
+                "{reference} was not pulled; local edits kept"
+            )));
+        }
+    }
+
+    let backup_dir = ProjectConfig::aic_sync_dir(&tenant).join("backups");
+    for entry in &entries {
+        if let Some(backup) = install_pull_entry(kind, &realm, entry, &backup_dir, force.backup())?
+        {
+            println!(
+                "backed up previous {} {} to {}",
+                kind.label(),
+                entry.name,
+                backup.display()
+            );
+        }
     }
     println!(
         "pulled {} {}(s) -> {}",
@@ -934,7 +1087,8 @@ pub async fn run(command: PolicyCommand) -> Result<()> {
             set,
             realm,
             tenant,
-        } => pull(Kind::Policy, tenant, realm, name, all, set).await,
+            force,
+        } => pull(Kind::Policy, tenant, realm, name, all, set, force).await,
         PolicyCommand::Push {
             name,
             force,
@@ -1008,7 +1162,8 @@ async fn run_set(command: SetCommand) -> Result<()> {
             all,
             realm,
             tenant,
-        } => pull(Kind::Set, tenant, realm, name, all, None).await,
+            force,
+        } => pull(Kind::Set, tenant, realm, name, all, None, force).await,
         SetCommand::Push {
             name,
             force,
@@ -1065,7 +1220,8 @@ async fn run_rt(command: RtCommand) -> Result<()> {
             all,
             realm,
             tenant,
-        } => pull(Kind::ResourceType, tenant, realm, id, all, None).await,
+            force,
+        } => pull(Kind::ResourceType, tenant, realm, id, all, None, force).await,
         RtCommand::Push {
             id,
             force,
@@ -1134,6 +1290,147 @@ fn type_row(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn pull_protection_matrix_uses_policy_content_normalization() {
+        let remote = json!({"name": "P", "active": true, "lastModifiedDate": "remote"});
+        let same = br#"{"active":true,"name":"P","lastModifiedDate":"local"}"#;
+        let old = br#"{"name":"P","active":false}"#;
+        let edited = br#"{"name":"P","active":"edited"}"#;
+
+        assert_eq!(pull_decision(None, &remote, None), PullDecision::Install);
+        assert_eq!(
+            pull_decision(Some(same), &remote, None),
+            PullDecision::Unchanged
+        );
+        assert_eq!(
+            pull_decision(Some(old), &remote, Some(old)),
+            PullDecision::Install
+        );
+        assert_eq!(
+            pull_decision(Some(edited), &remote, Some(old)),
+            PullDecision::Protected
+        );
+        assert_eq!(
+            pull_decision(Some(old), &remote, None),
+            PullDecision::Protected
+        );
+        assert_eq!(
+            pull_decision(Some(old), &remote, Some(b"not json")),
+            PullDecision::Protected
+        );
+        assert_eq!(
+            pull_decision(Some(b"not json"), &remote, Some(old)),
+            PullDecision::Protected
+        );
+    }
+
+    fn pull_entry(dir: &Path, name: &str, decision: PullDecision) -> PullEntry {
+        PullEntry {
+            name: name.into(),
+            content: json!({"name": name, "active": true}),
+            path: dir.join(format!("{name}.json")),
+            snapshot: dir.join(format!("{name}.snapshot.json")),
+            local: Some(format!("original {name}").into_bytes()),
+            decision,
+        }
+    }
+
+    #[test]
+    fn policy_pull_backs_up_original_bytes_and_snapshot_waits_for_install() {
+        let dir = std::env::temp_dir().join(format!("policy-pull-{}", uuid::Uuid::new_v4()));
+        let entry = pull_entry(&dir, "P", PullDecision::Protected);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&entry.path, entry.local.as_ref().unwrap()).unwrap();
+        let backup = install_pull_entry(Kind::Policy, "alpha", &entry, &dir.join("backups"), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read(backup).unwrap(), b"original P");
+        assert_eq!(read_json(&entry.path).unwrap(), Some(entry.content.clone()));
+        assert_eq!(
+            read_json(&entry.snapshot).unwrap(),
+            Some(entry.content.clone())
+        );
+
+        let failed = pull_entry(&dir, "Q", PullDecision::Install);
+        std::fs::create_dir_all(&failed.path).unwrap();
+        write_json(&failed.snapshot, &json!({"old": true})).unwrap();
+        assert!(
+            install_pull_entry(Kind::Policy, "alpha", &failed, &dir.join("backups"), false,)
+                .is_err()
+        );
+        assert_eq!(
+            read_json(&failed.snapshot).unwrap(),
+            Some(json!({"old": true}))
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn bulk_preflight_names_every_protected_reference_before_install() {
+        let dir = Path::new("unused");
+        let entries = vec![
+            pull_entry(dir, "One", PullDecision::Protected),
+            pull_entry(dir, "Safe", PullDecision::Install),
+            pull_entry(dir, "Two", PullDecision::Protected),
+        ];
+        let protected = protected_references(Kind::Policy, &entries);
+        let message = bulk_pull_block_message(&protected);
+        assert_eq!(protected, ["policy One", "policy Two"]);
+        assert!(message.contains("policy One"));
+        assert!(message.contains("policy Two"));
+        assert!(message.contains("nothing was changed"));
+    }
+
+    #[test]
+    fn every_policy_pull_collection_accepts_only_operation_and_backup_guards() {
+        for verb in [
+            vec!["pull", "P"],
+            vec!["set", "pull", "S"],
+            vec!["rt", "pull", "R"],
+        ] {
+            for flags in [
+                vec!["--force"],
+                vec!["--force=backup"],
+                vec!["--force", "--force=backup"],
+            ] {
+                let args: Vec<_> = ["aic", "policy"]
+                    .iter()
+                    .chain(&verb)
+                    .chain(&flags)
+                    .copied()
+                    .collect();
+                let cli = crate::cli::Cli::try_parse_from(args).unwrap();
+                let Some(crate::cli::Command::Policy { command }) = cli.command else {
+                    panic!("expected policy command")
+                };
+                let force = match command {
+                    PolicyCommand::Pull { force, .. } => force,
+                    PolicyCommand::Set {
+                        command: SetCommand::Pull { force, .. },
+                    } => force,
+                    PolicyCommand::Rt {
+                        command: RtCommand::Pull { force, .. },
+                    } => force,
+                    other => panic!("expected policy pull, got {other:?}"),
+                };
+                assert_eq!(force.operation(), flags.contains(&"--force"));
+                assert_eq!(force.backup(), flags.contains(&"--force=backup"));
+                assert_eq!(
+                    pull_needs_consent(PullDecision::Protected, force.operation()),
+                    !flags.contains(&"--force")
+                );
+            }
+            let args: Vec<_> = ["aic", "policy"]
+                .iter()
+                .chain(&verb)
+                .chain(["--force=syntax-check"].iter())
+                .copied()
+                .collect();
+            assert!(crate::cli::Cli::try_parse_from(args).is_err());
+        }
+    }
 
     fn v(json: serde_json::Value) -> Value {
         json

@@ -2,6 +2,7 @@ pub mod access;
 pub mod agent;
 pub mod aic;
 pub mod app;
+pub(crate) mod backup;
 pub mod cli;
 pub mod config;
 pub mod error;

@@ -59,6 +59,7 @@ pub fn describe_prod_action(action: &ProdAction) -> Option<String> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Search,
+    PullConfirm,
 }
 
 #[derive(Debug)]
@@ -72,6 +73,12 @@ pub enum Event {
         full: String,
         label: String,
         outcome: OpOutcome,
+    },
+    PullPrepared {
+        tenant: String,
+        full: String,
+        label: String,
+        result: std::result::Result<sync::PullPlan, String>,
     },
 }
 
@@ -109,12 +116,19 @@ pub fn apply_event(app: &mut App, event: Event) {
             label,
             outcome,
         } => apply_op_result(app, tenant, full, label, outcome),
+        Event::PullPrepared {
+            tenant,
+            full,
+            label,
+            result,
+        } => apply_pull_prepared(app, tenant, full, label, result),
     }
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
     match mode {
         Mode::Search => handle_search_key(app, key),
+        Mode::PullConfirm => handle_pull_confirm_key(app, key),
     }
 }
 
@@ -127,6 +141,11 @@ pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
             ("Esc", "clear filter and return to list"),
             ("↑/↓", "move selection"),
             ("PgUp/PgDn", "move by page"),
+            ("F1", "show keybinds"),
+        ]),
+        Mode::PullConfirm => Some(vec![
+            ("y", "overwrite every listed local edit with backups"),
+            ("n/Enter/Esc", "cancel the whole pull (default)"),
             ("F1", "show keybinds"),
         ]),
     }
@@ -172,6 +191,23 @@ pub struct State {
     /// inline strip. Cleared by a successful op on the same script, or by the
     /// next refresh once the local source has changed.
     pub refused: HashMap<(String, String), Refused>,
+    pub pending_pull: Option<PendingPull>,
+}
+
+#[derive(Debug)]
+pub struct PendingPull {
+    tenant: String,
+    full: String,
+    label: String,
+    plan: sync::PullPlan,
+}
+
+pub fn pending_pull_refs(app: &App) -> Vec<String> {
+    app.scripts
+        .pending_pull
+        .as_ref()
+        .map(|pending| pending.plan.protected_refs())
+        .unwrap_or_default()
 }
 
 /// A refusal held for display, with the source it was about.
@@ -208,6 +244,7 @@ impl Default for State {
             scroll: 0,
             in_flight: HashSet::new(),
             refused: HashMap::new(),
+            pending_pull: None,
         }
     }
 }
@@ -222,6 +259,9 @@ impl State {
         self.query.clear();
         self.selected = 0;
         self.scroll = 0;
+        if let Some(pending) = self.pending_pull.take() {
+            self.in_flight.remove(&(pending.tenant, pending.full));
+        }
     }
 
     pub fn clamp_selection(&mut self, n: usize) {
@@ -444,8 +484,7 @@ fn handle_search_key(app: &mut App, key: KeyEvent) {
 // Pull / push actions
 // ---------------------------------------------------------------------------
 
-/// Pull the selected script into the workspace (overwrites local edits; a
-/// backup is taken first, same as the CLI's non-`--force` pull).
+/// Preflight the selected pull before changing the workspace.
 pub fn pull_selected(app: &mut App) {
     let Some(c) = selected_candidate(app) else {
         return;
@@ -466,18 +505,21 @@ pub fn pull_selected(app: &mut App) {
     let tx = app.events.tx.clone();
     let label = format!("pull {full}");
     tokio::spawn(async move {
-        let outcome = match sync::pull(&tenant, &realm, kind, &Selector::Name(name), false).await {
-            Ok(outs) => OpOutcome::Ok(match outs.first() {
-                Some(o) => format!("{full}: {}", pull_status(&o.status)),
-                None => format!("{full}: nothing to pull"),
-            }),
-            Err(e) => OpOutcome::Failed(e.to_string()),
-        };
-        let _ = tx.send(AppEvent::Scripts(Event::OpResult {
+        let result = sync::prepare_pull(
+            &tenant,
+            vec![sync::PullTarget {
+                realm,
+                kind,
+                selector: Selector::Name(name),
+            }],
+        )
+        .await
+        .map_err(|error| error.to_string());
+        let _ = tx.send(AppEvent::Scripts(Event::PullPrepared {
             tenant,
             full: full.clone(),
             label,
-            outcome,
+            result,
         }));
     });
 }
@@ -503,29 +545,113 @@ pub fn pull_all(app: &mut App) {
     let tx = app.events.tx.clone();
     let label = "pull all".to_string();
     tokio::spawn(async move {
-        let mut pulled = 0usize;
-        let mut errors = 0usize;
-        for ns in script::Namespace::all() {
-            match sync::pull(&tenant, ns.realm_arg(), ns.kind, &Selector::All, false).await {
-                Ok(outs) => pulled += outs.len(),
-                Err(e) => {
-                    errors += 1;
-                    tracing::warn!("pull all: {} failed: {e}", ns.label());
-                }
-            }
-        }
-        let outcome = OpOutcome::Ok(if errors == 0 {
-            format!("pulled {pulled} scripts")
-        } else {
-            format!("pulled {pulled} scripts ({errors} namespace(s) failed)")
-        });
-        let _ = tx.send(AppEvent::Scripts(Event::OpResult {
+        let targets = script::Namespace::all()
+            .into_iter()
+            .map(|ns| sync::PullTarget {
+                realm: ns.realm_arg().to_string(),
+                kind: ns.kind,
+                selector: Selector::All,
+            })
+            .collect();
+        let result = sync::prepare_pull(&tenant, targets)
+            .await
+            .map_err(|error| error.to_string());
+        let _ = tx.send(AppEvent::Scripts(Event::PullPrepared {
             tenant,
             full,
             label,
-            outcome,
+            result,
         }));
     });
+}
+
+fn apply_pull_prepared(
+    app: &mut App,
+    tenant: String,
+    full: String,
+    label: String,
+    result: std::result::Result<sync::PullPlan, String>,
+) {
+    if app
+        .active_tenant()
+        .is_none_or(|active| active.name != tenant)
+    {
+        app.scripts.in_flight.remove(&(tenant, full));
+        return;
+    }
+    let plan = match result {
+        Ok(plan) => plan,
+        Err(error) => {
+            apply_op_result(app, tenant, full, label, OpOutcome::Failed(error));
+            return;
+        }
+    };
+    if plan.protected_refs().is_empty() {
+        apply_pull_plan(app, tenant, full, label, plan);
+    } else {
+        app.scripts.pending_pull = Some(PendingPull {
+            tenant,
+            full,
+            label,
+            plan,
+        });
+        app.input_mode = InputMode::Scripts(Mode::PullConfirm);
+    }
+}
+
+fn apply_pull_plan(
+    app: &mut App,
+    tenant: String,
+    full: String,
+    label: String,
+    plan: sync::PullPlan,
+) {
+    let count = plan.len();
+    let outcome = match plan.install(false) {
+        Ok(outcomes) => {
+            let backed_up = outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome.status, sync::PullStatus::LocalBackedUp(_)))
+                .count();
+            let suffix = if backed_up == 0 {
+                String::new()
+            } else {
+                format!(" ({backed_up} local source(s) backed up)")
+            };
+            OpOutcome::Ok(format!("pulled {count} script(s){suffix}"))
+        }
+        Err(error) => OpOutcome::Failed(error.to_string()),
+    };
+    apply_op_result(app, tenant, full, label, outcome);
+}
+
+fn handle_pull_confirm_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let Some(pending) = app.scripts.pending_pull.take() else {
+                app.input_mode = InputMode::Normal;
+                return;
+            };
+            app.input_mode = InputMode::Normal;
+            apply_pull_plan(
+                app,
+                pending.tenant,
+                pending.full,
+                pending.label,
+                pending.plan,
+            );
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter | KeyCode::Esc => {
+            if let Some(pending) = app.scripts.pending_pull.take() {
+                app.scripts
+                    .in_flight
+                    .remove(&(pending.tenant, pending.full));
+            }
+            app.input_mode = InputMode::Normal;
+            app.push_toast(ToastKind::Info, "Pull cancelled; local changes kept");
+        }
+        _ => {}
+    }
 }
 
 /// Push the selected script's local edits back to the tenant. Routes through
@@ -682,17 +808,6 @@ fn begin_op(app: &mut App, tenant: &str, full: &str) -> bool {
     }
     app.scripts.in_flight.insert(key);
     true
-}
-
-fn pull_status(status: &sync::PullStatus) -> String {
-    match status {
-        sync::PullStatus::Created => "pulled (new)".into(),
-        sync::PullStatus::Updated => "updated".into(),
-        sync::PullStatus::Unchanged => "already up to date".into(),
-        sync::PullStatus::LocalBackedUp(path) => {
-            format!("pulled; local source backed up to {}", path.display())
-        }
-    }
 }
 
 #[cfg(test)]

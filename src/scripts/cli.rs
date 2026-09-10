@@ -616,38 +616,39 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 },
                 some => parse_ref(some)?,
             };
-            let mut any = false;
-            for job in jobs {
-                // For a single named target, confirm before clobbering local
-                // edits. Confirmation only grants permission to proceed — the
-                // snapshot-backup still happens (only `--force=backup`
-                // skips it). Bulk pulls don't prompt.
-                if let sync::Selector::Name(name) = &job.selector {
-                    if !force.operation()
-                        && sync::local_state(&t, job.ns.kind, job.ns.realm_arg(), name)?
-                            == sync::LocalState::Modified
-                    {
-                        let full = script::full_name(job.ns.kind, job.ns.realm.as_deref(), name);
-                        // `Some(false)` = declined; `Some(true)`/`None` (no TTY)
-                        // → proceed (the snapshot-backup still happens).
-                        if let Some(false) = confirm_overwrite(&format!(
-                            "{full} has local changes — overwrite them? (a backup is kept under .aic-sync/backups/)"
-                        ))? {
-                            println!("{full}: skipped (kept local changes)");
-                            continue;
-                        }
-                    }
+            let single = jobs.len() == 1 && matches!(jobs[0].selector, sync::Selector::Name(_));
+            let targets = jobs
+                .into_iter()
+                .map(|job| sync::PullTarget {
+                    realm: job.ns.realm_arg().to_string(),
+                    kind: job.ns.kind,
+                    selector: job.selector,
+                })
+                .collect();
+            let plan = sync::prepare_pull(&t, targets).await?;
+            let protected = plan.protected_refs();
+            if !protected.is_empty() && !force.operation() {
+                if !single {
+                    return Err(Error::Config(format!(
+                        "pull would overwrite protected local edits; nothing was changed:\n  {}\nre-run with --force to authorize every listed overwrite",
+                        protected.join("\n  ")
+                    )));
                 }
-                for o in sync::pull(
-                    &t,
-                    job.ns.realm_arg(),
-                    job.ns.kind,
-                    &job.selector,
-                    force.backup(),
-                )
-                .await?
+                let full = &protected[0];
+                if confirm_overwrite(&format!(
+                    "{full} has local changes — overwrite them? (a backup is kept under .aic-sync/backups/)"
+                ))? != Some(true)
                 {
-                    any = true;
+                    return Err(Error::Config(format!(
+                        "{full} was not pulled; local changes kept"
+                    )));
+                }
+            }
+            let outcomes = plan.install(force.backup())?;
+            if outcomes.is_empty() {
+                println!("nothing to pull");
+            } else {
+                for o in outcomes {
                     let what = match &o.status {
                         sync::PullStatus::Created => "pulled (new)".to_string(),
                         sync::PullStatus::Updated => "pulled (updated)".to_string(),
@@ -658,12 +659,9 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     };
                     println!(
                         "  {}: {what}",
-                        script::full_name(o.kind, job.ns.realm.as_deref(), &o.name)
+                        script::full_name(o.kind, o.realm.as_deref(), &o.name)
                     );
                 }
-            }
-            if !any {
-                println!("nothing to pull");
             }
             workspace_update_hint(&t)?;
             Ok(())
