@@ -1107,7 +1107,7 @@ aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--no-syntax-check
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--force]               # pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--yes] [--no-syntax-check]  # push edits; --force makes tracked tenant scripts match local
-aic script sync [<ref>] [--resolve local|remote] [--tenant TENANT] [--yes] [--no-syntax-check]   # reconcile: push local-only, pull remote-only
+aic script sync [<ref>] [--resolve local|remote] [--tenant TENANT] [--yes] [--no-syntax-check]   # reconcile, or make one side win for every selected entry
 aic script watch [--tenant TENANT] [--yes] [--no-syntax-check]   # auto-push each .cjs you save (Ctrl-C to stop; also creates generated endpoints)
 aic script status [<ref>]                       # in sync / modified / remote / conflict; template/type drift notes
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
@@ -1192,6 +1192,27 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   snapshot; `push all --force` therefore checks every tracked script. It does
   not create or adopt untracked scripts. When remote already equals local, no
   PUT is sent and the snapshot is refreshed from the live resource.
+- **Accepted script writes are confirmed before the snapshot advances.** Push
+  and sync re-fetch the resource and compare its decoded source with the exact
+  bytes submitted. A mismatch reports “write accepted, but read-back did not
+  match” and a failed fetch/decode reports “confirmation failed”; both leave
+  the local source and snapshot unchanged, describe the tenant state as
+  uncertain, and exit non-zero.
+- **Explicit sync resolution applies to every selected entry.** `--resolve
+  local` makes the tenant match each existing local source via the same forced,
+  syntax-checked, confirmed push; a missing local file is an error and is not
+  restored. `--resolve remote` makes every local source match the tenant,
+  backing up differing existing source first. Without `--resolve`, sync keeps
+  its three-way behavior: local-only changes push, remote-only changes pull,
+  equal changes converge, and genuine conflicts prompt when a terminal is
+  available.
+- **Pull backups are based on the bytes being replaced, not the snapshot.** A
+  normal `pull`, a reconcile pull, and `sync --resolve remote` write any
+  differing existing source to `.aic-sync/backups/` before replacing it, even
+  if that source equals the snapshot. Backup names include kind, realm, and
+  script name plus a collision-safe suffix; the actual path is printed. A
+  backup failure aborts before local source or snapshot changes. Direct
+  `script pull --force` remains the explicit opt-out; sync never opts out.
 - **Every write is syntax-checked first.** Before `create`, `copy`, `push`,
   `sync` and `watch` write anything, the tenant is asked to parse the source —
   AM through `scripts?_action=validate`, IDM through `script?_action=compile`.
