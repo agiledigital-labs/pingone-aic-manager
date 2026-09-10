@@ -14,6 +14,7 @@ use crate::access::spec::{
     self, Amendment, RuleEdit, RuleSpec, RuleSummary, TouchedIndices, WarningScope,
 };
 use crate::access::{api, spec::Findings};
+use crate::cli::force::OperationAndBackupForce;
 use crate::cli::{
     WriteOk, confirm_destructive, ensure_prod_confirmed, print_json, prompt_available, tenant_for,
 };
@@ -129,8 +130,8 @@ pub struct AccessWriteArgs {
     yes: bool,
     #[arg(long)]
     dry_run: bool,
-    #[arg(long)]
-    no_backup: bool,
+    #[command(flatten)]
+    force: OperationAndBackupForce,
     #[arg(long)]
     tenant: Option<String>,
 }
@@ -342,7 +343,7 @@ async fn write(amendment: Amendment, options: AccessWriteArgs) -> Result<()> {
     let backup = if plan.backup {
         let path = ops::backup_document(&tenant, &before, Utc::now()).map_err(|error| {
             Error::Config(format!(
-                "{error}; pass --no-backup to proceed without a backup"
+                "{error}; pass --force=backup to proceed without a backup"
             ))
         })?;
         println!("backup: {}", path.display());
@@ -351,7 +352,7 @@ async fn write(amendment: Amendment, options: AccessWriteArgs) -> Result<()> {
         None
     };
 
-    spec::check_digest(options.if_digest.as_deref(), &before)?;
+    check_digest(&options, &before)?;
     let roles = resolve_roles(&tenant).await;
     report_write_findings(
         spec::validate_document(
@@ -376,7 +377,7 @@ async fn write(amendment: Amendment, options: AccessWriteArgs) -> Result<()> {
         && !confirm_destructive(
             "config/access changes",
             &format!("Write these config/access changes to tenant {tenant:?}?"),
-            "--yes",
+            "--force",
         )?
     {
         return Err(Error::Config("config/access was not changed".into()));
@@ -391,9 +392,10 @@ async fn write(amendment: Amendment, options: AccessWriteArgs) -> Result<()> {
 
 fn plan(before: &Value, amendment: Amendment, options: &AccessWriteArgs) -> Result<Plan> {
     let amended = ops::amend(before, amendment)?;
-    let needs_confirm = !amended.summary.changed.is_empty() && !options.dry_run && !options.yes;
+    let needs_confirm =
+        !amended.summary.changed.is_empty() && !options.dry_run && !options.force.operation();
     Ok(Plan {
-        backup: !options.dry_run && !options.no_backup,
+        backup: !options.dry_run && !options.force.backup(),
         after: amended.after,
         touched: amended.touched,
         summary: amended.summary,
@@ -481,13 +483,24 @@ fn render_finding(finding: &spec::Finding) -> String {
 }
 
 fn ensure_confirmation_available(options: &AccessWriteArgs) -> Result<()> {
-    if !options.yes && !options.dry_run && !prompt_available() {
+    ensure_confirmation_available_with(options, prompt_available())
+}
+
+fn ensure_confirmation_available_with(
+    options: &AccessWriteArgs,
+    terminal_available: bool,
+) -> Result<()> {
+    if !options.force.operation() && !options.dry_run && !terminal_available {
         return Err(Error::Config(
-            "config/access changes require confirmation; pass --yes when no terminal is available"
+            "config/access changes require confirmation; pass --force when no terminal is available"
                 .into(),
         ));
     }
     Ok(())
+}
+
+fn check_digest(options: &AccessWriteArgs, before: &Value) -> Result<()> {
+    spec::check_digest(options.if_digest.as_deref(), before)
 }
 
 async fn write_confirmed(
@@ -502,7 +515,7 @@ fn confirmed_write_error(error: api::ConfirmedWriteError, backup: Option<&Path>)
         api::ConfirmedWriteError::NotWritten(error) => error,
         api::ConfirmedWriteError::AcceptedButUnconfirmed(message) => {
             let recovery = backup.map_or_else(
-                || "no backup was created (--no-backup)".to_string(),
+                || "no backup was created (--force=backup)".to_string(),
                 |path| format!("restore from {} with `aic access apply`", path.display()),
             );
             Error::Config(format!("{message}; {recovery}"))
@@ -633,13 +646,24 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use clap::Parser;
 
-    fn options(yes: bool, dry_run: bool, no_backup: bool) -> AccessWriteArgs {
+    #[derive(Parser)]
+    struct ForceArgs {
+        #[command(flatten)]
+        force: OperationAndBackupForce,
+    }
+
+    fn options(yes: bool, dry_run: bool, force_args: &[&str]) -> AccessWriteArgs {
+        let force =
+            ForceArgs::try_parse_from(std::iter::once("test").chain(force_args.iter().copied()))
+                .unwrap()
+                .force;
         AccessWriteArgs {
             if_digest: None,
             yes,
             dry_run,
-            no_backup,
+            force,
             tenant: None,
         }
     }
@@ -753,15 +777,15 @@ mod tests {
 
     #[test]
     fn confirmation_gate_is_wired_to_the_full_prompt_predicate() {
-        let source = include_str!("cli.rs");
+        assert!(ensure_confirmation_available_with(&options(false, false, &[]), false).is_err());
         assert!(
-            source.contains("!options.yes && !options.dry_run && !prompt_available()"),
-            "the access pre-fetch gate must use prompt_available()"
+            ensure_confirmation_available_with(&options(true, false, &[]), false).is_err(),
+            "--yes must not confirm the operation"
         );
         assert!(
-            !source.contains(&["prompting", "_disabled"].concat()),
-            "the weaker --no-prompt-only predicate must not be wired into access"
+            ensure_confirmation_available_with(&options(false, false, &["--force"]), false).is_ok()
         );
+        assert!(ensure_confirmation_available_with(&options(false, true, &[]), false).is_ok());
     }
 
     #[test]
@@ -772,7 +796,7 @@ mod tests {
                 index: 6,
                 edit: RuleEdit::default(),
             },
-            &options(true, false, false),
+            &options(true, false, &[]),
         )
         .unwrap_err();
         assert!(matches!(error, Error::Config(message) if message.contains("0..=5")));
@@ -785,7 +809,7 @@ mod tests {
             (
                 "dry run",
                 Amendment::Remove(vec![1]),
-                options(false, true, false),
+                options(false, true, &[]),
                 false,
                 true,
                 false,
@@ -793,23 +817,39 @@ mod tests {
             (
                 "interactive write",
                 Amendment::Remove(vec![1]),
-                options(false, false, false),
+                options(false, false, &[]),
                 true,
                 true,
                 true,
             ),
             (
-                "yes write without backup",
+                "backup bypass without operation consent",
                 Amendment::Remove(vec![1]),
-                options(true, false, true),
+                options(false, false, &["--force=backup"]),
                 false,
                 true,
+                true,
+            ),
+            (
+                "operation consent with backup",
+                Amendment::Remove(vec![1]),
+                options(false, false, &["--force"]),
+                true,
+                true,
                 false,
+            ),
+            (
+                "yes is production consent only",
+                Amendment::Remove(vec![1]),
+                options(true, false, &[]),
+                true,
+                true,
+                true,
             ),
             (
                 "unchanged apply",
                 Amendment::Apply(before.clone()),
-                options(true, false, false),
+                options(true, false, &[]),
                 true,
                 false,
                 false,
@@ -823,6 +863,64 @@ mod tests {
     }
 
     #[test]
+    fn bare_force_still_requires_a_backup() {
+        let plan = plan(
+            &crate::access::six_rule_fixture(),
+            Amendment::Remove(vec![1]),
+            &options(false, false, &["--force"]),
+        )
+        .unwrap();
+
+        assert!(plan.backup, "a failed attempted backup must remain fatal");
+        assert!(!plan.needs_confirm);
+    }
+
+    #[test]
+    fn digest_mismatch_is_not_overridden_by_any_force_scope() {
+        let before = crate::access::six_rule_fixture();
+        let mut options = options(false, false, &["--force", "--force=backup"]);
+        options.if_digest = Some("0000000000000000".into());
+
+        let error = check_digest(&options, &before).unwrap_err();
+        assert!(matches!(error, Error::Config(message) if message.contains("digest")));
+    }
+
+    #[test]
+    fn obsolete_no_backup_flag_is_rejected() {
+        assert!(
+            crate::cli::Cli::try_parse_from(["aic", "access", "rm", "1", "--no-backup",]).is_err()
+        );
+    }
+
+    #[test]
+    fn every_access_write_accepts_independent_force_scopes() {
+        let commands = [
+            vec![
+                "aic",
+                "access",
+                "add",
+                "--pattern",
+                "managed/user/*",
+                "--roles",
+                "*",
+                "--methods",
+                "read",
+            ],
+            vec!["aic", "access", "edit", "1", "--methods", "read"],
+            vec!["aic", "access", "rm", "1"],
+            vec!["aic", "access", "apply", "access.json"],
+        ];
+
+        for mut command in commands {
+            command.extend(["--force", "--force=backup"]);
+            assert!(
+                crate::cli::Cli::try_parse_from(&command).is_ok(),
+                "{command:?}"
+            );
+        }
+    }
+
+    #[test]
     fn apply_normalises_or_rejects_the_document_id() {
         let before = crate::access::six_rule_fixture();
         let mut missing = before.clone();
@@ -830,19 +928,14 @@ mod tests {
         let planned = plan(
             &before,
             Amendment::Apply(missing),
-            &options(true, true, false),
+            &options(true, true, &[]),
         )
         .unwrap();
         assert_eq!(planned.after["_id"], "access");
 
         let mut wrong = before.clone();
         wrong["_id"] = json!("authentication");
-        let error = plan(
-            &before,
-            Amendment::Apply(wrong),
-            &options(true, true, false),
-        )
-        .unwrap_err();
+        let error = plan(&before, Amendment::Apply(wrong), &options(true, true, &[])).unwrap_err();
         assert!(matches!(error, Error::Config(message) if message.contains("must be \"access\"")));
     }
 
