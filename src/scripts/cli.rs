@@ -7,7 +7,8 @@ use crate::cli::force::{
     OperationAndBackupForce, OperationAndSyntaxCheckForce, OperationForce, SyntaxCheckForce,
 };
 use crate::cli::{
-    confirm_destructive, print_json, print_table, prod_hint, prompt_available, tenant_for,
+    confirm_destructive, print_json, print_table, prod_hint, prompt_available,
+    protected_pull_prompt, tenant_for,
 };
 use crate::config::{self, ProjectConfig, TenantTheme};
 use crate::scripts::{self as script, Namespace};
@@ -635,10 +636,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     )));
                 }
                 let full = &protected[0];
-                if confirm_overwrite(&format!(
-                    "{full} has local changes — overwrite them? (a backup is kept under .aic-sync/backups/)"
-                ))? != Some(true)
-                {
+                if confirm_overwrite(&protected_pull_prompt(full, force.backup()))? != Some(true) {
                     return Err(Error::Config(format!(
                         "{full} was not pulled; local changes kept"
                     )));
@@ -673,7 +671,6 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             yes,
         } => {
             let gate = gate_for(force.syntax_check());
-            let force = force.operation();
             let t = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             if reference.as_deref() == Some("all") {
@@ -2405,14 +2402,15 @@ async fn push_one(
     tenant: &str,
     ns: &Namespace,
     name: &str,
-    force: bool,
+    force: OperationAndSyntaxCheckForce,
     yes: bool,
     gate: script::sync::SyntaxGate,
 ) -> Result<()> {
     use script::sync::PushOutcome;
     let full = script::full_name(ns.kind, ns.realm.as_deref(), name);
     match prod_hint(
-        script::sync::push(tenant, ns.realm_arg(), ns.kind, name, force, yes, gate).await,
+        script::sync::push_authorized(tenant, ns.realm_arg(), ns.kind, name, force, yes, gate)
+            .await,
     )? {
         PushOutcome::Pushed => println!("pushed {full}"),
         PushOutcome::NotConfirmed(reason) => {
@@ -2479,13 +2477,15 @@ fn declined_push(full: &str) -> Result<()> {
 /// refusals and per-script failures are reported rather than aborting the batch.
 async fn push_all(
     tenant: &str,
-    force: bool,
+    force: OperationAndSyntaxCheckForce,
     yes: bool,
     gate: script::sync::SyntaxGate,
 ) -> Result<()> {
     use script::sync::PushOutcome;
-    let changed =
-        script::sync::push_batch_candidates(script::sync::push_candidates(tenant)?, force);
+    let changed = script::sync::push_batch_candidates(
+        script::sync::push_candidates(tenant)?,
+        force.operation(),
+    );
     if changed.is_empty() {
         println!("nothing changed to push");
         return Ok(());
@@ -2493,7 +2493,8 @@ async fn push_all(
     let mut refused = 0u32;
     let mut conflicts = 0u32;
     let mut failed = 0u32;
-    for (c, result) in script::sync::push_batch(tenant, changed, force, yes, gate).await {
+    for (c, result) in script::sync::push_batch_authorized(tenant, changed, force, yes, gate).await
+    {
         let full = full_of(&c);
         // Same reason as `sync`: one script's transport failure is that
         // script's result, not the batch's.

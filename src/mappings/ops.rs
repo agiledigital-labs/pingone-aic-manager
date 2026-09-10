@@ -9,8 +9,8 @@ use crate::app::{App, InputMode};
 use crate::mappings::api::MappingSummary;
 use crate::mappings::screen::Event;
 use crate::mappings::state::LoadState;
-use crate::scripts::sync::{self, Selector};
-use crate::scripts::{Kind, RemoteRef};
+use crate::scripts::Kind;
+use crate::scripts::sync::{self, PullTarget, Selector};
 
 const RECON_POLL_DELAY: Duration = Duration::from_secs(2);
 const RECON_MAX_POLLS: usize = 150;
@@ -38,10 +38,10 @@ pub fn pull_scripts(app: &mut App) {
 
     let tx = app.events.tx.clone();
     tokio::spawn(async move {
-        let result = pull_mapping_scripts(&tenant, &mapping)
+        let result = prepare_mapping_scripts(&tenant, &mapping)
             .await
             .map_err(|error| error.to_string());
-        let _ = tx.send(AppEvent::Mappings(Event::PullResult {
+        let _ = tx.send(AppEvent::Mappings(Event::PullPrepared {
             tenant,
             mapping,
             result,
@@ -232,57 +232,27 @@ pub fn describe_prod_action(action: &ProdAction) -> Option<String> {
     }
 }
 
-async fn pull_mapping_scripts(tenant: &str, mapping: &str) -> crate::Result<String> {
-    let refs = Kind::IdmSyncMapping.list(tenant, "").await?;
-    let names = script_names_for_mapping(refs, mapping);
-    if names.is_empty() {
-        return Ok(format!("{mapping} has no inline scripts"));
-    }
-
-    let mut pulled = 0usize;
-    for name in names {
-        let selector = Selector::Name(name);
-        let outcomes = sync::pull(tenant, "", Kind::IdmSyncMapping, &selector, false).await?;
-        pulled += outcomes.len();
-    }
-    Ok(format!("pulled {pulled} scripts for {mapping}"))
+async fn prepare_mapping_scripts(tenant: &str, mapping: &str) -> crate::Result<sync::PullPlan> {
+    sync::prepare_pull(tenant, vec![mapping_pull_target(mapping)]).await
 }
 
-fn script_names_for_mapping(refs: Vec<RemoteRef>, mapping: &str) -> Vec<String> {
-    let prefix = format!("{mapping}.");
-    refs.into_iter()
-        .filter(|remote| remote.name.starts_with(&prefix))
-        .map(|remote| remote.name)
-        .collect()
+fn mapping_pull_target(mapping: &str) -> PullTarget {
+    PullTarget {
+        realm: String::new(),
+        kind: Kind::IdmSyncMapping,
+        selector: Selector::Prefix(format!("{mapping}.")),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn remote(name: &str) -> RemoteRef {
-        RemoteRef {
-            kind: Kind::IdmSyncMapping,
-            id: format!("sync/{name}"),
-            name: name.into(),
-            context: None,
-            is_default: false,
-            evaluator_version: None,
-        }
-    }
-
     #[test]
-    fn script_names_for_mapping_filters_on_mapping_prefix() {
-        let names = script_names_for_mapping(
-            vec![
-                remote("map.onCreate"),
-                remote("map.transform.name"),
-                remote("map_two.onCreate"),
-                remote("mapish.onUpdate"),
-            ],
-            "map",
-        );
-
-        assert_eq!(names, ["map.onCreate", "map.transform.name"]);
+    fn mapping_script_pull_is_one_prefix_scoped_protected_plan() {
+        let target = mapping_pull_target("map");
+        assert_eq!(target.realm, "");
+        assert_eq!(target.kind, Kind::IdmSyncMapping);
+        assert_eq!(target.selector, Selector::Prefix("map.".into()));
     }
 }

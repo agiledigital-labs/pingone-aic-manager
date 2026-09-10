@@ -6,11 +6,13 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::event::ToastKind;
 use crate::app::{App, InputMode, View};
 use crate::mappings::api::{self, MappingSummary};
-use crate::mappings::state::ReconView;
+use crate::mappings::state::{PendingPull, ReconView};
+use crate::scripts::sync;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Search,
+    PullConfirm,
 }
 
 #[derive(Debug)]
@@ -24,10 +26,10 @@ pub enum Event {
         mapping: String,
         status: std::result::Result<api::ReconStatus, String>,
     },
-    PullResult {
+    PullPrepared {
         tenant: String,
         mapping: String,
-        result: std::result::Result<String, String>,
+        result: std::result::Result<sync::PullPlan, String>,
     },
 }
 
@@ -42,17 +44,18 @@ pub fn apply_event(app: &mut App, event: Event) {
             mapping,
             status,
         } => apply_recon_status(app, tenant, mapping, status),
-        Event::PullResult {
+        Event::PullPrepared {
             tenant,
             mapping,
             result,
-        } => apply_pull_result(app, tenant, mapping, result),
+        } => apply_pull_prepared(app, tenant, mapping, result),
     }
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent, mode: Mode) {
     match mode {
         Mode::Search => handle_search_key(app, key),
+        Mode::PullConfirm => handle_pull_confirm_key(app, key),
     }
 }
 
@@ -65,6 +68,10 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("↑/↓", "navigate"),
             ("Enter", "keep filter"),
             ("Esc", "clear + exit"),
+        ],
+        InputMode::Mappings(Mode::PullConfirm) => vec![
+            ("y", "overwrite every listed local edit with backups"),
+            ("n/Enter/Esc", "cancel the whole pull (default)"),
         ],
         _ => Vec::new(),
     }
@@ -79,6 +86,11 @@ pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
             ("Esc", "clear filter and return to list"),
             ("↑/↓", "move selection"),
             ("PgUp/PgDn", "move by page"),
+            ("F1", "show keybinds"),
+        ]),
+        Mode::PullConfirm => Some(vec![
+            ("y", "overwrite every listed local edit with backups"),
+            ("n/Enter/Esc", "cancel the whole pull (default)"),
             ("F1", "show keybinds"),
         ]),
     }
@@ -230,6 +242,93 @@ fn apply_pull_result(
     }
 }
 
+fn apply_pull_prepared(
+    app: &mut App,
+    tenant: String,
+    mapping: String,
+    result: std::result::Result<sync::PullPlan, String>,
+) {
+    if app
+        .active_tenant()
+        .is_none_or(|active| active.name != tenant)
+    {
+        app.mappings.in_flight_pull.remove(&(tenant, mapping));
+        return;
+    }
+    let plan = match result {
+        Ok(plan) => plan,
+        Err(error) => {
+            apply_pull_result(app, tenant, mapping, Err(error));
+            return;
+        }
+    };
+    if plan.protected_refs().is_empty() {
+        apply_pull_plan(app, tenant, mapping, plan);
+    } else {
+        app.mappings.pending_pull = Some(PendingPull {
+            tenant,
+            mapping,
+            plan,
+        });
+        app.input_mode = InputMode::Mappings(Mode::PullConfirm);
+    }
+}
+
+fn apply_pull_plan(app: &mut App, tenant: String, mapping: String, plan: sync::PullPlan) {
+    let count = plan.len();
+    let result = plan.install(false).map(|outcomes| {
+        if count == 0 {
+            return format!("{mapping} has no inline scripts");
+        }
+        let backups = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome.status, sync::PullStatus::LocalBackedUp(_)))
+            .count();
+        if backups == 0 {
+            format!("pulled {count} scripts for {mapping}")
+        } else {
+            format!("pulled {count} scripts for {mapping} ({backups} local source(s) backed up)")
+        }
+    });
+    apply_pull_result(
+        app,
+        tenant,
+        mapping,
+        result.map_err(|error| error.to_string()),
+    );
+}
+
+fn handle_pull_confirm_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+            let Some(pending) = app.mappings.pending_pull.take() else {
+                app.input_mode = InputMode::Normal;
+                return;
+            };
+            app.input_mode = InputMode::Normal;
+            apply_pull_plan(app, pending.tenant, pending.mapping, pending.plan);
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter | KeyCode::Esc => {
+            if let Some(pending) = app.mappings.pending_pull.take() {
+                app.mappings
+                    .in_flight_pull
+                    .remove(&(pending.tenant, pending.mapping));
+            }
+            app.input_mode = InputMode::Normal;
+            app.push_toast(ToastKind::Info, "Pull cancelled; local changes kept");
+        }
+        _ => {}
+    }
+}
+
+pub fn pending_pull_refs(app: &App) -> Vec<String> {
+    app.mappings
+        .pending_pull
+        .as_ref()
+        .map(|pending| pending.plan.protected_refs())
+        .unwrap_or_default()
+}
+
 fn recon_toast_kind(state: &str) -> ToastKind {
     match state {
         "SUCCESS" => ToastKind::Success,
@@ -250,5 +349,56 @@ fn terminal_recon_message(mapping: &str, status: &api::ReconStatus) -> String {
             "{mapping}: {}",
             status.stage_description.trim_end_matches('.')
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::View;
+    use crate::config::tenant::{Provenance, Tenant, TenantTheme};
+    use crossterm::event::KeyModifiers;
+
+    fn app() -> App {
+        App::for_test(
+            vec![Tenant {
+                name: "sandbox".into(),
+                base_url: "https://tenant.example.com".into(),
+                theme: TenantTheme::Sandbox,
+                sa_id: None,
+                scopes: Vec::new(),
+                provenance: Provenance::default(),
+            }],
+            View::Mappings,
+        )
+    }
+
+    #[test]
+    fn protected_mapping_pull_opens_one_default_cancel_batch_modal() {
+        let mut app = app();
+        app.mappings
+            .in_flight_pull
+            .insert(("sandbox".into(), "map".into()));
+
+        apply_pull_prepared(
+            &mut app,
+            "sandbox".into(),
+            "map".into(),
+            Ok(sync::PullPlan::protected_for_test(&[
+                "map.onCreate",
+                "map.transform.name",
+            ])),
+        );
+
+        assert_eq!(app.input_mode, InputMode::Mappings(Mode::PullConfirm));
+        assert_eq!(
+            pending_pull_refs(&app),
+            ["sync/map.onCreate", "sync/map.transform.name"]
+        );
+
+        handle_pull_confirm_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.mappings.pending_pull.is_none());
+        assert!(app.mappings.in_flight_pull.is_empty());
     }
 }
