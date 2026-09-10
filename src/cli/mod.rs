@@ -15,6 +15,7 @@
 //! keygen; we haven't tried to script them. Run the TUI once per tenant.
 
 pub(crate) mod diff;
+pub mod force;
 
 use std::io::{BufRead, IsTerminal};
 use std::path::{Path, PathBuf};
