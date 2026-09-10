@@ -556,14 +556,14 @@ pub fn preview_source(tenant: &str, c: &Candidate) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Pull scripts of `kind` matching `selector` into the workspace, updating the
-/// snapshot store. Protects un-pushed local edits with a backup unless `force`.
+/// snapshot store. Backs up every differing local source unless `skip_backup`.
 /// `realm` selects the AM realm (ignored for IDM).
 pub async fn pull(
     tenant: &str,
     realm: &str,
     kind: Kind,
     selector: &Selector,
-    force: bool,
+    skip_backup: bool,
 ) -> Result<Vec<PullOutcome>> {
     let store = SnapshotStore::open(tenant);
     let workspace_tree = ProjectConfig::workspace_tree(tenant);
@@ -575,7 +575,7 @@ pub async fn pull(
         realm,
         kind,
         selector,
-        force,
+        skip_backup,
     )
     .await
 }
@@ -589,7 +589,7 @@ async fn pull_with(
     realm: &str,
     kind: Kind,
     selector: &Selector,
-    force: bool,
+    skip_backup: bool,
 ) -> Result<Vec<PullOutcome>> {
     let refs: Vec<RemoteRef> = io
         .list(kind, tenant, realm)
@@ -611,7 +611,14 @@ async fn pull_with(
     for r in &refs {
         let script = io.fetch(kind, tenant, realm, &r.id).await?;
         let remote_src = kind.decode_source(&script.raw_config)?;
-        let status = install_remote(store, workspace_tree, realm, &script, &remote_src, force)?;
+        let status = install_remote(
+            store,
+            workspace_tree,
+            realm,
+            &script,
+            &remote_src,
+            skip_backup,
+        )?;
 
         outcomes.push(PullOutcome {
             name: script.reference.name.clone(),
@@ -707,7 +714,7 @@ pub async fn create(
 /// `aic script copy` want — both are asking for a script that does not exist.
 /// A refusal is returned, **not** flattened into an `Error`: the wording of a
 /// refusal — what the tenant said, that nothing was written, and the
-/// `--no-syntax-check` remedy — belongs to the surface and is worded once
+/// `--force=syntax-check` remedy — belongs to the surface and is worded once
 /// there. Converting it here is what left `create` and `copy` reporting a bare
 /// `Error::Config` while every other verb explained itself.
 pub async fn create_new(
@@ -850,7 +857,7 @@ pub async fn delete(
 }
 
 /// Replace the tracked source with a fetched remote copy. Any existing,
-/// differing source is backed up first unless this is a direct forced pull.
+/// differing source is backed up first unless backup bypass was requested.
 /// The snapshot advances only after the protected workspace operation.
 fn install_remote(
     store: &SnapshotStore,
@@ -858,13 +865,13 @@ fn install_remote(
     realm: &str,
     script: &RemoteScript,
     remote_source: &[u8],
-    force: bool,
+    skip_backup: bool,
 ) -> Result<PullStatus> {
     let dest = workspace_file_in(workspace_tree, realm, &script.reference);
     let local = read_local(&dest)?;
     let differs = local.as_deref() != Some(remote_source);
     let status = match &local {
-        Some(bytes) if differs && !force => {
+        Some(bytes) if differs && !skip_backup => {
             PullStatus::LocalBackedUp(back_up(store, &script.reference, realm, bytes)?)
         }
         None => PullStatus::Created,

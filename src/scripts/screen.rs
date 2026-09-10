@@ -592,7 +592,7 @@ pub fn execute_push(
                 &name,
                 false,
                 confirmed_prod,
-                // No opt-out in the TUI: the CLI's `--no-syntax-check` exists for
+                // No opt-out in the TUI: the CLI's `--force=syntax-check` exists for
                 // scripted use, and there is no keybind worth spending on writing
                 // source the tenant has just said it cannot parse.
                 sync::SyntaxGate::Check,
