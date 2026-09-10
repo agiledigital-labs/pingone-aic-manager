@@ -873,13 +873,16 @@ fn install_remote(
     };
 
     if differs {
-        write_workspace_files_in(workspace_tree, realm, script, remote_source)?;
+        write_workspace_source_in(workspace_tree, realm, script, remote_source)?;
     }
+    // Supporting files are managed output, not user source. Every pull repairs
+    // them even when the source itself is already current.
+    write_workspace_supporting_files_in(workspace_tree, realm, script)?;
     store.record(script, realm)?;
     Ok(status)
 }
 
-fn write_workspace_files_in(
+fn write_workspace_source_in(
     workspace_tree: &Path,
     realm: &str,
     script: &RemoteScript,
@@ -891,6 +894,15 @@ fn write_workspace_files_in(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&dest, source)?;
+    Ok(())
+}
+
+fn write_workspace_supporting_files_in(
+    workspace_tree: &Path,
+    realm: &str,
+    script: &RemoteScript,
+) -> Result<()> {
+    let r = &script.reference;
     for (rel, contents) in r.kind.extra_files(r, realm) {
         let p = workspace_tree.join(rel);
         if let Some(parent) = p.parent() {
@@ -920,9 +932,19 @@ fn backup_component(value: &str) -> String {
 }
 
 fn back_up(store: &SnapshotStore, r: &RemoteRef, realm: &str, local: &[u8]) -> Result<PathBuf> {
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    back_up_at(store, r, realm, local, &stamp)
+}
+
+fn back_up_at(
+    store: &SnapshotStore,
+    r: &RemoteRef,
+    realm: &str,
+    local: &[u8],
+    stamp: &str,
+) -> Result<PathBuf> {
     let dir = store.backups_dir();
     std::fs::create_dir_all(&dir)?;
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
     let realm = if r.kind.realm_scoped() {
         backup_component(realm)
     } else {
@@ -2144,6 +2166,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unchanged_pull_repairs_missing_and_stale_supporting_files() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let mut reference = am_ref("SupportFiles");
+        reference.context = Some("LIBRARY".into());
+        reference.evaluator_version = Some("2.0".into());
+        let mut raw = json!({
+            "_id": reference.id,
+            "name": reference.name,
+            "context": "LIBRARY",
+            "evaluatorVersion": "2.0",
+            "language": "JAVASCRIPT"
+        });
+        Kind::Am.encode_source(&mut raw, b"same source").unwrap();
+        let remote = script(reference.clone(), raw);
+        store.record(&remote, "alpha").unwrap();
+
+        let source_path = workspace_file_in(&workspace, "alpha", &reference);
+        std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        std::fs::write(&source_path, b"same source").unwrap();
+        let supporting = Kind::Am.extra_files(&reference, "alpha");
+        assert_eq!(supporting.len(), 2);
+        let stale_path = workspace.join(&supporting[0].0);
+        std::fs::write(&stale_path, b"stale").unwrap();
+        let missing_path = workspace.join(&supporting[1].0);
+        assert!(!missing_path.exists());
+
+        let io = FakeSyncIo::for_pull(reference.clone(), Ok(remote));
+        let outcomes = pull_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::Am,
+            &Selector::Name(reference.name.clone()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcomes[0].status, PullStatus::Unchanged);
+        assert_eq!(std::fs::read(&source_path).unwrap(), b"same source");
+        assert_eq!(
+            std::fs::read_to_string(stale_path).unwrap(),
+            supporting[0].1
+        );
+        assert_eq!(
+            std::fs::read_to_string(missing_path).unwrap(),
+            supporting[1].1
+        );
+        assert!(!store.backups_dir().exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn direct_forced_pull_remains_the_explicit_backup_opt_out() {
         let (dir, store, workspace, reference) = push_fixture("local", "local");
         let io = FakeSyncIo::for_pull(
@@ -2456,12 +2535,13 @@ mod tests {
     }
 
     #[test]
-    fn rapid_backups_are_exclusive_and_keep_kind_realm_name_identity() {
+    fn same_second_backups_are_exclusive_and_keep_kind_realm_name_identity() {
         let dir = tmp();
         let store = store_at(&dir.join(".aic-sync"));
         let reference = am_ref("Same/Name");
-        let first = back_up(&store, &reference, "alpha", b"first").unwrap();
-        let second = back_up(&store, &reference, "alpha", b"second").unwrap();
+        let stamp = "20260910T165833Z";
+        let first = back_up_at(&store, &reference, "alpha", b"first", stamp).unwrap();
+        let second = back_up_at(&store, &reference, "alpha", b"second", stamp).unwrap();
 
         assert_ne!(first, second);
         assert_eq!(std::fs::read(&first).unwrap(), b"first");
@@ -2469,6 +2549,7 @@ mod tests {
         for path in [first, second] {
             let name = path.file_name().unwrap().to_string_lossy();
             assert!(name.starts_with("am.alpha.Same_Name."), "{name}");
+            assert!(name.contains(stamp), "{name}");
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

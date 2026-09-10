@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump whenever an embedded template below changes. `workspace update`
 /// re-copies the managed files when this exceeds a tree's recorded version.
-pub const TEMPLATES_VERSION: u32 = 90;
+pub const TEMPLATES_VERSION: u32 = 91;
 
 /// Realms an AM tree is scaffolded for. AIC only has `alpha` + `bravo`.
 const REALMS: &[&str] = &["alpha", "bravo"];
@@ -833,6 +833,72 @@ mod tests {
         );
         assert!(MANAGED.iter().any(|(r, _)| *r == "idm/types/endpoint.d.ts"));
         assert!(USER.iter().any(|(r, _)| *r == "package.json"));
+    }
+
+    /// Pins the complete tracked template tree to the version above. A changed
+    /// template must deliberately advance both members of this release pair;
+    /// otherwise this fails with the repository's bump rule in the message.
+    #[test]
+    fn every_template_edit_is_covered_by_a_version_bump() {
+        const TEMPLATE_RELEASE: (u32, &str) = (
+            91,
+            "1c732544eefcac9ffa8d8ab1298e59b4fe06677f2f6157622f94e2316e7e9b7d",
+        );
+        const LOCAL_ARTIFACTS: &[&str] = &[
+            "node_modules",
+            "package-lock.json",
+            "dist",
+            "openapi",
+            ".aic-ts-manifest.json",
+        ];
+
+        fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("template dir is readable") {
+                let path = entry.expect("readable template entry").path();
+                if path
+                    .file_name()
+                    .is_some_and(|name| LOCAL_ARTIFACTS.iter().any(|artifact| name == *artifact))
+                {
+                    continue;
+                }
+                if path.is_dir() {
+                    walk(&path, files);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/scripts/templates");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        files.sort();
+        let mut hasher = Sha256::new();
+        for path in files {
+            hasher.update(
+                path.strip_prefix(&root)
+                    .unwrap()
+                    .as_os_str()
+                    .as_encoded_bytes(),
+            );
+            hasher.update([0]);
+            hasher.update(std::fs::read(path).unwrap());
+            hasher.update([0]);
+        }
+        let fingerprint: String = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+
+        assert_eq!(
+            TEMPLATES_VERSION, TEMPLATE_RELEASE.0,
+            "template release record must name the current TEMPLATES_VERSION"
+        );
+        assert_eq!(
+            fingerprint, TEMPLATE_RELEASE.1,
+            "embedded templates changed: bump TEMPLATES_VERSION and update TEMPLATE_RELEASE"
+        );
     }
 
     /// The slf4j `logger` format types are shipped TWICE — once per workspace,
