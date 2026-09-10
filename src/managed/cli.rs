@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::Result;
+use crate::cli::force::OperationForce;
 use crate::cli::{WriteOk, ensure_prod_confirmed, print_json, print_table, tenant_for};
 use crate::managed::{api, ops, spec, state};
 use crate::undo::{DiskLog, UndoLog};
@@ -107,6 +108,8 @@ pub enum FieldCommand {
         field: String,
         #[command(flatten)]
         attrs: FieldAttrs,
+        #[command(flatten)]
+        force: OperationForce,
         #[arg(long)]
         tenant: Option<String>,
         #[arg(long)]
@@ -161,9 +164,6 @@ pub struct FieldAttrs {
     /// Remove the default value.
     #[arg(long, conflicts_with = "default_value")]
     clear_default: bool,
-    /// Permit removing values from an existing allowed-value constraint.
-    #[arg(long)]
-    allow_narrowing: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -414,6 +414,7 @@ async fn field(command: FieldCommand) -> Result<()> {
         FieldCommand::Edit {
             field,
             attrs,
+            force,
             tenant,
             yes,
             json,
@@ -424,19 +425,12 @@ async fn field(command: FieldCommand) -> Result<()> {
             let ok = ensure_prod_confirmed(&tenant, yes)?;
             let mut doc = api::get_managed(&tenant).await?;
             let previous = api::object_named(&doc, &object)?.clone();
-            let edit_spec = field_edit_spec(attrs)?;
+            let edit_spec = field_edit_spec(attrs, force.operation())?;
             let removed = state::properties(&previous)
                 .and_then(|properties| properties.get(&key))
                 .map(|property| ops::removed_enum_values(property, &edit_spec.enum_change))
                 .unwrap_or_default();
-            // The transform refuses this too, but its message can't name a flag
-            // it doesn't know about.
-            if !removed.is_empty() && !edit_spec.allow_narrowing {
-                return Err(crate::Error::Config(format!(
-                    "dropping enum values {} would leave records that fail whole-record updates; pass --allow-narrowing to confirm",
-                    removed.join(", ")
-                )));
-            }
+            ensure_narrowing_consent(&removed, edit_spec.allow_narrowing)?;
             let applied =
                 ops::apply_field_edit(&previous, &key, &edit_spec).map_err(crate::Error::Config)?;
             replace_object_write(&ok, &mut doc, &object, &previous, applied.object.clone()).await?;
@@ -824,7 +818,7 @@ fn enum_spec(attrs: &FieldAttrs) -> Result<Option<spec::EnumSpec>> {
             .map_err(crate::Error::Config)
     }
 }
-fn field_edit_spec(attrs: FieldAttrs) -> Result<spec::FieldEditSpec> {
+fn field_edit_spec(attrs: FieldAttrs, allow_narrowing: bool) -> Result<spec::FieldEditSpec> {
     let enum_change = if attrs.clear_enum {
         spec::EnumChange::Clear
     } else {
@@ -847,8 +841,19 @@ fn field_edit_spec(attrs: FieldAttrs) -> Result<spec::FieldEditSpec> {
         user_editable: attrs.user_editable,
         enum_change,
         default_change,
-        allow_narrowing: attrs.allow_narrowing,
+        allow_narrowing,
     })
+}
+
+fn ensure_narrowing_consent(removed: &[String], allow_narrowing: bool) -> Result<()> {
+    if removed.is_empty() || allow_narrowing {
+        Ok(())
+    } else {
+        Err(crate::Error::Config(format!(
+            "dropping enum values {} would leave records that fail whole-record updates; pass --force to confirm",
+            removed.join(", ")
+        )))
+    }
 }
 fn attrs_present(attrs: &FieldAttrs) -> bool {
     attrs.title.is_some()
@@ -1011,7 +1016,9 @@ mod tests {
                 "field",
                 "edit",
                 "test.status",
-                "--allow-narrowing",
+                "--enum",
+                "new",
+                "--force",
             ]
             .as_slice(),
         ] {
@@ -1030,6 +1037,109 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn field_edit_force_reaches_the_domain_narrowing_consent() {
+        let object = serde_json::json!({
+            "name": "test",
+            "schema": {
+                "properties": {
+                    "status": {"type": "string", "enum": ["new", "done"]}
+                },
+                "required": [],
+                "order": ["status"]
+            }
+        });
+
+        for (force_arg, allowed) in [(None, false), (Some("--force"), true)] {
+            let mut args = vec![
+                "aic",
+                "managed",
+                "field",
+                "edit",
+                "test.status",
+                "--enum",
+                "new",
+            ];
+            if let Some(force_arg) = force_arg {
+                args.push(force_arg);
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            let (attrs, force) = match cli.command {
+                Some(crate::cli::Command::Managed {
+                    command:
+                        ManagedCommand::Field {
+                            command: FieldCommand::Edit { attrs, force, .. },
+                        },
+                }) => (attrs, force),
+                other => panic!("not a managed field edit: {other:?}"),
+            };
+            let edit = field_edit_spec(attrs, force.operation()).unwrap();
+            assert_eq!(edit.allow_narrowing, allowed);
+            let result = ops::apply_field_edit(&object, "status", &edit);
+            assert_eq!(result.is_ok(), allowed);
+        }
+    }
+
+    #[test]
+    fn omitted_field_edit_force_names_the_new_spelling() {
+        let error = ensure_narrowing_consent(&["done".into()], false).unwrap_err();
+        assert!(
+            matches!(error, crate::Error::Config(message) if message.contains("--force") && !message.contains("--allow-narrowing"))
+        );
+    }
+
+    #[test]
+    fn ineffective_narrowing_flags_are_removed_without_replacement() {
+        for args in [
+            vec![
+                "aic",
+                "managed",
+                "field",
+                "add",
+                "test.status",
+                "--type",
+                "string",
+                "--allow-narrowing",
+            ],
+            vec![
+                "aic",
+                "managed",
+                "field",
+                "add",
+                "test.status",
+                "--type",
+                "string",
+                "--force",
+            ],
+            vec![
+                "aic",
+                "managed",
+                "relationship",
+                "set",
+                "test.owner",
+                "--target",
+                "test2",
+                "--forward",
+                "one",
+                "--allow-narrowing",
+            ],
+            vec![
+                "aic",
+                "managed",
+                "relationship",
+                "set",
+                "test.owner",
+                "--target",
+                "test2",
+                "--forward",
+                "one",
+                "--force",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
+        }
     }
     #[test]
     fn get_flags_parse() {
