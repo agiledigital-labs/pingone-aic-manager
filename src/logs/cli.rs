@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::agent::AgentClient;
-use crate::cli::{ensure_prod_confirmed, print_table, tenant_for};
+use crate::cli::{WriteOk, ensure_prod_confirmed, print_table, tenant_for};
 use crate::config::{CredentialSource, ProjectConfig};
 #[cfg(feature = "logs-store")]
 use crate::logs::db::store_path;
@@ -566,7 +566,7 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             yes,
         } => {
             let (tenant, base_url) = configured_tenant_base_url(tenant)?;
-            let _ok = ensure_prod_confirmed(&tenant, yes)?;
+            let ok = ensure_prod_confirmed(&tenant, yes)?;
             let cookie_name = match cookie_name {
                 Some(cookie_name) => cookie_name,
                 None => {
@@ -599,13 +599,17 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             }
 
             let client = no_redirect_client()?;
-            let minted = mint_log_key_via_session(
-                &client,
-                &base_url,
-                Some(&cookie_name),
-                &cookie_value,
+            let minted = after_prod_confirmation(
+                ok,
                 &tenant,
-                None,
+                mint_log_key_via_session(
+                    &client,
+                    &base_url,
+                    Some(&cookie_name),
+                    &cookie_value,
+                    &tenant,
+                    None,
+                ),
             )
             .await?;
             let name = minted.credential_name;
@@ -636,6 +640,24 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Keep the direct admin-session mutation behind the same typed permission as
+/// daemon-backed writes. A rejected gate never polls `operation`.
+async fn after_prod_confirmation<T, F>(
+    permission: WriteOk<'_>,
+    tenant: &str,
+    operation: F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    if permission.tenant != tenant {
+        return Err(Error::Config(
+            "production confirmation belongs to a different tenant".into(),
+        ));
+    }
+    operation.await
 }
 
 fn persist_log_key_provenance(tenant: &str, source: CredentialSource) -> Result<()> {
@@ -1094,6 +1116,29 @@ mod tests {
             crate::cli::prod_write_ok(crate::config::TenantTheme::Production, "prod", false,)
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn confirmed_log_key_creation_reaches_the_remote_mint() {
+        let called = std::cell::Cell::new(false);
+        assert!(
+            crate::cli::prod_write_ok(crate::config::TenantTheme::Production, "prod", false)
+                .is_err()
+        );
+        assert!(!called.get());
+
+        let permission =
+            crate::cli::prod_write_ok(crate::config::TenantTheme::Production, "prod", true)
+                .unwrap();
+        let result = after_prod_confirmation(permission, "prod", async {
+            called.set(true);
+            Ok::<_, Error>("minted")
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result, "minted");
+        assert!(called.get());
     }
 
     #[test]
