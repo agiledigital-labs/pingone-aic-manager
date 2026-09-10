@@ -1071,7 +1071,7 @@ aic script pull [<ref>] [--force]               # pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--yes] [--no-syntax-check]  # push local edits
 aic script sync [<ref>] [--resolve local|remote] [--tenant TENANT] [--yes] [--no-syntax-check]   # reconcile: push local-only, pull remote-only
 aic script watch [--tenant TENANT] [--yes] [--no-syntax-check]   # auto-push each .cjs you save (Ctrl-C to stop; also creates generated endpoints)
-aic script status [<ref>]                       # in sync / modified / remote / conflict
+aic script status [<ref>]                       # in sync / modified / remote / conflict; template/type drift notes
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```
@@ -1190,6 +1190,14 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
 - **`status` filters.** `am`/`idm` are group aliases; anything else is a
   case-insensitive substring of the full-name (use a trailing slash, e.g.
   `alpha/`, to match only that AM realm and exclude `managed/alpha_user…`).
+- **`status` reports workspace drift** after the script rows. It prints the
+  same templates-version nudge that `push`/`pull` already print when the
+  scaffold predates the bundled templates. Independently, it fetches the live
+  managed schema and regenerates the expected type files in memory (nothing
+  is written): if any on-disk managed type file is missing or differs, one
+  line names how many are stale and points at `aic workspace update`. Both
+  notes stay silent when current. A failed fetch warns once and does not fail
+  the command — the script rows still printed.
 - **`diff`** shells out to `git diff --no-index` (needs `git` on PATH): colored
   via your pager interactively, plain unified diff when piped
   (`aic script diff bravo/Foo | delta`). Default compares local vs tenant;
