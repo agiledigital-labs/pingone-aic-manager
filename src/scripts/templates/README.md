@@ -95,8 +95,8 @@ aic script push bravo/MyNode         # push your edit back (content-checked)
 aic script push all                  # push every locally-changed script
 aic script push all --force          # make every tracked tenant script match local
 aic script sync                      # reconcile: push local-only, pull remote-only, resolve conflicts
-aic script sync --resolve local      # make tenant match local for every selected script
-aic script sync --resolve remote     # make local match tenant for every selected script
+aic script sync --resolve local --force  # make tenant match local for every selected script
+aic script sync --resolve remote --force # make local match tenant for every selected script
 aic script watch                     # auto-push each script you save (Ctrl-C to stop)
 aic script status                    # in sync / modified locally / remote / conflict
 aic script diff                      # no ref: fuzzy-pick a synced script
@@ -111,8 +111,9 @@ Notes:
 - Namespaces: `alpha`/`bravo` (AM scripts, by realm), `endpoint` (IDM custom
   endpoints), `schedule` (IDM scheduled jobs — only script-invoking ones).
 - A pull that would replace differing local source backs it up under
-  `.aic-sync/backups/` first, regardless of snapshot state. Direct `pull
-  --force` skips that backup; sync never does.
+  `.aic-sync/backups/` first, regardless of snapshot state. Bare `pull --force`
+  authorizes replacing protected local edits and keeps the backup;
+  `--force=backup` skips only the backup. Sync never skips it.
 - A push is blocked only if the remote changed since your last sync (resolve
   from the `diff`, or re-run with `--force`). Product-default scripts are
   editable like any other — they push without `--force`.

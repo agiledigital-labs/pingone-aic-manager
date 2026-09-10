@@ -37,6 +37,13 @@ aic <command> <subcommand> --help
   On commands that document named guards, bare `--force` means
   `--force=operation`; named forms require `=` and are repeatable. Each form
   grants only its named permission—there is no `all` guard.
+
+  The complete grammar is `--force`/`--force=operation` for the command's
+  primary override, `--force=syntax-check` for script syntax bypass, and
+  `--force=backup` for backup bypass. Optional values never consume the next
+  argument: use `=`, not `--force backup`. Repeat the flag to grant independent
+  permissions, for example `--force --force=backup`. Unsupported guard names
+  are parse errors before execution, including on preview commands.
 - **Output format.** List commands default to kubectl-style tables. Pass
   `--json` on list commands for machine-readable output. Single-resource reads
   and export-style commands still print JSON by default.
@@ -519,7 +526,7 @@ the workspace.
 
 ```bash
 aic journey list [--realm alpha] [--json]              # journey names
-aic journey pull <name> [--realm alpha]                # tree + nodes → workspace JSON
+aic journey pull <name> [--realm alpha] [--force] [--force=backup] # protected local install
 aic journey push <name> [--realm alpha] [--force] [--yes] # push; production requires --yes
 aic journey delete <name> --force [--realm alpha] [--yes] # delete; production requires --yes
 aic journey using-script <script-uuid> [--realm alpha] [--json] # journeys referencing a script
@@ -527,6 +534,17 @@ aic journey nodes [--realm alpha] [--json]             # available node types
 aic journey node-schema <nodeType> [--realm alpha]     # a node type's schema (JSON)
 aic journey node-template <nodeType> [--realm alpha]   # a starter node config (JSON)
 ```
+
+`pull` compares authored JSON content (ignoring recursive `_rev` fields) before
+replacing the export. A missing export installs normally; an export equal to
+the tenant or to its valid snapshot is safe. Any other existing export —
+including malformed JSON, or one with a missing/malformed snapshot — is a
+protected local edit and requires bare `--force` or an affirmative default-no
+terminal confirmation. Every differing existing export is backed up under
+`.aic-sync/backups/` first. Bare `--force` keeps that backup;
+`--force=backup` skips only the backup and does not authorize the overwrite.
+Backup names include journey/realm/name plus timestamp and UUID, and are mode
+0600 on Unix. The snapshot advances only after the export is installed successfully.
 
 ---
 
@@ -539,7 +557,7 @@ policy decision point and then explains the answer.
 ```bash
 aic policy list [--set <set>] [--realm alpha] [--json]
 aic policy show <name> [--realm alpha]
-aic policy pull <name> | --all [--set <set>] [--realm alpha]
+aic policy pull <name> | --all [--set <set>] [--realm alpha] [--force] [--force=backup]
 aic policy push <name> [--force] [--realm alpha] [--yes]
 aic policy rm   <name> --force [--realm alpha] [--yes]
 
@@ -561,6 +579,19 @@ revision: an unchanged remote is a no-op, a remote that has drifted **back** to
 the snapshot is pushable, and any other drift is refused until you re-pull or
 pass `--force`. The verb asymmetry is handled for you — resource types create
 with `PUT`, policies and policy sets only with `POST ?_action=create`.
+
+Pulls apply the inverse content rule before replacing local JSON. Missing local
+files install normally; local content equal to the incoming tenant document or
+to a valid snapshot is safe. A different local document with no trustworthy
+snapshot is protected, as is malformed local JSON. A single named pull offers
+one default-no confirmation; `--all` preflights every selected object and, if
+bare `--force` is absent, refuses the whole batch while naming every protected
+policy, set, or resource type before touching a file. Every differing existing
+file is backed up with its collection/realm/name identity under
+`.aic-sync/backups/`. `--force=backup` alone skips that recovery copy but never
+authorizes an overwrite. Names include collection/realm/name plus timestamp and
+UUID, and files are mode 0600 on Unix. The same behavior applies to `policy set
+pull` and `policy rt pull`.
 
 ### `aic policy eval`
 
@@ -732,11 +763,22 @@ aic oauth create <id> [common flags] [--from FILE]      # create from live tenan
 aic oauth grant list <id> [--realm alpha]              # grant types on one client
 aic oauth grant add <id> <grant>... [--realm alpha] [--yes]
 aic oauth grant remove <id> <grant>... [--realm alpha] [--yes]
-aic oauth pull <id> [--realm alpha]                     # one client → workspace JSON
+aic oauth pull <id> [--realm alpha] [--force] [--force=backup] # protected workspace install
 aic oauth push <id> [--realm alpha] [--force] [--yes]   # push; production requires --yes
 aic oauth diff <id> [--local-vs-snapshot | --snapshot-vs-remote]  # compare two versions
 aic oauth delete <id> --force [--realm alpha] [--yes]   # delete; production requires --yes
 ```
+
+`pull` protects local client edits with the same content-based rule as `push`,
+with recursive `_rev` fields ignored. A missing export installs normally; an
+export equal to the tenant or its valid snapshot is safe. Otherwise, including
+malformed local JSON or a missing/malformed snapshot, replacement requires bare
+`--force` or an affirmative default-no terminal confirmation. Every differing
+existing export is backed up under `.aic-sync/backups/` before replacement.
+Bare `--force` still takes the backup; only `--force=backup` skips it, and that
+named scope does not authorize overwriting local edits. Backup names include
+oauth/realm/client plus timestamp and UUID, and files are mode 0600 on Unix.
+Snapshot writes happen after the export install.
 
 `provider get` prints a compact realm-wide configuration summary, resolving
 script ids to names the same way `get` does. It always
@@ -1149,13 +1191,13 @@ resolves its namespace from your current directory. A bare namespace (`bravo`,
 
 ```bash
 aic script list [<ref>] [--context TEXT] [--default | --no-default] [--json]
-aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--tenant TENANT] [--yes] [--no-syntax-check]
-aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--no-syntax-check]
+aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evaluator-version V] [--description TEXT] [--tenant TENANT] [--yes] [--force=syntax-check]
+aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--force=syntax-check]
 aic script delete <ref> --force [--tenant TENANT] [--yes]
-aic script pull [<ref>] [--force]               # pull; no ref → fuzzy picker
-aic script push [<ref>] [--force] [--yes] [--no-syntax-check]  # push edits; --force makes tracked tenant scripts match local
-aic script sync [<ref>] [--resolve local|remote] [--tenant TENANT] [--yes] [--no-syntax-check]   # reconcile, or make one side win for every selected entry
-aic script watch [--tenant TENANT] [--yes] [--no-syntax-check]   # auto-push each .cjs you save (Ctrl-C to stop; also creates generated endpoints)
+aic script pull [<ref>] [--force] [--force=backup] # protected pull; no ref → fuzzy picker
+aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
+aic script sync [<ref>] [--resolve local|remote --force] [--force=syntax-check] [--tenant TENANT] [--yes]
+aic script watch [--tenant TENANT] [--yes] [--force=syntax-check] # auto-push each .cjs you save (Ctrl-C to stop)
 aic script status [<ref>]                       # in sync / modified / remote / conflict; template/type drift notes
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
@@ -1246,20 +1288,33 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   the local source and snapshot unchanged, describe the tenant state as
   uncertain, and exit non-zero.
 - **Explicit sync resolution applies to every selected entry.** `--resolve
-  local` makes the tenant match each existing local source via the same forced,
+  local --force` makes the tenant match each existing local source via the same forced,
   syntax-checked, confirmed push; a missing local file is an error and is not
   restored. `--resolve remote` makes every local source match the tenant,
   backing up differing existing source first. Without `--resolve`, sync keeps
   its three-way behavior: local-only changes push, remote-only changes pull,
   equal changes converge, and genuine conflicts prompt when a terminal is
-  available.
+  available. Resolution and bare force require each other: `--resolve local`
+  without `--force`, and bare `sync --force` without `--resolve`, both fail.
+  Ordinary reconcile can still use `--force=syntax-check` by itself.
 - **Pull backups are based on the bytes being replaced, not the snapshot.** A
   normal `pull`, a reconcile pull, and `sync --resolve remote` write any
   differing existing source to `.aic-sync/backups/` before replacing it, even
   if that source equals the snapshot. Backup names include kind, realm, and
   script name plus a collision-safe suffix; the actual path is printed. A
-  backup failure aborts before local source or snapshot changes. Direct
-  `script pull --force` remains the explicit opt-out; sync never opts out.
+  backup file is created exclusively at mode 0600 on Unix. A backup failure
+  aborts before local source or snapshot changes. Direct
+  `script pull --force=backup` is the explicit backup opt-out; bare `--force`
+  authorizes overwriting protected edits but still creates the backup. Sync
+  never opts out.
+
+  Direct pull preflights all selected scripts. Missing local source, content
+  already equal to the tenant, and content equal to a valid snapshot are safe.
+  Any other differing source is protected. A single pull offers one default-no
+  confirmation; a namespace/`all` pull refuses the whole batch without bare
+  `--force` and lists every affected ref before changing a file. The Scripts
+  TUI uses the same preflight and one default-cancel modal for the complete
+  selection; acceptance always keeps backups.
 - **Every write is syntax-checked first.** Before `create`, `copy`, `push`,
   `sync` and `watch` write anything, the tenant is asked to parse the source —
   AM through `scripts?_action=validate`, IDM through `script?_action=compile`.
@@ -1289,14 +1344,44 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   a script engine the compile action does not compile: that is recognised
   before the call is made, so the message names the type and skips the useless
   retry advice — but it still writes nothing, because unparsed source is
-  unparsed source however the gate found out. `--no-syntax-check` is the one
+  unparsed source however the gate found out. `--force=syntax-check` is the one
   way to store source the tenant has not parsed.
 
   `--force` does **not** override this, and that is deliberate: drift is a
   question of whose content wins, while an unparseable script is broken
-  whoever wrote it. `--no-syntax-check` is the escape hatch, on every one of
+  whoever wrote it. `--force=syntax-check` is the escape hatch, on every one of
   those commands, for when the check itself is in the way. The pre-flight is
   one extra call, ~0.15s.
+
+  `create`, `copy`, and `watch` support only this named guard and reject bare
+  `--force`. `push` and `sync` can combine it with their operation permission,
+  for example `aic script push endpoint/example --force
+  --force=syntax-check`.
+
+### Force-flag migration
+
+The old spellings were removed rather than retained as aliases:
+
+```bash
+# old
+aic script push endpoint/x --no-syntax-check
+# new
+aic script push endpoint/x --force=syntax-check
+
+# old: skipped both overwrite consent and backup
+aic script pull endpoint/x --force
+# new: spell both permissions to preserve that exact behavior
+aic script pull endpoint/x --force --force=backup
+
+# old
+aic script sync --resolve remote
+# new
+aic script sync --resolve remote --force
+```
+
+For a normal protected pull, bare `--force` now means overwrite consent while
+preserving the recovery backup. Add `--force=backup` only when deliberately
+waiving that separate safeguard.
 - **`status` filters.** `am`/`idm` are group aliases; anything else is a
   case-insensitive substring of the full-name (use a trailing slash, e.g.
   `alpha/`, to match only that AM realm and exclude `managed/alpha_user…`).

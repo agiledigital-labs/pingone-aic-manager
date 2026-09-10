@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf, is_separator};
 use clap::Subcommand;
 use serde_json::Value;
 
-use crate::cli::{ensure_prod_confirmed, print_json, print_table, realm_arg, tenant_for};
+use crate::cli::force::OperationAndBackupForce;
+use crate::cli::{
+    confirm_destructive, ensure_prod_confirmed, print_json, print_table, realm_arg, tenant_for,
+};
 use crate::config::ProjectConfig;
 use crate::journey::api;
 use crate::{Error, Result};
@@ -31,6 +34,8 @@ pub enum JourneyCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        #[command(flatten)]
+        force: OperationAndBackupForce,
     },
     /// Push a workspace journey export back to AIC.
     Push {
@@ -346,6 +351,101 @@ fn read_snapshot(path: &Path) -> Result<Option<Value>> {
     Ok(Some(export_value(&export)?))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PullDecision {
+    Install,
+    Unchanged,
+    Protected,
+}
+
+fn pull_json(bytes: &[u8]) -> Option<Value> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    let export = parse_export_value(value, "pull preflight").ok()?;
+    export_value(&export).ok()
+}
+
+fn pull_decision(local: Option<&[u8]>, remote: &Value, snapshot: Option<&[u8]>) -> PullDecision {
+    let Some(local_bytes) = local else {
+        return PullDecision::Install;
+    };
+    let Some(local) = pull_json(local_bytes) else {
+        return PullDecision::Protected;
+    };
+    if api::content_equal(&local, remote) {
+        return PullDecision::Unchanged;
+    }
+    match snapshot.and_then(pull_json) {
+        Some(snapshot) if api::content_equal(&local, &snapshot) => PullDecision::Install,
+        _ => PullDecision::Protected,
+    }
+}
+
+fn pull_needs_consent(decision: PullDecision, operation_force: bool) -> bool {
+    decision == PullDecision::Protected && !operation_force
+}
+
+fn read_pull_file(path: &Path, label: &str) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Error::Config(format!(
+            "read {label} {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn install_pull(
+    tenant: &str,
+    realm: &str,
+    name: &str,
+    export: &api::JourneyExport,
+    local: Option<&[u8]>,
+    decision: PullDecision,
+    skip_backup: bool,
+) -> Result<Option<PathBuf>> {
+    let path = export_path(tenant, realm, name)?;
+    let snapshot = snapshot_path(tenant, realm, name)?;
+    let backup_dir = ProjectConfig::aic_sync_dir(tenant).join("backups");
+    install_pull_at(
+        &path,
+        &snapshot,
+        &backup_dir,
+        realm,
+        name,
+        export,
+        local,
+        decision,
+        skip_backup,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_pull_at(
+    path: &Path,
+    snapshot: &Path,
+    backup_dir: &Path,
+    realm: &str,
+    name: &str,
+    export: &api::JourneyExport,
+    local: Option<&[u8]>,
+    decision: PullDecision,
+    skip_backup: bool,
+) -> Result<Option<PathBuf>> {
+    let bytes = serde_json::to_vec_pretty(export)?;
+    let backup = match (local, decision) {
+        (Some(original), PullDecision::Install | PullDecision::Protected) if !skip_backup => Some(
+            crate::backup::create_in(backup_dir, "journey", realm, name, "json", original)?,
+        ),
+        _ => None,
+    };
+    if decision != PullDecision::Unchanged {
+        write_bytes(path, &bytes)?;
+    }
+    write_bytes(snapshot, &bytes)?;
+    Ok(backup)
+}
+
 fn remove_snapshot_if_present(tenant: &str, realm: &str, name: &str) -> Result<()> {
     let path = snapshot_path(tenant, realm, name)?;
     match std::fs::remove_file(&path) {
@@ -414,6 +514,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             name,
             realm,
             tenant,
+            force,
         } => {
             let tenant = tenant_for(tenant)?;
             let realm = realm_arg("journey", realm)?;
@@ -421,12 +522,38 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             let snapshot = snapshot_path(&tenant, &realm, &name)?;
             let export = api::pull(&tenant, &realm, &name).await?;
             let node_count = export.nodes.len();
-            let bytes = serde_json::to_vec_pretty(&export)?;
-            write_bytes(&path, &bytes)?;
-            write_bytes(&snapshot, &bytes)?;
+            let remote = export_value(&export)?;
+            let local = read_pull_file(&path, "journey export")?;
+            let snapshot_bytes = read_pull_file(&snapshot, "journey snapshot")?;
+            let decision = pull_decision(local.as_deref(), &remote, snapshot_bytes.as_deref());
+            if pull_needs_consent(decision, force.operation())
+                && !confirm_destructive(
+                    "journey pull overwrite",
+                    &format!(
+                        "journey {name:?} has local edits; overwrite them? (a backup is kept under .aic-sync/backups/)"
+                    ),
+                    "--force",
+                )?
+            {
+                return Err(Error::Config(format!(
+                    "journey {name:?} was not pulled; local edits kept"
+                )));
+            }
+            let backup = install_pull(
+                &tenant,
+                &realm,
+                &name,
+                &export,
+                local.as_deref(),
+                decision,
+                force.backup(),
+            )?;
             println!(
-                "pulled journey {name:?} ({node_count} nodes) -> {}",
-                path.display()
+                "pulled journey {name:?} ({node_count} nodes) -> {}{}",
+                path.display(),
+                backup
+                    .map(|path| format!("; previous export backed up to {}", path.display()))
+                    .unwrap_or_default()
             );
             Ok(())
         }
@@ -600,6 +727,136 @@ mod tests {
     use super::*;
     use clap::Parser;
     use serde_json::json;
+
+    #[test]
+    fn pull_protection_matrix_uses_normalized_journey_content() {
+        let remote = json!({
+            "tree": {"_rev": "remote", "name": "Login"},
+            "nodes": {"node-1": {"_rev": "remote", "value": 2}}
+        });
+        let same = br#"{"nodes":{"node-1":{"value":2,"_rev":"local"}},"tree":{"name":"Login","_rev":"local"}}"#;
+        let old = br#"{"tree":{"name":"Login"},"nodes":{"node-1":{"value":1}}}"#;
+        let edited = br#"{"tree":{"name":"Login"},"nodes":{"node-1":{"value":"edited"}}}"#;
+
+        assert_eq!(pull_decision(None, &remote, None), PullDecision::Install);
+        assert_eq!(
+            pull_decision(Some(same), &remote, None),
+            PullDecision::Unchanged
+        );
+        assert_eq!(
+            pull_decision(Some(old), &remote, Some(old)),
+            PullDecision::Install
+        );
+        assert_eq!(
+            pull_decision(Some(edited), &remote, Some(old)),
+            PullDecision::Protected
+        );
+        assert_eq!(
+            pull_decision(Some(old), &remote, None),
+            PullDecision::Protected
+        );
+        assert_eq!(
+            pull_decision(Some(old), &remote, Some(b"not json")),
+            PullDecision::Protected
+        );
+        assert_eq!(
+            pull_decision(Some(b"not json"), &remote, Some(old)),
+            PullDecision::Protected
+        );
+    }
+
+    #[test]
+    fn protected_journey_pull_backs_up_original_bytes_and_installs() {
+        let dir = std::env::temp_dir().join(format!("journey-pull-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("Login.json");
+        let snapshot = dir.join("snapshot.json");
+        let backups = dir.join("backups");
+        let original = b"{ malformed local bytes";
+        let remote_value = json!({"tree": {"name": "Login"}, "nodes": {}});
+        let remote = parse_export_value(remote_value.clone(), "test").unwrap();
+        write_bytes(&path, original).unwrap();
+
+        let backup = install_pull_at(
+            &path,
+            &snapshot,
+            &backups,
+            "alpha",
+            "Login",
+            &remote,
+            Some(original),
+            PullDecision::Protected,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(std::fs::read(backup).unwrap(), original);
+        assert!(api::content_equal(
+            &serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),
+            &remote_value
+        ));
+        assert!(api::content_equal(
+            &serde_json::from_slice::<Value>(&std::fs::read(&snapshot).unwrap()).unwrap(),
+            &remote_value
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_journey_install_does_not_advance_snapshot() {
+        let dir = std::env::temp_dir().join(format!("journey-pull-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("Login.json");
+        let snapshot = dir.join("snapshot.json");
+        let backups = dir.join("backups");
+        std::fs::create_dir_all(&path).unwrap();
+        write_bytes(&snapshot, b"old snapshot").unwrap();
+        let remote = parse_export_value(json!({"tree": {}, "nodes": {}}), "test").unwrap();
+
+        assert!(
+            install_pull_at(
+                &path,
+                &snapshot,
+                &backups,
+                "alpha",
+                "Login",
+                &remote,
+                Some(b"old local"),
+                PullDecision::Install,
+                false,
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&snapshot).unwrap(), b"old snapshot");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn journey_pull_parses_operation_and_backup_permissions_independently() {
+        for args in [
+            vec!["--force"],
+            vec!["--force=backup"],
+            vec!["--force", "--force=backup"],
+        ] {
+            let cli = crate::cli::Cli::try_parse_from(
+                ["aic", "journey", "pull", "Login"]
+                    .into_iter()
+                    .chain(args.iter().copied()),
+            )
+            .unwrap();
+            let Some(crate::cli::Command::Journey {
+                command: JourneyCommand::Pull { force, .. },
+            }) = cli.command
+            else {
+                panic!("expected journey pull")
+            };
+            assert_eq!(force.operation(), args.contains(&"--force"));
+            assert_eq!(force.backup(), args.contains(&"--force=backup"));
+            assert_eq!(
+                pull_needs_consent(PullDecision::Protected, force.operation()),
+                !args.contains(&"--force")
+            );
+        }
+    }
 
     #[test]
     fn journey_realm_defaults_to_alpha_and_accepts_bravo() {

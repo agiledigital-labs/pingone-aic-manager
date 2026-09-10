@@ -9,9 +9,10 @@ use rand::RngCore;
 use serde_json::Value;
 
 use crate::cli::diff::show_diff;
+use crate::cli::force::OperationAndBackupForce;
 use crate::cli::{
-    ensure_prod_confirmed, print_json, print_table, prod_hint, read_password_line, realm_arg,
-    tenant_for,
+    confirm_destructive, ensure_prod_confirmed, print_json, print_table, prod_hint,
+    read_password_line, realm_arg, tenant_for,
 };
 use crate::config::ProjectConfig;
 use crate::oauth::{api, spec};
@@ -213,6 +214,8 @@ pub enum OauthCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        #[command(flatten)]
+        force: OperationAndBackupForce,
     },
     /// Push a workspace OAuth2 client JSON file back to AIC.
     Push {
@@ -971,6 +974,100 @@ fn write_snapshot(tenant: &str, realm: &str, id: &str, client: &Value) -> Result
     write_bytes(&path, &serde_json::to_vec_pretty(client)?)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PullDecision {
+    Install,
+    Unchanged,
+    Protected,
+}
+
+fn pull_json(bytes: &[u8]) -> Option<Value> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    value.is_object().then_some(value)
+}
+
+fn pull_decision(local: Option<&[u8]>, remote: &Value, snapshot: Option<&[u8]>) -> PullDecision {
+    let Some(local_bytes) = local else {
+        return PullDecision::Install;
+    };
+    let Some(local) = pull_json(local_bytes) else {
+        return PullDecision::Protected;
+    };
+    if api::content_equal(&local, remote) {
+        return PullDecision::Unchanged;
+    }
+    match snapshot.and_then(pull_json) {
+        Some(snapshot) if api::content_equal(&local, &snapshot) => PullDecision::Install,
+        _ => PullDecision::Protected,
+    }
+}
+
+fn pull_needs_consent(decision: PullDecision, operation_force: bool) -> bool {
+    decision == PullDecision::Protected && !operation_force
+}
+
+fn read_pull_file(path: &Path, label: &str) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Error::Config(format!(
+            "read {label} {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn install_pull(
+    tenant: &str,
+    realm: &str,
+    id: &str,
+    remote: &Value,
+    local: Option<&[u8]>,
+    decision: PullDecision,
+    skip_backup: bool,
+) -> Result<Option<PathBuf>> {
+    let path = export_path(tenant, realm, id)?;
+    let snapshot = snapshot_path(tenant, realm, id)?;
+    let backup_dir = ProjectConfig::aic_sync_dir(tenant).join("backups");
+    install_pull_at(
+        &path,
+        &snapshot,
+        &backup_dir,
+        realm,
+        id,
+        remote,
+        local,
+        decision,
+        skip_backup,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_pull_at(
+    path: &Path,
+    snapshot: &Path,
+    backup_dir: &Path,
+    realm: &str,
+    id: &str,
+    remote: &Value,
+    local: Option<&[u8]>,
+    decision: PullDecision,
+    skip_backup: bool,
+) -> Result<Option<PathBuf>> {
+    let bytes = serde_json::to_vec_pretty(remote)?;
+    let backup = match (local, decision) {
+        (Some(original), PullDecision::Install | PullDecision::Protected) if !skip_backup => Some(
+            crate::backup::create_in(backup_dir, "oauth", realm, id, "json", original)?,
+        ),
+        _ => None,
+    };
+    if decision != PullDecision::Unchanged {
+        write_bytes(path, &bytes)?;
+    }
+    write_bytes(snapshot, &bytes)?;
+    Ok(backup)
+}
+
 fn parse_client_value(value: Value, label: &str) -> Result<Value> {
     if value.is_object() {
         Ok(value)
@@ -1422,16 +1519,49 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 Ok(())
             }
         },
-        OauthCommand::Pull { id, realm, tenant } => {
+        OauthCommand::Pull {
+            id,
+            realm,
+            tenant,
+            force,
+        } => {
             let tenant = tenant_for(tenant)?;
             let realm = realm_arg("oauth", realm)?;
             let path = export_path(&tenant, &realm, &id)?;
             let snapshot = snapshot_path(&tenant, &realm, &id)?;
             let client = api::read_client(&tenant, &realm, &id).await?;
-            let bytes = serde_json::to_vec_pretty(&client)?;
-            write_bytes(&path, &bytes)?;
-            write_bytes(&snapshot, &bytes)?;
-            println!("pulled oauth client {id} -> {}", path.display());
+            let local = read_pull_file(&path, "oauth client export")?;
+            let snapshot_bytes = read_pull_file(&snapshot, "oauth client snapshot")?;
+            let decision = pull_decision(local.as_deref(), &client, snapshot_bytes.as_deref());
+            if pull_needs_consent(decision, force.operation())
+                && !confirm_destructive(
+                    "oauth pull overwrite",
+                    &format!(
+                        "oauth client {id} has local edits; overwrite them? (a backup is kept under .aic-sync/backups/)"
+                    ),
+                    "--force",
+                )?
+            {
+                return Err(Error::Config(format!(
+                    "oauth client {id} was not pulled; local edits kept"
+                )));
+            }
+            let backup = install_pull(
+                &tenant,
+                &realm,
+                &id,
+                &client,
+                local.as_deref(),
+                decision,
+                force.backup(),
+            )?;
+            println!(
+                "pulled oauth client {id} -> {}{}",
+                path.display(),
+                backup
+                    .map(|path| format!("; previous export backed up to {}", path.display()))
+                    .unwrap_or_default()
+            );
             Ok(())
         }
         OauthCommand::Push {
@@ -1571,6 +1701,141 @@ mod tests {
     use super::*;
     use clap::Parser;
     use serde_json::json;
+
+    #[test]
+    fn pull_protection_matrix_uses_normalized_json_content() {
+        let remote = json!({"name": "client", "enabled": true, "_rev": "remote"});
+        let same = br#"{"_rev":"local","enabled":true,"name":"client"}"#;
+        let old = br#"{"name":"client","enabled":false,"_rev":"old"}"#;
+        let edited = br#"{"name":"client","enabled":"locally edited"}"#;
+
+        assert_eq!(pull_decision(None, &remote, None), PullDecision::Install);
+        assert_eq!(
+            pull_decision(Some(same), &remote, None),
+            PullDecision::Unchanged
+        );
+        assert_eq!(
+            pull_decision(Some(old), &remote, Some(old)),
+            PullDecision::Install
+        );
+        assert_eq!(
+            pull_decision(Some(edited), &remote, Some(old)),
+            PullDecision::Protected
+        );
+        assert_eq!(
+            pull_decision(Some(old), &remote, None),
+            PullDecision::Protected
+        );
+        assert_eq!(
+            pull_decision(Some(old), &remote, Some(b"not json")),
+            PullDecision::Protected
+        );
+        assert_eq!(
+            pull_decision(Some(b"not json"), &remote, Some(old)),
+            PullDecision::Protected
+        );
+    }
+
+    #[test]
+    fn protected_pull_backs_up_original_bytes_then_installs_and_snapshots() {
+        let dir = std::env::temp_dir().join(format!("oauth-pull-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("client.json");
+        let snapshot = dir.join("snapshot.json");
+        let backups = dir.join("backups");
+        let original = b"{ malformed local bytes";
+        let remote = json!({"name": "client", "enabled": true});
+        write_bytes(&path, original).unwrap();
+
+        let backup = install_pull_at(
+            &path,
+            &snapshot,
+            &backups,
+            "alpha",
+            "client",
+            &remote,
+            Some(original),
+            PullDecision::Protected,
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(std::fs::read(backup).unwrap(), original);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),
+            remote
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(&snapshot).unwrap()).unwrap(),
+            remote
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_pull_install_does_not_advance_snapshot() {
+        let dir = std::env::temp_dir().join(format!("oauth-pull-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("client.json");
+        let snapshot = dir.join("snapshot.json");
+        let backups = dir.join("backups");
+        std::fs::create_dir_all(&path).unwrap();
+        write_bytes(&snapshot, b"old snapshot").unwrap();
+
+        assert!(
+            install_pull_at(
+                &path,
+                &snapshot,
+                &backups,
+                "alpha",
+                "client",
+                &json!({"new": true}),
+                Some(b"old local"),
+                PullDecision::Install,
+                false,
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&snapshot).unwrap(), b"old snapshot");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn oauth_pull_parses_operation_and_backup_permissions_independently() {
+        for args in [
+            vec!["--force"],
+            vec!["--force=backup"],
+            vec!["--force", "--force=backup"],
+        ] {
+            let cli = crate::cli::Cli::try_parse_from(
+                ["aic", "oauth", "pull", "client"]
+                    .into_iter()
+                    .chain(args.iter().copied()),
+            )
+            .unwrap();
+            let Some(crate::cli::Command::Oauth {
+                command: OauthCommand::Pull { force, .. },
+            }) = cli.command
+            else {
+                panic!("expected oauth pull")
+            };
+            assert_eq!(force.operation(), args.contains(&"--force"));
+            assert_eq!(force.backup(), args.contains(&"--force=backup"));
+            assert_eq!(
+                pull_needs_consent(PullDecision::Protected, force.operation()),
+                !args.contains(&"--force")
+            );
+        }
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "aic",
+                "oauth",
+                "pull",
+                "client",
+                "--force=syntax-check"
+            ])
+            .is_err()
+        );
+    }
 
     fn exchange_row(
         id: &str,

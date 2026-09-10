@@ -16,6 +16,15 @@ use crate::app::{App, InputMode};
 use crate::scripts::screen::{LoadState, Match, Mode};
 use crate::scripts::sync::LocalState;
 
+pub fn draw_pull_confirm(f: &mut Frame, app: &App) {
+    let references = crate::scripts::screen::pending_pull_refs(app);
+    let message = format!(
+        "These scripts have local changes:\n\n  {}\n\nOverwrite every listed source? Original bytes will be backed up under .aic-sync/backups/.",
+        references.join("\n  ")
+    );
+    crate::tui::popup_confirm::draw(f, "Overwrite local script changes?", &message);
+}
+
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let tenant_name = match app.active_tenant() {
         Some(t) => t.name.clone(),

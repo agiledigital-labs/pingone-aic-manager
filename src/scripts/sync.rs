@@ -19,7 +19,6 @@ use crate::config::ProjectConfig;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Which scripts an operation targets.
@@ -53,7 +52,113 @@ pub enum PullStatus {
 pub struct PullOutcome {
     pub name: String,
     pub kind: Kind,
+    pub realm: Option<String>,
     pub status: PullStatus,
+}
+
+/// One namespace/selector pair included in a protected pull preflight.
+#[derive(Debug, Clone)]
+pub struct PullTarget {
+    pub realm: String,
+    pub kind: Kind,
+    pub selector: Selector,
+}
+
+#[derive(Debug)]
+struct PreparedPull {
+    realm: String,
+    script: RemoteScript,
+    remote_source: Vec<u8>,
+    local: Option<Vec<u8>>,
+    protected: bool,
+}
+
+/// Fetched remote content and local decisions for one atomic authorization
+/// boundary. No workspace file or snapshot changes until [`Self::install`].
+#[derive(Debug)]
+pub struct PullPlan {
+    store: SnapshotStore,
+    workspace_tree: PathBuf,
+    entries: Vec<PreparedPull>,
+}
+
+impl PullPlan {
+    pub fn protected_refs(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.protected)
+            .map(|entry| {
+                super::full_name(
+                    entry.script.reference.kind,
+                    entry
+                        .script
+                        .reference
+                        .kind
+                        .realm_scoped()
+                        .then_some(entry.realm.as_str()),
+                    &entry.script.reference.name,
+                )
+            })
+            .collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Install the already-fetched content after the surface has authorized
+    /// every protected entry. Recheck all local bytes first so an edit made
+    /// while a confirmation modal was open cannot be overwritten unseen.
+    pub fn install(self, skip_backup: bool) -> Result<Vec<PullOutcome>> {
+        for entry in &self.entries {
+            let path =
+                workspace_file_in(&self.workspace_tree, &entry.realm, &entry.script.reference);
+            if read_local(&path)? != entry.local {
+                return Err(Error::Config(format!(
+                    "local source changed during pull preflight: {}; nothing was installed",
+                    super::full_name(
+                        entry.script.reference.kind,
+                        entry
+                            .script
+                            .reference
+                            .kind
+                            .realm_scoped()
+                            .then_some(entry.realm.as_str()),
+                        &entry.script.reference.name,
+                    )
+                )));
+            }
+        }
+
+        self.entries
+            .iter()
+            .map(|entry| {
+                let status = install_remote(
+                    &self.store,
+                    &self.workspace_tree,
+                    &entry.realm,
+                    &entry.script,
+                    &entry.remote_source,
+                    skip_backup,
+                )?;
+                Ok(PullOutcome {
+                    name: entry.script.reference.name.clone(),
+                    kind: entry.script.reference.kind,
+                    realm: entry
+                        .script
+                        .reference
+                        .kind
+                        .realm_scoped()
+                        .then(|| entry.realm.clone()),
+                    status,
+                })
+            })
+            .collect()
+    }
 }
 
 /// Identifies the exact source bytes an operation acted on, so a surface
@@ -180,6 +285,7 @@ pub struct SyncedScript {
 }
 
 /// On-disk record of the last-synced state for one tenant (both realms + IDM).
+#[derive(Debug)]
 pub struct SnapshotStore {
     dir: PathBuf,
 }
@@ -200,6 +306,18 @@ impl SnapshotStore {
         self.dir
             .join("configs")
             .join(r.kind.config_subpath(r, realm))
+    }
+
+    fn pull_snapshot_source(&self, r: &RemoteRef, realm: &str) -> Result<Option<Vec<u8>>> {
+        let bytes = match std::fs::read(self.config_path(r, realm)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let Some(raw) = serde_json::from_slice::<Value>(&bytes).ok() else {
+            return Ok(None);
+        };
+        Ok(r.kind.decode_source(&raw).ok())
     }
 
     pub fn backups_dir(&self) -> PathBuf {
@@ -555,6 +673,68 @@ pub fn preview_source(tenant: &str, c: &Candidate) -> Option<String> {
 // Pull
 // ---------------------------------------------------------------------------
 
+/// Fetch and classify every selected script before any workspace mutation.
+pub async fn prepare_pull(tenant: &str, targets: Vec<PullTarget>) -> Result<PullPlan> {
+    let store = SnapshotStore::open(tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    prepare_pull_with(&store, &workspace_tree, &LiveSyncIo, tenant, targets).await
+}
+
+async fn prepare_pull_with(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    targets: Vec<PullTarget>,
+) -> Result<PullPlan> {
+    let mut entries = Vec::new();
+    for target in targets {
+        let refs: Vec<_> = io
+            .list(target.kind, tenant, &target.realm)
+            .await?
+            .into_iter()
+            .filter(|reference| target.selector.matches(reference))
+            .collect();
+        if let Selector::Name(name) = &target.selector {
+            if refs.is_empty() {
+                return Err(Error::Config(format!(
+                    "no {} script named {name:?}",
+                    target.kind.as_str()
+                )));
+            }
+        }
+        for reference in refs {
+            let script = io
+                .fetch(target.kind, tenant, &target.realm, &reference.id)
+                .await?;
+            let remote_source = target.kind.decode_source(&script.raw_config)?;
+            let local = read_local(&workspace_file_in(
+                workspace_tree,
+                &target.realm,
+                &script.reference,
+            ))?;
+            let snapshot = store.pull_snapshot_source(&script.reference, &target.realm)?;
+            let protected = local
+                .as_ref()
+                .is_some_and(|local| local != &remote_source && snapshot.as_ref() != Some(local));
+            entries.push(PreparedPull {
+                realm: target.realm.clone(),
+                script,
+                remote_source,
+                local,
+                protected,
+            });
+        }
+    }
+    Ok(PullPlan {
+        store: SnapshotStore {
+            dir: store.dir.clone(),
+        },
+        workspace_tree: workspace_tree.to_path_buf(),
+        entries,
+    })
+}
+
 /// Pull scripts of `kind` matching `selector` into the workspace, updating the
 /// snapshot store. Backs up every differing local source unless `skip_backup`.
 /// `realm` selects the AM realm (ignored for IDM).
@@ -623,6 +803,7 @@ async fn pull_with(
         outcomes.push(PullOutcome {
             name: script.reference.name.clone(),
             kind,
+            realm: kind.realm_scoped().then(|| realm.to_string()),
             status,
         });
     }
@@ -920,29 +1101,22 @@ fn write_workspace_supporting_files_in(
     Ok(())
 }
 
-fn backup_component(value: &str) -> String {
-    let encoded: String = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if encoded.is_empty() {
-        "_".into()
-    } else {
-        encoded
-    }
-}
-
 fn back_up(store: &SnapshotStore, r: &RemoteRef, realm: &str, local: &[u8]) -> Result<PathBuf> {
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    back_up_at(store, r, realm, local, &stamp)
+    crate::backup::create_in(
+        &store.backups_dir(),
+        r.kind.as_str(),
+        if r.kind.realm_scoped() {
+            realm
+        } else {
+            "global"
+        },
+        &r.name,
+        "cjs",
+        local,
+    )
 }
 
+#[cfg(test)]
 fn back_up_at(
     store: &SnapshotStore,
     r: &RemoteRef,
@@ -950,34 +1124,19 @@ fn back_up_at(
     local: &[u8],
     stamp: &str,
 ) -> Result<PathBuf> {
-    let dir = store.backups_dir();
-    std::fs::create_dir_all(&dir)?;
-    let realm = if r.kind.realm_scoped() {
-        backup_component(realm)
-    } else {
-        "global".into()
-    };
-    let identity = format!(
-        "{}.{}.{}",
-        backup_component(r.kind.as_str()),
-        realm,
-        backup_component(&r.name)
-    );
-    loop {
-        let path = dir.join(format!("{identity}.{stamp}.{}.cjs", uuid::Uuid::new_v4()));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                file.write_all(local)?;
-                return Ok(path);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
+    crate::backup::create_at(
+        &store.backups_dir(),
+        r.kind.as_str(),
+        if r.kind.realm_scoped() {
+            realm
+        } else {
+            "global"
+        },
+        &r.name,
+        "cjs",
+        local,
+        stamp,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1716,6 +1875,137 @@ mod tests {
         )
     }
 
+    async fn prepared_fixture(
+        snapshot: Option<&str>,
+        local: Option<&str>,
+        remote: &str,
+        malformed_snapshot: bool,
+    ) -> (PathBuf, PullPlan) {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let reference = endpoint_ref("protected");
+        if let Some(snapshot) = snapshot {
+            store
+                .record(&endpoint_script(&reference, snapshot, "snapshot"), "alpha")
+                .unwrap();
+        }
+        if malformed_snapshot {
+            let path = store.config_path(&reference, "alpha");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"not json").unwrap();
+        }
+        if let Some(local) = local {
+            let path = workspace_file_in(&workspace, "alpha", &reference);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, local).unwrap();
+        }
+        let io = FakeSyncIo::for_pull(
+            reference.clone(),
+            Ok(endpoint_script(&reference, remote, "remote")),
+        );
+        let plan = prepare_pull_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            vec![PullTarget {
+                realm: "alpha".into(),
+                kind: Kind::IdmEndpoint,
+                selector: Selector::Name(reference.name),
+            }],
+        )
+        .await
+        .unwrap();
+        (dir, plan)
+    }
+
+    #[tokio::test]
+    async fn protected_pull_preflight_follows_the_content_matrix() {
+        for (snapshot, local, remote, malformed, protected) in [
+            (None, None, "remote", false, false),
+            (None, Some("remote"), "remote", false, false),
+            (Some("old"), Some("old"), "remote", false, false),
+            (Some("old"), Some("edited"), "remote", false, true),
+            (None, Some("edited"), "remote", false, true),
+            (None, Some("edited"), "remote", true, true),
+        ] {
+            let (dir, plan) = prepared_fixture(snapshot, local, remote, malformed).await;
+            assert_eq!(!plan.protected_refs().is_empty(), protected);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_pull_plan_backs_up_and_rechecks_before_any_install() {
+        let (dir, plan) = prepared_fixture(Some("old"), Some("edited"), "remote", false).await;
+        let outcomes = plan.install(false).unwrap();
+        let PullStatus::LocalBackedUp(path) = &outcomes[0].status else {
+            panic!("expected backup")
+        };
+        assert_eq!(std::fs::read(path).unwrap(), b"edited");
+        std::fs::remove_dir_all(dir).unwrap();
+
+        let (dir, plan) = prepared_fixture(Some("old"), Some("edited"), "remote", false).await;
+        let entry = &plan.entries[0];
+        let local_path =
+            workspace_file_in(&plan.workspace_tree, &entry.realm, &entry.script.reference);
+        std::fs::write(&local_path, b"newer edit").unwrap();
+        assert!(plan.install(false).is_err());
+        assert_eq!(std::fs::read(local_path).unwrap(), b"newer edit");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bulk_pull_preflight_names_every_protected_script() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let one = endpoint_ref("One");
+        let two = endpoint_ref("Two");
+        for reference in [&one, &two] {
+            let path = workspace_file_in(&workspace, "alpha", reference);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"local edit").unwrap();
+        }
+        let io = FakeSyncIo {
+            lists: Mutex::new(vec![Ok(vec![one.clone(), two.clone()])].into()),
+            fetches: Mutex::new(
+                vec![
+                    Ok(endpoint_script(&one, "remote one", "remote")),
+                    Ok(endpoint_script(&two, "remote two", "remote")),
+                ]
+                .into(),
+            ),
+            writes: Mutex::new(Vec::new()),
+            refusal: Mutex::new(None),
+        };
+        let plan = prepare_pull_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            vec![PullTarget {
+                realm: "alpha".into(),
+                kind: Kind::IdmEndpoint,
+                selector: Selector::All,
+            }],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(plan.protected_refs(), ["endpoint/One", "endpoint/Two"]);
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &one)).unwrap(),
+            b"local edit"
+        );
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &two)).unwrap(),
+            b"local edit"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn push_does_not_advance_snapshot_when_accepted_write_reads_back_different() {
         let (dir, store, workspace, reference) = push_fixture("old", "local edit");
@@ -2230,7 +2520,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_forced_pull_remains_the_explicit_backup_opt_out() {
+    async fn direct_pull_backup_bypass_remains_explicit() {
         let (dir, store, workspace, reference) = push_fixture("local", "local");
         let io = FakeSyncIo::for_pull(
             reference.clone(),

@@ -529,7 +529,7 @@ var out = new Packages.org.mozilla.javascript.Synchronizer(function () {
   never needs to interpret a 503 — and treat a 503 that still arrives as _no
   verdict_, which is neither a pass nor a syntax failure. `aic` refuses the
   write on one rather than storing source it could not check
-  (`--no-syntax-check` is the way past it).
+  (`--force=syntax-check` is the way past it).
 - **Nothing on the write path checks syntax.**
   `PUT /openidm/config/endpoint/{name}` stores unparseable `source` with a 201;
   the endpoint is then un-routable
@@ -706,7 +706,8 @@ Object shape (real example, `schedule/UpdateReviewList`):
   `endpoint/gate-probe` + `endpoint/gate-probe-nested` + `endpoint/sync-probe`
   (IDM). Broken source was refused on create and on push for both families,
   with the remote confirmed unchanged by `script diff` afterwards; the same
-  source with `--no-syntax-check` was stored with a 201, which re-measures
+  source with the then-current `--no-syntax-check` spelling (now
+  `--force=syntax-check`) was stored with a 201, which re-measures
   "nothing on the write path checks syntax" and proves the refusal came from
   the gate. `endpoint/gate-probe-nested` was created by raw `PUT` with root
   `type: "scripted"` and a nested `{source, type}`, to check the container-type
