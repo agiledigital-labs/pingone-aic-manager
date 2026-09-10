@@ -18,9 +18,15 @@ pub enum ManagedCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Print one managed object's full definition as JSON.
+    /// Print one managed object's definition as JSON.
     Get {
         name: String,
+        /// Restrict schema.properties to matching keys (repeatable, OR-ed globs).
+        #[arg(long, value_name = "GLOB")]
+        fields: Vec<String>,
+        /// Include inline hook source bodies instead of script-pull references.
+        #[arg(long)]
+        hook_sources: bool,
         #[arg(long)]
         tenant: Option<String>,
     },
@@ -216,15 +222,47 @@ pub enum RelationshipCommand {
 pub async fn run(cmd: ManagedCommand) -> Result<()> {
     match cmd {
         ManagedCommand::List { tenant, json } => list(tenant, json).await,
-        ManagedCommand::Get { name, tenant } => print_json(api::object_named(
-            &api::get_managed(&tenant_for(tenant)?).await?,
-            &name,
-        )?),
+        ManagedCommand::Get {
+            name,
+            fields,
+            hook_sources,
+            tenant,
+        } => get(name, fields, hook_sources, tenant).await,
         ManagedCommand::Object { command } => object(command).await,
         ManagedCommand::Field { command } => field(command).await,
         ManagedCommand::Hook { command } => hook(command).await,
         ManagedCommand::Relationship { command } => relationship(command).await,
     }
+}
+
+async fn get(
+    name: String,
+    fields: Vec<String>,
+    hook_sources: bool,
+    tenant: Option<String>,
+) -> Result<()> {
+    let object = api::object_named(&api::get_managed(&tenant_for(tenant)?).await?, &name)?.clone();
+    let view = spec::prepare_managed_get(object, &name, &fields, hook_sources)
+        .map_err(crate::Error::Config)?;
+    print_json(&view.object)?;
+    if let Some((shown, total)) = view.fields_shown {
+        eprintln!("showing {shown} of {total} properties");
+    }
+    for pattern in &view.unmatched_patterns {
+        eprintln!("--fields {pattern:?} matched no properties");
+    }
+    if view.elided_hooks > 0 {
+        let noun = if view.elided_hooks == 1 {
+            "source"
+        } else {
+            "sources"
+        };
+        eprintln!(
+            "omitted {} inline hook {noun}; pass --hook-sources to include them",
+            view.elided_hooks
+        );
+    }
+    Ok(())
 }
 
 async fn list(tenant: Option<String>, json_output: bool) -> Result<()> {
@@ -993,6 +1031,54 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn get_flags_parse() {
+        let parsed = Cli::try_parse_from([
+            "aic",
+            "managed",
+            "get",
+            "alpha_user",
+            "--fields",
+            "custom_idProofing*",
+            "--fields",
+            "name",
+            "--hook-sources",
+        ])
+        .unwrap();
+        match parsed.command {
+            Some(crate::cli::Command::Managed {
+                command:
+                    ManagedCommand::Get {
+                        name,
+                        fields,
+                        hook_sources,
+                        ..
+                    },
+            }) => {
+                assert_eq!(name, "alpha_user");
+                assert_eq!(fields, ["custom_idProofing*", "name"]);
+                assert!(hook_sources);
+            }
+            other => panic!("not a managed get: {other:?}"),
+        }
+
+        let parsed = Cli::try_parse_from(["aic", "managed", "get", "alpha_user"]).unwrap();
+        match parsed.command {
+            Some(crate::cli::Command::Managed {
+                command:
+                    ManagedCommand::Get {
+                        fields,
+                        hook_sources,
+                        ..
+                    },
+            }) => {
+                assert!(fields.is_empty());
+                assert!(!hook_sources);
+            }
+            other => panic!("not a managed get: {other:?}"),
+        }
+    }
+
     #[test]
     fn managed_write_commands_parse() {
         for args in [
