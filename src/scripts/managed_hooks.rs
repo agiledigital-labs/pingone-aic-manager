@@ -23,6 +23,7 @@
 
 use super::syntax::SyntaxCheck;
 use super::{Kind, RemoteRef, RemoteScript};
+use crate::managed::api::is_inline_hook;
 use crate::{Error, Result};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -58,17 +59,6 @@ fn ref_from_name(name: &str) -> RemoteRef {
 
 fn name_from_id(id: &str) -> &str {
     id.strip_prefix(ID_PREFIX).unwrap_or(id)
-}
-
-/// An editable hook: an object-valued property with a string `source` and a
-/// `type` mentioning javascript. File-backed hooks (`file` instead of
-/// `source`) fail this test by design.
-fn is_inline_hook(v: &Value) -> bool {
-    v.is_object()
-        && v.get("source").is_some_and(Value::is_string)
-        && v.get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|t| t.contains("javascript"))
 }
 
 async fn fetch_managed_doc(tenant: &str) -> Result<Value> {
@@ -346,19 +336,6 @@ mod tests {
                     .find("../../types/managed/hooks/alpha_user.d.ts")
                     .unwrap()
         );
-    }
-
-    #[test]
-    fn hook_detection_is_value_shaped() {
-        assert!(is_inline_hook(
-            &json!({"type": "text/javascript", "source": "x"})
-        ));
-        // File-backed: read-only, must not be detected as editable.
-        assert!(!is_inline_hook(
-            &json!({"type": "text/javascript", "file": "roles/onDelete-roles.js"})
-        ));
-        assert!(!is_inline_hook(&json!({"source": "x"})));
-        assert!(!is_inline_hook(&json!("text")));
     }
 
     #[test]
