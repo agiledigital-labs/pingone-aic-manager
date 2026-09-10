@@ -2006,6 +2006,149 @@ mod tests {
         }
     }
 
+    struct FakeCliRuntime {
+        store: SnapshotStore,
+        workspace: PathBuf,
+        io: FakeSyncIo,
+        candidates: Vec<Candidate>,
+    }
+
+    impl crate::scripts::cli::PushSyncRuntime for FakeCliRuntime {
+        fn writable_tenant_for(&self, tenant: Option<String>) -> Result<String> {
+            Ok(tenant.unwrap_or_else(|| "tenant".into()))
+        }
+
+        fn guard_legacy_workspace(&self, _tenant: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn push_candidates(&self, _tenant: &str) -> Result<Vec<Candidate>> {
+            Ok(self.candidates.clone())
+        }
+
+        async fn push_authorized(
+            &self,
+            tenant: &str,
+            realm: &str,
+            kind: Kind,
+            name: &str,
+            force: OperationAndSyntaxCheckForce,
+            confirmed_prod: bool,
+            gate: SyntaxGate,
+        ) -> Result<PushOutcome> {
+            push_authorized_with(
+                &self.store,
+                &self.workspace,
+                &self.io,
+                tenant,
+                realm,
+                kind,
+                name,
+                force,
+                confirmed_prod,
+                gate,
+            )
+            .await
+        }
+
+        async fn push_forced(
+            &self,
+            tenant: &str,
+            realm: &str,
+            kind: Kind,
+            name: &str,
+            confirmed_prod: bool,
+            gate: SyntaxGate,
+        ) -> Result<PushOutcome> {
+            push_with(
+                &self.store,
+                &self.workspace,
+                &self.io,
+                tenant,
+                realm,
+                kind,
+                name,
+                true,
+                confirmed_prod,
+                gate,
+            )
+            .await
+        }
+
+        async fn push_batch_authorized(
+            &self,
+            tenant: &str,
+            candidates: Vec<Candidate>,
+            force: OperationAndSyntaxCheckForce,
+            confirmed_prod: bool,
+            gate: SyntaxGate,
+        ) -> Vec<(Candidate, Result<PushOutcome>)> {
+            push_batch_authorized_with(
+                &self.store,
+                &self.workspace,
+                &self.io,
+                tenant,
+                candidates,
+                force,
+                confirmed_prod,
+                gate,
+            )
+            .await
+        }
+
+        async fn reconcile(
+            &self,
+            tenant: &str,
+            realm: &str,
+            kind: Kind,
+            name: &str,
+            confirmed_prod: bool,
+            gate: SyntaxGate,
+        ) -> Result<ReconcileOutcome> {
+            reconcile_with(
+                &self.store,
+                &self.workspace,
+                &self.io,
+                tenant,
+                realm,
+                kind,
+                name,
+                confirmed_prod,
+                gate,
+            )
+            .await
+        }
+
+        async fn reconcile_resolved(
+            &self,
+            tenant: &str,
+            realm: &str,
+            kind: Kind,
+            name: &str,
+            resolution: Resolution,
+            confirmed_prod: bool,
+            gate: SyntaxGate,
+        ) -> Result<ReconcileOutcome> {
+            reconcile_resolved_with(
+                &self.store,
+                &self.workspace,
+                &self.io,
+                tenant,
+                realm,
+                kind,
+                name,
+                resolution,
+                confirmed_prod,
+                gate,
+            )
+            .await
+        }
+
+        fn workspace_update_hint(&self, _tenant: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
     fn endpoint_script(reference: &RemoteRef, source: &str, marker: &str) -> RemoteScript {
         script(
             reference.clone(),
@@ -2535,6 +2678,102 @@ mod tests {
                 .decode_source(&written[0].raw_config)
                 .unwrap(),
             b"local"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parsed_script_push_force_reaches_poisoned_snapshot_convergence() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "remote", "before-write")),
+            Ok(endpoint_script(&reference, "local", "confirmed")),
+        ]);
+        let runtime = FakeCliRuntime {
+            store,
+            workspace,
+            io,
+            candidates: Vec::new(),
+        };
+        let cli = crate::cli::Cli::try_parse_from([
+            "aic",
+            "script",
+            "push",
+            "endpoint/confirm-me",
+            "--tenant",
+            "tenant",
+            "--force",
+            "--force=syntax-check",
+        ])
+        .unwrap();
+
+        crate::cli::dispatch(cli.command, &runtime).await.unwrap();
+
+        assert_eq!(runtime.io.write_count(), 1);
+        let written = runtime.io.writes.lock().unwrap();
+        assert_eq!(
+            Kind::IdmEndpoint
+                .decode_source(&written[0].raw_config)
+                .unwrap(),
+            b"local"
+        );
+        drop(written);
+        assert_eq!(
+            runtime.store.pull_snapshot_source(&reference, "").unwrap(),
+            Some(b"local".to_vec())
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parsed_script_sync_force_reaches_resolved_local_convergence() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "remote", "before-write")),
+            Ok(endpoint_script(&reference, "local", "confirmed")),
+        ]);
+        let runtime = FakeCliRuntime {
+            store,
+            workspace,
+            io,
+            candidates: vec![Candidate {
+                kind: Kind::IdmEndpoint,
+                realm: None,
+                name: reference.name.clone(),
+                local: LocalState::Clean,
+                is_default: false,
+                context: None,
+                evaluator_version: None,
+            }],
+        };
+        let cli = crate::cli::Cli::try_parse_from([
+            "aic",
+            "script",
+            "sync",
+            "endpoint/confirm-me",
+            "--tenant",
+            "tenant",
+            "--resolve",
+            "local",
+            "--force",
+            "--force=syntax-check",
+        ])
+        .unwrap();
+
+        crate::cli::dispatch(cli.command, &runtime).await.unwrap();
+
+        assert_eq!(runtime.io.write_count(), 1);
+        let written = runtime.io.writes.lock().unwrap();
+        assert_eq!(
+            Kind::IdmEndpoint
+                .decode_source(&written[0].raw_config)
+                .unwrap(),
+            b"local"
+        );
+        drop(written);
+        assert_eq!(
+            runtime.store.pull_snapshot_source(&reference, "").unwrap(),
+            Some(b"local".to_vec())
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

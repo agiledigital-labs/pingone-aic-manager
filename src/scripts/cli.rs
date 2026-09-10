@@ -346,7 +346,174 @@ pub enum WorkspaceCommand {
     },
 }
 
+/// Runtime boundary for the push/sync CLI dispatch paths.
+///
+/// Production delegates to the normal workspace and network implementations.
+/// Tests substitute the sync engine's transport seam, so a command parsed from
+/// real argv can exercise the same dispatch without contacting a tenant.
+pub(crate) trait PushSyncRuntime {
+    fn writable_tenant_for(&self, tenant: Option<String>) -> Result<String>;
+
+    fn guard_legacy_workspace(&self, tenant: &str) -> Result<()>;
+
+    fn push_candidates(&self, tenant: &str) -> Result<Vec<script::sync::Candidate>>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn push_authorized(
+        &self,
+        tenant: &str,
+        realm: &str,
+        kind: script::Kind,
+        name: &str,
+        force: OperationAndSyntaxCheckForce,
+        confirmed_prod: bool,
+        gate: script::sync::SyntaxGate,
+    ) -> Result<script::sync::PushOutcome>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn push_forced(
+        &self,
+        tenant: &str,
+        realm: &str,
+        kind: script::Kind,
+        name: &str,
+        confirmed_prod: bool,
+        gate: script::sync::SyntaxGate,
+    ) -> Result<script::sync::PushOutcome>;
+
+    async fn push_batch_authorized(
+        &self,
+        tenant: &str,
+        candidates: Vec<script::sync::Candidate>,
+        force: OperationAndSyntaxCheckForce,
+        confirmed_prod: bool,
+        gate: script::sync::SyntaxGate,
+    ) -> Vec<(script::sync::Candidate, Result<script::sync::PushOutcome>)>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn reconcile(
+        &self,
+        tenant: &str,
+        realm: &str,
+        kind: script::Kind,
+        name: &str,
+        confirmed_prod: bool,
+        gate: script::sync::SyntaxGate,
+    ) -> Result<script::sync::ReconcileOutcome>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn reconcile_resolved(
+        &self,
+        tenant: &str,
+        realm: &str,
+        kind: script::Kind,
+        name: &str,
+        resolution: script::sync::Resolution,
+        confirmed_prod: bool,
+        gate: script::sync::SyntaxGate,
+    ) -> Result<script::sync::ReconcileOutcome>;
+
+    fn workspace_update_hint(&self, tenant: &str) -> Result<()>;
+}
+
+pub(crate) struct LivePushSyncRuntime;
+
+impl PushSyncRuntime for LivePushSyncRuntime {
+    fn writable_tenant_for(&self, tenant: Option<String>) -> Result<String> {
+        writable_tenant_for(tenant)
+    }
+
+    fn guard_legacy_workspace(&self, tenant: &str) -> Result<()> {
+        guard_legacy_workspace(tenant)
+    }
+
+    fn push_candidates(&self, tenant: &str) -> Result<Vec<script::sync::Candidate>> {
+        script::sync::push_candidates(tenant)
+    }
+
+    async fn push_authorized(
+        &self,
+        tenant: &str,
+        realm: &str,
+        kind: script::Kind,
+        name: &str,
+        force: OperationAndSyntaxCheckForce,
+        confirmed_prod: bool,
+        gate: script::sync::SyntaxGate,
+    ) -> Result<script::sync::PushOutcome> {
+        script::sync::push_authorized(tenant, realm, kind, name, force, confirmed_prod, gate).await
+    }
+
+    async fn push_forced(
+        &self,
+        tenant: &str,
+        realm: &str,
+        kind: script::Kind,
+        name: &str,
+        confirmed_prod: bool,
+        gate: script::sync::SyntaxGate,
+    ) -> Result<script::sync::PushOutcome> {
+        script::sync::push(tenant, realm, kind, name, true, confirmed_prod, gate).await
+    }
+
+    async fn push_batch_authorized(
+        &self,
+        tenant: &str,
+        candidates: Vec<script::sync::Candidate>,
+        force: OperationAndSyntaxCheckForce,
+        confirmed_prod: bool,
+        gate: script::sync::SyntaxGate,
+    ) -> Vec<(script::sync::Candidate, Result<script::sync::PushOutcome>)> {
+        script::sync::push_batch_authorized(tenant, candidates, force, confirmed_prod, gate).await
+    }
+
+    async fn reconcile(
+        &self,
+        tenant: &str,
+        realm: &str,
+        kind: script::Kind,
+        name: &str,
+        confirmed_prod: bool,
+        gate: script::sync::SyntaxGate,
+    ) -> Result<script::sync::ReconcileOutcome> {
+        script::sync::reconcile(tenant, realm, kind, name, confirmed_prod, gate).await
+    }
+
+    async fn reconcile_resolved(
+        &self,
+        tenant: &str,
+        realm: &str,
+        kind: script::Kind,
+        name: &str,
+        resolution: script::sync::Resolution,
+        confirmed_prod: bool,
+        gate: script::sync::SyntaxGate,
+    ) -> Result<script::sync::ReconcileOutcome> {
+        script::sync::reconcile_resolved(
+            tenant,
+            realm,
+            kind,
+            name,
+            resolution,
+            confirmed_prod,
+            gate,
+        )
+        .await
+    }
+
+    fn workspace_update_hint(&self, tenant: &str) -> Result<()> {
+        workspace_update_hint(tenant)
+    }
+}
+
 pub async fn run(cmd: ScriptCommand) -> Result<()> {
+    run_with_runtime(cmd, &LivePushSyncRuntime).await
+}
+
+pub(crate) async fn run_with_runtime(
+    cmd: ScriptCommand,
+    runtime: &impl PushSyncRuntime,
+) -> Result<()> {
     use crate::scripts::{sync, workspace};
 
     match cmd {
@@ -671,21 +838,21 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             yes,
         } => {
             let gate = gate_for(force.syntax_check());
-            let t = writable_tenant_for(tenant)?;
-            guard_legacy_workspace(&t)?;
+            let t = runtime.writable_tenant_for(tenant)?;
+            runtime.guard_legacy_workspace(&t)?;
             if reference.as_deref() == Some("all") {
-                return push_all(&t, force, yes, gate).await;
+                return push_all(runtime, &t, force, yes, gate).await;
             }
             // No ref → fuzzy-pick one (changed scripts marked `!`, first).
             let (ns, name) = match reference {
                 Some(s) => parse_one(&s)?,
-                None => match pick("Push which script?", sync::push_candidates(&t)?, true)? {
+                None => match pick("Push which script?", runtime.push_candidates(&t)?, true)? {
                     Some(x) => x,
                     None => return Ok(()),
                 },
             };
-            push_one(&t, &ns, &name, force, yes, gate).await?;
-            workspace_update_hint(&t)?;
+            push_one(runtime, &t, &ns, &name, force, yes, gate).await?;
+            runtime.workspace_update_hint(&t)?;
             Ok(())
         }
         ScriptCommand::Status { reference, tenant } => {
@@ -747,9 +914,9 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
         } => {
             validate_resolution_force(resolve, force)?;
             let gate = gate_for(force.syntax_check());
-            let t = writable_tenant_for(tenant)?;
-            guard_legacy_workspace(&t)?;
-            let cands = select_synced(sync::push_candidates(&t)?, reference)?;
+            let t = runtime.writable_tenant_for(tenant)?;
+            runtime.guard_legacy_workspace(&t)?;
+            let cands = select_synced(runtime.push_candidates(&t)?, reference)?;
             if cands.is_empty() {
                 println!("nothing synced to reconcile — `aic script pull …` first");
                 return Ok(());
@@ -772,30 +939,36 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                 // only to entries three-way reconcile would call conflicts.
                 let operation = match resolve {
                     Some(Resolution::Local) => {
-                        sync::reconcile_resolved(
-                            &t,
-                            ns.realm_arg(),
-                            c.kind,
-                            &c.name,
-                            sync::Resolution::Local,
-                            yes,
-                            gate,
-                        )
-                        .await
+                        runtime
+                            .reconcile_resolved(
+                                &t,
+                                ns.realm_arg(),
+                                c.kind,
+                                &c.name,
+                                sync::Resolution::Local,
+                                yes,
+                                gate,
+                            )
+                            .await
                     }
                     Some(Resolution::Remote) => {
-                        sync::reconcile_resolved(
-                            &t,
-                            ns.realm_arg(),
-                            c.kind,
-                            &c.name,
-                            sync::Resolution::Remote,
-                            yes,
-                            gate,
-                        )
-                        .await
+                        runtime
+                            .reconcile_resolved(
+                                &t,
+                                ns.realm_arg(),
+                                c.kind,
+                                &c.name,
+                                sync::Resolution::Remote,
+                                yes,
+                                gate,
+                            )
+                            .await
                     }
-                    None => sync::reconcile(&t, ns.realm_arg(), c.kind, &c.name, yes, gate).await,
+                    None => {
+                        runtime
+                            .reconcile(&t, ns.realm_arg(), c.kind, &c.name, yes, gate)
+                            .await
+                    }
                 };
                 let outcome = match prod_hint(operation) {
                     Ok(o) => o,
@@ -860,16 +1033,9 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                                 // can appear — and dropping the outcome here
                                 // reported a push that never happened.
                                 match prod_hint(
-                                    sync::push(
-                                        &t,
-                                        ns.realm_arg(),
-                                        c.kind,
-                                        &c.name,
-                                        true,
-                                        yes,
-                                        gate,
-                                    )
-                                    .await,
+                                    runtime
+                                        .push_forced(&t, ns.realm_arg(), c.kind, &c.name, yes, gate)
+                                        .await,
                                 )? {
                                     sync::PushOutcome::Refused { refusal, .. } => {
                                         invalid += 1;
@@ -893,16 +1059,17 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                                 }
                             }
                             ConflictChoice::Remote => {
-                                match sync::reconcile_resolved(
-                                    &t,
-                                    ns.realm_arg(),
-                                    c.kind,
-                                    &c.name,
-                                    sync::Resolution::Remote,
-                                    yes,
-                                    gate,
-                                )
-                                .await?
+                                match runtime
+                                    .reconcile_resolved(
+                                        &t,
+                                        ns.realm_arg(),
+                                        c.kind,
+                                        &c.name,
+                                        sync::Resolution::Remote,
+                                        yes,
+                                        gate,
+                                    )
+                                    .await?
                                 {
                                     sync::ReconcileOutcome::Pulled(status) => {
                                         pulled += 1;
@@ -956,7 +1123,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     println!("  {c}");
                 }
             }
-            workspace_update_hint(&t)?;
+            runtime.workspace_update_hint(&t)?;
             // The summary is printed first, then the failure: a batch that
             // left something unpushed must not exit 0, or a caller reads the
             // refusal as a success (`docs/CLI.md`). `push all` has always done
@@ -2399,6 +2566,7 @@ fn confirm_overwrite(prompt: &str) -> Result<Option<bool>> {
 }
 
 async fn push_one(
+    runtime: &impl PushSyncRuntime,
     tenant: &str,
     ns: &Namespace,
     name: &str,
@@ -2409,7 +2577,8 @@ async fn push_one(
     use script::sync::PushOutcome;
     let full = script::full_name(ns.kind, ns.realm.as_deref(), name);
     match prod_hint(
-        script::sync::push_authorized(tenant, ns.realm_arg(), ns.kind, name, force, yes, gate)
+        runtime
+            .push_authorized(tenant, ns.realm_arg(), ns.kind, name, force, yes, gate)
             .await,
     )? {
         PushOutcome::Pushed => println!("pushed {full}"),
@@ -2435,7 +2604,8 @@ async fn push_one(
                     // refused — and it was the one place the outcome was
                     // thrown away and a push reported regardless.
                     match prod_hint(
-                        script::sync::push(tenant, ns.realm_arg(), ns.kind, name, true, yes, gate)
+                        runtime
+                            .push_forced(tenant, ns.realm_arg(), ns.kind, name, yes, gate)
                             .await,
                     )? {
                         PushOutcome::Pushed => {
@@ -2476,16 +2646,15 @@ fn declined_push(full: &str) -> Result<()> {
 /// whether a poisoned snapshot matches the tenant. Remote-drift conflicts,
 /// refusals and per-script failures are reported rather than aborting the batch.
 async fn push_all(
+    runtime: &impl PushSyncRuntime,
     tenant: &str,
     force: OperationAndSyntaxCheckForce,
     yes: bool,
     gate: script::sync::SyntaxGate,
 ) -> Result<()> {
     use script::sync::PushOutcome;
-    let changed = script::sync::push_batch_candidates(
-        script::sync::push_candidates(tenant)?,
-        force.operation(),
-    );
+    let changed =
+        script::sync::push_batch_candidates(runtime.push_candidates(tenant)?, force.operation());
     if changed.is_empty() {
         println!("nothing changed to push");
         return Ok(());
@@ -2493,7 +2662,9 @@ async fn push_all(
     let mut refused = 0u32;
     let mut conflicts = 0u32;
     let mut failed = 0u32;
-    for (c, result) in script::sync::push_batch_authorized(tenant, changed, force, yes, gate).await
+    for (c, result) in runtime
+        .push_batch_authorized(tenant, changed, force, yes, gate)
+        .await
     {
         let full = full_of(&c);
         // Same reason as `sync`: one script's transport failure is that
@@ -2524,7 +2695,7 @@ async fn push_all(
             }
         }
     }
-    workspace_update_hint(tenant)?;
+    runtime.workspace_update_hint(tenant)?;
     push_all_failure(refused, conflicts, failed)
 }
 

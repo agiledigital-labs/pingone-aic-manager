@@ -324,7 +324,14 @@ pub async fn run(cli: Cli) -> Result<()> {
         ensure_agent_unlocked_internal(false, !quiet).await?;
         prepare_operator().await?;
     }
-    match cli.command {
+    dispatch(cli.command, &crate::scripts::cli::LivePushSyncRuntime).await
+}
+
+pub(crate) async fn dispatch(
+    command: Option<Command>,
+    script_runtime: &impl crate::scripts::cli::PushSyncRuntime,
+) -> Result<()> {
+    match command {
         Some(Command::Agent {
             detach,
             idle_timeout,
@@ -354,7 +361,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
         Some(Command::Secretmap { command }) => crate::secretmap::cli::run(command).await,
         Some(Command::Workspace { command }) => crate::scripts::cli::run_workspace(command).await,
-        Some(Command::Script { command }) => crate::scripts::cli::run(command).await,
+        Some(Command::Script { command }) => {
+            crate::scripts::cli::run_with_runtime(command, script_runtime).await
+        }
         None => unreachable!("dispatch handled at top level"),
     }
 }
