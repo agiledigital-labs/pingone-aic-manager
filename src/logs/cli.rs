@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::agent::AgentClient;
-use crate::cli::{print_table, tenant_for};
+use crate::cli::{ensure_prod_confirmed, print_table, tenant_for};
 use crate::config::{CredentialSource, ProjectConfig};
 #[cfg(feature = "logs-store")]
 use crate::logs::db::store_path;
@@ -225,6 +225,9 @@ pub enum KeyCommand {
             help = "AM session cookie name (random-hex). Prompted if omitted."
         )]
         cookie_name: Option<String>,
+        /// Confirm key creation on a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
     /// Show whether a log API key pair is stored.
     Show {
@@ -560,8 +563,10 @@ async fn run_key(cmd: KeyCommand) -> Result<()> {
         KeyCommand::Create {
             tenant,
             cookie_name,
+            yes,
         } => {
             let (tenant, base_url) = configured_tenant_base_url(tenant)?;
+            let _ok = ensure_prod_confirmed(&tenant, yes)?;
             let cookie_name = match cookie_name {
                 Some(cookie_name) => cookie_name,
                 None => {
@@ -1059,6 +1064,37 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[test]
+    fn key_create_requires_and_forwards_production_consent() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "aic",
+            "logs",
+            "key",
+            "create",
+            "--cookie-name",
+            "example-cookie",
+            "--yes",
+        ])
+        .unwrap();
+        let Some(crate::cli::Command::Logs {
+            command:
+                LogsCommand::Key {
+                    command: KeyCommand::Create { yes, .. },
+                },
+        }) = cli.command
+        else {
+            panic!("expected logs key create");
+        };
+
+        let ok =
+            crate::cli::prod_write_ok(crate::config::TenantTheme::Production, "prod", yes).unwrap();
+        assert!(ok.confirmed_prod);
+        assert!(
+            crate::cli::prod_write_ok(crate::config::TenantTheme::Production, "prod", false,)
+                .is_err()
+        );
+    }
 
     #[test]
     fn default_sources_are_the_two_everything_rollups() {

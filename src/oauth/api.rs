@@ -6,10 +6,33 @@ use std::path::is_separator;
 use serde_json::{Value, json};
 use url::form_urlencoded::Serializer;
 
+use crate::aic::api::ApiCall;
 use crate::oauth::spec::sanitize_for_write;
 use crate::{Error, Result};
 
 const API_VERSION: &str = "protocol=2.1,resource=1.0";
+
+fn client_call<'a>(
+    tenant: &'a str,
+    method: &'a str,
+    path: &'a str,
+    body: Option<Value>,
+    confirmed_prod: bool,
+) -> ApiCall<'a> {
+    let mut call = ApiCall::new(tenant, method, path)
+        .confirmed_prod(confirmed_prod)
+        .api_version(API_VERSION);
+    if let Some(body) = body {
+        call = call.body(body);
+    }
+    call
+}
+
+fn client_read_action_call<'a>(tenant: &'a str, path: &'a str) -> ApiCall<'a> {
+    // Same treatment as script syntax validation: schema/template POSTs
+    // compute a response and store nothing.
+    client_call(tenant, "POST", path, Some(json!({})), true)
+}
 
 fn realm_path(realm: &str) -> String {
     format!("/am/json/realms/root/realms/{realm}")
@@ -215,20 +238,20 @@ pub async fn read_provider(tenant: &str, realm: &str) -> Result<Value> {
 
 /// Fetch the tenant's complete default OAuth2 client body.
 ///
-/// The action uses POST but does not mutate tenant state. `confirmed_prod` is
-/// still required by the shared transport for any POST to a production tenant.
-pub async fn client_template(tenant: &str, realm: &str, confirmed_prod: bool) -> Result<Value> {
+/// The action uses POST but does not mutate tenant state, so it passes the
+/// transport gate without consuming user production consent.
+pub async fn client_template(tenant: &str, realm: &str) -> Result<Value> {
     let path = format!("{}?_action=template", clients_path(realm));
-    crate::aic::api::post_versioned(tenant, &path, json!({}), confirmed_prod, API_VERSION).await
+    client_read_action_call(tenant, &path).send().await
 }
 
 /// Fetch field metadata and live enum choices for OAuth2 clients.
 ///
-/// Like [`client_template`], this read-like action is POST-shaped and therefore
-/// carries the caller's production confirmation through the shared transport.
-pub async fn client_schema(tenant: &str, realm: &str, confirmed_prod: bool) -> Result<Value> {
+/// Like [`client_template`], this read-only action is POST-shaped and passes
+/// the transport gate without consuming user production consent.
+pub async fn client_schema(tenant: &str, realm: &str) -> Result<Value> {
     let path = format!("{}?_action=schema", clients_path(realm));
-    crate::aic::api::post_versioned(tenant, &path, json!({}), confirmed_prod, API_VERSION).await
+    client_read_action_call(tenant, &path).send().await
 }
 
 /// Upsert a complete OAuth2 client body with the caller's production choice.
@@ -242,7 +265,9 @@ pub async fn upsert_client(
     validate_client_id(id)?;
     let path = format!("{}/{}", clients_path(realm), id);
     let body = sanitize_for_write(&body);
-    crate::aic::api::put_versioned(tenant, &path, body, confirmed_prod, API_VERSION).await
+    client_call(tenant, "PUT", &path, Some(body), confirmed_prod)
+        .send()
+        .await
 }
 
 /// Create or explicitly replace a client after the caller's existence check.
@@ -256,13 +281,22 @@ pub async fn create_client(
     validate_client_id(id)?;
     let path = format!("{}/{}", clients_path(realm), id);
     let body = sanitize_for_write(&body);
-    crate::aic::api::put_versioned(tenant, &path, body, confirmed_prod, API_VERSION).await
+    client_call(tenant, "PUT", &path, Some(body), confirmed_prod)
+        .send()
+        .await
 }
 
-pub async fn delete_client(tenant: &str, realm: &str, id: &str) -> Result<()> {
+pub async fn delete_client(
+    tenant: &str,
+    realm: &str,
+    id: &str,
+    confirmed_prod: bool,
+) -> Result<()> {
     validate_client_id(id)?;
     let path = format!("{}/{}", clients_path(realm), id);
-    crate::aic::api::delete_versioned(tenant, &path, false, API_VERSION).await?;
+    client_call(tenant, "DELETE", &path, None, confirmed_prod)
+        .send()
+        .await?;
     Ok(())
 }
 
@@ -369,6 +403,30 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::agent::Request;
+
+    fn request(call: ApiCall<'_>) -> crate::agent::ApiCallRequest {
+        let Request::ApiCall(request) = call.envelope() else {
+            panic!("expected API call");
+        };
+        request
+    }
+
+    #[test]
+    fn client_metadata_posts_bypass_prod_but_client_writes_do_not() {
+        for action in ["template", "schema"] {
+            let path = format!("{}?_action={action}", clients_path("alpha"));
+            let request = request(client_read_action_call("prod", &path));
+            assert_eq!(request.method, "POST");
+            assert!(request.confirmed_prod);
+        }
+
+        let path = format!("{}/service-client", clients_path("alpha"));
+        assert!(
+            !request(client_call("prod", "PUT", &path, Some(json!({})), false,)).confirmed_prod
+        );
+        assert!(request(client_call("prod", "PUT", &path, Some(json!({})), true,)).confirmed_prod);
+    }
 
     #[test]
     fn sanitize_for_write_strips_top_level_server_fields() {

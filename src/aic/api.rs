@@ -254,7 +254,7 @@ impl<'a> ApiCall<'a> {
     /// The wire envelope this call will be sent as. Split out from
     /// [`Self::send`] so tests can pin the wrapper-to-envelope mapping
     /// without a live agent.
-    fn envelope(self) -> Request {
+    pub(crate) fn envelope(self) -> Request {
         Request::ApiCall(ApiCallRequest {
             tenant: self.tenant.to_string(),
             method: self.method.to_string(),

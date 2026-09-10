@@ -9,7 +9,10 @@ use rand::RngCore;
 use serde_json::Value;
 
 use crate::cli::diff::show_diff;
-use crate::cli::{print_json, print_table, prod_hint, read_password_line, realm_arg, tenant_for};
+use crate::cli::{
+    ensure_prod_confirmed, print_json, print_table, prod_hint, read_password_line, realm_arg,
+    tenant_for,
+};
 use crate::config::ProjectConfig;
 use crate::oauth::{api, spec};
 use crate::{Error, Result};
@@ -221,6 +224,9 @@ pub enum OauthCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm the write on a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
     /// Diff an OAuth2 client (colored, via `git diff`). Default compares the
     /// tenant against your local workspace file.
@@ -250,6 +256,9 @@ pub enum OauthCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm the write on a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -1089,7 +1098,7 @@ async fn run_grant_change(args: GrantChangeArgs, operation: spec::GrantOperation
 
     let (client, schema) = tokio::join!(
         api::read_client(&tenant, &realm, &args.id),
-        api::client_schema(&tenant, &realm, args.yes),
+        api::client_schema(&tenant, &realm),
     );
     let client = client?;
     let schema = schema_for_validation(schema);
@@ -1208,8 +1217,8 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
 
             let seed = options.from.as_deref().map(read_seed).transpose()?;
             let (template, schema) = tokio::join!(
-                api::client_template(&tenant, &realm, options.yes),
-                api::client_schema(&tenant, &realm, options.yes),
+                api::client_template(&tenant, &realm),
+                api::client_schema(&tenant, &realm),
             );
             let template = prod_hint(template)?;
             let schema = schema_for_validation(schema);
@@ -1430,8 +1439,10 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             force,
             realm,
             tenant,
+            yes,
         } => {
             let tenant = tenant_for(tenant)?;
+            let ok = ensure_prod_confirmed(&tenant, yes)?;
             let realm = realm_arg("oauth", realm)?;
             let path = export_path(&tenant, &realm, &id)?;
             let snapshot = snapshot_path(&tenant, &realm, &id)?;
@@ -1443,7 +1454,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             };
 
             let Some(remote) = remote else {
-                api::upsert_client(&tenant, &realm, &id, local, false).await?;
+                api::upsert_client(&tenant, &realm, &id, local, ok.confirmed_prod).await?;
                 let refreshed = api::read_client(&tenant, &realm, &id).await?;
                 write_snapshot(&tenant, &realm, &id, &refreshed)?;
                 println!("created oauth client {id}");
@@ -1487,7 +1498,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                     )))
                 }
                 PushDecision::Push => {
-                    api::upsert_client(&tenant, &realm, &id, local, false).await?;
+                    api::upsert_client(&tenant, &realm, &id, local, ok.confirmed_prod).await?;
                     let refreshed = api::read_client(&tenant, &realm, &id).await?;
                     write_snapshot(&tenant, &realm, &id, &refreshed)?;
                     println!("pushed oauth client {id}");
@@ -1536,8 +1547,10 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             force,
             realm,
             tenant,
+            yes,
         } => {
             let tenant = tenant_for(tenant)?;
+            let ok = ensure_prod_confirmed(&tenant, yes)?;
             let realm = realm_arg("oauth", realm)?;
             if !force {
                 eprintln!(
@@ -1545,7 +1558,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
                 );
                 return Err(Error::Config("oauth client delete requires --force".into()));
             }
-            api::delete_client(&tenant, &realm, &id).await?;
+            api::delete_client(&tenant, &realm, &id, ok.confirmed_prod).await?;
             remove_snapshot_if_present(&tenant, &realm, &id)?;
             println!("deleted oauth client {id}");
             Ok(())
@@ -1796,6 +1809,36 @@ mod tests {
     fn oauth_realm_rejects_other_realms() {
         let error = realm_arg("oauth", Some("root".into())).unwrap_err();
         assert!(error.to_string().contains("alpha or bravo"));
+    }
+
+    #[test]
+    fn oauth_push_and_delete_forward_production_consent() {
+        for verb in ["push", "delete"] {
+            let cli = crate::cli::Cli::try_parse_from([
+                "aic",
+                "oauth",
+                verb,
+                "service-client",
+                "--force",
+                "--yes",
+            ])
+            .unwrap();
+            let Some(crate::cli::Command::Oauth { command }) = cli.command else {
+                panic!("expected oauth command");
+            };
+            let yes = match command {
+                OauthCommand::Push { yes, .. } | OauthCommand::Delete { yes, .. } => yes,
+                other => panic!("expected oauth mutation, got {other:?}"),
+            };
+            let ok = crate::cli::prod_write_ok(crate::config::TenantTheme::Production, "prod", yes)
+                .unwrap();
+            assert!(ok.confirmed_prod);
+        }
+
+        assert!(
+            crate::cli::prod_write_ok(crate::config::TenantTheme::Production, "prod", false,)
+                .is_err()
+        );
     }
 
     #[test]

@@ -3,11 +3,30 @@
 
 use serde_json::{Value, json};
 
+use crate::aic::api::ApiCall;
 use crate::{Error, Result};
 
 /// Policies and policy sets. Resource types and the type catalogs answer on
 /// the default `resource=1.0` and must not send this.
 const ENTITLEMENT_VERSION: &str = "protocol=1.0,resource=2.0";
+
+fn entitlement_post_call<'a>(
+    tenant: &'a str,
+    path: &'a str,
+    body: Value,
+    confirmed_prod: bool,
+) -> ApiCall<'a> {
+    ApiCall::new(tenant, "POST", path)
+        .body(body)
+        .confirmed_prod(confirmed_prod)
+        .api_version(ENTITLEMENT_VERSION)
+}
+
+fn pdp_call<'a>(tenant: &'a str, path: &'a str, body: Value) -> ApiCall<'a> {
+    // Like script validation, PDP evaluation computes a response and stores
+    // nothing, so the POST may pass the method-based production gate.
+    entitlement_post_call(tenant, path, body, true)
+}
 
 fn realm_path(realm: &str) -> String {
     format!("/am/json/realms/root/realms/{realm}")
@@ -80,7 +99,9 @@ pub async fn read_policy(tenant: &str, realm: &str, name: &str) -> Result<Value>
 
 pub async fn create_policy(tenant: &str, realm: &str, body: Value, prod: bool) -> Result<Value> {
     let path = format!("{}?_action=create", policies_path(realm));
-    crate::aic::api::post_versioned(tenant, &path, body, prod, ENTITLEMENT_VERSION).await
+    entitlement_post_call(tenant, &path, body, prod)
+        .send()
+        .await
 }
 
 pub async fn update_policy(
@@ -117,7 +138,9 @@ pub async fn read_set(tenant: &str, realm: &str, name: &str) -> Result<Value> {
 
 pub async fn create_set(tenant: &str, realm: &str, body: Value, prod: bool) -> Result<Value> {
     let path = format!("{}?_action=create", sets_path(realm));
-    crate::aic::api::post_versioned(tenant, &path, body, prod, ENTITLEMENT_VERSION).await
+    entitlement_post_call(tenant, &path, body, prod)
+        .send()
+        .await
 }
 
 pub async fn update_set(
@@ -264,8 +287,7 @@ pub async fn condition_types(tenant: &str, realm: &str) -> Result<Vec<Value>> {
 /// warning in `docs/api/21-am-policies.md`.
 pub async fn evaluate(tenant: &str, realm: &str, body: Value) -> Result<Vec<Value>> {
     let path = format!("{}?_action=evaluate", policies_path(realm));
-    let response =
-        crate::aic::api::post_versioned(tenant, &path, body, false, ENTITLEMENT_VERSION).await?;
+    let response = pdp_call(tenant, &path, body).send().await?;
     response.as_array().cloned().ok_or_else(|| Error::Api {
         status: 0,
         body: format!("unexpected evaluate response shape: {response}"),
@@ -276,7 +298,7 @@ pub async fn evaluate(tenant: &str, realm: &str, body: Value) -> Result<Vec<Valu
 /// difference is exactly the sort of thing a caller gets wrong once.
 pub async fn evaluate_tree(tenant: &str, realm: &str, body: Value) -> Result<Value> {
     let path = format!("{}?_action=evaluateTree", policies_path(realm));
-    crate::aic::api::post_versioned(tenant, &path, body, false, ENTITLEMENT_VERSION).await
+    pdp_call(tenant, &path, body).send().await
 }
 
 /// Everything the PDP needs, assembled. `subject` is already the wire form.
@@ -303,6 +325,28 @@ pub fn evaluate_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Request;
+
+    fn request(call: ApiCall<'_>) -> crate::agent::ApiCallRequest {
+        let Request::ApiCall(request) = call.envelope() else {
+            panic!("expected API call");
+        };
+        request
+    }
+
+    #[test]
+    fn pdp_posts_bypass_prod_but_create_posts_do_not() {
+        for action in ["evaluate", "evaluateTree"] {
+            let path = format!("{}?_action={action}", policies_path("alpha"));
+            let request = request(pdp_call("prod", &path, json!({})));
+            assert_eq!(request.method, "POST");
+            assert!(request.confirmed_prod);
+        }
+
+        let path = format!("{}?_action=create", policies_path("alpha"));
+        assert!(!request(entitlement_post_call("prod", &path, json!({}), false)).confirmed_prod);
+        assert!(request(entitlement_post_call("prod", &path, json!({}), true)).confirmed_prod);
+    }
 
     #[test]
     fn realm_paths_use_the_project_long_form() {

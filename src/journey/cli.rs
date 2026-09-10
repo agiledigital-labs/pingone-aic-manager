@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf, is_separator};
 use clap::Subcommand;
 use serde_json::Value;
 
-use crate::cli::{print_json, print_table, realm_arg, tenant_for};
+use crate::cli::{ensure_prod_confirmed, print_json, print_table, realm_arg, tenant_for};
 use crate::config::ProjectConfig;
 use crate::journey::api;
 use crate::{Error, Result};
@@ -42,6 +42,9 @@ pub enum JourneyCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm the write on a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
     /// Delete a journey from AIC. Requires --force.
     Delete {
@@ -53,6 +56,9 @@ pub enum JourneyCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm the write on a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
     /// List journeys that reference a script UUID.
     UsingScript {
@@ -429,8 +435,10 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             force,
             realm,
             tenant,
+            yes,
         } => {
             let tenant = tenant_for(tenant)?;
+            let ok = ensure_prod_confirmed(&tenant, yes)?;
             let realm = realm_arg("journey", realm)?;
             let path = export_path(&tenant, &realm, &name)?;
             let snapshot = snapshot_path(&tenant, &realm, &name)?;
@@ -462,7 +470,8 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                     Err(Error::Config(push_block_message(&name, &reason)))
                 }
                 PushDecision::Push => {
-                    let pushed = api::push(&tenant, &realm, &name, &local_export).await?;
+                    let pushed =
+                        api::push(&tenant, &realm, &name, &local_export, ok.confirmed_prod).await?;
                     let refreshed = api::pull(&tenant, &realm, &name).await?;
                     write_snapshot(&tenant, &realm, &name, &refreshed)?;
                     println!("pushed journey {name} ({pushed} nodes) -> {tenant}/{realm}");
@@ -475,8 +484,10 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             force,
             realm,
             tenant,
+            yes,
         } => {
             let tenant = tenant_for(tenant)?;
+            let ok = ensure_prod_confirmed(&tenant, yes)?;
             let realm = realm_arg("journey", realm)?;
             if !force {
                 eprintln!(
@@ -484,7 +495,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
                 );
                 return Err(Error::Config("journey delete requires --force".into()));
             }
-            api::delete_tree(&tenant, &realm, &name).await?;
+            api::delete_tree(&tenant, &realm, &name, ok.confirmed_prod).await?;
             remove_snapshot_if_present(&tenant, &realm, &name)?;
             println!("deleted journey {name}");
             Ok(())
@@ -587,6 +598,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use serde_json::json;
 
     #[test]
@@ -599,6 +611,31 @@ mod tests {
     fn journey_realm_rejects_other_realms() {
         let error = realm_arg("journey", Some("root".into())).unwrap_err();
         assert!(error.to_string().contains("alpha or bravo"));
+    }
+
+    #[test]
+    fn journey_push_and_delete_forward_production_consent() {
+        for verb in ["push", "delete"] {
+            let cli = crate::cli::Cli::try_parse_from([
+                "aic", "journey", verb, "Login", "--force", "--yes",
+            ])
+            .unwrap();
+            let Some(crate::cli::Command::Journey { command }) = cli.command else {
+                panic!("expected journey command");
+            };
+            let yes = match command {
+                JourneyCommand::Push { yes, .. } | JourneyCommand::Delete { yes, .. } => yes,
+                other => panic!("expected journey mutation, got {other:?}"),
+            };
+            let ok = crate::cli::prod_write_ok(crate::config::TenantTheme::Production, "prod", yes)
+                .unwrap();
+            assert!(ok.confirmed_prod);
+        }
+
+        assert!(
+            crate::cli::prod_write_ok(crate::config::TenantTheme::Production, "prod", false,)
+                .is_err()
+        );
     }
 
     #[test]
