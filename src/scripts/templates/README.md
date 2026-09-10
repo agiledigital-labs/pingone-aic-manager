@@ -93,6 +93,7 @@ aic script pull all                  # pull everything (both realms + endpoints 
 aic script push                      # no ref: fuzzy-pick one (locally-changed marked `!`)
 aic script push bravo/MyNode         # push your edit back (content-checked)
 aic script push all                  # push every locally-changed script
+aic script push all --force          # make every tracked tenant script match local
 aic script sync                      # reconcile: push local-only, pull remote-only, resolve conflicts
 aic script sync --resolve remote     # force any conflict to the tenant's copy
 aic script watch                     # auto-push each script you save (Ctrl-C to stop)

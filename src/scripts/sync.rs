@@ -936,8 +936,10 @@ async fn push_with(
         ))
     })?;
 
-    // No local change vs the snapshot → nothing to do.
-    if local_src == snapshot_src {
+    // A normal push needs a local change. A forced push instead means "make
+    // the live tenant match this file", including when a poisoned snapshot
+    // happens to equal the local bytes.
+    if local_src == snapshot_src && !force {
         return Ok(PushOutcome::Unchanged);
     }
 
@@ -1348,6 +1350,7 @@ mod tests {
     struct FakeSyncIo {
         fetches: Mutex<VecDeque<Result<RemoteScript>>>,
         writes: Mutex<Vec<RemoteScript>>,
+        refusal: Mutex<Option<Refusal>>,
     }
 
     impl FakeSyncIo {
@@ -1355,6 +1358,15 @@ mod tests {
             Self {
                 fetches: Mutex::new(fetches.into()),
                 writes: Mutex::new(Vec::new()),
+                refusal: Mutex::new(None),
+            }
+        }
+
+        fn refusing(fetches: Vec<Result<RemoteScript>>, refusal: Refusal) -> Self {
+            Self {
+                fetches: Mutex::new(fetches.into()),
+                writes: Mutex::new(Vec::new()),
+                refusal: Mutex::new(Some(refusal)),
             }
         }
 
@@ -1387,6 +1399,9 @@ mod tests {
             _confirmed_prod: bool,
             _gate: SyntaxGate,
         ) -> Result<Gated> {
+            if let Some(refusal) = self.refusal.lock().unwrap().take() {
+                return Ok(Gated::Refused(refusal));
+            }
             self.writes.lock().unwrap().push(script.clone());
             Ok(Gated::Written)
         }
@@ -1694,6 +1709,108 @@ mod tests {
 
         assert!(matches!(outcome, PushOutcome::Pushed));
         assert_eq!(io.write_count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn force_pushes_when_local_equals_a_poisoned_snapshot() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "remote", "before-write")),
+            Ok(endpoint_script(&reference, "local", "confirmed")),
+        ]);
+
+        let outcome = push_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            true,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, PushOutcome::Pushed));
+        assert_eq!(io.write_count(), 1);
+        let written = io.writes.lock().unwrap();
+        assert_eq!(
+            Kind::IdmEndpoint
+                .decode_source(&written[0].raw_config)
+                .unwrap(),
+            b"local"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn force_avoids_put_and_refreshes_snapshot_when_remote_matches_local() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let remote = endpoint_script(&reference, "local", "fresh-remote-metadata");
+        let io = FakeSyncIo::new(vec![Ok(remote.clone())]);
+
+        let outcome = push_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            true,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, PushOutcome::AlreadyInSync));
+        assert_eq!(io.write_count(), 0);
+        assert_eq!(
+            store.load_config(&reference, "alpha").unwrap(),
+            Some(remote.raw_config)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn force_still_honours_syntax_refusal_without_advancing_snapshot() {
+        use crate::scripts::syntax::SyntaxError;
+
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let before = snapshot_bytes(&store, &reference);
+        let refusal = Refusal::Rejected(vec![SyntaxError {
+            line: Some(1),
+            column: Some(2),
+            message: "broken".into(),
+        }]);
+        let io = FakeSyncIo::refusing(
+            vec![Ok(endpoint_script(&reference, "remote", "before-write"))],
+            refusal,
+        );
+
+        let outcome = push_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            true,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, PushOutcome::Refused { .. }));
+        assert_eq!(io.write_count(), 0);
+        assert_eq!(snapshot_bytes(&store, &reference), before);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

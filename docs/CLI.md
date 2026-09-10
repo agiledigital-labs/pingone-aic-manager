@@ -1106,7 +1106,7 @@ aic script create <ref> --context <ctx> [--from FILE] [--language LANG] [--evalu
 aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--no-syntax-check]
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--force]               # pull; no ref → fuzzy picker
-aic script push [<ref>] [--force] [--yes] [--no-syntax-check]  # push local edits
+aic script push [<ref>] [--force] [--yes] [--no-syntax-check]  # push edits; --force makes tracked tenant scripts match local
 aic script sync [<ref>] [--resolve local|remote] [--tenant TENANT] [--yes] [--no-syntax-check]   # reconcile: push local-only, pull remote-only
 aic script watch [--tenant TENANT] [--yes] [--no-syntax-check]   # auto-push each .cjs you save (Ctrl-C to stop; also creates generated endpoints)
 aic script status [<ref>]                       # in sync / modified / remote / conflict; template/type drift notes
@@ -1187,7 +1187,11 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
 - **Conflict detection is content-based** (scripts have no `_rev`): a push only
   proceeds if the remote still matches what you last synced — even if the
   revision moved but the content reverted. If the remote content drifted, the
-  push is blocked and a 3-way diff is shown; `--force` overrides.
+  push is blocked and a 3-way diff is shown. `--force` means make each selected
+  tracked tenant script match its local source, even when local equals the
+  snapshot; `push all --force` therefore checks every tracked script. It does
+  not create or adopt untracked scripts. When remote already equals local, no
+  PUT is sent and the snapshot is refreshed from the live resource.
 - **Every write is syntax-checked first.** Before `create`, `copy`, `push`,
   `sync` and `watch` write anything, the tenant is asked to parse the source —
   AM through `scripts?_action=validate`, IDM through `script?_action=compile`.
