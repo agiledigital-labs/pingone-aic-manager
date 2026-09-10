@@ -81,6 +81,7 @@ fn push_outcome_note(outcome: &script::sync::PushOutcome) -> String {
     use script::sync::PushOutcome;
     match outcome {
         PushOutcome::Pushed => "pushed".into(),
+        PushOutcome::NotConfirmed(reason) => reason.message(),
         PushOutcome::Unchanged => "no local changes to push".into(),
         PushOutcome::AlreadyInSync => "remote already matched local; snapshot refreshed".into(),
         PushOutcome::Conflict(_) => "remote changed again — re-run to resolve".into(),
@@ -770,6 +771,10 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     sync::ReconcileOutcome::Pushed => {
                         pushed += 1;
                         println!("→ pushed {full}");
+                    }
+                    sync::ReconcileOutcome::NotConfirmed(reason) => {
+                        eprintln!("! {full}: {}", reason.message());
+                        failed += 1;
                     }
                     sync::ReconcileOutcome::Pulled => {
                         pulled += 1;
@@ -1973,6 +1978,9 @@ async fn watch(tenant: &str, yes: bool, gate: script::sync::SyntaxGate) -> Resul
             );
             match result {
                 Ok(PushOutcome::Pushed) => println!("{}", watch_green(&format!("→ pushed {full}"))),
+                Ok(PushOutcome::NotConfirmed(reason)) => {
+                    eprintln!("{}", watch_red(&format!("! {full}: {}", reason.message())))
+                }
                 Ok(PushOutcome::Unchanged | PushOutcome::AlreadyInSync) => {}
                 // Keep watching: the operator's next save is the retry, and
                 // this is the case the whole gate exists for — a build that
@@ -2319,6 +2327,9 @@ async fn push_one(
         script::sync::push(tenant, ns.realm_arg(), ns.kind, name, force, yes, gate).await,
     )? {
         PushOutcome::Pushed => println!("pushed {full}"),
+        PushOutcome::NotConfirmed(reason) => {
+            return Err(Error::Config(format!("{full}: {}", reason.message())));
+        }
         PushOutcome::Refused { refusal, .. } => {
             report_refusal(&full, &refusal);
             return Err(Error::Config(format!("{full} was not pushed")));
@@ -2407,6 +2418,10 @@ async fn push_all(
         };
         match outcome {
             PushOutcome::Pushed => println!("pushed {full}"),
+            PushOutcome::NotConfirmed(reason) => {
+                eprintln!("! {full}: {}", reason.message());
+                failed += 1;
+            }
             PushOutcome::Unchanged | PushOutcome::AlreadyInSync => {}
             PushOutcome::Refused { refusal, .. } => {
                 report_refusal(&full, &refusal);
@@ -2929,5 +2944,15 @@ mod tests {
             managed_types_stale_note(3).as_deref(),
             Some("note: 3 managed type files are stale — run `aic workspace update` to refresh")
         );
+    }
+
+    #[test]
+    fn an_unconfirmed_push_note_never_reads_as_success() {
+        let note = push_outcome_note(&script::sync::PushOutcome::NotConfirmed(
+            script::sync::ConfirmationFailure::Mismatch,
+        ));
+        assert!(note.contains("snapshot unchanged"));
+        assert!(note.contains("tenant state uncertain"));
+        assert!(!note.starts_with("pushed"));
     }
 }

@@ -88,6 +88,9 @@ pub fn local_source_id(tenant: &str, c: &Candidate) -> Option<SourceId> {
 #[derive(Debug, Clone)]
 pub enum PushOutcome {
     Pushed,
+    /// The tenant accepted the write, but a fresh read could not prove that it
+    /// holds the submitted source. The snapshot remains unchanged.
+    NotConfirmed(ConfirmationFailure),
     /// Local matches the last-synced snapshot — nothing to push.
     Unchanged,
     /// Remote already equals local — snapshot refreshed, no write needed.
@@ -109,6 +112,30 @@ pub enum PushOutcome {
         refusal: Refusal,
         source: SourceId,
     },
+}
+
+/// Why a tenant-accepted write could not be confirmed by an immediate read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmationFailure {
+    /// The fresh remote source differed from the exact bytes submitted.
+    Mismatch,
+    /// The fresh resource could not be fetched or its source could not be
+    /// decoded.
+    Failed(String),
+}
+
+impl ConfirmationFailure {
+    /// Conservative wording shared by every surface that displays a failed
+    /// confirmation. A mismatch does not prove whether the write never landed
+    /// or was replaced immediately afterwards.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Mismatch => "write accepted, but read-back did not match the submitted source — snapshot unchanged; tenant state uncertain".into(),
+            Self::Failed(error) => format!(
+                "write accepted, but confirmation failed: {error} — snapshot unchanged; tenant state uncertain"
+            ),
+        }
+    }
 }
 
 /// The three sides of a content conflict, as decoded UTF-8 (lossy) text.
@@ -274,7 +301,11 @@ impl SnapshotStore {
 }
 
 fn workspace_file(tenant: &str, realm: &str, r: &RemoteRef) -> PathBuf {
-    ProjectConfig::workspace_tree(tenant).join(r.kind.workspace_subpath(r, realm))
+    workspace_file_in(&ProjectConfig::workspace_tree(tenant), realm, r)
+}
+
+fn workspace_file_in(workspace_tree: &Path, realm: &str, r: &RemoteRef) -> PathBuf {
+    workspace_tree.join(r.kind.workspace_subpath(r, realm))
 }
 
 /// Read a local workspace file without collapsing permission / transient I/O
@@ -290,6 +321,64 @@ fn read_local(path: &Path) -> Result<Option<Vec<u8>>> {
 
 fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// The only remote operations push/reconcile need. Keeping this seam here
+/// lets tests drive the production decision logic without teaching [`Kind`]
+/// about fake variants or bypassing the syntax/write gate in production.
+trait SyncIo {
+    async fn fetch(&self, kind: Kind, tenant: &str, realm: &str, id: &str) -> Result<RemoteScript>;
+
+    async fn write_checked(
+        &self,
+        kind: Kind,
+        tenant: &str,
+        realm: &str,
+        script: &RemoteScript,
+        confirmed_prod: bool,
+        gate: SyntaxGate,
+    ) -> Result<Gated>;
+}
+
+struct LiveSyncIo;
+
+impl SyncIo for LiveSyncIo {
+    async fn fetch(&self, kind: Kind, tenant: &str, realm: &str, id: &str) -> Result<RemoteScript> {
+        kind.fetch(tenant, realm, id).await
+    }
+
+    async fn write_checked(
+        &self,
+        kind: Kind,
+        tenant: &str,
+        realm: &str,
+        script: &RemoteScript,
+        confirmed_prod: bool,
+        gate: SyntaxGate,
+    ) -> Result<Gated> {
+        write_checked(kind, tenant, realm, script, confirmed_prod, gate).await
+    }
+}
+
+async fn confirm_write(
+    io: &impl SyncIo,
+    kind: Kind,
+    tenant: &str,
+    realm: &str,
+    id: &str,
+    submitted_source: &[u8],
+) -> std::result::Result<RemoteScript, ConfirmationFailure> {
+    let fetched = io
+        .fetch(kind, tenant, realm, id)
+        .await
+        .map_err(|error| ConfirmationFailure::Failed(error.to_string()))?;
+    let fetched_source = kind
+        .decode_source(&fetched.raw_config)
+        .map_err(|error| ConfirmationFailure::Failed(error.to_string()))?;
+    if fetched_source != submitted_source {
+        return Err(ConfirmationFailure::Mismatch);
+    }
+    Ok(fetched)
 }
 
 // ---------------------------------------------------------------------------
@@ -798,6 +887,35 @@ pub async fn push(
     gate: SyntaxGate,
 ) -> Result<PushOutcome> {
     let store = SnapshotStore::open(tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    push_with(
+        &store,
+        &workspace_tree,
+        &LiveSyncIo,
+        tenant,
+        realm,
+        kind,
+        name,
+        force,
+        confirmed_prod,
+        gate,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn push_with(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+    force: bool,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Result<PushOutcome> {
     let entry = store.lookup(kind, name, realm)?.ok_or_else(|| {
         Error::Config(format!(
             "{name:?} not synced yet — `aic script pull {name}` first"
@@ -810,7 +928,7 @@ pub async fn push(
         .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing — pull again")))?;
     let snapshot_src = kind.decode_source(&snapshot_cfg)?;
 
-    let dest = workspace_file(tenant, realm, r);
+    let dest = workspace_file_in(workspace_tree, realm, r);
     let local_src = read_local(&dest)?.ok_or_else(|| {
         Error::Config(format!(
             "local file {} not found — pull first",
@@ -827,7 +945,7 @@ pub async fn push(
     // thing that blocks a push is remote drift (handled below).
 
     // Conflict check: refetch remote, compare decoded bytes to the snapshot.
-    let remote = kind.fetch(tenant, realm, &r.id).await?;
+    let remote = io.fetch(kind, tenant, realm, &r.id).await?;
     let remote_src = kind.decode_source(&remote.raw_config)?;
 
     if remote_src == local_src {
@@ -855,7 +973,10 @@ pub async fn push(
         reference: r.clone(),
         raw_config: raw,
     };
-    match write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate).await? {
+    match io
+        .write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate)
+        .await?
+    {
         Gated::Written => {}
         // Nothing was written and the snapshot is untouched, so the local edit
         // survives for the operator to fix and push again. The refusal is
@@ -869,8 +990,12 @@ pub async fn push(
         }
     }
 
-    // Refresh the snapshot to exactly what we just pushed.
-    store.record(&to_push, realm)?;
+    let confirmed = match confirm_write(io, kind, tenant, realm, &r.id, &local_src).await {
+        Ok(confirmed) => confirmed,
+        Err(reason) => return Ok(PushOutcome::NotConfirmed(reason)),
+    };
+    // The fresh tenant copy is authoritative for server-normalised metadata.
+    store.record(&confirmed, realm)?;
     Ok(PushOutcome::Pushed)
 }
 
@@ -994,6 +1119,9 @@ pub async fn diff(
 pub enum ReconcileOutcome {
     InSync,
     Pushed,
+    /// A write was accepted, but its read-back could not be confirmed. The
+    /// local file and snapshot remain unchanged.
+    NotConfirmed(ConfirmationFailure),
     Pulled,
     /// Both sides changed to the same content; snapshot refreshed.
     Converged,
@@ -1017,6 +1145,33 @@ pub async fn reconcile(
     gate: SyntaxGate,
 ) -> Result<ReconcileOutcome> {
     let store = SnapshotStore::open(tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    reconcile_with(
+        &store,
+        &workspace_tree,
+        &LiveSyncIo,
+        tenant,
+        realm,
+        kind,
+        name,
+        confirmed_prod,
+        gate,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reconcile_with(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Result<ReconcileOutcome> {
     let entry = store
         .lookup(kind, name, realm)?
         .ok_or_else(|| Error::Config(format!("{name:?} not synced")))?;
@@ -1026,11 +1181,11 @@ pub async fn reconcile(
         .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing — pull again")))?;
     let snapshot = kind.decode_source(&snap_cfg)?;
 
-    let remote_script = kind.fetch(tenant, realm, &r.id).await?;
+    let remote_script = io.fetch(kind, tenant, realm, &r.id).await?;
     let remote = kind.decode_source(&remote_script.raw_config)?;
     let remote_changed = remote != snapshot;
 
-    let dest = workspace_file(tenant, realm, r);
+    let dest = workspace_file_in(workspace_tree, realm, r);
     let local = match read_local(&dest)? {
         Some(bytes) => bytes,
         None => {
@@ -1058,11 +1213,18 @@ pub async fn reconcile(
                 reference: r.clone(),
                 raw_config: raw,
             };
-            match write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate).await? {
+            match io
+                .write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate)
+                .await?
+            {
                 Gated::Written => {}
                 Gated::Refused(refusal) => return Ok(ReconcileOutcome::Refused(refusal)),
             }
-            store.record(&to_push, realm)?;
+            let confirmed = match confirm_write(io, kind, tenant, realm, &r.id, &local).await {
+                Ok(confirmed) => confirmed,
+                Err(reason) => return Ok(ReconcileOutcome::NotConfirmed(reason)),
+            };
+            store.record(&confirmed, realm)?;
             Ok(ReconcileOutcome::Pushed)
         }
         (true, true) if local == remote => {
@@ -1087,6 +1249,8 @@ pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
 
     #[test]
     fn local_reads_only_treat_not_found_as_missing() {
@@ -1179,6 +1343,358 @@ mod tests {
             reference,
             raw_config: raw,
         }
+    }
+
+    struct FakeSyncIo {
+        fetches: Mutex<VecDeque<Result<RemoteScript>>>,
+        writes: Mutex<Vec<RemoteScript>>,
+    }
+
+    impl FakeSyncIo {
+        fn new(fetches: Vec<Result<RemoteScript>>) -> Self {
+            Self {
+                fetches: Mutex::new(fetches.into()),
+                writes: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn write_count(&self) -> usize {
+            self.writes.lock().unwrap().len()
+        }
+    }
+
+    impl SyncIo for FakeSyncIo {
+        async fn fetch(
+            &self,
+            _kind: Kind,
+            _tenant: &str,
+            _realm: &str,
+            _id: &str,
+        ) -> Result<RemoteScript> {
+            self.fetches
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected fetch")
+        }
+
+        async fn write_checked(
+            &self,
+            _kind: Kind,
+            _tenant: &str,
+            _realm: &str,
+            script: &RemoteScript,
+            _confirmed_prod: bool,
+            _gate: SyntaxGate,
+        ) -> Result<Gated> {
+            self.writes.lock().unwrap().push(script.clone());
+            Ok(Gated::Written)
+        }
+    }
+
+    fn endpoint_script(reference: &RemoteRef, source: &str, marker: &str) -> RemoteScript {
+        script(
+            reference.clone(),
+            json!({
+                "_id": reference.id,
+                "type": "text/javascript",
+                "source": source,
+                "serverMarker": marker,
+            }),
+        )
+    }
+
+    fn push_fixture(snapshot: &str, local: &str) -> (PathBuf, SnapshotStore, PathBuf, RemoteRef) {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let reference = endpoint_ref("confirm-me");
+        store
+            .record(&endpoint_script(&reference, snapshot, "snapshot"), "alpha")
+            .unwrap();
+        let local_path = workspace_file_in(&workspace, "alpha", &reference);
+        std::fs::create_dir_all(local_path.parent().unwrap()).unwrap();
+        std::fs::write(&local_path, local).unwrap();
+        (dir, store, workspace, reference)
+    }
+
+    fn snapshot_bytes(store: &SnapshotStore, reference: &RemoteRef) -> (Vec<u8>, Vec<u8>) {
+        (
+            std::fs::read(store.manifest_path()).unwrap(),
+            std::fs::read(store.config_path(reference, "alpha")).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn push_does_not_advance_snapshot_when_accepted_write_reads_back_different() {
+        let (dir, store, workspace, reference) = push_fixture("old", "local edit");
+        let before = snapshot_bytes(&store, &reference);
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "old", "before-write")),
+            Ok(endpoint_script(&reference, "still old", "after-write")),
+        ]);
+
+        let outcome = push_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            PushOutcome::NotConfirmed(ConfirmationFailure::Mismatch)
+        ));
+        assert_eq!(io.write_count(), 1);
+        assert_eq!(snapshot_bytes(&store, &reference), before);
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &reference)).unwrap(),
+            b"local edit"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconcile_does_not_advance_snapshot_when_accepted_write_reads_back_different() {
+        let (dir, store, workspace, reference) = push_fixture("old", "local edit");
+        let before = snapshot_bytes(&store, &reference);
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "old", "before-write")),
+            Ok(endpoint_script(&reference, "still old", "after-write")),
+        ]);
+
+        let outcome = reconcile_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            outcome,
+            ReconcileOutcome::NotConfirmed(ConfirmationFailure::Mismatch)
+        ));
+        assert_eq!(io.write_count(), 1);
+        assert_eq!(snapshot_bytes(&store, &reference), before);
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &reference)).unwrap(),
+            b"local edit"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn confirmed_push_records_the_fetched_config_not_the_submitted_config() {
+        let (dir, store, workspace, reference) = push_fixture("old", "local edit");
+        let confirmed = endpoint_script(&reference, "local edit", "canonical-from-server");
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "old", "before-write")),
+            Ok(confirmed.clone()),
+        ]);
+
+        let outcome = push_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, PushOutcome::Pushed));
+        assert_eq!(
+            store.load_config(&reference, "alpha").unwrap(),
+            Some(confirmed.raw_config)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn confirmed_reconcile_records_the_fetched_config_not_the_submitted_config() {
+        let (dir, store, workspace, reference) = push_fixture("old", "local edit");
+        let confirmed = endpoint_script(&reference, "local edit", "canonical-from-server");
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "old", "before-write")),
+            Ok(confirmed.clone()),
+        ]);
+
+        let outcome = reconcile_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, ReconcileOutcome::Pushed));
+        assert_eq!(
+            store.load_config(&reference, "alpha").unwrap(),
+            Some(confirmed.raw_config)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn push_confirmation_fetch_failure_leaves_snapshot_and_local_untouched() {
+        let (dir, store, workspace, reference) = push_fixture("old", "local edit");
+        let before = snapshot_bytes(&store, &reference);
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "old", "before-write")),
+            Err(Error::Api {
+                status: 503,
+                body: "confirmation unavailable".into(),
+            }),
+        ]);
+
+        let outcome = push_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        let PushOutcome::NotConfirmed(reason) = outcome else {
+            panic!("expected failed confirmation")
+        };
+        assert!(matches!(reason, ConfirmationFailure::Failed(_)));
+        assert!(reason.message().contains("confirmation failed"));
+        assert_eq!(snapshot_bytes(&store, &reference), before);
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &reference)).unwrap(),
+            b"local edit"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconcile_confirmation_decode_failure_leaves_snapshot_and_local_untouched() {
+        let (dir, store, workspace, reference) = push_fixture("old", "local edit");
+        let before = snapshot_bytes(&store, &reference);
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "old", "before-write")),
+            Ok(script(reference.clone(), json!({"_id": reference.id}))),
+        ]);
+
+        let outcome = reconcile_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        let ReconcileOutcome::NotConfirmed(reason) = outcome else {
+            panic!("expected failed confirmation")
+        };
+        assert!(matches!(reason, ConfirmationFailure::Failed(_)));
+        assert!(reason.message().contains("confirmation failed"));
+        assert_eq!(snapshot_bytes(&store, &reference), before);
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &reference)).unwrap(),
+            b"local edit"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn content_conflict_still_blocks_without_writing() {
+        let (dir, store, workspace, reference) = push_fixture("old", "local edit");
+        let before = snapshot_bytes(&store, &reference);
+        let io = FakeSyncIo::new(vec![Ok(endpoint_script(
+            &reference,
+            "remote edit",
+            "metadata",
+        ))]);
+
+        let outcome = push_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, PushOutcome::Conflict(_)));
+        assert_eq!(io.write_count(), 0);
+        assert_eq!(snapshot_bytes(&store, &reference), before);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn metadata_only_remote_drift_does_not_create_a_content_conflict() {
+        let (dir, store, workspace, reference) = push_fixture("old", "local edit");
+        let confirmed = endpoint_script(&reference, "local edit", "server-normalised");
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "old", "metadata-drifted")),
+            Ok(confirmed),
+        ]);
+
+        let outcome = push_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, PushOutcome::Pushed));
+        assert_eq!(io.write_count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
