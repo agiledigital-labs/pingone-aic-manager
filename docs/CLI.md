@@ -1053,6 +1053,15 @@ named in the output. Deleted seeds stay deleted. `typescript/package.json`
 is merged rather than replaced — the framework's toolchain entries are
 refreshed, any dependency you added is kept.
 
+`update` also removes **generated-only** script folders: a leaf
+`tsconfig.json` (and, for AM libraries, the `export * from "./….cjs"`
+wrapper) left behind when a script was deleted and recreated under a
+different context, or when the `.cjs` was later removed by hand. A folder
+that still contains a script source, or any file this tool did not generate,
+is left alone. Safe to re-run; a workspace with no orphans is a no-op.
+`aic script delete` still keeps the local `.cjs` — that is the user's
+source, not scaffolding.
+
 ### The TypeScript endpoint project
 
 `workspace/<tenant>/typescript/` lets you write custom endpoints as ordinary
