@@ -583,32 +583,22 @@ pub fn execute_push(
     let label = format!("push {full}");
     let full_for_event = full.clone();
     tokio::spawn(async move {
-        let outcome = match sync::push(
-            &tenant,
-            &realm,
-            kind,
-            &name,
-            false,
-            confirmed_prod,
-            // No opt-out in the TUI: the CLI's `--no-syntax-check` exists for
-            // scripted use, and there is no keybind worth spending on writing
-            // source the tenant has just said it cannot parse.
-            sync::SyntaxGate::Check,
-        )
-        .await
-        {
-            Err(e) => OpOutcome::Failed(e.to_string()),
-            Ok(PushOutcome::Pushed) => OpOutcome::Ok(format!("pushed {full}")),
-            Ok(PushOutcome::Unchanged) => OpOutcome::Ok(format!("{full}: no local changes")),
-            Ok(PushOutcome::AlreadyInSync) => OpOutcome::Ok(format!("{full}: already in sync")),
-            Ok(PushOutcome::Conflict(_)) => OpOutcome::Failed(format!(
-                "{full}: remote changed since last pull — resolve with `aic script diff {full}`"
-            )),
-            // Held as an inline issue, not spent on one toast line: the
-            // coordinate and the reason are what the operator needs while
-            // fixing the source.
-            Ok(PushOutcome::Refused { refusal, source }) => OpOutcome::Refused { refusal, source },
-        };
+        let outcome = push_op_outcome(
+            &full,
+            sync::push(
+                &tenant,
+                &realm,
+                kind,
+                &name,
+                false,
+                confirmed_prod,
+                // No opt-out in the TUI: the CLI's `--no-syntax-check` exists for
+                // scripted use, and there is no keybind worth spending on writing
+                // source the tenant has just said it cannot parse.
+                sync::SyntaxGate::Check,
+            )
+            .await,
+        );
         let _ = tx.send(AppEvent::Scripts(Event::OpResult {
             tenant,
             full: full_for_event,
@@ -616,6 +606,22 @@ pub fn execute_push(
             outcome,
         }));
     });
+}
+
+fn push_op_outcome(full: &str, result: crate::Result<PushOutcome>) -> OpOutcome {
+    match result {
+        Err(e) => OpOutcome::Failed(e.to_string()),
+        Ok(PushOutcome::Pushed) => OpOutcome::Ok(format!("pushed {full}")),
+        Ok(PushOutcome::NotConfirmed(reason)) => OpOutcome::Failed(reason.message()),
+        Ok(PushOutcome::Unchanged) => OpOutcome::Ok(format!("{full}: no local changes")),
+        Ok(PushOutcome::AlreadyInSync) => OpOutcome::Ok(format!("{full}: already in sync")),
+        Ok(PushOutcome::Conflict(_)) => OpOutcome::Failed(format!(
+            "{full}: remote changed since last pull — resolve with `aic script diff {full}`"
+        )),
+        // Held as an inline issue, not spent on one toast line: the coordinate
+        // and reason are what the operator needs while fixing the source.
+        Ok(PushOutcome::Refused { refusal, source }) => OpOutcome::Refused { refusal, source },
+    }
 }
 
 /// Apply a finished pull/push. Clears the in-flight marker, toasts the
@@ -725,6 +731,19 @@ mod tests {
         assert!(
             !refusal_is_current(&held, None),
             "a file that is gone leaves nothing for the strip to be about"
+        );
+    }
+
+    #[test]
+    fn an_unconfirmed_push_is_a_failed_tui_operation() {
+        let outcome = push_op_outcome(
+            "alpha/example",
+            Ok(PushOutcome::NotConfirmed(
+                sync::ConfirmationFailure::Mismatch,
+            )),
+        );
+        assert!(
+            matches!(outcome, OpOutcome::Failed(message) if message.contains("tenant state uncertain"))
         );
     }
 }
