@@ -194,6 +194,20 @@ impl DeletePlan {
         }
     }
 
+    /// The planner defaults used by the TUI and by `ctx rm --purge defaults`.
+    ///
+    /// Walk in plan order and consult [`Self::prompt_for`] after every accepted
+    /// parent so implied children are never re-decided as independent choices.
+    pub fn default_selections(&self) -> HashSet<TargetKind> {
+        let mut accepted = HashSet::new();
+        for kind in TargetKind::ALL {
+            if let PromptAction::Ask { default_on: true } = self.prompt_for(kind, &accepted) {
+                accepted.insert(kind);
+            }
+        }
+        accepted
+    }
+
     /// The set that will actually be purged.
     ///
     /// Drops anything that is not [`TargetDecision::Offered`] — a force flag

@@ -805,7 +805,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_keys_does_not_touch_a_refused_target() {
+    async fn purge_all_does_not_touch_a_refused_target() {
         let departing = tenant("UAT", Some(DUP_SA));
         let keep = tenant("uat", Some(UAT_SA));
         let mut vault = VaultView::default();
@@ -846,7 +846,7 @@ mod tests {
             !io.vault_removed
                 .iter()
                 .any(|(artifact, _)| *artifact == VaultArtifact::LogKeys),
-            "refused log key must stay in the vault even under --delete-keys"
+            "refused log key must stay in the vault even under --purge all --force"
         );
         let _ = std::fs::remove_dir_all(root);
     }

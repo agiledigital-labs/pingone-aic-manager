@@ -89,7 +89,7 @@ pub struct Form {
 
 impl Form {
     fn new(tenant: Tenant, inventory: Inventory, plan: DeletePlan) -> Self {
-        let accepted = default_accepted(&plan);
+        let accepted = plan.default_selections();
         Self {
             tenant,
             inventory,
@@ -143,16 +143,6 @@ impl Form {
     fn purge(&self) -> ResolvedPurge {
         self.plan.resolve_purge(self.accepted.iter().copied())
     }
-}
-
-fn default_accepted(plan: &DeletePlan) -> HashSet<TargetKind> {
-    let mut accepted = HashSet::new();
-    for kind in TargetKind::ALL {
-        if let PromptAction::Ask { default_on: true } = plan.prompt_for(kind, &accepted) {
-            accepted.insert(kind);
-        }
-    }
-    accepted
 }
 
 pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
