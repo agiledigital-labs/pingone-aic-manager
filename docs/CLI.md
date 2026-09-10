@@ -285,7 +285,7 @@ but this standalone command does not set `operator.name`.
 | `aic logs key set [--tenant <name>] [--id <api_key_id>]`       | Store or replace the log API key pair in the vault. Prompts for the secret.                                  |
 | `aic logs key show [--tenant <name>]`                          | Show whether a log API key pair is stored, and print the key id.                                             |
 | `aic logs key rm [--tenant <name>]`                            | Remove the stored log API key pair.                                                                          |
-| `aic logs key create [--tenant <name>] [--cookie-name <name>]` | Mint a new key pair from an admin session, then store it. Prompts for the AM session cookie value if needed. |
+| `aic logs key create [--tenant <name>] [--cookie-name <name>] [--yes]` | Mint a new key pair from an admin session, then store it. Prompts for the AM session cookie value if needed; production requires `--yes` before any session input is read. |
 
 ### Remote fetch
 
@@ -497,8 +497,8 @@ the workspace.
 ```bash
 aic journey list [--realm alpha] [--json]              # journey names
 aic journey pull <name> [--realm alpha]                # tree + nodes → workspace JSON
-aic journey push <name> [--realm alpha] [--force]      # push an export back
-aic journey delete <name> --force [--realm alpha]      # delete (requires --force)
+aic journey push <name> [--realm alpha] [--force] [--yes] # push; production requires --yes
+aic journey delete <name> --force [--realm alpha] [--yes] # delete; production requires --yes
 aic journey using-script <script-uuid> [--realm alpha] [--json] # journeys referencing a script
 aic journey nodes [--realm alpha] [--json]             # available node types
 aic journey node-schema <nodeType> [--realm alpha]     # a node type's schema (JSON)
@@ -588,11 +588,11 @@ command makes the caller-chosen id the default name as well.
 ```bash
 aic role list [--json]
 aic role show <id> [--json]
-aic role create <id> [--name <name>] [--description <text>]
-aic role delete <id> [--force]
+aic role create <id> [--name <name>] [--description <text>] [--yes]
+aic role delete <id> [--force] [--yes]
 aic role privilege list <role-id> [--json]
-aic role privilege add <role-id> --path managed/alpha_user --permissions VIEW,UPDATE --attr mail:rw --attr userName:ro [--privilege-name <name>] [--actions action1,action2]
-aic role privilege rm <role-id> --path managed/alpha_user
+aic role privilege add <role-id> --path managed/alpha_user --permissions VIEW,UPDATE --attr mail:rw --attr userName:ro [--privilege-name <name>] [--actions action1,action2] [--yes]
+aic role privilege rm <role-id> --path managed/alpha_user [--yes]
 ```
 
 `create` refuses an existing id because IDM's `PUT` is a destructive full
@@ -605,6 +605,10 @@ not publish an authoritative enum. Privilege edits use the revision read with
 the role; a concurrent modification is reported and left untouched instead of
 being overwritten. Deletion prompts by default, while `--force` skips
 confirmation.
+
+All role mutations require `--yes` when the selected tenant is configured as
+production. `--force` on delete only skips its separate deletion prompt; it does
+not confirm the production environment.
 
 ---
 
@@ -695,9 +699,9 @@ aic oauth grant list <id> [--realm alpha]              # grant types on one clie
 aic oauth grant add <id> <grant>... [--realm alpha] [--yes]
 aic oauth grant remove <id> <grant>... [--realm alpha] [--yes]
 aic oauth pull <id> [--realm alpha]                     # one client → workspace JSON
-aic oauth push <id> [--realm alpha] [--force]           # push a workspace client JSON back
+aic oauth push <id> [--realm alpha] [--force] [--yes]   # push; production requires --yes
 aic oauth diff <id> [--local-vs-snapshot | --snapshot-vs-remote]  # compare two versions
-aic oauth delete <id> --force [--realm alpha]           # delete (requires --force)
+aic oauth delete <id> --force [--realm alpha] [--yes]   # delete; production requires --yes
 ```
 
 `provider get` prints a compact realm-wide configuration summary, resolving

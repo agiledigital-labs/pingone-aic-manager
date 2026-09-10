@@ -95,9 +95,7 @@ impl AicClient {
         api_version: Option<&str>,
         if_match: Option<&str>,
     ) -> Result<serde_json::Value> {
-        if self.tenant.theme == TenantTheme::Production && !confirmed_prod {
-            return Err(Error::ProdConfirmRequired);
-        }
+        self.ensure_write_allowed(confirmed_prod)?;
         let token = self.bearer().await?;
         let resp = self
             .json_request(method, path, body, &token, api_version, if_match)
@@ -153,9 +151,7 @@ impl AicClient {
         confirmed_prod: bool,
         authorization: Option<&str>,
     ) -> Result<serde_json::Value> {
-        if self.tenant.theme == TenantTheme::Production && !confirmed_prod {
-            return Err(Error::ProdConfirmRequired);
-        }
+        self.ensure_write_allowed(confirmed_prod)?;
         let resp = self
             .form_request(method, path, body, authorization)
             .send()
@@ -184,6 +180,14 @@ impl AicClient {
         match authorization {
             Some(authorization) => request.header("Authorization", authorization),
             None => request,
+        }
+    }
+
+    fn ensure_write_allowed(&self, confirmed_prod: bool) -> Result<()> {
+        if self.tenant.theme == TenantTheme::Production && !confirmed_prod {
+            Err(Error::ProdConfirmRequired)
+        } else {
+            Ok(())
         }
     }
 
@@ -226,6 +230,19 @@ mod tests {
             scopes: Vec::new(),
             provenance: crate::config::Provenance::default(),
         }
+    }
+
+    #[test]
+    fn production_transport_requires_the_request_confirmation_bit() {
+        let mut production = tenant("https://tenant.example".into());
+        production.theme = TenantTheme::Production;
+        let client = AicClient::new(production, serde_json::Value::Null);
+
+        assert!(matches!(
+            client.ensure_write_allowed(false),
+            Err(Error::ProdConfirmRequired)
+        ));
+        assert!(client.ensure_write_allowed(true).is_ok());
     }
 
     #[test]

@@ -5,11 +5,36 @@ use std::path::is_separator;
 
 use serde_json::{Value, json};
 
+use crate::aic::api::ApiCall;
 use crate::config::tenant::Tenant;
 use crate::jwtbearer::spec::TokenRequest;
 use crate::{Error, Result};
 
 const API_VERSION: &str = "protocol=2.1,resource=1.0";
+
+fn issuer_post_call<'a>(
+    tenant: &'a str,
+    path: &'a str,
+    body: Value,
+    confirmed_prod: bool,
+) -> ApiCall<'a> {
+    ApiCall::new(tenant, "POST", path)
+        .body(body)
+        .confirmed_prod(confirmed_prod)
+        .api_version(API_VERSION)
+}
+
+fn issuer_put_call<'a>(
+    tenant: &'a str,
+    path: &'a str,
+    body: Value,
+    confirmed_prod: bool,
+) -> ApiCall<'a> {
+    ApiCall::new(tenant, "PUT", path)
+        .body(body)
+        .confirmed_prod(confirmed_prod)
+        .api_version(API_VERSION)
+}
 
 /// The bare realm segment — what `docs/api/17-jwt-bearer-user-tokens.md` writes
 /// as `{realm-path}`. It carries no `/am/json` prefix, because the two families
@@ -92,7 +117,11 @@ pub async fn read_issuer(tenant: &str, realm: &str, id: &str) -> Result<Value> {
 /// Fetch AM's default issuer object before creating one.
 pub async fn issuer_template(tenant: &str, realm: &str) -> Result<Value> {
     let path = format!("{}?_action=template", issuers_path(realm));
-    crate::aic::api::post_versioned(tenant, &path, json!({}), false, API_VERSION).await
+    // The template action stores nothing. Match script syntax validation by
+    // passing the method-based transport gate without user production consent.
+    issuer_post_call(tenant, &path, json!({}), true)
+        .send()
+        .await
 }
 
 /// Create or update an issuer. AM agents use plain PUT without `If-Match`.
@@ -105,12 +134,34 @@ pub async fn upsert_issuer(
 ) -> Result<Value> {
     validate_issuer_id(id)?;
     let path = format!("{}/{}", issuers_path(realm), id);
-    crate::aic::api::put_versioned(tenant, &path, body, confirmed_prod, API_VERSION).await
+    issuer_put_call(tenant, &path, body, confirmed_prod)
+        .send()
+        .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Request;
+
+    fn request(call: ApiCall<'_>) -> crate::agent::ApiCallRequest {
+        let Request::ApiCall(request) = call.envelope() else {
+            panic!("expected API call");
+        };
+        request
+    }
+
+    #[test]
+    fn issuer_template_bypasses_prod_but_issuer_upsert_does_not() {
+        let template_path = format!("{}?_action=template", issuers_path("alpha"));
+        let template = request(issuer_post_call("prod", &template_path, json!({}), true));
+        assert_eq!(template.method, "POST");
+        assert!(template.confirmed_prod);
+
+        let issuer_path = format!("{}/issuer", issuers_path("alpha"));
+        assert!(!request(issuer_put_call("prod", &issuer_path, json!({}), false)).confirmed_prod);
+        assert!(request(issuer_put_call("prod", &issuer_path, json!({}), true)).confirmed_prod);
+    }
 
     /// These four paths sit under two different roots and are easy to compose
     /// wrongly: `realm-config` hangs off `/am/json`, the OAuth2 endpoints off

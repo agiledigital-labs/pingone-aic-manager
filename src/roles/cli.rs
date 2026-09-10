@@ -3,7 +3,7 @@
 use clap::Subcommand;
 use serde_json::{Value, json};
 
-use crate::cli::{confirm_destructive, print_json, print_table, tenant_for};
+use crate::cli::{confirm_destructive, ensure_prod_confirmed, print_json, print_table, tenant_for};
 use crate::managed;
 use crate::roles::{api, spec};
 use crate::{Error, Result};
@@ -36,6 +36,9 @@ pub enum RoleCommand {
         description: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm the write on a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
     /// Delete an IDM internal role, prompting unless --force is supplied.
     Delete {
@@ -44,6 +47,9 @@ pub enum RoleCommand {
         force: bool,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm the write on a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
     /// List or amend one role's managed-object privileges.
     Privilege {
@@ -81,6 +87,9 @@ pub enum PrivilegeCommand {
         actions: Vec<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm the write on a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
     /// Remove the privilege with an exact path match.
     Rm {
@@ -89,6 +98,9 @@ pub enum PrivilegeCommand {
         path: String,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm the write on a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -101,8 +113,14 @@ pub async fn run(command: RoleCommand) -> Result<()> {
             name,
             description,
             tenant,
-        } => create(&id, name, description, tenant).await,
-        RoleCommand::Delete { id, force, tenant } => delete(&id, force, tenant).await,
+            yes,
+        } => create(&id, name, description, tenant, yes).await,
+        RoleCommand::Delete {
+            id,
+            force,
+            tenant,
+            yes,
+        } => delete(&id, force, tenant, yes).await,
         RoleCommand::Privilege { command } => privilege(command).await,
     }
 }
@@ -135,9 +153,11 @@ async fn create(
     name: Option<String>,
     description: Option<String>,
     tenant_arg: Option<String>,
+    yes: bool,
 ) -> Result<()> {
     validate_id(id)?;
     let tenant = tenant_for(tenant_arg)?;
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
     match api::read_role(&tenant, id).await {
         Ok(_) => {
             return Err(Error::Config(format!(
@@ -153,22 +173,23 @@ async fn create(
     if let Some(description) = description {
         body["description"] = Value::String(description);
     }
-    let created = api::put_role(&tenant, id, body).await?;
+    let created = api::put_role(&tenant, id, body, ok.confirmed_prod).await?;
     let created_id = string_field(&created, "_id");
     let created_name = string_field(&created, "name");
     println!("created internal role {created_id} (name: {created_name})");
     Ok(())
 }
 
-async fn delete(id: &str, force: bool, tenant_arg: Option<String>) -> Result<()> {
+async fn delete(id: &str, force: bool, tenant_arg: Option<String>, yes: bool) -> Result<()> {
     validate_id(id)?;
     let tenant = tenant_for(tenant_arg)?;
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
     if !force && !confirm_delete(id)? {
         return Err(Error::Config(format!(
             "internal role {id:?} was not deleted"
         )));
     }
-    api::delete_role(&tenant, id).await?;
+    api::delete_role(&tenant, id, ok.confirmed_prod).await?;
     println!("deleted internal role {id}");
     Ok(())
 }
@@ -188,15 +209,19 @@ async fn privilege(command: PrivilegeCommand) -> Result<()> {
             privilege_name,
             actions,
             tenant,
+            yes,
         } => {
             privilege_add(
                 &role_id,
-                path,
-                permissions,
-                access_flags,
-                privilege_name,
-                actions,
+                spec::PrivilegeSpec {
+                    name: privilege_name,
+                    path,
+                    actions,
+                    permissions,
+                    access_flags,
+                },
                 tenant,
+                yes,
             )
             .await
         }
@@ -204,7 +229,8 @@ async fn privilege(command: PrivilegeCommand) -> Result<()> {
             role_id,
             path,
             tenant,
-        } => privilege_rm(&role_id, &path, tenant).await,
+            yes,
+        } => privilege_rm(&role_id, &path, tenant, yes).await,
     }
 }
 
@@ -227,24 +253,16 @@ async fn privilege_list(
 
 async fn privilege_add(
     role_id: &str,
-    path: String,
-    permissions: Vec<String>,
-    access_flags: Vec<spec::AccessFlag>,
-    privilege_name: Option<String>,
-    actions: Vec<String>,
+    privilege_spec: spec::PrivilegeSpec,
     tenant_arg: Option<String>,
+    yes: bool,
 ) -> Result<()> {
     validate_id(role_id)?;
-    let privilege = spec::build_privilege(spec::PrivilegeSpec {
-        name: privilege_name,
-        path,
-        actions,
-        permissions,
-        access_flags,
-    })?;
+    let privilege = spec::build_privilege(privilege_spec)?;
     warn_unknown_permissions(&privilege.permissions);
     let object_name = spec::object_name(&privilege.path)?;
     let tenant = tenant_for(tenant_arg)?;
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
 
     // Resolve and validate the live schema before reading or writing the role:
     // IDM's privilege-policy 403 cannot identify a bad path or attribute.
@@ -254,15 +272,21 @@ async fn privilege_add(
     let role = api::read_role(&tenant, role_id).await?;
     let path = privilege.path.clone();
     let merged = spec::merge_privilege(&role, privilege)?;
-    privilege_write(&tenant, role_id, merged.amendment).await?;
+    privilege_write(&tenant, role_id, merged.amendment, ok.confirmed_prod).await?;
     let verb = if merged.replaced { "replaced" } else { "added" };
     println!("{verb} privilege {path} on internal role {role_id}");
     Ok(())
 }
 
-async fn privilege_rm(role_id: &str, path: &str, tenant_arg: Option<String>) -> Result<()> {
+async fn privilege_rm(
+    role_id: &str,
+    path: &str,
+    tenant_arg: Option<String>,
+    yes: bool,
+) -> Result<()> {
     validate_id(role_id)?;
     let tenant = tenant_for(tenant_arg)?;
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
     let role = api::read_role(&tenant, role_id).await?;
     let (amendment, removed) = spec::remove_privilege(&role, path)?;
     if !removed {
@@ -270,7 +294,7 @@ async fn privilege_rm(role_id: &str, path: &str, tenant_arg: Option<String>) -> 
             "internal role {role_id:?} has no privilege with path {path:?}"
         )));
     }
-    privilege_write(&tenant, role_id, amendment).await?;
+    privilege_write(&tenant, role_id, amendment, ok.confirmed_prod).await?;
     println!("removed privilege {path} from internal role {role_id}");
     Ok(())
 }
@@ -279,8 +303,17 @@ async fn privilege_write(
     tenant: &str,
     role_id: &str,
     amendment: spec::RoleAmendment,
+    confirmed_prod: bool,
 ) -> Result<Value> {
-    match api::put_role_if_match(tenant, role_id, amendment.body, &amendment.revision).await {
+    match api::put_role_if_match(
+        tenant,
+        role_id,
+        amendment.body,
+        &amendment.revision,
+        confirmed_prod,
+    )
+    .await
+    {
         Err(Error::Api { status: 403, .. }) => Err(Error::Config(format!(
             "AM rejected the privilege for internal role {role_id:?}; it validates the --path, --permissions values, and --attr names, but reports all such failures as an opaque policy-validation 403"
         ))),
@@ -410,4 +443,95 @@ fn string_array(value: Option<&Value>) -> String {
                 .join(",")
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+    use crate::config::TenantTheme;
+
+    fn parsed(args: &[&str]) -> RoleCommand {
+        let cli = crate::cli::Cli::try_parse_from(args).expect("role command should parse");
+        let Some(crate::cli::Command::Role { command }) = cli.command else {
+            panic!("expected role command");
+        };
+        command
+    }
+
+    fn assert_production_consent(yes: bool) {
+        let result = crate::cli::prod_write_ok(TenantTheme::Production, "prod", yes);
+        if yes {
+            assert!(
+                result
+                    .expect("--yes should authorize production")
+                    .confirmed_prod
+            );
+        } else {
+            let Err(error) = result else {
+                panic!("production write without --yes was authorized");
+            };
+            assert!(error.to_string().contains("--yes"));
+        }
+    }
+
+    #[test]
+    fn every_role_mutation_parses_and_forwards_production_consent() {
+        let commands = [
+            parsed(&["aic", "role", "create", "support", "--yes"]),
+            parsed(&["aic", "role", "delete", "support", "--force", "--yes"]),
+            parsed(&[
+                "aic",
+                "role",
+                "privilege",
+                "add",
+                "support",
+                "--path",
+                "managed/alpha_user",
+                "--permissions",
+                "VIEW",
+                "--yes",
+            ]),
+            parsed(&[
+                "aic",
+                "role",
+                "privilege",
+                "rm",
+                "support",
+                "--path",
+                "managed/alpha_user",
+                "--yes",
+            ]),
+        ];
+
+        for command in commands {
+            let yes = match command {
+                RoleCommand::Create { yes, .. } | RoleCommand::Delete { yes, .. } => yes,
+                RoleCommand::Privilege {
+                    command: PrivilegeCommand::Add { yes, .. } | PrivilegeCommand::Rm { yes, .. },
+                } => yes,
+                other => panic!("expected role mutation, got {other:?}"),
+            };
+            assert_production_consent(yes);
+        }
+
+        assert_production_consent(false);
+    }
+
+    #[test]
+    fn role_reads_do_not_accept_production_consent() {
+        assert!(crate::cli::Cli::try_parse_from(["aic", "role", "list", "--yes"]).is_err());
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "aic",
+                "role",
+                "privilege",
+                "list",
+                "support",
+                "--yes",
+            ])
+            .is_err()
+        );
+    }
 }

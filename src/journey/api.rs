@@ -7,9 +7,32 @@ use std::path::is_separator;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::aic::api::ApiCall;
 use crate::{Error, Result};
 
 const API_VERSION: &str = "protocol=2.0,resource=1.0";
+
+fn versioned_call<'a>(
+    tenant: &'a str,
+    method: &'a str,
+    path: &'a str,
+    body: Option<Value>,
+    confirmed_prod: bool,
+) -> ApiCall<'a> {
+    let mut call = ApiCall::new(tenant, method, path)
+        .confirmed_prod(confirmed_prod)
+        .api_version(API_VERSION);
+    if let Some(body) = body {
+        call = call.body(body);
+    }
+    call
+}
+
+fn read_action_call<'a>(tenant: &'a str, path: &'a str) -> ApiCall<'a> {
+    // Same treatment as script syntax validation: this POST stores nothing,
+    // so it passes the method-based transport gate without user consent.
+    versioned_call(tenant, "POST", path, Some(json!({})), true)
+}
 
 fn realm_path(realm: &str) -> String {
     format!("/am/json/realms/root/realms/{realm}")
@@ -121,10 +144,18 @@ pub async fn read_tree(tenant: &str, realm: &str, name: &str) -> Result<Value> {
     crate::aic::api::get_versioned(tenant, &path, API_VERSION).await
 }
 
-pub async fn upsert_tree(tenant: &str, realm: &str, name: &str, body: Value) -> Result<Value> {
+pub async fn upsert_tree(
+    tenant: &str,
+    realm: &str,
+    name: &str,
+    body: Value,
+    confirmed_prod: bool,
+) -> Result<Value> {
     let path = format!("{}/trees/{name}", trees_path(realm));
     let body = strip_server_fields(&body);
-    crate::aic::api::put_versioned(tenant, &path, body, false, API_VERSION).await
+    versioned_call(tenant, "PUT", &path, Some(body), confirmed_prod)
+        .send()
+        .await
 }
 
 pub async fn read_node(tenant: &str, realm: &str, node_type: &str, node_id: &str) -> Result<Value> {
@@ -139,23 +170,32 @@ pub async fn upsert_node(
     node_type: &str,
     node_id: &str,
     body: Value,
+    confirmed_prod: bool,
 ) -> Result<Value> {
     validate_node_type(node_type)?;
     let path = format!("{}/{node_type}/{node_id}", nodes_path(realm));
     let body = strip_server_fields(&body);
-    crate::aic::api::put_versioned(tenant, &path, body, false, API_VERSION).await
+    versioned_call(tenant, "PUT", &path, Some(body), confirmed_prod)
+        .send()
+        .await
 }
 
-pub async fn delete_tree(tenant: &str, realm: &str, name: &str) -> Result<()> {
+pub async fn delete_tree(
+    tenant: &str,
+    realm: &str,
+    name: &str,
+    confirmed_prod: bool,
+) -> Result<()> {
     let path = format!("{}/trees/{name}", trees_path(realm));
-    crate::aic::api::delete_versioned(tenant, &path, false, API_VERSION).await?;
+    versioned_call(tenant, "DELETE", &path, None, confirmed_prod)
+        .send()
+        .await?;
     Ok(())
 }
 
 pub async fn list_node_types(tenant: &str, realm: &str) -> Result<Vec<NodeType>> {
     let path = format!("{}?_action=getAllTypes", nodes_path(realm));
-    let body =
-        crate::aic::api::post_versioned(tenant, &path, json!({}), false, API_VERSION).await?;
+    let body = read_action_call(tenant, &path).send().await?;
     let result = body
         .get("result")
         .and_then(Value::as_array)
@@ -169,13 +209,13 @@ pub async fn list_node_types(tenant: &str, realm: &str) -> Result<Vec<NodeType>>
 pub async fn node_schema(tenant: &str, realm: &str, node_type: &str) -> Result<Value> {
     validate_node_type(node_type)?;
     let path = format!("{}/{node_type}?_action=schema", nodes_path(realm));
-    crate::aic::api::post_versioned(tenant, &path, json!({}), false, API_VERSION).await
+    read_action_call(tenant, &path).send().await
 }
 
 pub async fn node_template(tenant: &str, realm: &str, node_type: &str) -> Result<Value> {
     validate_node_type(node_type)?;
     let path = format!("{}/{node_type}?_action=template", nodes_path(realm));
-    crate::aic::api::post_versioned(tenant, &path, json!({}), false, API_VERSION).await
+    read_action_call(tenant, &path).send().await
 }
 
 pub async fn list_custom_node_types(tenant: &str) -> Result<Vec<Value>> {
@@ -243,7 +283,13 @@ pub async fn pull(tenant: &str, realm: &str, name: &str) -> Result<JourneyExport
     .await
 }
 
-pub async fn push(tenant: &str, realm: &str, name: &str, export: &JourneyExport) -> Result<usize> {
+pub async fn push(
+    tenant: &str,
+    realm: &str,
+    name: &str,
+    export: &JourneyExport,
+    confirmed_prod: bool,
+) -> Result<usize> {
     let refs = node_refs(&export.tree)?;
     let mut pushed = 0;
     for (node_id, node_type) in refs {
@@ -253,10 +299,18 @@ pub async fn push(tenant: &str, realm: &str, name: &str, export: &JourneyExport)
             );
             continue;
         };
-        upsert_node(tenant, realm, &node_type, &node_id, node.clone()).await?;
+        upsert_node(
+            tenant,
+            realm,
+            &node_type,
+            &node_id,
+            node.clone(),
+            confirmed_prod,
+        )
+        .await?;
         pushed += 1;
     }
-    upsert_tree(tenant, realm, name, export.tree.clone()).await?;
+    upsert_tree(tenant, realm, name, export.tree.clone(), confirmed_prod).await?;
     Ok(pushed)
 }
 
@@ -297,6 +351,35 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::agent::Request;
+
+    fn request(call: ApiCall<'_>) -> crate::agent::ApiCallRequest {
+        let Request::ApiCall(request) = call.envelope() else {
+            panic!("expected API call");
+        };
+        request
+    }
+
+    #[test]
+    fn node_introspection_posts_bypass_prod_but_journey_writes_do_not() {
+        for path in [
+            format!("{}?_action=getAllTypes", nodes_path("alpha")),
+            format!("{}/PageNode?_action=schema", nodes_path("alpha")),
+            format!("{}/PageNode?_action=template", nodes_path("alpha")),
+        ] {
+            let request = request(read_action_call("prod", &path));
+            assert_eq!(request.method, "POST");
+            assert!(request.confirmed_prod);
+        }
+
+        let path = format!("{}/trees/Login", trees_path("alpha"));
+        assert!(
+            !request(versioned_call("prod", "PUT", &path, Some(json!({})), false,)).confirmed_prod
+        );
+        assert!(
+            request(versioned_call("prod", "PUT", &path, Some(json!({})), true,)).confirmed_prod
+        );
+    }
 
     #[tokio::test]
     async fn parses_full_node_type_entry() {

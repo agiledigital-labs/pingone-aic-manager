@@ -6,9 +6,26 @@ use std::path::is_separator;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::aic::api::ApiCall;
 use crate::{Error, Result};
 
 pub const API_VERSION: &str = "protocol=2.0,resource=1.0";
+
+fn mapping_call<'a>(
+    tenant: &'a str,
+    method: &'a str,
+    path: &'a str,
+    body: Option<Value>,
+    confirmed_prod: bool,
+) -> ApiCall<'a> {
+    let mut call = ApiCall::new(tenant, method, path)
+        .confirmed_prod(confirmed_prod)
+        .api_version(API_VERSION);
+    if let Some(body) = body {
+        call = call.body(body);
+    }
+    call
+}
 
 fn store_path(realm: &str) -> String {
     format!(
@@ -81,8 +98,11 @@ pub async fn read_mapping(tenant: &str, realm: &str, secret_id: &str) -> Result<
 
 pub async fn valid_secret_ids(tenant: &str, realm: &str) -> Result<Vec<String>> {
     let path = format!("{}?_action=schema", mappings_path(realm));
-    let body =
-        crate::aic::api::post_versioned(tenant, &path, json!({}), false, API_VERSION).await?;
+    // This schema action stores nothing. Match script syntax validation by
+    // passing the method-based transport gate without user production consent.
+    let body = mapping_call(tenant, "POST", &path, Some(json!({})), true)
+        .send()
+        .await?;
     let values = body
         .pointer("/properties/secretId/enum")
         .and_then(Value::as_array)
@@ -120,7 +140,9 @@ pub async fn set_mapping(
     // absent. Verified live (2026-06-17) for every label/alias pairing; the
     // console sends it too. Harmless on update.
     let body = json!({ "aliases": [alias], "secretId": secret_id });
-    crate::aic::api::put_versioned(tenant, &path, body, confirmed_prod, API_VERSION).await
+    mapping_call(tenant, "PUT", &path, Some(body), confirmed_prod)
+        .send()
+        .await
 }
 
 pub async fn delete_mapping(tenant: &str, realm: &str, secret_id: &str) -> Result<()> {
@@ -135,7 +157,9 @@ pub async fn delete_mapping_confirmed(
 ) -> Result<()> {
     validate_secret_id(secret_id)?;
     let path = format!("{}/{}", mappings_path(realm), secret_id);
-    crate::aic::api::delete_versioned(tenant, &path, confirmed_prod, API_VERSION).await?;
+    mapping_call(tenant, "DELETE", &path, None, confirmed_prod)
+        .send()
+        .await?;
     Ok(())
 }
 
@@ -178,6 +202,50 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::agent::Request;
+
+    fn request(call: ApiCall<'_>) -> crate::agent::ApiCallRequest {
+        let Request::ApiCall(request) = call.envelope() else {
+            panic!("expected API call");
+        };
+        request
+    }
+
+    #[test]
+    fn valid_label_schema_bypasses_prod_but_mapping_writes_do_not() {
+        let schema_path = format!("{}?_action=schema", mappings_path("alpha"));
+        let schema = request(mapping_call(
+            "prod",
+            "POST",
+            &schema_path,
+            Some(json!({})),
+            true,
+        ));
+        assert_eq!(schema.method, "POST");
+        assert!(schema.confirmed_prod);
+
+        let mapping_path = format!("{}/am.example.secret", mappings_path("alpha"));
+        assert!(
+            !request(mapping_call(
+                "prod",
+                "PUT",
+                &mapping_path,
+                Some(json!({})),
+                false,
+            ))
+            .confirmed_prod
+        );
+        assert!(
+            request(mapping_call(
+                "prod",
+                "PUT",
+                &mapping_path,
+                Some(json!({})),
+                true,
+            ))
+            .confirmed_prod
+        );
+    }
 
     #[test]
     fn parse_mapping_extracts_secret_id_and_first_alias() {
