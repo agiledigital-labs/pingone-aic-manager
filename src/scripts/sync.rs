@@ -15,6 +15,7 @@ pub use super::gate::SyntaxGate;
 use super::gate::{Gated, write_checked};
 use super::syntax::Refusal;
 use super::{Kind, RemoteRef, RemoteScript};
+use crate::cli::force::OperationAndSyntaxCheckForce;
 use crate::config::ProjectConfig;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -22,10 +23,11 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 /// Which scripts an operation targets.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selector {
     All,
     Name(String),
+    Prefix(String),
 }
 
 impl Selector {
@@ -33,6 +35,7 @@ impl Selector {
         match self {
             Selector::All => true,
             Selector::Name(n) => r.name == *n,
+            Selector::Prefix(prefix) => r.name.starts_with(prefix),
         }
     }
 }
@@ -83,6 +86,36 @@ pub struct PullPlan {
 }
 
 impl PullPlan {
+    #[cfg(test)]
+    pub(crate) fn protected_for_test(names: &[&str]) -> Self {
+        Self {
+            store: SnapshotStore {
+                dir: PathBuf::new(),
+            },
+            workspace_tree: PathBuf::new(),
+            entries: names
+                .iter()
+                .map(|name| PreparedPull {
+                    realm: String::new(),
+                    script: RemoteScript {
+                        reference: RemoteRef {
+                            kind: Kind::IdmSyncMapping,
+                            id: format!("sync/{name}"),
+                            name: (*name).to_string(),
+                            context: None,
+                            is_default: false,
+                            evaluator_version: None,
+                        },
+                        raw_config: Value::Null,
+                    },
+                    remote_source: b"remote".to_vec(),
+                    local: Some(b"local".to_vec()),
+                    protected: true,
+                })
+                .collect(),
+        }
+    }
+
     pub fn protected_refs(&self) -> Vec<String> {
         self.entries
             .iter()
@@ -1172,6 +1205,34 @@ pub async fn push(
     .await
 }
 
+/// CLI push bridge: keep the parsed operation permission intact until the
+/// call that selects the engine's forced-convergence path.
+pub async fn push_authorized(
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+    force: OperationAndSyntaxCheckForce,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Result<PushOutcome> {
+    let store = SnapshotStore::open(tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    push_authorized_with(
+        &store,
+        &workspace_tree,
+        &LiveSyncIo,
+        tenant,
+        realm,
+        kind,
+        name,
+        force,
+        confirmed_prod,
+        gate,
+    )
+    .await
+}
+
 /// Push a selected batch through the same per-entry engine as a single push.
 /// Results stay per-entry so the CLI can continue past non-fatal failures.
 pub async fn push_batch(
@@ -1190,6 +1251,81 @@ pub async fn push_batch(
         tenant,
         candidates,
         force,
+        confirmed_prod,
+        gate,
+    )
+    .await
+}
+
+/// Batch counterpart to [`push_authorized`].
+pub async fn push_batch_authorized(
+    tenant: &str,
+    candidates: Vec<Candidate>,
+    force: OperationAndSyntaxCheckForce,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Vec<(Candidate, Result<PushOutcome>)> {
+    let store = SnapshotStore::open(tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    push_batch_authorized_with(
+        &store,
+        &workspace_tree,
+        &LiveSyncIo,
+        tenant,
+        candidates,
+        force,
+        confirmed_prod,
+        gate,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn push_authorized_with(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+    force: OperationAndSyntaxCheckForce,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Result<PushOutcome> {
+    push_with(
+        store,
+        workspace_tree,
+        io,
+        tenant,
+        realm,
+        kind,
+        name,
+        force.operation(),
+        confirmed_prod,
+        gate,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn push_batch_authorized_with(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    candidates: Vec<Candidate>,
+    force: OperationAndSyntaxCheckForce,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Vec<(Candidate, Result<PushOutcome>)> {
+    push_batch_with(
+        store,
+        workspace_tree,
+        io,
+        tenant,
+        candidates,
+        force.operation(),
         confirmed_prod,
         gate,
     )
@@ -1666,6 +1802,7 @@ pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -1733,6 +1870,22 @@ mod tests {
         dir
     }
 
+    fn parsed_push_force(flags: &[&str]) -> OperationAndSyntaxCheckForce {
+        let cli = crate::cli::Cli::try_parse_from(
+            ["aic", "script", "push", "endpoint/confirm-me"]
+                .into_iter()
+                .chain(flags.iter().copied()),
+        )
+        .unwrap();
+        let Some(crate::cli::Command::Script {
+            command: crate::scripts::cli::ScriptCommand::Push { force, .. },
+        }) = cli.command
+        else {
+            panic!("expected script push")
+        };
+        force
+    }
+
     fn am_ref(name: &str) -> RemoteRef {
         RemoteRef {
             kind: Kind::Am,
@@ -1748,6 +1901,17 @@ mod tests {
         RemoteRef {
             kind: Kind::IdmEndpoint,
             id: format!("endpoint/{name}"),
+            name: name.into(),
+            context: None,
+            is_default: false,
+            evaluator_version: None,
+        }
+    }
+
+    fn mapping_ref(name: &str) -> RemoteRef {
+        RemoteRef {
+            kind: Kind::IdmSyncMapping,
+            id: format!("sync/{name}"),
             name: name.into(),
             context: None,
             is_default: false,
@@ -1851,6 +2015,13 @@ mod tests {
                 "source": source,
                 "serverMarker": marker,
             }),
+        )
+    }
+
+    fn mapping_script(reference: &RemoteRef, source: &str) -> RemoteScript {
+        script(
+            reference.clone(),
+            json!({"_id": reference.id, "type": "text/javascript", "source": source}),
         )
     }
 
@@ -2001,6 +2172,61 @@ mod tests {
         );
         assert_eq!(
             std::fs::read(workspace_file_in(&workspace, "alpha", &two)).unwrap(),
+            b"local edit"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mapping_prefix_pull_preflights_the_whole_mapping_without_installing() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let one = mapping_ref("map.onCreate");
+        let two = mapping_ref("map.transform.name");
+        let other = mapping_ref("other.onCreate");
+        for reference in [&one, &two] {
+            let path = workspace_file_in(&workspace, "", reference);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"local edit").unwrap();
+        }
+        let io = FakeSyncIo {
+            lists: Mutex::new(vec![Ok(vec![one.clone(), other, two.clone()])].into()),
+            fetches: Mutex::new(
+                vec![
+                    Ok(mapping_script(&one, "remote one")),
+                    Ok(mapping_script(&two, "remote two")),
+                ]
+                .into(),
+            ),
+            writes: Mutex::new(Vec::new()),
+            refusal: Mutex::new(None),
+        };
+
+        let plan = prepare_pull_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            vec![PullTarget {
+                realm: String::new(),
+                kind: Kind::IdmSyncMapping,
+                selector: Selector::Prefix("map.".into()),
+            }],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            plan.protected_refs(),
+            ["sync/map.onCreate", "sync/map.transform.name"]
+        );
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "", &one)).unwrap(),
+            b"local edit"
+        );
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "", &two)).unwrap(),
             b"local edit"
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -2286,7 +2512,7 @@ mod tests {
             Ok(endpoint_script(&reference, "local", "confirmed")),
         ]);
 
-        let outcome = push_with(
+        let outcome = push_authorized_with(
             &store,
             &workspace,
             &io,
@@ -2294,7 +2520,7 @@ mod tests {
             "alpha",
             Kind::IdmEndpoint,
             &reference.name,
-            true,
+            parsed_push_force(&["--force"]),
             false,
             SyntaxGate::Check,
         )
@@ -2320,6 +2546,7 @@ mod tests {
             Ok(endpoint_script(&reference, "remote", "before-write")),
             Ok(endpoint_script(&reference, "local", "confirmed")),
         ]);
+        let force = parsed_push_force(&["--force"]);
         let selected = push_batch_candidates(
             vec![Candidate {
                 kind: reference.kind,
@@ -2330,16 +2557,16 @@ mod tests {
                 context: None,
                 evaluator_version: None,
             }],
-            true,
+            force.operation(),
         );
 
-        let outcomes = push_batch_with(
+        let outcomes = push_batch_authorized_with(
             &store,
             &workspace,
             &io,
             "tenant",
             selected,
-            true,
+            force,
             false,
             SyntaxGate::Check,
         )

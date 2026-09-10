@@ -14,6 +14,15 @@ use crate::mappings::api::{self, ReconStatus};
 use crate::mappings::screen::Mode;
 use crate::mappings::state::{LoadState, MappingMatch};
 
+pub fn draw_pull_confirm(f: &mut Frame, app: &App) {
+    let references = crate::mappings::screen::pending_pull_refs(app);
+    let message = format!(
+        "These mapping scripts have local changes:\n\n  {}\n\nOverwrite every listed source? Original bytes will be backed up under .aic-sync/backups/.",
+        references.join("\n  ")
+    );
+    crate::tui::popup_confirm::draw(f, "Overwrite local mapping-script changes?", &message);
+}
+
 pub fn draw_body(f: &mut Frame, app: &App, area: Rect) {
     let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) else {
         return;

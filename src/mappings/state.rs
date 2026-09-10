@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crate::mappings::api::{MappingSummary, ReconStatus};
+use crate::scripts::sync::PullPlan;
 use crate::tui::widgets::LineEditor;
 
 #[derive(Debug)]
@@ -33,12 +34,20 @@ pub struct ReconView {
 }
 
 #[derive(Debug)]
+pub struct PendingPull {
+    pub(crate) tenant: String,
+    pub(crate) mapping: String,
+    pub(crate) plan: PullPlan,
+}
+
+#[derive(Debug)]
 pub struct State {
     pub data: HashMap<String, LoadState>,
     pub refreshing: HashSet<String>,
     pub recon: HashMap<(String, String), ReconView>,
     pub in_flight_recon: HashSet<(String, String)>,
     pub in_flight_pull: HashSet<(String, String)>,
+    pub pending_pull: Option<PendingPull>,
     pub last_poll: Instant,
     pub query: LineEditor,
     pub selected: usize,
@@ -53,6 +62,7 @@ impl State {
             recon: HashMap::new(),
             in_flight_recon: HashSet::new(),
             in_flight_pull: HashSet::new(),
+            pending_pull: None,
             last_poll: Instant::now(),
             query: LineEditor::new(),
             selected: 0,
@@ -64,6 +74,10 @@ impl State {
         self.query.clear();
         self.selected = 0;
         self.scroll = 0;
+        if let Some(pending) = self.pending_pull.take() {
+            self.in_flight_pull
+                .remove(&(pending.tenant, pending.mapping));
+        }
     }
 
     pub fn clamp_selection(&mut self, n: usize) {

@@ -76,6 +76,12 @@ pub fn draw(f: &mut Frame, app: &App) {
             toast::draw(f, app);
             return;
         }
+        InputMode::Mappings(crate::mappings::screen::Mode::PullConfirm) => {
+            crate::mappings::view::draw_pull_confirm(f, app);
+            draw_keybind_help(f, app);
+            toast::draw(f, app);
+            return;
+        }
         InputMode::Normal
         | InputMode::Esv(_)
         | InputMode::Secrets(_)

@@ -9,7 +9,8 @@ use serde_json::Value;
 
 use crate::cli::force::OperationAndBackupForce;
 use crate::cli::{
-    confirm_destructive, ensure_prod_confirmed, print_json, print_table, realm_arg, tenant_for,
+    confirm_destructive, ensure_prod_confirmed, print_json, print_table, protected_pull_prompt,
+    realm_arg, tenant_for,
 };
 use crate::config::ProjectConfig;
 use crate::journey::api;
@@ -428,12 +429,18 @@ fn install_pull_at(
     realm: &str,
     name: &str,
     export: &api::JourneyExport,
-    local: Option<&[u8]>,
+    preflight_local: Option<&[u8]>,
     decision: PullDecision,
     skip_backup: bool,
 ) -> Result<Option<PathBuf>> {
+    let local = read_pull_file(path, "journey export")?;
+    if local.as_deref() != preflight_local {
+        return Err(Error::Config(format!(
+            "journey {name:?} export changed during pull preflight; nothing was installed"
+        )));
+    }
     let bytes = serde_json::to_vec_pretty(export)?;
-    let backup = match (local, decision) {
+    let backup = match (local.as_deref(), decision) {
         (Some(original), PullDecision::Install | PullDecision::Protected) if !skip_backup => Some(
             crate::backup::create_in(backup_dir, "journey", realm, name, "json", original)?,
         ),
@@ -529,9 +536,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             if pull_needs_consent(decision, force.operation())
                 && !confirm_destructive(
                     "journey pull overwrite",
-                    &format!(
-                        "journey {name:?} has local edits; overwrite them? (a backup is kept under .aic-sync/backups/)"
-                    ),
+                    &protected_pull_prompt(&format!("journey {name:?}"), force.backup()),
                     "--force",
                 )?
             {
@@ -799,6 +804,40 @@ mod tests {
             &serde_json::from_slice::<Value>(&std::fs::read(&snapshot).unwrap()).unwrap(),
             &remote_value
         ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn journey_pull_refuses_a_local_edit_made_after_preflight() {
+        let dir = std::env::temp_dir().join(format!("journey-pull-race-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("Login.json");
+        let snapshot = dir.join("snapshot.json");
+        let backups = dir.join("backups");
+        let preflight = br#"{"tree":{"name":"Login"},"nodes":{}}"#;
+        let newer = br#"{"tree":{"name":"Newer edit"},"nodes":{}}"#;
+        write_bytes(&path, preflight).unwrap();
+        write_bytes(&snapshot, b"old snapshot").unwrap();
+        write_bytes(&path, newer).unwrap();
+        let remote =
+            parse_export_value(json!({"tree": {"name": "Remote"}, "nodes": {}}), "test").unwrap();
+
+        let error = install_pull_at(
+            &path,
+            &snapshot,
+            &backups,
+            "alpha",
+            "Login",
+            &remote,
+            Some(preflight),
+            PullDecision::Install,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed during pull preflight"));
+        assert_eq!(std::fs::read(&path).unwrap(), newer);
+        assert_eq!(std::fs::read(&snapshot).unwrap(), b"old snapshot");
+        assert!(!backups.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

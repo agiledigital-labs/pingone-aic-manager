@@ -814,6 +814,7 @@ fn begin_op(app: &mut App, tenant: &str, full: &str) -> bool {
 mod tests {
     use super::*;
     use crate::scripts::syntax::{Refusal, SyntaxError};
+    use crossterm::event::KeyModifiers;
 
     fn held(source: sync::SourceId) -> Refused {
         let refusal = Refusal::Rejected(vec![SyntaxError {
@@ -862,5 +863,26 @@ mod tests {
         assert!(
             matches!(outcome, OpOutcome::Failed(message) if message.contains("tenant state uncertain"))
         );
+    }
+
+    #[test]
+    fn pull_confirmation_defaults_to_cancelling_the_whole_plan() {
+        let mut app = App::for_test(Vec::new(), crate::app::View::Scripts);
+        app.scripts
+            .in_flight
+            .insert(("sandbox".into(), "all".into()));
+        app.scripts.pending_pull = Some(PendingPull {
+            tenant: "sandbox".into(),
+            full: "all".into(),
+            label: "pull all".into(),
+            plan: sync::PullPlan::protected_for_test(&["map.onCreate"]),
+        });
+        app.input_mode = InputMode::Scripts(Mode::PullConfirm);
+
+        handle_pull_confirm_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.scripts.pending_pull.is_none());
+        assert!(app.scripts.in_flight.is_empty());
     }
 }

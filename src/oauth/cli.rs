@@ -12,7 +12,7 @@ use crate::cli::diff::show_diff;
 use crate::cli::force::OperationAndBackupForce;
 use crate::cli::{
     confirm_destructive, ensure_prod_confirmed, print_json, print_table, prod_hint,
-    read_password_line, realm_arg, tenant_for,
+    protected_pull_prompt, read_password_line, realm_arg, tenant_for,
 };
 use crate::config::ProjectConfig;
 use crate::oauth::{api, spec};
@@ -866,10 +866,10 @@ fn push_block_message(id: &str, reason: &PushBlockReason, tenant: &str, realm: &
     );
     match reason {
         PushBlockReason::MissingSnapshot => format!(
-            "no snapshot for oauth client {id:?}; run `{pull}` first (it overwrites your local file) or pass --force"
+            "no snapshot for oauth client {id:?}; run `{pull}` first (it protects local edits and backs up any replaced export) or pass --force"
         ),
         PushBlockReason::RemoteDrift => format!(
-            "remote oauth client {id} changed since you last pulled; re-pull with `{pull}` (it overwrites your local file) or pass --force"
+            "remote oauth client {id} changed since you last pulled; re-pull with `{pull}` (it protects local edits and backs up any replaced export) or pass --force"
         ),
     }
 }
@@ -1050,12 +1050,18 @@ fn install_pull_at(
     realm: &str,
     id: &str,
     remote: &Value,
-    local: Option<&[u8]>,
+    preflight_local: Option<&[u8]>,
     decision: PullDecision,
     skip_backup: bool,
 ) -> Result<Option<PathBuf>> {
+    let local = read_pull_file(path, "oauth client export")?;
+    if local.as_deref() != preflight_local {
+        return Err(Error::Config(format!(
+            "oauth client {id} export changed during pull preflight; nothing was installed"
+        )));
+    }
     let bytes = serde_json::to_vec_pretty(remote)?;
-    let backup = match (local, decision) {
+    let backup = match (local.as_deref(), decision) {
         (Some(original), PullDecision::Install | PullDecision::Protected) if !skip_backup => Some(
             crate::backup::create_in(backup_dir, "oauth", realm, id, "json", original)?,
         ),
@@ -1536,9 +1542,7 @@ pub async fn run(cmd: OauthCommand) -> Result<()> {
             if pull_needs_consent(decision, force.operation())
                 && !confirm_destructive(
                     "oauth pull overwrite",
-                    &format!(
-                        "oauth client {id} has local edits; overwrite them? (a backup is kept under .aic-sync/backups/)"
-                    ),
+                    &protected_pull_prompt(&format!("oauth client {id}"), force.backup()),
                     "--force",
                 )?
             {
@@ -1769,6 +1773,68 @@ mod tests {
             serde_json::from_slice::<Value>(&std::fs::read(&snapshot).unwrap()).unwrap(),
             remote
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn oauth_pull_refuses_a_local_edit_made_after_preflight() {
+        let dir = std::env::temp_dir().join(format!("oauth-pull-race-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("client.json");
+        let snapshot = dir.join("snapshot.json");
+        let backups = dir.join("backups");
+        let preflight = br#"{"name":"client","enabled":false}"#;
+        let newer = br#"{"name":"client","enabled":"newer edit"}"#;
+        write_bytes(&path, preflight).unwrap();
+        write_bytes(&snapshot, b"old snapshot").unwrap();
+        write_bytes(&path, newer).unwrap();
+
+        let error = install_pull_at(
+            &path,
+            &snapshot,
+            &backups,
+            "alpha",
+            "client",
+            &json!({"name": "client", "enabled": true}),
+            Some(preflight),
+            PullDecision::Install,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("changed during pull preflight"));
+        assert_eq!(std::fs::read(&path).unwrap(), newer);
+        assert_eq!(std::fs::read(&snapshot).unwrap(), b"old snapshot");
+        assert!(!backups.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn oauth_backup_failure_prevents_export_and_snapshot_replacement() {
+        let dir = std::env::temp_dir().join(format!("oauth-pull-backup-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("client.json");
+        let snapshot = dir.join("snapshot.json");
+        let backups = dir.join("backups");
+        let original = br#"{"name":"client","enabled":"local edit"}"#;
+        write_bytes(&path, original).unwrap();
+        write_bytes(&snapshot, b"old snapshot").unwrap();
+        write_bytes(&backups, b"not a directory").unwrap();
+
+        assert!(
+            install_pull_at(
+                &path,
+                &snapshot,
+                &backups,
+                "alpha",
+                "client",
+                &json!({"name": "client", "enabled": true}),
+                Some(original),
+                PullDecision::Protected,
+                false,
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(std::fs::read(&snapshot).unwrap(), b"old snapshot");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2730,8 +2796,8 @@ mod tests {
     }
 
     /// The refusals are the messages someone actually copies out of a failed
-    /// push, so they carry coordinates too — and say what re-pulling costs,
-    /// because it overwrites the local file the refusal just protected.
+    /// push, so they carry coordinates too — and describe re-pull's local
+    /// protection rather than implying that it overwrites unconditionally.
     #[test]
     fn a_refusal_names_the_tenant_and_realm_it_refused_for() {
         for reason in [
@@ -2741,7 +2807,11 @@ mod tests {
             let message = push_block_message("a-client", &reason, "staging", "bravo");
             assert!(message.contains("--tenant staging"), "{message}");
             assert!(message.contains("--realm bravo"), "{message}");
-            assert!(message.contains("overwrites your local file"), "{message}");
+            assert!(message.contains("protects local edits"), "{message}");
+            assert!(
+                message.contains("backs up any replaced export"),
+                "{message}"
+            );
         }
     }
 }

@@ -993,6 +993,18 @@ pub(crate) fn confirm_destructive(subject: &str, prompt: &str, escape_flag: &str
     }
 }
 
+/// Confirmation copy for a protected workspace pull. Backup bypass is an
+/// independent permission, so the prompt must describe the recovery cover the
+/// current invocation will actually provide.
+pub(crate) fn protected_pull_prompt(reference: &str, skip_backup: bool) -> String {
+    let recovery = if skip_backup {
+        "No backup will be created because --force=backup was supplied."
+    } else {
+        "Original bytes will be backed up under .aic-sync/backups/."
+    };
+    format!("{reference} has local edits; overwrite them? {recovery}")
+}
+
 fn ensure_prompt_available() -> Result<()> {
     if prompt_available() {
         Ok(())
@@ -1856,6 +1868,19 @@ mod tests {
         assert!(!should_prompt(false, false, true, true));
         assert!(!should_prompt(false, true, false, true));
         assert!(!should_prompt(false, true, true, false));
+    }
+
+    #[test]
+    fn protected_pull_prompt_describes_the_selected_backup_policy() {
+        let backed_up = protected_pull_prompt("oauth client example", false);
+        assert!(backed_up.contains("will be backed up"));
+        assert!(!backed_up.contains("no backup"));
+
+        let skipped = protected_pull_prompt("oauth client example", true);
+        let skipped_lower = skipped.to_lowercase();
+        assert!(skipped.contains("--force=backup"));
+        assert!(skipped_lower.contains("no backup will be created"));
+        assert!(!skipped_lower.contains("will be backed up"));
     }
 
     #[test]
