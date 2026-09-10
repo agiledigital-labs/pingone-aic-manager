@@ -1,12 +1,15 @@
 //! `aic logs` parser and command implementation.
 
+use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use chrono::{DateTime, Duration, Utc};
 use clap::Subcommand;
 use inquire::{Password, PasswordDisplayMode, Text, error::InquireError};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::agent::AgentClient;
 use crate::cli::{print_table, tenant_for};
@@ -48,6 +51,13 @@ pub enum LogsCommand {
         output: Option<PathBuf>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Poll until the trailing AM-ACCESS-OUTCOME event arrives.
+        #[arg(long)]
+        wait: bool,
+        /// Seconds to poll with --wait (ignored otherwise). Still writes
+        /// whatever has arrived if the outcome never shows up.
+        #[arg(long, value_name = "SECS", default_value_t = 60)]
+        timeout: u64,
     },
     /// Fetch events in an ISO-8601 time range.
     Range {
@@ -214,10 +224,12 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
             source,
             output,
             tenant,
+            wait,
+            timeout,
         } => {
             let sources = parse_sources(source.as_deref())?;
             let context = ops::fetch_context(tenant).await?;
-            let result = api::fetch_transaction(
+            let events = api::fetch_transaction(
                 &context.client,
                 &context.base_url,
                 &context.key,
@@ -225,7 +237,23 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
                 &sources,
             )
             .await?;
-            write_json(&result, output.as_deref())
+            let events = maybe_wait_for_outcome(
+                &transaction_id,
+                events,
+                wait,
+                std::time::Duration::from_secs(timeout),
+                || {
+                    api::fetch_transaction(
+                        &context.client,
+                        &context.base_url,
+                        &context.key,
+                        &transaction_id,
+                        &sources,
+                    )
+                },
+            )
+            .await?;
+            write_json(&events, output.as_deref())
         }
         LogsCommand::Range {
             begin,
@@ -607,6 +635,71 @@ fn query_range(
     Ok((begin, end))
 }
 
+const ACCESS_OUTCOME: &str = "AM-ACCESS-OUTCOME";
+
+fn payload_event_name(event: &Value) -> Option<&str> {
+    event.get("payload")?.get("eventName")?.as_str()
+}
+
+fn has_access_outcome(events: &[Value]) -> bool {
+    events
+        .iter()
+        .any(|event| payload_event_name(event) == Some(ACCESS_OUTCOME))
+}
+
+fn incomplete_tx_note(transaction_id: &str, waited_secs: Option<u64>) -> String {
+    match waited_secs {
+        Some(secs) => format!(
+            "note: no {ACCESS_OUTCOME} event yet for transaction {transaction_id} after waiting {secs}s — logs can lag tens of seconds behind the request; retry, or pass --wait"
+        ),
+        None => format!(
+            "note: no {ACCESS_OUTCOME} event yet for transaction {transaction_id} — logs can lag tens of seconds behind the request; retry, or pass --wait"
+        ),
+    }
+}
+
+/// After the first fetch, warn if `AM-ACCESS-OUTCOME` is missing, or (with
+/// `--wait`) poll the same query until it appears or `timeout` elapses.
+/// Timeout still returns the last payload. Polls go through
+/// `api::fetch_transaction`, which is already rate-limited.
+async fn maybe_wait_for_outcome<F, Fut>(
+    transaction_id: &str,
+    mut events: Vec<Value>,
+    wait: bool,
+    timeout: std::time::Duration,
+    mut fetch: F,
+) -> Result<Vec<Value>>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Vec<Value>>>,
+{
+    if has_access_outcome(&events) {
+        return Ok(events);
+    }
+    if !wait {
+        eprintln!("{}", incomplete_tx_note(transaction_id, None));
+        return Ok(events);
+    }
+
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        eprintln!(
+            "waiting for {ACCESS_OUTCOME}… ({}s elapsed, {} events so far)",
+            started.elapsed().as_secs(),
+            events.len()
+        );
+        events = fetch().await?;
+        if has_access_outcome(&events) {
+            return Ok(events);
+        }
+    }
+    eprintln!(
+        "{}",
+        incomplete_tx_note(transaction_id, Some(started.elapsed().as_secs()))
+    );
+    Ok(events)
+}
+
 fn write_json<T: Serialize>(value: &T, output: Option<&Path>) -> Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value)?;
     bytes.push(b'\n');
@@ -644,6 +737,7 @@ fn require_prompt(field: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
+    use clap::Parser;
 
     use super::*;
 
@@ -694,5 +788,168 @@ mod tests {
             query_range(None, None, now).unwrap(),
             (now - Duration::hours(24), now)
         );
+    }
+
+    fn event_with_name(name: &str) -> Value {
+        serde_json::json!({ "payload": { "eventName": name } })
+    }
+
+    #[test]
+    fn access_outcome_is_the_completeness_marker() {
+        assert!(!has_access_outcome(&[]));
+        assert!(!has_access_outcome(&[event_with_name("AM-ACCESS-ATTEMPT")]));
+        assert!(!has_access_outcome(&[serde_json::json!({
+            "payload": "raw string, no eventName"
+        })]));
+        assert!(!has_access_outcome(&[serde_json::json!({
+            "eventName": "AM-ACCESS-OUTCOME"
+        })]));
+        assert!(has_access_outcome(&[
+            event_with_name("AM-ACCESS-ATTEMPT"),
+            event_with_name("AM-ACCESS-OUTCOME"),
+        ]));
+    }
+
+    #[test]
+    fn incomplete_note_names_the_transaction_and_optional_wait() {
+        assert_eq!(
+            incomplete_tx_note("abc-1", None),
+            "note: no AM-ACCESS-OUTCOME event yet for transaction abc-1 — logs can lag tens of seconds behind the request; retry, or pass --wait"
+        );
+        assert_eq!(
+            incomplete_tx_note("abc-1", Some(90)),
+            "note: no AM-ACCESS-OUTCOME event yet for transaction abc-1 after waiting 90s — logs can lag tens of seconds behind the request; retry, or pass --wait"
+        );
+    }
+
+    #[test]
+    fn tx_wait_parses_with_default_timeout() {
+        let cli = crate::cli::Cli::try_parse_from(["aic", "logs", "tx", "abc", "--wait"]).unwrap();
+        match cli.command {
+            Some(crate::cli::Command::Logs {
+                command:
+                    LogsCommand::Tx {
+                        transaction_id,
+                        wait,
+                        timeout,
+                        ..
+                    },
+            }) => {
+                assert_eq!(transaction_id, "abc");
+                assert!(wait);
+                assert_eq!(timeout, 60);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tx_timeout_is_accepted_without_wait() {
+        let cli = crate::cli::Cli::try_parse_from(["aic", "logs", "tx", "abc", "--timeout", "15"])
+            .unwrap();
+        match cli.command {
+            Some(crate::cli::Command::Logs {
+                command: LogsCommand::Tx { wait, timeout, .. },
+            }) => {
+                assert!(!wait);
+                assert_eq!(timeout, 15);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn range_and_query_reject_wait() {
+        assert!(
+            crate::cli::Cli::try_parse_from([
+                "aic",
+                "logs",
+                "range",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T01:00:00Z",
+                "--wait",
+            ])
+            .is_err()
+        );
+        assert!(
+            crate::cli::Cli::try_parse_from(["aic", "logs", "query", "true", "--wait"]).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_does_not_poll_when_outcome_already_present() {
+        let first = vec![event_with_name("AM-ACCESS-OUTCOME")];
+        let result = maybe_wait_for_outcome(
+            "tx-1",
+            first.clone(),
+            true,
+            std::time::Duration::from_secs(60),
+            || async { panic!("must not poll once AM-ACCESS-OUTCOME is present") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, first);
+    }
+
+    #[tokio::test]
+    async fn missing_outcome_without_wait_does_not_poll() {
+        let first = vec![event_with_name("AM-ACCESS-ATTEMPT")];
+        let result = maybe_wait_for_outcome(
+            "tx-1",
+            first.clone(),
+            false,
+            std::time::Duration::from_secs(60),
+            || async { panic!("must not poll without --wait") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, first);
+        assert!(!has_access_outcome(&result));
+    }
+
+    #[tokio::test]
+    async fn wait_stops_when_outcome_arrives() {
+        let first = vec![event_with_name("AM-ACCESS-ATTEMPT")];
+        let mut calls = 0u32;
+        let result = maybe_wait_for_outcome(
+            "tx-1",
+            first,
+            true,
+            std::time::Duration::from_secs(5),
+            || {
+                calls += 1;
+                let n = calls;
+                async move {
+                    if n >= 2 {
+                        Ok(vec![
+                            event_with_name("AM-ACCESS-ATTEMPT"),
+                            event_with_name("AM-ACCESS-OUTCOME"),
+                        ])
+                    } else {
+                        Ok(vec![event_with_name("AM-ACCESS-ATTEMPT")])
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert!(has_access_outcome(&result));
+    }
+
+    #[tokio::test]
+    async fn wait_timeout_returns_partial_events() {
+        let first = vec![event_with_name("AM-ACCESS-ATTEMPT")];
+        let result = maybe_wait_for_outcome(
+            "tx-missing",
+            first.clone(),
+            true,
+            std::time::Duration::ZERO,
+            || async { panic!("should not poll when timeout is already elapsed") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, first);
+        assert!(!has_access_outcome(&result));
     }
 }
