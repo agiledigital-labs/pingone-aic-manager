@@ -49,7 +49,7 @@ pub enum SyncCommand {
         timeout: String,
         #[arg(long)]
         tenant: Option<String>,
-        /// Confirm a reconciliation write to a production tenant.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
         #[arg(long)]

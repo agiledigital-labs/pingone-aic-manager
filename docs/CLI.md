@@ -42,8 +42,9 @@ aic <command> <subcommand> --help
   primary override, `--force=syntax-check` for script syntax bypass, and
   `--force=backup` for backup bypass. Optional values never consume the next
   argument: use `=`, not `--force backup`. Repeat the flag to grant independent
-  permissions, for example `--force --force=backup`. Unsupported guard names
-  are parse errors before execution, including on preview commands.
+  permissions, for example `--force --force=backup`. Unsupported guard names are
+  parse errors before execution, including on preview commands.
+
 - **Output format.** List commands default to kubectl-style tables. Pass
   `--json` on list commands for machine-readable output. Single-resource reads
   and export-style commands still print JSON by default.
@@ -61,11 +62,56 @@ aic <command> <subcommand> --help
   are the same). It is resolved from raw argv before parsing, because the
   process has to be rooted before `--tenant`'s default can be read out of the
   project's own config.
+
 - **Non-interactive mode.** Pass the global `--no-prompt` flag, or set
   `AIC_NO_PROMPT=1`, to disable every interactive prompt. If input is required,
   the command fails instead of waiting on a terminal. Confirming a missing
   operator name is optional: non-interactive commands use the best fallback for
   that run and leave the setting unset for a later real terminal.
+
+### Flag migration
+
+Confirmation flags now have one meaning each. Old spellings were **removed**,
+not kept as hidden aliases — using one is a parse error. `--yes` help is
+uniformly "Confirm a write to a production-themed tenant."
+
+| Old                                                                     | New                                                             |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `script create\|copy\|push\|sync\|watch --no-syntax-check`              | `--force=syntax-check`                                          |
+| `script pull --force` (skipped the overwrite prompt **and** the backup) | `--force` (prompt only) **and** `--force=backup` (backup only)  |
+| `script sync --resolve local\|remote`                                   | `script sync --resolve local\|remote --force`                   |
+| `access … --no-backup`                                                  | `--force=backup`                                                |
+| `access … --yes` as the unattended summary accept                       | `--force` for the summary; keep `--yes` only for production     |
+| `managed field edit --allow-narrowing`                                  | `managed field edit --force`                                    |
+| `esv secret destroy\|delete --yes` (prod **and** the typed `yes`)       | `--yes` (prod) **plus** `--force` (skip the typed confirmation) |
+| `ctx rm --delete-keys`                                                  | `ctx rm --purge all --force` (plus `--yes` on production)       |
+
+The same protected-pull split as `script pull` now also applies to `oauth pull`,
+`journey pull`, `policy pull`, `policy set pull`, and `policy rt pull`: those
+four resource kinds did not previously back up or prompt before overwriting a
+local edit. Bare `--force` authorizes the overwrite and still writes a backup
+under `.aic-sync/backups/`; `--force=backup` skips only the backup and never
+authorizes the overwrite.
+
+`script create`, `copy`, and `watch` accept `--force=syntax-check` only and
+reject bare `--force`. `push` and `sync` combine both permissions:
+
+```bash
+# old
+aic script push endpoint/x --no-syntax-check
+# new
+aic script push endpoint/x --force=syntax-check
+
+# old: skipped both overwrite consent and backup
+aic script pull endpoint/x --force
+# new: spell both permissions to preserve that exact behavior
+aic script pull endpoint/x --force --force=backup
+
+# old
+aic script sync --resolve remote
+# new
+aic script sync --resolve remote --force
+```
 
 ### Exit codes
 
@@ -134,13 +180,13 @@ itself.
 
 #### `aic ctx rm` — remove a tenant
 
-| Flag                           | Effect                                                                                 |
-| ------------------------------ | -------------------------------------------------------------------------------------- |
-| `--dry-run`                    | Print the plan and exit, changing nothing.                                             |
-| `--json`                       | Print the plan as JSON and exit, changing nothing.                                     |
+| Flag                          | Effect                                                                                      |
+| ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `--dry-run`                   | Print the plan and exit, changing nothing.                                                  |
+| `--json`                      | Print the plan as JSON and exit, changing nothing.                                          |
 | `--purge all\|defaults\|none` | Select all offered artifacts, the TUI defaults, or no optional artifacts without prompting. |
-| `--force`                      | Skip only the typed-tenant-name confirmation.                                          |
-| `--yes`                        | Confirm a write to a production-themed tenant.                                         |
+| `--force`                     | Skip only the typed-tenant-name confirmation.                                               |
+| `--yes`                       | Confirm a write to a production-themed tenant.                                              |
 
 The command prints a plan first. Without `--purge`, it asks `[Y/n]` per
 artifact—even when `--force` is present. `--purge defaults` uses exactly the
@@ -154,8 +200,8 @@ are required; no selection default is assumed. Each row is one of four states:
 - **offered**, defaulting to on — or to **off** when the credential's recorded
   provenance says you supplied it rather than `aic` minting it;
 - **absent** — nothing stored, so no choice is offered;
-- **refused** — a _surviving_ tenant entry still needs it. Neither `--purge`
-  nor `--force` can override a refusal;
+- **refused** — a _surviving_ tenant entry still needs it. Neither `--purge` nor
+  `--force` can override a refusal;
 - **implied** — the workspace directory contains the sync state, so accepting
   the workspace takes it regardless.
 
@@ -193,11 +239,10 @@ Execution removes the `[[tenant]]` entry **last**. If anything before it fails,
 the entry stays and the whole removal can be retried; the command exits non-zero
 and says so.
 
-`--dry-run` and `--json` remain plan-only and take precedence over selection
-and confirmation flags. A production-themed tenant still additionally requires
-`--yes` for live execution. Migration: the removed `--delete-keys` spelling is
-now `--purge all --force` (plus `--yes` on production); the old flag is rejected
-rather than retained as a hidden alias.
+`--dry-run` and `--json` remain plan-only and take precedence over selection and
+confirmation flags. A production-themed tenant still additionally requires
+`--yes` for live execution. The removed `--delete-keys` spelling is
+`--purge all --force`; see [Flag migration](#flag-migration).
 
 ### aic auth — mint a token as an end user
 
@@ -292,10 +337,10 @@ aic esv secret delete  esv-my-secret [--force] [--yes]   # irreversible — dele
 history and `ps`. `create` is create-only (PUT); change a value with
 `add-version`, which becomes the active version.
 
-Destroying a version and deleting a secret require a typed `yes` confirmation
-on an interactive terminal. Bare `--force` replaces that operation
-confirmation for unattended use. Production independently requires `--yes`:
-neither flag implies the other, so unattended production deletion needs both.
+Destroying a version and deleting a secret require a typed `yes` confirmation on
+an interactive terminal. Bare `--force` replaces that operation confirmation for
+unattended use. Production independently requires `--yes`: neither flag implies
+the other, so unattended production deletion needs both.
 
 ---
 
@@ -308,29 +353,29 @@ but this standalone command does not set `operator.name`.
 
 ### Key management
 
-| Command                                                        | What it does                                                                                                 |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `aic logs key set [--tenant <name>] [--id <api_key_id>]`       | Store or replace the log API key pair in the vault. Prompts for the secret.                                  |
-| `aic logs key show [--tenant <name>]`                          | Show whether a log API key pair is stored, and print the key id.                                             |
-| `aic logs key rm [--tenant <name>]`                            | Remove the stored log API key pair.                                                                          |
+| Command                                                                | What it does                                                                                                                                                               |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aic logs key set [--tenant <name>] [--id <api_key_id>]`               | Store or replace the log API key pair in the vault. Prompts for the secret.                                                                                                |
+| `aic logs key show [--tenant <name>]`                                  | Show whether a log API key pair is stored, and print the key id.                                                                                                           |
+| `aic logs key rm [--tenant <name>]`                                    | Remove the stored log API key pair.                                                                                                                                        |
 | `aic logs key create [--tenant <name>] [--cookie-name <name>] [--yes]` | Mint a new key pair from an admin session, then store it. Prompts for the AM session cookie value if needed; production requires `--yes` before any session input is read. |
 
 ### Remote fetch
 
-| Command                                                                                                                                            | What it does                                                                                     |
-| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `aic logs sources [--tenant <name>] [--json] [--output <path>]`                                                                                    | List available log source ids. `--json` prints the list as JSON; `--output` writes it to a file. |
-| `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>] [--wait] [--timeout <secs>]`                                    | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list.    |
-| `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]`                                              | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter.                 |
-| `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]`                                       | Run a CREST filter over the logs API. Defaults to the most recent 24 hours.                      |
-| `aic logs grep <pattern> [--since <duration> \| --begin <iso> --end <iso>] [--source <csv>] [--tenant <name>] [--output <path>]`                    | Fetch live logs and match a case-sensitive substring within each normalized payload.            |
-| `aic logs tail [--source <csv>] [--pattern <text>] [--tenant <name>]`                                                                              | Follow live logs until Ctrl-C, optionally filtering on the same payload substring match.         |
+| Command                                                                                                                          | What it does                                                                                     |
+| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `aic logs sources [--tenant <name>] [--json] [--output <path>]`                                                                  | List available log source ids. `--json` prints the list as JSON; `--output` writes it to a file. |
+| `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>] [--wait] [--timeout <secs>]`                  | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list.    |
+| `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]`                            | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter.                 |
+| `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]`                     | Run a CREST filter over the logs API. Defaults to the most recent 24 hours.                      |
+| `aic logs grep <pattern> [--since <duration> \| --begin <iso> --end <iso>] [--source <csv>] [--tenant <name>] [--output <path>]` | Fetch live logs and match a case-sensitive substring within each normalized payload.             |
+| `aic logs tail [--source <csv>] [--pattern <text>] [--tenant <name>]`                                                            | Follow live logs until Ctrl-C, optionally filtering on the same payload substring match.         |
 
 `logs grep` defaults to `--since 15m`; durations accept positive whole seconds,
 minutes, or hours (`30s`, `5m`, `1h`). `--begin` and `--end` are an alternative
 fixed ISO-8601 window and must be supplied together. Matches form one JSON array
-on stdout, or in `--output`; pages are filtered and written as they arrive rather
-than accumulating the whole window in memory.
+on stdout, or in `--output`; pages are filtered and written as they arrive
+rather than accumulating the whole window in memory.
 
 `logs tail` begins with the most recent 15 seconds and then requests contiguous
 windows until Ctrl-C. Each matched event is one compact JSON value on stdout
@@ -351,7 +396,7 @@ the CLI looks for the trailing `AM-ACCESS-OUTCOME` event. If it is missing, a
 note goes to **stderr** (stdout stays the JSON event list, including when
 redirected or written with `--output`):
 
-```
+```text
 note: no AM-ACCESS-OUTCOME event yet for transaction <id> — logs can lag
 tens of seconds behind the request; retry, or pass --wait
 ```
@@ -410,13 +455,13 @@ aic managed relationship delete custom_widget.owner [--yes] [--json]
 `managed get` prints one object's definition as JSON. Inline hook `source`
 bodies are omitted by default and replaced with the argument `aic script pull`
 takes (`<script: managed/alpha_user.onUpdate>`), because those sources are
-already first-class workspace scripts. Pass `--hook-sources` to include the
-real source. `--fields` is a repeatable, both-ends-anchored glob over
+already first-class workspace scripts. Pass `--hook-sources` to include the real
+source. `--fields` is a repeatable, both-ends-anchored glob over
 `schema.properties` keys (`*` any run, `?` one character; case-sensitive);
 `schema.order` and `schema.required` are narrowed to the surviving keys. If no
-pattern matches, the command fails rather than printing an empty properties
-map. A filtered document also notes on stderr how many properties are shown,
-and names any pattern that matched nothing.
+pattern matches, the command fails rather than printing an empty properties map.
+A filtered document also notes on stderr how many properties are shown, and
+names any pattern that matched nothing.
 
 Every write accepts `--tenant <name>` and requires `--yes` for a
 production-themed tenant. Field and relationship booleans take explicit values
@@ -427,9 +472,9 @@ attribute unchanged. On `relationship set`, an omitted `--reverse` likewise
 names a property the target object does not have — and `--reverse-key` defaults
 to the declared name. It is `none` only when the relationship is being created.
 Removing a reverse therefore takes an explicit `--reverse none`, which also
-deletes the property from the target object. `<object>.<key>` must contain exactly one dot. Every schema
-write is recorded for reversal from the TUI history overlay; there is no CLI
-undo command.
+deletes the property from the target object. `<object>.<key>` must contain
+exactly one dot. Every schema write is recorded for reversal from the TUI
+history overlay; there is no CLI undo command.
 
 `--enum` is repeatable and replaces the field's allowed-value set; use
 `value:Title` for a display label. On `field edit`, `--clear-enum` removes the
@@ -443,13 +488,14 @@ schema default with 200, then the managed object returns 404 forever. Use
 `string[]` field, pass JSON such as `'["a","b"]'`.
 
 Removing a value from an existing set requires bare `--force`, and warns on
-stderr even then. This replaces the removed `--allow-narrowing` spelling.
-`field add` and `relationship set` accept neither spelling because narrowing
-does not apply to those commands. Nothing fails at the moment you narrow:
-records holding a removed value still read back, and patches to their other
-properties still succeed. What breaks is a whole-record `PUT` of such a record
-— in some other integration, on a property that code never touched. Adding a
-value, and `--clear-enum`, are both widening and need no flag.
+stderr even then. `field add` and `relationship set` reject `--force` because
+narrowing does not apply to those commands. See
+[Flag migration](#flag-migration) for the removed `--allow-narrowing` spelling.
+Nothing fails at the moment you narrow: records holding a removed value still
+read back, and patches to their other properties still succeed. What breaks is a
+whole-record `PUT` of such a record — in some other integration, on a property
+that code never touched. Adding a value, and `--clear-enum`, are both widening
+and need no flag.
 
 ---
 
@@ -536,15 +582,15 @@ aic journey node-template <nodeType> [--realm alpha]   # a starter node config (
 ```
 
 `pull` compares authored JSON content (ignoring recursive `_rev` fields) before
-replacing the export. A missing export installs normally; an export equal to
-the tenant or to its valid snapshot is safe. Any other existing export —
-including malformed JSON, or one with a missing/malformed snapshot — is a
-protected local edit and requires bare `--force` or an affirmative default-no
-terminal confirmation. Every differing existing export is backed up under
-`.aic-sync/backups/` first. Bare `--force` keeps that backup;
-`--force=backup` skips only the backup and does not authorize the overwrite.
-Backup names include journey/realm/name plus timestamp and UUID, and are mode
-0600 on Unix. The snapshot advances only after the export is installed successfully.
+replacing the export. A missing export installs normally; an export equal to the
+tenant or to its valid snapshot is safe. Any other existing export — including
+malformed JSON, or one with a missing/malformed snapshot — is a protected local
+edit and requires bare `--force` or an affirmative default-no terminal
+confirmation. Every differing existing export is backed up under
+`.aic-sync/backups/` first. Bare `--force` keeps that backup; `--force=backup`
+skips only the backup and does not authorize the overwrite. Backup names include
+journey/realm/name plus timestamp and UUID, and are mode 0600 on Unix. The
+snapshot advances only after the export is installed successfully.
 
 ---
 
@@ -590,18 +636,18 @@ policy, set, or resource type before touching a file. Every differing existing
 file is backed up with its collection/realm/name identity under
 `.aic-sync/backups/`. `--force=backup` alone skips that recovery copy but never
 authorizes an overwrite. Names include collection/realm/name plus timestamp and
-UUID, and files are mode 0600 on Unix. The same behavior applies to `policy set
-pull` and `policy rt pull`.
+UUID, and files are mode 0600 on Unix. The same behavior applies to
+`policy set pull` and `policy rt pull`.
 
 ### `aic policy eval`
 
-The reason this vertical exists. AM answers a denied request with
-`actions: {}`, which means "no policy applied" and covers a resource that
-matched nothing, a subject that failed, and a condition that failed — with no
-way to tell them apart. `eval` reads the set, its resource types and its
-policies and says which it was:
+The reason this vertical exists. AM answers a denied request with `actions: {}`,
+which means "no policy applied" and covers a resource that matched nothing, a
+subject that failed, and a condition that failed — with no way to tell them
+apart. `eval` reads the set, its resource types and its policies and says which
+it was:
 
-```
+```console
 $ aic policy eval --realm bravo --set CapTokenDemo \
     --resource https://shop-api.demo:443/payments/9 --action refund \
     --subject-jwt-file ./cap.jwt
@@ -712,15 +758,12 @@ already scoped to the rules the command touched, so those always print.
 Before a write, the fetched document is saved with mode 0600 at
 `.aic/backups/access-<tenant>-<UTC>.json` unless `--force=backup` is supplied.
 If an attempted backup fails, the write is refused even with bare `--force`.
-`--dry-run` prints the rule-level change summary without writing, confirming,
-or creating a backup. Writes prompt after showing the summary unless bare
-`--force` is supplied; global `--no-prompt` therefore requires `--force` for a
-real write (and production additionally requires `--yes`).
-
-Migration: replace the removed `--no-backup` spelling with
-`--force=backup`. If an old unattended command used `--yes` to accept the
-summary, add bare `--force`; retain `--yes` only when production consent is
-needed.
+`--dry-run` prints the rule-level change summary without writing, confirming, or
+creating a backup. Writes prompt after showing the summary unless bare `--force`
+is supplied; global `--no-prompt` therefore requires `--force` for a real write
+(and production additionally requires `--yes`). See
+[Flag migration](#flag-migration) for the removed `--no-backup` spelling and for
+unattended commands that used `--yes` to accept the summary.
 
 The backup is taken **first**, before validation and before the prompt — so a
 refused validation or a declined confirmation still leaves a backup file behind.
@@ -774,72 +817,72 @@ with recursive `_rev` fields ignored. A missing export installs normally; an
 export equal to the tenant or its valid snapshot is safe. Otherwise, including
 malformed local JSON or a missing/malformed snapshot, replacement requires bare
 `--force` or an affirmative default-no terminal confirmation. Every differing
-existing export is backed up under `.aic-sync/backups/` before replacement.
-Bare `--force` still takes the backup; only `--force=backup` skips it, and that
-named scope does not authorize overwriting local edits. Backup names include
+existing export is backed up under `.aic-sync/backups/` before replacement. Bare
+`--force` still takes the backup; only `--force=backup` skips it, and that named
+scope does not authorize overwriting local edits. Backup names include
 oauth/realm/client plus timestamp and UUID, and files are mode 0600 on Unix.
 Snapshot writes happen after the export install.
 
 `provider get` prints a compact realm-wide configuration summary, resolving
-script ids to names the same way `get` does. It always
-shows a row for both the provider `grantTypes` and `tokenExchangeClasses` —
-`<absent>` when the tenant does not set one — because configured exchangers do
-not themselves enable the token-exchange grant. It also derives a direct
-`token-exchange granted` yes/no row, from `grantTypes` alone. Arrays inside the
-known configuration groups expand to one value per row and the `[Empty]`
-sentinel prints as `<not set>`; a group this command does not know about, and an
-object-valued plugin setting, still print as a single JSON cell. Token-exchange
-class mappings drop their repeated token-type URN and Java-package prefixes.
-That rewrite is purely structural, so a mapping that does not parse is printed
-in full — but one naming an unfamiliar token type or exchanger class is
-shortened like any other. `--json` prints the same document the API returned,
-re-serialised rather than passed through byte-for-byte.
+script ids to names the same way `get` does. It always shows a row for both the
+provider `grantTypes` and `tokenExchangeClasses` — `<absent>` when the tenant
+does not set one — because configured exchangers do not themselves enable the
+token-exchange grant. It also derives a direct `token-exchange granted` yes/no
+row, from `grantTypes` alone. Arrays inside the known configuration groups
+expand to one value per row and the `[Empty]` sentinel prints as `<not set>`; a
+group this command does not know about, and an object-valued plugin setting,
+still print as a single JSON cell. Token-exchange class mappings drop their
+repeated token-type URN and Java-package prefixes. That rewrite is purely
+structural, so a mapping that does not parse is printed in full — but one naming
+an unfamiliar token type or exchanger class is shortened like any other.
+`--json` prints the same document the API returned, re-serialised rather than
+passed through byte-for-byte.
 
-`list` prints one row per client: id, client name, type, status and grant
-types. A field the tenant does not set shows as `-` — some clients really do
-have `status: null`. `--filter TEXT` keeps the clients whose id **or** client
-name contains TEXT, case-insensitively; both, because the two disagree in
-practice and either can be the one you remember.
+`list` prints one row per client: id, client name, type, status and grant types.
+A field the tenant does not set shows as `-` — some clients really do have
+`status: null`. `--filter TEXT` keeps the clients whose id **or** client name
+contains TEXT, case-insensitively; both, because the two disagree in practice
+and either can be the one you remember.
 
-`--no-dynamic` hides clients whose id is a bare UUID, which is what AM mints
-for a client registered through dynamic registration — on a tenant with a
-thousand DCR clients that is the flag that makes the list readable. It tests
-the **id**, not the provenance: AM records nothing saying a client came from
-DCR, so a hand-made client given a UUID id is hidden too, and a dynamic
-registration that supplied its own `client_id` is not. That is why a filtered
-listing always reports how many rows were hidden and by which flag. Verified
-2026-09-10 against a real dynamic registration: the client AM created carried a
-UUID `client_id`, and `--no-dynamic` hid exactly that row.
+`--no-dynamic` hides clients whose id is a bare UUID, which is what AM mints for
+a client registered through dynamic registration — on a tenant with a thousand
+DCR clients that is the flag that makes the list readable. It tests the **id**,
+not the provenance: AM records nothing saying a client came from DCR, so a
+hand-made client given a UUID id is hidden too, and a dynamic registration that
+supplied its own `client_id` is not. That is why a filtered listing always
+reports how many rows were hidden and by which flag. Verified 2026-09-10 against
+a real dynamic registration: the client AM created carried a UUID `client_id`,
+and `--no-dynamic` hid exactly that row.
 
-`--json` still prints ids alone, not the new columns, so anything piping it
-into another command keeps working.
+`--json` still prints ids alone, not the new columns, so anything piping it into
+another command keeps working.
 
 `exchange list` answers the question RFC 8693 configuration is spread too thin
 to answer by reading: **who may act for whom.** The realm decides whether the
 grant exists at all, which token types have an exchanger, and which script
 stamps `may_act` by default; each client decides whether it holds the grant
-(making it an **actor**) and whether it stamps `may_act` on the tokens it
-issues (making it a usable **subject**). One client can be both. By default a
-client is listed when it says something the realm header does not: it holds
-the grant (or that could not be determined), it configures a may-act script,
-it has a **live** override block while the realm sets a may-act script — an
-exception to the realm-wide one — it sets its own audience values or a
-non-zero auth level, or something in its configuration could not be read. The
-tally says how many were hidden; `--all` lists every client.
+(making it an **actor**) and whether it stamps `may_act` on the tokens it issues
+(making it a usable **subject**). One client can be both. By default a client is
+listed when it says something the realm header does not: it holds the grant (or
+that could not be determined), it configures a may-act script, it has a **live**
+override block while the realm sets a may-act script — an exception to the
+realm-wide one — it sets its own audience values or a non-zero auth level, or
+something in its configuration could not be read. The tally says how many were
+hidden; `--all` lists every client.
 
 The subject half is the **effective** answer, not the configured one, and the
 cases differ:
 
 - a live client override with a script — shown as `subject`;
-- **no live override** while the realm sets `accessTokenMayActScript` — shown
-  as `subject (realm)`. A realm script makes *every* such client a subject, so
-  the header says it once rather than the table saying it a thousand times;
-- a `(dormant)` override — configured under a `providerOverridesEnabled` that
-  is not `true`, so it stamps nothing and the realm's script applies instead.
+- **no live override** while the realm sets `accessTokenMayActScript` — shown as
+  `subject (realm)`. A realm script makes _every_ such client a subject, so the
+  header says it once rather than the table saying it a thousand times;
+- a `(dormant)` override — configured under a `providerOverridesEnabled` that is
+  not `true`, so it stamps nothing and the realm's script applies instead.
   Without a realm script, that client's tokens cannot be exchanged at all;
 - a **live** override that sets no script — `providerOverridesEnabled: true`
   with the field on `[Empty]`. This is not silence: enabling the block stops
-  inheritance for every field in it at once, so the realm's script does *not*
+  inheritance for every field in it at once, so the realm's script does _not_
   apply and nothing stamps the claim.
 
 Because the default view lists clients with exchange configuration **of their
@@ -849,25 +892,24 @@ own**, a client that is a subject only by inheritance does not appear without
 `MAY-ACT SCRIPT` names the script per field — `access` and `oidc` stamp the
 claim on different token types, and they collapse to `access+oidc` when they
 name the same script. It prints a resolved script's **name** alone to keep the
-row inside a terminal; an *unresolved* id keeps its full UUID, because that
-case is a finding, and `--json` carries every id regardless. `AUTH_LEVEL` is
+row inside a terminal; an _unresolved_ id keeps its full UUID, because that case
+is a finding, and `--json` carries every id regardless. `AUTH_LEVEL` is
 `tokenExchangeAuthLevel` verbatim. `0` is AM's default; what a non-zero value
-does is **not verified here** — the name and AM's use of "auth level"
-elsewhere suggest a floor on the subject token, and
-`docs/api/22-token-exchange.md` records it as untested. The column reports the
-number, not an interpretation of it. `AUDIENCE` is
-`allowedResourceServerAudienceValues` — empty means the client cannot be asked
-for an `audience` at all. `ACCEPT_AUD` is the client's override of
-`acceptAudienceParametersInTokenExchangeRequests`, which lives in the
+does is **not verified here** — the name and AM's use of "auth level" elsewhere
+suggest a floor on the subject token, and `docs/api/22-token-exchange.md`
+records it as untested. The column reports the number, not an interpretation of
+it. `AUDIENCE` is `allowedResourceServerAudienceValues` — empty means the client
+cannot be asked for an `audience` at all. `ACCEPT_AUD` is the client's override
+of `acceptAudienceParametersInTokenExchangeRequests`, which lives in the
 **override** block and so is governed by the master switch (the other two are
 not). It has four values, because three of them are not the same answer:
-`yes`/`no` when the live block decides it; `realm` when the block is dormant,
-in which case the header's `realm acceptAudienceParameters` line is what
-applies; `block default` when the block is live but the field absent, where the
-override block's own default governs and this listing never sees it; and `?`
-when the master switch or the field itself could not be read. Worth reading with `AUDIENCE`,
-because a client that accepts no audience parameters silently **ignores** an
-`audience=` it is sent rather than rejecting it.
+`yes`/`no` when the live block decides it; `realm` when the block is dormant, in
+which case the header's `realm acceptAudienceParameters` line is what applies;
+`block default` when the block is live but the field absent, where the override
+block's own default governs and this listing never sees it; and `?` when the
+master switch or the field itself could not be read. Worth reading with
+`AUDIENCE`, because a client that accepts no audience parameters silently
+**ignores** an `audience=` it is sent rather than rejecting it.
 
 The warnings are why the command exists. Each names a prerequisite that is
 visibly unmet, and every one of them surfaces at the token endpoint as the same
@@ -887,38 +929,37 @@ That list is **not** every way an exchange fails, and the difference matters
 when you are debugging one. A may-act script that names the wrong actor or
 throws, a `tokenExchangeAuthLevel` the subject token does not reach, an
 `audience` the acting client does not allow, an unconfigured subject/requested
-token-type *pair*, and a forged subject token are all invisible here and all
+token-type _pair_, and a forged subject token are all invisible here and all
 produce the same message. Clearing these warnings narrows the search; it does
-not end it. In particular there is no field naming *which* actor a subject
+not end it. In particular there is no field naming _which_ actor a subject
 permits — the may-act script decides that at mint time — so the relationship is
 only fully readable by reading the script this command names.
 
-A projected field that is **present with an unusable type** is reported, and
-the answer it feeds is withheld rather than defaulted — `?` in a cell, `null`
-in JSON beside a `…Readable: false`, never the `-` that means "not set". It matters here more
-than elsewhere: a `grantTypes` that stopped being an array would quietly turn
-an actor into a bystander in the one view whose job is to say who can act, and
-a warning printed under "no client holds the grant" does not make that sentence
-true. So an unreadable grant list gives `actor?` and suppresses the no-actor
-finding; an unreadable `providerOverridesEnabled` gives `subject?` and
-suppresses the deny-by-default finding; the realm document gets the same
-treatment, where it matters more rather than less. The same applies to a
-listing page that comes back with an unusable `_id` or `pagedResultsCookie`:
-both are refused rather than skipped, because a listing that quietly loses
-rows or stops early is how an incomplete population becomes a confident
-statement about every client. An *absent* field stays silent, because absent
-really does mean not set.
+A projected field that is **present with an unusable type** is reported, and the
+answer it feeds is withheld rather than defaulted — `?` in a cell, `null` in
+JSON beside a `…Readable: false`, never the `-` that means "not set". It matters
+here more than elsewhere: a `grantTypes` that stopped being an array would
+quietly turn an actor into a bystander in the one view whose job is to say who
+can act, and a warning printed under "no client holds the grant" does not make
+that sentence true. So an unreadable grant list gives `actor?` and suppresses
+the no-actor finding; an unreadable `providerOverridesEnabled` gives `subject?`
+and suppresses the deny-by-default finding; the realm document gets the same
+treatment, where it matters more rather than less. The same applies to a listing
+page that comes back with an unusable `_id` or `pagedResultsCookie`: both are
+refused rather than skipped, because a listing that quietly loses rows or stops
+early is how an incomplete population becomes a confident statement about every
+client. An _absent_ field stays silent, because absent really does mean not set.
 
 `--json` carries the realm's half, the projected rows and the findings. The
 warnings also go to stderr, so a piped `--json` loses nothing.
 
-Two JSON fields need care. `acceptAudienceParametersOverride` is the
-**client's override**, never the runtime value — with the block dormant the
-realm's `realmAcceptAudienceParameters` governs, and with the block live but
-the field absent the block's own default does, which this projection never
-sees. And `tokenExchangeGranted`, `actor` and `overridesLive` are all
-nullable: `null` means the document did not say, which is not `false`. The
-table spells that `actor?` / `subject?`.
+Two JSON fields need care. `acceptAudienceParametersOverride` is the **client's
+override**, never the runtime value — with the block dormant the realm's
+`realmAcceptAudienceParameters` governs, and with the block live but the field
+absent the block's own default does, which this projection never sees. And
+`tokenExchangeGranted`, `actor` and `overridesLive` are all nullable: `null`
+means the document did not say, which is not `false`. The table spells that
+`actor?` / `subject?`.
 
 `get` prints one client as a compact table and **writes nothing** — reading a
 client used to mean `pull`, which drops a JSON file in the workspace and
@@ -929,38 +970,36 @@ default scopes, redirect URIs, implied consent, the three lifetimes). Array
 fields print one value per row. `--json` prints the document the API returned.
 
 The last section is `overrideOAuth2ClientConfig`, whose 29 keys are only
-meaningful alongside one of them: `providerOverridesEnabled` is a master
-switch, so the section header says whether the block runs at all rather than
-echoing a boolean — `in effect` when the switch is true, `dormant` when it is
-false **or absent** (the switch has to be `true`; a missing one leaves the
-realm in charge).
+meaningful alongside one of them: `providerOverridesEnabled` is a master switch,
+so the section header says whether the block runs at all rather than echoing a
+boolean — `in effect` when the switch is true, `dormant` when it is false **or
+absent** (the switch has to be `true`; a missing one leaves the realm in
+charge).
 
 The rows are the same either way, deliberately. A dormant
 `statelessTokensEnabled: true` is exactly what you need to see before enabling
-the block to attach one script, because flipping the switch makes every value
-in it live at once — including ones you never set. Entries that say "inherit"
-(the `[Empty]` sentinel, `null`, an empty array, a `…PluginType` of
-`PROVIDER`, a `…Class` still on AM's `Default…` implementation) are suppressed
-and **counted** on a final row, so nothing is dropped without saying so.
-A script id prints as `name (uuid)` where the realm has a script with that id,
-and as the bare UUID where it does not. Only fields that hold a script id are
-rewritten — a scope or a client id that happened to be UUID-shaped keeps its
-value. The lookup covers **every** script in the realm, including the Groovy
-and product-internal ones `aic script list` hides, because an override can
-legitimately point at one and resolving it to nothing would report an existing
-script as missing — an id naming a script that is not
-there is a finding, and replacing it with a placeholder would remove the value
-you need to chase it. Resolution needs a second request; if that fails you get
-the UUIDs and a warning saying why.
+the block to attach one script, because flipping the switch makes every value in
+it live at once — including ones you never set. Entries that say "inherit" (the
+`[Empty]` sentinel, `null`, an empty array, a `…PluginType` of `PROVIDER`, a
+`…Class` still on AM's `Default…` implementation) are suppressed and **counted**
+on a final row, so nothing is dropped without saying so. A script id prints as
+`name (uuid)` where the realm has a script with that id, and as the bare UUID
+where it does not. Only fields that hold a script id are rewritten — a scope or
+a client id that happened to be UUID-shaped keeps its value. The lookup covers
+**every** script in the realm, including the Groovy and product-internal ones
+`aic script list` hides, because an override can legitimately point at one and
+resolving it to nothing would report an existing script as missing — an id
+naming a script that is not there is a finding, and replacing it with a
+placeholder would remove the value you need to chase it. Resolution needs a
+second request; if that fails you get the UUIDs and a warning saying why.
 
-After the table, `get` warns on stderr about each `…Script` that cannot run:
-one set while its `…PluginType` is still `PROVIDER` (or `JAVA`) is ignored by
-AM, and a `…PluginType` of `SCRIPTED` with no script runs nothing. Both are
-accepted silently by the tenant, which is what makes them expensive. The
-may-act fields have no `…PluginType` companion — setting the id is enough —
-and are correctly never reported. A warning from a dormant block is prefixed
-`(dormant)`: it is not biting yet, and enabling the block is what would make
-it bite.
+After the table, `get` warns on stderr about each `…Script` that cannot run: one
+set while its `…PluginType` is still `PROVIDER` (or `JAVA`) is ignored by AM,
+and a `…PluginType` of `SCRIPTED` with no script runs nothing. Both are accepted
+silently by the tenant, which is what makes them expensive. The may-act fields
+have no `…PluginType` companion — setting the id is enough — and are correctly
+never reported. A warning from a dormant block is prefixed `(dormant)`: it is
+not biting yet, and enabling the block is what would make it bite.
 
 `create` exposes the common client settings (`--name`, repeatable scopes,
 redirect URIs, grants/response types, token auth, consent, and lifetimes); run
@@ -1006,22 +1045,22 @@ change. `--local-vs-snapshot` is your own edits, and makes no tenant request.
 
 Both sides are normalised exactly the way the drift check normalises — `_rev`
 stripped, keys sorted, `-0.0` and `0.0` collapsed — so `diff` and `push` do not
-disagree about whether a client changed. Secret values are replaced by their full
-SHA-256 — the `*-encrypted` blobs AM returns, and a plaintext `userpassword`,
-which only ever appears on the local side because AM reads that field back as
-`null`. `pull` already writes both to the workspace, but a rendered diff also
-reaches your scrollback, your pager's history and any CI log, and a digest
-still changes when the secret is rotated. The OAuth tab masks the same fields
-in its detail pane, everywhere in the document.
+disagree about whether a client changed. Secret values are replaced by their
+full SHA-256 — the `*-encrypted` blobs AM returns, and a plaintext
+`userpassword`, which only ever appears on the local side because AM reads that
+field back as `null`. `pull` already writes both to the workspace, but a
+rendered diff also reaches your scrollback, your pager's history and any CI log,
+and a digest still changes when the secret is rotated. The OAuth tab masks the
+same fields in its detail pane, everywhere in the document.
 
 A side that does not exist is reported on stderr and rendered as empty, and a
 comparison where **neither** side exists (a mistyped client id) fails rather
 than reporting the two absences as identical. `pull` is suggested as the remedy
 only when no **local** side would be lost by running it — it rewrites both the
 local file and the snapshot, and never the tenant, so it is the right advice
-when the client is simply not pulled yet and the wrong advice when your edits
-or your snapshot are the surviving side. In that case the note says what
-`pull` would cost instead of naming it.
+when the client is simply not pulled yet and the wrong advice when your edits or
+your snapshot are the surviving side. In that case the note says what `pull`
+would cost instead of naming it.
 
 `push` prints the relevant diff before it refuses. On remote drift that is
 snapshot-vs-tenant — what changed under you; with no snapshot at all it is
@@ -1126,21 +1165,20 @@ tenant schema defect rather than a generation bug
 (`docs/api/10-managed-objects.md`).
 
 `update` refreshes every managed file and **adds the TypeScript project to a
-workspace that predates it**, seeding its example endpoints. A seed you have
-not edited is refreshed when the template moves; a seed you have edited, or
-one whose origin cannot be verified (no recorded hash), is left alone and
-named in the output. Deleted seeds stay deleted. `typescript/package.json`
-is merged rather than replaced — the framework's toolchain entries are
-refreshed, any dependency you added is kept.
+workspace that predates it**, seeding its example endpoints. A seed you have not
+edited is refreshed when the template moves; a seed you have edited, or one
+whose origin cannot be verified (no recorded hash), is left alone and named in
+the output. Deleted seeds stay deleted. `typescript/package.json` is merged
+rather than replaced — the framework's toolchain entries are refreshed, any
+dependency you added is kept.
 
-`update` also removes **generated-only** script folders: a leaf
-`tsconfig.json` (and, for AM libraries, the `export * from "./….cjs"`
-wrapper) left behind when a script was deleted and recreated under a
-different context, or when the `.cjs` was later removed by hand. A folder
-that still contains a script source, or any file this tool did not generate,
-is left alone. Safe to re-run; a workspace with no orphans is a no-op.
-`aic script delete` still keeps the local `.cjs` — that is the user's
-source, not scaffolding.
+`update` also removes **generated-only** script folders: a leaf `tsconfig.json`
+(and, for AM libraries, the `export * from "./….cjs"` wrapper) left behind when
+a script was deleted and recreated under a different context, or when the `.cjs`
+was later removed by hand. A folder that still contains a script source, or any
+file this tool did not generate, is left alone. Safe to re-run; a workspace with
+no orphans is a no-op. `aic script delete` still keeps the local `.cjs` — that
+is the user's source, not scaffolding.
 
 ### The TypeScript endpoint project
 
@@ -1203,21 +1241,21 @@ aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```
 
-- `list` tags each row with its `ref` and narrows three ways.
-  `--context TEXT` keeps AM scripts whose context **or** workspace folder slug
-  contains `TEXT`, case-insensitively — so `--context OAUTH2_VALIDATE_SCOPE`
-  returns both the legacy context and its `_NEXT_GEN` sibling, and
-  `--context decision-node` returns both engine generations while
-  `--context decision-node-legacy` returns only the 1.0 ones. It matches no IDM
-  script, because only AM scripts have a context. When the filter keeps nothing,
-  the contexts the tenant actually has are printed on stderr.
+- `list` tags each row with its `ref` and narrows three ways. `--context TEXT`
+  keeps AM scripts whose context **or** workspace folder slug contains `TEXT`,
+  case-insensitively — so `--context OAUTH2_VALIDATE_SCOPE` returns both the
+  legacy context and its `_NEXT_GEN` sibling, and `--context decision-node`
+  returns both engine generations while `--context decision-node-legacy` returns
+  only the 1.0 ones. It matches no IDM script, because only AM scripts have a
+  context. When the filter keeps nothing, the contexts the tenant actually has
+  are printed on stderr.
 - `--default` / `--no-default` split the listing on the **DEFAULT** column,
   which means _shipped with the product_ (AM's `default: true`) — the scripts
   `script delete` refuses to remove. It does **not** mean "the script this realm
-  is configured to run". That question is answered by
-  `aic oauth provider get` (realm-wide, e.g. `validateScopeScript`) and by the
-  client's own `overrideOAuth2ClientConfig` (per-client). Both report a script
-  UUID; resolve it against the `ID` column of a listing.
+  is configured to run". That question is answered by `aic oauth provider get`
+  (realm-wide, e.g. `validateScopeScript`) and by the client's own
+  `overrideOAuth2ClientConfig` (per-client). Both report a script UUID; resolve
+  it against the `ID` column of a listing.
 - `create`, `copy`, and `delete` apply only to standalone AM scripts, IDM
   endpoints, and IDM schedules. Managed hooks and sync-mapping scripts are slots
   in their owning configuration documents.
@@ -1230,14 +1268,14 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   tenant which engines a context supports **before** writing anything. It has
   to: the scripts endpoint accepts a legacy-only context with
   `"evaluatorVersion": "2.0"` and stores `1.0` anyway — `201`, no warning — so
-  the refusal was previously unreachable for exactly the contexts it exists
-  for, and you found out at runtime. Now `--context OAUTH2_VALIDATE_SCOPE`
-  creates under `OAUTH2_VALIDATE_SCOPE_NEXT_GEN` and says so on stderr. Where a
-  context has no next-gen form at all — `AUTHENTICATION_SERVER_SIDE`,
+  the refusal was previously unreachable for exactly the contexts it exists for,
+  and you found out at runtime. Now `--context OAUTH2_VALIDATE_SCOPE` creates
+  under `OAUTH2_VALIDATE_SCOPE_NEXT_GEN` and says so on stderr. Where a context
+  has no next-gen form at all — `AUTHENTICATION_SERVER_SIDE`,
   `AUTHENTICATION_CLIENT_SIDE` — it refuses and names what the context does
-  support. Do not infer the engine from the context's name or its language
-  list. The global context list says `SAML2_SP_ADAPTER` is `JAVASCRIPT` only,
-  while the realm's own `contexts/SAML2_SP_ADAPTER` reports
+  support. Do not infer the engine from the context's name or its language list.
+  The global context list says `SAML2_SP_ADAPTER` is `JAVASCRIPT` only, while
+  the realm's own `contexts/SAML2_SP_ADAPTER` reports
   `evaluatorVersions: {JAVASCRIPT: ["1.0"], GROOVY: ["1.0"]}` — the two AM
   endpoints disagree, and only the second one answers the question being asked
   (measured 2026-09-10). That is why this is a live call and not a table. The
@@ -1249,8 +1287,8 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   declares it owns in `typescript/.aic-ts-manifest.json`: that has no snapshot
   precisely because it has never existed remotely, so watch **creates** it on
   the tenant (honouring the same prod guard as a push) and every later save
-  takes the ordinary tracked path. Hand-written `.cjs` files are unaffected.
-  If the tenant already has that name — a bundle built in another checkout, or a
+  takes the ordinary tracked path. Hand-written `.cjs` files are unaffected. If
+  the tenant already has that name — a bundle built in another checkout, or a
   create whose pull-back never finished — watch **adopts** the tenant's copy as
   the baseline instead, writing nothing to the tenant and backing that copy up
   when it differs from the file on disk. The next line of output is the ordinary
@@ -1284,46 +1322,46 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
 - **Accepted script writes are confirmed before the snapshot advances.** Push
   and sync re-fetch the resource and compare its decoded source with the exact
   bytes submitted. A mismatch reports “write accepted, but read-back did not
-  match” and a failed fetch/decode reports “confirmation failed”; both leave
-  the local source and snapshot unchanged, describe the tenant state as
-  uncertain, and exit non-zero.
-- **Explicit sync resolution applies to every selected entry.** `--resolve
-  local --force` makes the tenant match each existing local source via the same forced,
-  syntax-checked, confirmed push; a missing local file is an error and is not
-  restored. `--resolve remote` makes every local source match the tenant,
-  backing up differing existing source first. Without `--resolve`, sync keeps
-  its three-way behavior: local-only changes push, remote-only changes pull,
-  equal changes converge, and genuine conflicts prompt when a terminal is
-  available. Resolution and bare force require each other: `--resolve local`
-  without `--force`, and bare `sync --force` without `--resolve`, both fail.
-  Ordinary reconcile can still use `--force=syntax-check` by itself.
+  match” and a failed fetch/decode reports “confirmation failed”; both leave the
+  local source and snapshot unchanged, describe the tenant state as uncertain,
+  and exit non-zero.
+- **Explicit sync resolution applies to every selected entry.**
+  `--resolve local --force` makes the tenant match each existing local source
+  via the same forced, syntax-checked, confirmed push; a missing local file is
+  an error and is not restored. `--resolve remote` makes every local source
+  match the tenant, backing up differing existing source first. Without
+  `--resolve`, sync keeps its three-way behavior: local-only changes push,
+  remote-only changes pull, equal changes converge, and genuine conflicts prompt
+  when a terminal is available. Resolution and bare force require each other:
+  `--resolve local` without `--force`, and bare `sync --force` without
+  `--resolve`, both fail. Ordinary reconcile can still use
+  `--force=syntax-check` by itself.
 - **Pull backups are based on the bytes being replaced, not the snapshot.** A
   normal `pull`, a reconcile pull, and `sync --resolve remote` write any
-  differing existing source to `.aic-sync/backups/` before replacing it, even
-  if that source equals the snapshot. Backup names include kind, realm, and
-  script name plus a collision-safe suffix; the actual path is printed. A
-  backup file is created exclusively at mode 0600 on Unix. A backup failure
-  aborts before local source or snapshot changes. Direct
-  `script pull --force=backup` is the explicit backup opt-out; bare `--force`
-  authorizes overwriting protected edits but still creates the backup. Sync
-  never opts out.
+  differing existing source to `.aic-sync/backups/` before replacing it, even if
+  that source equals the snapshot. Backup names include kind, realm, and script
+  name plus a collision-safe suffix; the actual path is printed. A backup file
+  is created exclusively at mode 0600 on Unix. A backup failure aborts before
+  local source or snapshot changes. Direct `script pull --force=backup` is the
+  explicit backup opt-out; bare `--force` authorizes overwriting protected edits
+  but still creates the backup. Sync never opts out.
 
   Direct pull preflights all selected scripts. Missing local source, content
   already equal to the tenant, and content equal to a valid snapshot are safe.
   Any other differing source is protected. A single pull offers one default-no
   confirmation; a namespace/`all` pull refuses the whole batch without bare
-  `--force` and lists every affected ref before changing a file. The Scripts
-  TUI uses the same preflight and one default-cancel modal for the complete
+  `--force` and lists every affected ref before changing a file. The Scripts TUI
+  uses the same preflight and one default-cancel modal for the complete
   selection; acceptance always keeps backups.
+
 - **Every write is syntax-checked first.** Before `create`, `copy`, `push`,
   `sync` and `watch` write anything, the tenant is asked to parse the source —
   AM through `scripts?_action=validate`, IDM through `script?_action=compile`.
   Neither write path does this itself: a `PUT` of a script that does not parse
   succeeds with a 201, and the breakage then surfaces far from the edit. A
   broken AM script fails whenever its journey or token flow next evaluates; a
-  broken IDM endpoint answers **404** at its runtime URL while its config
-  object still reads back 200, so it presents as an endpoint that was never
-  created.
+  broken IDM endpoint answers **404** at its runtime URL while its config object
+  still reads back 200, so it presents as an endpoint that was never created.
 
   A refusal writes nothing, leaves the snapshot alone, and exits non-zero, so
   the local edit survives for you to fix and push again. That includes a batch:
@@ -1334,65 +1372,42 @@ aic script who <ref> [--history] [--minutes N] [--json]   # who created/last mod
   rather than leave you hunting for a coordinate that was never sent.
 
   **No verdict is also a refusal, with no exceptions.** If the check cannot
-  answer — an unexpected body, or a 503 from IDM's compile action, which is
-  what it returns for a script `type` it does not recognise _and_ what an
-  unwell service returns — nothing is written, and the message says the check
-  gave no verdict rather than that the source was rejected. Retrying is the
-  first thing to try, since it may be a bad minute on the tenant.
+  answer — an unexpected body, or a 503 from IDM's compile action, which is what
+  it returns for a script `type` it does not recognise _and_ what an unwell
+  service returns — nothing is written, and the message says the check gave no
+  verdict rather than that the source was rejected. Retrying is the first thing
+  to try, since it may be a bad minute on the tenant.
 
-  The same goes for source nothing _can_ check, such as an endpoint declaring
-  a script engine the compile action does not compile: that is recognised
-  before the call is made, so the message names the type and skips the useless
-  retry advice — but it still writes nothing, because unparsed source is
-  unparsed source however the gate found out. `--force=syntax-check` is the one
-  way to store source the tenant has not parsed.
+  The same goes for source nothing _can_ check, such as an endpoint declaring a
+  script engine the compile action does not compile: that is recognised before
+  the call is made, so the message names the type and skips the useless retry
+  advice — but it still writes nothing, because unparsed source is unparsed
+  source however the gate found out. `--force=syntax-check` is the one way to
+  store source the tenant has not parsed.
 
   `--force` does **not** override this, and that is deliberate: drift is a
-  question of whose content wins, while an unparseable script is broken
-  whoever wrote it. `--force=syntax-check` is the escape hatch, on every one of
-  those commands, for when the check itself is in the way. The pre-flight is
-  one extra call, ~0.15s.
+  question of whose content wins, while an unparseable script is broken whoever
+  wrote it. `--force=syntax-check` is the escape hatch, on every one of those
+  commands, for when the check itself is in the way. The pre-flight is one extra
+  call, ~0.15s.
 
   `create`, `copy`, and `watch` support only this named guard and reject bare
   `--force`. `push` and `sync` can combine it with their operation permission,
-  for example `aic script push endpoint/example --force
-  --force=syntax-check`.
+  for example `aic script push endpoint/example --force --force=syntax-check`.
+  See [Flag migration](#flag-migration) for the removed `--no-syntax-check`
+  spelling and for the change in what `pull --force` means.
 
-### Force-flag migration
-
-The old spellings were removed rather than retained as aliases:
-
-```bash
-# old
-aic script push endpoint/x --no-syntax-check
-# new
-aic script push endpoint/x --force=syntax-check
-
-# old: skipped both overwrite consent and backup
-aic script pull endpoint/x --force
-# new: spell both permissions to preserve that exact behavior
-aic script pull endpoint/x --force --force=backup
-
-# old
-aic script sync --resolve remote
-# new
-aic script sync --resolve remote --force
-```
-
-For a normal protected pull, bare `--force` now means overwrite consent while
-preserving the recovery backup. Add `--force=backup` only when deliberately
-waiving that separate safeguard.
 - **`status` filters.** `am`/`idm` are group aliases; anything else is a
   case-insensitive substring of the full-name (use a trailing slash, e.g.
   `alpha/`, to match only that AM realm and exclude `managed/alpha_user…`).
-- **`status` reports workspace drift** after the script rows. It prints the
-  same templates-version nudge that `push`/`pull` already print when the
-  scaffold predates the bundled templates. Independently, it fetches the live
-  managed schema and regenerates the expected type files in memory (nothing
-  is written): if any on-disk managed type file is missing or differs, one
-  line names how many are stale and points at `aic workspace update`. Both
-  notes stay silent when current. A failed fetch warns once and does not fail
-  the command — the script rows still printed.
+- **`status` reports workspace drift** after the script rows. It prints the same
+  templates-version nudge that `push`/`pull` already print when the scaffold
+  predates the bundled templates. Independently, it fetches the live managed
+  schema and regenerates the expected type files in memory (nothing is written):
+  if any on-disk managed type file is missing or differs, one line names how
+  many are stale and points at `aic workspace update`. Both notes stay silent
+  when current. A failed fetch warns once and does not fail the command — the
+  script rows still printed.
 - **`diff`** shells out to `git diff --no-index` (needs `git` on PATH): colored
   via your pager interactively, plain unified diff when piped
   (`aic script diff bravo/Foo | delta`). Default compares local vs tenant;

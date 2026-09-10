@@ -48,7 +48,7 @@ pub enum JourneyCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
-        /// Confirm the write on a production-themed tenant.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -62,7 +62,7 @@ pub enum JourneyCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
-        /// Confirm the write on a production-themed tenant.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },

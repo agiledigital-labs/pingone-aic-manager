@@ -47,6 +47,7 @@ pub enum EsvCommand {
         id: String,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
@@ -54,6 +55,7 @@ pub enum EsvCommand {
     Apply {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },

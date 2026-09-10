@@ -225,7 +225,7 @@ pub enum KeyCommand {
             help = "AM session cookie name (random-hex). Prompted if omitted."
         )]
         cookie_name: Option<String>,
-        /// Confirm key creation on a production-themed tenant.
+        /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
     },
