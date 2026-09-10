@@ -30,8 +30,8 @@ aic <command> <subcommand> --help
   realm.
 - **Production-write guard.** Commands that mutate a _production-themed_ tenant
   refuse to run without **`--yes`** — the CLI equivalent of the TUI's prod
-  guard. Irreversible commands (`esv secret destroy`/`delete`) prompt for a
-  typed confirmation on _any_ tenant unless `--yes` is given.
+  guard. `--yes` authorizes only the environment; it never grants a separate
+  operation-specific safety override.
 - **`--force`** skips a safety check specific to the command (e.g. overwriting a
   drifted remote, deleting a journey/client). It's called out per command below.
 - **Output format.** List commands default to kubectl-style tables. Pass
@@ -254,8 +254,8 @@ aic esv secret add-version esv-my-secret         # add + activate a new version
 aic esv secret enable  esv-my-secret 2
 aic esv secret disable esv-my-secret 2           # latest version can't be disabled
 aic esv secret set-description esv-my-secret --description "…"
-aic esv secret destroy esv-my-secret 2 --yes     # irreversible — destroy one version
-aic esv secret delete  esv-my-secret --yes       # irreversible — delete the secret
+aic esv secret destroy esv-my-secret 2 [--force] [--yes] # irreversible — destroy one version
+aic esv secret delete  esv-my-secret [--force] [--yes]   # irreversible — delete the secret
 ```
 
 **Value sources** (for `create` / `add-version`), in priority order:
@@ -268,6 +268,11 @@ aic esv secret delete  esv-my-secret --yes       # irreversible — delete the s
 `--value <v>` exists for scripting but is **discouraged** — it leaks into shell
 history and `ps`. `create` is create-only (PUT); change a value with
 `add-version`, which becomes the active version.
+
+Destroying a version and deleting a secret require a typed `yes` confirmation
+on an interactive terminal. Bare `--force` replaces that operation
+confirmation for unattended use. Production independently requires `--yes`:
+neither flag implies the other, so unattended production deletion needs both.
 
 ---
 
