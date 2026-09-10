@@ -379,7 +379,7 @@ aic managed object create custom_widget [--title T] [--description D] [--yes] [-
 aic managed object rename custom_widget custom_gadget [--yes] [--json]
 aic managed object delete custom_gadget [--yes] [--json]
 aic managed field add custom_widget.code --type string [--title T] [--required false] [--enum value[:Title] ...] [--default VALUE] [--yes] [--json]
-aic managed field edit custom_widget.code --searchable true [--enum value[:Title] ... | --clear-enum] [--default VALUE | --clear-default] [--allow-narrowing] [--yes] [--json]
+aic managed field edit custom_widget.code --searchable true [--enum value[:Title] ... | --clear-enum] [--default VALUE | --clear-default] [--force] [--yes] [--json]
 aic managed field rename custom_widget.code external_code [--yes] [--json]
 aic managed field delete custom_widget.external_code [--yes] [--json]
 aic managed hook add custom_widget onCreate [--yes] [--json]
@@ -422,12 +422,14 @@ schema default with 200, then the managed object returns 404 forever. Use
 `--clear-default` on `field edit` to remove it (`field add` rejects it). For a
 `string[]` field, pass JSON such as `'["a","b"]'`.
 
-Removing a value from an existing set requires `--allow-narrowing`, and warns on
-stderr even then. Nothing fails at the moment you narrow: records holding a
-removed value still read back, and patches to their other properties still
-succeed. What breaks is a whole-record `PUT` of such a record — in some other
-integration, on a property that code never touched. Adding a value, and
-`--clear-enum`, are both widening and need no flag.
+Removing a value from an existing set requires bare `--force`, and warns on
+stderr even then. This replaces the removed `--allow-narrowing` spelling.
+`field add` and `relationship set` accept neither spelling because narrowing
+does not apply to those commands. Nothing fails at the moment you narrow:
+records holding a removed value still read back, and patches to their other
+properties still succeed. What breaks is a whole-record `PUT` of such a record
+— in some other integration, on a property that code never touched. Adding a
+value, and `--clear-enum`, are both widening and need no flag.
 
 ---
 
