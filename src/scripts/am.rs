@@ -1652,7 +1652,22 @@ mod tests {
         // `isExists`/`getAttribute` are the legacy AMIdentity spellings; the
         // next-gen `exists`/`getAttributeValues` throw here.
         assert!(legacy.contains("isExists(): boolean;"));
-        assert!(legacy.contains("getAttribute(attributeName: StringLike)"));
+        // Both getters were `JavaArray`/list-shaped until 2026-09-10 on nothing
+        // but the fact that the CALL resolved. Measured: `getAttribute` hands
+        // back a `java.util.HashSet` (AM names the class when you index it) and
+        // `getAttributes` a Map of those. `JavaArray` promised `.length`, `[0]`,
+        // `.get(0)` and `.includes()`, all four of which throw — so pin the
+        // return, not just the spelling, in BOTH AMIdentity leaves.
+        for leaf in [legacy, include_str!("templates/am/types/oidc-claims.d.ts")] {
+            assert!(
+                leaf.contains("getAttribute(attributeName: StringLike): JavaSet<JavaString>;"),
+                "getAttribute returns a java.util.HashSet, not an indexable list"
+            );
+            assert!(
+                leaf.contains("getAttributes(): JavaMap<JavaString, JavaSet<JavaString>>;"),
+                "getAttributes returns a Map of Sets"
+            );
+        }
         // A JS array throws `Cannot convert NativeArray to java.util.Set`.
         assert!(legacy.contains("setScope(scopes: JavaSet<JavaString>): void;"));
     }

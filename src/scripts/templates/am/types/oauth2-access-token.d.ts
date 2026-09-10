@@ -188,13 +188,33 @@ interface AmIdentity {
   getType(): JavaString;
   isExists(): boolean;
   isActive(): boolean;
-  /** Empty list, never `null`, for an attribute the identity does not have. */
-  getAttribute(attributeName: StringLike): JavaArray<JavaString>;
   /**
-   * EVERY attribute. On an `agentonly` identity that includes the OAuth2
-   * client's own `userpassword` — do not log this object.
+   * A **`java.util.HashSet`** — measured, and AM names the class itself in the
+   * error when you index it: `java.util.HashSet has no public instance field or
+   * method named "0"`. So `size()`, `toArray()`, `contains()` and `iterator()`
+   * work, while `.length`, `[0]`, `.get(0)` and `.includes()` do NOT. Read a
+   * single-valued attribute as `String(v.toArray()[0])`.
+   *
+   * This was declared `JavaArray<JavaString>` until 2026-09-10, which promised
+   * all four of the members that throw. The 2026-08-27 sweep had established
+   * that the METHOD resolves — `getAttribute("mail")` returned the real address
+   * — and never asked what the container was.
+   *
+   * Empty set, never `null`, both for an attribute the identity does not have
+   * and for a name that does not exist: a size of 0 cannot tell those apart.
    */
-  getAttributes(): JavaMap<JavaString, JavaArray<JavaString>>;
+  getAttribute(attributeName: StringLike): JavaSet<JavaString>;
+  /**
+   * EVERY attribute, as a Java `Map` whose values are `HashSet`s. `get(name)`,
+   * `containsKey(name)`, `size()` and `entrySet()` resolve; `keySet()` is
+   * blocked by the class shutter (`Access to Java class
+   * "com.sun.identity.common…"`), so there is no way to enumerate the names
+   * from here.
+   *
+   * On an `agentonly` identity this includes the OAuth2 client's own
+   * `userpassword` — do not log this object.
+   */
+  getAttributes(): JavaMap<JavaString, JavaSet<JavaString>>;
   store(): void;
 
   // ABSENT here, present on the next-gen `Identity`: `exists`,

@@ -12,4 +12,13 @@ identity.exists(); // expect: TS2551 — legacy spelling is isExists(), which ts
 secrets.getGenericSecret("x"); // expect: TS2304 — binding is undefined here
 accessToken.setScope(["openid"]); // expect: TS2345 — needs a java.util.Set
 scopes.length; // expect: TS2339 — a java.util.Set has no length
+identity.getAttribute("mail").length; // expect: TS2339 — getAttribute returns a java.util.HashSet
+identity.getAttribute("mail").get(0); // expect: TS2339 — HashSet has no get(int); use toArray()[0]
+// NOT a reject row: `identity.getAttribute("mail")[0]` throws at runtime
+// (`java.util.HashSet has no public instance field or method named "0"`) and
+// still compiles clean. These fixtures are `.cjs` under `checkJs`, where tsc
+// does not raise the implicit-any element-access error, so numeric indexing of
+// ANY JavaSet — `scopes[0]` included — is invisible to the type system. Named
+// here so the gap is not rediscovered as a bug in these declarations.
+identity.getAttributes().length; // expect: TS2339 — getAttributes returns a Map, not a list
 accessToken.getNonce().split(""); // expect: TS2531 — the getter is nullable and must be checked

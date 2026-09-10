@@ -51,6 +51,17 @@ interface JavaArray<T = JavaString> {
 interface JavaMap<Key = JavaString, Value = JavaString> {
   get(key: Lookup<Key>): Value | null;
   containsKey?(key: Lookup<Key>): boolean;
+  /**
+   * Every `java.util.Map` has these, and both were called on
+   * `identity.getAttributes()` (2026-09-10, legacy access-token modification).
+   *
+   * `keySet()` is deliberately NOT here: it threw `Access to Java class
+   * "com.sun.identity.common…" is prohibited` on that same object — the class
+   * shutter, not a missing method. `entrySet()` did resolve, but nothing has
+   * measured whether its iterator survives the shutter, so it stays out too.
+   */
+  size(): number;
+  isEmpty(): boolean;
 }
 
 // Request header/parameter/cookie bindings are Java multimaps surfaced without

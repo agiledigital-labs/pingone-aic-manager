@@ -61,9 +61,34 @@ declare const logger: OidcLogger;
 // collection, and only the argument side can be widened without lying about
 // what comes back. `String(...)` before comparing a result is the safe idiom.
 interface AMIdentity {
-  getAttribute(attributeName: StringLike): JavaArray<JavaString>;
-  getAttributes(): JavaArray<JavaString>;
-  getAttributes(attributeNames: StringLike[]): JavaArray<JavaString>;
+  /**
+   * A **`java.util.HashSet`**: `size()`, `toArray()`, `contains()`,
+   * `iterator()` — but no `.length`, no `[0]`, no `.get(0)`, no `.includes()`.
+   * `String(v.toArray()[0])` is how you read a single-valued attribute.
+   *
+   * Measured 2026-09-10 in the legacy access-token-modification context, which
+   * binds the same `com.sun.identity.idm.AMIdentity` on the same engine
+   * (`evaluatorVersion 1.0`, Rhino 1.7.14) — see
+   * `docs/api/12-script-bindings-matrix.md`. Not probed through an OIDC flow;
+   * the class and the engine are the same, the context is not.
+   *
+   * Empty set, never `null`, for an absent attribute AND for a name that does
+   * not exist.
+   */
+  getAttribute(attributeName: StringLike): JavaSet<JavaString>;
+  /**
+   * A Java `Map` of every attribute, values `HashSet`s — NOT a list, which is
+   * what this returned until 2026-09-10. `keySet()` is class-shuttered, so the
+   * names cannot be enumerated from here; `get`/`containsKey`/`size` work.
+   */
+  getAttributes(): JavaMap<JavaString, JavaSet<JavaString>>;
+  /**
+   * The `Set`-taking overload. Java's parameter is a `java.util.Set`, and Rhino
+   * does not convert a JS array to one — the same trap as `setScope` in the
+   * token-modification context, where a JS array throws (verified 2026-08-27).
+   * Build it with `new java.util.HashSet()`.
+   */
+  getAttributes(attributeNames: JavaSet<JavaString>): JavaMap<JavaString, JavaSet<JavaString>>;
 }
 
 interface JavaClass {}

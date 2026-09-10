@@ -48,11 +48,23 @@ var wanted = new java.util.HashSet();
 wanted.add("openid");
 accessToken.setScope(wanted);
 
-// The legacy AMIdentity spellings.
+// The legacy AMIdentity spellings. `getAttribute` hands back a
+// `java.util.HashSet`, so `toArray()[0]` is the read — `.get(0)` and `[0]` both
+// throw at runtime (measured 2026-09-10), and this fixture used to demonstrate
+// `.get(0)` back when the return was typed `JavaArray`.
 if (identity.isExists() && identity.isActive()) {
   var mail = identity.getAttribute("mail");
   if (mail && mail.size() > 0) {
-    accessToken.setField("aic_mail", String(mail.get(0)));
+    accessToken.setField("aic_mail", String(mail.toArray()[0]));
+  }
+}
+
+// getAttributes() is a Map of Sets, not a list.
+var all = identity.getAttributes();
+if (all.size() > 0) {
+  var mails = all.get("mail");
+  if (mails) {
+    accessToken.setField("aic_mail_count", mails.size());
   }
 }
 
