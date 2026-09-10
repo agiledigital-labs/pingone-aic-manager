@@ -707,6 +707,8 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     _ => println!("nothing synced yet — `aic script pull …` first"),
                 }
             }
+            workspace_update_hint(&t)?;
+            check_managed_types_stale(&t).await;
             Ok(())
         }
         ScriptCommand::Who {
@@ -2461,6 +2463,62 @@ fn workspace_update_hint(tenant: &str) -> Result<()> {
     Ok(())
 }
 
+/// Compare on-disk managed type files to a fresh in-memory generation from the
+/// live schema. Prints one summary line when any file is missing or differs;
+/// stays silent when current. Never writes, and never fails the caller: a
+/// fetch or generate error warns once and returns, matching
+/// [`generate_managed_types`]'s best-effort discipline.
+///
+/// Skips when no workspace has been initialised (`applied_version == 0`):
+/// every expected file would be "missing", and the remedy would be
+/// `workspace init`, not `update`.
+async fn check_managed_types_stale(tenant: &str) {
+    let Ok(applied) = crate::scripts::workspace::applied_version(tenant) else {
+        return;
+    };
+    if applied == 0 {
+        return;
+    }
+    let schema = match crate::aic::api::get(tenant, "/openidm/config/managed").await {
+        Ok(schema) => schema,
+        Err(error) => {
+            eprintln!(
+                "warning: could not fetch managed schema (stale-types check skipped): {error}"
+            );
+            return;
+        }
+    };
+    let files = match crate::scripts::managed_types::generate(&schema) {
+        Ok(files) => files,
+        Err(error) => {
+            eprintln!(
+                "warning: could not generate managed types (stale-types check skipped): {error}"
+            );
+            return;
+        }
+    };
+    let stale =
+        crate::scripts::managed_types::stale_files(&ProjectConfig::workspace_tree(tenant), &files);
+    if let Some(note) = managed_types_stale_note(stale.len()) {
+        println!("{note}");
+    }
+}
+
+/// One-line summary for [`check_managed_types_stale`]. `None` when current,
+/// so the command stays silent the same way [`workspace_update_hint`] does.
+fn managed_types_stale_note(stale: usize) -> Option<String> {
+    match stale {
+        0 => None,
+        1 => Some(
+            "note: 1 managed type file is stale — run `aic workspace update` to refresh"
+                .to_string(),
+        ),
+        n => Some(format!(
+            "note: {n} managed type files are stale — run `aic workspace update` to refresh"
+        )),
+    }
+}
+
 fn print_conflict(name: &str, tw: &crate::scripts::sync::ThreeWay) {
     println!("=== {name}: last-synced ===\n{}", tw.last_synced);
     println!("=== {name}: remote ===\n{}", tw.remote);
@@ -2854,5 +2912,22 @@ mod tests {
         for theme in TenantTheme::all() {
             assert_eq!(scripts_are_writable(*theme), theme.allows_static_content());
         }
+    }
+
+    #[test]
+    fn managed_types_stale_note_is_silent_when_current() {
+        assert_eq!(managed_types_stale_note(0), None);
+    }
+
+    #[test]
+    fn managed_types_stale_note_names_the_count() {
+        assert_eq!(
+            managed_types_stale_note(1).as_deref(),
+            Some("note: 1 managed type file is stale — run `aic workspace update` to refresh")
+        );
+        assert_eq!(
+            managed_types_stale_note(3).as_deref(),
+            Some("note: 3 managed type files are stale — run `aic workspace update` to refresh")
+        );
     }
 }
