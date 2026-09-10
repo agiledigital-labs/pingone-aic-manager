@@ -1787,13 +1787,15 @@ mod tests {
     }
 
     #[test]
-    fn ctx_rm_parses_delete_keys_without_assuming_a_default() {
+    fn ctx_rm_parses_explicit_purge_and_force_without_assuming_defaults() {
         let cli = Cli::try_parse_from([
             "aic",
             "ctx",
             "rm",
             "UAT",
-            "--delete-keys",
+            "--purge",
+            "defaults",
+            "--force",
             "--dry-run",
             "--json",
             "--yes",
@@ -1804,13 +1806,23 @@ mod tests {
                 command: CtxCommand::Rm { tenant, options },
             }) => {
                 assert_eq!(tenant, "UAT");
-                assert!(options.delete_keys);
+                assert_eq!(
+                    options.purge,
+                    Some(crate::offboard::cli::PurgeSelector::Defaults)
+                );
+                assert!(options.force.operation());
                 assert!(options.dry_run);
                 assert!(options.json);
                 assert!(options.yes);
             }
             other => panic!("expected ctx rm, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ctx_rm_rejects_removed_delete_keys_spelling() {
+        let error = Cli::try_parse_from(["aic", "ctx", "rm", "UAT", "--delete-keys"]).unwrap_err();
+        assert!(error.to_string().contains("--delete-keys"));
     }
 
     #[test]

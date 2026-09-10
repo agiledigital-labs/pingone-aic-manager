@@ -3,10 +3,11 @@
 use std::collections::HashSet;
 use std::io::Write;
 
-use clap::Args;
+use clap::{Args, ValueEnum};
 use serde::Serialize;
 
-use crate::cli::{ensure_prod_confirmed, print_json, prompt_available, prompting_disabled};
+use crate::cli::force::OperationForce;
+use crate::cli::{ensure_prod_confirmed, print_json, prompt_available};
 use crate::config::{self, ProjectConfig};
 use crate::offboard::ops::{self, ExecuteReport, Layout, LiveIo, Step, StepStatus};
 use crate::offboard::spec::{
@@ -16,12 +17,12 @@ use crate::{Error, Result};
 
 #[derive(Args, Debug)]
 pub struct RmOptions {
-    /// Accept every offered artifact and skip prompts, including the
-    /// typed-name confirmation. Forces past a prompt, never past the
-    /// sharing guard — a credential another surviving tenant still needs
-    /// is not deleted.
-    #[arg(long)]
-    pub delete_keys: bool,
+    /// Select optional cleanup artifacts without opening the interactive picker.
+    #[arg(long, value_enum)]
+    pub purge: Option<PurgeSelector>,
+    /// Skip the typed-tenant-name operation confirmation.
+    #[command(flatten)]
+    pub force: OperationForce,
     /// Print the plan and exit, changing nothing.
     #[arg(long)]
     pub dry_run: bool,
@@ -31,6 +32,16 @@ pub struct RmOptions {
     /// Confirm a write to a production-themed tenant.
     #[arg(long)]
     pub yes: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum PurgeSelector {
+    /// Select every artifact the sharing guard offers.
+    All,
+    /// Select the same default-on artifacts as the TUI.
+    Defaults,
+    /// Select no optional artifacts.
+    None,
 }
 
 #[derive(Serialize)]
@@ -93,9 +104,10 @@ pub async fn run(tenant: String, options: RmOptions) -> Result<()> {
     }
 
     let ok = ensure_prod_confirmed(&tenant, options.yes)?;
-    let purge = collect_purge(&plan, options.delete_keys)?;
+    ensure_unattended_flags(&options, prompt_available())?;
+    let purge = collect_purge(&plan, options.purge)?;
 
-    if !options.delete_keys {
+    if !options.force.operation() {
         confirm_typed_name(&tenant)?;
     }
 
@@ -121,14 +133,38 @@ pub async fn run(tenant: String, options: RmOptions) -> Result<()> {
     Ok(())
 }
 
-fn collect_purge(plan: &DeletePlan, delete_keys: bool) -> Result<ResolvedPurge> {
-    if delete_keys {
-        return Ok(plan.resolve_purge(offered_kinds(plan)));
-    }
-    if prompting_disabled() {
+fn ensure_unattended_flags(options: &RmOptions, terminal_available: bool) -> Result<()> {
+    if !terminal_available && (options.purge.is_none() || !options.force.operation()) {
         return Err(Error::Config(
-            "removing a tenant requires confirmation; pass --delete-keys with --no-prompt".into(),
+            "removing a tenant without a terminal requires both --purge all|defaults|none and --force"
+                .into(),
         ));
+    }
+    Ok(())
+}
+
+fn collect_purge(plan: &DeletePlan, selector: Option<PurgeSelector>) -> Result<ResolvedPurge> {
+    if selector.is_none() && !prompt_available() {
+        return Err(Error::Config(
+            "artifact selection requires a terminal; pass --purge all|defaults|none explicitly"
+                .into(),
+        ));
+    }
+    collect_purge_with(plan, selector, confirm_target)
+}
+
+fn collect_purge_with(
+    plan: &DeletePlan,
+    selector: Option<PurgeSelector>,
+    mut confirm: impl FnMut(&str, bool) -> Result<bool>,
+) -> Result<ResolvedPurge> {
+    match selector {
+        Some(PurgeSelector::All) => return Ok(plan.resolve_purge(offered_kinds(plan))),
+        Some(PurgeSelector::Defaults) => {
+            return Ok(plan.resolve_purge(plan.default_selections()));
+        }
+        Some(PurgeSelector::None) => return Ok(plan.resolve_purge([])),
+        None => {}
     }
 
     let mut accepted = HashSet::new();
@@ -139,7 +175,7 @@ fn collect_purge(plan: &DeletePlan, delete_keys: bool) -> Result<ResolvedPurge> 
                 accepted.insert(target.kind);
             }
             PromptAction::Ask { default_on } => {
-                if confirm_target(target.kind.label(), default_on)? {
+                if confirm(target.kind.label(), default_on)? {
                     accepted.insert(target.kind);
                 }
             }
@@ -317,7 +353,8 @@ fn display_id(value: Option<&str>) -> &str {
 fn confirm_target(label: &str, default_on: bool) -> Result<bool> {
     if !prompt_available() {
         return Err(Error::Config(
-            "removing a tenant requires confirmation; pass --delete-keys when no terminal is available".into(),
+            "artifact selection requires a terminal; pass --purge all|defaults|none explicitly"
+                .into(),
         ));
     }
     let hint = if default_on { "Y/n" } else { "y/N" };
@@ -336,15 +373,10 @@ fn confirm_target(label: &str, default_on: bool) -> Result<bool> {
 }
 
 fn confirm_typed_name(name: &str) -> Result<()> {
-    if prompting_disabled() {
-        return Err(Error::Config(
-            "typed-name confirmation disabled by --no-prompt; pass --delete-keys to skip prompts"
-                .into(),
-        ));
-    }
     if !prompt_available() {
         return Err(Error::Config(
-            "deleting a tenant requires typing its name; pass --delete-keys when no terminal is available".into(),
+            "deleting a tenant requires typing its name; pass --force when no terminal is available"
+                .into(),
         ));
     }
     eprint!("Type {name:?} to delete this tenant entry: ");
@@ -363,7 +395,10 @@ fn confirm_typed_name(name: &str) -> Result<()> {
 mod tests {
     use std::path::Path;
 
+    use clap::Parser;
+
     use super::*;
+    use crate::cli::{Cli, Command, CtxCommand};
     use crate::config::{Tenant, TenantTheme, VaultArtifact};
     use crate::offboard::ops::{ExecuteIo, Layout, Step, StepStatus};
     use crate::offboard::spec::{self, Inventory, TargetKind};
@@ -388,8 +423,23 @@ mod tests {
         }
     }
 
+    fn options(extra: &[&str]) -> RmOptions {
+        let cli = Cli::try_parse_from(
+            ["aic", "ctx", "rm", "UAT"]
+                .into_iter()
+                .chain(extra.iter().copied()),
+        )
+        .unwrap();
+        match cli.command {
+            Some(Command::Ctx {
+                command: CtxCommand::Rm { options, .. },
+            }) => options,
+            other => panic!("not ctx rm: {other:?}"),
+        }
+    }
+
     #[test]
-    fn delete_keys_selection_is_exactly_the_offered_set() {
+    fn purge_all_selection_is_exactly_the_offered_set() {
         let departing = tenant("UAT", "dup-sa");
         let keep = spec::Survivor {
             name: "uat".into(),
@@ -409,7 +459,10 @@ mod tests {
             undo_entries: false,
         };
         let plan = spec::plan(&departing, &inventory, &[keep]);
-        let purge = plan.resolve_purge(offered_kinds(&plan));
+        let purge = collect_purge_with(&plan, Some(PurgeSelector::All), |_, _| {
+            panic!("--purge all must not prompt")
+        })
+        .unwrap();
         assert!(purge.contains(&TargetKind::ServiceAccountJwk));
         assert!(purge.contains(&TargetKind::IssuerSigningKey));
         assert!(purge.contains(&TargetKind::LogsDatabase));
@@ -418,6 +471,84 @@ mod tests {
         assert!(!purge.contains(&TargetKind::LogApiKey));
         assert!(!purge.contains(&TargetKind::IdmStore));
         assert!(!purge.contains(&TargetKind::UndoLog));
+    }
+
+    #[test]
+    fn purge_defaults_uses_the_shared_tui_algorithm_and_none_selects_nothing() {
+        let mut departing = tenant("UAT", "sa");
+        departing.provenance = crate::config::Provenance {
+            service_account: Some(crate::config::CredentialSource::External),
+            log_key: Some(crate::config::CredentialSource::External),
+        };
+        let inventory = Inventory {
+            service_account_jwk: true,
+            log_api_key_id: Some("log-key".into()),
+            issuer_kid: Some("kid".into()),
+            logs_database: true,
+            idm_store: true,
+            workspace: true,
+            sync_state: true,
+            undo_entries: true,
+        };
+        let plan = spec::plan(&departing, &inventory, &[]);
+
+        let defaults = collect_purge_with(&plan, Some(PurgeSelector::Defaults), |_, _| {
+            panic!("--purge defaults must not prompt")
+        })
+        .unwrap();
+        assert_eq!(
+            defaults,
+            plan.resolve_purge(plan.default_selections()),
+            "CLI defaults must be exactly the TUI's shared default selections"
+        );
+        assert!(!defaults.contains(&TargetKind::ServiceAccountJwk));
+        assert!(!defaults.contains(&TargetKind::LogApiKey));
+        assert!(defaults.contains(&TargetKind::IssuerSigningKey));
+        assert!(defaults.contains(&TargetKind::Workspace));
+        assert!(defaults.contains(&TargetKind::SyncState));
+
+        let none = collect_purge_with(&plan, Some(PurgeSelector::None), |_, _| {
+            panic!("--purge none must not prompt")
+        })
+        .unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn no_purge_still_collects_interactive_choices_even_with_force() {
+        let plan = spec::plan(
+            &tenant("UAT", "sa"),
+            &Inventory {
+                service_account_jwk: true,
+                ..Inventory::default()
+            },
+            &[],
+        );
+        let forced = options(&["--force"]);
+        assert_eq!(forced.purge, None);
+        assert!(forced.force.operation());
+
+        let mut prompts = 0;
+        let purge = collect_purge_with(&plan, forced.purge, |_, default_on| {
+            prompts += 1;
+            Ok(default_on)
+        })
+        .unwrap();
+        assert_eq!(prompts, 1);
+        assert!(purge.contains(&TargetKind::ServiceAccountJwk));
+    }
+
+    #[test]
+    fn no_terminal_requires_both_purge_and_force() {
+        for (args, allowed) in [
+            (Vec::new(), false),
+            (vec!["--purge", "all"], false),
+            (vec!["--force"], false),
+            (vec!["--purge", "all", "--force"], true),
+        ] {
+            let result = ensure_unattended_flags(&options(&args), false);
+            assert_eq!(result.is_ok(), allowed, "{args:?}");
+        }
     }
 
     #[test]

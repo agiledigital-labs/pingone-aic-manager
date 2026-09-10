@@ -127,21 +127,28 @@ itself.
 
 #### `aic ctx rm` — remove a tenant
 
-| Flag            | Effect                                                                                     |
-| --------------- | ------------------------------------------------------------------------------------------ |
-| `--dry-run`     | Print the plan and exit, changing nothing.                                                 |
-| `--json`        | Print the plan as JSON and exit, changing nothing.                                         |
-| `--delete-keys` | Accept every offered artifact and skip all prompts, including the typed-name confirmation. |
-| `--yes`         | Confirm a write to a production-themed tenant.                                             |
+| Flag                           | Effect                                                                                 |
+| ------------------------------ | -------------------------------------------------------------------------------------- |
+| `--dry-run`                    | Print the plan and exit, changing nothing.                                             |
+| `--json`                       | Print the plan as JSON and exit, changing nothing.                                     |
+| `--purge all\|defaults\|none` | Select all offered artifacts, the TUI defaults, or no optional artifacts without prompting. |
+| `--force`                      | Skip only the typed-tenant-name confirmation.                                          |
+| `--yes`                        | Confirm a write to a production-themed tenant.                                         |
 
-The command prints a plan first, then asks `[Y/n]` per artifact, then requires
-the tenant name typed back. Each row is one of four states:
+The command prints a plan first. Without `--purge`, it asks `[Y/n]` per
+artifact—even when `--force` is present. `--purge defaults` uses exactly the
+same default-on choices as the TUI, including provenance and implied-child
+rules; `all` requests every offered artifact and `none` requests no optional
+artifact. Every selection still passes through the planner and its sharing
+guard. Unless `--force` is present, the command then requires the tenant name
+typed back. Without a terminal, both an explicit `--purge` value and `--force`
+are required; no selection default is assumed. Each row is one of four states:
 
 - **offered**, defaulting to on — or to **off** when the credential's recorded
   provenance says you supplied it rather than `aic` minting it;
 - **absent** — nothing stored, so no choice is offered;
-- **refused** — a _surviving_ tenant entry still needs it. `--delete-keys`
-  forces past a prompt, **never** past a refusal;
+- **refused** — a _surviving_ tenant entry still needs it. Neither `--purge`
+  nor `--force` can override a refusal;
 - **implied** — the workspace directory contains the sync state, so accepting
   the workspace takes it regardless.
 
@@ -178,6 +185,12 @@ tenant to reach its vault entries.
 Execution removes the `[[tenant]]` entry **last**. If anything before it fails,
 the entry stays and the whole removal can be retried; the command exits non-zero
 and says so.
+
+`--dry-run` and `--json` remain plan-only and take precedence over selection
+and confirmation flags. A production-themed tenant still additionally requires
+`--yes` for live execution. Migration: the removed `--delete-keys` spelling is
+now `--purge all --force` (plus `--yes` on production); the old flag is rejected
+rather than retained as a hidden alias.
 
 ### aic auth — mint a token as an end user
 
