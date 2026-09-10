@@ -289,12 +289,29 @@ but this standalone command does not set `operator.name`.
 
 ### Remote fetch
 
-| Command                                                                                                      | What it does                                                                                     |
-| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `aic logs sources [--tenant <name>] [--json] [--output <path>]`                                              | List available log source ids. `--json` prints the list as JSON; `--output` writes it to a file. |
-| `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>]`                          | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list.    |
-| `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]`        | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter.                 |
-| `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]` | Run a CREST filter over the logs API. Defaults to the most recent 24 hours.                      |
+| Command                                                                                                         | What it does                                                                                     |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `aic logs sources [--tenant <name>] [--json] [--output <path>]`                                                 | List available log source ids. `--json` prints the list as JSON; `--output` writes it to a file. |
+| `aic logs tx <transaction_id> [--tenant <name>] [--source <csv>] [--output <path>] [--wait] [--timeout <secs>]` | Fetch all events for one transaction id. `--source` narrows to a comma-separated source list.    |
+| `aic logs range <begin> <end> [--tenant <name>] [--source <csv>] [--query <crest>] [--output <path>]`           | Fetch events in an ISO-8601 time range. `--query` adds an optional CREST filter.                 |
+| `aic logs query <filter> [--begin <iso>] [--end <iso>] [--tenant <name>] [--source <csv>] [--output <path>]`    | Run a CREST filter over the logs API. Defaults to the most recent 24 hours.                      |
+
+Log ingestion can lag tens of seconds behind the request, so a short
+`aic logs tx` result is not proof the script never ran. After every `tx` fetch
+the CLI looks for the trailing `AM-ACCESS-OUTCOME` event. If it is missing, a
+note goes to **stderr** (stdout stays the JSON event list, including when
+redirected or written with `--output`):
+
+```
+note: no AM-ACCESS-OUTCOME event yet for transaction <id> — logs can lag
+tens of seconds behind the request; retry, or pass --wait
+```
+
+`--wait` polls the same transaction query until that event arrives or
+`--timeout` seconds elapse (default 60). Progress lines go to stderr. Timeout
+does not fail the command: the events from the last poll are still written.
+`--timeout` is accepted without `--wait` and ignored. Range and query have no
+equivalent completion signal, so they have no `--wait`.
 
 ### Local store
 
