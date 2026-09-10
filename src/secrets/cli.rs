@@ -3,8 +3,10 @@
 use clap::Subcommand;
 use serde_json::Value;
 
+use crate::cli::force::OperationForce;
 use crate::cli::{
-    clip, json_bool_cell, json_str_cell, print_json, print_table, prod_hint, tenant_for,
+    clip, json_bool_cell, json_str_cell, print_json, print_table, prod_hint, prompt_available,
+    tenant_for,
 };
 use crate::{Error, Result};
 
@@ -119,6 +121,8 @@ pub enum SecretCommand {
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
+        #[command(flatten)]
+        force: OperationForce,
     },
     /// Delete a secret and all its versions — irreversible.
     Delete {
@@ -127,6 +131,8 @@ pub enum SecretCommand {
         tenant: Option<String>,
         #[arg(long)]
         yes: bool,
+        #[command(flatten)]
+        force: OperationForce,
     },
 }
 
@@ -239,28 +245,28 @@ pub async fn run(cmd: SecretCommand) -> Result<()> {
             version,
             tenant,
             yes,
+            force,
         } => {
             let t = tenant_for(tenant)?;
-            if !confirm_irreversible(
+            confirm_irreversible(
                 &format!("Destroy version {version} of secret {id} on {t}."),
-                yes,
-            )? {
-                println!("aborted");
-                return Ok(());
-            }
+                force.operation(),
+            )?;
             prod_hint(esv::destroy_secret_version(&t, &id, &version, yes).await)?;
             println!("secret {id} version {version} destroyed");
             Ok(())
         }
-        SecretCommand::Delete { id, tenant, yes } => {
+        SecretCommand::Delete {
+            id,
+            tenant,
+            yes,
+            force,
+        } => {
             let t = tenant_for(tenant)?;
-            if !confirm_irreversible(
+            confirm_irreversible(
                 &format!("Delete secret {id} and all its versions on {t}."),
-                yes,
-            )? {
-                println!("aborted");
-                return Ok(());
-            }
+                force.operation(),
+            )?;
             prod_hint(esv::delete_secret(&t, &id, yes).await)?;
             println!("secret {id} deleted");
             Ok(())
@@ -331,24 +337,49 @@ fn resolve_secret_value(
     Ok(value)
 }
 
-fn confirm_irreversible(action: &str, yes: bool) -> Result<bool> {
-    if yes {
-        return Ok(true);
+fn confirm_irreversible(action: &str, forced: bool) -> Result<()> {
+    confirm_irreversible_with(
+        action,
+        forced,
+        prompt_available(),
+        std::io::stdin().lock(),
+        std::io::stderr().lock(),
+    )
+}
+
+fn confirm_irreversible_with(
+    action: &str,
+    forced: bool,
+    terminal_available: bool,
+    mut input: impl std::io::BufRead,
+    mut output: impl std::io::Write,
+) -> Result<()> {
+    if forced {
+        return Ok(());
     }
-    if crate::cli::prompting_disabled() {
+    if !terminal_available {
         return Err(Error::Config(
-            "irreversible action confirmation disabled by --no-prompt; pass --yes to confirm"
+            "irreversible action requires confirmation; pass --force when no terminal is available"
                 .into(),
         ));
     }
-    use std::io::Write;
-    eprint!("{action} This cannot be undone. Type 'yes' to confirm: ");
-    std::io::stderr().flush().ok();
+    write!(
+        output,
+        "{action} This cannot be undone. Type 'yes' to confirm: "
+    )
+    .map_err(|error| Error::Config(format!("write confirmation prompt: {error}")))?;
+    output.flush().ok();
     let mut line = String::new();
-    std::io::stdin()
+    input
         .read_line(&mut line)
-        .map_err(|e| Error::Config(format!("read confirmation: {e}")))?;
-    Ok(line.trim() == "yes")
+        .map_err(|error| Error::Config(format!("read confirmation: {error}")))?;
+    if line.trim() == "yes" {
+        Ok(())
+    } else {
+        Err(Error::Config(
+            "irreversible action was not confirmed".into(),
+        ))
+    }
 }
 
 fn json_scalar(v: &serde_json::Value) -> String {
@@ -403,4 +434,61 @@ fn print_versions(versions: &[Value]) {
         })
         .collect::<Vec<_>>();
     print_table(&["VERSION", "STATUS", "LOADED", "CREATED"], &rows);
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+    use crate::cli::{Cli, Command};
+    use crate::esv::cli::EsvCommand;
+
+    fn destructive_flags(args: &[&str]) -> (bool, bool) {
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Some(Command::Esv {
+                command:
+                    EsvCommand::Secret {
+                        command:
+                            SecretCommand::Destroy { yes, force, .. }
+                            | SecretCommand::Delete { yes, force, .. },
+                    },
+            }) => (yes, force.operation()),
+            other => panic!("not a destructive secret command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn production_and_irreversible_consent_parse_independently() {
+        assert_eq!(
+            destructive_flags(&["aic", "esv", "secret", "destroy", "secret", "1", "--yes"]),
+            (true, false)
+        );
+        assert_eq!(
+            destructive_flags(&["aic", "esv", "secret", "delete", "secret", "--force"]),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn declined_irreversible_confirmation_is_an_error() {
+        let error =
+            confirm_irreversible_with("Delete it.", false, true, "no\n".as_bytes(), Vec::new())
+                .unwrap_err();
+        assert!(matches!(error, Error::Config(message) if message.contains("not confirmed")));
+    }
+
+    #[test]
+    fn unavailable_terminal_fails_with_force_guidance() {
+        let error =
+            confirm_irreversible_with("Delete it.", false, false, "yes\n".as_bytes(), Vec::new())
+                .unwrap_err();
+        assert!(matches!(error, Error::Config(message) if message.contains("--force")));
+    }
+
+    #[test]
+    fn force_confirms_without_a_terminal_or_input() {
+        confirm_irreversible_with("Delete it.", true, false, "".as_bytes(), Vec::new()).unwrap();
+    }
 }
