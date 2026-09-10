@@ -34,6 +34,9 @@ aic <command> <subcommand> --help
   operation-specific safety override.
 - **`--force`** skips a safety check specific to the command (e.g. overwriting a
   drifted remote, deleting a journey/client). It's called out per command below.
+  On commands that document named guards, bare `--force` means
+  `--force=operation`; named forms require `=` and are repeatable. Each form
+  grants only its named permission—there is no `all` guard.
 - **Output format.** List commands default to kubectl-style tables. Pass
   `--json` on list commands for machine-readable output. Single-resource reads
   and export-style commands still print JSON by default.
@@ -634,13 +637,17 @@ aic access apply <file> [write flags]
 ```
 
 All commands accept `--tenant <name>`. The write flags are `--if-digest <hex>`,
-`--yes`, `--dry-run`, and `--no-backup`. `list` prints the whole-document digest
-used by `--if-digest`; a write with a stale digest is refused. It also prints
-each rule's 0-based index and 8-character rule digest. Writes use the index
-because duplicate rules are legal—several byte-identical entries make “replace
-this entry” ambiguous by content. `show` may use either address; a digest that
-identifies duplicates shows every matching entry, and `list --duplicates`
-filters to all members of duplicate groups.
+`--yes`, `--dry-run`, and repeatable `--force[=<guard>]`. Bare `--force`
+confirms the displayed change summary; `--force=backup` skips the pre-write
+backup. They are independent, so unattended use that needs both spells both
+flags. `--yes` only confirms a production environment. `list` prints the
+whole-document digest used by `--if-digest`; a write with a stale digest is
+refused regardless of force. It also prints each rule's 0-based index and
+8-character rule digest. Writes use the index because duplicate rules are
+legal—several byte-identical entries make “replace this entry” ambiguous by
+content. `show` may use either address; a digest that identifies duplicates
+shows every matching entry, and `list --duplicates` filters to all members of
+duplicate groups.
 
 `list` prints one indented block per rule, headed by its index and rule digest,
 rather than one row per rule. A key the rule omits gets **no line**, so an
@@ -657,10 +664,17 @@ buries the rule blocks and trains you to ignore the line that matters.
 already scoped to the rules the command touched, so those always print.
 
 Before a write, the fetched document is saved with mode 0600 at
-`.aic/backups/access-<tenant>-<UTC>.json` unless `--no-backup` is supplied.
-`--dry-run` prints the rule-level change summary without writing or creating a
-backup. Writes prompt after showing the summary unless `--yes` is supplied;
-global `--no-prompt` therefore requires `--yes` for a real write.
+`.aic/backups/access-<tenant>-<UTC>.json` unless `--force=backup` is supplied.
+If an attempted backup fails, the write is refused even with bare `--force`.
+`--dry-run` prints the rule-level change summary without writing, confirming,
+or creating a backup. Writes prompt after showing the summary unless bare
+`--force` is supplied; global `--no-prompt` therefore requires `--force` for a
+real write (and production additionally requires `--yes`).
+
+Migration: replace the removed `--no-backup` spelling with
+`--force=backup`. If an old unattended command used `--yes` to accept the
+summary, add bare `--force`; retain `--yes` only when production consent is
+needed.
 
 The backup is taken **first**, before validation and before the prompt — so a
 refused validation or a declined confirmation still leaves a backup file behind.
@@ -674,7 +688,7 @@ anything else and why its path is printed.
 
 Access-tab writes get **both**: a mode-0600 backup before the `PUT`, same as
 here, and an undo entry that appears in the history overlay. The tab has no
-`--no-backup` equivalent, so a failed backup blocks the write there too.
+backup-bypass equivalent, so a failed backup blocks the write there too.
 
 `aic access get --out access.json`, edit the file, then
 `aic access apply access.json` is the guarded hand-edit workflow. Restore a
