@@ -138,10 +138,20 @@ fn force_arg<const ALLOWED: u8>() -> Arg {
         "ForceFlags contains an unknown allowed-guard bit"
     );
 
+    let help = if ALLOWED == SYNTAX_CHECK {
+        "Skip script syntax preflight (`--force=syntax-check` only)"
+    } else if ALLOWED == (OPERATION | SYNTAX_CHECK) {
+        "Authorize the primary safety override, or skip syntax preflight with `--force=syntax-check`"
+    } else if ALLOWED == (OPERATION | BACKUP) {
+        "Authorize the primary safety override, or skip backup with `--force=backup`"
+    } else {
+        "Authorize the command's documented safety override"
+    };
+
     Arg::new("force")
         .long("force")
         .value_name("GUARD")
-        .help("Authorize the primary safety override, or only a named guard")
+        .help(help)
         .num_args(0..=1)
         .require_equals(true)
         .default_missing_value("operation")

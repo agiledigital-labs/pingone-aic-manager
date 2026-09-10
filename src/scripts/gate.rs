@@ -73,7 +73,7 @@ pub(super) enum Gated {
 /// a pass writes. It used to warn and write anyway whenever it had no verdict,
 /// on the reasoning that blocking on an unanswerable pre-flight was a
 /// regression against having no pre-flight — which is wrong twice over.
-/// `--no-syntax-check` is that regression, on request; and the shapes that
+/// `--force=syntax-check` is that regression, on request; and the shapes that
 /// reached the fail-open path were mostly ones this gate could check and did
 /// not (a nested endpoint `source`, a legacy array-form AM `script`), so it
 /// reproduced exactly the distant-failure the feature exists to prevent, while

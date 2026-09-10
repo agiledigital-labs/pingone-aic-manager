@@ -36,7 +36,7 @@ use serde_json::{Value, json};
 /// Only [`Ok`](SyntaxCheck::Ok) authorises a write under the default gate. The
 /// other three all refuse, including the two that carry no verdict: whether
 /// the check could not answer or could never have answered, the source about
-/// to be stored is unparsed either way, and `--no-syntax-check` is the one
+/// to be stored is unparsed either way, and `--force=syntax-check` is the one
 /// sanctioned way to store unparsed source. What the two no-verdict arms are
 /// *for* is diagnosis and remedy — retrying helps one and can never help the
 /// other — not permission.

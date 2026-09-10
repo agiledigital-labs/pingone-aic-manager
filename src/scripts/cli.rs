@@ -3,6 +3,9 @@
 use clap::Subcommand;
 
 use crate::cli::diff::show_diff;
+use crate::cli::force::{
+    OperationAndBackupForce, OperationAndSyntaxCheckForce, OperationForce, SyntaxCheckForce,
+};
 use crate::cli::{
     confirm_destructive, print_json, print_table, prod_hint, prompt_available, tenant_for,
 };
@@ -38,9 +41,9 @@ fn batch_fatal(e: &Error) -> bool {
     )
 }
 
-/// Map the CLI's opt-out flag onto the engine's gate.
-fn gate_for(no_syntax_check: bool) -> script::sync::SyntaxGate {
-    if no_syntax_check {
+/// Map the CLI's scoped permission onto the engine's gate.
+fn gate_for(skip_syntax_check: bool) -> script::sync::SyntaxGate {
+    if skip_syntax_check {
         script::sync::SyntaxGate::Skip
     } else {
         script::sync::SyntaxGate::Check
@@ -48,8 +51,8 @@ fn gate_for(no_syntax_check: bool) -> script::sync::SyntaxGate {
 }
 
 /// Report a refused write. Shared by every CLI verb so the remedy is worded
-/// once — and it names `--no-syntax-check` rather than `--force`, which does
-/// not (and must not) get past this. `create` and `copy` reach it too: they
+/// once — and it names the syntax-check scope rather than bare `--force`,
+/// which does not (and must not) get past this. `create` and `copy` reach it too: they
 /// used to print whatever `Error::Config` the engine had folded the refusal
 /// into, which named neither the missing coordinates nor the remedy.
 fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
@@ -61,14 +64,18 @@ fn report_refusal(full: &str, refusal: &script::syntax::Refusal) {
     eprintln!(
         "  {}",
         match refusal {
-            Refusal::Rejected(_) => "fix the source, or pass --no-syntax-check to write it anyway",
+            Refusal::Rejected(_) => {
+                "fix the source, or pass --force=syntax-check to write it anyway"
+            }
             // A no-verdict refusal may be a tenant having a bad minute, so
             // retrying is the first thing to try — unlike a rejection, where
             // retrying the same bytes gets the same answer, or an unsupported
             // engine, where no retry can ever help.
-            Refusal::NoVerdict(_) => "retry, or pass --no-syntax-check to write it unchecked",
+            Refusal::NoVerdict(_) => {
+                "retry, or pass --force=syntax-check to write it unchecked"
+            }
             Refusal::Unsupported(_) =>
-                "pass --no-syntax-check to write it unchecked (retrying cannot help)",
+                "pass --force=syntax-check to write it unchecked (retrying cannot help)",
         }
     );
 }
@@ -158,9 +165,8 @@ pub enum ScriptCommand {
         tenant: Option<String>,
         #[arg(long, help = "Confirm the write")]
         yes: bool,
-        /// Write without asking the tenant to parse the source first.
-        #[arg(long)]
-        no_syntax_check: bool,
+        #[command(flatten)]
+        force: SyntaxCheckForce,
     },
     /// Copy a standalone script, including its complete raw config.
     Copy {
@@ -170,16 +176,15 @@ pub enum ScriptCommand {
         tenant: Option<String>,
         #[arg(long, help = "Confirm the write")]
         yes: bool,
-        /// Write without asking the tenant to parse the source first.
-        #[arg(long)]
-        no_syntax_check: bool,
+        #[command(flatten)]
+        force: SyntaxCheckForce,
     },
     /// Delete a standalone script, retaining its local source file.
     Delete {
         #[arg(help = "<namespace>/<name>")]
         reference: String,
-        #[arg(long, help = "Required: delete the remote script")]
-        force: bool,
+        #[command(flatten)]
+        force: OperationForce,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
         #[arg(long, help = "Confirm the write")]
@@ -197,9 +202,8 @@ pub enum ScriptCommand {
         reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        /// Overwrite local edits without backing them up first.
-        #[arg(long)]
-        force: bool,
+        #[command(flatten)]
+        force: OperationAndBackupForce,
     },
     /// Push a local edit back to the tenant (requires a prior pull). With no
     /// <ref>, opens a fuzzy picker (changed scripts marked `!`, listed first).
@@ -214,20 +218,11 @@ pub enum ScriptCommand {
         /// Includes scripts whose local source equals the snapshot, and
         /// overwrites remote drift. Does **not** create or adopt untracked
         /// scripts or override the syntax pre-flight.
-        #[arg(long)]
-        force: bool,
+        #[command(flatten)]
+        force: OperationAndSyntaxCheckForce,
         /// Confirm the write.
         #[arg(long)]
         yes: bool,
-        /// Write without asking the tenant to parse the source first.
-        ///
-        /// The pre-flight is cheap (~0.15s) and catches a class of failure
-        /// that otherwise surfaces far from the edit — a broken IDM endpoint
-        /// 404s at its runtime URL, and a broken AM script fails whenever its
-        /// journey next evaluates. Skip it only when the check itself is in
-        /// the way.
-        #[arg(long)]
-        no_syntax_check: bool,
     },
     /// Show the sync state of synced scripts. Optional <ref> filters by
     /// namespace (`bravo`, `endpoint`).
@@ -281,15 +276,8 @@ pub enum ScriptCommand {
         /// Confirm writes.
         #[arg(long)]
         yes: bool,
-        /// Write without asking the tenant to parse the source first.
-        ///
-        /// The pre-flight is cheap (~0.15s) and catches a class of failure
-        /// that otherwise surfaces far from the edit — a broken IDM endpoint
-        /// 404s at its runtime URL, and a broken AM script fails whenever its
-        /// journey next evaluates. Skip it only when the check itself is in
-        /// the way.
-        #[arg(long)]
-        no_syntax_check: bool,
+        #[command(flatten)]
+        force: OperationAndSyntaxCheckForce,
     },
     /// Watch the workspace and push each `.cjs` you save back to the tenant
     /// (runs until Ctrl-C). Reacts to local saves only — run `sync`/`pull` to
@@ -300,15 +288,8 @@ pub enum ScriptCommand {
         /// Confirm writes.
         #[arg(long)]
         yes: bool,
-        /// Write without asking the tenant to parse the source first.
-        ///
-        /// The pre-flight is cheap (~0.15s) and catches a class of failure
-        /// that otherwise surfaces far from the edit — a broken IDM endpoint
-        /// 404s at its runtime URL, and a broken AM script fails whenever its
-        /// journey next evaluates. Skip it only when the check itself is in
-        /// the way.
-        #[arg(long)]
-        no_syntax_check: bool,
+        #[command(flatten)]
+        force: SyntaxCheckForce,
     },
     /// Diff a script (colored, via `git diff`). Default compares your local
     /// copy against the tenant. With no <ref>, opens a fuzzy picker over synced
@@ -334,6 +315,20 @@ pub enum Resolution {
     Local,
     /// Overwrite your local copy with the tenant's.
     Remote,
+}
+
+fn validate_resolution_force(
+    resolve: Option<Resolution>,
+    force: OperationAndSyntaxCheckForce,
+) -> Result<()> {
+    if resolve.is_some() == force.operation() {
+        Ok(())
+    } else {
+        Err(Error::Config(
+            "script sync requires --resolve local|remote with bare --force, and bare --force requires --resolve"
+                .into(),
+        ))
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -407,9 +402,9 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             description,
             tenant,
             yes,
-            no_syntax_check,
+            force,
         } => {
-            let gate = gate_for(no_syntax_check);
+            let gate = gate_for(force.syntax_check());
             let tenant = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&tenant)?;
             require_workspace(&tenant)?;
@@ -505,9 +500,9 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             destination,
             tenant,
             yes,
-            no_syntax_check,
+            force,
         } => {
-            let gate = gate_for(no_syntax_check);
+            let gate = gate_for(force.syntax_check());
             let tenant = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&tenant)?;
             require_workspace(&tenant)?;
@@ -567,7 +562,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             let (ns, name) = parse_one(&reference)?;
             require_standalone(ns.kind, &name)?;
             let full = script::full_name(ns.kind, ns.realm.as_deref(), &name);
-            if !force {
+            if !force.operation() {
                 eprintln!("would delete {full} from {tenant}; pass --force to delete it");
                 return Err(Error::Config("script delete requires --force".into()));
             }
@@ -625,10 +620,10 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             for job in jobs {
                 // For a single named target, confirm before clobbering local
                 // edits. Confirmation only grants permission to proceed — the
-                // snapshot-backup still happens (only an explicit `--force`
+                // snapshot-backup still happens (only `--force=backup`
                 // skips it). Bulk pulls don't prompt.
                 if let sync::Selector::Name(name) = &job.selector {
-                    if !force
+                    if !force.operation()
                         && sync::local_state(&t, job.ns.kind, job.ns.realm_arg(), name)?
                             == sync::LocalState::Modified
                     {
@@ -643,8 +638,14 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                         }
                     }
                 }
-                for o in
-                    sync::pull(&t, job.ns.realm_arg(), job.ns.kind, &job.selector, force).await?
+                for o in sync::pull(
+                    &t,
+                    job.ns.realm_arg(),
+                    job.ns.kind,
+                    &job.selector,
+                    force.backup(),
+                )
+                .await?
                 {
                     any = true;
                     let what = match &o.status {
@@ -672,9 +673,9 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             tenant,
             force,
             yes,
-            no_syntax_check,
         } => {
-            let gate = gate_for(no_syntax_check);
+            let gate = gate_for(force.syntax_check());
+            let force = force.operation();
             let t = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             if reference.as_deref() == Some("all") {
@@ -747,9 +748,10 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             resolve,
             tenant,
             yes,
-            no_syntax_check,
+            force,
         } => {
-            let gate = gate_for(no_syntax_check);
+            validate_resolution_force(resolve, force)?;
+            let gate = gate_for(force.syntax_check());
             let t = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
             let cands = select_synced(sync::push_candidates(&t)?, reference)?;
@@ -966,14 +968,10 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             // this; `sync` counted refusals and exited 0.
             sync_failure(invalid, failed, conflicts.len())
         }
-        ScriptCommand::Watch {
-            tenant,
-            yes,
-            no_syntax_check,
-        } => {
+        ScriptCommand::Watch { tenant, yes, force } => {
             let t = writable_tenant_for(tenant)?;
             guard_legacy_workspace(&t)?;
-            watch(&t, yes, gate_for(no_syntax_check)).await
+            watch(&t, yes, gate_for(force.syntax_check())).await
         }
         ScriptCommand::Diff {
             reference,
@@ -2775,15 +2773,15 @@ mod tests {
     /// and must actually carry the flag, which the synopsis in `docs/CLI.md`
     /// once disagreed with. Driving `gate_for` through a real parse is what
     /// makes this discriminating: an inverted mapping fails, a missing
-    /// `--no-syntax-check` on any of these verbs fails to parse, and a clap
-    /// default of `true` fails.
+    /// `--force=syntax-check` on any of these verbs fails to parse, and a clap
+    /// default that skips the check fails.
     #[test]
     fn every_write_verb_checks_by_default_and_opts_out_only_when_asked() {
         fn gate(verb: &[&str], opt_out: bool) -> script::sync::SyntaxGate {
             let mut argv = vec!["aic", "script"];
             argv.extend_from_slice(verb);
             if opt_out {
-                argv.push("--no-syntax-check");
+                argv.push("--force=syntax-check");
             }
             let parsed = crate::cli::Cli::try_parse_from(&argv)
                 .unwrap_or_else(|e| panic!("{argv:?} did not parse: {e}"));
@@ -2793,21 +2791,11 @@ mod tests {
             // Reading the parsed flag, not restating the rule: `gate_for` is
             // the function under test.
             let flag = match command {
-                ScriptCommand::Create {
-                    no_syntax_check, ..
-                }
-                | ScriptCommand::Copy {
-                    no_syntax_check, ..
-                }
-                | ScriptCommand::Push {
-                    no_syntax_check, ..
-                }
-                | ScriptCommand::Sync {
-                    no_syntax_check, ..
-                }
-                | ScriptCommand::Watch {
-                    no_syntax_check, ..
-                } => no_syntax_check,
+                ScriptCommand::Create { force, .. } => force.syntax_check(),
+                ScriptCommand::Copy { force, .. } => force.syntax_check(),
+                ScriptCommand::Push { force, .. } => force.syntax_check(),
+                ScriptCommand::Sync { force, .. } => force.syntax_check(),
+                ScriptCommand::Watch { force, .. } => force.syntax_check(),
                 other => panic!("not a write verb: {other:?}"),
             };
             gate_for(flag)
@@ -2828,7 +2816,114 @@ mod tests {
             assert_eq!(
                 gate(&verb, true),
                 script::sync::SyntaxGate::Skip,
-                "{verb:?} --no-syntax-check must skip the check"
+                "{verb:?} --force=syntax-check must skip the check"
+            );
+        }
+    }
+
+    #[test]
+    fn script_commands_accept_only_their_scoped_force_guards() {
+        let parse = |args: &[&str]| {
+            crate::cli::Cli::try_parse_from(
+                ["aic", "script"].into_iter().chain(args.iter().copied()),
+            )
+        };
+
+        for verb in [
+            vec!["create", "alpha/Foo", "--context", "decision-node"],
+            vec!["copy", "alpha/Foo", "bravo/Foo"],
+            vec!["watch"],
+        ] {
+            let mut syntax = verb.clone();
+            syntax.push("--force=syntax-check");
+            assert!(parse(&syntax).is_ok(), "{syntax:?}");
+            let mut bare = verb.clone();
+            bare.push("--force");
+            assert!(parse(&bare).is_err(), "{bare:?}");
+            let mut backup = verb;
+            backup.push("--force=backup");
+            assert!(parse(&backup).is_err(), "{backup:?}");
+        }
+
+        for verb in [vec!["push", "alpha/Foo"], vec!["sync"]] {
+            for flags in [
+                vec!["--force"],
+                vec!["--force=syntax-check"],
+                vec!["--force", "--force=syntax-check"],
+            ] {
+                let args: Vec<_> = verb.iter().chain(&flags).copied().collect();
+                assert!(parse(&args).is_ok(), "{args:?}");
+            }
+            let mut backup = verb;
+            backup.push("--force=backup");
+            assert!(parse(&backup).is_err(), "{backup:?}");
+        }
+
+        for flags in [
+            vec!["--force"],
+            vec!["--force=backup"],
+            vec!["--force", "--force=backup"],
+        ] {
+            let args: Vec<_> = ["pull", "alpha/Foo"]
+                .iter()
+                .chain(&flags)
+                .copied()
+                .collect();
+            assert!(parse(&args).is_ok(), "{args:?}");
+        }
+        assert!(parse(&["pull", "alpha/Foo", "--force=syntax-check"]).is_err());
+        assert!(parse(&["delete", "alpha/Foo", "--force=backup"]).is_err());
+        for args in [
+            vec!["create", "alpha/Foo", "--no-syntax-check"],
+            vec!["copy", "alpha/Foo", "bravo/Foo", "--no-syntax-check"],
+            vec!["push", "alpha/Foo", "--no-syntax-check"],
+            vec!["sync", "--no-syntax-check"],
+            vec!["watch", "--no-syntax-check"],
+        ] {
+            assert!(parse(&args).is_err(), "obsolete spelling parsed: {args:?}");
+        }
+    }
+
+    #[test]
+    fn sync_resolution_and_operation_force_require_each_other() {
+        fn parsed(args: &[&str]) -> (Option<Resolution>, OperationAndSyntaxCheckForce) {
+            let cli = crate::cli::Cli::try_parse_from(
+                ["aic", "script", "sync"]
+                    .into_iter()
+                    .chain(args.iter().copied()),
+            )
+            .unwrap();
+            let Some(crate::cli::Command::Script {
+                command: ScriptCommand::Sync { resolve, force, .. },
+            }) = cli.command
+            else {
+                panic!("expected script sync")
+            };
+            (resolve, force)
+        }
+
+        for args in [
+            vec!["--resolve", "local"],
+            vec!["--resolve", "remote"],
+            vec!["--force"],
+        ] {
+            let (resolve, force) = parsed(&args);
+            assert!(
+                validate_resolution_force(resolve, force).is_err(),
+                "{args:?}"
+            );
+        }
+        for args in [
+            vec![],
+            vec!["--force=syntax-check"],
+            vec!["--resolve", "local", "--force"],
+            vec!["--resolve", "remote", "--force"],
+            vec!["--resolve", "local", "--force", "--force=syntax-check"],
+        ] {
+            let (resolve, force) = parsed(&args);
+            assert!(
+                validate_resolution_force(resolve, force).is_ok(),
+                "{args:?}"
             );
         }
     }
@@ -2877,8 +2972,8 @@ mod tests {
         assert!(matches!(
             delete.command,
             Some(crate::cli::Command::Script {
-                command: ScriptCommand::Delete { force: true, .. }
-            })
+                command: ScriptCommand::Delete { force, .. }
+            }) if force.operation()
         ));
         assert!(crate::cli::Cli::try_parse_from(["aic", "script", "delete", "alpha/Foo"]).is_ok());
 
