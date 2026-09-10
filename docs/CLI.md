@@ -328,7 +328,7 @@ as workspace scripts via `aic script` (`managed/<object>.<hook>`).
 
 ```bash
 aic managed list [--json]                        # object types with property + hook counts
-aic managed get alpha_user                        # one object's full definition as JSON
+aic managed get alpha_user [--fields GLOB] [--hook-sources]
 aic managed object create custom_widget [--title T] [--description D] [--yes] [--json]
 aic managed object rename custom_widget custom_gadget [--yes] [--json]
 aic managed object delete custom_gadget [--yes] [--json]
@@ -340,6 +340,17 @@ aic managed hook add custom_widget onCreate [--yes] [--json]
 aic managed relationship set custom_widget.owner --target alpha_user --forward one [--reverse none|one|many] [--reverse-key widgets] [--yes] [--json]
 aic managed relationship delete custom_widget.owner [--yes] [--json]
 ```
+
+`managed get` prints one object's definition as JSON. Inline hook `source`
+bodies are omitted by default and replaced with the argument `aic script pull`
+takes (`<script: managed/alpha_user.onUpdate>`), because those sources are
+already first-class workspace scripts. Pass `--hook-sources` to include the
+real source. `--fields` is a repeatable, both-ends-anchored glob over
+`schema.properties` keys (`*` any run, `?` one character; case-sensitive);
+`schema.order` and `schema.required` are narrowed to the surviving keys. If no
+pattern matches, the command fails rather than printing an empty properties
+map. A filtered document also notes on stderr how many properties are shown,
+and names any pattern that matched nothing.
 
 Every write accepts `--tenant <name>` and requires `--yes` for a
 production-themed tenant. Field and relationship booleans take explicit values
