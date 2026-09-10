@@ -352,24 +352,15 @@ enum PullDecision {
     Protected,
 }
 
-fn pull_json(kind: Kind, bytes: &[u8]) -> Option<Value> {
+fn pull_json(kind: Kind, expected_identity: &str, bytes: &[u8]) -> Option<Value> {
     let value: Value = serde_json::from_slice(bytes).ok()?;
-    let object = value.as_object()?;
-    let identity = match kind {
-        Kind::Policy | Kind::Set => object.get("name").or_else(|| object.get("_id")),
-        Kind::ResourceType => object
-            .get("uuid")
-            .or_else(|| object.get("name"))
-            .or_else(|| object.get("_id")),
-    };
-    identity
-        .and_then(Value::as_str)
-        .is_some_and(|identity| !identity.is_empty())
-        .then_some(value)
+    value.as_object()?;
+    (object_name(kind, &value) == expected_identity).then_some(value)
 }
 
 fn pull_decision(
     kind: Kind,
+    expected_identity: &str,
     local: Option<&[u8]>,
     remote: &Value,
     snapshot: Option<&[u8]>,
@@ -377,13 +368,13 @@ fn pull_decision(
     let Some(local_bytes) = local else {
         return PullDecision::Install;
     };
-    let Some(local) = pull_json(kind, local_bytes) else {
+    let Some(local) = pull_json(kind, expected_identity, local_bytes) else {
         return PullDecision::Protected;
     };
     if spec::content_equal(&local, remote) {
         return PullDecision::Unchanged;
     }
-    match snapshot.and_then(|bytes| pull_json(kind, bytes)) {
+    match snapshot.and_then(|bytes| pull_json(kind, expected_identity, bytes)) {
         Some(snapshot) if spec::content_equal(&local, &snapshot) => PullDecision::Install,
         _ => PullDecision::Protected,
     }
@@ -419,7 +410,13 @@ fn prepare_pull_entry(
 ) -> Result<PullEntry> {
     let local = read_pull_file(&path)?;
     let snapshot_bytes = read_pull_file(&snapshot)?;
-    let decision = pull_decision(kind, local.as_deref(), &content, snapshot_bytes.as_deref());
+    let decision = pull_decision(
+        kind,
+        &name,
+        local.as_deref(),
+        &content,
+        snapshot_bytes.as_deref(),
+    );
     Ok(PullEntry {
         name,
         content,
@@ -458,34 +455,22 @@ fn reject_unforced_bulk_pull(
     Ok(())
 }
 
-fn recheck_pull_entries(kind: Kind, entries: &[PullEntry]) -> Result<Vec<Option<Vec<u8>>>> {
-    let mut current = Vec::with_capacity(entries.len());
-    let mut changed = Vec::new();
-    for entry in entries {
-        let local = read_pull_file(&entry.path)?;
-        if local != entry.local {
-            changed.push(format!("{} {}", kind.label(), entry.name));
-        }
-        current.push(local);
-    }
-    if !changed.is_empty() {
-        return Err(Error::Config(format!(
-            "local content changed during pull preflight; nothing was installed:\n  {}",
-            changed.join("\n  ")
-        )));
-    }
-    Ok(current)
-}
-
 fn install_pull_entry(
     kind: Kind,
     realm: &str,
     entry: &PullEntry,
-    local: Option<&[u8]>,
     backup_dir: &Path,
     skip_backup: bool,
 ) -> Result<Option<PathBuf>> {
-    let backup = match (local, entry.decision) {
+    let local = read_pull_file(&entry.path)?;
+    if local != entry.local {
+        return Err(Error::Config(format!(
+            "{} {} changed during pull preflight; it was not installed",
+            kind.label(),
+            entry.name
+        )));
+    }
+    let backup = match (local.as_deref(), entry.decision) {
         (Some(original), PullDecision::Install | PullDecision::Protected) if !skip_backup => {
             Some(crate::backup::create_in(
                 backup_dir,
@@ -503,6 +488,33 @@ fn install_pull_entry(
     }
     write_json(&entry.snapshot, &entry.content)?;
     Ok(backup)
+}
+
+fn install_pull_entries(
+    kind: Kind,
+    realm: &str,
+    entries: &[PullEntry],
+    backup_dir: &Path,
+    skip_backup: bool,
+) -> Result<Vec<(String, Option<PathBuf>)>> {
+    install_pull_entries_with(kind, realm, entries, backup_dir, skip_backup, |_, _| {})
+}
+
+fn install_pull_entries_with(
+    kind: Kind,
+    realm: &str,
+    entries: &[PullEntry],
+    backup_dir: &Path,
+    skip_backup: bool,
+    mut before_entry: impl FnMut(usize, &PullEntry),
+) -> Result<Vec<(String, Option<PathBuf>)>> {
+    let mut installed = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        before_entry(index, entry);
+        let backup = install_pull_entry(kind, realm, entry, backup_dir, skip_backup)?;
+        installed.push((entry.name.clone(), backup));
+    }
+    Ok(installed)
 }
 
 // ------------------------------------------------------------ push policy
@@ -726,20 +738,13 @@ async fn pull(
     }
 
     let backup_dir = ProjectConfig::aic_sync_dir(&tenant).join("backups");
-    let current_locals = recheck_pull_entries(kind, &entries)?;
-    for (entry, local) in entries.iter().zip(&current_locals) {
-        if let Some(backup) = install_pull_entry(
-            kind,
-            &realm,
-            entry,
-            local.as_deref(),
-            &backup_dir,
-            force.backup(),
-        )? {
+    for (name, backup) in install_pull_entries(kind, &realm, &entries, &backup_dir, force.backup())?
+    {
+        if let Some(backup) = backup {
             println!(
                 "backed up previous {} {} to {}",
                 kind.label(),
-                entry.name,
+                name,
                 backup.display()
             );
         }
@@ -1373,54 +1378,96 @@ mod tests {
         let edited = br#"{"name":"P","active":"edited"}"#;
 
         assert_eq!(
-            pull_decision(Kind::Policy, None, &remote, None),
+            pull_decision(Kind::Policy, "P", None, &remote, None),
             PullDecision::Install
         );
         assert_eq!(
-            pull_decision(Kind::Policy, Some(same), &remote, None),
+            pull_decision(Kind::Policy, "P", Some(same), &remote, None),
             PullDecision::Unchanged
         );
         assert_eq!(
-            pull_decision(Kind::Policy, Some(old), &remote, Some(old)),
+            pull_decision(Kind::Policy, "P", Some(old), &remote, Some(old)),
             PullDecision::Install
         );
         assert_eq!(
-            pull_decision(Kind::Policy, Some(edited), &remote, Some(old)),
+            pull_decision(Kind::Policy, "P", Some(edited), &remote, Some(old)),
             PullDecision::Protected
         );
         assert_eq!(
-            pull_decision(Kind::Policy, Some(old), &remote, None),
+            pull_decision(Kind::Policy, "P", Some(old), &remote, None),
             PullDecision::Protected
         );
         assert_eq!(
-            pull_decision(Kind::Policy, Some(old), &remote, Some(b"not json")),
+            pull_decision(Kind::Policy, "P", Some(old), &remote, Some(b"not json"),),
             PullDecision::Protected
         );
         assert_eq!(
-            pull_decision(Kind::Policy, Some(b"not json"), &remote, Some(old)),
+            pull_decision(Kind::Policy, "P", Some(b"not json"), &remote, Some(old)),
             PullDecision::Protected
         );
     }
 
     #[test]
     fn structurally_invalid_policy_snapshots_cannot_authorize_overwrite() {
-        for (kind, remote) in [
-            (Kind::Policy, json!({"name": "P", "active": true})),
-            (Kind::Set, json!({"name": "S", "resourceTypeUuids": []})),
+        for (kind, expected_identity, remote) in [
+            (Kind::Policy, "P", json!({"name": "P", "active": true})),
+            (
+                Kind::Set,
+                "S",
+                json!({"name": "S", "resourceTypeUuids": []}),
+            ),
             (
                 Kind::ResourceType,
+                "R",
                 json!({"uuid": "R", "name": "Resource", "patterns": []}),
             ),
         ] {
             assert_eq!(
-                pull_decision(kind, Some(b"[]"), &remote, Some(b"[]")),
+                pull_decision(kind, expected_identity, Some(b"[]"), &remote, Some(b"[]"),),
                 PullDecision::Protected,
                 "{kind:?} must reject array-shaped local/snapshot content"
             );
             assert_eq!(
-                pull_decision(kind, Some(b"{}"), &remote, Some(b"{}")),
+                pull_decision(kind, expected_identity, Some(b"{}"), &remote, Some(b"{}"),),
                 PullDecision::Protected,
                 "{kind:?} must reject identity-free local/snapshot content"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_identity_must_match_the_selected_policy_entry() {
+        for (kind, expected_identity, wrong_local, remote) in [
+            (
+                Kind::Policy,
+                "Policy-B",
+                json!({"name": "Policy-A", "active": false}),
+                json!({"name": "Policy-B", "active": true}),
+            ),
+            (
+                Kind::Set,
+                "Set-B",
+                json!({"name": "Set-A", "resourceTypeUuids": []}),
+                json!({"name": "Set-B", "resourceTypeUuids": ["resource"]}),
+            ),
+            (
+                Kind::ResourceType,
+                "resource-b",
+                json!({"uuid": "resource-a", "name": "Resource A"}),
+                json!({"uuid": "resource-b", "name": "Resource B"}),
+            ),
+        ] {
+            let wrong_bytes = serde_json::to_vec(&wrong_local).unwrap();
+            assert_eq!(
+                pull_decision(
+                    kind,
+                    expected_identity,
+                    Some(&wrong_bytes),
+                    &remote,
+                    Some(&wrong_bytes),
+                ),
+                PullDecision::Protected,
+                "{kind:?} must not trust matching local/snapshot content for another entry"
             );
         }
     }
@@ -1442,16 +1489,9 @@ mod tests {
         let entry = pull_entry(&dir, "P", PullDecision::Protected);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&entry.path, entry.local.as_ref().unwrap()).unwrap();
-        let backup = install_pull_entry(
-            Kind::Policy,
-            "alpha",
-            &entry,
-            entry.local.as_deref(),
-            &dir.join("backups"),
-            false,
-        )
-        .unwrap()
-        .unwrap();
+        let backup = install_pull_entry(Kind::Policy, "alpha", &entry, &dir.join("backups"), false)
+            .unwrap()
+            .unwrap();
         assert_eq!(std::fs::read(backup).unwrap(), b"original P");
         assert_eq!(read_json(&entry.path).unwrap(), Some(entry.content.clone()));
         assert_eq!(
@@ -1463,15 +1503,8 @@ mod tests {
         std::fs::create_dir_all(&failed.path).unwrap();
         write_json(&failed.snapshot, &json!({"old": true})).unwrap();
         assert!(
-            install_pull_entry(
-                Kind::Policy,
-                "alpha",
-                &failed,
-                failed.local.as_deref(),
-                &dir.join("backups"),
-                false,
-            )
-            .is_err()
+            install_pull_entry(Kind::Policy, "alpha", &failed, &dir.join("backups"), false,)
+                .is_err()
         );
         assert_eq!(
             read_json(&failed.snapshot).unwrap(),
@@ -1528,7 +1561,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_bulk_recheck_refuses_a_new_edit_before_any_install() {
+    fn policy_bulk_install_rechecks_each_entry_immediately_before_use() {
         let dir = std::env::temp_dir().join(format!("policy-pull-race-{}", uuid::Uuid::new_v4()));
         let mut entries = Vec::new();
         for name in ["One", "Two"] {
@@ -1548,25 +1581,49 @@ mod tests {
                 .unwrap(),
             );
         }
-        write_json(
-            &entries[1].path,
-            &json!({"name": "Two", "value": "newer edit"}),
-        )
-        .unwrap();
 
-        let error = recheck_pull_entries(Kind::Policy, &entries).unwrap_err();
-        assert!(error.to_string().contains("policy Two"));
+        let backup_dir = dir.join("backups");
+        let error = install_pull_entries_with(
+            Kind::Policy,
+            "alpha",
+            &entries,
+            &backup_dir,
+            false,
+            |index, entry| {
+                if index == 1 {
+                    write_json(&entry.path, &json!({"name": "Two", "value": "newer edit"}))
+                        .unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("policy Two changed during pull preflight")
+        );
         assert_eq!(
             read_json(&entries[0].path).unwrap().unwrap()["value"],
-            "old"
+            "remote"
         );
         assert_eq!(
             read_json(&entries[1].path).unwrap().unwrap()["value"],
             "newer edit"
         );
-        for entry in &entries {
-            assert_eq!(read_json(&entry.snapshot).unwrap().unwrap()["value"], "old");
-        }
+        assert_eq!(
+            read_json(&entries[0].snapshot).unwrap().unwrap()["value"],
+            "remote"
+        );
+        assert_eq!(
+            read_json(&entries[1].snapshot).unwrap().unwrap()["value"],
+            "old"
+        );
+        let backups = std::fs::read_dir(&backup_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        assert!(backups[0].contains("One"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
