@@ -1101,6 +1101,13 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
 }
 
 fn print_seed_notes(report: &crate::scripts::workspace::WorkspaceReport) {
+    for path in &report.pruned {
+        let rel = path.strip_prefix(&report.tree).unwrap_or(path);
+        println!(
+            "pruned {rel} (generated files only; no script source)",
+            rel = rel.display()
+        );
+    }
     for path in &report.drifted {
         let rel = path.strip_prefix(&report.tree).unwrap_or(path);
         println!(

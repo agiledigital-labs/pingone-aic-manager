@@ -6,6 +6,10 @@
 //! are shared at the `am/` level. Templates are embedded at compile time; a
 //! [`TEMPLATES_VERSION`] lets us ship updated types/config to existing
 //! workspaces via `aic workspace update`.
+//!
+//! Update also prunes per-script folders that hold only files this tool
+//! generates (leaf `tsconfig.json`, AM LIBRARY wrappers). Script source is
+//! never deleted.
 
 use crate::Result;
 use crate::app::App;
@@ -612,6 +616,9 @@ fn write_if(path: &Path, contents: &str, overwrite: bool) -> Result<bool> {
 pub struct WorkspaceReport {
     pub written: Vec<PathBuf>,
     pub removed: Vec<PathBuf>,
+    /// Per-script folders that held only generated scaffolding (leaf
+    /// `tsconfig.json` / library wrappers) and were removed.
+    pub pruned: Vec<PathBuf>,
     /// Seeds the user has edited: left on disk, named so they know `src/`
     /// may no longer compile against the framework.
     pub drifted: Vec<PathBuf>,
@@ -709,6 +716,11 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
         }
     }
 
+    // Generated-only script folders (leaf tsconfig, no `.cjs`) are the same
+    // class of leftover: files this tool wrote, now with no source to justify
+    // them. Prune before refreshing leaves so we don't rewrite an orphan.
+    prune_orphaned_script_folders(tree, &mut report)?;
+
     // Leaf `tsconfig.json` files are normally (re)written per script folder on
     // pull (`am::extra_files`). Renaming the shared type files means existing,
     // already-pulled folders would point at deleted defs until their next pull,
@@ -747,6 +759,105 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
     state.templates_version = TEMPLATES_VERSION;
     save_state(tree, &state)?;
     Ok(report)
+}
+
+/// Remove per-script folders that hold only files this tool generates.
+///
+/// `aic script delete` keeps the user's `.cjs` on purpose. The leftover the
+/// gap report saw is the other half: a leaf `tsconfig.json` (and, for LIBRARY
+/// scripts, the ES-module wrapper) written by `extra_files` into a folder
+/// whose source has since gone — deleted and recreated under a different
+/// context slug, or the `.cjs` removed by hand. `workspace update` already
+/// walks these folders to refresh those leaves, and would otherwise keep
+/// rewriting the orphan. Delete-time cleanup cannot do this: the source is
+/// still there.
+///
+/// IDM endpoints and schedules do not have this shape: their `.cjs` files sit
+/// next to a *shared* folder `tsconfig.json` that `MANAGED` owns, not a
+/// per-script leaf. Managed-hook object folders and sync-mapping category
+/// folders do, so they get the same pass.
+fn prune_orphaned_script_folders(tree: &Path, report: &mut WorkspaceReport) -> Result<()> {
+    for realm in REALMS {
+        prune_child_dirs(&tree.join("am").join(realm), report)?;
+    }
+    prune_child_dirs(&tree.join("idm").join("managed"), report)?;
+    prune_sync_mapping_dirs(&tree.join("idm").join("sync"), report)?;
+    Ok(())
+}
+
+fn prune_sync_mapping_dirs(sync_root: &Path, report: &mut WorkspaceReport) -> Result<()> {
+    let Some(mappings) = read_dir_complete(sync_root) else {
+        return Ok(());
+    };
+    for mapping in mappings {
+        let mapping_dir = mapping.path();
+        if !mapping_dir.is_dir() {
+            continue;
+        }
+        prune_child_dirs(&mapping_dir, report)?;
+        // Category prune may have emptied the mapping folder.
+        prune_if_generated_only(&mapping_dir, report)?;
+    }
+    Ok(())
+}
+
+fn prune_child_dirs(parent: &Path, report: &mut WorkspaceReport) -> Result<()> {
+    let Some(entries) = read_dir_complete(parent) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            prune_if_generated_only(&path, report)?;
+        }
+    }
+    Ok(())
+}
+
+/// `None` if the directory is missing or any entry could not be read — a
+/// partial listing must not decide a prune.
+fn read_dir_complete(dir: &Path) -> Option<Vec<std::fs::DirEntry>> {
+    std::fs::read_dir(dir)
+        .ok()
+        .and_then(|iter| iter.collect::<std::io::Result<Vec<_>>>().ok())
+}
+
+/// Delete `dir` when every file in it is a known `extra_files` output (or the
+/// directory is already empty). Any `.cjs`, subdirectory, or other file is
+/// treated as user content and the folder is left alone.
+fn prune_if_generated_only(dir: &Path, report: &mut WorkspaceReport) -> Result<()> {
+    let Some(entries) = read_dir_complete(dir) else {
+        return Ok(());
+    };
+    let mut generated = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => return Ok(()),
+        };
+        if !file_type.is_file() || !is_generated_scaffold(&path) {
+            return Ok(());
+        }
+        generated.push(path);
+    }
+    for path in &generated {
+        std::fs::remove_file(path)?;
+        report.removed.push(path.clone());
+    }
+    match std::fs::remove_dir(dir) {
+        Ok(()) => report.pruned.push(dir.to_path_buf()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+fn is_generated_scaffold(path: &Path) -> bool {
+    if path.file_name().and_then(|n| n.to_str()) == Some("tsconfig.json") {
+        return true;
+    }
+    super::am::is_library_wrapper_file(path)
 }
 
 /// Write or refresh one TypeScript seed according to its provenance.
@@ -1842,8 +1953,11 @@ mod tests {
         scaffold_at(&tree, false).unwrap();
 
         // A previously-pulled folder with a stale leaf tsconfig (old type path).
+        // A `.cjs` must be present: a generated-only folder is pruned, not
+        // refreshed (see `update_prunes_generated_only_script_folder…`).
         let folder = tree.join("am/alpha/decision-node");
         std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("decision-node.cjs"), "logger.info('x');\n").unwrap();
         let leaf = folder.join("tsconfig.json");
         std::fs::write(&leaf, "{ \"include\": [\"../../src.d.ts\"] }").unwrap();
 
@@ -1864,6 +1978,7 @@ mod tests {
 
         let folder = tree.join("idm/managed/alpha_user");
         std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("onCreate.cjs"), "logger.info('x');\n").unwrap();
         let leaf = folder.join("tsconfig.json");
         std::fs::write(&leaf, "{ \"include\": [\"../types/managed-hook.d.ts\"] }").unwrap();
 
@@ -1874,6 +1989,147 @@ mod tests {
         assert!(refreshed.contains("../../types/managed/hooks/alpha_user.d.ts"));
         assert!(refreshed.contains("../../types/managed-hook.d.ts"));
 
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_prunes_generated_only_script_folder_and_spares_a_sibling_with_source() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+
+        // The gap: delete + recreate under `_NEXT_GEN` left the old slug
+        // holding only the leaf tsconfig this tool generated.
+        let orphan = tree.join("am/alpha/oauth2-validate-scope");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("tsconfig.json"), "{}\n").unwrap();
+
+        let kept = tree.join("am/alpha/oauth2-validate-scope-ng");
+        std::fs::create_dir_all(&kept).unwrap();
+        let source = kept.join("oauth2-validate-scope.cjs");
+        let leaf = kept.join("tsconfig.json");
+        std::fs::write(&source, "logger.info('x');\n").unwrap();
+        std::fs::write(&leaf, "{}\n").unwrap();
+
+        let report = scaffold_at(&tree, true).unwrap();
+
+        assert!(!orphan.exists(), "generated-only folder should be removed");
+        assert!(
+            report
+                .pruned
+                .iter()
+                .any(|p| p.ends_with("am/alpha/oauth2-validate-scope"))
+        );
+        assert!(source.exists(), "sibling source must not be deleted");
+        assert!(
+            leaf.exists(),
+            "sibling generated leaf must stay with source"
+        );
+
+        // Re-run: no orphans left, no error.
+        let again = scaffold_at(&tree, true).unwrap();
+        assert!(again.pruned.is_empty());
+        assert!(source.exists());
+        assert!(leaf.exists());
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_prunes_a_library_wrapper_folder_with_no_source() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+
+        let orphan = tree.join("am/alpha/lib");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("tsconfig.json"), "{}\n").unwrap();
+        std::fs::write(
+            orphan.join("Helper.js"),
+            crate::scripts::am::library_wrapper_contents("Helper"),
+        )
+        .unwrap();
+
+        scaffold_at(&tree, true).unwrap();
+        assert!(!orphan.exists());
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_leaves_a_folder_that_still_has_user_content() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+
+        let folder = tree.join("am/alpha/oidc-claims");
+        std::fs::create_dir_all(&folder).unwrap();
+        let leaf = folder.join("tsconfig.json");
+        let notes = folder.join("NOTES.md");
+        std::fs::write(&leaf, "{}\n").unwrap();
+        std::fs::write(&notes, "mine\n").unwrap();
+
+        let edited_js = tree.join("am/alpha/lib");
+        std::fs::create_dir_all(&edited_js).unwrap();
+        let wrapper = edited_js.join("Helper.js");
+        std::fs::write(edited_js.join("tsconfig.json"), "{}\n").unwrap();
+        std::fs::write(&wrapper, "export const mine = 1;\n").unwrap();
+
+        let report = scaffold_at(&tree, true).unwrap();
+        assert!(report.pruned.is_empty());
+        assert!(notes.exists());
+        assert!(leaf.exists());
+        assert!(wrapper.exists());
+        assert!(edited_js.join("tsconfig.json").exists());
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_prunes_generated_only_managed_and_sync_folders() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+
+        let managed_orphan = tree.join("idm/managed/gone_object");
+        std::fs::create_dir_all(&managed_orphan).unwrap();
+        std::fs::write(managed_orphan.join("tsconfig.json"), "{}\n").unwrap();
+
+        let managed_kept = tree.join("idm/managed/alpha_user");
+        std::fs::create_dir_all(&managed_kept).unwrap();
+        let hook = managed_kept.join("onCreate.cjs");
+        let managed_leaf = managed_kept.join("tsconfig.json");
+        std::fs::write(&hook, "logger.info('x');\n").unwrap();
+        std::fs::write(&managed_leaf, "{}\n").unwrap();
+
+        let sync_orphan = tree.join("idm/sync/old-map/behaviour");
+        std::fs::create_dir_all(&sync_orphan).unwrap();
+        std::fs::write(sync_orphan.join("tsconfig.json"), "{}\n").unwrap();
+
+        let sync_kept = tree.join("idm/sync/map/behaviour");
+        std::fs::create_dir_all(&sync_kept).unwrap();
+        let slot = sync_kept.join("onCreate.cjs");
+        let sync_leaf = sync_kept.join("tsconfig.json");
+        std::fs::write(&slot, "logger.info('x');\n").unwrap();
+        std::fs::write(&sync_leaf, "{}\n").unwrap();
+
+        scaffold_at(&tree, true).unwrap();
+
+        assert!(!managed_orphan.exists());
+        assert!(hook.exists());
+        assert!(managed_leaf.exists());
+        assert!(
+            !tree.join("idm/sync/old-map").exists(),
+            "empty mapping parent should go with the generated-only category"
+        );
+        assert!(slot.exists());
+        assert!(sync_leaf.exists());
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[test]
+    fn update_is_a_noop_on_a_workspace_with_no_orphans() {
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+        let report = scaffold_at(&tree, true).unwrap();
+        assert!(report.pruned.is_empty());
         std::fs::remove_dir_all(&tree).ok();
     }
 

@@ -9,7 +9,7 @@ use crate::{Error, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// AM scripts require the protocol-versioned header (the client default of
 /// `resource=1.0` 400s on the scripts endpoint).
@@ -876,10 +876,32 @@ pub fn leaf_tsconfig(slug: &str) -> String {
     )
 }
 
+/// Exact bytes [`extra_files`] writes for a LIBRARY script's ES-module wrapper.
+pub(super) fn library_wrapper_contents(name: &str) -> String {
+    format!("export * from \"./{name}.cjs\";\n")
+}
+
+/// True when `path` is a LIBRARY wrapper this tool wrote, not a user `.js`.
+///
+/// `.cjs` also ends in `.js`; those are script source and must never match.
+pub(super) fn is_library_wrapper_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if name.ends_with(".cjs") {
+        return false;
+    }
+    let Some(stem) = name.strip_suffix(".js").filter(|stem| !stem.is_empty()) else {
+        return false;
+    };
+    std::fs::read_to_string(path).is_ok_and(|contents| contents == library_wrapper_contents(stem))
+}
+
 /// Files written into the script's folder on pull (overwritten each time —
 /// they're managed): the folder's leaf `tsconfig.json` (always), plus, for a
 /// `LIBRARY` script, an ES-module wrapper so other scripts can `require` it
-/// with types (matches p1-sync).
+/// with types (matches p1-sync). `workspace update` prunes these when the
+/// folder no longer has a `.cjs`.
 pub fn extra_files(r: &RemoteRef, realm: &str) -> Vec<(PathBuf, String)> {
     let slug = am_slug(r);
     let folder = PathBuf::from("am").join(realm).join(&slug);
@@ -887,7 +909,7 @@ pub fn extra_files(r: &RemoteRef, realm: &str) -> Vec<(PathBuf, String)> {
     if r.context.as_deref() == Some("LIBRARY") {
         out.push((
             folder.join(format!("{}.js", r.name)),
-            format!("export * from \"./{}.cjs\";\n", r.name),
+            library_wrapper_contents(&r.name),
         ));
     }
     out
@@ -1359,7 +1381,29 @@ mod tests {
         assert_eq!(lib[0].0, PathBuf::from("am/bravo/lib/tsconfig.json"));
         assert!(lib[0].1.contains("../../types/library.d.ts"));
         assert_eq!(lib[1].0, PathBuf::from("am/bravo/lib/MyScript.js"));
-        assert!(lib[1].1.contains("export * from \"./MyScript.cjs\""));
+        assert_eq!(lib[1].1, library_wrapper_contents("MyScript"));
+    }
+
+    #[test]
+    fn library_wrapper_classifier_matches_only_the_bytes_we_write() {
+        let dir = std::env::temp_dir().join(format!("aic-am-wrap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+
+        let wrapper = dir.join("MyScript.js");
+        std::fs::write(&wrapper, library_wrapper_contents("MyScript")).unwrap();
+        assert!(is_library_wrapper_file(&wrapper));
+
+        std::fs::write(&wrapper, "export * from \"./MyScript.cjs\"; // edited\n").unwrap();
+        assert!(!is_library_wrapper_file(&wrapper));
+
+        let source = dir.join("MyScript.cjs");
+        std::fs::write(&source, library_wrapper_contents("MyScript")).unwrap();
+        assert!(
+            !is_library_wrapper_file(&source),
+            ".cjs is source even when the bytes happen to match the wrapper"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
