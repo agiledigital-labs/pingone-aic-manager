@@ -163,7 +163,149 @@ export function typeTours(): void {
   // The engine accepts it.
   // @ts-expect-error getBytes requires "UTF-8" — the no-arg form is omitted
   new java.lang.String("abc").getBytes();
+
+  const rng = new java.security.SecureRandom();
+  const allocated: JavaBytes = java.lang.reflect.Array.newInstance(
+    java.lang.Byte.TYPE,
+    16
+  );
+  rng.nextBytes(allocated);
+  const _seed: JavaBytes = rng.generateSeed(8);
+  void _seed;
+  // @ts-expect-error a JS array is not a Java byte[] — nextBytes would
+  // silently fill a throwaway copy of it on the engine
+  rng.nextBytes([0, 0, 0, 0]);
+  // @ts-expect-error getAlgorithm returns a java.lang.String, never a JS one
+  const _algEquals: boolean = rng.getAlgorithm() === "NativePRNG";
+  void _algEquals;
+  const _alg: string = String(rng.getAlgorithm());
+  void _alg;
+  // @ts-expect-error the component type must be java.lang.Byte.TYPE
+  java.lang.reflect.Array.newInstance("byte", 4);
 }
+
+test("SecureRandom fills a real byte[] and reports its algorithm", () => {
+  withJava(() => {
+    const rng = new java.security.SecureRandom();
+    assert.equal(String(rng.getAlgorithm()), "NativePRNG");
+
+    const bytes = java.lang.reflect.Array.newInstance(
+      java.lang.Byte.TYPE,
+      32
+    );
+    assert.equal(bytes.length, 32);
+    rng.nextBytes(bytes);
+    let nonZero = 0;
+    for (let i = 0; i < bytes.length; i += 1) {
+      if (bytes[i]! !== 0) {
+        nonZero += 1;
+      }
+    }
+    // 32 zero bytes from a working generator is a 1-in-2^256 event.
+    assert.ok(nonZero > 0, "nextBytes filled nothing");
+  });
+});
+
+test("SecureRandom bytes are signed, like the engine's", () => {
+  withJava(() => {
+    const rng = new java.security.SecureRandom();
+    const bytes = java.lang.reflect.Array.newInstance(
+      java.lang.Byte.TYPE,
+      512
+    );
+    rng.nextBytes(bytes);
+    let min = 999;
+    let max = -999;
+    for (let i = 0; i < bytes.length; i += 1) {
+      const b = bytes[i]!;
+      if (b < min) {
+        min = b;
+      }
+      if (b > max) {
+        max = b;
+      }
+    }
+    // The point of the double: a value below zero is what makes a forgotten
+    // `& 0xff` fail here the way it fails on the tenant.
+    assert.ok(min < 0, "no negative byte — the double coerced them unsigned");
+    assert.ok(max <= 127 && min >= -128, "outside the signed byte range");
+  });
+});
+
+test("nextBytes on a plain JS array fills nothing, as on the engine", () => {
+  withJava(() => {
+    const rng = new java.security.SecureRandom();
+    const plain = [0, 0, 0, 0, 0, 0, 0, 0];
+    // The types reject this call; reaching it means they were bypassed, and
+    // the engine's answer is silence. Measured on the tenant 2026-09-10:
+    // 20 runs, 20 unchanged.
+    (rng as unknown as { nextBytes(value: number[]): void }).nextBytes(plain);
+    assert.deepEqual(plain, [0, 0, 0, 0, 0, 0, 0, 0]);
+
+    // The control. Without it, "unchanged" would also be satisfied by a
+    // generator that does nothing at all.
+    const real = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 8);
+    rng.nextBytes(real);
+    let nonZero = 0;
+    for (let i = 0; i < real.length; i += 1) {
+      if (real[i]! !== 0) {
+        nonZero += 1;
+      }
+    }
+    assert.ok(nonZero > 0, "the control byte[] was not filled either");
+  });
+});
+
+test("nextInt honours its bounds and rejects a non-positive one", () => {
+  withJava(() => {
+    const rng = new java.security.SecureRandom();
+    for (let i = 0; i < 200; i += 1) {
+      const n = rng.nextInt(4);
+      assert.ok(n >= 0 && n < 4, "nextInt(4) out of range: " + String(n));
+      const m = rng.nextInt(10, 20);
+      assert.ok(m >= 10 && m < 20, "nextInt(10,20) out of range: " + String(m));
+    }
+    assert.throws(() => rng.nextInt(0), /bound must be positive/);
+  });
+});
+
+test("the double names what it does not model", () => {
+  withJava(() => {
+    assert.throws(
+      () => java.security.SecureRandom.getInstance("NoSuchPRNG"),
+      /java: SecureRandom.getInstance is only modelled for/
+    );
+    assert.throws(
+      () =>
+        (
+          java.lang.reflect.Array as unknown as {
+            newInstance(t: unknown, n: number): unknown;
+          }
+        ).newInstance("byte", 4),
+      /java: Array.newInstance is only modelled for java.lang.Byte.TYPE/
+    );
+    assert.throws(
+      () => new java.security.SecureRandom().nextGaussian(),
+      /java: SecureRandom.nextGaussian is not modelled/
+    );
+  });
+});
+
+test("getInstanceStrong reports the blocking algorithm the tenant resolves", () => {
+  withJava(() => {
+    // Recorded so the doc claim and the double cannot drift apart: the
+    // tenant's `getInstanceStrong()` is NativePRNGBlocking, which reads
+    // /dev/random and can stall a request path.
+    assert.equal(
+      String(java.security.SecureRandom.getInstanceStrong().getAlgorithm()),
+      "NativePRNGBlocking"
+    );
+    assert.equal(
+      String(new java.security.SecureRandom().getAlgorithm()),
+      "NativePRNG"
+    );
+  });
+});
 
 test("the java type tours are declared but never executed", () => {
   assert.equal(typeof typeTours, "function");

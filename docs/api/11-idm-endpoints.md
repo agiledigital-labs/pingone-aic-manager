@@ -616,6 +616,22 @@ script lives** and **which ones have one**:
   `persisted:false`, but it did not appear in the AIC console. Changing only
   `persisted` to `true` made it appear; `enabled:false` was unchanged. Use
   `persisted:true, enabled:false` for a visible, manual-only schedule.
+- **`type` must be `cron`. `cronTrigger` is accepted and then ignored**
+  (verified 2026-09-10). `PUT /openidm/config/schedule/<name>` stores a document
+  whose `type` is `cronTrigger` and answers **201**, `GET` reads it back
+  unchanged, and the AIC console shows nothing wrong — but the scheduler never
+  registers the job. The only symptom is that
+  `POST /openidm/scheduler/job/<name>?_action=trigger` answers
+  **404 `Schedule does not exist: <name>`**, which reads like the config write
+  failed rather than like the value being wrong; `idm-core` carries a
+  `ScheduleConfigService.<init>` stack trace, and nothing else does. The
+  discriminator is `GET /openidm/scheduler/job?_queryFilter=true`: a schedule
+  that exists in `config` but is absent from that list was rejected at
+  registration. Changing only `type` to `cron` registered it and the trigger
+  answered `200 {"success":true}`. Note the cron expression itself validates
+  either way — `?_action=validateQuartzCronExpression` answered `{"valid":true}`
+  throughout — so a valid cron is not evidence the schedule will run.
+
 - **A schedule can be fired on demand, independent of its cron or `enabled`
   flag**, via `POST /openidm/scheduler/job/<name>?_action=trigger` (verified
   2026-07-14; header behaviour rechecked 2026-07-15 — `<name>` is the id segment
@@ -695,6 +711,22 @@ Object shape (real example, `schedule/UpdateReviewList`):
   the gate. `endpoint/gate-probe-nested` was created by raw `PUT` with root
   `type: "scripted"` and a nested `{source, type}`, to check the container-type
   path against a real stored shape rather than a fixture.
+- Date: 2026-09-10 (schedule `type`, and `script?_action=eval` as a probe
+  channel). A throwaway `schedule/aicedit-sr-probe` was written four times, the
+  only difference between the runs being one field. With `type: "cronTrigger"`
+  the config `PUT` answered 201, `GET` echoed the document, and
+  `?_action=trigger` answered 404 `Schedule does not exist` — under both
+  `persisted:false, enabled:false` and `persisted:true, enabled:true`, so
+  neither flag is the cause. Changing **only** `type` to `"cron"` made the job
+  appear in `GET /openidm/scheduler/job?_queryFilter=true` and the trigger
+  answer 200 `{"success":true}`; that is the control that pins the field. The
+  cron expression validated `{"valid":true}` in every run. `script?_action=eval`
+  was exercised repeatedly and returned the script's value with no object
+  created. `logger.error` from the schedule produced no `idm-core` entry, which
+  re-confirms the 2026-08-27 finding that IDM's `logger` has no readable sink —
+  it is why the probe needed a return channel at all. Throwaway
+  `schedule/aicedit-sr-probe` and `endpoint/aicedit-securerandom-probe` both
+  deleted, each confirmed 404 afterwards.)
 - Date: 2026-09-09 (`script?_action=compile` — valid source returned 200 with a
   bare `true`; a missing brace returned `400 {"message": "syntax error"}`. The
   no-line-numbers claim was established by placing the error on line 40 of a

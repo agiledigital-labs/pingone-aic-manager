@@ -166,6 +166,20 @@ only in comments:
   `String(...)` or `getBytes("UTF-8")`. `nfc()` / `normalize()` wrap
   `String(...)` and return a real `string`.
 
+- `java.security.SecureRandom` is reachable and fully functional. Three of
+  its behaviours are silent on the engine and are therefore encoded, not
+  merely noted: `nextBytes` on a JS array **fills nothing** (Rhino fills a
+  discarded conversion — 20 runs, 20 unchanged, against a control on a real
+  `byte[]` that changed 20 of 20), so the parameter is `JavaBytes` and the
+  only way to make one is
+  `java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, n)`;
+  `getAlgorithm()` returns a `java.lang.String`, so `=== "NativePRNG"` is
+  always false; and `nextLong()` was lossy in 100 of 100 draws, every one
+  above `Number.MAX_SAFE_INTEGER`, so it is never an identifier. Prefer
+  `new SecureRandom()` (`NativePRNG`) over `getInstanceStrong()`, which is
+  `NativePRNGBlocking` — it reads `/dev/random` and can stall a request path
+  with no timeout you control.
+
 `tests/harness.ts` provides `withJava(run)` in the same family as
 `withOpenIdm` / `withIdentityServer`. HMAC is `node:crypto`; normalisation
 is `String.prototype.normalize`. `doFinal` and `getBytes` hand back signed
@@ -180,6 +194,13 @@ byte `-9`), `openidm.hash` salting per call, no-arg `getBytes()` working,
 and a Normalizer result that is a `java.lang.String` with JS methods but
 not `===` the JS string. Do not promote any of this into a
 `## Verified against` block under `docs/api/`.
+
+`SecureRandom` was measured 2026-09-10 on JDK 21.0.12.1, the same way
+(throwaway `endpoint/aicedit-securerandom-probe`, plus
+`POST /openidm/script?_action=eval`); the table is in
+`docs/api/12-script-bindings-matrix.md`. `withJava` models it on
+`node:crypto`, reproducing signed bytes and the `nextBytes` no-op so a test
+cannot pass on behaviour the tenant does not have.
 
 ## Runtime bans, checked on the generated file
 
