@@ -684,12 +684,14 @@ fn begin_op(app: &mut App, tenant: &str, full: &str) -> bool {
     true
 }
 
-fn pull_status(status: &sync::PullStatus) -> &'static str {
+fn pull_status(status: &sync::PullStatus) -> String {
     match status {
-        sync::PullStatus::Created => "pulled (new)",
-        sync::PullStatus::Updated => "updated",
-        sync::PullStatus::Unchanged => "already up to date",
-        sync::PullStatus::LocalBackedUp(_) => "pulled (local backed up)",
+        sync::PullStatus::Created => "pulled (new)".into(),
+        sync::PullStatus::Updated => "updated".into(),
+        sync::PullStatus::Unchanged => "already up to date".into(),
+        sync::PullStatus::LocalBackedUp(path) => {
+            format!("pulled; local source backed up to {}", path.display())
+        }
     }
 }
 

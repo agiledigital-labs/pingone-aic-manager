@@ -89,6 +89,24 @@ fn push_outcome_note(outcome: &script::sync::PushOutcome) -> String {
     }
 }
 
+fn pull_backup_note(status: &script::sync::PullStatus) -> String {
+    match status {
+        script::sync::PullStatus::LocalBackedUp(path) => {
+            format!("; local source backed up to {}", path.display())
+        }
+        _ => String::new(),
+    }
+}
+
+fn sync_failure(refused: u32, failed: u32, conflicts: usize) -> Result<()> {
+    if refused == 0 && failed == 0 && conflicts == 0 {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "sync left {conflicts} conflict(s) unresolved, {refused} write(s) refused, and {failed} operation(s) failed"
+    )))
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ScriptCommand {
     /// List scripts on the tenant. Optional <ref> narrows the listing:
@@ -255,7 +273,7 @@ pub enum ScriptCommand {
     Sync {
         #[arg(help = "namespace, <namespace>/<name>, `all`, or empty for everything synced")]
         reference: Option<String>,
-        /// Auto-resolve every conflict this way (default: prompt; skip if no TTY).
+        /// Make this side win for every selected entry, including non-conflicts.
         #[arg(long, value_enum)]
         resolve: Option<Resolution>,
         #[arg(long, help = "Tenant to target")]
@@ -309,8 +327,8 @@ pub enum ScriptCommand {
     },
 }
 
-/// How `sync` resolves a both-changed conflict when `--resolve` is given.
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+/// Which side every selected `sync` entry converges to when `--resolve` is set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Resolution {
     /// Overwrite the tenant with your local copy.
     Local,
@@ -634,7 +652,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                         sync::PullStatus::Updated => "pulled (updated)".to_string(),
                         sync::PullStatus::Unchanged => "unchanged".to_string(),
                         sync::PullStatus::LocalBackedUp(p) => {
-                            format!("pulled; local edits backed up to {}", p.display())
+                            format!("pulled; local source backed up to {}", p.display())
                         }
                     };
                     println!(
@@ -752,9 +770,37 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     kind: c.kind,
                     realm: c.realm.clone(),
                 };
-                let outcome = match prod_hint(
-                    sync::reconcile(&t, ns.realm_arg(), c.kind, &c.name, yes, gate).await,
-                ) {
+                // An explicit resolution chooses the operation before
+                // anything mutates. It applies to every selected entry, not
+                // only to entries three-way reconcile would call conflicts.
+                let operation = match resolve {
+                    Some(Resolution::Local) => {
+                        sync::reconcile_resolved(
+                            &t,
+                            ns.realm_arg(),
+                            c.kind,
+                            &c.name,
+                            sync::Resolution::Local,
+                            yes,
+                            gate,
+                        )
+                        .await
+                    }
+                    Some(Resolution::Remote) => {
+                        sync::reconcile_resolved(
+                            &t,
+                            ns.realm_arg(),
+                            c.kind,
+                            &c.name,
+                            sync::Resolution::Remote,
+                            yes,
+                            gate,
+                        )
+                        .await
+                    }
+                    None => sync::reconcile(&t, ns.realm_arg(), c.kind, &c.name, yes, gate).await,
+                };
+                let outcome = match prod_hint(operation) {
                     Ok(o) => o,
                     Err(e) if batch_fatal(&e) => return Err(e),
                     Err(e) => {
@@ -771,25 +817,43 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                     }
                     sync::ReconcileOutcome::Pushed => {
                         pushed += 1;
-                        println!("→ pushed {full}");
+                        println!(
+                            "→ pushed {full}{}",
+                            if resolve == Some(Resolution::Local) {
+                                " (resolved: local)"
+                            } else {
+                                ""
+                            }
+                        );
                     }
                     sync::ReconcileOutcome::NotConfirmed(reason) => {
                         eprintln!("! {full}: {}", reason.message());
                         failed += 1;
                     }
-                    sync::ReconcileOutcome::Pulled => {
+                    sync::ReconcileOutcome::Pulled(status) => {
                         pulled += 1;
-                        println!("← pulled {full}");
+                        println!(
+                            "← pulled {full}{}{}",
+                            if resolve == Some(Resolution::Remote) {
+                                " (resolved: remote)"
+                            } else {
+                                ""
+                            },
+                            pull_backup_note(&status)
+                        );
                     }
                     sync::ReconcileOutcome::Converged => {
                         in_sync += 1;
                         println!("= {full}: converged");
                     }
                     sync::ReconcileOutcome::Conflict(_) => {
-                        let choice = match resolve {
-                            Some(Resolution::Local) => ConflictChoice::Local,
-                            Some(Resolution::Remote) => ConflictChoice::Remote,
-                            None => prompt_conflict(&full, true)?,
+                        // Explicit resolution was dispatched above; prompting
+                        // remains only for genuine three-way reconcile.
+                        let choice = if resolve.is_none() {
+                            prompt_conflict(&full, true)?
+                        } else {
+                            conflicts.push(full);
+                            continue;
                         };
                         match choice {
                             ConflictChoice::Local => {
@@ -818,6 +882,10 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                                         pushed += 1;
                                         println!("→ pushed {full} (resolved: local)");
                                     }
+                                    sync::PushOutcome::NotConfirmed(reason) => {
+                                        eprintln!("! {full}: {}", reason.message());
+                                        failed += 1;
+                                    }
                                     // Nothing to write after all (the local
                                     // edit matched, or someone landed the same
                                     // content), or the remote moved again
@@ -828,16 +896,32 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
                                 }
                             }
                             ConflictChoice::Remote => {
-                                sync::pull(
+                                match sync::reconcile_resolved(
                                     &t,
                                     ns.realm_arg(),
                                     c.kind,
-                                    &sync::Selector::Name(c.name.clone()),
-                                    false,
+                                    &c.name,
+                                    sync::Resolution::Remote,
+                                    yes,
+                                    gate,
                                 )
-                                .await?;
-                                pulled += 1;
-                                println!("← pulled {full} (resolved: remote; local backed up)");
+                                .await?
+                                {
+                                    sync::ReconcileOutcome::Pulled(status) => {
+                                        pulled += 1;
+                                        println!(
+                                            "← pulled {full} (resolved: remote){}",
+                                            pull_backup_note(&status)
+                                        );
+                                    }
+                                    sync::ReconcileOutcome::InSync => in_sync += 1,
+                                    other => {
+                                        eprintln!(
+                                            "! {full}: unexpected remote resolution outcome: {other:?}"
+                                        );
+                                        failed += 1;
+                                    }
+                                }
                             }
                             ConflictChoice::Skip => conflicts.push(full),
                             // Fall out to the summary rather than returning:
@@ -880,19 +964,7 @@ pub async fn run(cmd: ScriptCommand) -> Result<()> {
             // left something unpushed must not exit 0, or a caller reads the
             // refusal as a success (`docs/CLI.md`). `push all` has always done
             // this; `sync` counted refusals and exited 0.
-            match (invalid, failed) {
-                (0, 0) => Ok(()),
-                (0, f) => Err(Error::Config(format!(
-                    "{f} script(s) could not be reconciled — see the `!` lines above"
-                ))),
-                (i, 0) => Err(Error::Config(format!(
-                    "{i} script(s) were not pushed — the syntax check refused them"
-                ))),
-                (i, f) => Err(Error::Config(format!(
-                    "{i} script(s) were not pushed (the syntax check refused them) \
-                     and {f} could not be reconciled"
-                ))),
-            }
+            sync_failure(invalid, failed, conflicts.len())
         }
         ScriptCommand::Watch {
             tenant,
@@ -1943,9 +2015,13 @@ async fn watch(tenant: &str, yes: bool, gate: script::sync::SyntaxGate) -> Resul
                             )
                             .await
                             {
-                                Ok(_) => {
-                                    println!("← pulled {full} (resolved: remote; local backed up)")
-                                }
+                                Ok(outcomes) => println!(
+                                    "← pulled {full} (resolved: remote){}",
+                                    outcomes
+                                        .first()
+                                        .map(|outcome| pull_backup_note(&outcome.status))
+                                        .unwrap_or_default()
+                                ),
                                 Err(e) if is_fatal_watch_error(&e) => {
                                     eprintln!("! watch stopped: {e}");
                                     return Err(e);
@@ -2024,6 +2100,10 @@ async fn watch(tenant: &str, yes: bool, gate: script::sync::SyntaxGate) -> Resul
                                 Ok(PushOutcome::Refused { refusal, .. }) => {
                                     report_refusal(&full, &refusal)
                                 }
+                                Ok(PushOutcome::NotConfirmed(reason)) => eprintln!(
+                                    "{}",
+                                    watch_red(&format!("! {full}: {}", reason.message()))
+                                ),
                                 Ok(other) => eprintln!(
                                     "{}",
                                     watch_red(&format!("! {full}: {}", push_outcome_note(&other)))
@@ -2048,9 +2128,13 @@ async fn watch(tenant: &str, yes: bool, gate: script::sync::SyntaxGate) -> Resul
                             )
                             .await;
                             match result {
-                                Ok(_) => {
-                                    println!("← pulled {full} (resolved: remote; local backed up)")
-                                }
+                                Ok(outcomes) => println!(
+                                    "← pulled {full} (resolved: remote){}",
+                                    outcomes
+                                        .first()
+                                        .map(|outcome| pull_backup_note(&outcome.status))
+                                        .unwrap_or_default()
+                                ),
                                 Err(e) if is_fatal_watch_error(&e) => {
                                     eprintln!("! watch stopped: {e}");
                                     return Err(e);
@@ -2360,10 +2444,13 @@ async fn push_one(
                             report_refusal(&full, &refusal);
                             return Err(Error::Config(format!("{full} was not pushed")));
                         }
+                        PushOutcome::NotConfirmed(reason) => {
+                            return Err(Error::Config(format!("{full}: {}", reason.message())));
+                        }
                         other => println!("{full}: {}", push_outcome_note(&other)),
                     }
                 }
-                Some(false) => println!("{full}: skipped (remote changed)"),
+                Some(false) => return declined_push(&full),
                 None => {
                     // no TTY to prompt on
                     print_conflict(&full, &tw);
@@ -2377,6 +2464,12 @@ async fn push_one(
     Ok(())
 }
 
+fn declined_push(full: &str) -> Result<()> {
+    Err(Error::Config(format!(
+        "{full}: not pushed — remote overwrite declined"
+    )))
+}
+
 /// Push every synced script with local changes. Under `--force`, consider every
 /// tracked script because a clean local-vs-snapshot state says nothing about
 /// whether a poisoned snapshot matches the tenant. Remote-drift conflicts,
@@ -2388,24 +2481,20 @@ async fn push_all(
     gate: script::sync::SyntaxGate,
 ) -> Result<()> {
     use script::sync::PushOutcome;
-    let changed = push_all_candidates(script::sync::push_candidates(tenant)?, force);
+    let changed =
+        script::sync::push_batch_candidates(script::sync::push_candidates(tenant)?, force);
     if changed.is_empty() {
         println!("nothing changed to push");
         return Ok(());
     }
     let mut refused = 0u32;
+    let mut conflicts = 0u32;
     let mut failed = 0u32;
-    for c in changed {
+    for (c, result) in script::sync::push_batch(tenant, changed, force, yes, gate).await {
         let full = full_of(&c);
-        let ns = Namespace {
-            kind: c.kind,
-            realm: c.realm.clone(),
-        };
         // Same reason as `sync`: one script's transport failure is that
         // script's result, not the batch's.
-        let outcome = match prod_hint(
-            script::sync::push(tenant, ns.realm_arg(), c.kind, &c.name, force, yes, gate).await,
-        ) {
+        let outcome = match prod_hint(result) {
             Ok(o) => o,
             Err(e) if batch_fatal(&e) => return Err(e),
             Err(e) => {
@@ -2426,36 +2515,22 @@ async fn push_all(
                 refused += 1;
             }
             PushOutcome::Conflict(_) => {
-                println!("{full}: CONFLICT — skipped (`diff {full}`, or `push {full} --force`)")
+                println!("{full}: CONFLICT — skipped (`diff {full}`, or `push {full} --force`)");
+                conflicts += 1;
             }
         }
     }
     workspace_update_hint(tenant)?;
-    // A batch that left something unpushed must not exit 0, or a script
-    // calling `push all` reads the refusal as a success.
-    match (refused, failed) {
-        (0, 0) => Ok(()),
-        (0, f) => Err(Error::Config(format!(
-            "{f} script(s) could not be pushed — see the `!` lines above"
-        ))),
-        (r, 0) => Err(Error::Config(format!(
-            "{r} script(s) were not pushed — the syntax check refused them"
-        ))),
-        (r, f) => Err(Error::Config(format!(
-            "{r} script(s) were not pushed (the syntax check refused them) \
-             and {f} failed"
-        ))),
-    }
+    push_all_failure(refused, conflicts, failed)
 }
 
-fn push_all_candidates(
-    candidates: Vec<script::sync::Candidate>,
-    force: bool,
-) -> Vec<script::sync::Candidate> {
-    candidates
-        .into_iter()
-        .filter(|candidate| force || candidate.local == script::sync::LocalState::Modified)
-        .collect()
+fn push_all_failure(refused: u32, conflicts: u32, failed: u32) -> Result<()> {
+    if refused == 0 && conflicts == 0 && failed == 0 {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "batch left {conflicts} conflict(s), {refused} refused write(s), and {failed} failed operation(s) unpushed"
+    )))
 }
 
 /// Refuse to operate when a pre-redesign per-realm workspace is present, so we
@@ -2976,7 +3051,28 @@ mod tests {
             evaluator_version: None,
         };
 
-        assert!(push_all_candidates(vec![candidate.clone()], false).is_empty());
-        assert_eq!(push_all_candidates(vec![candidate], true).len(), 1);
+        assert!(script::sync::push_batch_candidates(vec![candidate.clone()], false).is_empty());
+        assert_eq!(
+            script::sync::push_batch_candidates(vec![candidate], true).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn batch_conflicts_and_unconfirmed_sync_operations_exit_nonzero() {
+        assert!(push_all_failure(0, 1, 0).is_err());
+        assert!(sync_failure(0, 0, 1).is_err());
+        assert!(
+            sync_failure(0, 1, 0).is_err(),
+            "NotConfirmed is counted in the failed-operation total"
+        );
+        assert!(push_all_failure(0, 0, 0).is_ok());
+        assert!(sync_failure(0, 0, 0).is_ok());
+    }
+
+    #[test]
+    fn declining_the_single_push_overwrite_is_a_failure() {
+        let error = declined_push("alpha/example").unwrap_err();
+        assert!(error.to_string().contains("overwrite declined"));
     }
 }

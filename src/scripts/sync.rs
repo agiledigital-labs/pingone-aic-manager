@@ -19,6 +19,7 @@ use crate::config::ProjectConfig;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Which scripts an operation targets.
@@ -43,8 +44,8 @@ pub enum PullStatus {
     Created,
     Updated,
     Unchanged,
-    /// Local `.cjs` had un-pushed edits and remote also moved; we backed the
-    /// local copy up to the given path before overwriting.
+    /// Existing local source differed from the fetched remote; we backed it up
+    /// to the given path before overwriting, independent of snapshot state.
     LocalBackedUp(PathBuf),
 }
 
@@ -327,6 +328,8 @@ fn lossy(bytes: &[u8]) -> String {
 /// lets tests drive the production decision logic without teaching [`Kind`]
 /// about fake variants or bypassing the syntax/write gate in production.
 trait SyncIo {
+    async fn list(&self, kind: Kind, tenant: &str, realm: &str) -> Result<Vec<RemoteRef>>;
+
     async fn fetch(&self, kind: Kind, tenant: &str, realm: &str, id: &str) -> Result<RemoteScript>;
 
     async fn write_checked(
@@ -343,6 +346,10 @@ trait SyncIo {
 struct LiveSyncIo;
 
 impl SyncIo for LiveSyncIo {
+    async fn list(&self, kind: Kind, tenant: &str, realm: &str) -> Result<Vec<RemoteRef>> {
+        kind.list(tenant, realm).await
+    }
+
     async fn fetch(&self, kind: Kind, tenant: &str, realm: &str, id: &str) -> Result<RemoteScript> {
         kind.fetch(tenant, realm, id).await
     }
@@ -502,6 +509,16 @@ pub fn push_candidates(tenant: &str) -> Result<Vec<Candidate>> {
     Ok(out)
 }
 
+/// Candidates a batch push must inspect. A forced batch includes every tracked
+/// entry because local-vs-snapshot cleanliness cannot prove the live tenant is
+/// equal to either one.
+pub fn push_batch_candidates(candidates: Vec<Candidate>, force: bool) -> Vec<Candidate> {
+    candidates
+        .into_iter()
+        .filter(|candidate| force || candidate.local == LocalState::Modified)
+        .collect()
+}
+
 /// The [`RemoteRef`] a candidate addresses locally. `id` is empty because
 /// nothing local keys on it — the workspace path and the snapshot path are
 /// both derived from kind/name/context.
@@ -549,8 +566,33 @@ pub async fn pull(
     force: bool,
 ) -> Result<Vec<PullOutcome>> {
     let store = SnapshotStore::open(tenant);
-    let refs: Vec<RemoteRef> = kind
-        .list(tenant, realm)
+    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    pull_with(
+        &store,
+        &workspace_tree,
+        &LiveSyncIo,
+        tenant,
+        realm,
+        kind,
+        selector,
+        force,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pull_with(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    selector: &Selector,
+    force: bool,
+) -> Result<Vec<PullOutcome>> {
+    let refs: Vec<RemoteRef> = io
+        .list(kind, tenant, realm)
         .await?
         .into_iter()
         .filter(|r| selector.matches(r))
@@ -567,40 +609,9 @@ pub async fn pull(
 
     let mut outcomes = Vec::new();
     for r in &refs {
-        let script = kind.fetch(tenant, realm, &r.id).await?;
+        let script = io.fetch(kind, tenant, realm, &r.id).await?;
         let remote_src = kind.decode_source(&script.raw_config)?;
-
-        let dest = workspace_file(tenant, realm, &script.reference);
-        let snapshot_src = match store.load_config(&script.reference, realm)? {
-            Some(cfg) => Some(kind.decode_source(&cfg)?),
-            None => None,
-        };
-        let local_src = read_local(&dest)?;
-
-        // Local content we'd lose by overwriting: either edited since the last
-        // pull, or an untracked file that was here before we ever synced (no
-        // snapshot). Both are the user's work — back it up unless --force.
-        let local_has_unsynced = match (&local_src, &snapshot_src) {
-            (Some(l), Some(s)) => l != s,
-            (Some(_), None) => true,
-            _ => false,
-        };
-        let differs_from_remote = local_src.as_deref() != Some(remote_src.as_slice());
-
-        let status = if local_has_unsynced && differs_from_remote && !force {
-            let backup = back_up(&store, &script.reference, local_src.as_deref().unwrap())?;
-            PullStatus::LocalBackedUp(backup)
-        } else if local_src.is_none() {
-            PullStatus::Created
-        } else if !differs_from_remote {
-            PullStatus::Unchanged
-        } else {
-            PullStatus::Updated
-        };
-
-        // Write source (+ any extra generated files), then refresh snapshot.
-        write_workspace_files(tenant, realm, &script, &remote_src)?;
-        store.record(&script, realm)?;
+        let status = install_remote(store, workspace_tree, realm, &script, &remote_src, force)?;
 
         outcomes.push(PullOutcome {
             name: script.reference.name.clone(),
@@ -737,7 +748,7 @@ pub async fn create_new(
 pub fn adopt(tenant: &str, realm: &str, remote: &RemoteScript) -> Result<PathBuf> {
     let store = SnapshotStore::open(tenant);
     let r = &remote.reference;
-    let backup = back_up(&store, r, &r.kind.decode_source(&remote.raw_config)?)?;
+    let backup = back_up(&store, r, realm, &r.kind.decode_source(&remote.raw_config)?)?;
     store.record(remote, realm)?;
     Ok(backup)
 }
@@ -838,21 +849,50 @@ pub async fn delete(
     forget(tenant, realm, kind, &reference.name)
 }
 
-fn write_workspace_files(
-    tenant: &str,
+/// Replace the tracked source with a fetched remote copy. Any existing,
+/// differing source is backed up first unless this is a direct forced pull.
+/// The snapshot advances only after the protected workspace operation.
+fn install_remote(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    realm: &str,
+    script: &RemoteScript,
+    remote_source: &[u8],
+    force: bool,
+) -> Result<PullStatus> {
+    let dest = workspace_file_in(workspace_tree, realm, &script.reference);
+    let local = read_local(&dest)?;
+    let differs = local.as_deref() != Some(remote_source);
+    let status = match &local {
+        Some(bytes) if differs && !force => {
+            PullStatus::LocalBackedUp(back_up(store, &script.reference, realm, bytes)?)
+        }
+        None => PullStatus::Created,
+        Some(_) if !differs => PullStatus::Unchanged,
+        Some(_) => PullStatus::Updated,
+    };
+
+    if differs {
+        write_workspace_files_in(workspace_tree, realm, script, remote_source)?;
+    }
+    store.record(script, realm)?;
+    Ok(status)
+}
+
+fn write_workspace_files_in(
+    workspace_tree: &Path,
     realm: &str,
     script: &RemoteScript,
     source: &[u8],
 ) -> Result<()> {
-    let tree = ProjectConfig::workspace_tree(tenant);
     let r = &script.reference;
-    let dest = tree.join(r.kind.workspace_subpath(r, realm));
+    let dest = workspace_file_in(workspace_tree, realm, r);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(&dest, source)?;
     for (rel, contents) in r.kind.extra_files(r, realm) {
-        let p = tree.join(rel);
+        let p = workspace_tree.join(rel);
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -861,13 +901,54 @@ fn write_workspace_files(
     Ok(())
 }
 
-fn back_up(store: &SnapshotStore, r: &RemoteRef, local: &[u8]) -> Result<PathBuf> {
+fn backup_component(value: &str) -> String {
+    let encoded: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if encoded.is_empty() {
+        "_".into()
+    } else {
+        encoded
+    }
+}
+
+fn back_up(store: &SnapshotStore, r: &RemoteRef, realm: &str, local: &[u8]) -> Result<PathBuf> {
     let dir = store.backups_dir();
     std::fs::create_dir_all(&dir)?;
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-    let path = dir.join(format!("{}.{stamp}.cjs", r.name));
-    std::fs::write(&path, local)?;
-    Ok(path)
+    let realm = if r.kind.realm_scoped() {
+        backup_component(realm)
+    } else {
+        "global".into()
+    };
+    let identity = format!(
+        "{}.{}.{}",
+        backup_component(r.kind.as_str()),
+        realm,
+        backup_component(&r.name)
+    );
+    loop {
+        let path = dir.join(format!("{identity}.{stamp}.{}.cjs", uuid::Uuid::new_v4()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(local)?;
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -901,6 +982,62 @@ pub async fn push(
         gate,
     )
     .await
+}
+
+/// Push a selected batch through the same per-entry engine as a single push.
+/// Results stay per-entry so the CLI can continue past non-fatal failures.
+pub async fn push_batch(
+    tenant: &str,
+    candidates: Vec<Candidate>,
+    force: bool,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Vec<(Candidate, Result<PushOutcome>)> {
+    let store = SnapshotStore::open(tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    push_batch_with(
+        &store,
+        &workspace_tree,
+        &LiveSyncIo,
+        tenant,
+        candidates,
+        force,
+        confirmed_prod,
+        gate,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn push_batch_with(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    candidates: Vec<Candidate>,
+    force: bool,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Vec<(Candidate, Result<PushOutcome>)> {
+    let mut outcomes = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let realm = candidate.realm.as_deref().unwrap_or_default();
+        let result = push_with(
+            store,
+            workspace_tree,
+            io,
+            tenant,
+            realm,
+            candidate.kind,
+            &candidate.name,
+            force,
+            confirmed_prod,
+            gate,
+        )
+        .await;
+        outcomes.push((candidate, result));
+    }
+    outcomes
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1124,7 +1261,7 @@ pub enum ReconcileOutcome {
     /// A write was accepted, but its read-back could not be confirmed. The
     /// local file and snapshot remain unchanged.
     NotConfirmed(ConfirmationFailure),
-    Pulled,
+    Pulled(PullStatus),
     /// Both sides changed to the same content; snapshot refreshed.
     Converged,
     /// Both sides changed differently — the caller resolves.
@@ -1192,9 +1329,9 @@ async fn reconcile_with(
         Some(bytes) => bytes,
         None => {
             // Local file gone — restore it from the remote.
-            write_workspace_files(tenant, realm, &remote_script, &remote)?;
-            store.record(&remote_script, realm)?;
-            return Ok(ReconcileOutcome::Pulled);
+            let status =
+                install_remote(store, workspace_tree, realm, &remote_script, &remote, false)?;
+            return Ok(ReconcileOutcome::Pulled(status));
         }
     };
     let local_changed = local != snapshot;
@@ -1202,9 +1339,9 @@ async fn reconcile_with(
     match (local_changed, remote_changed) {
         (false, false) => Ok(ReconcileOutcome::InSync),
         (false, true) => {
-            write_workspace_files(tenant, realm, &remote_script, &remote)?;
-            store.record(&remote_script, realm)?;
-            Ok(ReconcileOutcome::Pulled)
+            let status =
+                install_remote(store, workspace_tree, realm, &remote_script, &remote, false)?;
+            Ok(ReconcileOutcome::Pulled(status))
         }
         (true, false) => {
             // Remote == snapshot, so pushing the local edit is safe. Start from
@@ -1238,6 +1375,96 @@ async fn reconcile_with(
             remote: lossy(&remote),
             local: lossy(&local),
         })),
+    }
+}
+
+/// An explicit `sync --resolve` direction. Unlike three-way reconcile, this
+/// applies to every selected entry before any mutating operation is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolution {
+    Local,
+    Remote,
+}
+
+/// Resolve one tracked entry in an explicit direction. Local means a confirmed
+/// forced push; remote means a protected pull. A missing local source therefore
+/// fails in local mode instead of being silently restored from the tenant.
+pub async fn reconcile_resolved(
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+    resolution: Resolution,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Result<ReconcileOutcome> {
+    let store = SnapshotStore::open(tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    reconcile_resolved_with(
+        &store,
+        &workspace_tree,
+        &LiveSyncIo,
+        tenant,
+        realm,
+        kind,
+        name,
+        resolution,
+        confirmed_prod,
+        gate,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reconcile_resolved_with(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    realm: &str,
+    kind: Kind,
+    name: &str,
+    resolution: Resolution,
+    confirmed_prod: bool,
+    gate: SyntaxGate,
+) -> Result<ReconcileOutcome> {
+    match resolution {
+        Resolution::Local => {
+            match push_with(
+                store,
+                workspace_tree,
+                io,
+                tenant,
+                realm,
+                kind,
+                name,
+                true,
+                confirmed_prod,
+                gate,
+            )
+            .await?
+            {
+                PushOutcome::Pushed => Ok(ReconcileOutcome::Pushed),
+                PushOutcome::NotConfirmed(reason) => Ok(ReconcileOutcome::NotConfirmed(reason)),
+                PushOutcome::Unchanged | PushOutcome::AlreadyInSync => Ok(ReconcileOutcome::InSync),
+                PushOutcome::Conflict(conflict) => Ok(ReconcileOutcome::Conflict(conflict)),
+                PushOutcome::Refused { refusal, .. } => Ok(ReconcileOutcome::Refused(refusal)),
+            }
+        }
+        Resolution::Remote => {
+            let entry = store
+                .lookup(kind, name, realm)?
+                .ok_or_else(|| Error::Config(format!("{name:?} not synced")))?;
+            let remote_script = io.fetch(kind, tenant, realm, &entry.reference.id).await?;
+            let remote = kind.decode_source(&remote_script.raw_config)?;
+            let status =
+                install_remote(store, workspace_tree, realm, &remote_script, &remote, false)?;
+            if status == PullStatus::Unchanged {
+                Ok(ReconcileOutcome::InSync)
+            } else {
+                Ok(ReconcileOutcome::Pulled(status))
+            }
+        }
     }
 }
 
@@ -1348,6 +1575,7 @@ mod tests {
     }
 
     struct FakeSyncIo {
+        lists: Mutex<VecDeque<Result<Vec<RemoteRef>>>>,
         fetches: Mutex<VecDeque<Result<RemoteScript>>>,
         writes: Mutex<Vec<RemoteScript>>,
         refusal: Mutex<Option<Refusal>>,
@@ -1356,6 +1584,7 @@ mod tests {
     impl FakeSyncIo {
         fn new(fetches: Vec<Result<RemoteScript>>) -> Self {
             Self {
+                lists: Mutex::new(VecDeque::new()),
                 fetches: Mutex::new(fetches.into()),
                 writes: Mutex::new(Vec::new()),
                 refusal: Mutex::new(None),
@@ -1364,9 +1593,19 @@ mod tests {
 
         fn refusing(fetches: Vec<Result<RemoteScript>>, refusal: Refusal) -> Self {
             Self {
+                lists: Mutex::new(VecDeque::new()),
                 fetches: Mutex::new(fetches.into()),
                 writes: Mutex::new(Vec::new()),
                 refusal: Mutex::new(Some(refusal)),
+            }
+        }
+
+        fn for_pull(reference: RemoteRef, fetched: Result<RemoteScript>) -> Self {
+            Self {
+                lists: Mutex::new(vec![Ok(vec![reference])].into()),
+                fetches: Mutex::new(vec![fetched].into()),
+                writes: Mutex::new(Vec::new()),
+                refusal: Mutex::new(None),
             }
         }
 
@@ -1376,6 +1615,14 @@ mod tests {
     }
 
     impl SyncIo for FakeSyncIo {
+        async fn list(&self, _kind: Kind, _tenant: &str, _realm: &str) -> Result<Vec<RemoteRef>> {
+            self.lists
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected list")
+        }
+
         async fn fetch(
             &self,
             _kind: Kind,
@@ -1748,6 +1995,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forced_batch_pushes_and_confirms_a_clean_poisoned_snapshot_entry() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "remote", "before-write")),
+            Ok(endpoint_script(&reference, "local", "confirmed")),
+        ]);
+        let selected = push_batch_candidates(
+            vec![Candidate {
+                kind: reference.kind,
+                realm: None,
+                name: reference.name.clone(),
+                local: LocalState::Clean,
+                is_default: false,
+                context: None,
+                evaluator_version: None,
+            }],
+            true,
+        );
+
+        let outcomes = push_batch_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            selected,
+            true,
+            false,
+            SyntaxGate::Check,
+        )
+        .await;
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(&outcomes[0].1, Ok(PushOutcome::Pushed)));
+        assert_eq!(io.write_count(), 1);
+        assert_eq!(
+            Kind::IdmEndpoint
+                .decode_source(&store.load_config(&reference, "alpha").unwrap().unwrap())
+                .unwrap(),
+            b"local"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn force_avoids_put_and_refreshes_snapshot_when_remote_matches_local() {
         let (dir, store, workspace, reference) = push_fixture("local", "local");
         let remote = endpoint_script(&reference, "local", "fresh-remote-metadata");
@@ -1811,6 +2102,407 @@ mod tests {
         assert!(matches!(outcome, PushOutcome::Refused { .. }));
         assert_eq!(io.write_count(), 0);
         assert_eq!(snapshot_bytes(&store, &reference), before);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordinary_pull_backs_up_poisoned_snapshot_source_before_replacing_it() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let io = FakeSyncIo::for_pull(
+            reference.clone(),
+            Ok(endpoint_script(&reference, "remote", "fresh")),
+        );
+
+        let outcomes = pull_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &Selector::Name(reference.name.clone()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let PullStatus::LocalBackedUp(path) = &outcomes[0].status else {
+            panic!("expected protected replacement")
+        };
+        assert_eq!(std::fs::read(path).unwrap(), b"local");
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &reference)).unwrap(),
+            b"remote"
+        );
+        assert_eq!(
+            Kind::IdmEndpoint
+                .decode_source(&store.load_config(&reference, "alpha").unwrap().unwrap())
+                .unwrap(),
+            b"remote"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_forced_pull_remains_the_explicit_backup_opt_out() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let io = FakeSyncIo::for_pull(
+            reference.clone(),
+            Ok(endpoint_script(&reference, "remote", "fresh")),
+        );
+
+        let outcomes = pull_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &Selector::Name(reference.name.clone()),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcomes[0].status, PullStatus::Updated);
+        assert!(!store.backups_dir().exists());
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &reference)).unwrap(),
+            b"remote"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordinary_reconcile_backs_up_poisoned_snapshot_source_before_pull() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let io = FakeSyncIo::new(vec![Ok(endpoint_script(&reference, "remote", "fresh"))]);
+
+        let outcome = reconcile_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        let ReconcileOutcome::Pulled(PullStatus::LocalBackedUp(path)) = outcome else {
+            panic!("expected protected reconcile pull")
+        };
+        assert_eq!(std::fs::read(path).unwrap(), b"local");
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &reference)).unwrap(),
+            b"remote"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn resolve_local_pushes_a_poisoned_snapshot_and_never_replaces_local() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&reference, "remote", "before")),
+            Ok(endpoint_script(&reference, "local", "confirmed")),
+        ]);
+
+        let outcome = reconcile_resolved_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            Resolution::Local,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, ReconcileOutcome::Pushed));
+        assert_eq!(io.write_count(), 1);
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &reference)).unwrap(),
+            b"local"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn resolve_remote_backs_up_a_poisoned_snapshot_before_replacing_local() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let io = FakeSyncIo::new(vec![Ok(endpoint_script(&reference, "remote", "fresh"))]);
+
+        let outcome = reconcile_resolved_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            Resolution::Remote,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+
+        let ReconcileOutcome::Pulled(PullStatus::LocalBackedUp(path)) = outcome else {
+            panic!("expected protected remote resolution")
+        };
+        assert_eq!(std::fs::read(path).unwrap(), b"local");
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &reference)).unwrap(),
+            b"remote"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_local_direction_matrix_restores_except_when_local_must_win() {
+        // Ordinary reconcile restores the missing source.
+        let (dir, store, workspace, reference) = push_fixture("old", "discard");
+        std::fs::remove_file(workspace_file_in(&workspace, "alpha", &reference)).unwrap();
+        let io = FakeSyncIo::new(vec![Ok(endpoint_script(&reference, "remote", "fresh"))]);
+        let ordinary = reconcile_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            ordinary,
+            ReconcileOutcome::Pulled(PullStatus::Created)
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+
+        // Explicit local refuses to invent a local source or pull remote.
+        let (dir, store, workspace, reference) = push_fixture("old", "discard");
+        let local_path = workspace_file_in(&workspace, "alpha", &reference);
+        std::fs::remove_file(&local_path).unwrap();
+        let io = FakeSyncIo::new(Vec::new());
+        let error = reconcile_resolved_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            Resolution::Local,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("local file"));
+        assert!(!local_path.exists());
+        assert_eq!(io.write_count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+
+        // Explicit remote restores it.
+        let (dir, store, workspace, reference) = push_fixture("old", "discard");
+        let local_path = workspace_file_in(&workspace, "alpha", &reference);
+        std::fs::remove_file(&local_path).unwrap();
+        let io = FakeSyncIo::new(vec![Ok(endpoint_script(&reference, "remote", "fresh"))]);
+        let remote = reconcile_resolved_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            Resolution::Remote,
+            false,
+            SyntaxGate::Check,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            remote,
+            ReconcileOutcome::Pulled(PullStatus::Created)
+        ));
+        assert_eq!(std::fs::read(local_path).unwrap(), b"remote");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn equal_source_resolution_refreshes_baseline_without_write_or_replacement() {
+        for resolution in [Resolution::Local, Resolution::Remote] {
+            let (dir, store, workspace, reference) = push_fixture("old snapshot", "same");
+            let local_path = workspace_file_in(&workspace, "alpha", &reference);
+            let before_modified = std::fs::metadata(&local_path).unwrap().modified().unwrap();
+            let remote = endpoint_script(&reference, "same", "fresh-metadata");
+            let io = FakeSyncIo::new(vec![Ok(remote.clone())]);
+
+            let outcome = reconcile_resolved_with(
+                &store,
+                &workspace,
+                &io,
+                "tenant",
+                "alpha",
+                Kind::IdmEndpoint,
+                &reference.name,
+                resolution,
+                false,
+                SyntaxGate::Check,
+            )
+            .await
+            .unwrap();
+
+            assert!(matches!(outcome, ReconcileOutcome::InSync));
+            assert_eq!(io.write_count(), 0);
+            assert_eq!(std::fs::read(&local_path).unwrap(), b"same");
+            assert_eq!(
+                std::fs::metadata(&local_path).unwrap().modified().unwrap(),
+                before_modified
+            );
+            assert_eq!(
+                store.load_config(&reference, "alpha").unwrap(),
+                Some(remote.raw_config)
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_remote_is_an_error_in_every_reconcile_mode() {
+        for resolution in [None, Some(Resolution::Local), Some(Resolution::Remote)] {
+            let (dir, store, workspace, reference) = push_fixture("old", "local edit");
+            let io = FakeSyncIo::new(vec![Err(Error::Api {
+                status: 404,
+                body: "missing".into(),
+            })]);
+            let result = match resolution {
+                Some(direction) => {
+                    reconcile_resolved_with(
+                        &store,
+                        &workspace,
+                        &io,
+                        "tenant",
+                        "alpha",
+                        Kind::IdmEndpoint,
+                        &reference.name,
+                        direction,
+                        false,
+                        SyntaxGate::Check,
+                    )
+                    .await
+                }
+                None => {
+                    reconcile_with(
+                        &store,
+                        &workspace,
+                        &io,
+                        "tenant",
+                        "alpha",
+                        Kind::IdmEndpoint,
+                        &reference.name,
+                        false,
+                        SyntaxGate::Check,
+                    )
+                    .await
+                }
+            };
+            assert!(result.is_err());
+            assert_eq!(io.write_count(), 0);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn backup_failure_prevents_local_replacement_and_snapshot_advance() {
+        let (dir, store, workspace, reference) = push_fixture("local", "local");
+        let before = snapshot_bytes(&store, &reference);
+        std::fs::write(store.backups_dir(), b"not a directory").unwrap();
+        let io = FakeSyncIo::new(vec![Ok(endpoint_script(&reference, "remote", "fresh"))]);
+
+        let result = reconcile_with(
+            &store,
+            &workspace,
+            &io,
+            "tenant",
+            "alpha",
+            Kind::IdmEndpoint,
+            &reference.name,
+            false,
+            SyntaxGate::Check,
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "alpha", &reference)).unwrap(),
+            b"local"
+        );
+        assert_eq!(snapshot_bytes(&store, &reference), before);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rapid_backups_are_exclusive_and_keep_kind_realm_name_identity() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let reference = am_ref("Same/Name");
+        let first = back_up(&store, &reference, "alpha", b"first").unwrap();
+        let second = back_up(&store, &reference, "alpha", b"second").unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&first).unwrap(), b"first");
+        assert_eq!(std::fs::read(&second).unwrap(), b"second");
+        for path in [first, second] {
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with("am.alpha.Same_Name."), "{name}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn same_named_backups_in_other_realms_and_kinds_have_distinct_identities() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let am = am_ref("Shared");
+        let endpoint = endpoint_ref("Shared");
+        let alpha = back_up(&store, &am, "alpha", b"alpha").unwrap();
+        let bravo = back_up(&store, &am, "bravo", b"bravo").unwrap();
+        let idm = back_up(&store, &endpoint, "ignored", b"idm").unwrap();
+
+        assert!(
+            alpha
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("am.alpha.Shared.")
+        );
+        assert!(
+            bravo
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("am.bravo.Shared.")
+        );
+        assert!(
+            idm.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("idm.global.Shared.")
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
