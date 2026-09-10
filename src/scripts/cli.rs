@@ -191,10 +191,11 @@ pub enum ScriptCommand {
         reference: Option<String>,
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        /// Push past a remote-drift conflict (overwrites remote).
+        /// Make every selected tracked tenant script match its local source.
         ///
-        /// Does **not** override the syntax pre-flight: drift is a question of
-        /// whose content wins, an unparseable script is broken either way.
+        /// Includes scripts whose local source equals the snapshot, and
+        /// overwrites remote drift. Does **not** create or adopt untracked
+        /// scripts or override the syntax pre-flight.
         #[arg(long)]
         force: bool,
         /// Confirm the write.
@@ -2376,21 +2377,18 @@ async fn push_one(
     Ok(())
 }
 
-/// Push every synced script with local changes. Clean / never-pulled scripts
-/// are skipped (nothing to push); product defaults are skipped (push them
-/// explicitly with `--force`); remote-drift conflicts, refusals and per-script
-/// failures are all reported and skipped rather than aborting the batch.
+/// Push every synced script with local changes. Under `--force`, consider every
+/// tracked script because a clean local-vs-snapshot state says nothing about
+/// whether a poisoned snapshot matches the tenant. Remote-drift conflicts,
+/// refusals and per-script failures are reported rather than aborting the batch.
 async fn push_all(
     tenant: &str,
     force: bool,
     yes: bool,
     gate: script::sync::SyntaxGate,
 ) -> Result<()> {
-    use script::sync::{LocalState, PushOutcome};
-    let changed: Vec<_> = script::sync::push_candidates(tenant)?
-        .into_iter()
-        .filter(|c| c.local == LocalState::Modified)
-        .collect();
+    use script::sync::PushOutcome;
+    let changed = push_all_candidates(script::sync::push_candidates(tenant)?, force);
     if changed.is_empty() {
         println!("nothing changed to push");
         return Ok(());
@@ -2448,6 +2446,16 @@ async fn push_all(
              and {f} failed"
         ))),
     }
+}
+
+fn push_all_candidates(
+    candidates: Vec<script::sync::Candidate>,
+    force: bool,
+) -> Vec<script::sync::Candidate> {
+    candidates
+        .into_iter()
+        .filter(|candidate| force || candidate.local == script::sync::LocalState::Modified)
+        .collect()
 }
 
 /// Refuse to operate when a pre-redesign per-realm workspace is present, so we
@@ -2954,5 +2962,21 @@ mod tests {
         assert!(note.contains("snapshot unchanged"));
         assert!(note.contains("tenant state uncertain"));
         assert!(!note.starts_with("pushed"));
+    }
+
+    #[test]
+    fn forced_batch_includes_clean_tracked_entries() {
+        let candidate = script::sync::Candidate {
+            kind: script::Kind::IdmEndpoint,
+            realm: None,
+            name: "poisoned-snapshot".into(),
+            local: script::sync::LocalState::Clean,
+            is_default: false,
+            context: None,
+            evaluator_version: None,
+        };
+
+        assert!(push_all_candidates(vec![candidate.clone()], false).is_empty());
+        assert_eq!(push_all_candidates(vec![candidate], true).len(), 1);
     }
 }
