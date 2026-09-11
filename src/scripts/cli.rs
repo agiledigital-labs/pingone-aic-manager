@@ -100,7 +100,10 @@ fn push_outcome_note(outcome: &script::sync::PushOutcome) -> String {
 fn pull_backup_note(status: &script::sync::PullStatus) -> String {
     match status {
         script::sync::PullStatus::LocalBackedUp(path) => {
-            format!("; local source backed up to {}", path.display())
+            format!(
+                "; local source backed up to {}",
+                crate::config::display_path(path)
+            )
         }
         _ => String::new(),
     }
@@ -618,10 +621,10 @@ pub(crate) async fn run_with_runtime(
                         .evaluator_version
                         .as_deref()
                         .unwrap_or("2.0"),
-                    path.display()
+                    crate::config::display_path(&path)
                 );
             } else {
-                println!("created {full} -> {}", path.display());
+                println!("created {full} -> {}", crate::config::display_path(&path));
             }
             Ok(())
         }
@@ -711,7 +714,10 @@ pub(crate) async fn run_with_runtime(
             let path = ProjectConfig::workspace_tree(&tenant)
                 .join(ns.kind.workspace_subpath(&reference, ns.realm_arg()));
             prod_hint(sync::delete(&tenant, ns.realm_arg(), ns.kind, &reference, yes).await)?;
-            println!("deleted {full}; local file kept at {}", path.display());
+            println!(
+                "deleted {full}; local file kept at {}",
+                crate::config::display_path(&path)
+            );
             Ok(())
         }
         ScriptCommand::Pull {
@@ -725,10 +731,13 @@ pub(crate) async fn run_with_runtime(
             // sources land next to their type definitions.
             if workspace::applied_version(&t)? == 0 {
                 let r = workspace::init(&t)?;
-                println!("initialised workspace at {}", r.tree.display());
+                println!(
+                    "initialised workspace at {}",
+                    crate::config::display_path(&r.tree)
+                );
                 println!(
                     "next: cd {} && npm install   (installs the lint/type-check toolchain)",
-                    r.tree.display()
+                    crate::config::display_path(&r.tree)
                 );
             }
             // No ref → fuzzy-pick one script; otherwise expand the ref to jobs.
@@ -783,7 +792,10 @@ pub(crate) async fn run_with_runtime(
                         sync::PullStatus::Updated => "pulled (updated)".to_string(),
                         sync::PullStatus::Unchanged => "unchanged".to_string(),
                         sync::PullStatus::LocalBackedUp(p) => {
-                            format!("pulled; local source backed up to {}", p.display())
+                            format!(
+                                "pulled; local source backed up to {}",
+                                crate::config::display_path(p)
+                            )
                         }
                     };
                     println!(
@@ -1195,7 +1207,7 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
             let sync_types = generate_sync_mapping_types(&t).await;
             println!(
                 "workspace ready at {} ({} files written, {} managed type files, {} sync type files, templates v{})",
-                r.tree.display(),
+                crate::config::display_path(&r.tree),
                 r.written.len(),
                 managed_types,
                 sync_types,
@@ -1204,7 +1216,7 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
             print_seed_notes(&r);
             println!(
                 "next: cd {} && npm install   (installs the lint/type-check toolchain)",
-                r.tree.display()
+                crate::config::display_path(&r.tree)
             );
             Ok(())
         }
@@ -1220,7 +1232,7 @@ pub async fn run_workspace(command: WorkspaceCommand) -> Result<()> {
                 r.written.len(),
                 managed_types,
                 sync_types,
-                r.tree.display()
+                crate::config::display_path(&r.tree)
             );
             print_seed_notes(&r);
             Ok(())
@@ -1290,7 +1302,10 @@ export {};
         return;
     }
     if let Err(error) = std::fs::write(&path, NOTE) {
-        eprintln!("warning: could not write {}: {error}", path.display());
+        eprintln!(
+            "warning: could not write {}: {error}",
+            crate::config::display_path(&path)
+        );
     }
 }
 
@@ -1323,7 +1338,7 @@ async fn generate_managed_types(tenant: &str) -> usize {
             if let Err(error) = std::fs::create_dir_all(parent) {
                 eprintln!(
                     "warning: could not create managed type directory {}: {error}",
-                    parent.display()
+                    crate::config::display_path(parent)
                 );
                 continue;
             }
@@ -1400,7 +1415,7 @@ async fn generate_sync_mapping_types(tenant: &str) -> usize {
             if let Err(error) = std::fs::create_dir_all(parent) {
                 eprintln!(
                     "warning: could not create sync type directory {}: {error}",
-                    parent.display()
+                    crate::config::display_path(parent)
                 );
                 continue;
             }
@@ -2042,7 +2057,7 @@ async fn watch(tenant: &str, yes: bool, force: SyntaxCheckForce) -> Result<()> {
     if !tree.exists() {
         return Err(Error::Config(format!(
             "no workspace at {} — `aic script pull …` first",
-            tree.display()
+            crate::config::display_path(&tree)
         )));
     }
     // Absolute, so it matches the (canonicalised) event paths from notify.
@@ -2055,10 +2070,10 @@ async fn watch(tenant: &str, yes: bool, force: SyntaxCheckForce) -> Result<()> {
     .map_err(|e| Error::Config(format!("watch: {e}")))?;
     watcher
         .watch(&tree, RecursiveMode::Recursive)
-        .map_err(|e| Error::Config(format!("watch {}: {e}", tree.display())))?;
+        .map_err(|e| Error::Config(format!("watch {}: {e}", crate::config::display_path(&tree))))?;
     println!(
         "watching {} — save a script to push it; Ctrl-C to stop",
-        tree.display()
+        crate::config::display_path(&tree)
     );
 
     // One handler for the whole run. A fresh `tokio::signal::ctrl_c()` per
@@ -2127,7 +2142,10 @@ async fn watch(tenant: &str, yes: bool, force: SyntaxCheckForce) -> Result<()> {
                                 "{}",
                                 watch_green(&format!("+ adopted {full} from the tenant"))
                             );
-                            println!("  its copy saved to {}", backup.display());
+                            println!(
+                                "  its copy saved to {}",
+                                crate::config::display_path(&backup)
+                            );
                         }
                         Ok(Adoption::Stop) => {
                             println!("\nstopped watching.");
@@ -2702,7 +2720,7 @@ fn guard_legacy_workspace(tenant: &str) -> Result<()> {
             "old per-realm workspace at {} — the layout is now per-tenant (am/<realm>/…). \
              Rescue any unpushed edits from the old <realm>/ dirs, delete them, then re-run \
              (`aic workspace init` + pull rebuilds the new tree).",
-            old.display()
+            crate::config::display_path(&old)
         )));
     }
     Ok(())

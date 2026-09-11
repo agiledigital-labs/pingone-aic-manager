@@ -398,7 +398,10 @@ fn sqlite_error(action: &str, error: rusqlite::Error) -> Error {
 
 fn print_sync_report(report: &SyncReport) {
     println!("tenant: {}", report.tenant);
-    println!("store:  {}", report.store_path.display());
+    println!(
+        "store:  {}",
+        crate::config::display_path(&report.store_path)
+    );
     if report.objects.is_empty() {
         println!("(no syncable managed objects)");
         return;

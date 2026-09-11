@@ -294,6 +294,42 @@ impl ProjectPaths {
     }
 }
 
+/// The directory the operator ran the command in, recorded before the CLI
+/// moves the process into the project root.
+///
+/// Only [`display_path`] consumes it. Every path the program computes is
+/// absolute (see [`ProjectPaths`]), which is what makes them safe to use, but
+/// printing one raw is needlessly long from the project root — where most
+/// commands are run.
+static INVOCATION_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Record the invocation directory. First call wins; later ones are ignored,
+/// so a test or a second bootstrap cannot move it under a running command.
+pub fn set_invocation_dir(dir: PathBuf) {
+    let _ = INVOCATION_DIR.set(dir);
+}
+
+/// Render `path` the way the operator would type it: relative to the directory
+/// they invoked the command in, when it lies beneath that directory, and
+/// absolute otherwise.
+///
+/// Absolute is the fallback rather than a `../..` chain because a path outside
+/// the operator's directory is one they will copy, paste or `cd` to, and a
+/// relative form only works from the one place they already are.
+pub fn display_path(path: &Path) -> String {
+    relative_to(INVOCATION_DIR.get().map(PathBuf::as_path), path)
+}
+
+/// The pure half of [`display_path`], so the unset and outside cases are
+/// testable without a process-global.
+fn relative_to(base: Option<&Path>, path: &Path) -> String {
+    base.and_then(|base| path.strip_prefix(base).ok())
+        .filter(|rel| !rel.as_os_str().is_empty())
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 /// Tenant + realm inferred from the directory a command was invoked in, when
 /// that directory is inside `workspace/<tenant>/…`. Populated once at CLI
 /// startup ([`crate::cli`]); consulted so `cd`-ing into a workspace subtree
@@ -917,6 +953,36 @@ impl Drop for TestDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `display_path` shortens a path the operator can reach from where they
+    /// are, and leaves every other path whole. The discriminating case is the
+    /// third: a sibling of the invocation directory shares a prefix with it
+    /// textually but is not beneath it, and printing it relative would send
+    /// the reader somewhere that does not exist.
+    #[test]
+    fn relative_to_shortens_only_paths_under_the_invocation_dir() {
+        let base = Path::new("/home/dave/w/proj");
+
+        assert_eq!(
+            relative_to(Some(base), Path::new("/home/dave/w/proj/workspace/sandbox")),
+            "workspace/sandbox"
+        );
+        assert_eq!(
+            relative_to(Some(base), Path::new("/home/dave/w/other/file.js")),
+            "/home/dave/w/other/file.js"
+        );
+        assert_eq!(
+            relative_to(Some(base), Path::new("/home/dave/w/proj-old/file.js")),
+            "/home/dave/w/proj-old/file.js"
+        );
+        // The invocation directory itself: "" would print as nothing at all.
+        assert_eq!(relative_to(Some(base), base), "/home/dave/w/proj");
+        // No bootstrap (a library caller, or a test): absolute, never a panic.
+        assert_eq!(
+            relative_to(None, Path::new("/home/dave/w/proj/workspace")),
+            "/home/dave/w/proj/workspace"
+        );
+    }
 
     /// A stand-in per-tenant map — the registry treats artifact payloads as
     /// opaque JSON bytes, so any serialisable map exercises the generic path.

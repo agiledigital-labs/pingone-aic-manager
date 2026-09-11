@@ -837,7 +837,10 @@ async fn remove(
     if let Err(error) = std::fs::remove_file(&snapshot)
         && error.kind() != ErrorKind::NotFound
     {
-        eprintln!("warning: remove snapshot {}: {error}", snapshot.display());
+        eprintln!(
+            "warning: remove snapshot {}: {error}",
+            crate::config::display_path(&snapshot)
+        );
     }
     println!("deleted {} {name}", kind.label());
     Ok(())

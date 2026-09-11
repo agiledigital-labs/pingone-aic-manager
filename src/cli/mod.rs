@@ -677,6 +677,9 @@ pub fn bootstrap_project_root() -> Result<()> {
     let cwd = std::env::current_dir().map_err(|error| {
         Error::Config(format!("could not resolve the current directory: {error}"))
     })?;
+    // Recorded before the chdir below, so printed paths can be shown relative
+    // to where the operator actually is rather than to the project root.
+    config::set_invocation_dir(cwd.clone());
     // The flag wins over the variable: an explicit argument is the more
     // specific statement of intent, and the one a reader of the command line
     // can see.
@@ -800,7 +803,10 @@ fn spawn_detached_then_exit() -> Result<()> {
         tokio::runtime::Runtime::new().map_err(|e| Error::Config(format!("tokio runtime: {e}")))?;
     rt.block_on(async {
         let _ = AgentClient::connect_or_spawn().await?;
-        eprintln!("agent running at {}", agent::socket_path().display());
+        eprintln!(
+            "agent running at {}",
+            crate::config::display_path(&agent::socket_path())
+        );
         Ok(())
     })
 }
