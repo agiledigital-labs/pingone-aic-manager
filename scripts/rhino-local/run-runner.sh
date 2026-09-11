@@ -21,7 +21,15 @@ fi
 
 "$HERE/compile-java.sh"
 
+# Optional container name so the Node client can docker rm -f on a crash
+# rather than leaking a JVM whose docker CLI it just killed.
+name_args=()
+if [ -n "${RHINO_LOCAL_CONTAINER:-}" ]; then
+  name_args=(--name "$RHINO_LOCAL_CONTAINER")
+fi
+
 exec docker run --rm -i \
+  "${name_args[@]}" \
   --user "$(id -u):$(id -g)" \
   --entrypoint /opt/java/openjdk/bin/java \
   -v "$ROOT:/work" \
