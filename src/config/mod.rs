@@ -592,13 +592,28 @@ impl ProjectConfig {
     }
 
     pub fn write_gitignore() -> Result<()> {
-        fs::create_dir_all(Self::dir())?;
-        let path = Self::dir().join(".gitignore");
-        fs::write(path, Self::gitignore_content())?;
+        Self::write_gitignore_to(&Self::dir())
+    }
+
+    /// Create `dir` and write the vault `.gitignore` into it.
+    ///
+    /// Relative `dir` is resolved against cwd **once**. `create_dir_all(".aic")`
+    /// then `write(".aic/.gitignore")` can fail with `AlreadyExists`/`NotFound`
+    /// if another thread calls `set_current_dir` between those syscalls —
+    /// `create_dir_all` treats `EEXIST` as success only when `.is_dir()` is
+    /// still true, and a cwd swap makes that check look at a different path.
+    pub fn write_gitignore_to(dir: &Path) -> Result<()> {
+        let resolved = if dir.is_absolute() {
+            dir.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(dir)
+        };
+        fs::create_dir_all(&resolved)?;
+        fs::write(resolved.join(".gitignore"), Self::gitignore_content())?;
         Ok(())
     }
 
-    fn gitignore_content() -> String {
+    pub(crate) fn gitignore_content() -> String {
         // Every vault artifact's .enc/.plain pair, plus wraps.toml — which
         // holds the (encrypted) DEK envelope and the FIDO2 credential id for
         // any enrolled security_keys (opaque but device-specific). Never
@@ -778,6 +793,17 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Config error: settings.toml is version 99; this aic understands up to 1 — upgrade aic"
+        );
+    }
+
+    #[test]
+    fn write_gitignore_to_uses_the_given_directory() {
+        let dir = TestDir::new();
+        let aic = dir.path(".aic");
+        ProjectConfig::write_gitignore_to(&aic).unwrap();
+        assert_eq!(
+            fs::read_to_string(aic.join(".gitignore")).unwrap(),
+            ProjectConfig::gitignore_content()
         );
     }
 
