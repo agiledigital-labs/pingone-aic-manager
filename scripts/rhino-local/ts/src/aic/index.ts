@@ -26,4 +26,8 @@ export { emitResultScript } from "./emit-result.ts";
 export { emitSetupScript } from "./emit-setup.ts";
 export { assembleEffects, classifyFinal, parseSubjectDump } from "./record.ts";
 export type { SubjectDump } from "./record.ts";
+export { runAicLane } from "./run.ts";
+export type { RunAicOptions } from "./run.ts";
+export { AicLaneError, connectTenant, defaultAicIo } from "./tenant.ts";
+export type { AicIo, TenantSession } from "./tenant.ts";
 export { aicUnsupportedReason } from "./unsupported.ts";
