@@ -1973,6 +1973,79 @@ secrets.getVerificationKey = function (secretId) {
   return __rhinoLocalRequireSecret("getVerificationKey", secretId);
 };
 
+// Capture the Rhino builtin before we shadow it. A function declaration
+// would hoist and capture the wrapper itself.
+var __rhinoLocalRealJavaImporter =
+  typeof JavaImporter === "function" ? JavaImporter : null;
+
+function __rhinoLocalHiddenValueCallback(id, value) {
+  this.type = "HiddenValueCallback";
+  this.id = String(id);
+  this.value = value === undefined || value === null ? "" : String(value);
+}
+
+function __rhinoLocalActionBuilder() {
+  return {
+    build: function () {
+      if (__rhinoLocal.outcome === null) {
+        __rhinoLocal.outcome = "ok";
+        outcome = "ok";
+      }
+      return action;
+    },
+  };
+}
+
+var __rhinoLocalActionClass = {
+  send: function () {
+    var i;
+    var cb;
+    var fields;
+    var key;
+    for (i = 0; i < arguments.length; i += 1) {
+      cb = arguments[i];
+      if (!cb) {
+        continue;
+      }
+      fields = {};
+      for (key in cb) {
+        if (Object.prototype.hasOwnProperty.call(cb, key) && key !== "type") {
+          fields[key] = cb[key];
+        }
+      }
+      __rhinoLocalCallback(
+        cb.type ? String(cb.type) : "HiddenValueCallback",
+        fields
+      );
+    }
+    if (__rhinoLocal.outcome === null) {
+      __rhinoLocal.outcome = "ok";
+      outcome = "ok";
+    }
+    return __rhinoLocalActionBuilder();
+  },
+  goTo: function (name) {
+    __rhinoLocal.outcome = String(name);
+    outcome = __rhinoLocal.outcome;
+    return __rhinoLocalActionBuilder();
+  },
+};
+
+JavaImporter = function () {
+  var real = null;
+  if (typeof __rhinoLocalRealJavaImporter === "function") {
+    real = __rhinoLocalRealJavaImporter.apply(null, arguments);
+  }
+  function Importer() {}
+  if (real) {
+    Importer.prototype = real;
+  }
+  var wrapper = new Importer();
+  wrapper.Action = __rhinoLocalActionClass;
+  wrapper.HiddenValueCallback = __rhinoLocalHiddenValueCallback;
+  return wrapper;
+};
+
 function __rhinoLocalLoadLibrary(name) {
   var id = String(name);
   if (__rhinoLocalHas(__rhinoLocal.requireCache, id)) {
@@ -2068,6 +2141,14 @@ function __rhinoLocalSeed(given) {
   if (given.engine === "legacy") {
     sharedState = __rhinoLocalStateMap("shared");
     transientState = __rhinoLocalStateMap("transient");
+    // Next-gen-only bindings. Live legacy typeofs them as undefined
+    // (docs/api/12); leaving them installed makes scripts take the
+    // callbacksBuilder fallback and never hit Action.send.
+    callbacksBuilder = undefined;
+    action = undefined;
+    openidm = undefined;
+    utils = undefined;
+    requestCookies = undefined;
   }
 }
 
