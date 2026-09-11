@@ -62,3 +62,7 @@ TODO.md
 # they shrink as the items land and go away entirely when the last one does.
 /GAPS.md
 /gaps/
+
+# AM Rhino jars extracted from the local docker image by
+# scripts/rhino-local/fetch-jars.sh. Never commit a jar.
+/.rhino-local/
