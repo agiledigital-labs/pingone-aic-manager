@@ -293,13 +293,127 @@ describe("callbacksBuilder", () => {
     ]);
   });
 
-  it("leaves unimplemented callback builders throwing", () => {
-    const sandbox = loadBehaviour();
-    const builder = sandbox.callbacksBuilder as {
-      redirectCallback: (url: string, data: object, method: string) => void;
+  it("records the remaining builder types under their Java simple names", () => {
+    const effects = runScript(
+      [
+        'callbacksBuilder.textInputCallback("Email");',
+        'callbacksBuilder.scriptTextOutputCallback("js");',
+        'callbacksBuilder.pollingWaitCallback("1000", "wait");',
+        'callbacksBuilder.redirectCallback("https://x", { a: 1 }, "GET");',
+        'callbacksBuilder.validatedUsernameCallback("User", {}, false);',
+        'callbacksBuilder.deviceProfileCallback(true, false, "Allow");',
+      ].join("\n")
+    );
+    expect(effects.callbacks.map((cb) => cb.type)).toEqual([
+      "TextInputCallback",
+      "ScriptTextOutputCallback",
+      "PollingWaitCallback",
+      "RedirectCallback",
+      "ValidatedUsernameCallback",
+      "DeviceProfileCallback",
+    ]);
+  });
+
+  it("covers every remaining builder method once", () => {
+    const effects = runScript(
+      [
+        "callbacksBuilder.suspendedTextOutputCallback(0, 'parked');",
+        'callbacksBuilder.languageCallback("en", "GB");',
+        'callbacksBuilder.idPCallback("google", "id", "https://r", ["openid"], "n", "req", "https://req", ["acr"], false);',
+        'callbacksBuilder.httpCallback("Basic", "Negotiate", "Negotiate", 401);',
+        'callbacksBuilder.x509CertificateCallback("cert");',
+        'callbacksBuilder.consentMappingCallback({ n: 1 }, "msg", true);',
+        'callbacksBuilder.kbaCreateCallback("q", ["a"], false);',
+        'callbacksBuilder.selectIdPCallback({ p: true });',
+        'callbacksBuilder.termsAndConditionsCallback("1", "terms", "2026-01-01");',
+        'callbacksBuilder.metadataCallback({ k: 1 });',
+        'callbacksBuilder.stringAttributeInputCallback("mail", "Email", "", true);',
+        'callbacksBuilder.numberAttributeInputCallback("age", "Age", 1, true);',
+        'callbacksBuilder.booleanAttributeInputCallback("ok", "OK", true, true);',
+        'callbacksBuilder.validatedPasswordCallback("pw", false, {}, false);',
+      ].join("\n")
+    );
+    expect(effects.callbacks.map((cb) => cb.type)).toEqual([
+      "SuspendedTextOutputCallback",
+      "LanguageCallback",
+      "IdPCallback",
+      "HttpCallback",
+      "X509CertificateCallback",
+      "ConsentMappingCallback",
+      "KbaCreateCallback",
+      "SelectIdPCallback",
+      "TermsAndConditionsCallback",
+      "MetadataCallback",
+      "StringAttributeInputCallback",
+      "NumberAttributeInputCallback",
+      "BooleanAttributeInputCallback",
+      "ValidatedPasswordCallback",
+    ]);
+  });
+
+  it("distinguishes redirectCallback overloads by arity", () => {
+    const withCookie = runScript(
+      'callbacksBuilder.redirectCallback("https://x", {}, "POST", true);'
+    );
+    const withStatus = runScript(
+      'callbacksBuilder.redirectCallback("https://x", {}, "POST", "status", "cookie");'
+    );
+    expect(withCookie.callbacks[0]).toEqual({
+      type: "RedirectCallback",
+      redirectUrl: "https://x",
+      redirectData: {},
+      method: "POST",
+      setTrackingCookie: true,
+    });
+    expect(withStatus.callbacks[0]).toEqual({
+      type: "RedirectCallback",
+      redirectUrl: "https://x",
+      redirectData: {},
+      method: "POST",
+      statusParameter: "status",
+      redirectBackUrlCookie: "cookie",
+    });
+  });
+});
+
+describe("callbacks (submitted values)", () => {
+  it("returns the submitted value itself, in order, not a callback object", () => {
+    const sandbox = loadBehaviour({
+      callbacks: [
+        { type: "NameCallback", value: "alice" },
+        { type: "NameCallback", value: "alice.admin" },
+        { type: "PasswordCallback", value: "s3cret" },
+        { type: "ConfirmationCallback", value: 1 },
+      ],
+    });
+    const callbacks = sandbox.callbacks as {
+      isEmpty: () => boolean;
+      getNameCallbacks: () => {
+        get: (i: number) => unknown;
+        size: () => number;
+      };
+      getPasswordCallbacks: () => { get: (i: number) => unknown };
+      getConfirmationCallbacks: () => { get: (i: number) => unknown };
+      getChoiceCallbacks: () => { size: () => number };
     };
-    expect(() => builder.redirectCallback("https://x", {}, "GET")).toThrow(
-      /not mocked: callbacksBuilder\.redirectCallback/
+    expect(callbacks.isEmpty()).toBe(false);
+    expect(callbacks.getNameCallbacks().size()).toBe(2);
+    expect(callbacks.getNameCallbacks().get(0)).toBe("alice");
+    expect(callbacks.getNameCallbacks().get(1)).toBe("alice.admin");
+    expect(callbacks.getPasswordCallbacks().get(0)).toBe("s3cret");
+    expect(callbacks.getConfirmationCallbacks().get(0)).toBe(1);
+    expect(callbacks.getChoiceCallbacks().size()).toBe(0);
+  });
+
+  it("treats an explicit empty given.callbacks as a first pass", () => {
+    const sandbox = loadBehaviour({ callbacks: [] });
+    const callbacks = sandbox.callbacks as { isEmpty: () => boolean };
+    expect(callbacks.isEmpty()).toBe(true);
+  });
+
+  it("throws naming given.callbacks when the fixture is missing", () => {
+    expect(() => runScript("callbacks.getNameCallbacks();")).toThrow(
+      /no given\.callbacks/
     );
   });
 });

@@ -32,6 +32,7 @@ export const GIVEN_KEYS = [
   "locales",
   "esv",
   "secrets",
+  "callbacks",
   "managed",
   "http",
   "engine",
@@ -213,6 +214,12 @@ export interface Given {
   locales?: JsonObject;
   esv?: Record<string, string>;
   secrets?: Record<string, string>;
+  /**
+   * Submitted callback values a resumed script reads via `callbacks.getXCallbacks()`.
+   * Omit to leave the binding unseeded (a read throws naming `given.callbacks`);
+   * seed `[]` for a first pass.
+   */
+  callbacks?: CallbackEffect[];
   managed?: Record<string, JsonObject[]>;
   http?: HttpStub[];
   engine?: Engine;
