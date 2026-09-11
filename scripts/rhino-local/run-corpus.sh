@@ -19,8 +19,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 DEST="$ROOT/.rhino-local"
 CORPUS="$HERE/corpus"
-PROBE_SRC="$HERE/Probe.java"
-PROBE_CLASS="$DEST/classes/Probe.class"
 VERSIONS_CSV="${RHINO_LOCAL_VERSIONS:-0,180,200}"
 
 JSONL=0
@@ -34,21 +32,7 @@ elif [ -n "${1:-}" ]; then
   exit 2
 fi
 
-"$HERE/fetch-jars.sh" >/dev/null
-
-mkdir -p "$DEST/classes"
-if [ ! -f "$PROBE_CLASS" ] || [ "$PROBE_SRC" -nt "$PROBE_CLASS" ]; then
-  docker run --rm \
-    --user "$(id -u):$(id -g)" \
-    --entrypoint /opt/java/openjdk/bin/javac \
-    -v "$ROOT:/work" \
-    -w /work \
-    "$IMAGE" \
-    -encoding UTF-8 \
-    -cp ".rhino-local/rhino-1.7.14.1.jar" \
-    -d .rhino-local/classes \
-    scripts/rhino-local/Probe.java
-fi
+"$HERE/compile-java.sh"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "error: python3 is required to parse Probe JSON and print the table." >&2
