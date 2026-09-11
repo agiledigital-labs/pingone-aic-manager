@@ -1626,6 +1626,7 @@ mod tests {
         let backups = std::fs::read_dir(&backup_dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != ".gitignore")
             .collect::<Vec<_>>();
         assert_eq!(backups.len(), 1);
         assert!(backups[0].contains("One"));
