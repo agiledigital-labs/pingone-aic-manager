@@ -9,6 +9,7 @@
   },
   "scripts": {
     "generate": "node src/generate.ts",
+    "measure": "node src/measure.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",

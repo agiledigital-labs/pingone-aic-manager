@@ -54,6 +54,7 @@ npm test
 npm run typecheck
 npm run lint
 npm run lint:am
+npm run measure   # JVM startup + per-job timings (needs docker + AM image)
 ```
 
 `npm run generate` reads the captured JSON (offline; it does not call the
