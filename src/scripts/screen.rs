@@ -254,11 +254,20 @@ impl State {
         Self::default()
     }
 
-    /// Drop view state (filter + cursor) — called on tenant switch.
-    pub fn reset_view(&mut self) {
+    /// Drop the filter and cursor. Leaves a pull waiting for confirmation
+    /// alone — `Esc` in Search means "clear my filter", not "cancel the
+    /// overwrite I was about to be asked about".
+    pub fn clear_filter(&mut self) {
         self.query.clear();
         self.selected = 0;
         self.scroll = 0;
+    }
+
+    /// Drop view state **and** abandon any pull awaiting confirmation —
+    /// called on tenant switch, where the plan no longer addresses the
+    /// tenant on screen.
+    pub fn reset_view(&mut self) {
+        self.clear_filter();
         if let Some(pending) = self.pending_pull.take() {
             self.in_flight.remove(&(pending.tenant, pending.full));
         }
@@ -391,7 +400,7 @@ pub fn filter_active(app: &App) -> bool {
 }
 
 pub fn clear_filter(app: &mut App) {
-    app.scripts.reset_view();
+    app.scripts.clear_filter();
 }
 
 pub fn primary(_app: &mut App) {}
@@ -459,7 +468,7 @@ fn selected_candidate(app: &App) -> Option<Candidate> {
 fn handle_search_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
-            app.scripts.reset_view();
+            app.scripts.clear_filter();
             app.input_mode = InputMode::Normal;
             return;
         }
@@ -945,6 +954,36 @@ mod tests {
 
         app.input_mode = InputMode::Normal;
         crate::app::promote_pending_pulls(&mut app);
+        assert_eq!(app.input_mode, InputMode::Scripts(Mode::PullConfirm));
+        assert_eq!(pending_pull_refs(&app), ["sync/map.onCreate"]);
+    }
+
+    /// The promotion must hang off the **key** path, not only `apply_event`:
+    /// once the event queue drains, leaving Search is the operator's only
+    /// remaining action, and a pull that waits forever is a toast that lies.
+    ///
+    /// Red if `keymap::dispatch` stops calling `promote_pending_pulls`.
+    #[tokio::test]
+    async fn leaving_search_with_a_key_promotes_a_waiting_pull() {
+        let mut app = app();
+        app.input_mode = InputMode::Scripts(Mode::Search);
+        app.scripts
+            .in_flight
+            .insert(("sandbox".into(), "all".into()));
+
+        apply_pull_prepared(
+            &mut app,
+            "sandbox".into(),
+            "all".into(),
+            "pull all".into(),
+            Ok(sync::PullPlan::protected_for_test(&["map.onCreate"])),
+        );
+        assert_eq!(app.input_mode, InputMode::Scripts(Mode::Search));
+
+        crate::app::keymap::dispatch(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
         assert_eq!(app.input_mode, InputMode::Scripts(Mode::PullConfirm));
         assert_eq!(pending_pull_refs(&app), ["sync/map.onCreate"]);
     }

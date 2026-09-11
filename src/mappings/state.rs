@@ -70,10 +70,18 @@ impl State {
         }
     }
 
-    pub fn reset_view(&mut self) {
+    /// Drop the filter and cursor, leaving a pull awaiting confirmation
+    /// alone. See `scripts::screen::ScriptsState::clear_filter`.
+    pub fn clear_filter(&mut self) {
         self.query.clear();
         self.selected = 0;
         self.scroll = 0;
+    }
+
+    /// Drop view state **and** abandon any pull awaiting confirmation —
+    /// called on tenant switch.
+    pub fn reset_view(&mut self) {
+        self.clear_filter();
         if let Some(pending) = self.pending_pull.take() {
             self.in_flight_pull
                 .remove(&(pending.tenant, pending.mapping));

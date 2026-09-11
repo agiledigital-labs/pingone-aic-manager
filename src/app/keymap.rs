@@ -653,6 +653,11 @@ pub async fn dispatch(app: &mut App, key: KeyEvent) -> crate::Result<()> {
         InputMode::Oauth(mode) => crate::oauth::screen::handle_key(app, key, mode),
         InputMode::Secretmap(mode) => crate::secretmap::screen::handle_key(app, key, mode),
     }
+    // The key that leaves Search — or any other mode — is the moment a pull
+    // stored by a background result becomes safe to confirm. Without this the
+    // promotion runs only on the next `AppEvent`, which may never arrive once
+    // the queue drains, and the "waiting for confirmation" toast never resolves.
+    crate::app::promote_pending_pulls(app);
     Ok(())
 }
 
