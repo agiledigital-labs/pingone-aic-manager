@@ -19,6 +19,18 @@ export const bindingsJsonPath = join(
 
 export const generatedDir = join(packageRoot, "generated");
 
+export const generatedJsPath = join(
+  generatedDir,
+  "scripted-decision-mocks.cjs"
+);
+
+export const generatedDtsPath = join(
+  generatedDir,
+  "scripted-decision-mocks.d.ts"
+);
+
+export const amRhinoEslintConfigPath = join(packageRoot, "eslint.am.config.js");
+
 export const amEslintConfigPath = join(
   repoRoot,
   "src",
