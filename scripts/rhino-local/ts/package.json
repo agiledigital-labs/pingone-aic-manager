@@ -13,7 +13,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
-    "lint:am": "eslint --config eslint.am.config.js generated --max-warnings 0"
+    "lint:am": "eslint --config eslint.am.config.js generated src/bindings cases --max-warnings 0"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
