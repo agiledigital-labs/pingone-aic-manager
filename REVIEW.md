@@ -286,6 +286,22 @@ findings). Each should name the guard that will eventually retire it.
   (`clear_filter`) so the wide one cannot be reached by accident; one test per
   caller asserting what survives._
 
+- **A relative path read from a global must be resolved once, not re-resolved
+  per syscall — in a binary whose tests mutate the process cwd, which this one
+  does.** `ProjectConfig::dir()` returns the relative `.aic`, so
+  `create_dir_all(Self::dir())` followed by `write(Self::dir().join(..))` is two
+  independent resolutions against a cwd that `src/agent/daemon.rs`'s tests move
+  out from under it. `create_dir_all` accepts mkdir's `EEXIST` only while
+  `.is_dir()` still holds, so the failure is an `AlreadyExists` (or `NotFound`)
+  error from a call that logically cannot produce one — surfacing as a rare
+  panic in an unrelated test, under load, once (2026-09-11). Note the daemon
+  tests' `CWD_LOCK` serialises those three tests against **each other** and
+  gives no protection at all to the rest of the binary. _Guard: pass the
+  directory in (`write_gitignore_to`) so no cwd is read; the durable fix is to
+  stop `set_current_dir` in tests entirely. A `repo_hygiene` grep for
+  `set_current_dir` under `#[cfg(test)]` would pin it, once the last caller is
+  gone._
+
 ## Findings log
 
 ### 2026-09-11 — the deferred modal that never arrived
@@ -923,3 +939,30 @@ findings). Each should name the guard that will eventually retire it.
 - **Guard:** not automatable. Procedural: keep an explicit open/closed ledger
   across rounds rather than re-deriving it from the last brief, and never accept
   a "closed" verdict rendered against a narrowed brief.
+
+### 2026-09-11 — a relative path, two syscalls, and a cwd that moved
+
+- **What:**
+  `undo::tests::forget_tenant_removes_only_the_named_tenant_on_disk_log` failed
+  once in a full run and never again. `DiskLog` persist called
+  `ProjectConfig::write_gitignore()`, which resolves the relative `.aic` twice —
+  `create_dir_all` then `write`. `src/agent/daemon.rs`'s tests `set_current_dir`
+  into an empty temp dir, and cwd is global to the whole test binary, so the
+  second resolution can name a different directory than the first.
+  `record().unwrap()` then panics with `Io(AlreadyExists)`. Reproduced on a
+  quiet machine on the third attempt with a cwd swapper; the two syscalls alone
+  fail ~17% of the time under one.
+- **Why missed:** a flake that fires once looks like infrastructure, and the
+  machine had just OOM-killed an agent — which supplied a comfortable
+  explanation that was wrong. The test itself is scrupulous about isolation (a
+  UUID-named temp log), so the shared state was invisible: it was two layers
+  down, in a defensive `write_gitignore()` call that has nothing to do with what
+  the test asserts.
+- **Guard:** applied in `a18a31e` — `write_gitignore_to(dir)` resolves once and
+  `DiskLog` passes its own log parent, so the persist path reads no cwd.
+  `disk_log_writes_gitignore_beside_an_aic_parent` is mutation-verified red
+  against the old global call. **Not** retired: six other relative two-step
+  writes under `ProjectConfig::dir()` remain exposed the same way
+  (`ProjectConfig::save`, `Settings::save`, `WrapsFile::save`,
+  `save_private_file`, `write_current_context`, `access::ops::backup_document`).
+  Queued as `R1`.
