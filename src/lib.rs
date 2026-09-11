@@ -117,6 +117,48 @@ mod repo_hygiene {
         );
     }
 
+    /// The process cwd is shared by all tests in one test binary. A daemon test
+    /// used to change it while unrelated tests performed relative multi-step
+    /// I/O, splitting one logical write across two directories. Tests use
+    /// explicit `ProjectPaths` values instead.
+    #[test]
+    fn no_process_cwd_mutation_under_cfg_test() {
+        let banned_call = ["set_current_", "dir"].concat();
+        let mut offences = Vec::new();
+        let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+
+        for path in rust_sources(&src_root) {
+            // The constructed pattern above keeps this file from matching its
+            // own guard; skip it anyway, mirroring the key-generation check.
+            if path.ends_with("lib.rs") {
+                continue;
+            }
+            let source = fs::read_to_string(&path).expect("read source file");
+            let Some(test_start) = source.find("#[cfg(test)]") else {
+                continue;
+            };
+            let offset_line = source[..test_start].lines().count();
+
+            for (index, line) in source[test_start..].lines().enumerate() {
+                if line.contains(&banned_call) {
+                    offences.push(format!(
+                        "{}:{}: {}",
+                        path.display(),
+                        offset_line + index + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            offences.is_empty(),
+            "process cwd mutation under #[cfg(test)]:\n  {}\n\n\
+             Pass an explicit ProjectPaths value to code that needs a test project.",
+            offences.join("\n  ")
+        );
+    }
+
     fn rust_sources(dir: &Path) -> Vec<PathBuf> {
         let mut found = Vec::new();
         let entries = fs::read_dir(dir).expect("read source dir");
