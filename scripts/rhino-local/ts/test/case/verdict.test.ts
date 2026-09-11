@@ -11,8 +11,10 @@ describe("verdict engine — outcome", () => {
     const verdict = judge(kase, makeEffects({ outcome: "true" }));
     expect(verdict).toEqual({
       pass: true,
+      conclusive: true,
       portable: true,
       mismatches: [],
+      unverified: [],
       summary: "",
     });
   });
