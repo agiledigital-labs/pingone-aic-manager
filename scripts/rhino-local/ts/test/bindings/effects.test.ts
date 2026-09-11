@@ -105,6 +105,105 @@ describe("openidm", () => {
     ]);
   });
 
+  it("evaluates CREST filters against given.managed with discriminating row sets", () => {
+    const rows = [
+      {
+        _id: "alice",
+        userName: "alice",
+        mail: "alice@example.com",
+        city: "York",
+      },
+      {
+        _id: "alicia",
+        userName: "alicia",
+        mail: "alicia@other.org",
+        city: "York",
+      },
+      { _id: "bob", userName: "bob", mail: "bob@example.com" },
+      {
+        _id: "carol",
+        userName: "carol",
+        mail: "carol@example.com",
+        city: "New York",
+      },
+      { _id: "malice", userName: "malice", mail: "m@x.com" },
+    ];
+    const sandbox = loadBehaviour({
+      managed: { "managed/alpha_user": rows },
+    });
+    const openidm = sandbox.openidm as {
+      query: (
+        resource: string,
+        params: { _queryFilter: string }
+      ) => { result: Array<{ _id: string }> };
+    };
+    function ids(filter: string): string[] {
+      return openidm
+        .query("managed/alpha_user", { _queryFilter: filter })
+        .result.map((row) => row._id);
+    }
+
+    // and binds tighter than or: bob OR (York AND alice-mail) → alice, bob.
+    // If or bound tighter, (bob OR York) AND alice-mail → alice only.
+    expect(
+      ids('userName eq "bob" or city eq "York" and mail eq "alice@example.com"')
+    ).toEqual(["alice", "bob"]);
+
+    expect(ids('userName sw "ali"')).toEqual(["alice", "alicia"]);
+    expect(ids('userName co "ali"')).toEqual(["alice", "alicia", "malice"]);
+    expect(ids("city pr")).toEqual(["alice", "alicia", "carol"]);
+    expect(ids('!(userName eq "bob")')).toEqual([
+      "alice",
+      "alicia",
+      "carol",
+      "malice",
+    ]);
+    expect(ids('city eq "New York"')).toEqual(["carol"]);
+    expect(ids('/name/last eq "Smith"')).toEqual([]);
+  });
+
+  it("matches a nested JSON-pointer field, not the parent object", () => {
+    const sandbox = loadBehaviour({
+      managed: {
+        "managed/alpha_user": [
+          { _id: "alice", name: { first: "Alice", last: "Smith" } },
+          { _id: "bob", name: { first: "Bob", last: "Jones" } },
+          { _id: "carol", name: { first: "Carol", last: "Smith" } },
+        ],
+      },
+    });
+    const openidm = sandbox.openidm as {
+      query: (
+        resource: string,
+        params: { _queryFilter: string }
+      ) => { result: Array<{ _id: string }> };
+    };
+    expect(
+      openidm
+        .query("managed/alpha_user", { _queryFilter: '/name/last eq "Smith"' })
+        .result.map((row) => row._id)
+    ).toEqual(["alice", "carol"]);
+  });
+
+  it("throws naming an unsupported filter rather than returning empty", () => {
+    const sandbox = loadBehaviour({
+      managed: {
+        "managed/alpha_user": [{ _id: "alice", userName: "alice" }],
+      },
+    });
+    const openidm = sandbox.openidm as {
+      query: (resource: string, params: { _queryFilter: string }) => unknown;
+    };
+    expect(() =>
+      openidm.query("managed/alpha_user", { _queryFilter: '/_id ne "alice"' })
+    ).toThrow(/unmocked filter "\/_id ne \\"alice\\""/);
+    expect(() =>
+      openidm.query("managed/alpha_user", {
+        _queryFilter: 'not (userName eq "alice")',
+      })
+    ).toThrow(/unmocked filter/);
+  });
+
   it("records actionName and body as content ?? params", () => {
     const withContent = runScript(
       'openidm.action("managed/alpha_user/alice", "reset", { n: 1 }, { q: true });'

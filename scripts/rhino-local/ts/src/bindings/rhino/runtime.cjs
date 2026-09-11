@@ -546,17 +546,355 @@ function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
   __rhinoLocal.openidm.push(rec);
 }
 
+function __rhinoLocalFilterError(filter) {
+  throw new Error(
+    "rhino-local: openidm.query: unmocked filter " + JSON.stringify(filter)
+  );
+}
+
+function __rhinoLocalIsIdentChar(ch) {
+  return (
+    (ch >= "a" && ch <= "z") ||
+    (ch >= "A" && ch <= "Z") ||
+    (ch >= "0" && ch <= "9") ||
+    ch === "_" ||
+    ch === "-"
+  );
+}
+
+function __rhinoLocalReadField(record, pointer) {
+  var path = String(pointer);
+  if (path.charAt(0) === "/") {
+    path = path.substring(1);
+  }
+  if (path === "") {
+    return record;
+  }
+  var parts = path.split("/");
+  var cur = record;
+  var i;
+  for (i = 0; i < parts.length; i += 1) {
+    if (cur === null || cur === undefined || typeof cur !== "object") {
+      return undefined;
+    }
+    if (!__rhinoLocalHas(cur, parts[i])) {
+      return undefined;
+    }
+    cur = cur[parts[i]];
+  }
+  return cur;
+}
+
+function __rhinoLocalCompareOne(actual, op, expected) {
+  var left = actual === null || actual === undefined ? "" : String(actual);
+  var right = expected === null || expected === undefined ? "" : String(expected);
+  if (op === "eq") {
+    return left === right;
+  }
+  if (op === "co") {
+    return left.indexOf(right) !== -1;
+  }
+  if (op === "sw") {
+    return left.indexOf(right) === 0;
+  }
+  return false;
+}
+
+function __rhinoLocalCompareField(record, pointer, op, expected) {
+  var actual = __rhinoLocalReadField(record, pointer);
+  if (op === "pr") {
+    return actual !== undefined && actual !== null;
+  }
+  if (actual === undefined || actual === null) {
+    return false;
+  }
+  if (Array.isArray(actual)) {
+    var i;
+    for (i = 0; i < actual.length; i += 1) {
+      if (__rhinoLocalCompareOne(actual[i], op, expected)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return __rhinoLocalCompareOne(actual, op, expected);
+}
+
+function __rhinoLocalParseFilter(filter) {
+  var src = String(filter);
+  var i = 0;
+
+  function skipWs() {
+    while (i < src.length) {
+      var ch = src.charAt(i);
+      if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") {
+        break;
+      }
+      i += 1;
+    }
+  }
+
+  function peek() {
+    skipWs();
+    if (i >= src.length) {
+      return "";
+    }
+    return src.charAt(i);
+  }
+
+  function readIdent() {
+    skipWs();
+    var start = i;
+    while (i < src.length && __rhinoLocalIsIdentChar(src.charAt(i))) {
+      i += 1;
+    }
+    if (start === i) {
+      return "";
+    }
+    return src.substring(start, i);
+  }
+
+  function readField() {
+    skipWs();
+    var start = i;
+    if (i < src.length && src.charAt(i) === "/") {
+      i += 1;
+    }
+    if (!__rhinoLocalIsIdentChar(peekCharRaw())) {
+      i = start;
+      return null;
+    }
+    while (i < src.length) {
+      var ch = src.charAt(i);
+      if (__rhinoLocalIsIdentChar(ch) || ch === "/") {
+        i += 1;
+      } else {
+        break;
+      }
+    }
+    var field = src.substring(start, i);
+    if (field === "" || field === "/") {
+      i = start;
+      return null;
+    }
+    return field;
+  }
+
+  function peekCharRaw() {
+    if (i >= src.length) {
+      return "";
+    }
+    return src.charAt(i);
+  }
+
+  function readString() {
+    skipWs();
+    if (src.charAt(i) !== '"') {
+      return null;
+    }
+    i += 1;
+    var out = "";
+    while (i < src.length) {
+      var ch = src.charAt(i);
+      if (ch === "\\") {
+        i += 1;
+        if (i >= src.length) {
+          __rhinoLocalFilterError(filter);
+        }
+        out += src.charAt(i);
+        i += 1;
+      } else if (ch === '"') {
+        i += 1;
+        return out;
+      } else {
+        out += ch;
+        i += 1;
+      }
+    }
+    __rhinoLocalFilterError(filter);
+    return null;
+  }
+
+  function readNumber() {
+    skipWs();
+    var start = i;
+    if (src.charAt(i) === "-") {
+      i += 1;
+    }
+    var digits = 0;
+    while (i < src.length && src.charAt(i) >= "0" && src.charAt(i) <= "9") {
+      digits += 1;
+      i += 1;
+    }
+    if (src.charAt(i) === ".") {
+      i += 1;
+      while (i < src.length && src.charAt(i) >= "0" && src.charAt(i) <= "9") {
+        digits += 1;
+        i += 1;
+      }
+    }
+    if (digits === 0) {
+      i = start;
+      return null;
+    }
+    return Number(src.substring(start, i));
+  }
+
+  function parseValue() {
+    skipWs();
+    var str = readString();
+    if (str !== null) {
+      return str;
+    }
+    var ident = "";
+    var saved = i;
+    ident = readIdent();
+    if (ident === "true") {
+      return true;
+    }
+    if (ident === "false") {
+      return false;
+    }
+    if (ident === "null") {
+      return null;
+    }
+    i = saved;
+    var num = readNumber();
+    if (num !== null && !isNaN(num)) {
+      return num;
+    }
+    __rhinoLocalFilterError(filter);
+    return null;
+  }
+
+  function parsePrimary() {
+    skipWs();
+    if (peek() === "(") {
+      i += 1;
+      var inner = parseOr();
+      skipWs();
+      if (peek() !== ")") {
+        __rhinoLocalFilterError(filter);
+      }
+      i += 1;
+      return inner;
+    }
+    var saved = i;
+    var ident = readIdent();
+    if (ident === "true") {
+      return { kind: "true" };
+    }
+    if (ident === "false") {
+      return { kind: "false" };
+    }
+    i = saved;
+    var field = readField();
+    if (field === null) {
+      __rhinoLocalFilterError(filter);
+    }
+    skipWs();
+    var op = readIdent();
+    if (op === "pr") {
+      return { kind: "pr", field: field };
+    }
+    if (op === "eq" || op === "co" || op === "sw") {
+      return { kind: "cmp", field: field, op: op, value: parseValue() };
+    }
+    __rhinoLocalFilterError(filter);
+    return null;
+  }
+
+  function parseNot() {
+    skipWs();
+    if (peek() === "!") {
+      i += 1;
+      return { kind: "not", inner: parseNot() };
+    }
+    var saved = i;
+    var ident = readIdent();
+    if (ident === "not") {
+      // AIC rejects the word form (docs/api/10, verified 2026-07-03).
+      __rhinoLocalFilterError(filter);
+    }
+    i = saved;
+    return parsePrimary();
+  }
+
+  function parseAnd() {
+    var left = parseNot();
+    while (true) {
+      var saved = i;
+      var ident = readIdent();
+      if (ident !== "and") {
+        i = saved;
+        break;
+      }
+      left = { kind: "and", left: left, right: parseNot() };
+    }
+    return left;
+  }
+
+  function parseOr() {
+    var left = parseAnd();
+    while (true) {
+      var saved = i;
+      var ident = readIdent();
+      if (ident !== "or") {
+        i = saved;
+        break;
+      }
+      left = { kind: "or", left: left, right: parseAnd() };
+    }
+    return left;
+  }
+
+  var ast = parseOr();
+  skipWs();
+  if (i !== src.length) {
+    __rhinoLocalFilterError(filter);
+  }
+  return ast;
+}
+
+function __rhinoLocalEvalFilter(record, ast) {
+  if (ast.kind === "true") {
+    return true;
+  }
+  if (ast.kind === "false") {
+    return false;
+  }
+  if (ast.kind === "not") {
+    return !__rhinoLocalEvalFilter(record, ast.inner);
+  }
+  if (ast.kind === "and") {
+    return (
+      __rhinoLocalEvalFilter(record, ast.left) &&
+      __rhinoLocalEvalFilter(record, ast.right)
+    );
+  }
+  if (ast.kind === "or") {
+    return (
+      __rhinoLocalEvalFilter(record, ast.left) ||
+      __rhinoLocalEvalFilter(record, ast.right)
+    );
+  }
+  if (ast.kind === "pr") {
+    return __rhinoLocalCompareField(record, ast.field, "pr", null);
+  }
+  if (ast.kind === "cmp") {
+    return __rhinoLocalCompareField(record, ast.field, ast.op, ast.value);
+  }
+  return false;
+}
+
 function __rhinoLocalMatchesFilter(record, filter) {
   if (!filter || filter === "true") {
     return true;
   }
-  var match = /^\s*([A-Za-z0-9_]+)\s+eq\s+"([^"]*)"\s*$/.exec(filter);
-  if (!match) {
-    throw new Error(
-      "rhino-local: openidm.query: unmocked filter " + JSON.stringify(filter)
-    );
+  if (filter === "false") {
+    return false;
   }
-  return String(record[match[1]]) === match[2];
+  return __rhinoLocalEvalFilter(record, __rhinoLocalParseFilter(filter));
 }
 
 openidm.read = function (resourceName, _params, fields) {
