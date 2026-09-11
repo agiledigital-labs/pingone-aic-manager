@@ -397,7 +397,9 @@ The verdict and comparison report distinguish all three cases:
 
 The AIC recorder also marks `openidm`, `http`, and `logs` unobserved. Their
 empty arrays are placeholders required by the common effect shape, not claims
-that no such effects occurred. The subject-snapshot wrapper and these revised
+that no such effects occurred. Its evidence also carries a standing `unified`
+state-bucket qualification: same-value and lower-precedence writes may produce
+no unified delta at all. The subject-snapshot wrapper and these revised
 semantics have unit coverage but have **not** yet been verified on a live
 tenant; the earlier live run exercised the result-node snapshot design.
 

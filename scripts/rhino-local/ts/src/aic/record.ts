@@ -73,6 +73,7 @@ export function assembleEffects(args: {
       http: [],
       logs: [],
       evidence: {
+        stateBuckets: "unified",
         ambientState: {},
         unbucketedState: [],
         unobservedChannels: [
@@ -156,6 +157,7 @@ export function classifyFinal(
     transientState: { initial: transientInitial, final: transientFinal },
     secureState: { initial: secureInitial, final: secureFinal },
     evidence: {
+      stateBuckets: "unified",
       ambientState,
       unbucketedState,
       unobservedChannels: [...AIC_UNOBSERVED],

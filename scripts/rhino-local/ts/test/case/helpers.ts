@@ -41,6 +41,7 @@ export function makeEffects(
     http: [],
     logs: [],
     evidence: {
+      stateBuckets: "exact",
       ambientState: {},
       unbucketedState: [],
       unobservedChannels: [],
