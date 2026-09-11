@@ -992,7 +992,7 @@ pub(crate) async fn run_with_runtime(
                                 // forced retry is the first place a refusal
                                 // can appear — and dropping the outcome here
                                 // reported a push that never happened.
-                                match prod_hint(
+                                let retry = prod_hint(
                                     runtime
                                         .push_forced(
                                             sync::PushContext::new(
@@ -1005,10 +1005,11 @@ pub(crate) async fn run_with_runtime(
                                             yes,
                                         )
                                         .await,
-                                )? {
+                                )?;
+                                match &retry {
                                     sync::PushOutcome::Refused { refusal, .. } => {
-                                        invalid += 1;
-                                        report_refusal(&full, &refusal);
+                                        invalid += u32::from(retry.is_failure());
+                                        report_refusal(&full, refusal);
                                     }
                                     sync::PushOutcome::Pushed => {
                                         pushed += 1;
@@ -1016,14 +1017,15 @@ pub(crate) async fn run_with_runtime(
                                     }
                                     sync::PushOutcome::NotConfirmed(reason) => {
                                         eprintln!("! {full}: {}", reason.message());
-                                        failed += 1;
+                                        failed += u32::from(retry.is_failure());
                                     }
                                     // Nothing to write after all (the local
                                     // edit matched, or someone landed the same
                                     // content), or the remote moved again
                                     // between the two calls.
                                     other => {
-                                        println!("= {full}: {}", push_outcome_note(&other));
+                                        println!("= {full}: {}", push_outcome_note(other));
+                                        failed += u32::from(other.is_failure());
                                     }
                                 }
                             }
@@ -2662,20 +2664,20 @@ async fn push_all(
                 continue;
             }
         };
-        match outcome {
+        match &outcome {
             PushOutcome::Pushed => println!("pushed {full}"),
             PushOutcome::NotConfirmed(reason) => {
                 eprintln!("! {full}: {}", reason.message());
-                failed += 1;
+                failed += u32::from(outcome.is_failure());
             }
             PushOutcome::Unchanged | PushOutcome::AlreadyInSync => {}
             PushOutcome::Refused { refusal, .. } => {
-                report_refusal(&full, &refusal);
-                refused += 1;
+                report_refusal(&full, refusal);
+                refused += u32::from(outcome.is_failure());
             }
             PushOutcome::Conflict(_) => {
                 println!("{full}: CONFLICT — skipped (`diff {full}`, or `push {full} --force`)");
-                conflicts += 1;
+                conflicts += u32::from(outcome.is_failure());
             }
         }
     }
