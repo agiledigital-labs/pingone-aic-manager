@@ -9,6 +9,8 @@ export default tseslint.config(
       "dist/**",
       "coverage/**",
       "eslint.am.config.js",
+      "src/bindings/rhino/**",
+      "cases/**/*.cjs",
     ],
   },
   eslint.configs.recommended,

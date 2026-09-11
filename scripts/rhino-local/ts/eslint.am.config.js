@@ -210,7 +210,7 @@ const rhinoPlugin = {
 
 export default [
   {
-    files: ["generated/**/*.cjs"],
+    files: ["generated/**/*.cjs", "src/bindings/**/*.cjs", "cases/**/*.cjs"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "script",
