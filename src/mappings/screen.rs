@@ -145,7 +145,7 @@ pub fn select(app: &mut App, idx: usize) {
 }
 
 pub fn clear_filter(app: &mut App) {
-    app.mappings.reset_view();
+    app.mappings.clear_filter();
 }
 
 pub fn filter_active(app: &App) -> bool {
@@ -449,6 +449,34 @@ mod tests {
 
         app.input_mode = InputMode::Normal;
         crate::app::promote_pending_pulls(&mut app);
+        assert_eq!(app.input_mode, InputMode::Mappings(Mode::PullConfirm));
+        assert_eq!(pending_pull_refs(&app), ["sync/map.onCreate"]);
+    }
+
+    /// `Esc` in Search means "clear my filter". It must not also discard a
+    /// pull waiting for confirmation — `reset_view` does that, and belongs to
+    /// the tenant switch. Red if `handle_search_key` calls `reset_view`
+    /// again, or if `dispatch` stops promoting.
+    #[tokio::test]
+    async fn leaving_search_with_a_key_promotes_rather_than_discards_a_waiting_pull() {
+        let mut app = app();
+        app.input_mode = InputMode::Mappings(Mode::Search);
+        app.mappings
+            .in_flight_pull
+            .insert(("sandbox".into(), "map".into()));
+
+        apply_pull_prepared(
+            &mut app,
+            "sandbox".into(),
+            "map".into(),
+            Ok(sync::PullPlan::protected_for_test(&["map.onCreate"])),
+        );
+        assert_eq!(app.input_mode, InputMode::Mappings(Mode::Search));
+
+        crate::app::keymap::dispatch(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
         assert_eq!(app.input_mode, InputMode::Mappings(Mode::PullConfirm));
         assert_eq!(pending_pull_refs(&app), ["sync/map.onCreate"]);
     }
