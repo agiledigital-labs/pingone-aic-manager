@@ -1,17 +1,5 @@
-import type { Expect, Given } from "../../src/case/types.ts";
+import type { Given } from "../../src/case/types.ts";
 import { hiddenValue, realCase, type BlockedBy, type RealEntry } from "./load.ts";
-
-/**
- * First throw almost every next-gen probe hits: they emit via
- * `if (callbacks.isEmpty()) callbacksBuilder.hiddenValueCallback(...)`.
- * Measured 2026-09-12 against the local JVM runner; see
- * `docs/rhino-local-gaps.md`.
- */
-const CALLBACKS_ISEMPTY: BlockedBy = {
-  method: "callbacks.isEmpty",
-  throw:
-    "rhino-local: not mocked: callbacks.isEmpty arity=0 overload=[isEmpty()] (rhino-local-mocks.cjs#53)",
-};
 
 /**
  * Parse-error fixtures never reach a binding. The case format has no
@@ -20,6 +8,24 @@ const CALLBACKS_ISEMPTY: BlockedBy = {
  */
 function parseError(message: string): BlockedBy {
   return { method: "(parse)", throw: message };
+}
+
+/**
+ * Legacy emit via `JavaImporter` + `Action.send`. Measured 2026-09-12 against
+ * the local JVM runner after `given.callbacks: []` unblocked `isEmpty`.
+ * `frJava.Action` is undefined because the AM classes are not on the
+ * classpath, so the exact throw is Rhino's `Cannot call method "send"`.
+ */
+function actionSend(line: string): BlockedBy {
+  return {
+    method: "Action.send",
+    throw: `TypeError: Cannot call method "send" of undefined (${line})`,
+  };
+}
+
+/** First-visit seed so `callbacks.isEmpty()` is `true` instead of a missing-fixture throw. */
+function firstVisit(given?: Given): Given {
+  return { ...(given ?? {}), callbacks: given?.callbacks ?? [] };
 }
 
 const ALICE_ID = "00000000-0000-0000-0000-000000000000";
@@ -67,22 +73,43 @@ const managerSwapGiven: Given = {
   },
 };
 
+function entry(
+  kind: "nextgen" | "legacy",
+  name: string,
+  originFile: string,
+  expectPayload: Record<string, unknown>,
+  extras: { given?: Given; blocked?: BlockedBy } = {}
+): RealEntry {
+  const init: {
+    name: string;
+    kind: "nextgen" | "legacy";
+    origin: string;
+    expect: { outcome: string; callbacks: ReturnType<typeof hiddenValue> };
+    given: Given;
+    blocked?: BlockedBy;
+  } = {
+    name,
+    kind,
+    origin: `scripts/rhino-script-tester/${originFile}`,
+    expect: {
+      outcome: "ok",
+      callbacks: hiddenValue(expectPayload),
+    },
+    given: firstVisit(extras.given),
+  };
+  if (extras.blocked !== undefined) {
+    init.blocked = extras.blocked;
+  }
+  return realCase(init);
+}
+
 function ng(
   name: string,
   originFile: string,
   payload: Record<string, unknown>,
   extras: { given?: Given; blocked?: BlockedBy } = {}
 ): RealEntry {
-  return realCase(withExtras({
-    name,
-    kind: "nextgen",
-    origin: `scripts/rhino-script-tester/${originFile}`,
-    expect: {
-      outcome: "ok",
-      callbacks: hiddenValue({ ok: true, feature: name, ...payload }),
-    },
-    blocked: extras.blocked ?? CALLBACKS_ISEMPTY,
-  }, extras.given));
+  return entry("nextgen", name, originFile, { ok: true, feature: name, ...payload }, extras);
 }
 
 function ngFeature(
@@ -92,16 +119,7 @@ function ngFeature(
   payload: Record<string, unknown>,
   extras: { given?: Given; blocked?: BlockedBy } = {}
 ): RealEntry {
-  return realCase(withExtras({
-    name,
-    kind: "nextgen",
-    origin: `scripts/rhino-script-tester/${originFile}`,
-    expect: {
-      outcome: "ok",
-      callbacks: hiddenValue({ ok: true, feature, ...payload }),
-    },
-    blocked: extras.blocked ?? CALLBACKS_ISEMPTY,
-  }, extras.given));
+  return entry("nextgen", name, originFile, { ok: true, feature, ...payload }, extras);
 }
 
 function legacy(
@@ -110,39 +128,7 @@ function legacy(
   payload: Record<string, unknown>,
   extras: { given?: Given; blocked?: BlockedBy } = {}
 ): RealEntry {
-  return realCase(withExtras({
-    name,
-    kind: "legacy",
-    origin: `scripts/rhino-script-tester/${originFile}`,
-    expect: {
-      outcome: "ok",
-      callbacks: hiddenValue({ ok: true, feature: name, ...payload }),
-    },
-    blocked: extras.blocked ?? CALLBACKS_ISEMPTY,
-  }, extras.given));
-}
-
-function withExtras(
-  base: {
-    name: string;
-    kind: "nextgen" | "legacy";
-    origin: string;
-    expect: Expect;
-    blocked: BlockedBy;
-  },
-  given: Given | undefined
-): {
-  name: string;
-  kind: "nextgen" | "legacy";
-  origin: string;
-  expect: Expect;
-  blocked: BlockedBy;
-  given?: Given;
-} {
-  if (given === undefined) {
-    return base;
-  }
-  return { ...base, given };
+  return entry("legacy", name, originFile, { ok: true, feature: name, ...payload }, extras);
 }
 
 const BINDINGS_AVAILABILITY_VALUE = JSON.stringify({
@@ -226,6 +212,8 @@ const STRING_NORMALIZE_RESULTS = [
  *
  * `blocked` is the first throw against today's overlay. Do not delete a case
  * when a binding lands — clear `blocked` so it becomes a pass assertion.
+ * First-visit cases seed `given.callbacks: []` so `isEmpty` is a real
+ * boolean, not a missing-fixture throw.
  */
 export const realCases: RealEntry[] = [
   ng("arrow-function", "fixtures/arrow-function.script.js", {
@@ -260,7 +248,7 @@ export const realCases: RealEntry[] = [
       outcome: "ok",
       callbacks: hiddenValue({ ok: true, feature: "const-top-level" }),
     },
-    blocked: CALLBACKS_ISEMPTY,
+    given: firstVisit(),
   }),
   ng("const-in-loop-body", "fixtures/const-in-loop-body.script.js", {
     value: ",,",
@@ -364,7 +352,7 @@ export const realCases: RealEntry[] = [
         },
       }),
     },
-    blocked: CALLBACKS_ISEMPTY,
+    given: firstVisit(),
   }),
 
   ng("enum-callbacks-utils", "fixtures/enum-callbacks-utils.script.js", {
@@ -567,8 +555,10 @@ export const realCases: RealEntry[] = [
     }),
   }, { given: managerSwapGiven }),
 
-  // Legacy engine. Same emit path starts at callbacks.isEmpty, then
-  // JavaImporter + Action.send — neither is on the local overlay.
+  // Legacy engine. Three of these take a next-gen `callbacksBuilder` fallback
+  // because the overlay still installs that binding; they run and miss the
+  // live typeof dump. The other four have no fallback and throw on
+  // `Action.send` (`frJava.Action` is undefined).
   legacy("legacy-bindings", "fixtures-legacy/legacy-bindings.script.js", {
     value: JSON.stringify({
       nodeState: "object",
@@ -609,22 +599,26 @@ export const realCases: RealEntry[] = [
         setAttribute: "function",
         addAttribute: "function",
       },
-    }
+    },
+    { blocked: actionSend("legacy-idrepository-methods#13") }
   ),
   legacy(
     "legacy-nodestate-logger",
     "fixtures-legacy/legacy-nodestate-logger.script.js",
-    {}
+    {},
+    { blocked: actionSend("legacy-nodestate-logger#15") }
   ),
   legacy(
     "legacy-logger-args",
     "fixtures-legacy/legacy-logger-args.script.js",
-    {}
+    {},
+    { blocked: actionSend("legacy-logger-args#33") }
   ),
   legacy(
     "legacy-logger-levels",
     "fixtures-legacy/legacy-logger-levels.script.js",
-    {}
+    {},
+    { blocked: actionSend("legacy-logger-levels#27") }
   ),
   legacy(
     "legacy-request-multivalue",
