@@ -1819,6 +1819,63 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn parsed_oauth_pull_force(flags: &[&str]) -> crate::cli::force::OperationAndBackupForce {
+        let cli = crate::cli::Cli::try_parse_from(
+            ["aic", "oauth", "pull", "client"]
+                .into_iter()
+                .chain(flags.iter().copied()),
+        )
+        .unwrap();
+        let Some(crate::cli::Command::Oauth {
+            command: OauthCommand::Pull { force, .. },
+        }) = cli.command
+        else {
+            panic!("expected oauth pull")
+        };
+        force
+    }
+
+    #[test]
+    fn parsed_backup_permission_controls_the_oauth_pull_installer() {
+        // Red if `if !skip_backup` in `install_pull_at` is deleted (always
+        // writes a backup) or inverted (writes one only when `--force=backup`).
+        for (flags, expect_backup) in [(&[][..], true), (&["--force=backup"][..], false)] {
+            let force = parsed_oauth_pull_force(flags);
+            let dir =
+                std::env::temp_dir().join(format!("oauth-backup-perm-{}", uuid::Uuid::new_v4()));
+            let path = dir.join("workspace/sandbox/oauth/alpha/client.json");
+            let snapshot = dir.join("workspace/sandbox/oauth/alpha/.snapshots/client.json");
+            let backups = dir.join("workspace/sandbox/.aic-sync/backups");
+            let original = br#"{"name":"client","enabled":"local edit"}"#;
+            let remote = json!({"name": "client", "enabled": true});
+            write_bytes(&path, original).unwrap();
+
+            let backup = install_pull_at(
+                &path,
+                &snapshot,
+                &backups,
+                "alpha",
+                "client",
+                &remote,
+                Some(original),
+                PullDecision::Protected,
+                force.backup(),
+            )
+            .unwrap();
+
+            assert_eq!(
+                serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),
+                remote
+            );
+            assert_eq!(backup.is_some(), expect_backup);
+            assert_eq!(backups.exists(), expect_backup);
+            if let Some(backup) = backup {
+                assert_eq!(std::fs::read(backup).unwrap(), original);
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
     #[test]
     fn oauth_pull_parses_operation_and_backup_permissions_independently() {
         for args in [

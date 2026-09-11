@@ -1475,6 +1475,59 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn parsed_policy_pull_force(flags: &[&str]) -> crate::cli::force::OperationAndBackupForce {
+        let cli = crate::cli::Cli::try_parse_from(
+            ["aic", "policy", "pull", "P"]
+                .into_iter()
+                .chain(flags.iter().copied()),
+        )
+        .unwrap();
+        let Some(crate::cli::Command::Policy {
+            command: PolicyCommand::Pull { force, .. },
+        }) = cli.command
+        else {
+            panic!("expected policy pull")
+        };
+        force
+    }
+
+    #[test]
+    fn parsed_backup_permission_controls_the_policy_pull_installer() {
+        // Red if `if !skip_backup` in `install_pull_entry` is deleted (always
+        // writes a backup) or inverted (writes one only when `--force=backup`).
+        for (flags, expect_backup) in [(&[][..], true), (&["--force=backup"][..], false)] {
+            let force = parsed_policy_pull_force(flags);
+            let dir =
+                std::env::temp_dir().join(format!("policy-backup-perm-{}", uuid::Uuid::new_v4()));
+            let path = dir.join("workspace/sandbox/policy/alpha/policies/P.json");
+            let snapshot = dir.join("workspace/sandbox/policy/alpha/policies/.snapshots/P.json");
+            let backups = dir.join("workspace/sandbox/.aic-sync/backups");
+            let original = b"original P";
+            let entry = PullEntry {
+                name: "P".into(),
+                content: json!({"name": "P", "active": true}),
+                path,
+                snapshot,
+                local: Some(original.to_vec()),
+                decision: PullDecision::Protected,
+            };
+            std::fs::create_dir_all(entry.path.parent().unwrap()).unwrap();
+            std::fs::write(&entry.path, original).unwrap();
+
+            let backup =
+                install_pull_entry(Kind::Policy, "alpha", &entry, &backups, force.backup())
+                    .unwrap();
+
+            assert_eq!(read_json(&entry.path).unwrap(), Some(entry.content.clone()));
+            assert_eq!(backup.is_some(), expect_backup);
+            assert_eq!(backups.exists(), expect_backup);
+            if let Some(backup) = backup {
+                assert_eq!(std::fs::read(backup).unwrap(), original);
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
     #[test]
     fn real_bulk_preflight_refuses_every_protected_entry_before_install() {
         let dir = std::env::temp_dir().join(format!("policy-bulk-pull-{}", uuid::Uuid::new_v4()));

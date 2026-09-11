@@ -823,6 +823,64 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    fn parsed_journey_pull_force(flags: &[&str]) -> crate::cli::force::OperationAndBackupForce {
+        let cli = crate::cli::Cli::try_parse_from(
+            ["aic", "journey", "pull", "Login"]
+                .into_iter()
+                .chain(flags.iter().copied()),
+        )
+        .unwrap();
+        let Some(crate::cli::Command::Journey {
+            command: JourneyCommand::Pull { force, .. },
+        }) = cli.command
+        else {
+            panic!("expected journey pull")
+        };
+        force
+    }
+
+    #[test]
+    fn parsed_backup_permission_controls_the_journey_pull_installer() {
+        // Red if `if !skip_backup` in `install_pull_at` is deleted (always
+        // writes a backup) or inverted (writes one only when `--force=backup`).
+        for (flags, expect_backup) in [(&[][..], true), (&["--force=backup"][..], false)] {
+            let force = parsed_journey_pull_force(flags);
+            let dir =
+                std::env::temp_dir().join(format!("journey-backup-perm-{}", uuid::Uuid::new_v4()));
+            let path = dir.join("workspace/sandbox/journeys/alpha/Login.json");
+            let snapshot = dir.join("workspace/sandbox/journeys/alpha/.snapshots/Login.json");
+            let backups = dir.join("workspace/sandbox/.aic-sync/backups");
+            let original = br#"{"tree":{"name":"Login"},"nodes":{}}"#;
+            let remote_value = json!({"tree": {"name": "Remote"}, "nodes": {}});
+            let remote = parse_export_value(remote_value.clone(), "test").unwrap();
+            write_bytes(&path, original).unwrap();
+
+            let backup = install_pull_at(
+                &path,
+                &snapshot,
+                &backups,
+                "alpha",
+                "Login",
+                &remote,
+                Some(original),
+                PullDecision::Protected,
+                force.backup(),
+            )
+            .unwrap();
+
+            assert!(api::content_equal(
+                &serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),
+                &remote_value
+            ));
+            assert_eq!(backup.is_some(), expect_backup);
+            assert_eq!(backups.exists(), expect_backup);
+            if let Some(backup) = backup {
+                assert_eq!(std::fs::read(backup).unwrap(), original);
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
     #[test]
     fn journey_pull_parses_operation_and_backup_permissions_independently() {
         for args in [
