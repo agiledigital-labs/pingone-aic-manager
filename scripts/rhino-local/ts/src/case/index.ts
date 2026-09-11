@@ -1,4 +1,6 @@
+export { isPortable } from "./portable.ts";
 export { defineCase, validateCase } from "./validate.ts";
+export { judge } from "./verdict.ts";
 export {
   ALLOW_UNDECLARED_CHANNELS,
   CASE_KEYS,

@@ -33,7 +33,7 @@ import type {
   Pattern,
   StateDiff,
 } from "./types.ts";
-import { isPlainObject, unknownKeyError } from "./util.ts";
+import { isPlainObject, parseJsonObject, parseJsonValue, unknownKeyError } from "./util.ts";
 
 const GIVEN_BINDING_SEED_SET: ReadonlySet<string> = new Set(GIVEN_BINDING_SEEDS);
 const OPENIDM_METHOD_SET: ReadonlySet<string> = new Set(OPENIDM_METHODS);
@@ -447,39 +447,6 @@ function parsePattern(raw: unknown, path: string): Pattern {
   throw new Error(`rhino-local: ${path} must be a string or RegExp`);
 }
 
-function parseJsonValue(raw: unknown, path: string): JsonValue {
-  if (raw === null || typeof raw === "string" || typeof raw === "boolean") {
-    return raw;
-  }
-  if (typeof raw === "number") {
-    if (!Number.isFinite(raw)) {
-      throw new Error(`rhino-local: ${path} must be a finite number`);
-    }
-    return raw;
-  }
-  if (Array.isArray(raw)) {
-    return raw.map((item, index) => parseJsonValue(item, `${path}[${index}]`));
-  }
-  if (isPlainObject(raw)) {
-    const object: JsonObject = {};
-    for (const [key, value] of Object.entries(raw)) {
-      object[key] = parseJsonValue(value, `${path}.${key}`);
-    }
-    return object;
-  }
-  throw new Error(
-    `rhino-local: ${path} is not a JSON value (${describeType(raw)})`
-  );
-}
-
-function parseJsonObject(raw: unknown, path: string): JsonObject {
-  const value = parseJsonValue(raw, path);
-  if (!isPlainObject(value)) {
-    throw new Error(`rhino-local: ${path} must be an object`);
-  }
-  return value;
-}
-
 function parseNonEmptyString(raw: unknown, path: string): string {
   if (typeof raw !== "string" || raw.trim() === "") {
     throw new Error(`rhino-local: ${path} must be a non-empty string`);
@@ -623,15 +590,4 @@ function rejectUnknownKeys(
   }
 }
 
-function describeType(value: unknown): string {
-  if (value === null) {
-    return "null";
-  }
-  if (Array.isArray(value)) {
-    return "array";
-  }
-  if (value instanceof RegExp) {
-    return "RegExp";
-  }
-  return typeof value;
-}
+
