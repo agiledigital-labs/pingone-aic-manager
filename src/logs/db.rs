@@ -1,6 +1,6 @@
 //! DuckDB storage for locally synced AIC log events and compacted journey data.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Timelike, Utc};
 pub use duckdb::Connection;
@@ -12,8 +12,7 @@ use super::event::event_id;
 
 pub type Result<T> = std::result::Result<T, DbError>;
 
-use crate::config::tenant_file_name;
-use std::path::PathBuf;
+use crate::config::{ProjectPaths, project_paths, tenant_file_name};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -111,11 +110,17 @@ pub fn init(conn: &Connection) -> Result<()> {
 }
 
 pub fn store_dir() -> PathBuf {
-    crate::config::project_paths().logs_dir()
+    project_paths().logs_dir()
 }
 
 pub fn store_path(tenant: &str) -> PathBuf {
-    store_dir().join(format!("{}.duckdb", tenant_file_name(tenant)))
+    store_path_with(project_paths(), tenant)
+}
+
+fn store_path_with(paths: &ProjectPaths, tenant: &str) -> PathBuf {
+    paths
+        .logs_dir()
+        .join(format!("{}.duckdb", tenant_file_name(tenant)))
 }
 
 pub fn open_store(tenant: &str) -> crate::Result<Connection> {
@@ -605,8 +610,11 @@ mod tests {
 
     #[test]
     fn tenant_names_are_safe_for_store_paths() {
+        let paths = ProjectPaths::new(PathBuf::from("/project")).unwrap();
         assert_eq!(
-            store_path("https://alpha/example").file_name().unwrap(),
+            store_path_with(&paths, "https://alpha/example")
+                .file_name()
+                .unwrap(),
             "https___alpha_example.duckdb"
         );
     }

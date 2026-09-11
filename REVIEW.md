@@ -286,21 +286,17 @@ findings). Each should name the guard that will eventually retire it.
   (`clear_filter`) so the wide one cannot be reached by accident; one test per
   caller asserting what survives._
 
-- **A relative path read from a global must be resolved once, not re-resolved
-  per syscall — in a binary whose tests mutate the process cwd, which this one
-  does.** `ProjectConfig::dir()` returns the relative `.aic`, so
-  `create_dir_all(Self::dir())` followed by `write(Self::dir().join(..))` is two
-  independent resolutions against a cwd that `src/agent/daemon.rs`'s tests move
-  out from under it. `create_dir_all` accepts mkdir's `EEXIST` only while
-  `.is_dir()` still holds, so the failure is an `AlreadyExists` (or `NotFound`)
-  error from a call that logically cannot produce one — surfacing as a rare
-  panic in an unrelated test, under load, once (2026-09-11). Note the daemon
-  tests' `CWD_LOCK` serialises those three tests against **each other** and
-  gives no protection at all to the rest of the binary. _Guard: pass the
-  directory in (`write_gitignore_to`) so no cwd is read; the durable fix is to
-  stop `set_current_dir` in tests entirely. A `repo_hygiene` grep for
-  `set_current_dir` under `#[cfg(test)]` would pin it, once the last caller is
-  gone._
+- **Project paths must be rooted once, not re-resolved from the process cwd per
+  syscall.** A relative `ProjectConfig::dir()` made
+  `create_dir_all(Self::dir())` followed by `write(Self::dir().join(..))` two
+  independent resolutions. The daemon tests moved the process cwd between
+  them; `create_dir_all` accepts mkdir's `EEXIST` only while `.is_dir()` still
+  holds, so the swap surfaced as an `AlreadyExists` (or `NotFound`) error from a
+  call that logically cannot produce one — a rare panic in an unrelated test
+  under load (2026-09-11). `ProjectPaths` now owns one absolute root, production
+  installs an immutable process default at bootstrap, and tests carry explicit
+  instances. _Guard: `repo_hygiene::no_process_cwd_mutation_under_cfg_test`
+  rejects `set_current_dir` below any `#[cfg(test)]` boundary._
 
 ## Findings log
 
@@ -965,4 +961,5 @@ findings). Each should name the guard that will eventually retire it.
   writes under `ProjectConfig::dir()` remain exposed the same way
   (`ProjectConfig::save`, `Settings::save`, `WrapsFile::save`,
   `save_private_file`, `write_current_context`, `access::ops::backup_document`).
-  Queued as `R1`.
+  Resolved by R1 on 2026-09-11 with absolute `ProjectPaths` and explicit paths
+  in the daemon tests.

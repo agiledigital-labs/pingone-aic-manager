@@ -148,7 +148,9 @@ impl ProjectPaths {
     }
 }
 
-pub(crate) fn set_project_root(root: PathBuf) -> Result<()> {
+/// Install the immutable project root used by the process-default path APIs.
+/// Repeating the same root is harmless; selecting another root is an error.
+pub fn set_project_root(root: PathBuf) -> Result<()> {
     let paths = ProjectPaths::new(root)?;
     if let Some(current) = PROJECT_PATHS.get() {
         if current == &paths {
