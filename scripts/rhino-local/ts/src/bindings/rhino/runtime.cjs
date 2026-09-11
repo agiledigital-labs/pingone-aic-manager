@@ -24,11 +24,14 @@ var __rhinoLocal = {
   openidm: [],
   http: [],
   logs: [],
+  libraries: {},
+  requireCache: {},
 };
 
 var sharedState;
 var transientState;
 var systemEnv;
+var require;
 
 function __rhinoLocalClone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -1600,7 +1603,22 @@ openidm.read = function (resourceName, _params, fields) {
   }
   var resource = String(resourceName);
   __rhinoLocalPushOpenidm("read", resource);
-  var found = __rhinoLocalRequireRecord("read", resource);
+  var split = __rhinoLocalSplitResource(resource);
+  if (split.recordId === null) {
+    throw new Error(
+      "rhino-local: openidm.read: " +
+        JSON.stringify(resource) +
+        " is a collection path, not a record"
+    );
+  }
+  __rhinoLocalRequireCollection("read", split.collection);
+  var found = __rhinoLocalFindRecord(split.collection, split.recordId);
+  if (!found.record) {
+    // AIC returns null for a missing record in a known collection
+    // (docs/api/10, verified 2026-07-17). An unseeded collection still
+    // throws above — that is a missing given.managed fixture.
+    return null;
+  }
   return __rhinoLocalProject(found.record, fields);
 };
 
@@ -1955,6 +1973,28 @@ secrets.getVerificationKey = function (secretId) {
   return __rhinoLocalRequireSecret("getVerificationKey", secretId);
 };
 
+function __rhinoLocalLoadLibrary(name) {
+  var id = String(name);
+  if (__rhinoLocalHas(__rhinoLocal.requireCache, id)) {
+    return __rhinoLocal.requireCache[id];
+  }
+  if (!__rhinoLocalHas(__rhinoLocal.libraries, id)) {
+    throw new Error(
+      "rhino-local: require: no given.libraries entry for " + JSON.stringify(id)
+    );
+  }
+  var exports = {};
+  var module = { exports: exports };
+  __rhinoLocal.requireCache[id] = exports;
+  var source = String(__rhinoLocal.libraries[id]);
+  var loader = eval(
+    "(function (require, exports, module) {\n" + source + "\n})"
+  );
+  loader(require, exports, module);
+  __rhinoLocal.requireCache[id] = module.exports;
+  return module.exports;
+}
+
 function __rhinoLocalSeed(given) {
   given = given || {};
   if (given.bindings) {
@@ -1971,6 +2011,18 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.managed = __rhinoLocalClone(given.managed || {});
   __rhinoLocal.esv = __rhinoLocalClone(given.esv || {});
   __rhinoLocal.secrets = __rhinoLocalClone(given.secrets || {});
+  __rhinoLocal.libraries = given.libraries
+    ? __rhinoLocalClone(given.libraries)
+    : {};
+  __rhinoLocal.requireCache = {};
+  if (given.engine === "legacy") {
+    require = undefined;
+  } else {
+    require = function (name) {
+      __rhinoLocalExpectArity("require", arguments, 1);
+      return __rhinoLocalLoadLibrary(name);
+    };
+  }
   if (given.callbacks === undefined) {
     __rhinoLocal.submittedCallbacks = null;
   } else {

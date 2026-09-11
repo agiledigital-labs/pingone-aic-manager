@@ -3,11 +3,13 @@ import type { Case, RecordedEffects, Verdict } from "../case/types.ts";
 import type { JobResponse } from "../protocol.ts";
 import type { RhinoRunner } from "../runner.ts";
 import { parseHarvest } from "./harvest.ts";
-import { mockPreamble, withHarvest } from "./preamble.ts";
+import { mockPreamble, withHarvest, type MockPreambleOptions } from "./preamble.ts";
 
 export interface RunCaseOptions {
   timeoutMs?: number;
   sourceName?: string;
+  /** AM library script bodies keyed by `require()` id. See mockPreamble. */
+  libraries?: Record<string, string>;
 }
 
 export interface CaseRun {
@@ -35,7 +37,7 @@ export async function runCase(
   } = {
     source: withHarvest(kase.script),
     sourceName: options.sourceName ?? kase.name,
-    preamble: mockPreamble(kase.given),
+    preamble: mockPreamble(kase.given, preambleOptions(options)),
     preambleName: "rhino-local-mocks.cjs",
   };
   if (options.timeoutMs !== undefined) {
@@ -55,4 +57,11 @@ export async function runCase(
   }
   const effects = parseHarvest(response.value);
   return { effects, verdict: judge(kase, effects), response };
+}
+
+function preambleOptions(options: RunCaseOptions): MockPreambleOptions {
+  if (options.libraries === undefined) {
+    return {};
+  }
+  return { libraries: options.libraries };
 }
