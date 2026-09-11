@@ -32,6 +32,18 @@ export const generatedDtsPath = join(
   "scripted-decision-mocks.d.ts"
 );
 
+/** Handwritten AM-safe overlay that implements a subset of the generated stubs. */
+export const bindingsRuntimePath = join(
+  packageRoot,
+  "src",
+  "bindings",
+  "rhino",
+  "runtime.cjs"
+);
+
+/** Scripted-decision case files (author scripts + defineCase wrappers). */
+export const casesDir = join(packageRoot, "cases");
+
 export const amRhinoEslintConfigPath = join(packageRoot, "eslint.am.config.js");
 
 export const amEslintConfigPath = join(

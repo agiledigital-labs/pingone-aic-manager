@@ -8,9 +8,16 @@ Two jobs, one package:
    test can eval a script without starting a JVM per case.
 
 The generator emits presence, not behaviour: every method throws
-`rhino-local: not mocked: <binding>.<method> arity=N overload=[…]` until a
-later slice implements it. A mock that returned `undefined` would turn a
-missing feature into a passing test.
+`rhino-local: not mocked: <binding>.<method> arity=N overload=[…]` until the
+handwritten overlay in `src/bindings/rhino/runtime.cjs` replaces it. A mock
+that returned `undefined` would turn a missing feature into a passing test.
+
+Implemented (still fail-loud for missing fixtures and for every method the
+overlay does not replace): `nodeState` get/putShared/putTransient/isDefined,
+legacy `sharedState`/`transientState` when `given.engine === "legacy"`,
+request maps, `outcome` / `action.goTo`, `logger`, `openidm`, `httpClient`,
+`callbacksBuilder` (the six authenticate-response types), `systemEnv`,
+`idRepository.getIdentity`. End-to-end cases live in `cases/`.
 
 ## JVM runner client
 
