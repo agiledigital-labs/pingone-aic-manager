@@ -15,7 +15,7 @@ pub use super::gate::SyntaxGate;
 use super::gate::{Gated, write_checked};
 use super::syntax::Refusal;
 use super::{Kind, RemoteRef, RemoteScript};
-use crate::cli::force::OperationAndSyntaxCheckForce;
+use crate::cli::force::ForceFlags;
 use crate::config::ProjectConfig;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -579,6 +579,15 @@ trait SyncIo {
     ) -> Result<Gated>;
 }
 
+/// Resources shared by one engine call. These always travel together and are
+/// injected as a unit in tests.
+struct SyncContext<'a, I> {
+    store: &'a SnapshotStore,
+    workspace_tree: &'a Path,
+    io: &'a I,
+    tenant: &'a str,
+}
+
 struct LiveSyncIo;
 
 impl SyncIo for LiveSyncIo {
@@ -865,32 +874,25 @@ pub async fn pull(
 ) -> Result<Vec<PullOutcome>> {
     let store = SnapshotStore::open(tenant);
     let workspace_tree = ProjectConfig::workspace_tree(tenant);
-    pull_with(
-        &store,
-        &workspace_tree,
-        &LiveSyncIo,
+    let context = SyncContext {
+        store: &store,
+        workspace_tree: &workspace_tree,
+        io: &LiveSyncIo,
         tenant,
-        realm,
-        kind,
-        selector,
-        skip_backup,
-    )
-    .await
+    };
+    pull_with(&context, realm, kind, selector, skip_backup).await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn pull_with(
-    store: &SnapshotStore,
-    workspace_tree: &Path,
-    io: &impl SyncIo,
-    tenant: &str,
+    context: &SyncContext<'_, impl SyncIo>,
     realm: &str,
     kind: Kind,
     selector: &Selector,
     skip_backup: bool,
 ) -> Result<Vec<PullOutcome>> {
-    let refs: Vec<RemoteRef> = io
-        .list(kind, tenant, realm)
+    let refs: Vec<RemoteRef> = context
+        .io
+        .list(kind, context.tenant, realm)
         .await?
         .into_iter()
         .filter(|r| selector.matches(r))
@@ -907,11 +909,11 @@ async fn pull_with(
 
     let mut outcomes = Vec::new();
     for r in &refs {
-        let script = io.fetch(kind, tenant, realm, &r.id).await?;
+        let script = context.io.fetch(kind, context.tenant, realm, &r.id).await?;
         let remote_src = kind.decode_source(&script.raw_config)?;
         let status = install_remote(
-            store,
-            workspace_tree,
+            context.store,
+            context.workspace_tree,
             realm,
             &script,
             &remote_src,
@@ -1276,187 +1278,138 @@ fn back_up_at(
 // Push
 // ---------------------------------------------------------------------------
 
-/// Push a local edit back to the tenant. Requires a prior pull (snapshot must
-/// exist). Content-based conflict check unless `force`. `realm` selects the AM
-/// realm (ignored for IDM).
-pub async fn push(
-    tenant: &str,
-    realm: &str,
+/// Coordinates for one script write or reconciliation.
+#[derive(Debug, Clone, Copy)]
+pub struct PushContext<'a> {
+    tenant: &'a str,
+    realm: &'a str,
     kind: Kind,
-    name: &str,
-    force: bool,
+    name: &'a str,
+}
+
+impl<'a> PushContext<'a> {
+    /// Build coordinates for one script operation.
+    pub fn new(tenant: &'a str, realm: &'a str, kind: Kind, name: &'a str) -> Self {
+        Self {
+            tenant,
+            realm,
+            kind,
+            name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PushOptions {
+    force_operation: bool,
     confirmed_prod: bool,
     gate: SyntaxGate,
+}
+
+impl PushOptions {
+    fn from_force<const ALLOWED: u8>(force: ForceFlags<ALLOWED>, confirmed_prod: bool) -> Self {
+        Self {
+            force_operation: force.operation(),
+            confirmed_prod,
+            gate: if force.syntax_check() {
+                SyntaxGate::Skip
+            } else {
+                SyntaxGate::Check
+            },
+        }
+    }
+
+    fn forced<const ALLOWED: u8>(force: ForceFlags<ALLOWED>, confirmed_prod: bool) -> Self {
+        Self {
+            force_operation: true,
+            ..Self::from_force(force, confirmed_prod)
+        }
+    }
+}
+
+/// Push a local edit back to the tenant. Requires a prior pull (snapshot must
+/// exist). Content-based conflict checking is bypassed only by the parsed
+/// operation permission; the syntax gate is derived from the same flags.
+pub async fn push<const ALLOWED: u8>(
+    request: PushContext<'_>,
+    force: ForceFlags<ALLOWED>,
+    confirmed_prod: bool,
 ) -> Result<PushOutcome> {
-    let store = SnapshotStore::open(tenant);
-    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    let store = SnapshotStore::open(request.tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(request.tenant);
+    let context = SyncContext {
+        store: &store,
+        workspace_tree: &workspace_tree,
+        io: &LiveSyncIo,
+        tenant: request.tenant,
+    };
     push_with(
-        &store,
-        &workspace_tree,
-        &LiveSyncIo,
-        tenant,
-        realm,
-        kind,
-        name,
-        force,
-        confirmed_prod,
-        gate,
+        &context,
+        request,
+        PushOptions::from_force(force, confirmed_prod),
     )
     .await
 }
 
-/// CLI push bridge: keep the parsed operation permission intact until the
-/// call that selects the engine's forced-convergence path.
-pub async fn push_authorized(
-    tenant: &str,
-    realm: &str,
-    kind: Kind,
-    name: &str,
-    force: OperationAndSyntaxCheckForce,
+/// Force a retry after an interactive conflict resolution while retaining the
+/// parsed syntax-check permission.
+pub async fn push_forced<const ALLOWED: u8>(
+    request: PushContext<'_>,
+    force: ForceFlags<ALLOWED>,
     confirmed_prod: bool,
-    gate: SyntaxGate,
 ) -> Result<PushOutcome> {
-    let store = SnapshotStore::open(tenant);
-    let workspace_tree = ProjectConfig::workspace_tree(tenant);
-    push_authorized_with(
-        &store,
-        &workspace_tree,
-        &LiveSyncIo,
-        tenant,
-        realm,
-        kind,
-        name,
-        force,
-        confirmed_prod,
-        gate,
+    let store = SnapshotStore::open(request.tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(request.tenant);
+    let context = SyncContext {
+        store: &store,
+        workspace_tree: &workspace_tree,
+        io: &LiveSyncIo,
+        tenant: request.tenant,
+    };
+    push_with(
+        &context,
+        request,
+        PushOptions::forced(force, confirmed_prod),
     )
     .await
 }
 
 /// Push a selected batch through the same per-entry engine as a single push.
 /// Results stay per-entry so the CLI can continue past non-fatal failures.
-pub async fn push_batch(
+pub async fn push_batch<const ALLOWED: u8>(
     tenant: &str,
     candidates: Vec<Candidate>,
-    force: bool,
+    force: ForceFlags<ALLOWED>,
     confirmed_prod: bool,
-    gate: SyntaxGate,
 ) -> Vec<(Candidate, Result<PushOutcome>)> {
     let store = SnapshotStore::open(tenant);
     let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    let context = SyncContext {
+        store: &store,
+        workspace_tree: &workspace_tree,
+        io: &LiveSyncIo,
+        tenant,
+    };
     push_batch_with(
-        &store,
-        &workspace_tree,
-        &LiveSyncIo,
-        tenant,
+        &context,
         candidates,
-        force,
-        confirmed_prod,
-        gate,
+        PushOptions::from_force(force, confirmed_prod),
     )
     .await
 }
 
-/// Batch counterpart to [`push_authorized`].
-pub async fn push_batch_authorized(
-    tenant: &str,
-    candidates: Vec<Candidate>,
-    force: OperationAndSyntaxCheckForce,
-    confirmed_prod: bool,
-    gate: SyntaxGate,
-) -> Vec<(Candidate, Result<PushOutcome>)> {
-    let store = SnapshotStore::open(tenant);
-    let workspace_tree = ProjectConfig::workspace_tree(tenant);
-    push_batch_authorized_with(
-        &store,
-        &workspace_tree,
-        &LiveSyncIo,
-        tenant,
-        candidates,
-        force,
-        confirmed_prod,
-        gate,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn push_authorized_with(
-    store: &SnapshotStore,
-    workspace_tree: &Path,
-    io: &impl SyncIo,
-    tenant: &str,
-    realm: &str,
-    kind: Kind,
-    name: &str,
-    force: OperationAndSyntaxCheckForce,
-    confirmed_prod: bool,
-    gate: SyntaxGate,
-) -> Result<PushOutcome> {
-    push_with(
-        store,
-        workspace_tree,
-        io,
-        tenant,
-        realm,
-        kind,
-        name,
-        force.operation(),
-        confirmed_prod,
-        gate,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn push_batch_authorized_with(
-    store: &SnapshotStore,
-    workspace_tree: &Path,
-    io: &impl SyncIo,
-    tenant: &str,
-    candidates: Vec<Candidate>,
-    force: OperationAndSyntaxCheckForce,
-    confirmed_prod: bool,
-    gate: SyntaxGate,
-) -> Vec<(Candidate, Result<PushOutcome>)> {
-    push_batch_with(
-        store,
-        workspace_tree,
-        io,
-        tenant,
-        candidates,
-        force.operation(),
-        confirmed_prod,
-        gate,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn push_batch_with(
-    store: &SnapshotStore,
-    workspace_tree: &Path,
-    io: &impl SyncIo,
-    tenant: &str,
+    context: &SyncContext<'_, impl SyncIo>,
     candidates: Vec<Candidate>,
-    force: bool,
-    confirmed_prod: bool,
-    gate: SyntaxGate,
+    options: PushOptions,
 ) -> Vec<(Candidate, Result<PushOutcome>)> {
     let mut outcomes = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         let realm = candidate.realm.as_deref().unwrap_or_default();
         let result = push_with(
-            store,
-            workspace_tree,
-            io,
-            tenant,
-            realm,
-            candidate.kind,
-            &candidate.name,
-            force,
-            confirmed_prod,
-            gate,
+            context,
+            PushContext::new(context.tenant, realm, candidate.kind, &candidate.name),
+            options,
         )
         .await;
         outcomes.push((candidate, result));
@@ -1464,32 +1417,31 @@ async fn push_batch_with(
     outcomes
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn push_with(
-    store: &SnapshotStore,
-    workspace_tree: &Path,
-    io: &impl SyncIo,
-    tenant: &str,
-    realm: &str,
-    kind: Kind,
-    name: &str,
-    force: bool,
-    confirmed_prod: bool,
-    gate: SyntaxGate,
+    context: &SyncContext<'_, impl SyncIo>,
+    request: PushContext<'_>,
+    options: PushOptions,
 ) -> Result<PushOutcome> {
-    let entry = store.lookup(kind, name, realm)?.ok_or_else(|| {
+    let PushContext {
+        tenant,
+        realm,
+        kind,
+        name,
+    } = request;
+    let entry = context.store.lookup(kind, name, realm)?.ok_or_else(|| {
         Error::Config(format!(
             "{name:?} not synced yet — `aic script pull {name}` first"
         ))
     })?;
     let r = &entry.reference;
 
-    let snapshot_cfg = store
+    let snapshot_cfg = context
+        .store
         .load_config(r, realm)?
         .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing — pull again")))?;
     let snapshot_src = kind.decode_source(&snapshot_cfg)?;
 
-    let dest = workspace_file_in(workspace_tree, realm, r);
+    let dest = workspace_file_in(context.workspace_tree, realm, r);
     let local_src = read_local(&dest)?.ok_or_else(|| {
         Error::Config(format!(
             "local file {} not found — pull first",
@@ -1500,7 +1452,7 @@ async fn push_with(
     // A normal push needs a local change. A forced push instead means "make
     // the live tenant match this file", including when a poisoned snapshot
     // happens to equal the local bytes.
-    if local_src == snapshot_src && !force {
+    if local_src == snapshot_src && !options.force_operation {
         return Ok(PushOutcome::Unchanged);
     }
 
@@ -1508,17 +1460,17 @@ async fn push_with(
     // thing that blocks a push is remote drift (handled below).
 
     // Conflict check: refetch remote, compare decoded bytes to the snapshot.
-    let remote = io.fetch(kind, tenant, realm, &r.id).await?;
+    let remote = context.io.fetch(kind, tenant, realm, &r.id).await?;
     let remote_src = kind.decode_source(&remote.raw_config)?;
 
     if remote_src == local_src {
         // Someone already pushed identical content; just refresh the snapshot.
-        store.record(&remote, realm)?;
+        context.store.record(&remote, realm)?;
         return Ok(PushOutcome::AlreadyInSync);
     }
 
     let remote_drifted = remote_src != snapshot_src;
-    if remote_drifted && !force {
+    if remote_drifted && !options.force_operation {
         return Ok(PushOutcome::Conflict(ThreeWay {
             last_synced: lossy(&snapshot_src),
             remote: lossy(&remote_src),
@@ -1536,8 +1488,16 @@ async fn push_with(
         reference: r.clone(),
         raw_config: raw,
     };
-    match io
-        .write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate)
+    match context
+        .io
+        .write_checked(
+            kind,
+            tenant,
+            realm,
+            &to_push,
+            options.confirmed_prod,
+            options.gate,
+        )
         .await?
     {
         Gated::Written => {}
@@ -1553,12 +1513,12 @@ async fn push_with(
         }
     }
 
-    let confirmed = match confirm_write(io, kind, tenant, realm, &r.id, &local_src).await {
+    let confirmed = match confirm_write(context.io, kind, tenant, realm, &r.id, &local_src).await {
         Ok(confirmed) => confirmed,
         Err(reason) => return Ok(PushOutcome::NotConfirmed(reason)),
     };
     // The fresh tenant copy is authoritative for server-normalised metadata.
-    store.record(&confirmed, realm)?;
+    context.store.record(&confirmed, realm)?;
     Ok(PushOutcome::Pushed)
 }
 
@@ -1699,63 +1659,61 @@ pub enum ReconcileOutcome {
 /// pull if only remote changed (or the local file is missing), refresh if both
 /// converged to the same content, else return `Conflict` for the caller to
 /// resolve. Pushing obeys the prod-write guard via `confirmed_prod`.
-pub async fn reconcile(
-    tenant: &str,
-    realm: &str,
-    kind: Kind,
-    name: &str,
+pub async fn reconcile<const ALLOWED: u8>(
+    request: PushContext<'_>,
+    force: ForceFlags<ALLOWED>,
     confirmed_prod: bool,
-    gate: SyntaxGate,
 ) -> Result<ReconcileOutcome> {
-    let store = SnapshotStore::open(tenant);
-    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    let store = SnapshotStore::open(request.tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(request.tenant);
+    let context = SyncContext {
+        store: &store,
+        workspace_tree: &workspace_tree,
+        io: &LiveSyncIo,
+        tenant: request.tenant,
+    };
     reconcile_with(
-        &store,
-        &workspace_tree,
-        &LiveSyncIo,
-        tenant,
-        realm,
-        kind,
-        name,
-        confirmed_prod,
-        gate,
+        &context,
+        request,
+        PushOptions::from_force(force, confirmed_prod),
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn reconcile_with(
-    store: &SnapshotStore,
-    workspace_tree: &Path,
-    io: &impl SyncIo,
-    tenant: &str,
-    realm: &str,
-    kind: Kind,
-    name: &str,
-    confirmed_prod: bool,
-    gate: SyntaxGate,
+    context: &SyncContext<'_, impl SyncIo>,
+    request: PushContext<'_>,
+    options: PushOptions,
 ) -> Result<ReconcileOutcome> {
-    let entry = store
+    let PushContext {
+        tenant,
+        realm,
+        kind,
+        name,
+    } = request;
+    let entry = context
+        .store
         .lookup(kind, name, realm)?
         .ok_or_else(|| Error::Config(format!("{name:?} not synced")))?;
     let r = &entry.reference;
-    let snap_cfg = store
+    let snap_cfg = context
+        .store
         .load_config(r, realm)?
         .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing — pull again")))?;
     let snapshot = kind.decode_source(&snap_cfg)?;
 
-    let remote_script = io.fetch(kind, tenant, realm, &r.id).await?;
+    let remote_script = context.io.fetch(kind, tenant, realm, &r.id).await?;
     let remote = kind.decode_source(&remote_script.raw_config)?;
     let remote_changed = remote != snapshot;
 
-    let dest = workspace_file_in(workspace_tree, realm, r);
+    let dest = workspace_file_in(context.workspace_tree, realm, r);
     let local = match read_local(&dest)? {
         Some(bytes) => bytes,
         None => {
             // Local file gone — restore it from the remote.
             let status = install_remote(
-                store,
-                workspace_tree,
+                context.store,
+                context.workspace_tree,
                 realm,
                 &remote_script,
                 &remote,
@@ -1771,8 +1729,8 @@ async fn reconcile_with(
         (false, false) => Ok(ReconcileOutcome::InSync),
         (false, true) => {
             let status = install_remote(
-                store,
-                workspace_tree,
+                context.store,
+                context.workspace_tree,
                 realm,
                 &remote_script,
                 &remote,
@@ -1790,22 +1748,31 @@ async fn reconcile_with(
                 reference: r.clone(),
                 raw_config: raw,
             };
-            match io
-                .write_checked(kind, tenant, realm, &to_push, confirmed_prod, gate)
+            match context
+                .io
+                .write_checked(
+                    kind,
+                    tenant,
+                    realm,
+                    &to_push,
+                    options.confirmed_prod,
+                    options.gate,
+                )
                 .await?
             {
                 Gated::Written => {}
                 Gated::Refused(refusal) => return Ok(ReconcileOutcome::Refused(refusal)),
             }
-            let confirmed = match confirm_write(io, kind, tenant, realm, &r.id, &local).await {
-                Ok(confirmed) => confirmed,
-                Err(reason) => return Ok(ReconcileOutcome::NotConfirmed(reason)),
-            };
-            store.record(&confirmed, realm)?;
+            let confirmed =
+                match confirm_write(context.io, kind, tenant, realm, &r.id, &local).await {
+                    Ok(confirmed) => confirmed,
+                    Err(reason) => return Ok(ReconcileOutcome::NotConfirmed(reason)),
+                };
+            context.store.record(&confirmed, realm)?;
             Ok(ReconcileOutcome::Pushed)
         }
         (true, true) if local == remote => {
-            store.record(&remote_script, realm)?;
+            context.store.record(&remote_script, realm)?;
             Ok(ReconcileOutcome::Converged)
         }
         (true, true) => Ok(ReconcileOutcome::Conflict(ThreeWay {
@@ -1827,58 +1794,50 @@ pub enum Resolution {
 /// Resolve one tracked entry in an explicit direction. Local means a confirmed
 /// forced push; remote means a protected pull. A missing local source therefore
 /// fails in local mode instead of being silently restored from the tenant.
-pub async fn reconcile_resolved(
-    tenant: &str,
-    realm: &str,
-    kind: Kind,
-    name: &str,
+pub async fn reconcile_resolved<const ALLOWED: u8>(
+    request: PushContext<'_>,
     resolution: Resolution,
+    force: ForceFlags<ALLOWED>,
     confirmed_prod: bool,
-    gate: SyntaxGate,
 ) -> Result<ReconcileOutcome> {
-    let store = SnapshotStore::open(tenant);
-    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    let store = SnapshotStore::open(request.tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(request.tenant);
+    let context = SyncContext {
+        store: &store,
+        workspace_tree: &workspace_tree,
+        io: &LiveSyncIo,
+        tenant: request.tenant,
+    };
     reconcile_resolved_with(
-        &store,
-        &workspace_tree,
-        &LiveSyncIo,
-        tenant,
-        realm,
-        kind,
-        name,
+        &context,
+        request,
         resolution,
-        confirmed_prod,
-        gate,
+        PushOptions::from_force(force, confirmed_prod),
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn reconcile_resolved_with(
-    store: &SnapshotStore,
-    workspace_tree: &Path,
-    io: &impl SyncIo,
-    tenant: &str,
-    realm: &str,
-    kind: Kind,
-    name: &str,
+    context: &SyncContext<'_, impl SyncIo>,
+    request: PushContext<'_>,
     resolution: Resolution,
-    confirmed_prod: bool,
-    gate: SyntaxGate,
+    options: PushOptions,
 ) -> Result<ReconcileOutcome> {
+    let PushContext {
+        tenant,
+        realm,
+        kind,
+        name,
+    } = request;
     match resolution {
         Resolution::Local => {
             match push_with(
-                store,
-                workspace_tree,
-                io,
-                tenant,
-                realm,
-                kind,
-                name,
-                true,
-                confirmed_prod,
-                gate,
+                context,
+                request,
+                PushOptions {
+                    force_operation: true,
+                    ..options
+                },
             )
             .await?
             {
@@ -1890,14 +1849,18 @@ async fn reconcile_resolved_with(
             }
         }
         Resolution::Remote => {
-            let entry = store
+            let entry = context
+                .store
                 .lookup(kind, name, realm)?
                 .ok_or_else(|| Error::Config(format!("{name:?} not synced")))?;
-            let remote_script = io.fetch(kind, tenant, realm, &entry.reference.id).await?;
+            let remote_script = context
+                .io
+                .fetch(kind, tenant, realm, &entry.reference.id)
+                .await?;
             let remote = kind.decode_source(&remote_script.raw_config)?;
             let status = install_remote(
-                store,
-                workspace_tree,
+                context.store,
+                context.workspace_tree,
                 realm,
                 &remote_script,
                 &remote,
@@ -1923,6 +1886,7 @@ pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::force::OperationAndSyntaxCheckForce;
     use clap::Parser;
     use std::collections::VecDeque;
     use std::sync::Mutex;
@@ -2165,49 +2129,30 @@ mod tests {
 
         async fn push_authorized(
             &self,
-            tenant: &str,
-            realm: &str,
-            kind: Kind,
-            name: &str,
+            request: PushContext<'_>,
             force: OperationAndSyntaxCheckForce,
             confirmed_prod: bool,
-            gate: SyntaxGate,
         ) -> Result<PushOutcome> {
-            push_authorized_with(
-                &self.store,
-                &self.workspace,
-                &self.io,
-                tenant,
-                realm,
-                kind,
-                name,
-                force,
-                confirmed_prod,
-                gate,
+            let context = test_context(&self.store, &self.workspace, &self.io, request.tenant);
+            push_with(
+                &context,
+                request,
+                PushOptions::from_force(force, confirmed_prod),
             )
             .await
         }
 
         async fn push_forced(
             &self,
-            tenant: &str,
-            realm: &str,
-            kind: Kind,
-            name: &str,
+            request: PushContext<'_>,
+            force: OperationAndSyntaxCheckForce,
             confirmed_prod: bool,
-            gate: SyntaxGate,
         ) -> Result<PushOutcome> {
+            let context = test_context(&self.store, &self.workspace, &self.io, request.tenant);
             push_with(
-                &self.store,
-                &self.workspace,
-                &self.io,
-                tenant,
-                realm,
-                kind,
-                name,
-                true,
-                confirmed_prod,
-                gate,
+                &context,
+                request,
+                PushOptions::forced(force, confirmed_prod),
             )
             .await
         }
@@ -2218,65 +2163,44 @@ mod tests {
             candidates: Vec<Candidate>,
             force: OperationAndSyntaxCheckForce,
             confirmed_prod: bool,
-            gate: SyntaxGate,
         ) -> Vec<(Candidate, Result<PushOutcome>)> {
-            push_batch_authorized_with(
-                &self.store,
-                &self.workspace,
-                &self.io,
-                tenant,
+            let context = test_context(&self.store, &self.workspace, &self.io, tenant);
+            push_batch_with(
+                &context,
                 candidates,
-                force,
-                confirmed_prod,
-                gate,
+                PushOptions::from_force(force, confirmed_prod),
             )
             .await
         }
 
         async fn reconcile(
             &self,
-            tenant: &str,
-            realm: &str,
-            kind: Kind,
-            name: &str,
+            request: PushContext<'_>,
+            force: OperationAndSyntaxCheckForce,
             confirmed_prod: bool,
-            gate: SyntaxGate,
         ) -> Result<ReconcileOutcome> {
+            let context = test_context(&self.store, &self.workspace, &self.io, request.tenant);
             reconcile_with(
-                &self.store,
-                &self.workspace,
-                &self.io,
-                tenant,
-                realm,
-                kind,
-                name,
-                confirmed_prod,
-                gate,
+                &context,
+                request,
+                PushOptions::from_force(force, confirmed_prod),
             )
             .await
         }
 
         async fn reconcile_resolved(
             &self,
-            tenant: &str,
-            realm: &str,
-            kind: Kind,
-            name: &str,
+            request: PushContext<'_>,
             resolution: Resolution,
+            force: OperationAndSyntaxCheckForce,
             confirmed_prod: bool,
-            gate: SyntaxGate,
         ) -> Result<ReconcileOutcome> {
+            let context = test_context(&self.store, &self.workspace, &self.io, request.tenant);
             reconcile_resolved_with(
-                &self.store,
-                &self.workspace,
-                &self.io,
-                tenant,
-                realm,
-                kind,
-                name,
+                &context,
+                request,
                 resolution,
-                confirmed_prod,
-                gate,
+                PushOptions::from_force(force, confirmed_prod),
             )
             .await
         }
@@ -2284,6 +2208,32 @@ mod tests {
         fn workspace_update_hint(&self, _tenant: &str) -> Result<()> {
             Ok(())
         }
+    }
+
+    fn test_context<'a, I>(
+        store: &'a SnapshotStore,
+        workspace_tree: &'a Path,
+        io: &'a I,
+        tenant: &'a str,
+    ) -> SyncContext<'a, I> {
+        SyncContext {
+            store,
+            workspace_tree,
+            io,
+            tenant,
+        }
+    }
+
+    fn push_options(force_operation: bool, gate: SyntaxGate) -> PushOptions {
+        PushOptions {
+            force_operation,
+            confirmed_prod: false,
+            gate,
+        }
+    }
+
+    fn test_request(reference: &RemoteRef) -> PushContext<'_> {
+        PushContext::new("tenant", "alpha", reference.kind, &reference.name)
     }
 
     fn endpoint_script(reference: &RemoteRef, source: &str, marker: &str) -> RemoteScript {
@@ -2625,17 +2575,11 @@ mod tests {
             Ok(endpoint_script(&reference, "still old", "after-write")),
         ]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = push_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -2662,16 +2606,11 @@ mod tests {
             Ok(endpoint_script(&reference, "still old", "after-write")),
         ]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = reconcile_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -2698,17 +2637,11 @@ mod tests {
             Ok(confirmed.clone()),
         ]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = push_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -2730,16 +2663,11 @@ mod tests {
             Ok(confirmed.clone()),
         ]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = reconcile_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -2764,17 +2692,11 @@ mod tests {
             }),
         ]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = push_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -2801,16 +2723,11 @@ mod tests {
             Ok(script(reference.clone(), json!({"_id": reference.id}))),
         ]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = reconcile_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -2838,17 +2755,11 @@ mod tests {
             "metadata",
         ))]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = push_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -2868,17 +2779,11 @@ mod tests {
             Ok(confirmed),
         ]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = push_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -2896,17 +2801,11 @@ mod tests {
             Ok(endpoint_script(&reference, "local", "confirmed")),
         ]);
 
-        let outcome = push_authorized_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            parsed_push_force(&["--force"]),
-            false,
-            SyntaxGate::Check,
+        let context = test_context(&store, &workspace, &io, "tenant");
+        let outcome = push_with(
+            &context,
+            test_request(&reference),
+            PushOptions::from_force(parsed_push_force(&["--force"]), false),
         )
         .await
         .unwrap();
@@ -3040,17 +2939,9 @@ mod tests {
             force.operation(),
         );
 
-        let outcomes = push_batch_authorized_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            selected,
-            force,
-            false,
-            SyntaxGate::Check,
-        )
-        .await;
+        let context = test_context(&store, &workspace, &io, "tenant");
+        let outcomes =
+            push_batch_with(&context, selected, PushOptions::from_force(force, false)).await;
 
         assert_eq!(outcomes.len(), 1);
         assert!(matches!(&outcomes[0].1, Ok(PushOutcome::Pushed)));
@@ -3070,17 +2961,11 @@ mod tests {
         let remote = endpoint_script(&reference, "local", "fresh-remote-metadata");
         let io = FakeSyncIo::new(vec![Ok(remote.clone())]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = push_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            true,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(true, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -3110,17 +2995,11 @@ mod tests {
             refusal,
         );
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = push_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            true,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(true, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -3139,11 +3018,9 @@ mod tests {
             Ok(endpoint_script(&reference, "remote", "fresh")),
         );
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcomes = pull_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
+            &context,
             "alpha",
             Kind::IdmEndpoint,
             &Selector::Name(reference.name.clone()),
@@ -3199,11 +3076,9 @@ mod tests {
         assert!(!missing_path.exists());
 
         let io = FakeSyncIo::for_pull(reference.clone(), Ok(remote));
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcomes = pull_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
+            &context,
             "alpha",
             Kind::Am,
             &Selector::Name(reference.name.clone()),
@@ -3234,11 +3109,9 @@ mod tests {
             Ok(endpoint_script(&reference, "remote", "fresh")),
         );
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcomes = pull_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
+            &context,
             "alpha",
             Kind::IdmEndpoint,
             &Selector::Name(reference.name.clone()),
@@ -3261,16 +3134,11 @@ mod tests {
         let (dir, store, workspace, reference) = push_fixture("local", "local");
         let io = FakeSyncIo::new(vec![Ok(endpoint_script(&reference, "remote", "fresh"))]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = reconcile_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -3294,17 +3162,12 @@ mod tests {
             Ok(endpoint_script(&reference, "local", "confirmed")),
         ]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = reconcile_resolved_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
+            &context,
+            test_request(&reference),
             Resolution::Local,
-            false,
-            SyntaxGate::Check,
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -3323,17 +3186,12 @@ mod tests {
         let (dir, store, workspace, reference) = push_fixture("local", "local");
         let io = FakeSyncIo::new(vec![Ok(endpoint_script(&reference, "remote", "fresh"))]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let outcome = reconcile_resolved_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
+            &context,
+            test_request(&reference),
             Resolution::Remote,
-            false,
-            SyntaxGate::Check,
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -3355,16 +3213,11 @@ mod tests {
         let (dir, store, workspace, reference) = push_fixture("old", "discard");
         std::fs::remove_file(workspace_file_in(&workspace, "alpha", &reference)).unwrap();
         let io = FakeSyncIo::new(vec![Ok(endpoint_script(&reference, "remote", "fresh"))]);
+        let context = test_context(&store, &workspace, &io, "tenant");
         let ordinary = reconcile_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -3379,17 +3232,12 @@ mod tests {
         let local_path = workspace_file_in(&workspace, "alpha", &reference);
         std::fs::remove_file(&local_path).unwrap();
         let io = FakeSyncIo::new(Vec::new());
+        let context = test_context(&store, &workspace, &io, "tenant");
         let error = reconcile_resolved_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
+            &context,
+            test_request(&reference),
             Resolution::Local,
-            false,
-            SyntaxGate::Check,
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap_err();
@@ -3403,17 +3251,12 @@ mod tests {
         let local_path = workspace_file_in(&workspace, "alpha", &reference);
         std::fs::remove_file(&local_path).unwrap();
         let io = FakeSyncIo::new(vec![Ok(endpoint_script(&reference, "remote", "fresh"))]);
+        let context = test_context(&store, &workspace, &io, "tenant");
         let remote = reconcile_resolved_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
+            &context,
+            test_request(&reference),
             Resolution::Remote,
-            false,
-            SyntaxGate::Check,
+            push_options(false, SyntaxGate::Check),
         )
         .await
         .unwrap();
@@ -3434,17 +3277,12 @@ mod tests {
             let remote = endpoint_script(&reference, "same", "fresh-metadata");
             let io = FakeSyncIo::new(vec![Ok(remote.clone())]);
 
+            let context = test_context(&store, &workspace, &io, "tenant");
             let outcome = reconcile_resolved_with(
-                &store,
-                &workspace,
-                &io,
-                "tenant",
-                "alpha",
-                Kind::IdmEndpoint,
-                &reference.name,
+                &context,
+                test_request(&reference),
                 resolution,
-                false,
-                SyntaxGate::Check,
+                push_options(false, SyntaxGate::Check),
             )
             .await
             .unwrap();
@@ -3472,33 +3310,22 @@ mod tests {
                 status: 404,
                 body: "missing".into(),
             })]);
+            let context = test_context(&store, &workspace, &io, "tenant");
             let result = match resolution {
                 Some(direction) => {
                     reconcile_resolved_with(
-                        &store,
-                        &workspace,
-                        &io,
-                        "tenant",
-                        "alpha",
-                        Kind::IdmEndpoint,
-                        &reference.name,
+                        &context,
+                        test_request(&reference),
                         direction,
-                        false,
-                        SyntaxGate::Check,
+                        push_options(false, SyntaxGate::Check),
                     )
                     .await
                 }
                 None => {
                     reconcile_with(
-                        &store,
-                        &workspace,
-                        &io,
-                        "tenant",
-                        "alpha",
-                        Kind::IdmEndpoint,
-                        &reference.name,
-                        false,
-                        SyntaxGate::Check,
+                        &context,
+                        test_request(&reference),
+                        push_options(false, SyntaxGate::Check),
                     )
                     .await
                 }
@@ -3516,16 +3343,11 @@ mod tests {
         std::fs::write(store.backups_dir(), b"not a directory").unwrap();
         let io = FakeSyncIo::new(vec![Ok(endpoint_script(&reference, "remote", "fresh"))]);
 
+        let context = test_context(&store, &workspace, &io, "tenant");
         let result = reconcile_with(
-            &store,
-            &workspace,
-            &io,
-            "tenant",
-            "alpha",
-            Kind::IdmEndpoint,
-            &reference.name,
-            false,
-            SyntaxGate::Check,
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
         )
         .await;
 

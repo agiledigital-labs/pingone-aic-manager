@@ -712,16 +712,12 @@ pub fn execute_push(
         let outcome = push_op_outcome(
             &full,
             sync::push(
-                &tenant,
-                &realm,
-                kind,
-                &name,
-                false,
-                confirmed_prod,
+                sync::PushContext::new(&tenant, &realm, kind, &name),
                 // No opt-out in the TUI: the CLI's `--force=syntax-check` exists for
                 // scripted use, and there is no keybind worth spending on writing
                 // source the tenant has just said it cannot parse.
-                sync::SyntaxGate::Check,
+                crate::cli::force::OperationAndSyntaxCheckForce::default(),
+                confirmed_prod,
             )
             .await,
         );
