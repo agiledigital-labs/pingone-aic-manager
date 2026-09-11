@@ -584,6 +584,7 @@ impl App {
             AppEvent::Secretmap(event) => crate::secretmap::screen::apply_event(self, event),
             AppEvent::Offboard(event) => crate::offboard::screen::apply_event(self, event),
         }
+        promote_pending_pulls(self);
         Ok(())
     }
 
@@ -686,6 +687,26 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// Open a waiting protected-pull confirm only from Normal.
+///
+/// Async pull results store the plan and must not assign `input_mode`:
+/// the confirm modal's accept key is `y`, so opening it while the
+/// operator is typing into Search (or any other mode) would authorize
+/// an overwrite with the next keystroke. Called at the end of every
+/// event so a result that lands while already idle still opens the
+/// modal before the next draw, and a result that lands in another mode
+/// waits until a later key returns to Normal.
+pub(crate) fn promote_pending_pulls(app: &mut App) {
+    if app.input_mode != InputMode::Normal {
+        return;
+    }
+    crate::scripts::screen::promote_pending_pull(app);
+    if app.input_mode != InputMode::Normal {
+        return;
+    }
+    crate::mappings::screen::promote_pending_pull(app);
 }
 
 pub fn refresh_view(app: &mut App, view: View, force: bool) {
