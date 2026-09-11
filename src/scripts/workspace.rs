@@ -733,7 +733,9 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
         for entry in entries.flatten() {
             let dir = entry.path();
             let leaf = dir.join("tsconfig.json");
-            if dir.is_dir() && leaf.exists() {
+            // `entry.file_type()`, not `dir.is_dir()`: the latter follows a
+            // symlink and would rewrite a `tsconfig.json` outside the tree.
+            if entry.file_type().is_ok_and(|t| t.is_dir()) && leaf.exists() {
                 let slug = entry.file_name().to_string_lossy().into_owned();
                 std::fs::write(&leaf, super::am::leaf_tsconfig(&slug))?;
                 report.written.push(leaf);
@@ -748,7 +750,8 @@ fn scaffold_at(tree: &Path, is_update: bool) -> Result<WorkspaceReport> {
         for entry in entries.flatten() {
             let dir = entry.path();
             let leaf = dir.join("tsconfig.json");
-            if dir.is_dir() && leaf.exists() {
+            // Same non-following selection as the AM realm pass above.
+            if entry.file_type().is_ok_and(|t| t.is_dir()) && leaf.exists() {
                 let object = entry.file_name().to_string_lossy().into_owned();
                 std::fs::write(&leaf, super::managed_hooks::leaf_tsconfig(&object))?;
                 report.written.push(leaf);
@@ -2020,6 +2023,35 @@ mod tests {
         assert!(parent.join("foo").exists(), "symlink itself stays");
         assert!(report.pruned.is_empty());
         assert!(report.removed.is_empty());
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_template_update_does_not_rewrite_a_tsconfig_through_a_symlink() {
+        // The sibling of the prune hole: the leaf-tsconfig refresh selected
+        // with `dir.is_dir()`, which follows, and then *writes*. Red if that
+        // selection goes back to `dir.is_dir()`.
+        let tree = temp_tree();
+        scaffold_at(&tree, false).unwrap();
+
+        let elsewhere = tree.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let far = elsewhere.join("tsconfig.json");
+        std::fs::write(&far, "not ours\n").unwrap();
+
+        let parent = tree.join("am/alpha");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, parent.join("foo")).unwrap();
+
+        scaffold_at(&tree, true).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&far).unwrap(),
+            "not ours\n",
+            "a symlinked folder is not a workspace leaf"
+        );
 
         std::fs::remove_dir_all(&tree).ok();
     }
