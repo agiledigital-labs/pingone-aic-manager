@@ -20,6 +20,7 @@ use crate::config::ProjectConfig;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Which scripts an operation targets.
@@ -57,6 +58,53 @@ pub struct PullOutcome {
     pub kind: Kind,
     pub realm: Option<String>,
     pub status: PullStatus,
+}
+
+/// A pull batch stopped after some earlier entries were fully installed.
+///
+/// `installed` is authoritative: each listed entry has its workspace source
+/// and snapshot advanced together. The failing entry is named separately and
+/// is never included in that list.
+#[derive(Debug)]
+pub struct PullInstallError {
+    installed: Vec<PullOutcome>,
+    failed: String,
+    total: usize,
+    source: Box<Error>,
+}
+
+impl PullInstallError {
+    /// Entries fully installed before the failure.
+    pub fn installed(&self) -> &[PullOutcome] {
+        &self.installed
+    }
+}
+
+impl fmt::Display for PullInstallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.installed.is_empty() {
+            write!(
+                f,
+                "0 of {} scripts installed; failed on {}: {}",
+                self.total, self.failed, self.source
+            )
+        } else {
+            write!(
+                f,
+                "{} of {} scripts installed, then failed on {}: {}",
+                self.installed.len(),
+                self.total,
+                self.failed,
+                self.source
+            )
+        }
+    }
+}
+
+impl std::error::Error for PullInstallError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
 }
 
 /// One namespace/selector pair included in a protected pull preflight.
@@ -146,52 +194,89 @@ impl PullPlan {
     /// Install the already-fetched content after the surface has authorized
     /// every protected entry. Recheck all local bytes first so an edit made
     /// while a confirmation modal was open cannot be overwritten unseen.
-    pub fn install(self, skip_backup: bool) -> Result<Vec<PullOutcome>> {
+    pub fn install(
+        self,
+        skip_backup: bool,
+    ) -> std::result::Result<Vec<PullOutcome>, PullInstallError> {
+        self.install_with(skip_backup, |_, _| {})
+    }
+
+    fn install_with(
+        self,
+        skip_backup: bool,
+        mut before_entry: impl FnMut(usize, &PreparedPull),
+    ) -> std::result::Result<Vec<PullOutcome>, PullInstallError> {
+        let total = self.entries.len();
         for entry in &self.entries {
             let path =
                 workspace_file_in(&self.workspace_tree, &entry.realm, &entry.script.reference);
-            if read_local(&path)? != entry.local {
-                return Err(Error::Config(format!(
-                    "local source changed during pull preflight: {}; nothing was installed",
-                    super::full_name(
-                        entry.script.reference.kind,
-                        entry
-                            .script
-                            .reference
-                            .kind
-                            .realm_scoped()
-                            .then_some(entry.realm.as_str()),
-                        &entry.script.reference.name,
-                    )
-                )));
+            let local = read_local(&path).map_err(|source| PullInstallError {
+                installed: Vec::new(),
+                failed: pull_entry_name(entry),
+                total,
+                source: Box::new(source),
+            })?;
+            if local != entry.local {
+                return Err(PullInstallError {
+                    installed: Vec::new(),
+                    failed: pull_entry_name(entry),
+                    total,
+                    source: Box::new(Error::Config(
+                        "local source changed during pull preflight; nothing was installed".into(),
+                    )),
+                });
             }
         }
 
-        self.entries
-            .iter()
-            .map(|entry| {
-                let status = install_remote(
-                    &self.store,
-                    &self.workspace_tree,
-                    &entry.realm,
-                    &entry.script,
-                    &entry.remote_source,
-                    skip_backup,
-                )?;
-                Ok(PullOutcome {
-                    name: entry.script.reference.name.clone(),
-                    kind: entry.script.reference.kind,
-                    realm: entry
-                        .script
-                        .reference
-                        .kind
-                        .realm_scoped()
-                        .then(|| entry.realm.clone()),
-                    status,
-                })
-            })
-            .collect()
+        let mut installed = Vec::with_capacity(total);
+        for (index, entry) in self.entries.iter().enumerate() {
+            before_entry(index, entry);
+            let status = match install_remote(
+                &self.store,
+                &self.workspace_tree,
+                &entry.realm,
+                &entry.script,
+                &entry.remote_source,
+                LocalExpectation::Exact(entry.local.as_deref()),
+                skip_backup,
+            ) {
+                Ok(status) => status,
+                Err(source) => {
+                    return Err(PullInstallError {
+                        installed,
+                        failed: pull_entry_name(entry),
+                        total,
+                        source: Box::new(source),
+                    });
+                }
+            };
+            installed.push(PullOutcome {
+                name: entry.script.reference.name.clone(),
+                kind: entry.script.reference.kind,
+                realm: entry
+                    .script
+                    .reference
+                    .kind
+                    .realm_scoped()
+                    .then(|| entry.realm.clone()),
+                status,
+            });
+        }
+        Ok(installed)
     }
+}
+
+fn pull_entry_name(entry: &PreparedPull) -> String {
+    super::full_name(
+        entry.script.reference.kind,
+        entry
+            .script
+            .reference
+            .kind
+            .realm_scoped()
+            .then_some(entry.realm.as_str()),
+        &entry.script.reference.name,
+    )
 }
 
 /// Identifies the exact source bytes an operation acted on, so a surface
@@ -830,6 +915,7 @@ async fn pull_with(
             realm,
             &script,
             &remote_src,
+            LocalExpectation::Any,
             skip_backup,
         )?;
 
@@ -1073,16 +1159,30 @@ pub async fn delete(
 /// Replace the tracked source with a fetched remote copy. Any existing,
 /// differing source is backed up first unless backup bypass was requested.
 /// The snapshot advances only after the protected workspace operation.
+#[derive(Debug, Clone, Copy)]
+enum LocalExpectation<'a> {
+    Any,
+    Exact(Option<&'a [u8]>),
+}
+
 fn install_remote(
     store: &SnapshotStore,
     workspace_tree: &Path,
     realm: &str,
     script: &RemoteScript,
     remote_source: &[u8],
+    expected_local: LocalExpectation<'_>,
     skip_backup: bool,
 ) -> Result<PullStatus> {
     let dest = workspace_file_in(workspace_tree, realm, &script.reference);
     let local = read_local(&dest)?;
+    if let LocalExpectation::Exact(expected) = expected_local {
+        if local.as_deref() != expected {
+            return Err(Error::Config(
+                "local source changed after pull preflight; this entry was not installed".into(),
+            ));
+        }
+    }
     let differs = local.as_deref() != Some(remote_source);
     let status = match &local {
         Some(bytes) if differs && !skip_backup => {
@@ -1653,8 +1753,15 @@ async fn reconcile_with(
         Some(bytes) => bytes,
         None => {
             // Local file gone — restore it from the remote.
-            let status =
-                install_remote(store, workspace_tree, realm, &remote_script, &remote, false)?;
+            let status = install_remote(
+                store,
+                workspace_tree,
+                realm,
+                &remote_script,
+                &remote,
+                LocalExpectation::Any,
+                false,
+            )?;
             return Ok(ReconcileOutcome::Pulled(status));
         }
     };
@@ -1663,8 +1770,15 @@ async fn reconcile_with(
     match (local_changed, remote_changed) {
         (false, false) => Ok(ReconcileOutcome::InSync),
         (false, true) => {
-            let status =
-                install_remote(store, workspace_tree, realm, &remote_script, &remote, false)?;
+            let status = install_remote(
+                store,
+                workspace_tree,
+                realm,
+                &remote_script,
+                &remote,
+                LocalExpectation::Any,
+                false,
+            )?;
             Ok(ReconcileOutcome::Pulled(status))
         }
         (true, false) => {
@@ -1781,8 +1895,15 @@ async fn reconcile_resolved_with(
                 .ok_or_else(|| Error::Config(format!("{name:?} not synced")))?;
             let remote_script = io.fetch(kind, tenant, realm, &entry.reference.id).await?;
             let remote = kind.decode_source(&remote_script.raw_config)?;
-            let status =
-                install_remote(store, workspace_tree, realm, &remote_script, &remote, false)?;
+            let status = install_remote(
+                store,
+                workspace_tree,
+                realm,
+                &remote_script,
+                &remote,
+                LocalExpectation::Any,
+                false,
+            )?;
             if status == PullStatus::Unchanged {
                 Ok(ReconcileOutcome::InSync)
             } else {
@@ -2265,8 +2386,91 @@ mod tests {
         let local_path =
             workspace_file_in(&plan.workspace_tree, &entry.realm, &entry.script.reference);
         std::fs::write(&local_path, b"newer edit").unwrap();
-        assert!(plan.install(false).is_err());
+        let error = plan.install(false).unwrap_err();
+        assert!(error.installed().is_empty());
+        assert!(error.to_string().contains("0 of 1 scripts installed"));
         assert_eq!(std::fs::read(local_path).unwrap(), b"newer edit");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pull_batch_reports_completed_entries_when_a_later_local_recheck_fails() {
+        // Regression: `collect()` returned only the second entry's error after
+        // the first entry and its snapshot had already been replaced.
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let one = endpoint_ref("One");
+        let two = endpoint_ref("Two");
+        for (reference, source) in [(&one, "local one"), (&two, "local two")] {
+            store
+                .record(&endpoint_script(reference, "old", "snapshot"), "")
+                .unwrap();
+            let path = workspace_file_in(&workspace, "", reference);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, source).unwrap();
+        }
+        let plan = PullPlan {
+            store,
+            workspace_tree: workspace.clone(),
+            entries: vec![
+                PreparedPull {
+                    realm: String::new(),
+                    script: endpoint_script(&one, "remote one", "remote"),
+                    remote_source: b"remote one".to_vec(),
+                    local: Some(b"local one".to_vec()),
+                    protected: true,
+                },
+                PreparedPull {
+                    realm: String::new(),
+                    script: endpoint_script(&two, "remote two", "remote"),
+                    remote_source: b"remote two".to_vec(),
+                    local: Some(b"local two".to_vec()),
+                    protected: true,
+                },
+            ],
+        };
+        let second_path = workspace_file_in(&workspace, "", &two);
+        let error = plan
+            .install_with(true, |index, _| {
+                if index == 1 {
+                    std::fs::write(&second_path, b"newer edit").unwrap();
+                }
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            error
+                .installed()
+                .iter()
+                .map(|outcome| outcome.name.as_str())
+                .collect::<Vec<_>>(),
+            ["One"]
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("1 of 2 scripts installed, then failed on endpoint/Two"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(workspace_file_in(&workspace, "", &one)).unwrap(),
+            b"remote one"
+        );
+        let reopened = store_at(&dir.join(".aic-sync"));
+        assert_eq!(
+            Kind::IdmEndpoint
+                .decode_source(&reopened.load_config(&one, "").unwrap().unwrap())
+                .unwrap(),
+            b"remote one"
+        );
+        assert_eq!(std::fs::read(&second_path).unwrap(), b"newer edit");
+        assert_eq!(
+            Kind::IdmEndpoint
+                .decode_source(&reopened.load_config(&two, "").unwrap().unwrap())
+                .unwrap(),
+            b"old"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

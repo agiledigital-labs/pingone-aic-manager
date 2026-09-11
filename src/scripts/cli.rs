@@ -812,7 +812,9 @@ pub(crate) async fn run_with_runtime(
                     )));
                 }
             }
-            let outcomes = plan.install(force.backup())?;
+            let outcomes = plan
+                .install(force.backup())
+                .map_err(|error| Error::Config(error.to_string()))?;
             if outcomes.is_empty() {
                 println!("nothing to pull");
             } else {
