@@ -1,17 +1,11 @@
-import type { Expect, Given } from "../../src/case/types.ts";
-import { hiddenValue, realCase, type BlockedBy, type RealEntry } from "./load.ts";
-
-/**
- * First throw almost every next-gen probe hits: they emit via
- * `if (callbacks.isEmpty()) callbacksBuilder.hiddenValueCallback(...)`.
- * Measured 2026-09-12 against the local JVM runner; see
- * `docs/rhino-local-gaps.md`.
- */
-const CALLBACKS_ISEMPTY: BlockedBy = {
-  method: "callbacks.isEmpty",
-  throw:
-    "rhino-local: not mocked: callbacks.isEmpty arity=0 overload=[isEmpty()] (rhino-local-mocks.cjs#53)",
-};
+import type { Given } from "../../src/case/types.ts";
+import {
+  hiddenValue,
+  librarySource,
+  realCase,
+  type BlockedBy,
+  type RealEntry,
+} from "./load.ts";
 
 /**
  * Parse-error fixtures never reach a binding. The case format has no
@@ -20,6 +14,11 @@ const CALLBACKS_ISEMPTY: BlockedBy = {
  */
 function parseError(message: string): BlockedBy {
   return { method: "(parse)", throw: message };
+}
+
+/** First-visit seed so `callbacks.isEmpty()` is `true` instead of a missing-fixture throw. */
+function firstVisit(given?: Given): Given {
+  return { ...(given ?? {}), callbacks: given?.callbacks ?? [] };
 }
 
 const ALICE_ID = "00000000-0000-0000-0000-000000000000";
@@ -67,22 +66,55 @@ const managerSwapGiven: Given = {
   },
 };
 
+function entry(
+  kind: "nextgen" | "legacy",
+  name: string,
+  originFile: string,
+  expectPayload: Record<string, unknown>,
+  extras: {
+    given?: Given;
+    blocked?: BlockedBy;
+    libraries?: Record<string, string>;
+  } = {}
+): RealEntry {
+  const init: {
+    name: string;
+    kind: "nextgen" | "legacy";
+    origin: string;
+    expect: { outcome: string; callbacks: ReturnType<typeof hiddenValue> };
+    given: Given;
+    blocked?: BlockedBy;
+    libraries?: Record<string, string>;
+  } = {
+    name,
+    kind,
+    origin: `scripts/rhino-script-tester/${originFile}`,
+    expect: {
+      outcome: "ok",
+      callbacks: hiddenValue(expectPayload),
+    },
+    given: firstVisit(extras.given),
+  };
+  if (extras.blocked !== undefined) {
+    init.blocked = extras.blocked;
+  }
+  if (extras.libraries !== undefined) {
+    init.libraries = extras.libraries;
+  }
+  return realCase(init);
+}
+
 function ng(
   name: string,
   originFile: string,
   payload: Record<string, unknown>,
-  extras: { given?: Given; blocked?: BlockedBy } = {}
+  extras: {
+    given?: Given;
+    blocked?: BlockedBy;
+    libraries?: Record<string, string>;
+  } = {}
 ): RealEntry {
-  return realCase(withExtras({
-    name,
-    kind: "nextgen",
-    origin: `scripts/rhino-script-tester/${originFile}`,
-    expect: {
-      outcome: "ok",
-      callbacks: hiddenValue({ ok: true, feature: name, ...payload }),
-    },
-    blocked: extras.blocked ?? CALLBACKS_ISEMPTY,
-  }, extras.given));
+  return entry("nextgen", name, originFile, { ok: true, feature: name, ...payload }, extras);
 }
 
 function ngFeature(
@@ -90,59 +122,26 @@ function ngFeature(
   originFile: string,
   feature: string,
   payload: Record<string, unknown>,
-  extras: { given?: Given; blocked?: BlockedBy } = {}
+  extras: {
+    given?: Given;
+    blocked?: BlockedBy;
+    libraries?: Record<string, string>;
+  } = {}
 ): RealEntry {
-  return realCase(withExtras({
-    name,
-    kind: "nextgen",
-    origin: `scripts/rhino-script-tester/${originFile}`,
-    expect: {
-      outcome: "ok",
-      callbacks: hiddenValue({ ok: true, feature, ...payload }),
-    },
-    blocked: extras.blocked ?? CALLBACKS_ISEMPTY,
-  }, extras.given));
+  return entry("nextgen", name, originFile, { ok: true, feature, ...payload }, extras);
 }
 
 function legacy(
   name: string,
   originFile: string,
   payload: Record<string, unknown>,
-  extras: { given?: Given; blocked?: BlockedBy } = {}
+  extras: {
+    given?: Given;
+    blocked?: BlockedBy;
+    libraries?: Record<string, string>;
+  } = {}
 ): RealEntry {
-  return realCase(withExtras({
-    name,
-    kind: "legacy",
-    origin: `scripts/rhino-script-tester/${originFile}`,
-    expect: {
-      outcome: "ok",
-      callbacks: hiddenValue({ ok: true, feature: name, ...payload }),
-    },
-    blocked: extras.blocked ?? CALLBACKS_ISEMPTY,
-  }, extras.given));
-}
-
-function withExtras(
-  base: {
-    name: string;
-    kind: "nextgen" | "legacy";
-    origin: string;
-    expect: Expect;
-    blocked: BlockedBy;
-  },
-  given: Given | undefined
-): {
-  name: string;
-  kind: "nextgen" | "legacy";
-  origin: string;
-  expect: Expect;
-  blocked: BlockedBy;
-  given?: Given;
-} {
-  if (given === undefined) {
-    return base;
-  }
-  return { ...base, given };
+  return entry("legacy", name, originFile, { ok: true, feature: name, ...payload }, extras);
 }
 
 const BINDINGS_AVAILABILITY_VALUE = JSON.stringify({
@@ -226,6 +225,8 @@ const STRING_NORMALIZE_RESULTS = [
  *
  * `blocked` is the first throw against today's overlay. Do not delete a case
  * when a binding lands — clear `blocked` so it becomes a pass assertion.
+ * First-visit cases seed `given.callbacks: []` so `isEmpty` is a real
+ * boolean, not a missing-fixture throw.
  */
 export const realCases: RealEntry[] = [
   ng("arrow-function", "fixtures/arrow-function.script.js", {
@@ -260,7 +261,7 @@ export const realCases: RealEntry[] = [
       outcome: "ok",
       callbacks: hiddenValue({ ok: true, feature: "const-top-level" }),
     },
-    blocked: CALLBACKS_ISEMPTY,
+    given: firstVisit(),
   }),
   ng("const-in-loop-body", "fixtures/const-in-loop-body.script.js", {
     value: ",,",
@@ -364,7 +365,7 @@ export const realCases: RealEntry[] = [
         },
       }),
     },
-    blocked: CALLBACKS_ISEMPTY,
+    given: firstVisit(),
   }),
 
   ng("enum-callbacks-utils", "fixtures/enum-callbacks-utils.script.js", {
@@ -438,49 +439,126 @@ export const realCases: RealEntry[] = [
 
   ng("string-normalize", "fixtures/string-normalize.script.js", {
     results: STRING_NORMALIZE_RESULTS,
+  }, {
+    libraries: {
+      "rhino-lib-normalize-probe": librarySource("lib-normalize-probe.lib.js"),
+    },
   }),
 
   ngFeature(
     "lib-array-fill-consumer",
     "fixtures/lib-array-fill-consumer.script.js",
     "lib-array-fill-from",
-    { fill: "false,false,false", from: "false,false,false" }
+    {
+      fill: {
+        ok: true,
+        length: 3,
+        joined: "false,false,false",
+        allFalse: true,
+      },
+      from: {
+        ok: true,
+        length: 3,
+        joined: "false,false,false",
+        allFalse: true,
+      },
+    },
+    {
+      libraries: {
+        "rhino-lib-array-fill-probe": librarySource("lib-array-fill-probe.lib.js"),
+      },
+    }
   ),
   ngFeature(
     "lib-const-consumer",
     "fixtures/lib-const-consumer.script.js",
     "lib-top-const",
-    {}
+    { fromConst: "lib-const-ok", fromVar: "lib-var-ok" },
+    {
+      libraries: {
+        "rhino-lib-const-probe": librarySource("lib-const-probe.lib.js"),
+      },
+    }
   ),
   ngFeature(
     "lib-const-loop-consumer",
     "fixtures/lib-const-loop-consumer.script.js",
     "lib-const-loop-in-function",
-    {}
+    // Live (docs/api/12): loop-body const inside a function keeps the first
+    // initializer; the correct series would be "0,2,4".
+    { fromLoopConst: "0,0,0" },
+    {
+      libraries: {
+        "rhino-lib-const-loop-probe": librarySource("lib-const-loop-probe.lib.js"),
+      },
+    }
   ),
   ngFeature(
     "lib-es2015-globals-consumer",
     "fixtures/lib-es2015-globals-consumer.script.js",
     "lib-es2015-globals",
-    {}
+    {
+      globals: {
+        Map: "undefined",
+        Set: "undefined",
+        WeakMap: "undefined",
+        WeakSet: "undefined",
+        Symbol: "undefined",
+        Promise: "undefined",
+        Proxy: "undefined",
+        Reflect: "undefined",
+        JSON: "object",
+      },
+      value: [
+        {
+          name: "new Map + set/get/size",
+          ok: false,
+          error: 'ReferenceError: "Map" is not defined.',
+        },
+        {
+          name: "new Set + add/has/size",
+          ok: false,
+          error: 'ReferenceError: "Set" is not defined.',
+        },
+        { name: "object-as-set fallback", ok: true, value: "a,b" },
+      ],
+    },
+    {
+      libraries: {
+        "rhino-lib-es2015-globals-probe": librarySource(
+          "lib-es2015-globals-probe.lib.js"
+        ),
+      },
+    }
   ),
   ngFeature(
     "lib-java-collections-consumer",
     "fixtures/lib-java-collections-consumer.script.js",
     "lib-java-collections",
-    {}
+    {},
+    {
+      libraries: {
+        "rhino-lib-java-collections-probe": librarySource(
+          "lib-java-collections-probe.lib.js"
+        ),
+      },
+    }
   ),
   ngFeature(
     "lib-openidm-read-consumer",
     "fixtures/lib-openidm-read-consumer.script.js",
     "lib-openidm-read",
-    {},
+    {
+      fromLib: { nameA: "alice", nameB: "bob", score: 1, imputed: false },
+      missResult: { threw: false, value: "null" },
+    },
     {
       given: {
         managed: {
           "managed/alpha_name_variant": [
             {
-              _id: "alice_bob",
+              // Library body hardcodes this id (live seed name, not a person).
+              _id: "aaron_erin",
               nameA: "alice",
               nameB: "bob",
               score: 1,
@@ -489,19 +567,35 @@ export const realCases: RealEntry[] = [
           ],
         },
       },
+      libraries: {
+        "rhino-lib-openidm-read-probe": librarySource(
+          "lib-openidm-read-probe.lib.js"
+        ),
+      },
     }
   ),
   ngFeature(
     "lib-openidm-miss-consumer",
     "fixtures/lib-openidm-miss-consumer.script.js",
     "lib-openidm-miss",
-    {},
+    {
+      // Live (docs/api/10): missing record AND missing type return null.
+      // Local still throws on an unseeded collection (unknownTypeMiss).
+      variantMiss: { threw: false, value: "null" },
+      discrepancyMiss: { threw: false, value: "null" },
+      unknownTypeMiss: { threw: false, value: "null" },
+    },
     {
       given: {
         managed: {
           "managed/idr_name_variants": [],
           "managed/idr_name_variant_discrepancies": [],
         },
+      },
+      libraries: {
+        "rhino-lib-openidm-miss-probe": librarySource(
+          "lib-openidm-miss-probe.lib.js"
+        ),
       },
     }
   ),
@@ -567,8 +661,9 @@ export const realCases: RealEntry[] = [
     }),
   }, { given: managerSwapGiven }),
 
-  // Legacy engine. Same emit path starts at callbacks.isEmpty, then
-  // JavaImporter + Action.send — neither is on the local overlay.
+  // Legacy engine. Emit is JavaImporter + Action.send; next-gen-only
+  // bindings are undefined so scripts cannot take the callbacksBuilder
+  // fallback.
   legacy("legacy-bindings", "fixtures-legacy/legacy-bindings.script.js", {
     value: JSON.stringify({
       nodeState: "object",
@@ -597,7 +692,30 @@ export const realCases: RealEntry[] = [
   legacy(
     "legacy-es2015-globals",
     "fixtures-legacy/legacy-es2015-globals.script.js",
-    {}
+    {
+      value: [
+        { name: "typeof Map", ok: true, value: "undefined" },
+        { name: "typeof Set", ok: true, value: "undefined" },
+        { name: "typeof WeakMap", ok: true, value: "undefined" },
+        { name: "typeof WeakSet", ok: true, value: "undefined" },
+        { name: "typeof Symbol", ok: true, value: "undefined" },
+        { name: "typeof Proxy", ok: true, value: "undefined" },
+        { name: "typeof Reflect", ok: true, value: "undefined" },
+        { name: "typeof Promise", ok: true, value: "undefined" },
+        { name: "typeof JSON", ok: true, value: "object" },
+        {
+          name: "new Map + set/get/size",
+          ok: false,
+          error: 'ReferenceError: "Map" is not defined.',
+        },
+        {
+          name: "new Set + add/has/size",
+          ok: false,
+          error: 'ReferenceError: "Set" is not defined.',
+        },
+        { name: "java.util.HashMap", ok: true, value: "1:1" },
+      ],
+    }
   ),
   legacy(
     "legacy-idrepository-methods",

@@ -17,7 +17,10 @@ overlay does not replace): `nodeState` get/putShared/putTransient/isDefined,
 legacy `sharedState`/`transientState` when `given.engine === "legacy"`,
 request maps, `outcome` / `action.goTo`, `logger`, `openidm`, `httpClient`,
 `callbacksBuilder` (the six authenticate-response types), `systemEnv`,
-`idRepository.getIdentity`. End-to-end cases live in `cases/`.
+`idRepository.getIdentity`, next-gen `require()` (CommonJS eval of seeded
+library bodies; a missing id throws naming `given.libraries`), legacy
+`JavaImporter` + `Action.send(HiddenValueCallback)`. End-to-end cases live
+in `cases/`.
 
 ## JVM runner client
 

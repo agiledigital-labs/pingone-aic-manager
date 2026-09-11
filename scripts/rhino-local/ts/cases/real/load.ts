@@ -8,6 +8,7 @@ import type {
   Expect,
   Given,
 } from "../../src/case/types.ts";
+import { repoRoot } from "../../src/paths.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -19,6 +20,14 @@ export const realCasesDir = here;
  * intentionally use a Rhino-banned construct (or `for each`) are `.src` so
  * `eslint.am.config.js` does not reject them.
  */
+/** Load an AM LIBRARY fixture body for `require()` by script name. */
+export function librarySource(file: string): string {
+  return readFileSync(
+    join(repoRoot, "scripts/rhino-script-tester/fixtures", file),
+    "utf8"
+  );
+}
+
 export function loadScript(kind: "nextgen" | "legacy", name: string): string {
   const base = join(here, kind, name);
   const cjs = `${base}.cjs`;
@@ -65,6 +74,8 @@ export interface RealEntry {
    * happens.
    */
   blocked?: BlockedBy;
+  /** AM library script bodies keyed by `require()` id. */
+  libraries?: Record<string, string>;
 }
 
 export function realCase(input: {
@@ -74,6 +85,7 @@ export function realCase(input: {
   given?: Given;
   expect: Expect;
   blocked?: BlockedBy;
+  libraries?: Record<string, string>;
 }): RealEntry {
   const init: {
     name: string;
@@ -99,6 +111,9 @@ export function realCase(input: {
   };
   if (input.blocked !== undefined) {
     entry.blocked = input.blocked;
+  }
+  if (input.libraries !== undefined) {
+    entry.libraries = input.libraries;
   }
   return entry;
 }
