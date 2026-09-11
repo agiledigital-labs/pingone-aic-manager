@@ -2007,6 +2007,22 @@ mod tests {
         force
     }
 
+    fn parsed_pull_force(flags: &[&str]) -> crate::cli::force::OperationAndBackupForce {
+        let cli = crate::cli::Cli::try_parse_from(
+            ["aic", "script", "pull", "endpoint/protected"]
+                .into_iter()
+                .chain(flags.iter().copied()),
+        )
+        .unwrap();
+        let Some(crate::cli::Command::Script {
+            command: crate::scripts::cli::ScriptCommand::Pull { force, .. },
+        }) = cli.command
+        else {
+            panic!("expected script pull")
+        };
+        force
+    }
+
     fn am_ref(name: &str) -> RemoteRef {
         RemoteRef {
             kind: Kind::Am,
@@ -2391,6 +2407,27 @@ mod tests {
         assert!(error.to_string().contains("0 of 1 scripts installed"));
         assert_eq!(std::fs::read(local_path).unwrap(), b"newer edit");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parsed_backup_permission_controls_the_real_pull_installer() {
+        // Regression: `--force=backup` parsed correctly but no test reached
+        // the condition that suppresses backup creation.
+        for (flags, expect_backup) in [(&[][..], true), (&["--force=backup"][..], false)] {
+            let force = parsed_pull_force(flags);
+            let (dir, plan) = prepared_fixture(Some("old"), Some("edited"), "remote", false).await;
+            let source_path =
+                workspace_file_in(&dir.join("workspace"), "", &endpoint_ref("protected"));
+            let outcomes = plan.install(force.backup()).unwrap();
+
+            assert_eq!(std::fs::read(source_path).unwrap(), b"remote");
+            assert_eq!(
+                matches!(outcomes[0].status, PullStatus::LocalBackedUp(_)),
+                expect_backup
+            );
+            assert_eq!(dir.join(".aic-sync/backups").exists(), expect_backup);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]
