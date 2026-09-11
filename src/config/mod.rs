@@ -167,9 +167,10 @@ pub fn set_project_root(root: PathBuf) -> Result<()> {
 }
 
 pub(crate) fn project_paths() -> &'static ProjectPaths {
-    PROJECT_PATHS
-        .get()
-        .expect("project paths are initialized by cli::bootstrap_project_root")
+    PROJECT_PATHS.get().expect(
+        "project paths are installed by cli::bootstrap_project_root; \
+             a test that reaches this must build its own ProjectPaths instead",
+    )
 }
 
 /// An encrypted per-tenant artifact stored as a `<stem>.enc` / `<stem>.plain`
