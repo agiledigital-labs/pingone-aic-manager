@@ -1,0 +1,25 @@
+{
+  "name": "rhino-local-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Generate an AM-safe scripted-decision mock surface from the captured contexts JSON.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "generate": "node src/generate.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "lint:am": "eslint --config eslint.am.config.js generated --max-warnings 0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "24.13.4",
+    "eslint": "9.39.5",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.0",
+    "vitest": "3.2.7"
+  }
+}
