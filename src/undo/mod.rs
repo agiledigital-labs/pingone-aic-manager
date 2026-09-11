@@ -383,10 +383,7 @@ impl DiskLog {
         if !persistable(entry.sensitivity) {
             return Ok(());
         }
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        ProjectConfig::write_gitignore()?;
+        self.prepare_parent()?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -397,10 +394,7 @@ impl DiskLog {
     }
 
     fn rewrite(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        ProjectConfig::write_gitignore()?;
+        self.prepare_parent()?;
         let tmp = self.path.with_extension("log.tmp");
         {
             let mut file = OpenOptions::new()
@@ -418,6 +412,21 @@ impl DiskLog {
         }
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
         fs::rename(tmp, &self.path)?;
+        Ok(())
+    }
+
+    /// Create the log parent. Write `.gitignore` only when that parent is
+    /// `.aic`, using that path rather than the process-global relative
+    /// [`ProjectConfig::dir`].
+    fn prepare_parent(&self) -> Result<()> {
+        let Some(parent) = self.path.parent() else {
+            return Ok(());
+        };
+        if parent.file_name() == Some(std::ffi::OsStr::new(".aic")) {
+            ProjectConfig::write_gitignore_to(parent)?;
+        } else {
+            fs::create_dir_all(parent)?;
+        }
         Ok(())
     }
 }
@@ -690,5 +699,40 @@ mod tests {
         assert_eq!(listed[0].tenant, "uat");
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn disk_log_writes_gitignore_beside_an_aic_parent() {
+        // Persist used to call ProjectConfig::write_gitignore(), which resolves
+        // `.aic` against the process cwd and raced daemon tests that
+        // set_current_dir into an empty temp dir (AlreadyExists on
+        // create_dir_all). Gitignore belongs next to the log when the log
+        // lives in `.aic/`, not at whatever cwd happens to be.
+        let dir = crate::config::TestDir::new();
+        let aic = dir.path(".aic");
+        fs::create_dir_all(&aic).unwrap();
+        let path = aic.join("undo.log");
+        let mut log = DiskLog::load(path.clone()).unwrap();
+        log.record(entry_for("uat", "keep")).unwrap();
+        log.record(entry_for("UAT", "drop")).unwrap();
+        assert_eq!(log.forget_tenant("UAT").unwrap(), 1);
+
+        assert_eq!(
+            fs::read_to_string(aic.join(".gitignore")).unwrap(),
+            ProjectConfig::gitignore_content()
+        );
+        let reloaded = DiskLog::load(path).unwrap();
+        let listed = reloaded.list(10);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].tenant, "uat");
+    }
+
+    #[test]
+    fn disk_log_on_a_temp_path_does_not_write_parent_gitignore() {
+        let dir = crate::config::TestDir::new();
+        let path = dir.path("undo.log");
+        let mut log = DiskLog::load(path).unwrap();
+        log.record(entry_for("uat", "keep")).unwrap();
+        assert!(!dir.path(".gitignore").exists());
     }
 }
