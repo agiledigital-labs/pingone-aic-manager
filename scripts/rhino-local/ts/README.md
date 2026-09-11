@@ -18,8 +18,9 @@ legacy `sharedState`/`transientState` when `given.engine === "legacy"`,
 request maps, `outcome` / `action.goTo`, `logger`, `openidm`, `httpClient`,
 `callbacksBuilder` (the six authenticate-response types), `systemEnv`,
 `idRepository.getIdentity`, next-gen `require()` (CommonJS eval of seeded
-library bodies; a missing id throws naming `given.libraries`). End-to-end
-cases live in `cases/`.
+library bodies; a missing id throws naming `given.libraries`), legacy
+`JavaImporter` + `Action.send(HiddenValueCallback)`. End-to-end cases live
+in `cases/`.
 
 ## JVM runner client
 

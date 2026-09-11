@@ -16,19 +16,6 @@ function parseError(message: string): BlockedBy {
   return { method: "(parse)", throw: message };
 }
 
-/**
- * Legacy emit via `JavaImporter` + `Action.send`. Measured 2026-09-12 against
- * the local JVM runner after `given.callbacks: []` unblocked `isEmpty`.
- * `frJava.Action` is undefined because the AM classes are not on the
- * classpath, so the exact throw is Rhino's `Cannot call method "send"`.
- */
-function actionSend(line: string): BlockedBy {
-  return {
-    method: "Action.send",
-    throw: `TypeError: Cannot call method "send" of undefined (${line})`,
-  };
-}
-
 /** First-visit seed so `callbacks.isEmpty()` is `true` instead of a missing-fixture throw. */
 function firstVisit(given?: Given): Given {
   return { ...(given ?? {}), callbacks: given?.callbacks ?? [] };
@@ -674,10 +661,9 @@ export const realCases: RealEntry[] = [
     }),
   }, { given: managerSwapGiven }),
 
-  // Legacy engine. Three of these take a next-gen `callbacksBuilder` fallback
-  // because the overlay still installs that binding; they run and miss the
-  // live typeof dump. The other four have no fallback and throw on
-  // `Action.send` (`frJava.Action` is undefined).
+  // Legacy engine. Emit is JavaImporter + Action.send; next-gen-only
+  // bindings are undefined so scripts cannot take the callbacksBuilder
+  // fallback.
   legacy("legacy-bindings", "fixtures-legacy/legacy-bindings.script.js", {
     value: JSON.stringify({
       nodeState: "object",
@@ -706,7 +692,30 @@ export const realCases: RealEntry[] = [
   legacy(
     "legacy-es2015-globals",
     "fixtures-legacy/legacy-es2015-globals.script.js",
-    {}
+    {
+      value: [
+        { name: "typeof Map", ok: true, value: "undefined" },
+        { name: "typeof Set", ok: true, value: "undefined" },
+        { name: "typeof WeakMap", ok: true, value: "undefined" },
+        { name: "typeof WeakSet", ok: true, value: "undefined" },
+        { name: "typeof Symbol", ok: true, value: "undefined" },
+        { name: "typeof Proxy", ok: true, value: "undefined" },
+        { name: "typeof Reflect", ok: true, value: "undefined" },
+        { name: "typeof Promise", ok: true, value: "undefined" },
+        { name: "typeof JSON", ok: true, value: "object" },
+        {
+          name: "new Map + set/get/size",
+          ok: false,
+          error: 'ReferenceError: "Map" is not defined.',
+        },
+        {
+          name: "new Set + add/has/size",
+          ok: false,
+          error: 'ReferenceError: "Set" is not defined.',
+        },
+        { name: "java.util.HashMap", ok: true, value: "1:1" },
+      ],
+    }
   ),
   legacy(
     "legacy-idrepository-methods",
@@ -718,26 +727,22 @@ export const realCases: RealEntry[] = [
         setAttribute: "function",
         addAttribute: "function",
       },
-    },
-    { blocked: actionSend("legacy-idrepository-methods#13") }
+    }
   ),
   legacy(
     "legacy-nodestate-logger",
     "fixtures-legacy/legacy-nodestate-logger.script.js",
-    {},
-    { blocked: actionSend("legacy-nodestate-logger#15") }
+    {}
   ),
   legacy(
     "legacy-logger-args",
     "fixtures-legacy/legacy-logger-args.script.js",
-    {},
-    { blocked: actionSend("legacy-logger-args#33") }
+    {}
   ),
   legacy(
     "legacy-logger-levels",
     "fixtures-legacy/legacy-logger-levels.script.js",
-    {},
-    { blocked: actionSend("legacy-logger-levels#27") }
+    {}
   ),
   legacy(
     "legacy-request-multivalue",
