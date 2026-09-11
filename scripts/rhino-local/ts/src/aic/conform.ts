@@ -2,6 +2,7 @@ import { isPortable } from "../case/portable.ts";
 import type { Case, RecordedEffects, Verdict } from "../case/types.ts";
 import { diffRecordedEffects, type EffectsDisagreement } from "./diff.ts";
 import { judge } from "../case/verdict.ts";
+import { runAicLane } from "./run.ts";
 import { aicUnsupportedReason } from "./unsupported.ts";
 
 export type LaneRunner = (args: {
@@ -13,7 +14,8 @@ export interface ConformanceInput {
   kase: Case;
   source: string;
   local?: LaneRunner;
-  aic?: LaneRunner;
+  /** Omit to skip; pass a runner, or `"tenant"` to use `runAicLane`. */
+  aic?: LaneRunner | "tenant";
 }
 
 export interface LaneResult {
@@ -42,9 +44,10 @@ export interface ConformanceReport {
 export async function conform(input: ConformanceInput): Promise<ConformanceReport> {
   const local = await runLane(input.local, input, "no local runner provided (bindings lane is a separate slice)");
   const aicSkip = aicUnsupportedReason(input.kase);
+  const aicRunner = input.aic === "tenant" ? tenantRunner : input.aic;
   const aic = aicSkip
     ? skipResult(aicSkip)
-    : await runLane(input.aic, input, "no AIC runner provided");
+    : await runLane(aicRunner, input, "no AIC runner provided");
 
   const disagreements =
     local.effects !== undefined && aic.effects !== undefined
@@ -79,3 +82,5 @@ async function runLane(
 function skipResult(reason: string): LaneResult {
   return { skipped: reason };
 }
+
+const tenantRunner: LaneRunner = ({ kase, source }) => runAicLane(kase, source);
