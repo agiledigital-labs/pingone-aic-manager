@@ -210,6 +210,15 @@ impl<'a> ApiCall<'a> {
         }
     }
 
+    /// POST that computes a response and stores nothing — schema, template,
+    /// node introspection, PDP eval. The method-based production gate would
+    /// otherwise demand consent for every POST; this constructor is the
+    /// explicit, greppable exemption. Callers still set `api_version` /
+    /// `body` as the family requires.
+    pub fn read_only_action(tenant: &'a str, path: &'a str) -> Self {
+        Self::new(tenant, "POST", path).confirmed_prod(true)
+    }
+
     /// Send `body` as JSON.
     pub fn body(mut self, body: serde_json::Value) -> Self {
         self.body = Some(body);
@@ -447,6 +456,14 @@ mod tests {
                     confirmed_prod: true,
                     api_version: Some("resource=2.0".into()),
                     ..bare("DELETE")
+                },
+            ),
+            (
+                "read_only_action",
+                ApiCall::read_only_action(TENANT, PATH),
+                ApiCallRequest {
+                    confirmed_prod: true,
+                    ..bare("POST")
                 },
             ),
         ];

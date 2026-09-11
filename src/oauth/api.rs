@@ -29,9 +29,9 @@ fn client_call<'a>(
 }
 
 fn client_read_action_call<'a>(tenant: &'a str, path: &'a str) -> ApiCall<'a> {
-    // Same treatment as script syntax validation: schema/template POSTs
-    // compute a response and store nothing.
-    client_call(tenant, "POST", path, Some(json!({})), true)
+    ApiCall::read_only_action(tenant, path)
+        .api_version(API_VERSION)
+        .body(json!({}))
 }
 
 fn realm_path(realm: &str) -> String {

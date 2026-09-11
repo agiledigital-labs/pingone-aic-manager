@@ -12,18 +12,6 @@ use crate::{Error, Result};
 
 const API_VERSION: &str = "protocol=2.1,resource=1.0";
 
-fn issuer_post_call<'a>(
-    tenant: &'a str,
-    path: &'a str,
-    body: Value,
-    confirmed_prod: bool,
-) -> ApiCall<'a> {
-    ApiCall::new(tenant, "POST", path)
-        .body(body)
-        .confirmed_prod(confirmed_prod)
-        .api_version(API_VERSION)
-}
-
 fn issuer_put_call<'a>(
     tenant: &'a str,
     path: &'a str,
@@ -114,14 +102,16 @@ pub async fn read_issuer(tenant: &str, realm: &str, id: &str) -> Result<Value> {
     crate::aic::api::get_versioned(tenant, &path, API_VERSION).await
 }
 
+fn issuer_template_call<'a>(tenant: &'a str, path: &'a str) -> ApiCall<'a> {
+    ApiCall::read_only_action(tenant, path)
+        .body(json!({}))
+        .api_version(API_VERSION)
+}
+
 /// Fetch AM's default issuer object before creating one.
 pub async fn issuer_template(tenant: &str, realm: &str) -> Result<Value> {
     let path = format!("{}?_action=template", issuers_path(realm));
-    // The template action stores nothing. Match script syntax validation by
-    // passing the method-based transport gate without user production consent.
-    issuer_post_call(tenant, &path, json!({}), true)
-        .send()
-        .await
+    issuer_template_call(tenant, &path).send().await
 }
 
 /// Create or update an issuer. AM agents use plain PUT without `If-Match`.
@@ -154,7 +144,7 @@ mod tests {
     #[test]
     fn issuer_template_bypasses_prod_but_issuer_upsert_does_not() {
         let template_path = format!("{}?_action=template", issuers_path("alpha"));
-        let template = request(issuer_post_call("prod", &template_path, json!({}), true));
+        let template = request(issuer_template_call("prod", &template_path));
         assert_eq!(template.method, "POST");
         assert!(template.confirmed_prod);
 
