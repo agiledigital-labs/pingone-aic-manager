@@ -1008,7 +1008,7 @@ pub(crate) async fn run_with_runtime(
                                 )?;
                                 match &retry {
                                     sync::PushOutcome::Refused { refusal, .. } => {
-                                        invalid += u32::from(retry.is_failure());
+                                        invalid += 1;
                                         report_refusal(&full, refusal);
                                     }
                                     sync::PushOutcome::Pushed => {
@@ -1017,7 +1017,7 @@ pub(crate) async fn run_with_runtime(
                                     }
                                     sync::PushOutcome::NotConfirmed(reason) => {
                                         eprintln!("! {full}: {}", reason.message());
-                                        failed += u32::from(retry.is_failure());
+                                        failed += 1;
                                     }
                                     // Nothing to write after all (the local
                                     // edit matched, or someone landed the same
@@ -2668,16 +2668,16 @@ async fn push_all(
             PushOutcome::Pushed => println!("pushed {full}"),
             PushOutcome::NotConfirmed(reason) => {
                 eprintln!("! {full}: {}", reason.message());
-                failed += u32::from(outcome.is_failure());
+                failed += 1;
             }
             PushOutcome::Unchanged | PushOutcome::AlreadyInSync => {}
             PushOutcome::Refused { refusal, .. } => {
                 report_refusal(&full, refusal);
-                refused += u32::from(outcome.is_failure());
+                refused += 1;
             }
             PushOutcome::Conflict(_) => {
                 println!("{full}: CONFLICT — skipped (`diff {full}`, or `push {full} --force`)");
-                conflicts += u32::from(outcome.is_failure());
+                conflicts += 1;
             }
         }
     }

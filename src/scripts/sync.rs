@@ -340,6 +340,12 @@ pub enum PushOutcome {
 
 impl PushOutcome {
     /// Whether the requested local-to-tenant convergence did not complete.
+    ///
+    /// For callers that classify from a **non-exhaustive** position — a
+    /// catch-all arm, a counter fed by several variants — so that a new
+    /// variant is classified here rather than silently counted as a success.
+    /// An exhaustive `match` arm already knows its own verdict and should say
+    /// so directly.
     pub fn is_failure(&self) -> bool {
         match self {
             Self::Pushed | Self::Unchanged | Self::AlreadyInSync => false,
