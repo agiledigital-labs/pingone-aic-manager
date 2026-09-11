@@ -212,6 +212,59 @@ findings). Each should name the guard that will eventually retire it.
   none automatable; enumerate the CLI's write-path steps and tick off each one
   against the tab._
 
+- **A new permission needs a test that it is HONOURED, not only that it
+  parses.** `--force=backup` shipped with six parsing tests and zero behaviour
+  tests: every test call site of `install_pull_at` / `install_pull_entry` /
+  `install_remote` / `PullPlan::install` passes `skip_backup = false`, so
+  inverting `if !skip_backup` in all four leaves the suite green (2026-09-11). A
+  parser change is reviewed as a parser; ask separately what the parsed value
+  makes the program do differently, and test that. _Guard: one test per surface
+  driving the permission's non-default value and asserting the changed effect._
+
+- **Apply "could this test fail if the code were wrong?" to the batch's FEATURE
+  code, not only its safety code.** Fourth sighting (2026-09-11,
+  `consecutive_tail_windows_share_exactly_one_boundary`), and the first where
+  the check was demonstrably applied to the guard code in the same batch and
+  skipped on the feature shipped beside it. The tell is a test whose assertions
+  restate the body's arithmetic while its _name_ claims an invariant about the
+  outside world. _Guard: for each new test, name the production edit that turns
+  it red; if that edit is "delete this line", the test is a change-detector._
+
+- **Directory traversal that deletes must select with `entry.file_type()`, never
+  `Path::is_dir()`.** `Path::is_dir()` follows symlinks, so a symlinked child
+  directory hands a pruner a target outside the tree it was told to manage —
+  `src/scripts/workspace.rs:810` deletes files on the far side (2026-09-11).
+  Reviewing the match predicate is not enough; review how candidates are
+  _selected_. _Guard: a test that a symlinked child directory is skipped, in
+  every walker that removes files._
+
+- **A batch operation must be all-or-nothing, or must report which entries
+  landed.** `PullPlan::install` and policy's install loop run sequentially and
+  `collect()` into a `Result`, so a failure part-way leaves earlier entries
+  written and their snapshots advanced while the surface prints a failure
+  (2026-09-11; raised in a review round and lost between rounds). Preflighting
+  the whole batch makes the _consent_ atomic and is often mistaken for making
+  the _application_ atomic. _Guard: a test that fails entry N of a batch and
+  asserts either nothing was installed or the outcome names entries 1..N-1 as
+  installed._
+
+- **When a fix lands on one path, grep for its siblings before closing.** The
+  check/use race and the batch-atomicity defect were fixed in `policy/cli.rs`
+  and left in `scripts/sync.rs` in the same commit range (2026-09-11). The
+  `codex-review` skill's highest-yield question — "where else does this shape
+  appear?" — was not asked. _Guard: none automatable; ask it once per fixed
+  defect class, and keep an open/closed ledger across review rounds rather than
+  re-deriving it from the most recent brief._
+
+- **The doc comment on a matcher must say what it matches ON.**
+  `prune_if_generated_only` says it deletes "known `extra_files` output", which
+  reads as content-derived; it is name-only for `tsconfig.json` and byte-exact
+  only for `.js` wrappers. That comment misled the author of the change itself,
+  who built a synthetic probe on the byte-exact reading and then spent effort
+  explaining a non-result (2026-09-11). _Guard: none automatable; when a
+  predicate mixes name-based and content-based arms, the comment must name which
+  is which._
+
 ## Findings log
 
 ### 2026-08-11 — `write_gitignore()` was called; the gitignore covered nothing
@@ -743,3 +796,93 @@ findings). Each should name the guard that will eventually retire it.
   `unstable-rendered-line-info`) would remove the approximation entirely; not
   worth an unstable feature today. Generally: when a review's own fix lands in
   the same category as the finding it closes, say so in the commit.
+
+### 2026-09-11 — a follow-the-logs command that drops the events it exists to show
+
+- **What:** `logs tail` (`src/logs/cli.rs:912-921`, loop at `938`) advances
+  `TailCursor::next_begin` to `end` unconditionally, before the fetch, and never
+  revisits a closed interval. The log API window is `(beginTime, endTime]` and
+  ingestion lags — a fact the **same file** states in `incomplete_tx_note`
+  ("logs can lag tens of seconds behind the request") and that `logs sync`
+  already handles by rewinding five minutes and relying on insert dedup. Any
+  event whose timestamp falls in a window that was queried before the event was
+  ingested is never seen again.
+- **Why missed:** the review checked that consecutive windows were contiguous,
+  which is exactly what the test asserts and exactly the wrong property. Nobody
+  asked what the _server_ does between the two polls. The repo's own
+  contradicting knowledge sat 60 lines below the defect.
+- **Guard:** a test driving `TailCursor` with an injected clock and an injected
+  fetch that returns an event stamped inside window N only on poll N+1,
+  asserting it is still delivered. More durably: `logs tail` should reuse the
+  overlap-and-dedupe windowing in `src/logs/ops.rs` rather than growing a
+  second, weaker one.
+
+### 2026-09-11 — the test named the invariant, asserted the arithmetic (4th)
+
+- **What:** `consecutive_tail_windows_share_exactly_one_boundary`
+  (`src/logs/cli.rs:1283`) asserts `next_window(t1) == (t0, t1)` then
+  `next_window(t2) == (t1, t2)`. That is a restatement of the two-line body; it
+  can only fail if the assignment is deleted. It was described in the session
+  notes as "a windowing-correctness unit test proving no dropped/duplicated
+  events across polls", and it proves neither.
+- **Why missed:** the standing check exists and has three prior sightings, but
+  it was applied to the _new safety_ code (protected pull, force parsing,
+  backups) and not to the _new feature_ code shipped in the same batch. The
+  check reads as being about guards; it is about tests.
+- **Guard:** the standing check below now names feature code explicitly. The
+  concrete guard for this instance is the injected-clock test above.
+
+### 2026-09-11 — a new flag's parsing has six tests and its behaviour has none
+
+- **What:** `--force=backup` was added across four surfaces. Its _parsing_ is
+  covered six ways (`src/cli/force.rs`, plus
+  `*_parses_operation_and_backup_permissions_independently` in oauth, journey
+  and policy). Its _effect_ — not writing a backup — is covered nowhere: every
+  test call site of `install_pull_at` / `install_pull_entry` / `install_remote`
+  / `PullPlan::install` passes `skip_backup = false`. Inverting
+  `if !skip_backup` in all four leaves the whole suite green.
+- **Why missed:** the flag was reviewed as a _parser_ change, and the parser was
+  reviewed thoroughly. The review rounds asked whether the guard could be
+  requested, never whether requesting it did anything.
+- **Guard:** one `install(..., true)` test per surface asserting the file is
+  replaced and no backup exists. Generally: for every new permission, one test
+  that the permission is _honoured_, not only that it parses.
+
+### 2026-09-11 — the pruner follows a directory symlink out of the workspace
+
+- **What:** `prune_child_dirs` (`src/scripts/workspace.rs:810`) selects children
+  with `path.is_dir()`, which traverses symlinks. `prune_if_generated_only` then
+  `read_dir`s the _target_ and `remove_file`s every entry that matches the
+  generated-scaffold predicate. A symlink at `am/<realm>/foo` pointing outside
+  the workspace has files deleted on the far side. `DirEntry::file_type()` is
+  used for the folder's _contents_ (correctly, it does not follow), so only the
+  directory itself is the hole.
+- **Why missed:** first sighting for this repo. The review of the pruner
+  concentrated on the match predicate — which is careful, fails closed on a
+  partial listing, and is well tested for user content — and not on how
+  candidates are selected.
+- **Guard:** `entry.file_type()?.is_dir()` at the selection site, plus a test
+  that a symlinked child directory is skipped. The general rule is in the
+  standing check below.
+
+### 2026-09-11 — raised in round 2, declared closed in round 3, still open
+
+- **What:** the T14 stage-4 review loop ran four rounds and ended "Clean … no
+  fourth review round is needed." Round 2 had reported that `PullPlan::install`
+  installs sequentially with `collect()`, so a failure on entry N leaves entries
+  1..N-1 installed with snapshots advanced while the surface reports the pull as
+  failed; and that `install_remote` re-reads local bytes for the backup without
+  comparing them to the preflight bytes. The round-3 brief listed only the three
+  items from the round-2 _follow-up_, and round 3 answered against that narrowed
+  set. Both defects are still in `src/scripts/sync.rs:169-180` and `1076-1102`;
+  the equivalent policy defect _was_ fixed, so the batch shipped the same rule
+  enforced on one path and not its sibling.
+- **Why missed:** the closing question was "are these three closed?", which has
+  a true answer of "yes". `codex-review`'s own skill names the question that
+  would have caught it — "Is anything from earlier rounds still open that I have
+  lost track of?" — and it was not asked. The sibling instance would also have
+  been found by "where else does this shape appear?", the skill's highest-yield
+  question.
+- **Guard:** not automatable. Procedural: keep an explicit open/closed ledger
+  across rounds rather than re-deriving it from the last brief, and never accept
+  a "closed" verdict rendered against a narrowed brief.
