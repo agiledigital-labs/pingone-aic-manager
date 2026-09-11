@@ -55,6 +55,14 @@ describe("openidm", () => {
     );
   });
 
+  it("returns null for a missing record in a seeded collection", () => {
+    const sandbox = loadBehaviour({
+      managed: { "managed/alpha_user": [{ _id: "alice" }] },
+    });
+    const openidm = sandbox.openidm as { read: (id: string) => unknown };
+    expect(openidm.read("managed/alpha_user/nobody")).toBeNull();
+  });
+
   it("records create with a null id as the collection path", () => {
     const effects = runScript(
       'openidm.create("managed/alpha_user", null, { userName: "bob" });',
