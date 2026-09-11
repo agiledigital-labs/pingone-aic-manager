@@ -51,6 +51,19 @@ export function diffRecordedEffects(
   const observationGaps: ObservationGap[] = [];
   const localUnobserved = new Set(local.evidence?.unobservedChannels ?? []);
   const aicUnobserved = new Set(aic.evidence?.unobservedChannels ?? []);
+  const localUnified = local.evidence?.stateBuckets === "unified";
+  const aicUnified = aic.evidence?.stateBuckets === "unified";
+
+  if (localUnified || aicUnified) {
+    observationGaps.push({
+      channel: "nodeState",
+      path: "buckets",
+      local: localUnified ? "unified" : "exact",
+      aic: aicUnified ? "unified" : "exact",
+      message:
+        "nodeState: per-bucket absence and hidden lower-precedence writes cannot be compared through a unified view",
+    });
+  }
 
   compareScalar(
     "outcome",
@@ -148,12 +161,25 @@ function compareState(
   const localMutations = collectState(local, localUnobserved, "local", gaps);
   const aicMutations = collectState(aic, aicUnobserved, "AIC", gaps);
   const remaining = aicMutations.slice();
+  const pairedAicKeys = new Set<string>();
   for (const localMutation of localMutations) {
-    const index = remaining.findIndex(
-      (candidate) => candidate.mutation.key === localMutation.mutation.key
+    const sameKey = remaining
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(({ candidate }) => candidate.mutation.key === localMutation.mutation.key);
+    const equal = sameKey.find(({ candidate }) =>
+      sameMutationValue(localMutation.mutation, candidate.mutation)
     );
+    const index = equal?.index ?? sameKey[0]?.index ?? -1;
     if (index < 0) {
-      disagreements.push(stateDisagreement(localMutation, undefined));
+      if (
+        aic.evidence?.stateBuckets === "unified" &&
+        (unifiedBeforeHasKey(aic, localMutation.mutation.key) ||
+          pairedAicKeys.has(localMutation.mutation.key))
+      ) {
+        gaps.push(hiddenMutationGap("AIC", localMutation));
+      } else {
+        disagreements.push(stateDisagreement(localMutation, undefined));
+      }
       continue;
     }
     const aicMutation = remaining[index];
@@ -162,6 +188,7 @@ function compareState(
       disagreements.push(stateDisagreement(localMutation, undefined));
       continue;
     }
+    pairedAicKeys.add(aicMutation.mutation.key);
     if (!sameMutationValue(localMutation.mutation, aicMutation.mutation)) {
       disagreements.push(stateDisagreement(localMutation, aicMutation));
       continue;
@@ -185,8 +212,37 @@ function compareState(
     });
   }
   for (const aicMutation of remaining) {
-    disagreements.push(stateDisagreement(undefined, aicMutation));
+    if (
+      local.evidence?.stateBuckets === "unified" &&
+      unifiedBeforeHasKey(local, aicMutation.mutation.key)
+    ) {
+      gaps.push(hiddenMutationGap("local", aicMutation));
+    } else {
+      disagreements.push(stateDisagreement(undefined, aicMutation));
+    }
   }
+}
+
+function unifiedBeforeHasKey(effects: RecordedEffects, key: string): boolean {
+  if (Object.prototype.hasOwnProperty.call(effects.evidence?.ambientState ?? {}, key)) {
+    return true;
+  }
+  return STATE_CHANNELS.some((bucket) =>
+    Object.prototype.hasOwnProperty.call(effects[bucket].initial, key)
+  );
+}
+
+function hiddenMutationGap(
+  unobservingLane: "local" | "AIC",
+  observed: LocatedMutation
+): ObservationGap {
+  return {
+    channel: "nodeState",
+    path: observed.mutation.key,
+    local: unobservingLane === "local" ? "hidden by unified view" : formatLocated(observed),
+    aic: unobservingLane === "AIC" ? "hidden by unified view" : formatLocated(observed),
+    message: `nodeState: ${JSON.stringify(observed.mutation.key)} may be a lower-precedence or same-value write hidden from the ${unobservingLane} unified view`,
+  };
 }
 
 function collectState(

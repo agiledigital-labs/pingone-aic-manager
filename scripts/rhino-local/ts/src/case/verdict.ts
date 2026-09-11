@@ -75,6 +75,7 @@ export function judge(input: unknown, effects: unknown): Verdict {
   );
   const unverified: Unverified[] = [
     ...reconciled.unverified,
+    ...qualifyUnifiedState(kase.expect, strictness, evidence),
     ...qualifyUnobserved(kase.expect, strictness, evidence.unobservedChannels),
   ];
   const mismatches: Mismatch[] = [
@@ -292,6 +293,30 @@ function qualifyUnobserved(
   return gaps;
 }
 
+function qualifyUnifiedState(
+  expect: Expect,
+  strictness: Strictness,
+  evidence: RecordingEvidence
+): Unverified[] {
+  if (evidence.stateBuckets === "exact") {
+    return [];
+  }
+  const needsBuckets =
+    STATE_CHANNELS.some((channel) => stateDiffHasEntries(expect[channel])) ||
+    STATE_CHANNELS.some((channel) => !strictness[channel]);
+  if (!needsBuckets) {
+    return [];
+  }
+  return [
+    {
+      channel: "nodeState",
+      path: "buckets",
+      message:
+        "nodeState: the runner observes one unified view; per-bucket absence and hidden lower-precedence writes were not verified",
+    },
+  ];
+}
+
 function needsObservation(
   channel: Channel,
   expect: Expect,
@@ -328,7 +353,12 @@ function stateDiffHasEntries(diff: StateDiff | undefined): boolean {
 }
 
 function exactEvidence(): RecordingEvidence {
-  return { ambientState: {}, unbucketedState: [], unobservedChannels: [] };
+  return {
+    stateBuckets: "exact",
+    ambientState: {},
+    unbucketedState: [],
+    unobservedChannels: [],
+  };
 }
 
 function resolveStrictness(flags: AllowUndeclared | undefined): Strictness {
@@ -931,7 +961,12 @@ function parseRecordingEvidence(raw: unknown): RecordingEvidence {
   if (!isPlainObject(raw)) {
     throw new Error("rhino-local: effects.evidence is not an object");
   }
-  for (const key of ["ambientState", "unbucketedState", "unobservedChannels"]) {
+  for (const key of [
+    "stateBuckets",
+    "ambientState",
+    "unbucketedState",
+    "unobservedChannels",
+  ]) {
     if (!(key in raw)) {
       throw new Error(`rhino-local: effects.evidence is missing ${key}`);
     }
@@ -941,7 +976,13 @@ function parseRecordingEvidence(raw: unknown): RecordingEvidence {
     "effects.evidence.unobservedChannels",
     CHANNEL_SET
   ) as Channel[];
+  if (raw.stateBuckets !== "exact" && raw.stateBuckets !== "unified") {
+    throw new Error(
+      'rhino-local: effects.evidence.stateBuckets must be "exact" or "unified"'
+    );
+  }
   return {
+    stateBuckets: raw.stateBuckets,
     ambientState: parseJsonObject(
       raw.ambientState,
       "effects.evidence.ambientState"

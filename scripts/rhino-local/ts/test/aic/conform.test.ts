@@ -41,6 +41,7 @@ describe("diffRecordedEffects", () => {
     });
     const aic = makeEffects({
       evidence: {
+        stateBuckets: "exact",
         ambientState: {},
         unbucketedState: [],
         unobservedChannels: ["openidm"],
@@ -59,6 +60,7 @@ describe("diffRecordedEffects", () => {
     });
     const aic = makeEffects({
       evidence: {
+        stateBuckets: "unified",
         ambientState: {},
         unbucketedState: [
           {
@@ -78,12 +80,65 @@ describe("diffRecordedEffects", () => {
     );
   });
 
+  it("reports the standing unified-bucket limitation even with no visible delta", () => {
+    const aic = makeEffects({
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [],
+        unobservedChannels: [],
+      },
+    });
+    expect(diffRecordedEffects(makeEffects(), aic).observationGaps).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "buckets" })
+    );
+  });
+
+  it("classifies a same-value lower-bucket write as structurally hidden", () => {
+    const local = makeEffects({
+      sharedState: bucket({ existing: 1 }, { existing: 1 }),
+      transientState: bucket({}, { existing: 1 }),
+    });
+    const aic = makeEffects({
+      sharedState: bucket({ existing: 1 }, { existing: 1 }),
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [],
+        unobservedChannels: [],
+      },
+    });
+    const comparison = diffRecordedEffects(local, aic);
+    expect(comparison.disagreements).toEqual([]);
+    expect(comparison.observationGaps).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "existing" })
+    );
+  });
+
+  it("anti-silencing: a missing new key is a disagreement despite unified buckets", () => {
+    const local = makeEffects({
+      transientState: bucket({}, { created: true }),
+    });
+    const aic = makeEffects({
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [],
+        unobservedChannels: [],
+      },
+    });
+    expect(diffRecordedEffects(local, aic).disagreements).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "created" })
+    );
+  });
+
   it("anti-silencing: a wrong unbucketed value is a real disagreement and failed verdict", () => {
     const local = makeEffects({
       transientState: bucket({}, { scratch: "n/a" }),
     });
     const aic = makeEffects({
       evidence: {
+        stateBuckets: "unified",
         ambientState: {},
         unbucketedState: [
           {
@@ -113,6 +168,7 @@ describe("diffRecordedEffects", () => {
     });
     const aic = makeEffects({
       evidence: {
+        stateBuckets: "unified",
         ambientState: {},
         unbucketedState: [
           {
@@ -135,6 +191,7 @@ describe("diffRecordedEffects", () => {
   it("fails an undeclared unbucketed mutation under default strictness", () => {
     const effects = makeEffects({
       evidence: {
+        stateBuckets: "unified",
         ambientState: {},
         unbucketedState: [
           {
@@ -163,6 +220,7 @@ describe("diffRecordedEffects", () => {
     });
     const effects = makeEffects({
       evidence: {
+        stateBuckets: "unified",
         ambientState: {},
         unbucketedState: [
           {
@@ -207,6 +265,7 @@ describe("diffRecordedEffects", () => {
     });
     const effects = makeEffects({
       evidence: {
+        stateBuckets: "exact",
         ambientState: {},
         unbucketedState: [],
         unobservedChannels: ["openidm"],

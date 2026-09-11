@@ -285,6 +285,8 @@ export type UnbucketedStateMutation = StateMutation & {
 
 /** What a runner could establish in addition to the effect values themselves. */
 export interface RecordingEvidence {
+  /** `unified` means per-bucket absence and hidden lower-precedence writes are unknowable. */
+  stateBuckets: "exact" | "unified";
   /** Unified state present before the subject but absent from `given`. */
   ambientState: JsonObject;
   /** Unified state mutations whose concrete bucket could not be observed. */
