@@ -326,7 +326,10 @@ async fn get(tenant_arg: Option<String>, out: Option<PathBuf>) -> Result<()> {
     bytes.push(b'\n');
     ProjectConfig::write_gitignore()?;
     crate::access::ops::write_private_file(&path, &bytes, false)?;
-    println!("wrote config/access to {}", path.display());
+    println!(
+        "wrote config/access to {}",
+        crate::config::display_path(&path)
+    );
     Ok(())
 }
 
@@ -347,7 +350,7 @@ async fn write(amendment: Amendment, options: AccessWriteArgs) -> Result<()> {
                 "{error}; pass --force=backup to proceed without a backup"
             ))
         })?;
-        println!("backup: {}", path.display());
+        println!("backup: {}", crate::config::display_path(&path));
         Some(path)
     } else {
         None

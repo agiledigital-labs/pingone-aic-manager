@@ -543,9 +543,12 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             )?;
             println!(
                 "pulled journey {name:?} ({node_count} nodes) -> {}{}",
-                path.display(),
+                crate::config::display_path(&path),
                 backup
-                    .map(|path| format!("; previous export backed up to {}", path.display()))
+                    .map(|path| format!(
+                        "; previous export backed up to {}",
+                        crate::config::display_path(&path)
+                    ))
                     .unwrap_or_default()
             );
             Ok(())
