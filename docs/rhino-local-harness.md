@@ -381,17 +381,30 @@ two cases, so deterministic rather than incidental. They are not script writes,
 but `judge()` currently reports them as undeclared additions and fails the case.
 
 **2. Bucket membership is not observable from the AIC side.** A key written
-with `nodeState.putTransient` arrives in `sharedState.final` with
-`transientState.final` empty. This is not a recording bug:
-`src/aic/record.ts::classifyFinal` documents it correctly — `nodeState.get` is
-unified (transient -> secure -> shared) and next-gen AM exposes no
-bucket-inspection API, so a newly-transient key is genuinely unobservable as
-transient. The gap is downstream, in `diffRecordedEffects`, which treats it as
-a behavioural disagreement.
+with `nodeState.putTransient` is reported in `sharedState.final` with
+`transientState.final` empty — but read that carefully, because the obvious
+reading is wrong. The wrapper's result node reads `nodeState.get`, which is
+**unified** (transient -> secure -> shared). So what was measured is that the
+key is *reachable*; the shared attribution was supplied by
+`src/aic/record.ts::classifyFinal`, not observed on the tenant. Next-gen AM
+exposes no bucket-inspection API, so bucket membership is genuinely
+unrecoverable from a unified read, and any lane that reports one is inventing
+it.
+
+The same caution applies to the ambient keys above: they were observed at the
+**result** node, which does not establish that the **subject** could read them.
+Establishing that needs a snapshot taken inside the subject node itself, before
+and after the author's source.
 
 Neither is fixed yet. Both are conformance-model questions rather than bugs:
 the code currently conflates a genuine behavioural difference, an effect one
 lane structurally cannot observe, and ambient environment state.
+
+A third defect found while reviewing this: the AIC recorder returns
+`openidm: []`, `http: []` and `logs: []` unconditionally. Those are not
+observations — the wrapper journey never measures them — so a case can pass its
+`openidm` expectations having never looked. An empty array must mean "observed
+none", never "did not observe".
 
 ### The portability guard fires correctly
 
