@@ -1,6 +1,10 @@
 import { isPortable } from "../case/portable.ts";
-import type { Case, RecordedEffects, Verdict } from "../case/types.ts";
-import { diffRecordedEffects, type EffectsDisagreement } from "./diff.ts";
+import type { Case, JsonObject, RecordedEffects, Verdict } from "../case/types.ts";
+import {
+  diffRecordedEffects,
+  type EffectsDisagreement,
+  type ObservationGap,
+} from "./diff.ts";
 import { judge } from "../case/verdict.ts";
 import { runAicLane } from "./run.ts";
 import { aicUnsupportedReason } from "./unsupported.ts";
@@ -31,6 +35,8 @@ export interface ConformanceReport {
   local: LaneResult;
   aic: LaneResult;
   disagreements: EffectsDisagreement[];
+  observationGaps: ObservationGap[];
+  ambientState: Array<{ lane: "local" | "aic"; values: JsonObject }>;
 }
 
 /**
@@ -49,18 +55,37 @@ export async function conform(input: ConformanceInput): Promise<ConformanceRepor
     ? skipResult(aicSkip)
     : await runLane(aicRunner, input, "no AIC runner provided");
 
-  const disagreements =
+  const comparison =
     local.effects !== undefined && aic.effects !== undefined
       ? diffRecordedEffects(local.effects, aic.effects)
-      : [];
+      : { disagreements: [], observationGaps: [] };
 
   return {
     name: input.kase.name,
     portable: isPortable(input.kase),
     local,
     aic,
-    disagreements,
+    disagreements: comparison.disagreements,
+    observationGaps: comparison.observationGaps,
+    ambientState: collectAmbient(local, aic),
   };
+}
+
+function collectAmbient(
+  local: LaneResult,
+  aic: LaneResult
+): ConformanceReport["ambientState"] {
+  const ambient: ConformanceReport["ambientState"] = [];
+  for (const [lane, result] of [
+    ["local", local],
+    ["aic", aic],
+  ] as const) {
+    const values = result.effects?.evidence?.ambientState;
+    if (values !== undefined && Object.keys(values).length > 0) {
+      ambient.push({ lane, values });
+    }
+  }
+  return ambient;
 }
 
 async function runLane(

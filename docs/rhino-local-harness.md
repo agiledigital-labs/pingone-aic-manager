@@ -372,13 +372,15 @@ if a resource of the same name already exists.
 Roughly **1700x**. Both lanes are judged by the same `judge()`; that is what
 makes the comparison meaningful.
 
-### Two disagreements, both real, neither a script bug
+### Two apparent disagreements exposed recording-model defects
 
-**1. AM injects ambient shared-state keys.** `realm` (`/alpha`),
-`maxAuthenticationSessionDuration` (20) and `authLevel` (0) appear in
-`sharedState.final` on the tenant and not locally. Measured identical across
-two cases, so deterministic rather than incidental. They are not script writes,
-but `judge()` currently reports them as undeclared additions and fails the case.
+The original live run observed three additional keys with stable values at the
+**result node**. It did not establish that those keys existed when the subject
+ran, so describing them as AM state readable by the subject overstated the
+measurement. The wrapper now snapshots unified `nodeState` immediately before
+and after the unmodified subject body. A key present in `before` but absent from
+`given` is reported as ambient context; it is not attributed to the script.
+A changed or removed ambient key remains a script mutation.
 
 **2. Bucket membership is not observable from the AIC side.** A key written
 with `nodeState.putTransient` is reported in `sharedState.final` with
@@ -396,9 +398,23 @@ The same caution applies to the ambient keys above: they were observed at the
 Establishing that needs a snapshot taken inside the subject node itself, before
 and after the author's source.
 
-Neither is fixed yet. Both are conformance-model questions rather than bugs:
-the code currently conflates a genuine behavioural difference, an effect one
-lane structurally cannot observe, and ambient environment state.
+New and changed unified values are now recorded as **unbucketed**, carrying
+their possible buckets, rather than being assigned to shared state.
+
+The verdict and comparison report distinguish all three cases:
+
+- comparable observations that differ are behavioural disagreements;
+- matching unified mutations with unknown bucket membership are observation
+  gaps, and make a passing verdict non-conclusive;
+- pre-subject state absent from `given` is ambient state in its own report.
+
+The AIC recorder also marks `openidm`, `http`, and `logs` unobserved. Their
+empty arrays are placeholders required by the common effect shape, not claims
+that no such effects occurred. Its evidence also carries a standing `unified`
+state-bucket qualification: same-value and lower-precedence writes may produce
+no unified delta at all. The subject-snapshot wrapper and these revised
+semantics have unit coverage but have **not** yet been verified on a live
+tenant; the earlier live run exercised the result-node snapshot design.
 
 A third defect found while reviewing this: the AIC recorder returns
 `openidm: []`, `http: []` and `logs: []` unconditionally. Those are not
@@ -437,10 +453,12 @@ precisely located fidelity gap, which is what the corpus is for.
   in the real-script corpus: live AIC reports `typeof require === "function"`
   and the harness reports `"undefined"`, which blocks 8 of the 52 probe scripts.
   No longer out of scope.
-- Whether the local lane should seed AM's ambient shared-state keys (`realm`,
-  `authLevel`, `maxAuthenticationSessionDuration`) so a script reading them
-  behaves the same in both lanes. Buys fidelity; needs correct values, and
-  `authLevel` plausibly varies with position in the tree.
+- Whether a script that intentionally depends on wrapper ambient state should
+  declare the required value in `given`, or be classified as environment
+  dependent. The local lane does not seed hidden AM defaults.
+- Live verification that the subject instrumentation executes after
+  `action.goTo`, and that its before/after payload survives the transition to
+  the result node. Unit tests cannot establish those AM runtime properties.
 - `AMWrapFactory` behaviour and the class shutter allowlist. Approximating the
   shutter is still acceptable; using AM's class is not free.
 - How the generated mock `.cjs` should be loaded: `preamble` vs concatenating

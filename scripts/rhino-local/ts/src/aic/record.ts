@@ -2,13 +2,20 @@ import type {
   CallbackEffect,
   Given,
   JsonObject,
-  JsonValue,
   RecordedEffects,
+  RecordingEvidence,
+  StateChannel,
 } from "../case/types.ts";
-import { isPlainObject, parseJsonObject, parseJsonValue } from "../case/util.ts";
+import { STATE_CHANNELS } from "../case/types.ts";
+import { deepEqual } from "../case/equal.ts";
+import { diffState } from "../case/state.ts";
+import { isPlainObject, parseJsonObject } from "../case/util.ts";
+
+const AIC_UNOBSERVED = ["openidm", "http", "logs"] as const;
 
 export interface SubjectDump {
   outcome: string;
+  before: JsonObject;
   final: JsonObject;
 }
 
@@ -34,11 +41,12 @@ export function parseSubjectDump(raw: unknown): SubjectDump {
   if (typeof raw.outcome !== "string") {
     throw new Error("rhino-local: harness dump.outcome must be a string");
   }
-  if (!("final" in raw)) {
-    throw new Error("rhino-local: harness dump is missing final");
+  if (!("before" in raw) || !("final" in raw)) {
+    throw new Error("rhino-local: harness dump must have before and final");
   }
   return {
     outcome: raw.outcome,
+    before: parseJsonObject(raw.before, "dump.before"),
     final: parseJsonObject(raw.final, "dump.final"),
   };
 }
@@ -64,57 +72,154 @@ export function assembleEffects(args: {
       openidm: [],
       http: [],
       logs: [],
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [],
+        unobservedChannels: [
+          "sharedState",
+          "transientState",
+          "secureState",
+          ...AIC_UNOBSERVED,
+        ],
+      },
     };
   }
-  const buckets = classifyFinal(args.given, args.dump.final);
+  const classified = classifyFinal(
+    args.given,
+    args.dump.before,
+    args.dump.final
+  );
   return {
     outcome: args.dump.outcome,
-    sharedState: buckets.sharedState,
-    transientState: buckets.transientState,
-    secureState: buckets.secureState,
+    sharedState: classified.sharedState,
+    transientState: classified.transientState,
+    secureState: classified.secureState,
     callbacks: args.callbacks,
     openidm: [],
     http: [],
     logs: [],
+    evidence: classified.evidence,
   };
 }
 
 /**
- * `nodeState.get` is unified (transient → secure → shared). New keys have no
- * bucket API, so they land in shared — `putShared` is the common path. A
- * subject that `putTransient`s a brand-new key will therefore disagree with
- * a local lane that tracked the method; that disagreement is a measured
- * observability gap, not a silent reclassification.
+ * Classify only what the AIC wrapper actually established. The snapshots use
+ * unified `nodeState.keys/get`, so a changed or added value is observable but
+ * its bucket is not. Declared seeds remain exact only while unchanged; a seed
+ * missing afterwards is an exact removal only when it existed in one bucket.
+ * State present before the subject but absent from `given` is ambient.
  */
 export function classifyFinal(
   given: Given,
+  before: JsonObject,
   final: JsonObject
-): Pick<RecordedEffects, "sharedState" | "transientState" | "secureState"> {
+): Pick<
+  Required<RecordedEffects>,
+  "sharedState" | "transientState" | "secureState" | "evidence"
+> {
   const sharedInitial = given.sharedState ?? {};
   const transientInitial = given.transientState ?? {};
   const secureInitial = given.secureState ?? {};
-  const sharedFinal: JsonObject = {};
-  const transientFinal: JsonObject = {};
-  const secureFinal: JsonObject = {};
+  verifySeedsVisible(given, before);
 
-  for (const [key, value] of Object.entries(final)) {
-    const json = parseJsonValue(value, `dump.final.${key}`);
-    if (Object.prototype.hasOwnProperty.call(transientInitial, key)) {
-      assign(transientFinal, key, json);
-    } else if (Object.prototype.hasOwnProperty.call(secureInitial, key)) {
-      assign(secureFinal, key, json);
-    } else {
-      assign(sharedFinal, key, json);
+  const sharedFinal: JsonObject = { ...sharedInitial };
+  const transientFinal: JsonObject = { ...transientInitial };
+  const secureFinal: JsonObject = { ...secureInitial };
+  const ambientState: JsonObject = {};
+  for (const [key, value] of Object.entries(before)) {
+    if (seedBuckets(given, key).length === 0) {
+      ambientState[key] = value;
     }
+  }
+
+  const unbucketedState: RecordingEvidence["unbucketedState"] = [];
+  for (const mutation of diffState(before, final)) {
+    const buckets = seedBuckets(given, mutation.key);
+    if (mutation.operation === "removed" && buckets.length === 1) {
+      const bucket = buckets[0];
+      if (bucket !== undefined) {
+        delete finalFor(bucket, sharedFinal, transientFinal, secureFinal)[mutation.key];
+      }
+      continue;
+    }
+    unbucketedState.push({
+      ...mutation,
+      possibleBuckets:
+        buckets.length === 0 && mutation.operation === "added"
+          ? ["sharedState", "transientState"]
+          : [...STATE_CHANNELS],
+    });
   }
 
   return {
     sharedState: { initial: sharedInitial, final: sharedFinal },
     transientState: { initial: transientInitial, final: transientFinal },
     secureState: { initial: secureInitial, final: secureFinal },
+    evidence: {
+      stateBuckets: "unified",
+      ambientState,
+      unbucketedState,
+      unobservedChannels: [...AIC_UNOBSERVED],
+    },
   };
 }
 
-function assign(target: JsonObject, key: string, value: JsonValue): void {
-  target[key] = value;
+function seedBuckets(given: Given, key: string): StateChannel[] {
+  const buckets: StateChannel[] = [];
+  if (Object.prototype.hasOwnProperty.call(given.sharedState ?? {}, key)) {
+    buckets.push("sharedState");
+  }
+  if (Object.prototype.hasOwnProperty.call(given.transientState ?? {}, key)) {
+    buckets.push("transientState");
+  }
+  if (Object.prototype.hasOwnProperty.call(given.secureState ?? {}, key)) {
+    buckets.push("secureState");
+  }
+  return buckets;
+}
+
+function verifySeedsVisible(given: Given, before: JsonObject): void {
+  const keys = new Set([
+    ...Object.keys(given.sharedState ?? {}),
+    ...Object.keys(given.secureState ?? {}),
+    ...Object.keys(given.transientState ?? {}),
+  ]);
+  for (const key of keys) {
+    const expected = visibleSeed(given, key);
+    if (
+      !Object.prototype.hasOwnProperty.call(before, key) ||
+      !deepEqual(before[key], expected)
+    ) {
+      throw new Error(
+        `rhino-local: AIC subject state did not contain the declared seed ${JSON.stringify(key)}`
+      );
+    }
+  }
+}
+
+function visibleSeed(given: Given, key: string): unknown {
+  // AM's unified lookup precedence is transient → secure → shared.
+  if (Object.prototype.hasOwnProperty.call(given.transientState ?? {}, key)) {
+    return given.transientState?.[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(given.secureState ?? {}, key)) {
+    return given.secureState?.[key];
+  }
+  return given.sharedState?.[key];
+}
+
+function finalFor(
+  bucket: StateChannel,
+  shared: JsonObject,
+  transient: JsonObject,
+  secure: JsonObject
+): JsonObject {
+  if (bucket === "sharedState") {
+    return shared;
+  }
+  if (bucket === "transientState") {
+    return transient;
+  }
+  return secure;
 }

@@ -132,6 +132,14 @@ export const CHANNELS = [
 ] as const;
 export type Channel = (typeof CHANNELS)[number];
 
+export const STATE_CHANNELS = [
+  "sharedState",
+  "transientState",
+  "secureState",
+] as const;
+export type StateChannel = (typeof STATE_CHANNELS)[number];
+export type EvidenceChannel = Channel | "nodeState";
+
 export const ENV_INPUT_KEYS = ["esv", "secrets", "managed", "http"] as const;
 export type EnvInputKey = (typeof ENV_INPUT_KEYS)[number];
 
@@ -261,6 +269,32 @@ export interface StateBucket {
   final: JsonObject;
 }
 
+export type StateMutation =
+  | { operation: "added"; key: string; after: JsonValue }
+  | {
+      operation: "changed";
+      key: string;
+      before: JsonValue;
+      after: JsonValue;
+    }
+  | { operation: "removed"; key: string; before: JsonValue };
+
+export type UnbucketedStateMutation = StateMutation & {
+  possibleBuckets: StateChannel[];
+};
+
+/** What a runner could establish in addition to the effect values themselves. */
+export interface RecordingEvidence {
+  /** `unified` means per-bucket absence and hidden lower-precedence writes are unknowable. */
+  stateBuckets: "exact" | "unified";
+  /** Unified state present before the subject but absent from `given`. */
+  ambientState: JsonObject;
+  /** Unified state mutations whose concrete bucket could not be observed. */
+  unbucketedState: UnbucketedStateMutation[];
+  /** An empty effect value in one of these channels is not an observation of absence. */
+  unobservedChannels: Channel[];
+}
+
 /**
  * Observed effects of one run. Every channel is required: omitting a
  * fail-closed channel would silently assert nothing, which is the failure
@@ -276,20 +310,31 @@ export interface RecordedEffects {
   openidm: OpenidmEffect[];
   http: HttpEffect[];
   logs: LogEffect[];
+  /** Omitted by exact recorders; present when a lane has qualified evidence. */
+  evidence?: RecordingEvidence;
 }
 
 export interface Mismatch {
-  channel: Channel;
+  channel: EvidenceChannel;
   path: string;
   expected: string;
   actual: string;
   message: string;
 }
 
+export interface Unverified {
+  channel: EvidenceChannel;
+  path: string;
+  message: string;
+}
+
 export interface Verdict {
   pass: boolean;
+  /** False when no contradiction was seen but one or more assertions were unobservable. */
+  conclusive: boolean;
   portable: boolean;
   mismatches: Mismatch[];
+  unverified: Unverified[];
   /** Multi-line explanation; empty string when `pass` is true. */
   summary: string;
 }

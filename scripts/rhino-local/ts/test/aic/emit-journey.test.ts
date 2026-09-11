@@ -40,7 +40,10 @@ describe("emitWrapperJourney", () => {
       "result",
       "result",
     ]);
-    expect(wrapper.scripts[1]?.source).toBe(SUBJECT);
+    expect(wrapper.scripts[1]?.source).toContain(SUBJECT);
+    expect(wrapper.scripts[1]?.source).toContain(".before =");
+    expect(wrapper.scripts[1]?.source).toContain(".final =");
+    expect(wrapper.scripts[1]?.source).toContain("__rhino_local_snapshot_test01");
 
     const setup = wrapper.nodes.find((node) => node.displayName === "setup");
     const subject = wrapper.nodes.find(
@@ -115,7 +118,7 @@ describe("emitWrapperJourney", () => {
     ).toThrow(/next-gen only/);
   });
 
-  it("emits AM-lint-clean setup and result scripts", async () => {
+  it("emits AM-lint-clean setup, instrumented subject and result scripts", async () => {
     const wrapper = emitWrapperJourney(
       caseWith({
         given: { sharedState: { username: "alice" }, transientState: { t: 1 } },
@@ -125,9 +128,6 @@ describe("emitWrapperJourney", () => {
       { runId: "lint", idFactory: sequentialIds() }
     );
     for (const script of wrapper.scripts) {
-      if (script.role === "subject") {
-        continue;
-      }
       const messages = await lintAmScript(
         script.source,
         `generated/aic-${script.role}.cjs`

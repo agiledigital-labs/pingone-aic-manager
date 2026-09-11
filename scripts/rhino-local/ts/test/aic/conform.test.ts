@@ -1,22 +1,29 @@
 import { describe, expect, it } from "vitest";
+import { decideFromState, writeState } from "../../cases/index.ts";
 import { conform } from "../../src/aic/conform.ts";
 import { diffRecordedEffects } from "../../src/aic/diff.ts";
 import { assembleEffects } from "../../src/aic/record.ts";
+import { judge } from "../../src/case/verdict.ts";
 import { caseWith } from "./helpers.ts";
 import { makeEffects, bucket } from "../case/helpers.ts";
 
 describe("diffRecordedEffects", () => {
   it("is silent when both lanes recorded the same effects", () => {
     const effects = makeEffects({
-      sharedState: bucket({ username: "alice" }, { username: "alice", verified: true }),
+      sharedState: bucket({}, { verified: true }),
     });
-    expect(diffRecordedEffects(effects, effects)).toEqual([]);
+    expect(diffRecordedEffects(effects, effects)).toEqual({
+      disagreements: [],
+      observationGaps: [],
+    });
   });
 
-  it("names the channel where local and AIC disagree", () => {
-    const local = makeEffects({ outcome: "true" });
-    const aic = makeEffects({ outcome: "false" });
-    expect(diffRecordedEffects(local, aic)).toEqual([
+  it("names a genuinely different observable outcome", () => {
+    const comparison = diffRecordedEffects(
+      makeEffects({ outcome: "true" }),
+      makeEffects({ outcome: "false" })
+    );
+    expect(comparison.disagreements).toEqual([
       {
         channel: "outcome",
         path: "outcome",
@@ -25,49 +32,313 @@ describe("diffRecordedEffects", () => {
         message: 'outcome: local "true", AIC "false"',
       },
     ]);
+    expect(comparison.observationGaps).toEqual([]);
   });
 
-  it("reports an openidm write the AIC lane could not observe", () => {
+  it("reports an unobserved effect channel as a gap, not equality", () => {
     const local = makeEffects({
       openidm: [{ method: "read", resource: "managed/alpha_user/alice" }],
     });
-    const aic = makeEffects();
-    const disagreements = diffRecordedEffects(local, aic);
-    expect(disagreements).toHaveLength(1);
-    expect(disagreements[0]?.channel).toBe("openidm");
-    expect(disagreements[0]?.local).toContain("managed/alpha_user/alice");
-    expect(disagreements[0]?.aic).toBe("(none)");
+    const aic = makeEffects({
+      evidence: {
+        stateBuckets: "exact",
+        ambientState: {},
+        unbucketedState: [],
+        unobservedChannels: ["openidm"],
+      },
+    });
+    const comparison = diffRecordedEffects(local, aic);
+    expect(comparison.disagreements).toEqual([]);
+    expect(comparison.observationGaps).toContainEqual(
+      expect.objectContaining({ channel: "openidm", aic: "unobserved" })
+    );
+  });
+
+  it("qualifies equal state mutations when AIC cannot observe the bucket", () => {
+    const local = makeEffects({
+      transientState: bucket({}, { scratch: "n/a" }),
+    });
+    const aic = makeEffects({
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [
+          {
+            operation: "added",
+            key: "scratch",
+            after: "n/a",
+            possibleBuckets: ["sharedState", "transientState"],
+          },
+        ],
+        unobservedChannels: [],
+      },
+    });
+    const comparison = diffRecordedEffects(local, aic);
+    expect(comparison.disagreements).toEqual([]);
+    expect(comparison.observationGaps).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "scratch" })
+    );
+  });
+
+  it("reports the standing unified-bucket limitation even with no visible delta", () => {
+    const aic = makeEffects({
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [],
+        unobservedChannels: [],
+      },
+    });
+    expect(diffRecordedEffects(makeEffects(), aic).observationGaps).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "buckets" })
+    );
+  });
+
+  it("classifies a same-value lower-bucket write as structurally hidden", () => {
+    const local = makeEffects({
+      sharedState: bucket({ existing: 1 }, { existing: 1 }),
+      transientState: bucket({}, { existing: 1 }),
+    });
+    const aic = makeEffects({
+      sharedState: bucket({ existing: 1 }, { existing: 1 }),
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [],
+        unobservedChannels: [],
+      },
+    });
+    const comparison = diffRecordedEffects(local, aic);
+    expect(comparison.disagreements).toEqual([]);
+    expect(comparison.observationGaps).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "existing" })
+    );
+  });
+
+  it("anti-silencing: a missing new key is a disagreement despite unified buckets", () => {
+    const local = makeEffects({
+      transientState: bucket({}, { created: true }),
+    });
+    const aic = makeEffects({
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [],
+        unobservedChannels: [],
+      },
+    });
+    expect(diffRecordedEffects(local, aic).disagreements).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "created" })
+    );
+  });
+
+  it("anti-silencing: a wrong unbucketed value is a real disagreement and failed verdict", () => {
+    const local = makeEffects({
+      transientState: bucket({}, { scratch: "n/a" }),
+    });
+    const aic = makeEffects({
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [
+          {
+            operation: "added",
+            key: "scratch",
+            after: "WRONG",
+            possibleBuckets: ["sharedState", "transientState"],
+          },
+        ],
+        unobservedChannels: [],
+      },
+    });
+    const verdict = judge(writeState, aic);
+    const comparison = diffRecordedEffects(local, aic);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.mismatches).toContainEqual(
+      expect.objectContaining({ channel: "transientState", path: "scratch" })
+    );
+    expect(comparison.disagreements).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "scratch" })
+    );
+  });
+
+  it("anti-silencing: a different mutation operation is a real disagreement", () => {
+    const local = makeEffects({
+      transientState: bucket({}, { scratch: "n/a" }),
+    });
+    const aic = makeEffects({
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [
+          {
+            operation: "changed",
+            key: "scratch",
+            before: "old",
+            after: "n/a",
+            possibleBuckets: ["sharedState", "transientState"],
+          },
+        ],
+        unobservedChannels: [],
+      },
+    });
+    const comparison = diffRecordedEffects(local, aic);
+    expect(comparison.disagreements).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "scratch" })
+    );
+  });
+
+  it("fails an undeclared unbucketed mutation under default strictness", () => {
+    const effects = makeEffects({
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [
+          {
+            operation: "added",
+            key: "surprise",
+            after: true,
+            possibleBuckets: ["sharedState", "transientState"],
+          },
+        ],
+        unobservedChannels: [],
+      },
+    });
+    const verdict = judge(caseWith(), effects);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.mismatches).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "surprise" })
+    );
+  });
+
+  it("does not let one bucket's allowUndeclared excuse a possibly-disallowed write", () => {
+    const kase = caseWith({
+      expect: {
+        outcome: "true",
+        allowUndeclared: { sharedState: true },
+      },
+    });
+    const effects = makeEffects({
+      evidence: {
+        stateBuckets: "unified",
+        ambientState: {},
+        unbucketedState: [
+          {
+            operation: "added",
+            key: "surprise",
+            after: true,
+            possibleBuckets: ["sharedState", "transientState"],
+          },
+        ],
+        unobservedChannels: [],
+      },
+    });
+    expect(judge(kase, effects)).toMatchObject({ pass: false });
+  });
+
+  it.each([
+    {
+      label: "changes",
+      before: { platform: "before" },
+      final: { platform: "after" },
+    },
+    { label: "removes", before: { platform: "before" }, final: {} },
+  ])("fails when the subject $label ambient state", ({ before, final }) => {
+    const effects = assembleEffects({
+      given: {},
+      dump: { outcome: "true", before, final },
+      callbacks: [],
+    });
+    const verdict = judge(caseWith(), effects);
+    expect(verdict.pass).toBe(false);
+    expect(verdict.mismatches).toContainEqual(
+      expect.objectContaining({ channel: "nodeState", path: "platform" })
+    );
+  });
+
+  it("qualifies expectations on a wholly unobserved channel", () => {
+    const kase = caseWith({
+      expect: {
+        outcome: "true",
+        openidm: [{ method: "read", resource: "managed/alpha_user/alice" }],
+      },
+    });
+    const effects = makeEffects({
+      evidence: {
+        stateBuckets: "exact",
+        ambientState: {},
+        unbucketedState: [],
+        unobservedChannels: ["openidm"],
+      },
+    });
+    const verdict = judge(kase, effects);
+    expect(verdict).toMatchObject({ pass: true, conclusive: false });
+    expect(verdict.unverified).toContainEqual(
+      expect.objectContaining({ channel: "openidm" })
+    );
   });
 });
 
 describe("conform", () => {
-  it("judges both lanes with verdict.ts and diffs their effects", async () => {
-    const kase = caseWith({
-      given: { sharedState: { username: "alice" } },
-      expect: { outcome: "true", sharedState: { added: { verified: true } } },
-    });
-    const localEffects = assembleEffects({
-      given: kase.given,
-      dump: { outcome: "true", final: { username: "alice", verified: true } },
-      callbacks: [],
+  it("judges both lanes and keeps disagreement, gap and ambient reports separate", async () => {
+    const localEffects = makeEffects({
+      sharedState: bucket({}, { checked: true }),
+      transientState: bucket({}, { scratch: "n/a" }),
     });
     const aicEffects = assembleEffects({
-      given: kase.given,
-      dump: { outcome: "false", final: { username: "alice" } },
+      given: writeState.given,
+      dump: {
+        outcome: "true",
+        before: { platform: 42 },
+        final: { platform: 42, checked: true, scratch: "n/a" },
+      },
       callbacks: [],
     });
     const report = await conform({
-      kase,
-      source: "action.goTo('true');",
+      kase: writeState,
+      source: writeState.script,
       local: async () => localEffects,
       aic: async () => aicEffects,
     });
-    expect(report.portable).toBe(true);
-    expect(report.local.verdict?.pass).toBe(true);
-    expect(report.aic.verdict?.pass).toBe(false);
-    expect(report.disagreements.map((item) => item.channel).sort()).toEqual([
-      "outcome",
-      "sharedState",
+    expect(report.local.verdict).toMatchObject({ pass: true, conclusive: true });
+    expect(report.aic.verdict).toMatchObject({ pass: true, conclusive: false });
+    expect(report.disagreements).toEqual([]);
+    expect(report.observationGaps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ channel: "nodeState", path: "checked" }),
+        expect.objectContaining({ channel: "nodeState", path: "scratch" }),
+        expect.objectContaining({ channel: "openidm" }),
+        expect.objectContaining({ channel: "http" }),
+        expect.objectContaining({ channel: "logs" }),
+      ])
+    );
+    expect(report.ambientState).toEqual([
+      { lane: "aic", values: { platform: 42 } },
+    ]);
+  });
+
+  it("decide-from-state passes while reporting pre-subject ambient state separately", async () => {
+    const aicEffects = assembleEffects({
+      given: decideFromState.given,
+      dump: {
+        outcome: "true",
+        before: { username: "alice", platform: "ambient" },
+        final: { username: "alice", platform: "ambient" },
+      },
+      callbacks: [],
+    });
+    const report = await conform({
+      kase: decideFromState,
+      source: decideFromState.script,
+      local: async () => makeEffects({
+        sharedState: bucket({ username: "alice" }, { username: "alice" }),
+      }),
+      aic: async () => aicEffects,
+    });
+    expect(report.aic.verdict).toMatchObject({ pass: true, conclusive: false });
+    expect(report.disagreements).toEqual([]);
+    expect(report.ambientState).toEqual([
+      { lane: "aic", values: { platform: "ambient" } },
     ]);
   });
 
@@ -76,20 +347,22 @@ describe("conform", () => {
       kase: caseWith({
         given: { managed: { alpha_user: [{ userName: "alice" }] } },
       }),
-      source: "action.goTo('true');",
+      source: 'action.goTo("true");',
       local: async () => makeEffects(),
     });
     expect(report.portable).toBe(false);
     expect(report.aic.skipped).toMatch(/managed/);
     expect(report.disagreements).toEqual([]);
+    expect(report.observationGaps).toEqual([]);
   });
 
-  it("skips a missing local runner with a stated reason", async () => {
+  it("skips missing runners with stated reasons", async () => {
     const report = await conform({
       kase: caseWith(),
-      source: "action.goTo('true');",
+      source: 'action.goTo("true");',
     });
     expect(report.local.skipped).toMatch(/bindings lane/);
     expect(report.aic.skipped).toMatch(/no AIC runner/);
+    expect(report.disagreements).toEqual([]);
   });
 });

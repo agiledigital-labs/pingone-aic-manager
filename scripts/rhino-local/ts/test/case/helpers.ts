@@ -40,6 +40,12 @@ export function makeEffects(
     openidm: [],
     http: [],
     logs: [],
+    evidence: {
+      stateBuckets: "exact",
+      ambientState: {},
+      unbucketedState: [],
+      unobservedChannels: [],
+    },
   };
   if ("outcome" in overrides) {
     effects.outcome = overrides.outcome ?? null;
@@ -64,6 +70,9 @@ export function makeEffects(
   }
   if (overrides.logs !== undefined) {
     effects.logs = overrides.logs;
+  }
+  if (overrides.evidence !== undefined) {
+    effects.evidence = overrides.evidence;
   }
   return effects;
 }
