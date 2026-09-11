@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::config::{ProjectConfig, tenant_file_name};
+use crate::config::tenant_file_name;
 
 #[derive(Debug, Default)]
 pub struct State;
@@ -60,7 +60,7 @@ pub struct ObjectStatus {
 }
 
 pub fn store_dir() -> PathBuf {
-    ProjectConfig::dir().join("idmstore")
+    crate::config::project_paths().idmstore_dir()
 }
 
 pub fn store_path(tenant: &str) -> PathBuf {

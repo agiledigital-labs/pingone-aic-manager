@@ -12,7 +12,7 @@ use crate::cli::{
     confirm_destructive, ensure_prod_confirmed, print_json, print_table, protected_pull_prompt,
     realm_arg, tenant_for,
 };
-use crate::config::ProjectConfig;
+use crate::config::{ProjectConfig, ProjectPaths, project_paths};
 use crate::journey::api;
 use crate::pullguard::PullDecision;
 use crate::{Error, Result};
@@ -117,19 +117,29 @@ fn validate_journey_name(name: &str) -> Result<()> {
 
 fn export_path(tenant: &str, realm: &str, name: &str) -> Result<PathBuf> {
     validate_journey_name(name)?;
-    Ok(ProjectConfig::workspace_tree(tenant)
+    Ok(export_path_with(project_paths(), tenant, realm, name))
+}
+
+fn export_path_with(paths: &ProjectPaths, tenant: &str, realm: &str, name: &str) -> PathBuf {
+    paths
+        .workspace_tree(tenant)
         .join("journeys")
         .join(realm)
-        .join(format!("{name}.json")))
+        .join(format!("{name}.json"))
 }
 
 fn snapshot_path(tenant: &str, realm: &str, name: &str) -> Result<PathBuf> {
     validate_journey_name(name)?;
-    Ok(ProjectConfig::workspace_tree(tenant)
+    Ok(snapshot_path_with(project_paths(), tenant, realm, name))
+}
+
+fn snapshot_path_with(paths: &ProjectPaths, tenant: &str, realm: &str, name: &str) -> PathBuf {
+    paths
+        .workspace_tree(tenant)
         .join("journeys")
         .join(realm)
         .join(".snapshots")
-        .join(format!("{name}.json")))
+        .join(format!("{name}.json"))
 }
 
 fn node_type_matches_tag(node_type: &api::NodeType, tag: &str) -> bool {
@@ -954,9 +964,10 @@ mod tests {
 
     #[test]
     fn export_path_uses_the_journey_workspace_tree() {
+        let paths = ProjectPaths::new(PathBuf::from("/project")).unwrap();
         assert_eq!(
-            export_path("sandbox", "bravo", "GetIP").unwrap(),
-            PathBuf::from("workspace/sandbox/journeys/bravo/GetIP.json")
+            export_path_with(&paths, "sandbox", "bravo", "GetIP"),
+            PathBuf::from("/project/workspace/sandbox/journeys/bravo/GetIP.json")
         );
     }
 
@@ -968,9 +979,10 @@ mod tests {
 
     #[test]
     fn snapshot_path_uses_snapshots_sibling_directory() {
+        let paths = ProjectPaths::new(PathBuf::from("/project")).unwrap();
         assert_eq!(
-            snapshot_path("sandbox", "bravo", "GetIP").unwrap(),
-            PathBuf::from("workspace/sandbox/journeys/bravo/.snapshots/GetIP.json")
+            snapshot_path_with(&paths, "sandbox", "bravo", "GetIP"),
+            PathBuf::from("/project/workspace/sandbox/journeys/bravo/.snapshots/GetIP.json")
         );
     }
 

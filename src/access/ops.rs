@@ -15,8 +15,8 @@ use crate::access::state::{DeleteState, Document, FormKind, RuleFormState};
 use crate::app::event::{AppEvent, ToastKind};
 use crate::app::prod_confirm::PendingProdAction;
 use crate::app::{App, InputMode, View};
-use crate::config::ProjectConfig;
 use crate::config::tenant::TenantTheme;
+use crate::config::{ProjectPaths, project_paths};
 use crate::undo::{
     Capability, ConflictCheck, EntryStatus, Sensitivity, UndoEntry, UndoExecutor, UndoId, UndoOp,
 };
@@ -732,13 +732,20 @@ pub(crate) fn backup_document(
     document: &Value,
     now: DateTime<Utc>,
 ) -> Result<PathBuf> {
-    let path = ProjectConfig::dir().join("backups").join(backup_filename(
-        tenant,
-        now,
-        uuid::Uuid::new_v4(),
-    ));
+    backup_document_with_paths(project_paths(), tenant, document, now)
+}
+
+fn backup_document_with_paths(
+    paths: &ProjectPaths,
+    tenant: &str,
+    document: &Value,
+    now: DateTime<Utc>,
+) -> Result<PathBuf> {
+    let path = paths
+        .backups_dir()
+        .join(backup_filename(tenant, now, uuid::Uuid::new_v4()));
     let write = || -> Result<()> {
-        ProjectConfig::write_gitignore()?;
+        paths.write_gitignore()?;
         let mut bytes = serde_json::to_vec_pretty(document)?;
         bytes.push(b'\n');
         write_private_file(&path, &bytes, true)
@@ -1141,6 +1148,36 @@ pub fn describe_prod_action(action: &ProdAction) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{TimeZone, Utc};
+
+    use crate::config::{ProjectPaths, TestDir};
+
+    use super::*;
+
+    #[test]
+    fn backup_document_stays_under_its_explicit_project_root() {
+        // Regression: backup creation used to resolve the process-relative
+        // `.aic` separately while creating its gitignore and backup file.
+        let dir = TestDir::new();
+        let paths = ProjectPaths::new(dir.path("project")).unwrap();
+        let document = serde_json::json!({"configs": []});
+
+        let backup = backup_document_with_paths(
+            &paths,
+            "sandbox",
+            &document,
+            Utc.with_ymd_and_hms(2026, 9, 11, 0, 0, 0).unwrap(),
+        )
+        .unwrap();
+
+        assert!(backup.starts_with(paths.backups_dir()));
+        assert_eq!(
+            fs::read_to_string(backup).unwrap(),
+            "{\n  \"configs\": []\n}\n"
+        );
+        assert!(paths.aic_dir().join(".gitignore").is_file());
+    }
+
     /// A reorder must not be a grant change. `configs` is a disjunction — order
     /// carries no evaluation meaning (`docs/api/19-config-access.md`, verified
     /// 2026-08-10) — so the multiset of rules has to come out identical, and
@@ -1272,14 +1309,11 @@ mod tests {
         assert!(insert_at(&before, len + 1, spec).is_err());
     }
 
-    use chrono::TimeZone;
     use serde_json::json;
 
     use crate::access::spec::{digest, short_digest};
     use crate::access::state::{DeleteState, Document, RuleFormState};
     use crate::undo::{ConflictCheck, MemoryLog, UndoLog, UndoOp};
-
-    use super::*;
 
     fn new_rule() -> RuleSpec {
         RuleSpec {

@@ -12,7 +12,7 @@ use super::event::event_id;
 
 pub type Result<T> = std::result::Result<T, DbError>;
 
-use crate::config::{ProjectConfig, tenant_file_name};
+use crate::config::tenant_file_name;
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
@@ -111,7 +111,7 @@ pub fn init(conn: &Connection) -> Result<()> {
 }
 
 pub fn store_dir() -> PathBuf {
-    ProjectConfig::dir().join("logs")
+    crate::config::project_paths().logs_dir()
 }
 
 pub fn store_path(tenant: &str) -> PathBuf {

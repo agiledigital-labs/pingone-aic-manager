@@ -621,9 +621,9 @@ fn resolve_project_root(
 /// Locate the project root (the dir containing `.aic/`) by walking up from the
 /// working directory — or from `$AIC_PROJECT`, for callers that cannot choose
 /// their working directory — record any tenant/realm implied by a
-/// `workspace/<tenant>/<realm>/` path, then chdir to the root so every
-/// project-relative path (config, keystore, agent socket) resolves the same no
-/// matter which subdirectory the command was invoked from.
+/// `workspace/<tenant>/<realm>/` path, install its absolute paths as the
+/// process default, then chdir to the root for relative user arguments and the
+/// workspace.
 /// Pull `--project <DIR>` (or `--project=<DIR>`) out of raw argv.
 ///
 /// It cannot be read off the parsed [`Cli`], even though it is declared there:
@@ -674,9 +674,9 @@ fn wants_help_or_version(args: impl IntoIterator<Item = std::ffi::OsString>) -> 
 }
 
 pub fn bootstrap_project_root() -> Result<()> {
-    let Ok(cwd) = std::env::current_dir() else {
-        return Ok(());
-    };
+    let cwd = std::env::current_dir().map_err(|error| {
+        Error::Config(format!("could not resolve the current directory: {error}"))
+    })?;
     // The flag wins over the variable: an explicit argument is the more
     // specific statement of intent, and the one a reader of the command line
     // can see.
@@ -690,15 +690,19 @@ pub fn bootstrap_project_root() -> Result<()> {
         // one. Rooting is still ATTEMPTED — a help page for a valid project
         // carries that project's `--tenant` default, which is most of why it is
         // worth reading — and only the failure is dropped.
-        Err(_) if wants_help_or_version(std::env::args_os()) => return Ok(()),
+        Err(_) if wants_help_or_version(std::env::args_os()) => {
+            config::set_project_root(cwd)?;
+            return Ok(());
+        }
         other => other?,
     };
     let Some((root, start)) = resolved else {
+        config::set_project_root(cwd)?;
         return Ok(());
     };
     config::set_workspace_context(config::detect_workspace_context(&root, &start));
-    // Not best-effort: if this fails every project-relative path below would
-    // silently resolve against the wrong directory.
+    config::set_project_root(root.clone())?;
+    // Still load-bearing for relative user arguments and `workspace/` paths.
     std::env::set_current_dir(&root)
         .map_err(|e| Error::Config(format!("could not enter project {}: {e}", root.display())))?;
     Ok(())
