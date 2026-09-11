@@ -20,7 +20,30 @@ use clap::{Arg, ArgAction, ArgMatches, Args, Command, Error, FromArgMatches};
 const OPERATION: u8 = 1 << 0;
 const SYNTAX_CHECK: u8 = 1 << 1;
 const BACKUP: u8 = 1 << 2;
-const KNOWN_GUARDS: u8 = OPERATION | SYNTAX_CHECK | BACKUP;
+
+/// Bit, clap value, one-line description. The single source for `bit`,
+/// possible-values, and help text; adding a guard is one row.
+const GUARDS: &[(u8, &str, &str)] = &[
+    (
+        OPERATION,
+        "operation",
+        "authorize the primary safety override",
+    ),
+    (SYNTAX_CHECK, "syntax-check", "skip script syntax preflight"),
+    (BACKUP, "backup", "skip backup"),
+];
+
+const fn known_guards() -> u8 {
+    let mut acc = 0;
+    let mut i = 0;
+    while i < GUARDS.len() {
+        acc |= GUARDS[i].0;
+        i += 1;
+    }
+    acc
+}
+
+const KNOWN_GUARDS: u8 = known_guards();
 
 /// Parsed `--force` permissions for one command invocation.
 ///
@@ -60,7 +83,7 @@ impl<const ALLOWED: u8> ForceFlags<ALLOWED> {
     }
 
     fn insert(&mut self, guard: ForceGuard) {
-        self.requested |= guard.bit();
+        self.requested |= guard.0;
     }
 }
 
@@ -106,30 +129,7 @@ impl<const ALLOWED: u8> Args for ForceFlags<ALLOWED> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ForceGuard {
-    Operation,
-    SyntaxCheck,
-    Backup,
-}
-
-impl ForceGuard {
-    fn bit(self) -> u8 {
-        match self {
-            Self::Operation => OPERATION,
-            Self::SyntaxCheck => SYNTAX_CHECK,
-            Self::Backup => BACKUP,
-        }
-    }
-
-    fn from_name(name: String) -> Self {
-        match name.as_str() {
-            "operation" => Self::Operation,
-            "syntax-check" => Self::SyntaxCheck,
-            "backup" => Self::Backup,
-            _ => unreachable!("PossibleValuesParser returned an unknown force guard"),
-        }
-    }
-}
+struct ForceGuard(u8);
 
 fn force_arg<const ALLOWED: u8>() -> Arg {
     assert_eq!(
@@ -138,20 +138,10 @@ fn force_arg<const ALLOWED: u8>() -> Arg {
         "ForceFlags contains an unknown allowed-guard bit"
     );
 
-    let help = if ALLOWED == SYNTAX_CHECK {
-        "Skip script syntax preflight (`--force=syntax-check` only)"
-    } else if ALLOWED == (OPERATION | SYNTAX_CHECK) {
-        "Authorize the primary safety override, or skip syntax preflight with `--force=syntax-check`"
-    } else if ALLOWED == (OPERATION | BACKUP) {
-        "Authorize the primary safety override, or skip backup with `--force=backup`"
-    } else {
-        "Authorize the command's documented safety override"
-    };
-
     Arg::new("force")
         .long("force")
         .value_name("GUARD")
-        .help(help)
+        .help(force_help(ALLOWED))
         .num_args(0..=1)
         .require_equals(true)
         .default_missing_value("operation")
@@ -159,19 +149,68 @@ fn force_arg<const ALLOWED: u8>() -> Arg {
         .value_parser(force_value_parser::<ALLOWED>())
 }
 
-fn force_value_parser<const ALLOWED: u8>() -> impl TypedValueParser<Value = ForceGuard> {
-    let mut names = Vec::new();
-    if ALLOWED & OPERATION != 0 {
-        names.push("operation");
+fn force_help(allowed: u8) -> String {
+    let guards: Vec<_> = GUARDS
+        .iter()
+        .filter(|(bit, _, _)| allowed & *bit != 0)
+        .collect();
+    match guards.as_slice() {
+        [] => "Authorize the command's documented safety override".into(),
+        [(bit, _, desc)] if *bit == OPERATION => capitalize(desc),
+        [(_, name, desc)] => format!("{} (`--force={name}` only)", capitalize(desc)),
+        many => {
+            let parts: Vec<String> = many
+                .iter()
+                .map(|(bit, name, desc)| {
+                    if *bit == OPERATION {
+                        capitalize(desc)
+                    } else {
+                        format!("{desc} with `--force={name}`")
+                    }
+                })
+                .collect();
+            join_or(&parts)
+        }
     }
-    if ALLOWED & SYNTAX_CHECK != 0 {
-        names.push("syntax-check");
-    }
-    if ALLOWED & BACKUP != 0 {
-        names.push("backup");
-    }
+}
 
-    PossibleValuesParser::new(names).map(ForceGuard::from_name)
+fn capitalize(desc: &str) -> String {
+    let mut chars = desc.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn join_or(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first, rest @ ..] => {
+            let mut out = first.clone();
+            for part in rest {
+                out.push_str(", or ");
+                out.push_str(part);
+            }
+            out
+        }
+    }
+}
+
+fn force_value_parser<const ALLOWED: u8>() -> impl TypedValueParser<Value = ForceGuard> {
+    let names: Vec<&'static str> = GUARDS
+        .iter()
+        .filter(|(bit, _, _)| ALLOWED & *bit != 0)
+        .map(|(_, name, _)| *name)
+        .collect();
+
+    PossibleValuesParser::new(names).try_map(|name: String| {
+        GUARDS
+            .iter()
+            .find(|(_, n, _)| *n == name)
+            .map(|(bit, _, _)| ForceGuard(*bit))
+            .ok_or_else(|| format!("unknown force guard {name}"))
+    })
 }
 
 #[cfg(test)]
@@ -292,5 +331,46 @@ mod tests {
     #[test]
     fn all_is_not_a_wildcard() {
         assert!(Cli::try_parse_from(["test", "run", "--force=all"]).is_err());
+    }
+
+    fn help_of<const ALLOWED: u8>() -> String {
+        force_arg::<ALLOWED>()
+            .get_help()
+            .expect("force arg has help")
+            .to_string()
+    }
+
+    fn help_mentions(help: &str, bit: u8, name: &str) -> bool {
+        if bit == OPERATION {
+            help.contains("primary safety override")
+        } else {
+            help.contains(name)
+        }
+    }
+
+    #[test]
+    fn help_names_exactly_the_guards_the_mask_permits() {
+        let cases = [
+            help_of::<OPERATION>(),
+            help_of::<SYNTAX_CHECK>(),
+            help_of::<{ OPERATION | SYNTAX_CHECK }>(),
+            help_of::<{ OPERATION | BACKUP }>(),
+        ];
+        let masks = [
+            OPERATION,
+            SYNTAX_CHECK,
+            OPERATION | SYNTAX_CHECK,
+            OPERATION | BACKUP,
+        ];
+
+        for (allowed, help) in masks.into_iter().zip(cases) {
+            for &(bit, name, _) in GUARDS {
+                assert_eq!(
+                    help_mentions(&help, bit, name),
+                    allowed & bit != 0,
+                    "help for mask {allowed:#010b} vs guard {name}: {help}"
+                );
+            }
+        }
     }
 }

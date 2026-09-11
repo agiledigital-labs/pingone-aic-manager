@@ -29,9 +29,9 @@ fn versioned_call<'a>(
 }
 
 fn read_action_call<'a>(tenant: &'a str, path: &'a str) -> ApiCall<'a> {
-    // Same treatment as script syntax validation: this POST stores nothing,
-    // so it passes the method-based transport gate without user consent.
-    versioned_call(tenant, "POST", path, Some(json!({})), true)
+    ApiCall::read_only_action(tenant, path)
+        .api_version(API_VERSION)
+        .body(json!({}))
 }
 
 fn realm_path(realm: &str) -> String {

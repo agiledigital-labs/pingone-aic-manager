@@ -1,5 +1,6 @@
 //! `aic logs` parser and command implementation.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -766,6 +767,16 @@ fn query_range(
 
 const DEFAULT_GREP_SINCE: &str = "15m";
 const TAIL_INITIAL_LOOKBACK_SECONDS: i64 = 15;
+/// How far `tail` rewinds each subsequent window so events ingested after
+/// their timestamp's first query still appear. The live pipeline lags "tens
+/// of seconds" (`incomplete_tx_note`); 90s is a 2–3× margin without the
+/// 5-minute overlap `sync` uses for batch catch-up.
+///
+/// Cost: every poll re-fetches 90s of logs (rate-limited to ~1 req/s, so
+/// extra pages add ~1s each). The seen-set holds one id per event in that
+/// window — tens of KB for a typical tenant, a couple of MB if a 90s window
+/// ever filled many 1000-event pages.
+const TAIL_OVERLAP: Duration = Duration::seconds(90);
 
 fn parse_recent_duration(value: &str) -> Result<Duration> {
     let value = value.trim();
@@ -902,11 +913,17 @@ impl<W: Write> JsonArrayWriter<W> {
 #[derive(Debug)]
 struct TailCursor {
     next_begin: DateTime<Utc>,
+    /// The first window's begin. The overlap rewind is clamped to it so a
+    /// follow never reaches back past the point it started watching.
+    origin: DateTime<Utc>,
 }
 
 impl TailCursor {
     fn new(next_begin: DateTime<Utc>) -> Self {
-        Self { next_begin }
+        Self {
+            next_begin,
+            origin: next_begin,
+        }
     }
 
     fn next_window(&mut self, end: DateTime<Utc>) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
@@ -916,8 +933,47 @@ impl TailCursor {
             ));
         }
         let begin = self.next_begin;
-        self.next_begin = end;
+        // Rewind the next origin into this window so a late-ingested event
+        // whose timestamp already passed is still queried. The logs API is
+        // `(beginTime, endTime]`, so the first window stays the advertised
+        // lookback; only subsequent polls overlap.
+        //
+        // Clamped to the origin: an unclamped rewind would make the *second*
+        // poll — a second after start — query the full overlap, dumping ~90s
+        // of backlog the banner just promised it would not show.
+        self.next_begin = (end - TAIL_OVERLAP).max(self.origin);
         Ok((begin, end))
+    }
+}
+
+/// In-memory counterpart of DuckDB's `ON CONFLICT (id) DO NOTHING`.
+///
+/// Ids are forgotten once their event timestamp falls at or behind the
+/// current window's exclusive begin — they cannot reappear in a later
+/// `(beginTime, endTime]` query.
+#[derive(Debug, Default)]
+struct TailSeen {
+    by_id: HashMap<String, DateTime<Utc>>,
+}
+
+impl TailSeen {
+    fn prune(&mut self, begin: DateTime<Utc>) {
+        self.by_id.retain(|_, ts| *ts > begin);
+    }
+
+    fn accept(&mut self, event: &Value, fallback_ts: DateTime<Utc>) -> bool {
+        let id = crate::logs::event::event_id_of(event);
+        if self.by_id.contains_key(&id) {
+            return false;
+        }
+        let ts = event_timestamp(event).unwrap_or(fallback_ts);
+        self.by_id.insert(id, ts);
+        true
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.by_id.len()
     }
 }
 
@@ -927,6 +983,7 @@ async fn tail(
     pattern: Option<&str>,
 ) -> Result<()> {
     let mut cursor = TailCursor::new(Utc::now() - Duration::seconds(TAIL_INITIAL_LOOKBACK_SECONDS));
+    let mut seen_ids = TailSeen::default();
     let mut stdout = BufWriter::new(std::io::stdout());
     let interrupted = tokio::signal::ctrl_c();
     tokio::pin!(interrupted);
@@ -937,13 +994,17 @@ async fn tail(
 
     loop {
         let (begin, end) = cursor.next_window(Utc::now())?;
+        seen_ids.prune(begin);
         let mut seen = 0usize;
         let mut matched = 0usize;
         {
             let mut on_page = |mut page: Vec<Value>| -> Result<()> {
-                seen += page.len();
                 sort_events_by_timestamp(&mut page);
                 for event in page {
+                    if !seen_ids.accept(&event, end) {
+                        continue;
+                    }
+                    seen += 1;
                     if pattern.is_none_or(|pattern| payload_matches(&event, pattern)) {
                         serde_json::to_writer(&mut stdout, &event)?;
                         stdout.write_all(b"\n")?;
@@ -1279,15 +1340,117 @@ mod tests {
         assert_eq!(events[2]["source"], "missing-timestamp");
     }
 
-    #[test]
-    fn consecutive_tail_windows_share_exactly_one_boundary() {
-        let t0 = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
-        let t1 = t0 + Duration::seconds(1);
-        let t2 = t1 + Duration::seconds(2);
-        let mut cursor = TailCursor::new(t0);
+    fn tail_event(id: &str, ts: DateTime<Utc>) -> Value {
+        serde_json::json!({
+            "timestamp": ts.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "source": "am-everything",
+            "payload": {"_id": id, "message": "x"},
+        })
+    }
 
-        assert_eq!(cursor.next_window(t1).unwrap(), (t0, t1));
-        assert_eq!(cursor.next_window(t2).unwrap(), (t1, t2));
+    /// Drive `TailCursor` + `TailSeen` the way `tail` does, keeping only
+    /// events the logs API would return for `(beginTime, endTime]`.
+    fn emit_tail_polls(
+        origin: DateTime<Utc>,
+        polls: &[(DateTime<Utc>, Vec<Value>)],
+    ) -> (Vec<String>, TailSeen) {
+        let mut cursor = TailCursor::new(origin);
+        let mut seen = TailSeen::default();
+        let mut emitted = Vec::new();
+        for (end, events) in polls {
+            let (begin, _) = cursor.next_window(*end).unwrap();
+            seen.prune(begin);
+            for event in events {
+                let Some(ts) = event_timestamp(event) else {
+                    continue;
+                };
+                if ts <= begin || ts > *end {
+                    continue;
+                }
+                if seen.accept(event, *end) {
+                    emitted.push(crate::logs::event::event_id_of(event));
+                }
+            }
+        }
+        (emitted, seen)
+    }
+
+    #[test]
+    fn late_event_arriving_in_overlap_is_emitted_once() {
+        // Red if `next_window` assigns `self.next_begin = end` with no
+        // `TAIL_OVERLAP` rewind: the late event's timestamp then falls on
+        // or behind window 2's exclusive begin and is never returned.
+        let t0 = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
+        let t1 = t0 + Duration::seconds(2);
+        let t2 = t1 + Duration::seconds(2);
+        let t3 = t2 + Duration::seconds(2);
+        let event = tail_event("late-1", t0 + Duration::seconds(1));
+
+        let (ids, _) = emit_tail_polls(
+            t0,
+            &[(t1, vec![]), (t2, vec![event.clone()]), (t3, vec![event])],
+        );
+        assert_eq!(ids, ["late-1"]);
+    }
+
+    #[test]
+    fn the_overlap_rewind_never_reaches_back_before_the_follow_started() {
+        // Red if `next_window` assigns `end - TAIL_OVERLAP` unclamped: the
+        // second poll's begin would then sit a full overlap before `t0`, and
+        // `before-start` — older than the lookback the banner advertised —
+        // would be emitted along with it.
+        let t0 = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
+        let t1 = t0 + Duration::seconds(2);
+        let t2 = t1 + Duration::seconds(2);
+        let stale = tail_event("before-start", t0 - Duration::seconds(30));
+        let fresh = tail_event("after-start", t0 + Duration::seconds(1));
+
+        let (ids, _) = emit_tail_polls(t0, &[(t1, vec![]), (t2, vec![stale, fresh])]);
+        assert_eq!(ids, ["after-start"]);
+    }
+
+    #[test]
+    fn the_overlap_rewind_applies_once_the_follow_is_older_than_the_overlap() {
+        // The clamp must not become a permanent ceiling: past `origin +
+        // TAIL_OVERLAP` the rewind is the full overlap again.
+        let t0 = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
+        let mut cursor = TailCursor::new(t0);
+        let far = t0 + TAIL_OVERLAP + Duration::seconds(30);
+
+        assert_eq!(cursor.next_window(t0 + Duration::seconds(2)).unwrap().0, t0);
+        assert_eq!(cursor.next_window(far).unwrap().0, t0);
+        assert_eq!(
+            cursor.next_window(far + Duration::seconds(1)).unwrap().0,
+            far - TAIL_OVERLAP
+        );
+    }
+
+    #[test]
+    fn overlapping_replay_of_an_already_emitted_event_is_not_duplicated() {
+        // Red if `TailSeen::accept` always returns true (overlap without
+        // dedupe): the same id is emitted from window 1 and the overlapping
+        // window 2.
+        let t0 = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
+        let t1 = t0 + Duration::seconds(2);
+        let t2 = t1 + Duration::seconds(2);
+        let event = tail_event("dup-1", t0 + Duration::seconds(1));
+
+        let (ids, _) = emit_tail_polls(t0, &[(t1, vec![event.clone()]), (t2, vec![event])]);
+        assert_eq!(ids, ["dup-1"]);
+    }
+
+    #[test]
+    fn seen_ids_are_forgotten_once_they_fall_behind_the_overlap() {
+        // Red if `seen.prune(begin)` is removed: `seen.len()` stays 1 after
+        // the horizon advances past the event.
+        let t0 = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
+        let t1 = t0 + Duration::seconds(2);
+        let t2 = t1 + TAIL_OVERLAP;
+        let t3 = t2 + Duration::seconds(1);
+        let event = tail_event("old-1", t0 + Duration::seconds(1));
+
+        let (_, seen) = emit_tail_polls(t0, &[(t1, vec![event]), (t2, vec![]), (t3, vec![])]);
+        assert_eq!(seen.len(), 0);
     }
 
     #[test]

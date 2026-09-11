@@ -31,6 +31,7 @@ pub mod api;
 pub mod cli;
 #[cfg(feature = "logs-store")]
 pub mod db;
+pub mod event;
 #[cfg(feature = "logs-store")]
 pub mod journey;
 pub mod ops;

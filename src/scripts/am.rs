@@ -485,16 +485,14 @@ pub async fn check_syntax(tenant: &str, realm: &str, script: &RemoteScript) -> R
         .unwrap_or("JAVASCRIPT");
     // Note the trailing slash before `?` — the action route needs it.
     let path = format!("{}/scripts/?_action=validate", realm_path(realm));
-    let body = crate::aic::api::post_versioned(
-        tenant,
-        &path,
-        syntax::am_validate_body(&script_b64, language),
-        // A validate stores nothing, so it is not a tenant write and must not
-        // consume a production confirmation.
-        true,
-        API_VERSION,
-    )
-    .await?;
+    // A validate stores nothing, so it is not a tenant write and must not
+    // consume a production confirmation. `read_only_action` is the one
+    // greppable list of such POSTs.
+    let body = crate::aic::api::ApiCall::read_only_action(tenant, &path)
+        .body(syntax::am_validate_body(&script_b64, language))
+        .api_version(API_VERSION)
+        .send()
+        .await?;
     Ok(syntax::parse_am_validate(&body))
 }
 

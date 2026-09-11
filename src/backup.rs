@@ -35,6 +35,24 @@ fn component(value: &str) -> String {
     }
 }
 
+/// Ignore every backup file. `!.gitignore` keeps the ignore rule itself
+/// trackable so a later `git add -A` cannot pick the backups up.
+const GITIGNORE: &str = "*\n!.gitignore\n";
+
+fn ensure_untracked(dir: &Path) -> Result<()> {
+    let path = dir.join(".gitignore");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    match options.open(&path) {
+        Ok(mut file) => {
+            file.write_all(GITIGNORE.as_bytes())?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub(crate) fn create_at(
     dir: &Path,
     kind: &str,
@@ -45,6 +63,7 @@ pub(crate) fn create_at(
     stamp: &str,
 ) -> Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
+    ensure_untracked(dir)?;
     let identity = format!(
         "{}.{}.{}",
         component(kind),
@@ -123,6 +142,24 @@ mod tests {
                     .starts_with("policy-set.alpha.Same_Name.20260911T120000Z.")
             );
         }
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn create_in_leaves_a_gitignore_that_ignores_everything() {
+        let dir = std::env::temp_dir().join(format!("aic-backup-gi-{}", uuid::Uuid::new_v4()));
+        create_in(&dir, "oauth", "alpha", "client", "json", b"secret").unwrap();
+        let gitignore = dir.join(".gitignore");
+        let contents = std::fs::read_to_string(&gitignore).unwrap();
+        assert_eq!(contents, "*\n!.gitignore\n");
+
+        std::fs::write(&gitignore, "do-not-touch\n").unwrap();
+        create_in(&dir, "oauth", "alpha", "other", "json", b"also").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&gitignore).unwrap(),
+            "do-not-touch\n"
+        );
 
         std::fs::remove_dir_all(dir).unwrap();
     }

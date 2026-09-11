@@ -7,7 +7,8 @@ pub use duckdb::Connection;
 use duckdb::types::ToSql;
 use duckdb::{OptionalExt, params, params_from_iter};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+
+use super::event::event_id;
 
 pub type Result<T> = std::result::Result<T, DbError>;
 
@@ -581,26 +582,6 @@ fn parse_timestamp(value: &str) -> Result<DateTime<Utc>> {
     parsed
         .with_nanosecond(micros * 1_000)
         .ok_or_else(|| DbError::InvalidEvent(format!("invalid timestamp {value:?}")))
-}
-
-fn event_id(source: Option<&str>, timestamp: &str, payload: &Value, payload_json: &str) -> String {
-    if let Some(id) = payload
-        .get("_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-    {
-        return id.to_string();
-    }
-
-    let input = format!("{}|{timestamp}|{payload_json}", source.unwrap_or_default());
-    let digest = Sha256::digest(input.as_bytes());
-    let mut hex = String::with_capacity(digest.len() * 2);
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in digest {
-        hex.push(HEX[usize::from(byte >> 4)] as char);
-        hex.push(HEX[usize::from(byte & 0x0f)] as char);
-    }
-    hex
 }
 
 fn payload_text<'a>(payload: &'a Value, field: &str) -> Option<&'a str> {

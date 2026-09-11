@@ -382,16 +382,14 @@ pub async fn idm_check_slot(tenant: &str, slot: Option<&Value>) -> Result<Syntax
             ));
         }
     };
-    let outcome = crate::aic::api::post(
-        tenant,
-        "/openidm/script?_action=compile",
-        idm_compile_body(source, script_type),
-        // A compile stores nothing — not a tenant write, so no production
-        // confirmation is consumed. (`eval` would run the script; we never
-        // call it.)
-        true,
-    )
-    .await;
+    // A compile stores nothing — not a tenant write, so no production
+    // confirmation is consumed. (`eval` would run the script; we never call
+    // it.) `read_only_action` is the one greppable list of such POSTs.
+    let outcome =
+        crate::aic::api::ApiCall::read_only_action(tenant, "/openidm/script?_action=compile")
+            .body(idm_compile_body(source, script_type))
+            .send()
+            .await;
     parse_idm_compile(outcome)
 }
 
