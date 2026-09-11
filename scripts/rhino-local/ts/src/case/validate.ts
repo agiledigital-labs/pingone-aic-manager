@@ -123,6 +123,13 @@ function parseGiven(raw: unknown, path: string): Given {
   assignJsonObject(given, "locales", raw.locales, `${path}.locales`);
   assignStringMap(given, "esv", raw.esv, `${path}.esv`);
   assignStringMap(given, "secrets", raw.secrets, `${path}.secrets`);
+  if (raw.callbacks !== undefined) {
+    given.callbacks = parseArray(
+      raw.callbacks,
+      `${path}.callbacks`,
+      parseCallback
+    );
+  }
   if (raw.managed !== undefined) {
     given.managed = parseManaged(raw.managed, `${path}.managed`);
   }

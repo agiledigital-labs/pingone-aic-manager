@@ -61,12 +61,74 @@ describe("nodeState", () => {
     );
   });
 
-  it("leaves unimplemented nodeState methods throwing", () => {
-    const sandbox = loadBehaviour();
-    const nodeState = sandbox.nodeState as { remove: (key: string) => void };
-    expect(() => nodeState.remove("k")).toThrow(
-      /rhino-local: not mocked: nodeState\.remove/
+  it("remove drops the key from every bucket", () => {
+    const effects = runScript('nodeState.remove("k");', {
+      sharedState: { k: "shared", keep: 1 },
+      transientState: { k: "transient" },
+      secureState: { k: "secure" },
+    });
+    expect(effects.sharedState.final).toEqual({ keep: 1 });
+    expect(effects.transientState.final).toEqual({});
+    expect(effects.secureState.final).toEqual({});
+  });
+
+  it("keys returns distinct names across buckets, once", () => {
+    const sandbox = loadBehaviour({
+      sharedState: { a: 1, b: 2 },
+      transientState: { b: 9, c: 3 },
+      secureState: { d: 4 },
+    });
+    const nodeState = sandbox.nodeState as {
+      keys: () => { size: () => number; contains: (k: string) => boolean };
+    };
+    const keys = nodeState.keys();
+    expect(keys.size()).toBe(4);
+    expect(keys.contains("a")).toBe(true);
+    expect(keys.contains("b")).toBe(true);
+    expect(keys.contains("c")).toBe(true);
+    expect(keys.contains("d")).toBe(true);
+  });
+
+  it("getObject merges maps across buckets; get returns the first hit", () => {
+    const sandbox = loadBehaviour({
+      sharedState: { objectAttributes: { a: 1, b: 2 } },
+      transientState: { objectAttributes: { b: 9, c: 3 } },
+    });
+    const nodeState = sandbox.nodeState as {
+      get: (key: string) => unknown;
+      getObject: (key: string) => unknown;
+    };
+    expect(nodeState.get("objectAttributes")).toEqual({ b: 9, c: 3 });
+    expect(nodeState.getObject("objectAttributes")).toEqual({
+      a: 1,
+      b: 9,
+      c: 3,
+    });
+  });
+
+  it("mergeShared adds keys without replacing the whole bucket", () => {
+    const effects = runScript(
+      'nodeState.mergeShared({ b: 2, objectAttributes: { k: 1 } });',
+      {
+        sharedState: { a: 1, objectAttributes: { k: 0, m: 2 } },
+        transientState: { t: 1 },
+      }
     );
+    expect(effects.sharedState.final).toEqual({
+      a: 1,
+      b: 2,
+      objectAttributes: { k: 1, m: 2 },
+    });
+    expect(effects.transientState.final).toEqual({ t: 1 });
+  });
+
+  it("mergeTransient writes the transient bucket only", () => {
+    const effects = runScript('nodeState.mergeTransient({ t: 2, extra: 3 });', {
+      sharedState: { a: 1 },
+      transientState: { t: 1 },
+    });
+    expect(effects.sharedState.final).toEqual({ a: 1 });
+    expect(effects.transientState.final).toEqual({ t: 2, extra: 3 });
   });
 
   it("does not bind legacy maps on next-gen", () => {

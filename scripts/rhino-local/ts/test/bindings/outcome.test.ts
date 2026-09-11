@@ -22,11 +22,55 @@ describe("outcome", () => {
       withErrorMessage: (message: string) => unknown;
       withHeader: (header: string) => unknown;
       suspend: (text: string) => unknown;
+      withIdentifiedUser: (username: string) => unknown;
+      withStage: (stage: string) => unknown;
     };
     expect(action.goTo("true")).toBe(action);
     expect(action.withErrorMessage("no")).toBe(action);
     expect(action.withHeader("X-A: b")).toBe(action);
-    expect(() => action.suspend("wait")).toThrow(/not mocked: action\.suspend/);
+    expect(action.suspend("wait")).toBe(action);
+    expect(action.withIdentifiedUser("alice")).toBe(action);
+    expect(action.withStage("collect")).toBe(action);
+  });
+
+  it("records suspend as a callback and does not set an outcome", () => {
+    const effects = runScript('action.suspend("Check your email");');
+    expect(effects.outcome).toBeNull();
+    expect(effects.callbacks).toEqual([
+      { type: "SuspendedTextOutputCallback", message: "Check your email" },
+    ]);
+  });
+
+  it("invokes additionalLogic with a resume URI and substitutes {0}", () => {
+    const effects = runScript(
+      [
+        "action.suspend('Click: [{0}]', function (resumeUri) {",
+        '  nodeState.putShared("uri", resumeUri);',
+        "});",
+      ].join("\n")
+    );
+    expect(effects.callbacks[0]).toEqual({
+      type: "SuspendedTextOutputCallback",
+      message: "Click: [https://rhino-local.invalid/resume]",
+    });
+    expect(effects.sharedState.final).toEqual({
+      uri: "https://rhino-local.invalid/resume",
+    });
+  });
+
+  it("chains the remaining action methods without setting an outcome", () => {
+    const effects = runScript(
+      [
+        'action.withIdentifiedAgent("agent-1")',
+        '.withDescription("d")',
+        '.withLockoutMessage("locked")',
+        '.putSessionProperty("k", "v")',
+        '.removeSessionProperty("k")',
+        ".withMaxSessionTime(60)",
+        ".withMaxIdleTime(30);",
+      ].join("\n")
+    );
+    expect(effects.outcome).toBeNull();
   });
 
   it("chains goTo after withErrorMessage", () => {

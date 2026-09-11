@@ -114,6 +114,24 @@ describe("defineCase / validateCase", () => {
     );
   });
 
+  it("accepts given.callbacks as submitted callback values", () => {
+    const kase = defineCase({
+      name: "resumed",
+      script: "am/decision-node/x.js",
+      given: {
+        callbacks: [
+          { type: "NameCallback", value: "alice" },
+          { type: "ConfirmationCallback", value: 0 },
+        ],
+      },
+      expect: { outcome: "true" },
+    });
+    expect(kase.given.callbacks).toEqual([
+      { type: "NameCallback", value: "alice" },
+      { type: "ConfirmationCallback", value: 0 },
+    ]);
+  });
+
   it("rejects a typo in given.bindings against the generated surface", () => {
     const input = {
       name: "typo",

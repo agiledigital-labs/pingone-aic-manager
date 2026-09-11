@@ -15,6 +15,8 @@ var __rhinoLocal = {
   initialSecure: {},
   managed: {},
   esv: {},
+  secrets: {},
+  submittedCallbacks: null,
   httpStubs: [],
   generatedId: 0,
   outcome: null,
@@ -61,6 +63,55 @@ function __rhinoLocalExpectArity(path, args, expected) {
 
 function __rhinoLocalHas(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function __rhinoLocalIsPlainObject(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
+function __rhinoLocalAssignPlain(target, source) {
+  if (!__rhinoLocalIsPlainObject(source)) {
+    return;
+  }
+  var keys = Object.keys(source);
+  var i;
+  for (i = 0; i < keys.length; i += 1) {
+    target[keys[i]] = source[keys[i]];
+  }
+}
+
+function __rhinoLocalMergeBucket(bucketName, object) {
+  if (!__rhinoLocalIsPlainObject(object)) {
+    throw new Error(
+      "rhino-local: nodeState.merge" +
+        (bucketName === "shared" ? "Shared" : "Transient") +
+        ": expected an object"
+    );
+  }
+  var bucket = __rhinoLocal[bucketName];
+  var keys = Object.keys(object);
+  var i;
+  var key;
+  var incoming;
+  var existing;
+  var merged;
+  for (i = 0; i < keys.length; i += 1) {
+    key = keys[i];
+    incoming = object[key];
+    existing = bucket[key];
+    if (__rhinoLocalIsPlainObject(existing) && __rhinoLocalIsPlainObject(incoming)) {
+      merged = {};
+      __rhinoLocalAssignPlain(merged, existing);
+      __rhinoLocalAssignPlain(merged, incoming);
+      bucket[key] = merged;
+    } else {
+      bucket[key] = incoming;
+    }
+  }
 }
 
 function __rhinoLocalJavaList(items) {
@@ -207,6 +258,74 @@ nodeState.putTransient = function (key, value) {
   return nodeState;
 };
 
+nodeState.remove = function (key) {
+  __rhinoLocalExpectArity("nodeState.remove", arguments, 1);
+  var k = String(key);
+  delete __rhinoLocal.shared[k];
+  delete __rhinoLocal.transient[k];
+  delete __rhinoLocal.secure[k];
+};
+
+nodeState.keys = function () {
+  __rhinoLocalExpectArity("nodeState.keys", arguments, 0);
+  var seen = {};
+  var names = [];
+  function take(bucket) {
+    var keys = Object.keys(bucket);
+    var i;
+    var key;
+    for (i = 0; i < keys.length; i += 1) {
+      key = keys[i];
+      if (!__rhinoLocalHas(seen, key)) {
+        seen[key] = true;
+        names.push(key);
+      }
+    }
+  }
+  take(__rhinoLocal.transient);
+  take(__rhinoLocal.secure);
+  take(__rhinoLocal.shared);
+  return __rhinoLocalJavaList(names);
+};
+
+nodeState.getObject = function (key) {
+  __rhinoLocalExpectArity("nodeState.getObject", arguments, 1);
+  var k = String(key);
+  var sharedVal = __rhinoLocalHas(__rhinoLocal.shared, k)
+    ? __rhinoLocal.shared[k]
+    : undefined;
+  var secureVal = __rhinoLocalHas(__rhinoLocal.secure, k)
+    ? __rhinoLocal.secure[k]
+    : undefined;
+  var transientVal = __rhinoLocalHas(__rhinoLocal.transient, k)
+    ? __rhinoLocal.transient[k]
+    : undefined;
+  if (
+    __rhinoLocalIsPlainObject(sharedVal) ||
+    __rhinoLocalIsPlainObject(secureVal) ||
+    __rhinoLocalIsPlainObject(transientVal)
+  ) {
+    var merged = {};
+    __rhinoLocalAssignPlain(merged, sharedVal);
+    __rhinoLocalAssignPlain(merged, secureVal);
+    __rhinoLocalAssignPlain(merged, transientVal);
+    return merged;
+  }
+  return __rhinoLocalLookupState(k);
+};
+
+nodeState.mergeShared = function (object) {
+  __rhinoLocalExpectArity("nodeState.mergeShared", arguments, 1);
+  __rhinoLocalMergeBucket("shared", object);
+  return nodeState;
+};
+
+nodeState.mergeTransient = function (object) {
+  __rhinoLocalExpectArity("nodeState.mergeTransient", arguments, 1);
+  __rhinoLocalMergeBucket("transient", object);
+  return nodeState;
+};
+
 action.goTo = function (name) {
   __rhinoLocalExpectArity("action.goTo", arguments, 1);
   __rhinoLocal.outcome = String(name);
@@ -221,6 +340,74 @@ action.withErrorMessage = function (message) {
 
 action.withHeader = function (header) {
   __rhinoLocalExpectArity("action.withHeader", arguments, 1);
+  return action;
+};
+
+action.withIdentifiedUser = function (username) {
+  __rhinoLocalExpectArity("action.withIdentifiedUser", arguments, 1);
+  return action;
+};
+
+action.withIdentifiedAgent = function (agentName) {
+  __rhinoLocalExpectArity("action.withIdentifiedAgent", arguments, 1);
+  return action;
+};
+
+action.withStage = function (stage) {
+  __rhinoLocalExpectArity("action.withStage", arguments, 1);
+  return action;
+};
+
+action.withDescription = function (description) {
+  __rhinoLocalExpectArity("action.withDescription", arguments, 1);
+  return action;
+};
+
+action.withLockoutMessage = function (lockoutMessage) {
+  __rhinoLocalExpectArity("action.withLockoutMessage", arguments, 1);
+  return action;
+};
+
+action.putSessionProperty = function (key, value) {
+  __rhinoLocalExpectArity("action.putSessionProperty", arguments, 2);
+  return action;
+};
+
+action.removeSessionProperty = function (key) {
+  __rhinoLocalExpectArity("action.removeSessionProperty", arguments, 1);
+  return action;
+};
+
+action.withMaxSessionTime = function (maxSessionTime) {
+  __rhinoLocalExpectArity("action.withMaxSessionTime", arguments, 1);
+  return action;
+};
+
+action.withMaxIdleTime = function (maxIdleTime) {
+  __rhinoLocalExpectArity("action.withMaxIdleTime", arguments, 1);
+  return action;
+};
+
+action.suspend = function (callbackTextFormat, additionalLogic) {
+  if (arguments.length < 1 || arguments.length > 3) {
+    throw new Error(
+      "rhino-local: action.suspend arity=" +
+        arguments.length +
+        " (expected 1..3)"
+    );
+  }
+  var message = String(callbackTextFormat);
+  var resumeUri = "https://rhino-local.invalid/resume";
+  if (arguments.length >= 2) {
+    if (typeof additionalLogic !== "function") {
+      throw new Error(
+        "rhino-local: action.suspend additionalLogic is not a function"
+      );
+    }
+    message = message.split("{0}").join(resumeUri);
+    additionalLogic(resumeUri);
+  }
+  __rhinoLocalCallback("SuspendedTextOutputCallback", { message: message });
   return action;
 };
 
@@ -440,6 +627,514 @@ callbacksBuilder.choiceCallback = function (
   });
 };
 
+callbacksBuilder.suspendedTextOutputCallback = function (messageType, message) {
+  __rhinoLocalExpectArity(
+    "callbacksBuilder.suspendedTextOutputCallback",
+    arguments,
+    2
+  );
+  __rhinoLocalCallback("SuspendedTextOutputCallback", {
+    messageType: messageType,
+    message: String(message),
+  });
+};
+
+callbacksBuilder.textInputCallback = function (prompt, defaultText) {
+  if (arguments.length !== 1 && arguments.length !== 2) {
+    throw new Error(
+      "rhino-local: callbacksBuilder.textInputCallback arity=" +
+        arguments.length +
+        " (expected 1 or 2)"
+    );
+  }
+  var textFields = { prompt: String(prompt) };
+  if (arguments.length > 1) {
+    textFields.defaultText = String(defaultText);
+  }
+  __rhinoLocalCallback("TextInputCallback", textFields);
+};
+
+callbacksBuilder.scriptTextOutputCallback = function (message) {
+  __rhinoLocalExpectArity(
+    "callbacksBuilder.scriptTextOutputCallback",
+    arguments,
+    1
+  );
+  __rhinoLocalCallback("ScriptTextOutputCallback", { message: String(message) });
+};
+
+callbacksBuilder.languageCallback = function (language, country) {
+  __rhinoLocalExpectArity("callbacksBuilder.languageCallback", arguments, 2);
+  __rhinoLocalCallback("LanguageCallback", {
+    language: String(language),
+    country: String(country),
+  });
+};
+
+callbacksBuilder.idPCallback = function (
+  provider,
+  clientId,
+  redirectUri,
+  scope,
+  nonce,
+  request,
+  requestUri,
+  acrValues,
+  requestNativeAppForUserInfo,
+  token,
+  tokenType
+) {
+  if (arguments.length !== 9 && arguments.length !== 11) {
+    throw new Error(
+      "rhino-local: callbacksBuilder.idPCallback arity=" +
+        arguments.length +
+        " (expected 9 or 11)"
+    );
+  }
+  var idpFields = {
+    provider: String(provider),
+    clientId: String(clientId),
+    redirectUri: String(redirectUri),
+    scope: scope,
+    nonce: String(nonce),
+    request: String(request),
+    requestUri: String(requestUri),
+    acrValues: acrValues,
+    requestNativeAppForUserInfo: Boolean(requestNativeAppForUserInfo),
+  };
+  if (arguments.length === 11) {
+    idpFields.token = String(token);
+    idpFields.tokenType = String(tokenType);
+  }
+  __rhinoLocalCallback("IdPCallback", idpFields);
+};
+
+callbacksBuilder.httpCallback = function () {
+  var a = arguments;
+  if (a.length === 4) {
+    __rhinoLocalCallback("HttpCallback", {
+      authRHeader: String(a[0]),
+      negoName: String(a[1]),
+      negoValue: String(a[2]),
+      errorCode: a[3],
+    });
+    return;
+  }
+  if (a.length === 3) {
+    __rhinoLocalCallback("HttpCallback", {
+      authorizationHeader: String(a[0]),
+      negotiationHeader: String(a[1]),
+      errorCode: a[2],
+    });
+    return;
+  }
+  throw new Error(
+    "rhino-local: callbacksBuilder.httpCallback arity=" + a.length
+  );
+};
+
+callbacksBuilder.x509CertificateCallback = function (
+  prompt,
+  certificate,
+  requestSignature
+) {
+  if (arguments.length < 1 || arguments.length > 3) {
+    throw new Error(
+      "rhino-local: callbacksBuilder.x509CertificateCallback arity=" +
+        arguments.length +
+        " (expected 1..3)"
+    );
+  }
+  var x509 = { prompt: String(prompt) };
+  if (arguments.length > 1) {
+    x509.certificate = certificate;
+  }
+  if (arguments.length > 2) {
+    x509.requestSignature = Boolean(requestSignature);
+  }
+  __rhinoLocalCallback("X509CertificateCallback", x509);
+};
+
+callbacksBuilder.consentMappingCallback = function () {
+  var a = arguments;
+  if (a.length === 7) {
+    __rhinoLocalCallback("ConsentMappingCallback", {
+      name: String(a[0]),
+      displayName: String(a[1]),
+      icon: String(a[2]),
+      accessLevel: String(a[3]),
+      titles: a[4],
+      message: String(a[5]),
+      isRequired: Boolean(a[6]),
+    });
+    return;
+  }
+  if (a.length === 3) {
+    __rhinoLocalCallback("ConsentMappingCallback", {
+      config: a[0],
+      message: String(a[1]),
+      isRequired: Boolean(a[2]),
+    });
+    return;
+  }
+  throw new Error(
+    "rhino-local: callbacksBuilder.consentMappingCallback arity=" + a.length
+  );
+};
+
+callbacksBuilder.deviceProfileCallback = function (metadata, location, message) {
+  __rhinoLocalExpectArity("callbacksBuilder.deviceProfileCallback", arguments, 3);
+  __rhinoLocalCallback("DeviceProfileCallback", {
+    metadata: Boolean(metadata),
+    location: Boolean(location),
+    message: String(message),
+  });
+};
+
+callbacksBuilder.kbaCreateCallback = function (
+  prompt,
+  predefinedQuestions,
+  allowUserDefinedQuestions
+) {
+  __rhinoLocalExpectArity("callbacksBuilder.kbaCreateCallback", arguments, 3);
+  __rhinoLocalCallback("KbaCreateCallback", {
+    prompt: String(prompt),
+    predefinedQuestions: predefinedQuestions,
+    allowUserDefinedQuestions: Boolean(allowUserDefinedQuestions),
+  });
+};
+
+callbacksBuilder.selectIdPCallback = function (providers) {
+  __rhinoLocalExpectArity("callbacksBuilder.selectIdPCallback", arguments, 1);
+  __rhinoLocalCallback("SelectIdPCallback", { providers: providers });
+};
+
+callbacksBuilder.termsAndConditionsCallback = function (version, terms, createDate) {
+  __rhinoLocalExpectArity(
+    "callbacksBuilder.termsAndConditionsCallback",
+    arguments,
+    3
+  );
+  __rhinoLocalCallback("TermsAndConditionsCallback", {
+    version: String(version),
+    terms: String(terms),
+    createDate: String(createDate),
+  });
+};
+
+callbacksBuilder.metadataCallback = function (outputValue) {
+  __rhinoLocalExpectArity("callbacksBuilder.metadataCallback", arguments, 1);
+  __rhinoLocalCallback("MetadataCallback", { outputValue: outputValue });
+};
+
+callbacksBuilder.pollingWaitCallback = function (waitTime, message) {
+  __rhinoLocalExpectArity("callbacksBuilder.pollingWaitCallback", arguments, 2);
+  __rhinoLocalCallback("PollingWaitCallback", {
+    waitTime: String(waitTime),
+    message: String(message),
+  });
+};
+
+callbacksBuilder.redirectCallback = function (
+  redirectUrl,
+  redirectData,
+  method,
+  fourth,
+  fifth,
+  sixth
+) {
+  var a = arguments;
+  var redirectFields = {
+    redirectUrl: String(redirectUrl),
+    redirectData: redirectData,
+    method: String(method),
+  };
+  if (a.length === 3) {
+    __rhinoLocalCallback("RedirectCallback", redirectFields);
+    return;
+  }
+  if (a.length === 4) {
+    redirectFields.setTrackingCookie = Boolean(fourth);
+    __rhinoLocalCallback("RedirectCallback", redirectFields);
+    return;
+  }
+  if (a.length === 5) {
+    redirectFields.statusParameter = String(fourth);
+    redirectFields.redirectBackUrlCookie = String(fifth);
+    __rhinoLocalCallback("RedirectCallback", redirectFields);
+    return;
+  }
+  if (a.length === 6) {
+    redirectFields.statusParameter = String(fourth);
+    redirectFields.redirectBackUrlCookie = String(fifth);
+    redirectFields.setTrackingCookie = Boolean(sixth);
+    __rhinoLocalCallback("RedirectCallback", redirectFields);
+    return;
+  }
+  throw new Error(
+    "rhino-local: callbacksBuilder.redirectCallback arity=" + a.length
+  );
+};
+
+function __rhinoLocalAttributeCallback(type, args) {
+  var fields = {
+    name: String(args[0]),
+    prompt: String(args[1]),
+    value: args[2],
+    required: Boolean(args[3]),
+  };
+  if (args.length === 4) {
+    __rhinoLocalCallback(type, fields);
+    return;
+  }
+  if (args.length === 5) {
+    fields.failedPolicies = args[4];
+    __rhinoLocalCallback(type, fields);
+    return;
+  }
+  if (args.length === 6) {
+    fields.policies = args[4];
+    fields.validateOnly = Boolean(args[5]);
+    __rhinoLocalCallback(type, fields);
+    return;
+  }
+  if (args.length === 7) {
+    fields.policies = args[4];
+    fields.validateOnly = Boolean(args[5]);
+    fields.failedPolicies = args[6];
+    __rhinoLocalCallback(type, fields);
+    return;
+  }
+  throw new Error(
+    "rhino-local: callbacksBuilder." +
+      type.charAt(0).toLowerCase() +
+      type.substring(1) +
+      " arity=" +
+      args.length
+  );
+}
+
+callbacksBuilder.stringAttributeInputCallback = function () {
+  __rhinoLocalAttributeCallback("StringAttributeInputCallback", arguments);
+};
+
+callbacksBuilder.numberAttributeInputCallback = function () {
+  __rhinoLocalAttributeCallback("NumberAttributeInputCallback", arguments);
+};
+
+callbacksBuilder.booleanAttributeInputCallback = function () {
+  __rhinoLocalAttributeCallback("BooleanAttributeInputCallback", arguments);
+};
+
+callbacksBuilder.validatedUsernameCallback = function (
+  prompt,
+  policies,
+  validateOnly,
+  failedPolicies
+) {
+  if (arguments.length !== 3 && arguments.length !== 4) {
+    throw new Error(
+      "rhino-local: callbacksBuilder.validatedUsernameCallback arity=" +
+        arguments.length +
+        " (expected 3 or 4)"
+    );
+  }
+  var userFields = {
+    prompt: String(prompt),
+    policies: policies,
+    validateOnly: Boolean(validateOnly),
+  };
+  if (arguments.length === 4) {
+    userFields.failedPolicies = failedPolicies;
+  }
+  __rhinoLocalCallback("ValidatedUsernameCallback", userFields);
+};
+
+callbacksBuilder.validatedPasswordCallback = function (
+  prompt,
+  echoOn,
+  policies,
+  validateOnly,
+  failedPolicies
+) {
+  if (arguments.length !== 4 && arguments.length !== 5) {
+    throw new Error(
+      "rhino-local: callbacksBuilder.validatedPasswordCallback arity=" +
+        arguments.length +
+        " (expected 4 or 5)"
+    );
+  }
+  var pwFields = {
+    prompt: String(prompt),
+    echoOn: Boolean(echoOn),
+    policies: policies,
+    validateOnly: Boolean(validateOnly),
+  };
+  if (arguments.length === 5) {
+    pwFields.failedPolicies = failedPolicies;
+  }
+  __rhinoLocalCallback("ValidatedPasswordCallback", pwFields);
+};
+
+function __rhinoLocalRequireSubmitted() {
+  if (__rhinoLocal.submittedCallbacks === null) {
+    throw new Error("rhino-local: callbacks: no given.callbacks");
+  }
+  return __rhinoLocal.submittedCallbacks;
+}
+
+function __rhinoLocalSubmittedValues(type) {
+  var submitted = __rhinoLocalRequireSubmitted();
+  var out = [];
+  var i;
+  var cb;
+  for (i = 0; i < submitted.length; i += 1) {
+    cb = submitted[i];
+    if (cb.type === type) {
+      if (cb.value === undefined) {
+        throw new Error(
+          "rhino-local: given.callbacks[" +
+            i +
+            "] (" +
+            type +
+            ") has no value"
+        );
+      }
+      out.push(cb.value);
+    }
+  }
+  return __rhinoLocalJavaList(out);
+}
+
+callbacks.isEmpty = function () {
+  __rhinoLocalExpectArity("callbacks.isEmpty", arguments, 0);
+  return __rhinoLocalRequireSubmitted().length === 0;
+};
+
+callbacks.getNameCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getNameCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("NameCallback");
+};
+
+callbacks.getPasswordCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getPasswordCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("PasswordCallback");
+};
+
+callbacks.getHiddenValueCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getHiddenValueCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("HiddenValueCallback");
+};
+
+callbacks.getDeviceProfileCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getDeviceProfileCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("DeviceProfileCallback");
+};
+
+callbacks.getKbaCreateCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getKbaCreateCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("KbaCreateCallback");
+};
+
+callbacks.getSelectIdPCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getSelectIdPCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("SelectIdPCallback");
+};
+
+callbacks.getTermsAndConditionsCallbacks = function () {
+  __rhinoLocalExpectArity(
+    "callbacks.getTermsAndConditionsCallbacks",
+    arguments,
+    0
+  );
+  return __rhinoLocalSubmittedValues("TermsAndConditionsCallback");
+};
+
+callbacks.getTextInputCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getTextInputCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("TextInputCallback");
+};
+
+callbacks.getStringAttributeInputCallbacks = function () {
+  __rhinoLocalExpectArity(
+    "callbacks.getStringAttributeInputCallbacks",
+    arguments,
+    0
+  );
+  return __rhinoLocalSubmittedValues("StringAttributeInputCallback");
+};
+
+callbacks.getNumberAttributeInputCallbacks = function () {
+  __rhinoLocalExpectArity(
+    "callbacks.getNumberAttributeInputCallbacks",
+    arguments,
+    0
+  );
+  return __rhinoLocalSubmittedValues("NumberAttributeInputCallback");
+};
+
+callbacks.getBooleanAttributeInputCallbacks = function () {
+  __rhinoLocalExpectArity(
+    "callbacks.getBooleanAttributeInputCallbacks",
+    arguments,
+    0
+  );
+  return __rhinoLocalSubmittedValues("BooleanAttributeInputCallback");
+};
+
+callbacks.getConfirmationCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getConfirmationCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("ConfirmationCallback");
+};
+
+callbacks.getLanguageCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getLanguageCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("LanguageCallback");
+};
+
+callbacks.getIdpCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getIdpCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("IdPCallback");
+};
+
+callbacks.getValidatedPasswordCallbacks = function () {
+  __rhinoLocalExpectArity(
+    "callbacks.getValidatedPasswordCallbacks",
+    arguments,
+    0
+  );
+  return __rhinoLocalSubmittedValues("ValidatedPasswordCallback");
+};
+
+callbacks.getValidatedUsernameCallbacks = function () {
+  __rhinoLocalExpectArity(
+    "callbacks.getValidatedUsernameCallbacks",
+    arguments,
+    0
+  );
+  return __rhinoLocalSubmittedValues("ValidatedUsernameCallback");
+};
+
+callbacks.getHttpCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getHttpCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("HttpCallback");
+};
+
+callbacks.getX509CertificateCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getX509CertificateCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("X509CertificateCallback");
+};
+
+callbacks.getConsentMappingCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getConsentMappingCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("ConsentMappingCallback");
+};
+
+callbacks.getChoiceCallbacks = function () {
+  __rhinoLocalExpectArity("callbacks.getChoiceCallbacks", arguments, 0);
+  return __rhinoLocalSubmittedValues("ChoiceCallback");
+};
+
 function __rhinoLocalSplitResource(id) {
   var s = String(id);
   var parts = s.split("/");
@@ -546,17 +1241,355 @@ function __rhinoLocalPushOpenidm(method, resource, body, actionName) {
   __rhinoLocal.openidm.push(rec);
 }
 
+function __rhinoLocalFilterError(filter) {
+  throw new Error(
+    "rhino-local: openidm.query: unmocked filter " + JSON.stringify(filter)
+  );
+}
+
+function __rhinoLocalIsIdentChar(ch) {
+  return (
+    (ch >= "a" && ch <= "z") ||
+    (ch >= "A" && ch <= "Z") ||
+    (ch >= "0" && ch <= "9") ||
+    ch === "_" ||
+    ch === "-"
+  );
+}
+
+function __rhinoLocalReadField(record, pointer) {
+  var path = String(pointer);
+  if (path.charAt(0) === "/") {
+    path = path.substring(1);
+  }
+  if (path === "") {
+    return record;
+  }
+  var parts = path.split("/");
+  var cur = record;
+  var i;
+  for (i = 0; i < parts.length; i += 1) {
+    if (cur === null || cur === undefined || typeof cur !== "object") {
+      return undefined;
+    }
+    if (!__rhinoLocalHas(cur, parts[i])) {
+      return undefined;
+    }
+    cur = cur[parts[i]];
+  }
+  return cur;
+}
+
+function __rhinoLocalCompareOne(actual, op, expected) {
+  var left = actual === null || actual === undefined ? "" : String(actual);
+  var right = expected === null || expected === undefined ? "" : String(expected);
+  if (op === "eq") {
+    return left === right;
+  }
+  if (op === "co") {
+    return left.indexOf(right) !== -1;
+  }
+  if (op === "sw") {
+    return left.indexOf(right) === 0;
+  }
+  return false;
+}
+
+function __rhinoLocalCompareField(record, pointer, op, expected) {
+  var actual = __rhinoLocalReadField(record, pointer);
+  if (op === "pr") {
+    return actual !== undefined && actual !== null;
+  }
+  if (actual === undefined || actual === null) {
+    return false;
+  }
+  if (Array.isArray(actual)) {
+    var i;
+    for (i = 0; i < actual.length; i += 1) {
+      if (__rhinoLocalCompareOne(actual[i], op, expected)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return __rhinoLocalCompareOne(actual, op, expected);
+}
+
+function __rhinoLocalParseFilter(filter) {
+  var src = String(filter);
+  var i = 0;
+
+  function skipWs() {
+    while (i < src.length) {
+      var ch = src.charAt(i);
+      if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") {
+        break;
+      }
+      i += 1;
+    }
+  }
+
+  function peek() {
+    skipWs();
+    if (i >= src.length) {
+      return "";
+    }
+    return src.charAt(i);
+  }
+
+  function readIdent() {
+    skipWs();
+    var start = i;
+    while (i < src.length && __rhinoLocalIsIdentChar(src.charAt(i))) {
+      i += 1;
+    }
+    if (start === i) {
+      return "";
+    }
+    return src.substring(start, i);
+  }
+
+  function readField() {
+    skipWs();
+    var start = i;
+    if (i < src.length && src.charAt(i) === "/") {
+      i += 1;
+    }
+    if (!__rhinoLocalIsIdentChar(peekCharRaw())) {
+      i = start;
+      return null;
+    }
+    while (i < src.length) {
+      var ch = src.charAt(i);
+      if (__rhinoLocalIsIdentChar(ch) || ch === "/") {
+        i += 1;
+      } else {
+        break;
+      }
+    }
+    var field = src.substring(start, i);
+    if (field === "" || field === "/") {
+      i = start;
+      return null;
+    }
+    return field;
+  }
+
+  function peekCharRaw() {
+    if (i >= src.length) {
+      return "";
+    }
+    return src.charAt(i);
+  }
+
+  function readString() {
+    skipWs();
+    if (src.charAt(i) !== '"') {
+      return null;
+    }
+    i += 1;
+    var out = "";
+    while (i < src.length) {
+      var ch = src.charAt(i);
+      if (ch === "\\") {
+        i += 1;
+        if (i >= src.length) {
+          __rhinoLocalFilterError(filter);
+        }
+        out += src.charAt(i);
+        i += 1;
+      } else if (ch === '"') {
+        i += 1;
+        return out;
+      } else {
+        out += ch;
+        i += 1;
+      }
+    }
+    __rhinoLocalFilterError(filter);
+    return null;
+  }
+
+  function readNumber() {
+    skipWs();
+    var start = i;
+    if (src.charAt(i) === "-") {
+      i += 1;
+    }
+    var digits = 0;
+    while (i < src.length && src.charAt(i) >= "0" && src.charAt(i) <= "9") {
+      digits += 1;
+      i += 1;
+    }
+    if (src.charAt(i) === ".") {
+      i += 1;
+      while (i < src.length && src.charAt(i) >= "0" && src.charAt(i) <= "9") {
+        digits += 1;
+        i += 1;
+      }
+    }
+    if (digits === 0) {
+      i = start;
+      return null;
+    }
+    return Number(src.substring(start, i));
+  }
+
+  function parseValue() {
+    skipWs();
+    var str = readString();
+    if (str !== null) {
+      return str;
+    }
+    var ident = "";
+    var saved = i;
+    ident = readIdent();
+    if (ident === "true") {
+      return true;
+    }
+    if (ident === "false") {
+      return false;
+    }
+    if (ident === "null") {
+      return null;
+    }
+    i = saved;
+    var num = readNumber();
+    if (num !== null && !isNaN(num)) {
+      return num;
+    }
+    __rhinoLocalFilterError(filter);
+    return null;
+  }
+
+  function parsePrimary() {
+    skipWs();
+    if (peek() === "(") {
+      i += 1;
+      var inner = parseOr();
+      skipWs();
+      if (peek() !== ")") {
+        __rhinoLocalFilterError(filter);
+      }
+      i += 1;
+      return inner;
+    }
+    var saved = i;
+    var ident = readIdent();
+    if (ident === "true") {
+      return { kind: "true" };
+    }
+    if (ident === "false") {
+      return { kind: "false" };
+    }
+    i = saved;
+    var field = readField();
+    if (field === null) {
+      __rhinoLocalFilterError(filter);
+    }
+    skipWs();
+    var op = readIdent();
+    if (op === "pr") {
+      return { kind: "pr", field: field };
+    }
+    if (op === "eq" || op === "co" || op === "sw") {
+      return { kind: "cmp", field: field, op: op, value: parseValue() };
+    }
+    __rhinoLocalFilterError(filter);
+    return null;
+  }
+
+  function parseNot() {
+    skipWs();
+    if (peek() === "!") {
+      i += 1;
+      return { kind: "not", inner: parseNot() };
+    }
+    var saved = i;
+    var ident = readIdent();
+    if (ident === "not") {
+      // AIC rejects the word form (docs/api/10, verified 2026-07-03).
+      __rhinoLocalFilterError(filter);
+    }
+    i = saved;
+    return parsePrimary();
+  }
+
+  function parseAnd() {
+    var left = parseNot();
+    while (true) {
+      var saved = i;
+      var ident = readIdent();
+      if (ident !== "and") {
+        i = saved;
+        break;
+      }
+      left = { kind: "and", left: left, right: parseNot() };
+    }
+    return left;
+  }
+
+  function parseOr() {
+    var left = parseAnd();
+    while (true) {
+      var saved = i;
+      var ident = readIdent();
+      if (ident !== "or") {
+        i = saved;
+        break;
+      }
+      left = { kind: "or", left: left, right: parseAnd() };
+    }
+    return left;
+  }
+
+  var ast = parseOr();
+  skipWs();
+  if (i !== src.length) {
+    __rhinoLocalFilterError(filter);
+  }
+  return ast;
+}
+
+function __rhinoLocalEvalFilter(record, ast) {
+  if (ast.kind === "true") {
+    return true;
+  }
+  if (ast.kind === "false") {
+    return false;
+  }
+  if (ast.kind === "not") {
+    return !__rhinoLocalEvalFilter(record, ast.inner);
+  }
+  if (ast.kind === "and") {
+    return (
+      __rhinoLocalEvalFilter(record, ast.left) &&
+      __rhinoLocalEvalFilter(record, ast.right)
+    );
+  }
+  if (ast.kind === "or") {
+    return (
+      __rhinoLocalEvalFilter(record, ast.left) ||
+      __rhinoLocalEvalFilter(record, ast.right)
+    );
+  }
+  if (ast.kind === "pr") {
+    return __rhinoLocalCompareField(record, ast.field, "pr", null);
+  }
+  if (ast.kind === "cmp") {
+    return __rhinoLocalCompareField(record, ast.field, ast.op, ast.value);
+  }
+  return false;
+}
+
 function __rhinoLocalMatchesFilter(record, filter) {
   if (!filter || filter === "true") {
     return true;
   }
-  var match = /^\s*([A-Za-z0-9_]+)\s+eq\s+"([^"]*)"\s*$/.exec(filter);
-  if (!match) {
-    throw new Error(
-      "rhino-local: openidm.query: unmocked filter " + JSON.stringify(filter)
-    );
+  if (filter === "false") {
+    return false;
   }
-  return String(record[match[1]]) === match[2];
+  return __rhinoLocalEvalFilter(record, __rhinoLocalParseFilter(filter));
 }
 
 openidm.read = function (resourceName, _params, fields) {
@@ -875,6 +1908,53 @@ systemEnv = {
   },
 };
 
+function __rhinoLocalSecret(value) {
+  return {
+    getAsUtf8: function () {
+      __rhinoLocalExpectArity("secret.getAsUtf8", arguments, 0);
+      return value;
+    },
+  };
+}
+
+function __rhinoLocalRequireSecret(method, secretId) {
+  var id = String(secretId);
+  if (!__rhinoLocalHas(__rhinoLocal.secrets, id)) {
+    throw new Error(
+      "rhino-local: secrets." +
+        method +
+        ": no given.secrets entry for " +
+        JSON.stringify(id)
+    );
+  }
+  return __rhinoLocalSecret(__rhinoLocal.secrets[id]);
+}
+
+secrets.getGenericSecret = function (secretId) {
+  __rhinoLocalExpectArity("secrets.getGenericSecret", arguments, 1);
+  return __rhinoLocalRequireSecret("getGenericSecret", secretId);
+};
+
+secrets.getDecryptionKey = function (secretId) {
+  __rhinoLocalExpectArity("secrets.getDecryptionKey", arguments, 1);
+  return __rhinoLocalRequireSecret("getDecryptionKey", secretId);
+};
+
+secrets.getEncryptionKey = function (secretId) {
+  __rhinoLocalExpectArity("secrets.getEncryptionKey", arguments, 1);
+  return __rhinoLocalRequireSecret("getEncryptionKey", secretId);
+};
+
+secrets.getSigningKey = function (secretId) {
+  __rhinoLocalExpectArity("secrets.getSigningKey", arguments, 1);
+  return __rhinoLocalRequireSecret("getSigningKey", secretId);
+};
+
+secrets.getVerificationKey = function (secretId) {
+  __rhinoLocalExpectArity("secrets.getVerificationKey", arguments, 1);
+  return __rhinoLocalRequireSecret("getVerificationKey", secretId);
+};
+
 function __rhinoLocalSeed(given) {
   given = given || {};
   if (given.bindings) {
@@ -890,6 +1970,12 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.initialSecure = __rhinoLocalClone(__rhinoLocal.secure);
   __rhinoLocal.managed = __rhinoLocalClone(given.managed || {});
   __rhinoLocal.esv = __rhinoLocalClone(given.esv || {});
+  __rhinoLocal.secrets = __rhinoLocalClone(given.secrets || {});
+  if (given.callbacks === undefined) {
+    __rhinoLocal.submittedCallbacks = null;
+  } else {
+    __rhinoLocal.submittedCallbacks = __rhinoLocalClone(given.callbacks);
+  }
   __rhinoLocal.httpStubs = given.http ? __rhinoLocalClone(given.http) : [];
   __rhinoLocal.generatedId = 0;
   __rhinoLocal.outcome = null;
