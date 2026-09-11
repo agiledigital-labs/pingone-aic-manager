@@ -17,6 +17,36 @@ describe("systemEnv", () => {
   });
 });
 
+describe("secrets", () => {
+  it("returns the seeded secret via getAsUtf8, not a neighbour", () => {
+    const sandbox = loadBehaviour({
+      secrets: {
+        "esv.api-key": "alpha",
+        "esv.other": "bravo",
+      },
+    });
+    type Secret = { getAsUtf8: () => string };
+    const secrets = sandbox.secrets as {
+      getGenericSecret: (id: string) => Secret;
+      getDecryptionKey: (id: string) => Secret;
+      getEncryptionKey: (id: string) => Secret;
+      getSigningKey: (id: string) => Secret;
+      getVerificationKey: (id: string) => Secret;
+    };
+    expect(secrets.getGenericSecret("esv.api-key").getAsUtf8()).toBe("alpha");
+    expect(secrets.getDecryptionKey("esv.api-key").getAsUtf8()).toBe("alpha");
+    expect(secrets.getEncryptionKey("esv.api-key").getAsUtf8()).toBe("alpha");
+    expect(secrets.getSigningKey("esv.other").getAsUtf8()).toBe("bravo");
+    expect(secrets.getVerificationKey("esv.other").getAsUtf8()).toBe("bravo");
+  });
+
+  it("throws naming a missing given.secrets key", () => {
+    expect(() =>
+      runScript('secrets.getGenericSecret("esv.missing").getAsUtf8();')
+    ).toThrow(/no given\.secrets entry for "esv\.missing"/);
+  });
+});
+
 describe("idRepository", () => {
   it("resolves a managed record by _id or userName", () => {
     const sandbox = loadBehaviour({
