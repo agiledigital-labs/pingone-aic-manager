@@ -422,6 +422,51 @@ observations — the wrapper journey never measures them — so a case can pass 
 `openidm` expectations having never looked. An empty array must mean "observed
 none", never "did not observe".
 
+### Conformance model — verified live 2026-09-12
+
+The evidence model (`RecordingEvidence`, `Verdict.conclusive`) was verified
+against the sandbox tenant after it was implemented. Three runs:
+
+| Live case | Result |
+| --- | --- |
+| `decide-from-state`, correct expectations | `pass: true` |
+| `write-state`, correct values | `pass: true`, `conclusive: false` |
+| `write-state` with a deliberately wrong unbucketed value | `pass: false` |
+| `decide-from-state` with a wrong outcome | `pass: false` |
+
+The third row is the one that matters: bucket uncertainty does not excuse a
+wrong value. `diffRecordedEffects` compares values **before** it reasons about
+buckets, so an unobservable location can never silence a bad value. A mutation
+test confirms it — introducing the permissive version fails two of the three
+anti-silencing fixtures in `test/aic/conform.test.ts`.
+
+`write-state` reports `conclusive: false` with a per-key reason:
+
+```text
+sharedState: "checked" added value matched, but its bucket is unobservable
+             (could be sharedState, transientState)
+nodeState:   the runner observes one unified view; per-bucket absence and
+             hidden lower-precedence writes were not verified
+openidm/http/logs: the runner cannot observe this channel
+```
+
+The ambient keys are now derived, not named: anything present in the subject's
+`before` snapshot and absent from `given` is ambient. On this tenant that is
+`realm` (`/alpha`), `maxAuthenticationSessionDuration` (20) and `authLevel`
+(0) — the same three, now attributed rather than guessed.
+
+### `action.goTo()` does not halt script execution — verified 2026-09-12
+
+The subject wrapper appends a state snapshot **after** the author's source. The
+probe scripts end in `action.goTo(...)`, so this only works if execution
+continues past that call. It does: the snapshot ran and its payload was
+readable by the result node on a live tenant.
+
+This also establishes something the earlier result-node measurement could not.
+Ambient keys are visible in the subject's `before` snapshot, so the subject
+script really can read them — previously we only knew they existed by the time
+the result node ran.
+
 ### The portability guard fires correctly
 
 `openidm-read` declares `given.managed` and the lane refused it:
