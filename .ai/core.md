@@ -172,30 +172,75 @@ on the resource id.
 ESVs, logs, and IDM managed config have no realm in the path. Full table in
 `docs/api/01-realms-and-paths.md`.
 
-## 5. Conflict-detection rule (for the script-sync feature)
+## 5. Conflict detection — content snapshots, both directions
 
-The user explicitly wants: _compare script content, not `_rev`_. Rationale:
-revision drift doesn't matter if the content is back to what we have locally.
+This rule governs every resource `aic` syncs to a local file, not only scripts:
+AM/IDM scripts, ESV variables, `config/access`, OAuth2 clients, journeys, and
+AM policies / policy sets / resource types.
 
-For each script we sync, store the **last-synced remote content** (decoded
-bytes) locally. Before pushing a local change:
+The user explicitly wants: _compare content, not `_rev`_. Rationale: revision
+drift doesn't matter if the content is back to what we have locally.
 
-1. `GET` the remote script and base64-decode the `script` field.
-2. If `decoded(remote) == decoded(last_synced_cache)`, push the local change
-   (overwrite is safe — content matches what we forked from).
-3. Otherwise, remote has drifted; surface a 3-way diff (`last_synced` ↔
-   `remote` ↔ `local`) and prompt the user.
-4. Update the cache after any successful pull or push.
+Store the **last-synced remote content** (decoded bytes) locally — the
+_snapshot_.
 
-Scripts have **no `_rev`** anyway (verified 2026-05-17 — see
-`docs/api/04-scripts.md`), so this is the only viable algorithm. The same rule
-applies to ESV variables and to `config/access` (both also have no `_rev` —
-`docs/api/19-config-access.md`), where the snapshot is of the **whole document**
-because the API has no per-rule endpoint.
+### Pushing a local change
 
-For resources that DO have `_rev`, use content snapshots for the same "revert
-detection" reason. Only send `If-Match: <_rev>` for API families verified to
-support conditional writes. OAuth2 clients and journeys have `_rev` but were
+1. `GET` the remote and decode it to bytes.
+2. If `decoded(remote) == snapshot`, push (overwrite is safe — content matches
+   what we forked from).
+3. Otherwise, remote has drifted; surface a 3-way diff (`snapshot` ↔ `remote` ↔
+   `local`) and prompt the user.
+4. **Re-fetch after the write and record the snapshot from that confirmed
+   read — never from the bytes you submitted.** A snapshot taken from the
+   request body is a claim that the tenant accepted them verbatim, and a tenant
+   that silently normalises, truncates or rejects part of a write poisons the
+   snapshot: the next push then compares against something that was never on
+   the tenant and concludes "no drift". `scripts/sync.rs::confirm_write` is the
+   implementation; a write whose confirmation fails leaves **both** the snapshot
+   and the local file untouched (`PushOutcome::NotConfirmed`).
+
+### Pulling a remote change
+
+Pull is protected by the same content comparison, and the snapshot is what
+distinguishes safe from destructive:
+
+- local file absent → install.
+- `local == remote` → no-op.
+- `local == snapshot != remote` → the local copy is unmodified since the last
+  sync; update it.
+- local differs from **both** → the operator has unsynced work. Refuse without
+  `--force`; with it, back the local file up before overwriting.
+- snapshot missing or malformed → untrustworthy, so treat as the protected
+  case. Fail closed.
+
+`src/pullguard.rs` is the single implementation of that matrix — callers supply
+a normaliser and a content-equality predicate, nothing more. Do not grow a
+sixth copy for a sixth resource kind.
+
+Two rules the batch case adds, both learned by getting them wrong:
+
+- **Recheck the local bytes immediately before each write, not only once for
+  the batch.** A plan authorized against a preflight read can be minutes old by
+  the time entry N is written, and an edit landing in that gap is backed up and
+  then silently overwritten.
+- **A batch that stops partway must report what landed.** Short-circuiting a
+  loop of writes tells the operator nothing was installed while several files
+  are already replaced with their snapshots advanced. `PullInstallError` in
+  `scripts/sync.rs` carries the completed outcomes alongside the failure, and
+  every surface renders them.
+
+### Why content and not `_rev`
+
+Scripts have **no `_rev`** at all (verified 2026-05-17 —
+`docs/api/04-scripts.md`), so this is the only viable algorithm there. ESV
+variables and `config/access` likewise have none
+(`docs/api/19-config-access.md`); for `config/access` the snapshot is of the
+**whole document**, because the API has no per-rule endpoint.
+
+For resources that DO have `_rev`, still use content snapshots — for the same
+revert-detection reason. Only send `If-Match: <_rev>` for API families verified
+to support conditional writes. OAuth2 clients and journeys have `_rev` but were
 verified 2026-06-14 to use plain `PUT` without `If-Match`; strip `_rev` from
 their write bodies and ignore it in content comparisons.
 
@@ -284,6 +329,14 @@ rule or a doc row.
   `docs/api/12-script-bindings-matrix.md`). Read the one attribute you want with
   `getAttribute(name)`. No type can catch this one; the return is a map either
   way.
+- **Don't select a directory with `Path::is_dir()` in a walker that then
+  writes or deletes.** It follows symlinks, so a symlinked folder inside the
+  workspace makes the walker operate on the far side of the link — outside the
+  tree it believes it is confined to. Use `DirEntry::file_type()`, which does
+  not follow. `src/scripts/workspace.rs` had this twice: the prune walk
+  (`remove_file` on the target's contents) and the leaf-`tsconfig.json` refresh
+  (`write` through the link). The contents loop was already correct; only the
+  directory _selection_ was wrong, which is what makes it easy to miss.
 - **Don't trust `creationDate` / `lastModifiedDate` types are consistent.**
   Scripts use epoch-ms ints; ESVs use ISO-8601 strings. Don't assume.
 - **Don't try to create new realms.** AIC only allows `alpha` + `bravo` + root.
@@ -346,11 +399,13 @@ worked example.
 | Trusted JWT Issuer setup (per-tenant signing key, issuer CRUD/show)                                                                    | `src/jwtbearer/` (CLI only — no TUI tab yet)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `docs/api/17-jwt-bearer-user-tokens.md`                        |
 | Script sync (pull/push/sync/watch/diff)                                                                                                | `src/scripts/` (one module per `Kind`: `am`, `idm`, `schedule`, `managed_hooks`, `sync_mapping`). Every tenant write goes through `gate.rs`'s `write_checked`, which runs the pre-push syntax gate in `syntax.rs`. **You cannot call `Kind::write` directly — it will not compile.** `gate.rs` owns `WritePermit`, whose field is private, so only that module can mint one; `Kind::write` and all five raw per-kind writers require a `&WritePermit` and are `pub(super)`. Verified 2026-09-09 by planting each bypass the old source-scanning tripwire missed: a missing permit, a split/aliased call, a direct `am::write`, and constructing a permit outside `gate` all fail to compile (E0061/E0603). What the permit proves is **routing**, not correctness — it says a write came through `write_checked`, not that the check inside was right; the residual risk is a second minting site added inside `gate.rs` itself. The gate fails **closed** with no exceptions: only a pass writes. A check that gives no verdict writes nothing, and neither does source nothing can check (an unknown script engine) — where the gate found out shapes the message and the remedy, never the permission. `write_checked` returns its outcome and prints nothing — presentation is per-surface (`cli.rs` to stderr, the tab's inline strip). Note this covers script-**sync** writes; `managed/ops.rs`'s `apply_add_hook` authors a fixed comment-only hook body outside the engine                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `docs/api/04-scripts.md`, `11`, `12`, `13`, `16`               |
 | Protected-pull decision (content snapshot rule, §5)                                                                                    | `src/pullguard.rs` — the single source of truth for `PullDecision`, the decision function and the consent predicate. Callers supply a normaliser plus a content-equality predicate so policy identity checks, journey export shaping and `_rev` stripping stay at the surface. OAuth, journey and policy CLI pulls are the current callers; do not reimplement the matrix in a fourth vertical. | `.ai/core.md` §5                                               |
+| Workspace backups (the file a protected overwrite preserves)                                                                           | `src/backup.rs` — one collision-safe allocator (kind+realm+name+timestamp+uuid, `create_new`, `0600`) writing under `workspace/<tenant>/.aic-sync/backups/`. It drops a `*` / `!.gitignore` in that directory itself, because the workspace `.gitignore` that covers `.aic-sync/` is only written by `scaffold_at` and the CLI pull paths never scaffold. Every backup writer goes through it; do not hand-roll a second path                                                                                                   | `.ai/core.md` §5                                               |
+| `--force` guards (which safety override a command accepts)                                                                             | `src/cli/force.rs` — `ForceFlags<const ALLOWED: u8>` is a clap type whose `PossibleValuesParser` emits only the guards in `ALLOWED`, so `--force=<undeclared>` is a parse error rather than a silent no-op. One `GUARDS` table is the source of truth for bit, name, help and possible values. Aliases (`OperationForce`, `SyntaxCheckForce`, …) name the masks; `--force` bare means `operation`                                                                                                                       | `docs/CLI.md` (Flag migration)                                 |
 | TypeScript custom endpoints (build-time module sharing; bundle → `idm/endpoint/<name>.cjs`)                                            | `src/scripts/templates/typescript/` (the embedded project), `src/scripts/ts_project.rs` (build manifest read by `script watch`), `src/scripts/workspace.rs` (scaffold + `package.json` merge), `src/scripts/managed_types.rs` (module-form tenant types)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `docs/typescript-endpoints.md`, `docs/api/11-idm-endpoints.md` |
 | Script workspace templates (lint/types)                                                                                                | `src/scripts/templates/` + `TEMPLATES_VERSION` in `src/scripts/workspace.rs`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `docs/api/12-script-bindings-matrix.md`                        |
 | Managed-object schema: browse **and edit** (Managed tab + `aic managed` writes); hooks sync as `managed/<obj>.<hook>` via `aic script` | `src/managed/` — `spec.rs` holds the TUI-free input specs (`FieldEditSpec`, `AddFieldSpec`, `EnumChange`, …), `ops.rs` the pure `apply_*` transforms that both the tab and `cli.rs` call. Hook sync is `src/scripts/managed_hooks.rs`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `docs/api/10-managed-objects.md`                               |
 | IDM managed-object record store + query                                                                                                | `src/idmstore/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `docs/api/10-managed-objects.md`                               |
-| Logs (fetch, key mgmt, local DuckDB sync/search/compact + journey rollup)                                                              | `src/logs/` (CLI only — no TUI tab yet); log-KEY STORAGE rides the same vault path as the SA JWK: `src/config/` (`log-keys.enc`/`log-keys.plain` read/write), `src/agent/` (vault secret verbs), `src/vault/` (`unlock.rs`/`auth.rs` load the decrypted map into `App` on unlock)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `docs/api/08-logs.md`, `docs/logs-store.md`                    |
+| Logs (fetch, key mgmt, local DuckDB sync/search/compact + journey rollup)                                                              | `src/logs/` (CLI only — no TUI tab yet); `event.rs` holds the one event-identity function `tail`'s in-memory dedupe and the DuckDB `ON CONFLICT (id)` insert both use, and is deliberately **not** behind `logs-store`; log-KEY STORAGE rides the same vault path as the SA JWK: `src/config/` (`log-keys.enc`/`log-keys.plain` read/write), `src/agent/` (vault secret verbs), `src/vault/` (`unlock.rs`/`auth.rs` load the decrypted map into `App` on unlock)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `docs/api/08-logs.md`, `docs/logs-store.md`                    |
 | OAuth2 clients, the realm provider service, and RFC 8693 token exchange                                                                | `src/oauth/` — `spec.rs` holds the projections both the summary and the exchange view are built from. `aic oauth exchange list` is read-only reconnaissance: it names who holds the grant and who stamps `may_act`, and warns about the states that all fail as one opaque error. There is no `provider set`, and nothing performs an exchange                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `docs/api/05-oauth2-oidc.md`, `22-token-exchange.md`           |
 | Tokens / HTTP transport / daemon                                                                                                       | `src/aic/` (transport core), `src/agent/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `docs/api/00-auth.md`, `01`, `02`; `src/agent/mod.rs` header   |
 | Local credential vault / unlock                                                                                                        | `src/vault/` + `src/config/{crypto,wraps}.rs` storage                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | — (local-only, no AIC docs)                                    |
