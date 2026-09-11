@@ -913,11 +913,17 @@ impl<W: Write> JsonArrayWriter<W> {
 #[derive(Debug)]
 struct TailCursor {
     next_begin: DateTime<Utc>,
+    /// The first window's begin. The overlap rewind is clamped to it so a
+    /// follow never reaches back past the point it started watching.
+    origin: DateTime<Utc>,
 }
 
 impl TailCursor {
     fn new(next_begin: DateTime<Utc>) -> Self {
-        Self { next_begin }
+        Self {
+            next_begin,
+            origin: next_begin,
+        }
     }
 
     fn next_window(&mut self, end: DateTime<Utc>) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
@@ -931,7 +937,11 @@ impl TailCursor {
         // whose timestamp already passed is still queried. The logs API is
         // `(beginTime, endTime]`, so the first window stays the advertised
         // lookback; only subsequent polls overlap.
-        self.next_begin = end - TAIL_OVERLAP;
+        //
+        // Clamped to the origin: an unclamped rewind would make the *second*
+        // poll — a second after start — query the full overlap, dumping ~90s
+        // of backlog the banner just promised it would not show.
+        self.next_begin = (end - TAIL_OVERLAP).max(self.origin);
         Ok((begin, end))
     }
 }
@@ -1381,6 +1391,38 @@ mod tests {
             &[(t1, vec![]), (t2, vec![event.clone()]), (t3, vec![event])],
         );
         assert_eq!(ids, ["late-1"]);
+    }
+
+    #[test]
+    fn the_overlap_rewind_never_reaches_back_before_the_follow_started() {
+        // Red if `next_window` assigns `end - TAIL_OVERLAP` unclamped: the
+        // second poll's begin would then sit a full overlap before `t0`, and
+        // `before-start` — older than the lookback the banner advertised —
+        // would be emitted along with it.
+        let t0 = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
+        let t1 = t0 + Duration::seconds(2);
+        let t2 = t1 + Duration::seconds(2);
+        let stale = tail_event("before-start", t0 - Duration::seconds(30));
+        let fresh = tail_event("after-start", t0 + Duration::seconds(1));
+
+        let (ids, _) = emit_tail_polls(t0, &[(t1, vec![]), (t2, vec![stale, fresh])]);
+        assert_eq!(ids, ["after-start"]);
+    }
+
+    #[test]
+    fn the_overlap_rewind_applies_once_the_follow_is_older_than_the_overlap() {
+        // The clamp must not become a permanent ceiling: past `origin +
+        // TAIL_OVERLAP` the rewind is the full overlap again.
+        let t0 = Utc.with_ymd_and_hms(2026, 9, 10, 12, 0, 0).unwrap();
+        let mut cursor = TailCursor::new(t0);
+        let far = t0 + TAIL_OVERLAP + Duration::seconds(30);
+
+        assert_eq!(cursor.next_window(t0 + Duration::seconds(2)).unwrap().0, t0);
+        assert_eq!(cursor.next_window(far).unwrap().0, t0);
+        assert_eq!(
+            cursor.next_window(far + Duration::seconds(1)).unwrap().0,
+            far - TAIL_OVERLAP
+        );
     }
 
     #[test]
