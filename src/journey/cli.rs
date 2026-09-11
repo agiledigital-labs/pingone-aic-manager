@@ -14,6 +14,7 @@ use crate::cli::{
 };
 use crate::config::ProjectConfig;
 use crate::journey::api;
+use crate::pullguard::PullDecision;
 use crate::{Error, Result};
 
 #[derive(Subcommand, Debug)]
@@ -352,13 +353,6 @@ fn read_snapshot(path: &Path) -> Result<Option<Value>> {
     Ok(Some(export_value(&export)?))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PullDecision {
-    Install,
-    Unchanged,
-    Protected,
-}
-
 fn pull_json(bytes: &[u8]) -> Option<Value> {
     let value: Value = serde_json::from_slice(bytes).ok()?;
     let export = parse_export_value(value, "pull preflight").ok()?;
@@ -366,23 +360,7 @@ fn pull_json(bytes: &[u8]) -> Option<Value> {
 }
 
 fn pull_decision(local: Option<&[u8]>, remote: &Value, snapshot: Option<&[u8]>) -> PullDecision {
-    let Some(local_bytes) = local else {
-        return PullDecision::Install;
-    };
-    let Some(local) = pull_json(local_bytes) else {
-        return PullDecision::Protected;
-    };
-    if api::content_equal(&local, remote) {
-        return PullDecision::Unchanged;
-    }
-    match snapshot.and_then(pull_json) {
-        Some(snapshot) if api::content_equal(&local, &snapshot) => PullDecision::Install,
-        _ => PullDecision::Protected,
-    }
-}
-
-fn pull_needs_consent(decision: PullDecision, operation_force: bool) -> bool {
-    decision == PullDecision::Protected && !operation_force
+    crate::pullguard::decide(local, remote, snapshot, pull_json, api::content_equal)
 }
 
 fn read_pull_file(path: &Path, label: &str) -> Result<Option<Vec<u8>>> {
@@ -533,7 +511,7 @@ pub async fn run(cmd: JourneyCommand) -> Result<()> {
             let local = read_pull_file(&path, "journey export")?;
             let snapshot_bytes = read_pull_file(&snapshot, "journey snapshot")?;
             let decision = pull_decision(local.as_deref(), &remote, snapshot_bytes.as_deref());
-            if pull_needs_consent(decision, force.operation())
+            if crate::pullguard::needs_consent(decision, force.operation())
                 && !confirm_destructive(
                     "journey pull overwrite",
                     &protected_pull_prompt(&format!("journey {name:?}"), force.backup()),
@@ -734,39 +712,15 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn pull_protection_matrix_uses_normalized_journey_content() {
+    fn journey_pull_wires_normalized_export_content_into_the_shared_decision() {
         let remote = json!({
             "tree": {"_rev": "remote", "name": "Login"},
             "nodes": {"node-1": {"_rev": "remote", "value": 2}}
         });
         let same = br#"{"nodes":{"node-1":{"value":2,"_rev":"local"}},"tree":{"name":"Login","_rev":"local"}}"#;
-        let old = br#"{"tree":{"name":"Login"},"nodes":{"node-1":{"value":1}}}"#;
-        let edited = br#"{"tree":{"name":"Login"},"nodes":{"node-1":{"value":"edited"}}}"#;
-
-        assert_eq!(pull_decision(None, &remote, None), PullDecision::Install);
         assert_eq!(
             pull_decision(Some(same), &remote, None),
             PullDecision::Unchanged
-        );
-        assert_eq!(
-            pull_decision(Some(old), &remote, Some(old)),
-            PullDecision::Install
-        );
-        assert_eq!(
-            pull_decision(Some(edited), &remote, Some(old)),
-            PullDecision::Protected
-        );
-        assert_eq!(
-            pull_decision(Some(old), &remote, None),
-            PullDecision::Protected
-        );
-        assert_eq!(
-            pull_decision(Some(old), &remote, Some(b"not json")),
-            PullDecision::Protected
-        );
-        assert_eq!(
-            pull_decision(Some(b"not json"), &remote, Some(old)),
-            PullDecision::Protected
         );
     }
 
@@ -891,7 +845,7 @@ mod tests {
             assert_eq!(force.operation(), args.contains(&"--force"));
             assert_eq!(force.backup(), args.contains(&"--force=backup"));
             assert_eq!(
-                pull_needs_consent(PullDecision::Protected, force.operation()),
+                crate::pullguard::needs_consent(PullDecision::Protected, force.operation()),
                 !args.contains(&"--force")
             );
         }
