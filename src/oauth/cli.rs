@@ -14,7 +14,7 @@ use crate::cli::{
     confirm_destructive, ensure_prod_confirmed, print_json, print_table, prod_hint,
     protected_pull_prompt, read_password_line, realm_arg, tenant_for,
 };
-use crate::config::ProjectConfig;
+use crate::config::{ProjectConfig, ProjectPaths, project_paths};
 use crate::oauth::{api, spec};
 use crate::pullguard::PullDecision;
 use crate::{Error, Result};
@@ -558,19 +558,29 @@ fn validate_client_id(id: &str) -> Result<()> {
 
 fn export_path(tenant: &str, realm: &str, id: &str) -> Result<PathBuf> {
     validate_client_id(id)?;
-    Ok(ProjectConfig::workspace_tree(tenant)
+    Ok(export_path_with(project_paths(), tenant, realm, id))
+}
+
+fn export_path_with(paths: &ProjectPaths, tenant: &str, realm: &str, id: &str) -> PathBuf {
+    paths
+        .workspace_tree(tenant)
         .join("oauth")
         .join(realm)
-        .join(format!("{id}.json")))
+        .join(format!("{id}.json"))
 }
 
 fn snapshot_path(tenant: &str, realm: &str, id: &str) -> Result<PathBuf> {
     validate_client_id(id)?;
-    Ok(ProjectConfig::workspace_tree(tenant)
+    Ok(snapshot_path_with(project_paths(), tenant, realm, id))
+}
+
+fn snapshot_path_with(paths: &ProjectPaths, tenant: &str, realm: &str, id: &str) -> PathBuf {
+    paths
+        .workspace_tree(tenant)
         .join("oauth")
         .join(realm)
         .join(".snapshots")
-        .join(format!("{id}.json")))
+        .join(format!("{id}.json"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2191,9 +2201,10 @@ mod tests {
 
     #[test]
     fn export_path_uses_the_oauth_workspace_tree() {
+        let paths = ProjectPaths::new(PathBuf::from("/project")).unwrap();
         assert_eq!(
-            export_path("sandbox", "bravo", "service_C1").unwrap(),
-            PathBuf::from("workspace/sandbox/oauth/bravo/service_C1.json")
+            export_path_with(&paths, "sandbox", "bravo", "service_C1"),
+            PathBuf::from("/project/workspace/sandbox/oauth/bravo/service_C1.json")
         );
     }
 
@@ -2205,9 +2216,10 @@ mod tests {
 
     #[test]
     fn snapshot_path_uses_snapshots_sibling_directory() {
+        let paths = ProjectPaths::new(PathBuf::from("/project")).unwrap();
         assert_eq!(
-            snapshot_path("sandbox", "bravo", "service_C1").unwrap(),
-            PathBuf::from("workspace/sandbox/oauth/bravo/.snapshots/service_C1.json")
+            snapshot_path_with(&paths, "sandbox", "bravo", "service_C1"),
+            PathBuf::from("/project/workspace/sandbox/oauth/bravo/.snapshots/service_C1.json")
         );
     }
 

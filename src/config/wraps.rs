@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use crate::config::ProjectConfig;
+use crate::config::{ProjectPaths, project_paths};
 use crate::{Error, Result};
 
 const FILE_VERSION: u32 = 1;
@@ -111,26 +111,11 @@ impl Default for WrapsFile {
 
 impl WrapsFile {
     pub fn load() -> Result<Option<Self>> {
-        let path = ProjectConfig::wraps_path();
-        if !path.exists() {
-            return Ok(None);
-        }
-        let body = fs::read_to_string(&path)?;
-        let parsed: Self = toml::from_str(&body)?;
-        Ok(Some(parsed))
+        project_paths().load_wraps()
     }
 
     pub fn save(&self) -> Result<()> {
-        fs::create_dir_all(ProjectConfig::dir())?;
-        let path = ProjectConfig::wraps_path();
-        let body = toml::to_string_pretty(self)?;
-        fs::write(&path, body)?;
-        // wraps.toml contains password-Argon2 salts + security-key credential
-        // ids — material an attacker with read access can use to brute-force
-        // or impersonate. Match the keys.enc / keys.plain protections.
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-        ProjectConfig::write_gitignore()?;
-        Ok(())
+        project_paths().save_wraps(self)
     }
 
     pub fn password_wrap(&self) -> Option<&Wrap> {
@@ -197,6 +182,31 @@ impl WrapsFile {
         if !self.has_security_key() {
             self.security_key_hmac_salt = None;
         }
+    }
+}
+
+impl ProjectPaths {
+    pub fn load_wraps(&self) -> Result<Option<WrapsFile>> {
+        let path = self.wraps_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let body = fs::read_to_string(&path)?;
+        let parsed = toml::from_str(&body)?;
+        Ok(Some(parsed))
+    }
+
+    pub fn save_wraps(&self, wraps: &WrapsFile) -> Result<()> {
+        fs::create_dir_all(self.aic_dir())?;
+        let path = self.wraps_path();
+        let body = toml::to_string_pretty(wraps)?;
+        fs::write(&path, body)?;
+        // wraps.toml contains password-Argon2 salts + security-key credential
+        // ids — material an attacker with read access can use to brute-force
+        // or impersonate. Match the keys.enc / keys.plain protections.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        self.write_gitignore()?;
+        Ok(())
     }
 }
 

@@ -42,6 +42,134 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 pub use tenant::{CredentialSource, Provenance, Tenant, TenantTheme, tenant_file_name};
 
+/// Absolute paths for one project.
+///
+/// The CLI installs one process default during bootstrap. Tests and other
+/// callers that need independent projects can construct values directly and
+/// pass them to the path-aware I/O methods instead of mutating the process cwd.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectPaths {
+    root: PathBuf,
+}
+
+static PROJECT_PATHS: OnceLock<ProjectPaths> = OnceLock::new();
+
+impl ProjectPaths {
+    /// Address a project rooted at `root`, which must be absolute.
+    pub fn new(root: PathBuf) -> Result<Self> {
+        if !root.is_absolute() {
+            return Err(crate::Error::Config(format!(
+                "project root must be absolute: {}",
+                root.display()
+            )));
+        }
+        Ok(Self { root })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn aic_dir(&self) -> PathBuf {
+        self.root.join(".aic")
+    }
+
+    pub fn config_path(&self) -> PathBuf {
+        self.aic_dir().join("config.toml")
+    }
+
+    pub fn settings_path(&self) -> PathBuf {
+        self.aic_dir().join("settings.toml")
+    }
+
+    pub fn wraps_path(&self) -> PathBuf {
+        self.aic_dir().join("wraps.toml")
+    }
+
+    pub fn current_context_path(&self) -> PathBuf {
+        self.aic_dir().join("current-context")
+    }
+
+    pub fn workspace_dir(&self) -> PathBuf {
+        self.root.join("workspace")
+    }
+
+    pub fn workspace_tree(&self, tenant: &str) -> PathBuf {
+        self.workspace_dir().join(tenant)
+    }
+
+    pub fn aic_sync_dir(&self, tenant: &str) -> PathBuf {
+        self.workspace_tree(tenant).join(".aic-sync")
+    }
+
+    pub fn backups_dir(&self) -> PathBuf {
+        self.aic_dir().join("backups")
+    }
+
+    pub fn undo_log_path(&self) -> PathBuf {
+        self.aic_dir().join("undo.log")
+    }
+
+    pub fn logs_dir(&self) -> PathBuf {
+        self.aic_dir().join("logs")
+    }
+
+    pub fn idmstore_dir(&self) -> PathBuf {
+        self.aic_dir().join("idmstore")
+    }
+
+    pub fn agent_socket_path(&self) -> PathBuf {
+        self.aic_dir().join("agent.sock")
+    }
+
+    pub fn agent_pid_path(&self) -> PathBuf {
+        self.aic_dir().join("agent.pid")
+    }
+
+    pub fn agent_log_path(&self) -> PathBuf {
+        self.aic_dir().join("agent.log")
+    }
+
+    fn artifact_path(&self, artifact: VaultArtifact, suffix: &str) -> PathBuf {
+        self.aic_dir()
+            .join(format!("{}{suffix}", artifact.file_stem()))
+    }
+
+    pub(crate) fn artifact_enc_path(&self, artifact: VaultArtifact) -> PathBuf {
+        self.artifact_path(artifact, ".enc")
+    }
+
+    pub(crate) fn artifact_plain_path(&self, artifact: VaultArtifact) -> PathBuf {
+        self.artifact_path(artifact, ".plain")
+    }
+
+    pub(crate) fn write_gitignore(&self) -> Result<()> {
+        ProjectConfig::write_gitignore_to(&self.aic_dir())
+    }
+}
+
+pub(crate) fn set_project_root(root: PathBuf) -> Result<()> {
+    let paths = ProjectPaths::new(root)?;
+    if let Some(current) = PROJECT_PATHS.get() {
+        if current == &paths {
+            return Ok(());
+        }
+        return Err(crate::Error::Config(format!(
+            "project root is already set to {}",
+            current.root().display()
+        )));
+    }
+    PROJECT_PATHS
+        .set(paths)
+        .map_err(|_| crate::Error::Config("project root was initialized concurrently".into()))
+}
+
+pub(crate) fn project_paths() -> &'static ProjectPaths {
+    PROJECT_PATHS
+        .get()
+        .expect("project paths are initialized by cli::bootstrap_project_root")
+}
+
 /// An encrypted per-tenant artifact stored as a `<stem>.enc` / `<stem>.plain`
 /// pair in `.aic/`. The registry ([`VaultArtifact::ALL`]) drives gitignore
 /// coverage and the encrypt/decrypt transitions so each new artifact is one
@@ -94,11 +222,11 @@ impl VaultArtifact {
     }
 
     fn enc_path(self) -> PathBuf {
-        ProjectConfig::dir().join(format!("{}.enc", self.file_stem()))
+        project_paths().artifact_enc_path(self)
     }
 
     fn plain_path(self) -> PathBuf {
-        ProjectConfig::dir().join(format!("{}.plain", self.file_stem()))
+        project_paths().artifact_plain_path(self)
     }
 }
 
@@ -114,12 +242,24 @@ pub fn load_artifact_bytes(
     artifact: VaultArtifact,
     dek: Option<&crypto::Dek>,
 ) -> Result<Option<Vec<u8>>> {
-    match dek {
-        Some(dek) => match load_optional_file(&artifact.enc_path())? {
-            Some(data) => Ok(Some(crypto::decrypt_data(&data, dek)?)),
-            None => Ok(None),
-        },
-        None => load_optional_file(&artifact.plain_path()),
+    project_paths().load_artifact_bytes(artifact, dek)
+}
+
+impl ProjectPaths {
+    pub(crate) fn load_artifact_bytes(
+        &self,
+        artifact: VaultArtifact,
+        dek: Option<&crypto::Dek>,
+    ) -> Result<Option<Vec<u8>>> {
+        let enc_path = self.artifact_enc_path(artifact);
+        let plain_path = self.artifact_plain_path(artifact);
+        match dek {
+            Some(dek) => match load_optional_file(&enc_path)? {
+                Some(data) => Ok(Some(crypto::decrypt_data(&data, dek)?)),
+                None => Ok(None),
+            },
+            None => load_optional_file(&plain_path),
+        }
     }
 }
 
@@ -131,12 +271,23 @@ pub fn save_artifact_bytes(
     bytes: &[u8],
     dek: Option<&crypto::Dek>,
 ) -> Result<()> {
-    match dek {
-        Some(dek) => {
-            let enc = crypto::encrypt_data(bytes, dek)?;
-            save_private_file(&artifact.enc_path(), &enc)
+    project_paths().save_artifact_bytes(artifact, bytes, dek)
+}
+
+impl ProjectPaths {
+    pub(crate) fn save_artifact_bytes(
+        &self,
+        artifact: VaultArtifact,
+        bytes: &[u8],
+        dek: Option<&crypto::Dek>,
+    ) -> Result<()> {
+        match dek {
+            Some(dek) => {
+                let enc = crypto::encrypt_data(bytes, dek)?;
+                save_private_file(&self.artifact_enc_path(artifact), &enc)
+            }
+            None => save_private_file(&self.artifact_plain_path(artifact), bytes),
         }
-        None => save_private_file(&artifact.plain_path(), bytes),
     }
 }
 
@@ -241,12 +392,29 @@ pub fn unlock_with_password(
 }
 
 pub fn decrypt_keys_file(dek: &crypto::Dek) -> Result<HashMap<String, serde_json::Value>> {
-    decode_json_map(load_artifact_bytes(VaultArtifact::Jwks, Some(dek))?)
+    project_paths().decrypt_keys_file(dek)
 }
 
 /// Encrypt + persist the JWK map using the in-memory DEK.
 pub fn save_jwk_map(map: &HashMap<String, serde_json::Value>, dek: &crypto::Dek) -> Result<()> {
-    save_artifact_bytes(VaultArtifact::Jwks, &serde_json::to_vec(map)?, Some(dek))
+    project_paths().save_jwk_map(map, dek)
+}
+
+impl ProjectPaths {
+    pub(crate) fn decrypt_keys_file(
+        &self,
+        dek: &crypto::Dek,
+    ) -> Result<HashMap<String, serde_json::Value>> {
+        decode_json_map(self.load_artifact_bytes(VaultArtifact::Jwks, Some(dek))?)
+    }
+
+    pub(crate) fn save_jwk_map(
+        &self,
+        map: &HashMap<String, serde_json::Value>,
+        dek: &crypto::Dek,
+    ) -> Result<()> {
+        self.save_artifact_bytes(VaultArtifact::Jwks, &serde_json::to_vec(map)?, Some(dek))
+    }
 }
 
 /// Deserialise an artifact's opaque map bytes into a `HashMap`, tolerating both
@@ -407,22 +575,32 @@ pub fn unlock_with_security_key(
 
 /// Path to the per-project "currently-selected tenant" pointer used by the CLI.
 pub fn current_context_path() -> PathBuf {
-    ProjectConfig::dir().join("current-context")
+    project_paths().current_context_path()
 }
 
 pub fn read_current_context() -> Result<Option<String>> {
-    let path = current_context_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let s = fs::read_to_string(path)?;
-    Ok(Some(s.trim().to_string()))
+    project_paths().read_current_context()
 }
 
 pub fn write_current_context(name: &str) -> Result<()> {
-    fs::create_dir_all(ProjectConfig::dir())?;
-    fs::write(current_context_path(), name)?;
-    Ok(())
+    project_paths().write_current_context(name)
+}
+
+impl ProjectPaths {
+    pub fn read_current_context(&self) -> Result<Option<String>> {
+        let path = self.current_context_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let s = fs::read_to_string(path)?;
+        Ok(Some(s.trim().to_string()))
+    }
+
+    pub fn write_current_context(&self, name: &str) -> Result<()> {
+        fs::create_dir_all(self.aic_dir())?;
+        fs::write(self.current_context_path(), name)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -488,22 +666,15 @@ impl Default for Settings {
 
 impl Settings {
     pub fn path() -> std::path::PathBuf {
-        ProjectConfig::dir().join("settings.toml")
+        project_paths().settings_path()
     }
 
     pub fn load() -> Result<Option<Self>> {
-        let path = Self::path();
-        if !path.exists() {
-            return Ok(None);
-        }
-        Ok(Some(Self::load_from(&path)?))
+        project_paths().load_settings()
     }
 
     pub fn save(&self) -> Result<()> {
-        fs::create_dir_all(ProjectConfig::dir())?;
-        self.save_to(&Self::path())?;
-        ProjectConfig::write_gitignore()?;
-        Ok(())
+        project_paths().save_settings(self)
     }
 
     fn load_from(path: &Path) -> Result<Self> {
@@ -531,85 +702,89 @@ impl Settings {
     }
 }
 
+impl ProjectPaths {
+    pub fn load_settings(&self) -> Result<Option<Settings>> {
+        let path = self.settings_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(Settings::load_from(&path)?))
+    }
+
+    pub fn save_settings(&self, settings: &Settings) -> Result<()> {
+        fs::create_dir_all(self.aic_dir())?;
+        settings.save_to(&self.settings_path())?;
+        self.write_gitignore()?;
+        Ok(())
+    }
+}
+
 impl ProjectConfig {
     pub fn dir() -> PathBuf {
-        PathBuf::from(".aic")
+        project_paths().aic_dir()
     }
 
     pub fn keys_path() -> PathBuf {
-        VaultArtifact::Jwks.enc_path()
+        project_paths().artifact_enc_path(VaultArtifact::Jwks)
     }
 
     pub fn wraps_path() -> PathBuf {
-        Self::dir().join("wraps.toml")
+        project_paths().wraps_path()
     }
 
     pub fn keys_plain_path() -> PathBuf {
-        VaultArtifact::Jwks.plain_path()
+        project_paths().artifact_plain_path(VaultArtifact::Jwks)
     }
 
     pub fn config_path() -> PathBuf {
-        Self::dir().join("config.toml")
+        project_paths().config_path()
     }
 
     /// Root of the script-sync workspace (sibling of `.aic/`). Trees are
     /// namespaced per tenant + realm so multiple tenants never share a tree.
     pub fn workspace_dir() -> PathBuf {
-        PathBuf::from("workspace")
+        project_paths().workspace_dir()
     }
 
     /// `workspace/<tenant>/` — the per-tenant tree. AM scripts live under
     /// `am/<realm>/<type>/` (realm-scoped); IDM endpoints under
     /// `idm/endpoint/` (tenant-global). Also holds configs + `.aic-sync/`.
     pub fn workspace_tree(tenant: &str) -> PathBuf {
-        Self::workspace_dir().join(tenant)
+        project_paths().workspace_tree(tenant)
     }
 
     /// `workspace/<tenant>/.aic-sync/` — our sync state for the whole tenant
     /// (snapshots for both realms + IDM, applied-templates version).
     /// Gitignored; never holds secrets.
     pub fn aic_sync_dir(tenant: &str) -> PathBuf {
-        Self::workspace_tree(tenant).join(".aic-sync")
+        project_paths().aic_sync_dir(tenant)
     }
 
     pub fn load() -> Result<Option<Self>> {
-        let path = Self::config_path();
-        if !path.exists() {
-            return Ok(None);
-        }
-        let contents = fs::read_to_string(&path)?;
-        let config: ProjectConfig = toml::from_str(&contents)?;
-        Ok(Some(config))
+        project_paths().load_config()
     }
 
     pub fn save(&self) -> Result<()> {
-        let dir = Self::dir();
-        fs::create_dir_all(&dir)?;
-        let contents = toml::to_string_pretty(self)?;
-        fs::write(Self::config_path(), contents)?;
-        Self::write_gitignore()?;
-        Ok(())
+        project_paths().save_config(self)
     }
 
     pub fn write_gitignore() -> Result<()> {
-        Self::write_gitignore_to(&Self::dir())
+        project_paths().write_gitignore()
     }
 
     /// Create `dir` and write the vault `.gitignore` into it.
     ///
-    /// Relative `dir` is resolved against cwd **once**. `create_dir_all(".aic")`
-    /// then `write(".aic/.gitignore")` can fail with `AlreadyExists`/`NotFound`
-    /// if another thread calls `set_current_dir` between those syscalls —
-    /// `create_dir_all` treats `EEXIST` as success only when `.is_dir()` is
-    /// still true, and a cwd swap makes that check look at a different path.
+    /// Callers must pass a stable path. Project-owned callers should prefer a
+    /// [`ProjectPaths`] method, whose paths are absolute by construction.
     pub fn write_gitignore_to(dir: &Path) -> Result<()> {
-        let resolved = if dir.is_absolute() {
-            dir.to_path_buf()
-        } else {
-            std::env::current_dir()?.join(dir)
-        };
-        fs::create_dir_all(&resolved)?;
-        fs::write(resolved.join(".gitignore"), Self::gitignore_content())?;
+        if !dir.is_absolute() {
+            return Err(crate::Error::Config(format!(
+                "gitignore directory must be absolute: {}",
+                dir.display()
+            )));
+        }
+        fs::create_dir_all(dir)?;
+        fs::write(dir.join(".gitignore"), Self::gitignore_content())?;
         Ok(())
     }
 
@@ -638,21 +813,58 @@ impl ProjectConfig {
 
     /// Save the encrypted JWK map (Argon2id + AES-256-GCM) at mode 600.
     pub fn save_keys_enc(data: &[u8]) -> Result<()> {
-        save_private_file(&Self::keys_path(), data)
+        project_paths().save_keys_enc(data)
     }
 
     pub fn load_keys_enc() -> Result<Option<Vec<u8>>> {
-        load_optional_file(&Self::keys_path())
+        project_paths().load_keys_enc()
     }
 
     /// Save unencrypted JWK map (mode 600). Used when the user opts out of
     /// master-password protection.
     pub fn save_keys_plain(data: &[u8]) -> Result<()> {
-        save_private_file(&Self::keys_plain_path(), data)
+        project_paths().save_keys_plain(data)
     }
 
     pub fn load_keys_plain() -> Result<Option<Vec<u8>>> {
-        load_optional_file(&Self::keys_plain_path())
+        project_paths().load_keys_plain()
+    }
+}
+
+impl ProjectPaths {
+    pub fn load_config(&self) -> Result<Option<ProjectConfig>> {
+        let path = self.config_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        let contents = fs::read_to_string(&path)?;
+        let config: ProjectConfig = toml::from_str(&contents)?;
+        Ok(Some(config))
+    }
+
+    pub fn save_config(&self, config: &ProjectConfig) -> Result<()> {
+        let dir = self.aic_dir();
+        fs::create_dir_all(&dir)?;
+        let contents = toml::to_string_pretty(config)?;
+        fs::write(self.config_path(), contents)?;
+        self.write_gitignore()?;
+        Ok(())
+    }
+
+    pub(crate) fn save_keys_enc(&self, data: &[u8]) -> Result<()> {
+        save_private_file(&self.artifact_enc_path(VaultArtifact::Jwks), data)
+    }
+
+    pub(crate) fn load_keys_enc(&self) -> Result<Option<Vec<u8>>> {
+        load_optional_file(&self.artifact_enc_path(VaultArtifact::Jwks))
+    }
+
+    pub(crate) fn save_keys_plain(&self, data: &[u8]) -> Result<()> {
+        save_private_file(&self.artifact_plain_path(VaultArtifact::Jwks), data)
+    }
+
+    pub(crate) fn load_keys_plain(&self) -> Result<Option<Vec<u8>>> {
+        load_optional_file(&self.artifact_plain_path(VaultArtifact::Jwks))
     }
 }
 
@@ -805,6 +1017,65 @@ mod tests {
             fs::read_to_string(aic.join(".gitignore")).unwrap(),
             ProjectConfig::gitignore_content()
         );
+    }
+
+    #[test]
+    fn project_paths_isolate_concurrent_multi_step_writes() {
+        // Regression: each writer used to resolve `.aic` again for every
+        // syscall, so a concurrent cwd change could split one logical write
+        // across projects. Explicit absolute roots must stay independent.
+        let left_dir = TestDir::new();
+        let right_dir = TestDir::new();
+        let left = ProjectPaths::new(left_dir.path("left")).unwrap();
+        let right = ProjectPaths::new(right_dir.path("right")).unwrap();
+
+        assert!(ProjectPaths::new(PathBuf::from("relative")).is_err());
+        assert!(left.aic_dir().is_absolute());
+        assert!(right.workspace_dir().is_absolute());
+
+        let write = |paths: ProjectPaths, name: &'static str| {
+            std::thread::spawn(move || {
+                let config = ProjectConfig {
+                    project: name.into(),
+                    default_tenant: name.into(),
+                    tenants: Vec::new(),
+                };
+                let settings = Settings {
+                    operator: Operator {
+                        name: Some(name.into()),
+                        host: None,
+                    },
+                    ..Settings::default()
+                };
+                for _ in 0..16 {
+                    paths.save_config(&config).unwrap();
+                    paths.save_settings(&settings).unwrap();
+                    paths.save_wraps(&wraps::WrapsFile::default()).unwrap();
+                    paths.write_current_context(name).unwrap();
+                    paths.save_keys_plain(name.as_bytes()).unwrap();
+                }
+            })
+        };
+
+        let left_write = write(left.clone(), "left");
+        let right_write = write(right.clone(), "right");
+        left_write.join().unwrap();
+        right_write.join().unwrap();
+
+        assert_eq!(left.load_config().unwrap().unwrap().project, "left");
+        assert_eq!(right.load_config().unwrap().unwrap().project, "right");
+        assert_eq!(
+            left.read_current_context().unwrap().as_deref(),
+            Some("left")
+        );
+        assert_eq!(
+            right.read_current_context().unwrap().as_deref(),
+            Some("right")
+        );
+        assert_eq!(left.load_keys_plain().unwrap().unwrap(), b"left");
+        assert_eq!(right.load_keys_plain().unwrap().unwrap(), b"right");
+        assert!(left.load_wraps().unwrap().is_some());
+        assert!(right.load_wraps().unwrap().is_some());
     }
 
     #[test]

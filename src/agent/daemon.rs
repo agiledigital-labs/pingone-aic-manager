@@ -13,7 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 
 use crate::aic::AicClient;
-use crate::config::{self, ProjectConfig, VaultArtifact, crypto::Dek};
+use crate::config::{ProjectPaths, VaultArtifact, crypto::Dek, project_paths};
 use crate::{Error, Result};
 
 use super::protocol::{
@@ -40,7 +40,7 @@ enum Vault {
 }
 
 struct AgentState {
-    project_dir: String,
+    paths: ProjectPaths,
     vault: Vault,
     /// AicClients are built lazily on the first `GetToken { tenant }` after
     /// unlock and cached here for their token-cache + HTTP-connection-pool
@@ -51,9 +51,9 @@ struct AgentState {
 }
 
 impl AgentState {
-    fn new(project_dir: String, idle_timeout: Duration) -> Self {
+    fn new(paths: ProjectPaths, idle_timeout: Duration) -> Self {
         Self {
-            project_dir,
+            paths,
             vault: Vault::Locked,
             clients: HashMap::new(),
             last_request: Instant::now(),
@@ -89,16 +89,14 @@ impl Default for DaemonOptions {
 
 /// Run the agent until SIGTERM/SIGINT or a `Shutdown` request.
 pub async fn run(opts: DaemonOptions) -> Result<()> {
-    let project_dir = std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| ".".into());
-
-    let sock = socket_path();
-    std::fs::create_dir_all(ProjectConfig::dir())?;
+    let paths = project_paths().clone();
+    let project_dir = paths.root().display().to_string();
+    let sock = paths.agent_socket_path();
+    std::fs::create_dir_all(paths.aic_dir())?;
 
     // Refuse to start if another live agent owns the socket.
     if sock.exists() {
-        match try_ping_existing().await {
+        match try_ping_existing(&paths).await {
             Ok(true) => {
                 return Err(Error::Config(format!(
                     "another agent is already running (socket {} is responsive)",
@@ -117,13 +115,10 @@ pub async fn run(opts: DaemonOptions) -> Result<()> {
     std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
 
     // Best-effort PID file for observability.
-    let _ = std::fs::write(pid_path(), std::process::id().to_string());
+    let _ = std::fs::write(paths.agent_pid_path(), std::process::id().to_string());
 
     let idle_timeout = Duration::from_secs(opts.idle_timeout_secs);
-    let state = Arc::new(RwLock::new(AgentState::new(
-        project_dir.clone(),
-        idle_timeout,
-    )));
+    let state = Arc::new(RwLock::new(AgentState::new(paths.clone(), idle_timeout)));
 
     tracing::info!(
         socket = %sock.display(),
@@ -193,7 +188,7 @@ pub async fn run(opts: DaemonOptions) -> Result<()> {
     }
 
     let _ = std::fs::remove_file(&sock);
-    let _ = std::fs::remove_file(pid_path());
+    let _ = std::fs::remove_file(paths.agent_pid_path());
     tracing::info!("agent exited");
     Ok(())
 }
@@ -210,8 +205,8 @@ async fn wait_sigterm() {
     }
 }
 
-async fn try_ping_existing() -> Result<bool> {
-    let client = super::AgentClient::connect(socket_path()).await?;
+async fn try_ping_existing(paths: &ProjectPaths) -> Result<bool> {
+    let client = super::AgentClient::connect(paths.agent_socket_path()).await?;
     match client.send(&Request::Ping).await? {
         Response::Pong { .. } => Ok(true),
         _ => Ok(false),
@@ -396,10 +391,12 @@ async fn do_put_dek(dek_b64: &str, state: Arc<RwLock<AgentState>>) -> Result<()>
 /// missing or malformed; callers should fall through to a clear "set up
 /// encryption first" message in that case.
 async fn do_unlock_plain(state: Arc<RwLock<AgentState>>) -> Result<()> {
-    let bytes = ProjectConfig::load_keys_plain()?
+    let paths = state.read().await.paths.clone();
+    let bytes = paths
+        .load_keys_plain()?
         .ok_or_else(|| Error::Config("no .aic/keys.plain on disk".into()))?;
     let map = serde_json::from_slice(&bytes)?;
-    let cache = std::fs::metadata(ProjectConfig::keys_plain_path())
+    let cache = std::fs::metadata(paths.artifact_plain_path(VaultArtifact::Jwks))
         .and_then(|metadata| metadata.modified())
         .ok()
         .map(|modified| (map, modified));
@@ -448,7 +445,7 @@ async fn do_status(state: Arc<RwLock<AgentState>>) -> StatusInfo {
 
     StatusInfo {
         unlocked,
-        project_dir: s.project_dir.clone(),
+        project_dir: s.paths.root().display().to_string(),
         tenants,
         cached_tokens,
         idle_remaining_secs,
@@ -506,11 +503,11 @@ async fn do_put_secret(
 ) -> Result<bool> {
     let artifact = artifact_for(kind)?;
     let s = state.write().await;
-    let Some(mut map) = load_secret_map(artifact, &s.vault)? else {
+    let Some(mut map) = load_secret_map(&s.paths, artifact, &s.vault)? else {
         return Ok(false);
     };
     map.insert(tenant.to_string(), value);
-    save_secret_map(artifact, &s.vault, &map)?;
+    save_secret_map(&s.paths, artifact, &s.vault, &map)?;
     Ok(true)
 }
 
@@ -521,7 +518,7 @@ async fn do_get_secret(
 ) -> Result<Option<serde_json::Value>> {
     let artifact = artifact_for(kind)?;
     let s = state.read().await;
-    let Some(map) = load_secret_map(artifact, &s.vault)? else {
+    let Some(map) = load_secret_map(&s.paths, artifact, &s.vault)? else {
         return Ok(None);
     };
     map.get(tenant)
@@ -540,17 +537,18 @@ async fn do_remove_secret(
 ) -> Result<bool> {
     let artifact = artifact_for(kind)?;
     let s = state.write().await;
-    let Some(mut map) = load_secret_map(artifact, &s.vault)? else {
+    let Some(mut map) = load_secret_map(&s.paths, artifact, &s.vault)? else {
         return Ok(false);
     };
     map.remove(tenant);
-    save_secret_map(artifact, &s.vault, &map)?;
+    save_secret_map(&s.paths, artifact, &s.vault, &map)?;
     Ok(true)
 }
 
 /// The decrypted per-tenant secret map for `artifact`, or `None` when the
 /// vault is locked. Values are opaque JSON — the daemon never inspects them.
 fn load_secret_map(
+    paths: &ProjectPaths,
     artifact: VaultArtifact,
     vault: &Vault,
 ) -> Result<Option<HashMap<String, serde_json::Value>>> {
@@ -559,7 +557,7 @@ fn load_secret_map(
         Vault::Encrypted { dek, .. } => Some(dek),
         Vault::Plain { .. } => None,
     };
-    let map = match config::load_artifact_bytes(artifact, dek)? {
+    let map = match paths.load_artifact_bytes(artifact, dek)? {
         Some(bytes) if !bytes.is_empty() => serde_json::from_slice(&bytes)?,
         _ => HashMap::new(),
     };
@@ -567,6 +565,7 @@ fn load_secret_map(
 }
 
 fn save_secret_map(
+    paths: &ProjectPaths,
     artifact: VaultArtifact,
     vault: &Vault,
     map: &HashMap<String, serde_json::Value>,
@@ -576,7 +575,7 @@ fn save_secret_map(
         Vault::Encrypted { dek, .. } => Some(dek),
         Vault::Plain { .. } => None,
     };
-    config::save_artifact_bytes(artifact, &serde_json::to_vec(map)?, dek)
+    paths.save_artifact_bytes(artifact, &serde_json::to_vec(map)?, dek)
 }
 
 /// Proxy a tenant-scoped HTTP call to AIC. Returns `Ok(None)` when the
@@ -684,17 +683,19 @@ async fn do_api_call(
 /// failures); without a cache we reload so the existing file-read error remains
 /// the caller-visible result.
 async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
-    let (path, cached_mtime, dek) = {
+    let (paths, path, cached_mtime, dek) = {
         let s = state.read().await;
         match &s.vault {
             Vault::Locked => return Err(Error::Auth("agent is locked".into())),
             Vault::Encrypted { dek, cache } => (
-                ProjectConfig::keys_path(),
+                s.paths.clone(),
+                s.paths.artifact_enc_path(VaultArtifact::Jwks),
                 cache.as_ref().map(|(_, mtime)| *mtime),
                 Some(dek.clone()),
             ),
             Vault::Plain { cache } => (
-                ProjectConfig::keys_plain_path(),
+                s.paths.clone(),
+                s.paths.artifact_plain_path(VaultArtifact::Jwks),
                 cache.as_ref().map(|(_, mtime)| *mtime),
                 None,
             ),
@@ -712,8 +713,8 @@ async fn refresh_jwk_cache(state: Arc<RwLock<AgentState>>) -> Result<()> {
     };
 
     let map = match dek {
-        Some(dek) => config::decrypt_keys_file(&dek)?,
-        None => match ProjectConfig::load_keys_plain()? {
+        Some(dek) => paths.decrypt_keys_file(&dek)?,
+        None => match paths.load_keys_plain()? {
             Some(bytes) => serde_json::from_slice(&bytes)?,
             None => HashMap::new(),
         },
@@ -746,18 +747,20 @@ async fn build_client_from_cache(
     tenant: &str,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<Arc<AicClient>> {
-    let jwk = {
+    let (jwk, paths) = {
         let s = state.read().await;
-        match &s.vault {
+        let jwk = match &s.vault {
             Vault::Locked => return Err(Error::Auth("agent is locked".into())),
             Vault::Encrypted { cache, .. } | Vault::Plain { cache } => cache
                 .as_ref()
                 .and_then(|(map, _)| map.get(tenant))
                 .cloned()
                 .ok_or_else(|| Error::Config(format!("no JWK on file for tenant: {tenant}")))?,
-        }
+        };
+        (jwk, s.paths.clone())
     };
-    let cfg = ProjectConfig::load()?
+    let cfg = paths
+        .load_config()?
         .ok_or_else(|| Error::Config("no .aic/config.toml in current dir".into()))?;
     let tcfg = cfg
         .tenants
@@ -788,17 +791,6 @@ pub fn describe_paths() -> String {
 mod tests {
     use super::*;
     use crate::config::tenant::{Tenant, TenantTheme};
-    static CWD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-    struct CurrentDir {
-        original: std::path::PathBuf,
-    }
-
-    impl Drop for CurrentDir {
-        fn drop(&mut self) {
-            std::env::set_current_dir(&self.original).unwrap();
-        }
-    }
 
     fn tenant(name: &str) -> Tenant {
         Tenant {
@@ -813,29 +805,30 @@ mod tests {
 
     struct TestProject {
         directory: std::path::PathBuf,
+        paths: ProjectPaths,
     }
 
-    fn test_project() -> (TestProject, CurrentDir) {
-        let project = TestProject {
-            directory: std::env::temp_dir()
-                .join(format!("aic-daemon-test-{}", uuid::Uuid::new_v4())),
-        };
-        std::fs::create_dir(&project.directory).unwrap();
-        let restore = CurrentDir {
-            original: std::env::current_dir().unwrap(),
-        };
-        std::env::set_current_dir(&project.directory).unwrap();
-        (project, restore)
+    impl Drop for TestProject {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
     }
 
-    fn save_config(names: &[&str]) {
-        ProjectConfig {
+    fn test_project() -> TestProject {
+        let directory =
+            std::env::temp_dir().join(format!("aic-daemon-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let paths = ProjectPaths::new(directory.clone()).unwrap();
+        TestProject { directory, paths }
+    }
+
+    fn save_config(project: &TestProject, names: &[&str]) {
+        let config = crate::config::ProjectConfig {
             project: "test".into(),
             default_tenant: "sandbox".into(),
             tenants: names.iter().map(|name| tenant(name)).collect(),
-        }
-        .save()
-        .unwrap();
+        };
+        project.paths.save_config(&config).unwrap();
     }
 
     fn set_mtime(path: &std::path::Path, modified: SystemTime) {
@@ -845,9 +838,9 @@ mod tests {
             .unwrap();
     }
 
-    fn state(directory: &std::path::Path) -> Arc<RwLock<AgentState>> {
+    fn state(project: &TestProject) -> Arc<RwLock<AgentState>> {
         Arc::new(RwLock::new(AgentState::new(
-            directory.display().to_string(),
+            project.paths.clone(),
             Duration::from_secs(60),
         )))
     }
@@ -882,16 +875,18 @@ mod tests {
     async fn encrypted_vault_refreshes_reonboarded_jwk_and_invalidates_clients() {
         // Regression: foreground re-onboarding rewrites keys.enc while the
         // daemon still has an AicClient bound to the previous JWK map.
-        let _cwd = CWD_LOCK.lock().await;
-        let (project, restore) = test_project();
-        save_config(&["sandbox"]);
+        let project = test_project();
+        save_config(&project, &["sandbox"]);
         let dek = Dek::random();
         let old_map = HashMap::from([("sandbox".into(), serde_json::json!({"old": "jwk"}))]);
-        config::save_jwk_map(&old_map, &dek).unwrap();
+        project.paths.save_jwk_map(&old_map, &dek).unwrap();
         let first_mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
-        set_mtime(&ProjectConfig::keys_path(), first_mtime);
+        set_mtime(
+            &project.paths.artifact_enc_path(VaultArtifact::Jwks),
+            first_mtime,
+        );
 
-        let state = state(&project.directory);
+        let state = state(&project);
         set_vault(
             state.clone(),
             Vault::Encrypted {
@@ -903,14 +898,14 @@ mod tests {
         build_client("sandbox", state.clone()).await.unwrap();
         assert!(state.read().await.clients.contains_key("sandbox"));
 
-        save_config(&["sandbox", "reonboarded"]);
+        save_config(&project, &["sandbox", "reonboarded"]);
         let new_map = HashMap::from([
             ("sandbox".into(), serde_json::json!({"old": "jwk"})),
             ("reonboarded".into(), serde_json::json!({"new": "jwk"})),
         ]);
-        config::save_jwk_map(&new_map, &dek).unwrap();
+        project.paths.save_jwk_map(&new_map, &dek).unwrap();
         set_mtime(
-            &ProjectConfig::keys_path(),
+            &project.paths.artifact_enc_path(VaultArtifact::Jwks),
             SystemTime::UNIX_EPOCH + Duration::from_secs(20),
         );
 
@@ -920,22 +915,22 @@ mod tests {
         assert!(state_guard.clients.contains_key("reonboarded"));
 
         drop(state_guard);
-        drop(restore);
-        std::fs::remove_dir_all(project.directory).unwrap();
     }
 
     #[tokio::test]
     async fn unchanged_mtime_reuses_cached_map_and_clients() {
-        let _cwd = CWD_LOCK.lock().await;
-        let (project, restore) = test_project();
-        save_config(&["sandbox"]);
-        ProjectConfig::save_keys_plain(br#"{"sandbox":{"cached":"jwk"}}"#).unwrap();
+        let project = test_project();
+        save_config(&project, &["sandbox"]);
+        project
+            .paths
+            .save_keys_plain(br#"{"sandbox":{"cached":"jwk"}}"#)
+            .unwrap();
         set_mtime(
-            &ProjectConfig::keys_plain_path(),
+            &project.paths.artifact_plain_path(VaultArtifact::Jwks),
             SystemTime::UNIX_EPOCH + Duration::from_secs(10),
         );
 
-        let state = state(&project.directory);
+        let state = state(&project);
         set_vault(state.clone(), Vault::Plain { cache: None }).await;
 
         let first = build_client("sandbox", state.clone()).await.unwrap();
@@ -947,36 +942,35 @@ mod tests {
         ));
 
         drop(state_guard);
-        drop(restore);
-        std::fs::remove_dir_all(project.directory).unwrap();
     }
 
     #[tokio::test]
     async fn plain_vault_refreshes_a_reonboarded_jwk_on_mtime_change() {
-        let _cwd = CWD_LOCK.lock().await;
-        let (project, restore) = test_project();
-        save_config(&["sandbox"]);
-        ProjectConfig::save_keys_plain(br#"{"sandbox":{"old":"jwk"}}"#).unwrap();
+        let project = test_project();
+        save_config(&project, &["sandbox"]);
+        project
+            .paths
+            .save_keys_plain(br#"{"sandbox":{"old":"jwk"}}"#)
+            .unwrap();
         set_mtime(
-            &ProjectConfig::keys_plain_path(),
+            &project.paths.artifact_plain_path(VaultArtifact::Jwks),
             SystemTime::UNIX_EPOCH + Duration::from_secs(10),
         );
 
-        let state = state(&project.directory);
+        let state = state(&project);
         set_vault(state.clone(), Vault::Plain { cache: None }).await;
         build_client("sandbox", state.clone()).await.unwrap();
 
-        save_config(&["sandbox", "reonboarded"]);
-        ProjectConfig::save_keys_plain(br#"{"sandbox":{"old":"jwk"},"reonboarded":{"new":"jwk"}}"#)
+        save_config(&project, &["sandbox", "reonboarded"]);
+        project
+            .paths
+            .save_keys_plain(br#"{"sandbox":{"old":"jwk"},"reonboarded":{"new":"jwk"}}"#)
             .unwrap();
         set_mtime(
-            &ProjectConfig::keys_plain_path(),
+            &project.paths.artifact_plain_path(VaultArtifact::Jwks),
             SystemTime::UNIX_EPOCH + Duration::from_secs(20),
         );
 
         assert!(build_client("reonboarded", state).await.is_ok());
-
-        drop(restore);
-        std::fs::remove_dir_all(project.directory).unwrap();
     }
 }

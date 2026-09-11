@@ -14,7 +14,7 @@
 //!
 //! Design notes: `docs/typescript-endpoints.md`.
 
-use crate::config::ProjectConfig;
+use crate::config::{ProjectPaths, project_paths};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -40,12 +40,20 @@ struct ManifestEndpoint {
 
 /// `workspace/<tenant>/typescript/`.
 pub fn project_dir(tenant: &str) -> PathBuf {
-    ProjectConfig::workspace_tree(tenant).join(PROJECT_DIR)
+    project_dir_with(project_paths(), tenant)
+}
+
+fn project_dir_with(paths: &ProjectPaths, tenant: &str) -> PathBuf {
+    paths.workspace_tree(tenant).join(PROJECT_DIR)
 }
 
 /// `workspace/<tenant>/typescript/.aic-ts-manifest.json`.
 pub fn manifest_path(tenant: &str) -> PathBuf {
-    project_dir(tenant).join(MANIFEST_FILE)
+    manifest_path_with(project_paths(), tenant)
+}
+
+fn manifest_path_with(paths: &ProjectPaths, tenant: &str) -> PathBuf {
+    project_dir_with(paths, tenant).join(MANIFEST_FILE)
 }
 
 /// Endpoint names the TypeScript project declares it owns.
@@ -122,10 +130,10 @@ mod tests {
 
     #[test]
     fn manifest_path_sits_at_the_project_root() {
-        let path = manifest_path("sandbox");
-        assert!(
-            path.ends_with("typescript/.aic-ts-manifest.json"),
-            "{path:?}"
+        let paths = ProjectPaths::new(PathBuf::from("/project")).unwrap();
+        assert_eq!(
+            manifest_path_with(&paths, "sandbox"),
+            PathBuf::from("/project/workspace/sandbox/typescript/.aic-ts-manifest.json")
         );
     }
 }

@@ -42,7 +42,7 @@ pub mod protocol;
 
 use std::path::PathBuf;
 
-use crate::config::ProjectConfig;
+use crate::config::project_paths;
 
 pub use client::AgentClient;
 pub use protocol::{ApiCallRequest, CachedTokenInfo, Request, Response, StatusInfo};
@@ -51,13 +51,13 @@ pub use protocol::{ApiCallRequest, CachedTokenInfo, Request, Response, StatusInf
 pub const PROTOCOL_VERSION: u32 = 2;
 
 pub fn socket_path() -> PathBuf {
-    ProjectConfig::dir().join("agent.sock")
+    project_paths().agent_socket_path()
 }
 
 pub fn pid_path() -> PathBuf {
-    ProjectConfig::dir().join("agent.pid")
+    project_paths().agent_pid_path()
 }
 
 pub fn log_path() -> PathBuf {
-    ProjectConfig::dir().join("agent.log")
+    project_paths().agent_log_path()
 }

@@ -371,10 +371,15 @@ pub struct DiskLog {
 
 impl DiskLog {
     pub fn load_default() -> Result<Self> {
-        Self::load(ProjectConfig::dir().join("undo.log"))
+        Self::load(crate::config::project_paths().undo_log_path())
     }
 
     pub fn load(path: PathBuf) -> Result<Self> {
+        let path = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()?.join(path)
+        };
         let entries = load_entries(&path)?;
         Ok(Self { path, entries })
     }
@@ -704,10 +709,9 @@ mod tests {
     #[test]
     fn disk_log_writes_gitignore_beside_an_aic_parent() {
         // Persist used to call ProjectConfig::write_gitignore(), which resolves
-        // `.aic` against the process cwd and raced daemon tests that
-        // set_current_dir into an empty temp dir (AlreadyExists on
-        // create_dir_all). Gitignore belongs next to the log when the log
-        // lives in `.aic/`, not at whatever cwd happens to be.
+        // `.aic` against the process cwd and raced daemon tests that used to
+        // change it (AlreadyExists on create_dir_all). Gitignore belongs next
+        // to the log when the log lives in `.aic/`, not at an implicit cwd.
         let dir = crate::config::TestDir::new();
         let aic = dir.path(".aic");
         fs::create_dir_all(&aic).unwrap();
