@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import {
   amEslintConfigPath,
   amRhinoEslintConfigPath,
+  bindingsRuntimePath,
+  casesDir,
   generatedJsPath,
   packageRoot,
 } from "../src/paths.ts";
@@ -12,6 +14,20 @@ import {
 describe("AM script lint", () => {
   it("accepts the generated mock", async () => {
     const results = await lintFiles([generatedJsPath]);
+    expect(formatResults(results)).toEqual([]);
+  });
+
+  it("accepts the handwritten behaviour overlay", async () => {
+    const results = await lintFiles([bindingsRuntimePath]);
+    expect(formatResults(results)).toEqual([]);
+  });
+
+  it("accepts the scripted-decision case scripts", async () => {
+    const results = await lintFiles([
+      join(casesDir, "decide-from-state.cjs"),
+      join(casesDir, "write-state.cjs"),
+      join(casesDir, "openidm-read.cjs"),
+    ]);
     expect(formatResults(results)).toEqual([]);
   });
 
