@@ -18,6 +18,7 @@ pub mod oauth;
 pub mod offboard;
 pub mod onboard;
 pub mod policy;
+pub(crate) mod pullguard;
 pub mod roles;
 pub mod scripts;
 pub mod secretmap;

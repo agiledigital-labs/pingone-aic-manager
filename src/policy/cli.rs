@@ -18,6 +18,7 @@ use crate::cli::{
 };
 use crate::config::ProjectConfig;
 use crate::policy::{api, spec};
+use crate::pullguard::PullDecision;
 use crate::{Error, Result};
 
 #[derive(Subcommand, Debug)]
@@ -350,13 +351,6 @@ fn read_json(path: &Path) -> Result<Option<Value>> {
     Ok(Some(value))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PullDecision {
-    Install,
-    Unchanged,
-    Protected,
-}
-
 fn pull_json(kind: Kind, expected_identity: &str, bytes: &[u8]) -> Option<Value> {
     let value: Value = serde_json::from_slice(bytes).ok()?;
     value.as_object()?;
@@ -370,23 +364,13 @@ fn pull_decision(
     remote: &Value,
     snapshot: Option<&[u8]>,
 ) -> PullDecision {
-    let Some(local_bytes) = local else {
-        return PullDecision::Install;
-    };
-    let Some(local) = pull_json(kind, expected_identity, local_bytes) else {
-        return PullDecision::Protected;
-    };
-    if spec::content_equal(&local, remote) {
-        return PullDecision::Unchanged;
-    }
-    match snapshot.and_then(|bytes| pull_json(kind, expected_identity, bytes)) {
-        Some(snapshot) if spec::content_equal(&local, &snapshot) => PullDecision::Install,
-        _ => PullDecision::Protected,
-    }
-}
-
-fn pull_needs_consent(decision: PullDecision, operation_force: bool) -> bool {
-    decision == PullDecision::Protected && !operation_force
+    crate::pullguard::decide(
+        local,
+        remote,
+        snapshot,
+        |bytes| pull_json(kind, expected_identity, bytes),
+        spec::content_equal,
+    )
 }
 
 fn read_pull_file(path: &Path) -> Result<Option<Vec<u8>>> {
@@ -725,7 +709,7 @@ async fn pull(
     let protected = protected_references(kind, &entries);
     if entries
         .iter()
-        .any(|entry| pull_needs_consent(entry.decision, force.operation()))
+        .any(|entry| crate::pullguard::needs_consent(entry.decision, force.operation()))
     {
         if all || entries.len() > 1 {
             reject_unforced_bulk_pull(kind, &entries, true, force.operation())?;
@@ -1376,39 +1360,12 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn pull_protection_matrix_uses_policy_content_normalization() {
+    fn policy_pull_wires_content_normalization_into_the_shared_decision() {
         let remote = json!({"name": "P", "active": true, "lastModifiedDate": "remote"});
         let same = br#"{"active":true,"name":"P","lastModifiedDate":"local"}"#;
-        let old = br#"{"name":"P","active":false}"#;
-        let edited = br#"{"name":"P","active":"edited"}"#;
-
-        assert_eq!(
-            pull_decision(Kind::Policy, "P", None, &remote, None),
-            PullDecision::Install
-        );
         assert_eq!(
             pull_decision(Kind::Policy, "P", Some(same), &remote, None),
             PullDecision::Unchanged
-        );
-        assert_eq!(
-            pull_decision(Kind::Policy, "P", Some(old), &remote, Some(old)),
-            PullDecision::Install
-        );
-        assert_eq!(
-            pull_decision(Kind::Policy, "P", Some(edited), &remote, Some(old)),
-            PullDecision::Protected
-        );
-        assert_eq!(
-            pull_decision(Kind::Policy, "P", Some(old), &remote, None),
-            PullDecision::Protected
-        );
-        assert_eq!(
-            pull_decision(Kind::Policy, "P", Some(old), &remote, Some(b"not json"),),
-            PullDecision::Protected
-        );
-        assert_eq!(
-            pull_decision(Kind::Policy, "P", Some(b"not json"), &remote, Some(old)),
-            PullDecision::Protected
         );
     }
 
@@ -1667,7 +1624,7 @@ mod tests {
                 assert_eq!(force.operation(), flags.contains(&"--force"));
                 assert_eq!(force.backup(), flags.contains(&"--force=backup"));
                 assert_eq!(
-                    pull_needs_consent(PullDecision::Protected, force.operation()),
+                    crate::pullguard::needs_consent(PullDecision::Protected, force.operation()),
                     !flags.contains(&"--force")
                 );
             }
