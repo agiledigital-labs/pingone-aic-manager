@@ -23,9 +23,9 @@ fn entitlement_post_call<'a>(
 }
 
 fn pdp_call<'a>(tenant: &'a str, path: &'a str, body: Value) -> ApiCall<'a> {
-    // Like script validation, PDP evaluation computes a response and stores
-    // nothing, so the POST may pass the method-based production gate.
-    entitlement_post_call(tenant, path, body, true)
+    ApiCall::read_only_action(tenant, path)
+        .body(body)
+        .api_version(ENTITLEMENT_VERSION)
 }
 
 fn realm_path(realm: &str) -> String {

@@ -96,13 +96,15 @@ pub async fn read_mapping(tenant: &str, realm: &str, secret_id: &str) -> Result<
     crate::aic::api::get_versioned(tenant, &path, API_VERSION).await
 }
 
+fn mapping_schema_call<'a>(tenant: &'a str, path: &'a str) -> ApiCall<'a> {
+    ApiCall::read_only_action(tenant, path)
+        .body(json!({}))
+        .api_version(API_VERSION)
+}
+
 pub async fn valid_secret_ids(tenant: &str, realm: &str) -> Result<Vec<String>> {
     let path = format!("{}?_action=schema", mappings_path(realm));
-    // This schema action stores nothing. Match script syntax validation by
-    // passing the method-based transport gate without user production consent.
-    let body = mapping_call(tenant, "POST", &path, Some(json!({})), true)
-        .send()
-        .await?;
+    let body = mapping_schema_call(tenant, &path).send().await?;
     let values = body
         .pointer("/properties/secretId/enum")
         .and_then(Value::as_array)
@@ -214,13 +216,7 @@ mod tests {
     #[test]
     fn valid_label_schema_bypasses_prod_but_mapping_writes_do_not() {
         let schema_path = format!("{}?_action=schema", mappings_path("alpha"));
-        let schema = request(mapping_call(
-            "prod",
-            "POST",
-            &schema_path,
-            Some(json!({})),
-            true,
-        ));
+        let schema = request(mapping_schema_call("prod", &schema_path));
         assert_eq!(schema.method, "POST");
         assert!(schema.confirmed_prod);
 
