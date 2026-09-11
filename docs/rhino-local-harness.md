@@ -354,6 +354,65 @@ Harder, or at least bounded:
   `context`; a later mock must not collide with it, or must overwrite it
   deliberately.
 
+## AIC lane — live tenant verification (2026-09-12)
+
+Verified against the sandbox tenant on 2026-09-12 by running
+`runAicLane` from this checkout. These figures are from those runs, not from
+inference or from a neighbouring doc.
+
+The lane provisions a namespaced wrapper journey (`rl-aic-<runId>`: four
+scripts, four nodes, one tree), invokes `/json/realms/root/realms/alpha/authenticate`,
+records the effects, and deletes everything in a `finally`. It refuses to start
+if a resource of the same name already exists.
+
+| | Local lane | AIC lane |
+| --- | --- | --- |
+| `decide-from-state` | 6.4 ms | 10.9 s |
+
+Roughly **1700x**. Both lanes are judged by the same `judge()`; that is what
+makes the comparison meaningful.
+
+### Two disagreements, both real, neither a script bug
+
+**1. AM injects ambient shared-state keys.** `realm` (`/alpha`),
+`maxAuthenticationSessionDuration` (20) and `authLevel` (0) appear in
+`sharedState.final` on the tenant and not locally. Measured identical across
+two cases, so deterministic rather than incidental. They are not script writes,
+but `judge()` currently reports them as undeclared additions and fails the case.
+
+**2. Bucket membership is not observable from the AIC side.** A key written
+with `nodeState.putTransient` arrives in `sharedState.final` with
+`transientState.final` empty. This is not a recording bug:
+`src/aic/record.ts::classifyFinal` documents it correctly — `nodeState.get` is
+unified (transient -> secure -> shared) and next-gen AM exposes no
+bucket-inspection API, so a newly-transient key is genuinely unobservable as
+transient. The gap is downstream, in `diffRecordedEffects`, which treats it as
+a behavioural disagreement.
+
+Neither is fixed yet. Both are conformance-model questions rather than bugs:
+the code currently conflates a genuine behavioural difference, an effect one
+lane structurally cannot observe, and ambient environment state.
+
+### The portability guard fires correctly
+
+`openidm-read` declares `given.managed` and the lane refused it:
+`given.managed is environment-dependent; AIC lane skips rather than run against
+whatever the tenant holds`. That is the designed behaviour — an
+environment-dependent case is skipped with a reason, never run against
+whatever state the tenant happens to be in.
+
+### Real-script corpus, same day
+
+52 probe scripts from `scripts/rhino-script-tester/` are now cases. After
+`callbacks.isEmpty` landed: **14 pass end to end**, 24 run and disagree on
+callback content, 4 legacy need `action.send`, 1 fails its outcome.
+
+The 24 are the corpus working as a measuring instrument rather than failing.
+`bindings-availability` dumps `typeof` for every binding; live AIC recorded
+`require: "function"` where the local harness produces `"undefined"`. That is a
+precisely located fidelity gap, which is what the corpus is for.
+`docs/rhino-local-gaps.md` holds the ranked list.
+
 ## Unsettled
 
 - Whether AIC actually sets `org.forgerock.am.scripting.disableES6=true`, or
@@ -361,8 +420,14 @@ Harder, or at least bounded:
   JS is 0 either way. Reading the property needs a tenant (or an AIC image),
   which this slice did not touch.
 - LIBRARY scripts (function-like top level, CommonJS `require` via
-  `libraryBindings`). Out of scope; this harness evals a file as a decision-node
-  script.
+  `libraryBindings`). Measured 2026-09-12 to be the single largest fidelity gap
+  in the real-script corpus: live AIC reports `typeof require === "function"`
+  and the harness reports `"undefined"`, which blocks 8 of the 52 probe scripts.
+  No longer out of scope.
+- Whether the local lane should seed AM's ambient shared-state keys (`realm`,
+  `authLevel`, `maxAuthenticationSessionDuration`) so a script reading them
+  behaves the same in both lanes. Buys fidelity; needs correct values, and
+  `authLevel` plausibly varies with position in the tree.
 - `AMWrapFactory` behaviour and the class shutter allowlist. Approximating the
   shutter is still acceptable; using AM's class is not free.
 - How the generated mock `.cjs` should be loaded: `preamble` vs concatenating
