@@ -9,6 +9,7 @@ import { isPlainObject, parseJsonObject, parseJsonValue } from "../case/util.ts"
 
 export interface SubjectDump {
   outcome: string;
+  before: JsonObject;
   final: JsonObject;
 }
 
@@ -34,11 +35,12 @@ export function parseSubjectDump(raw: unknown): SubjectDump {
   if (typeof raw.outcome !== "string") {
     throw new Error("rhino-local: harness dump.outcome must be a string");
   }
-  if (!("final" in raw)) {
-    throw new Error("rhino-local: harness dump is missing final");
+  if (!("before" in raw) || !("final" in raw)) {
+    throw new Error("rhino-local: harness dump must have before and final");
   }
   return {
     outcome: raw.outcome,
+    before: parseJsonObject(raw.before, "dump.before"),
     final: parseJsonObject(raw.final, "dump.final"),
   };
 }

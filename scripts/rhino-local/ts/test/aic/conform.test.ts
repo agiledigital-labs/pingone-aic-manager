@@ -48,12 +48,20 @@ describe("conform", () => {
     });
     const localEffects = assembleEffects({
       given: kase.given,
-      dump: { outcome: "true", final: { username: "alice", verified: true } },
+      dump: {
+        outcome: "true",
+        before: { username: "alice" },
+        final: { username: "alice", verified: true },
+      },
       callbacks: [],
     });
     const aicEffects = assembleEffects({
       given: kase.given,
-      dump: { outcome: "false", final: { username: "alice" } },
+      dump: {
+        outcome: "false",
+        before: { username: "alice" },
+        final: { username: "alice" },
+      },
       callbacks: [],
     });
     const report = await conform({
