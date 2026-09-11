@@ -377,8 +377,14 @@ fixed ISO-8601 window and must be supplied together. Matches form one JSON array
 on stdout, or in `--output`; pages are filtered and written as they arrive
 rather than accumulating the whole window in memory.
 
-`logs tail` begins with the most recent 15 seconds and then requests contiguous
-windows until Ctrl-C. Each matched event is one compact JSON value on stdout
+`logs tail` begins with the most recent 15 seconds and then requests
+**overlapping** windows until Ctrl-C. Each poll rewinds 90 seconds — never
+before the moment the follow started — because the log pipeline lags ingestion
+behind event time by tens of seconds, so contiguous windows silently drop any
+event that arrives after its own window was already queried. Events already
+printed are suppressed by the same identity the local store dedupes on, and
+that set is forgotten once it falls behind the window, so a long follow stays
+bounded. Each matched event is one compact JSON value on stdout
 (JSON Lines). Startup, empty-poll/filter status, and the Ctrl-C acknowledgement
 go to stderr, so redirecting stdout produces a clean event stream. There is no
 separate polling-interval flag: all log requests already pass through the
