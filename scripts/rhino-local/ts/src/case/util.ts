@@ -1,3 +1,5 @@
+import type { JsonObject, JsonValue } from "./types.ts";
+
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -87,4 +89,50 @@ function editDistance(a: string, b: string): number {
     }
   }
   return dp[rows * width + cols] ?? Math.max(rows, cols);
+}
+
+export function parseJsonValue(raw: unknown, path: string): JsonValue {
+  if (raw === null || typeof raw === "string" || typeof raw === "boolean") {
+    return raw;
+  }
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) {
+      throw new Error(`rhino-local: ${path} must be a finite number`);
+    }
+    return raw;
+  }
+  if (Array.isArray(raw)) {
+    return raw.map((item, index) => parseJsonValue(item, `${path}[${index}]`));
+  }
+  if (isPlainObject(raw)) {
+    const object: JsonObject = {};
+    for (const [key, value] of Object.entries(raw)) {
+      object[key] = parseJsonValue(value, `${path}.${key}`);
+    }
+    return object;
+  }
+  throw new Error(
+    `rhino-local: ${path} is not a JSON value (${describeType(raw)})`
+  );
+}
+
+export function parseJsonObject(raw: unknown, path: string): JsonObject {
+  const value = parseJsonValue(raw, path);
+  if (!isPlainObject(value)) {
+    throw new Error(`rhino-local: ${path} must be an object`);
+  }
+  return value;
+}
+
+function describeType(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  if (value instanceof RegExp) {
+    return "RegExp";
+  }
+  return typeof value;
 }
