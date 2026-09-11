@@ -107,6 +107,7 @@ function mockTenant(
   const aicArgs: string[][] = [];
   const dump = JSON.stringify({
     outcome: "true",
+    before: { username: "alice" },
     final: { username: "alice", verified: true },
   });
   const authenticateBody = options.authenticateBody ?? {

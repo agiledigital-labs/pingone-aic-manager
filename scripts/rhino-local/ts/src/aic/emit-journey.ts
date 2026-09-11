@@ -8,6 +8,7 @@ import {
 } from "./constants.ts";
 import { emitResultScript } from "./emit-result.ts";
 import { emitSetupScript } from "./emit-setup.ts";
+import { instrumentSubject } from "./emit-subject.ts";
 
 export interface EmitJourneyOptions {
   /** Short token used in tree/script names. Must match `[A-Za-z0-9-]{1,32}`. */
@@ -88,6 +89,7 @@ export function emitWrapperJourney(
   const nextId = options.idFactory ?? randomUUID;
   const outcomes = subjectOutcomes(kase);
   const treeName = `${RESOURCE_PREFIX}-${runId}`;
+  const instrumented = instrumentSubject(source, runId);
 
   const setupScript: ScriptResource = {
     id: nextId(),
@@ -98,7 +100,7 @@ export function emitWrapperJourney(
   const subjectScript: ScriptResource = {
     id: nextId(),
     name: `${treeName}-subject`,
-    source,
+    source: instrumented.source,
     role: "subject",
   };
 
@@ -113,7 +115,7 @@ export function emitWrapperJourney(
     const script: ScriptResource = {
       id: nextId(),
       name: `${treeName}-result-${slug(outcome)}`,
-      source: emitResultScript(outcome),
+      source: emitResultScript(outcome, instrumented.snapshotKey),
       role: "result",
       outcome,
     };

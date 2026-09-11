@@ -41,7 +41,11 @@ describe("assembleEffects", () => {
   it("fills every RecordedEffects channel, including empty openidm/http/logs", () => {
     const effects = assembleEffects({
       given: { sharedState: { username: "alice" } },
-      dump: { outcome: "true", final: { username: "alice", verified: true } },
+      dump: {
+        outcome: "true",
+        before: { username: "alice" },
+        final: { username: "alice", verified: true },
+      },
       callbacks: [],
     });
     expect(effects.outcome).toBe("true");
@@ -83,6 +87,7 @@ describe("assembleEffects", () => {
       given: kase.given,
       dump: parseSubjectDump({
         outcome: "true",
+        before: { username: "alice" },
         final: { username: "alice", verified: true },
       }),
       callbacks: [],
