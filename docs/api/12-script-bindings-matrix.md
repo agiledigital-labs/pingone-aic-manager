@@ -1299,6 +1299,16 @@ returns the **submitted value**, not a callback object — `.getName()` /
 `.getValue()` on it throw `TypeError`. Worked example and the two-post drive
 loop: [09-journeys.md](09-journeys.md).
 
+**`action.goTo()` does not halt the script (2026-09-12).** It records the
+chosen outcome and returns; statements after it still execute. Verified by
+appending a `nodeState.putTransient` snapshot after an author body ending in
+`action.goTo("true")` and reading the payload back from the next node on a live
+tenant — the suffix ran. This is what makes it possible to instrument a script
+without editing its body, and it is also a hazard: cleanup or logging written
+after a `goTo` runs, and a second `goTo` would overwrite the first. Pair it with
+the accumulation rule above — callbacks are sent only if the script does *not*
+`goTo` an outcome.
+
 **Next-gen validate-scope is a function-entry-point script.** This is a contract
 difference, not a bindings one, and it bites immediately: a top-level script
 body (the token-mod/evaluate-scope style) fails the token request with
