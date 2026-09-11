@@ -264,14 +264,31 @@ fn apply_pull_prepared(
     };
     if plan.protected_refs().is_empty() {
         apply_pull_plan(app, tenant, mapping, plan);
-    } else {
-        app.mappings.pending_pull = Some(PendingPull {
-            tenant,
-            mapping,
-            plan,
-        });
-        app.input_mode = InputMode::Mappings(Mode::PullConfirm);
+        return;
     }
+    // The confirm modal's accept key is `y`. Opening it from this
+    // async handler would steal a keystroke from Search (or any other
+    // mode). Store the plan; `promote_pending_pulls` opens the modal
+    // only while `input_mode` is already Normal.
+    let waiting = app.input_mode != InputMode::Normal;
+    app.mappings.pending_pull = Some(PendingPull {
+        tenant,
+        mapping,
+        plan,
+    });
+    if waiting {
+        app.push_toast(
+            ToastKind::Info,
+            "Protected pull is waiting for confirmation",
+        );
+    }
+}
+
+pub(crate) fn promote_pending_pull(app: &mut App) {
+    if app.input_mode != InputMode::Normal || app.mappings.pending_pull.is_none() {
+        return;
+    }
+    app.input_mode = InputMode::Mappings(Mode::PullConfirm);
 }
 
 fn apply_pull_plan(app: &mut App, tenant: String, mapping: String, plan: sync::PullPlan) {
@@ -389,6 +406,7 @@ mod tests {
                 "map.transform.name",
             ])),
         );
+        crate::app::promote_pending_pulls(&mut app);
 
         assert_eq!(app.input_mode, InputMode::Mappings(Mode::PullConfirm));
         assert_eq!(
@@ -400,5 +418,38 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.mappings.pending_pull.is_none());
         assert!(app.mappings.in_flight_pull.is_empty());
+    }
+
+    #[test]
+    fn protected_mapping_pull_does_not_replace_another_input_mode() {
+        let mut app = app();
+        app.input_mode = InputMode::Mappings(Mode::Search);
+        app.mappings
+            .in_flight_pull
+            .insert(("sandbox".into(), "map".into()));
+
+        apply_pull_prepared(
+            &mut app,
+            "sandbox".into(),
+            "map".into(),
+            Ok(sync::PullPlan::protected_for_test(&["map.onCreate"])),
+        );
+
+        assert_eq!(app.input_mode, InputMode::Mappings(Mode::Search));
+        assert_eq!(pending_pull_refs(&app), ["sync/map.onCreate"]);
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("waiting for confirmation"))
+        );
+
+        crate::app::promote_pending_pulls(&mut app);
+        assert_eq!(app.input_mode, InputMode::Mappings(Mode::Search));
+        assert!(app.mappings.pending_pull.is_some());
+
+        app.input_mode = InputMode::Normal;
+        crate::app::promote_pending_pulls(&mut app);
+        assert_eq!(app.input_mode, InputMode::Mappings(Mode::PullConfirm));
+        assert_eq!(pending_pull_refs(&app), ["sync/map.onCreate"]);
     }
 }

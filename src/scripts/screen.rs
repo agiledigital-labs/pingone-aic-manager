@@ -588,15 +588,32 @@ fn apply_pull_prepared(
     };
     if plan.protected_refs().is_empty() {
         apply_pull_plan(app, tenant, full, label, plan);
-    } else {
-        app.scripts.pending_pull = Some(PendingPull {
-            tenant,
-            full,
-            label,
-            plan,
-        });
-        app.input_mode = InputMode::Scripts(Mode::PullConfirm);
+        return;
     }
+    // The confirm modal's accept key is `y`. Opening it from this
+    // async handler would steal a keystroke from Search (or any other
+    // mode). Store the plan; `promote_pending_pulls` opens the modal
+    // only while `input_mode` is already Normal.
+    let waiting = app.input_mode != InputMode::Normal;
+    app.scripts.pending_pull = Some(PendingPull {
+        tenant,
+        full,
+        label,
+        plan,
+    });
+    if waiting {
+        app.push_toast(
+            ToastKind::Info,
+            "Protected pull is waiting for confirmation",
+        );
+    }
+}
+
+pub(crate) fn promote_pending_pull(app: &mut App) {
+    if app.input_mode != InputMode::Normal || app.scripts.pending_pull.is_none() {
+        return;
+    }
+    app.input_mode = InputMode::Scripts(Mode::PullConfirm);
 }
 
 fn apply_pull_plan(
@@ -809,8 +826,24 @@ fn begin_op(app: &mut App, tenant: &str, full: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::View;
+    use crate::config::tenant::{Provenance, Tenant, TenantTheme};
     use crate::scripts::syntax::{Refusal, SyntaxError};
     use crossterm::event::KeyModifiers;
+
+    fn app() -> App {
+        App::for_test(
+            vec![Tenant {
+                name: "sandbox".into(),
+                base_url: "https://tenant.example.com".into(),
+                theme: TenantTheme::Sandbox,
+                sa_id: None,
+                scopes: Vec::new(),
+                provenance: Provenance::default(),
+            }],
+            View::Scripts,
+        )
+    }
 
     fn held(source: sync::SourceId) -> Refused {
         let refusal = Refusal::Rejected(vec![SyntaxError {
@@ -880,5 +913,39 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.scripts.pending_pull.is_none());
         assert!(app.scripts.in_flight.is_empty());
+    }
+
+    #[test]
+    fn protected_script_pull_does_not_replace_another_input_mode() {
+        let mut app = app();
+        app.input_mode = InputMode::Scripts(Mode::Search);
+        app.scripts
+            .in_flight
+            .insert(("sandbox".into(), "all".into()));
+
+        apply_pull_prepared(
+            &mut app,
+            "sandbox".into(),
+            "all".into(),
+            "pull all".into(),
+            Ok(sync::PullPlan::protected_for_test(&["map.onCreate"])),
+        );
+
+        assert_eq!(app.input_mode, InputMode::Scripts(Mode::Search));
+        assert_eq!(pending_pull_refs(&app), ["sync/map.onCreate"]);
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("waiting for confirmation"))
+        );
+
+        crate::app::promote_pending_pulls(&mut app);
+        assert_eq!(app.input_mode, InputMode::Scripts(Mode::Search));
+        assert!(app.scripts.pending_pull.is_some());
+
+        app.input_mode = InputMode::Normal;
+        crate::app::promote_pending_pulls(&mut app);
+        assert_eq!(app.input_mode, InputMode::Scripts(Mode::PullConfirm));
+        assert_eq!(pending_pull_refs(&app), ["sync/map.onCreate"]);
     }
 }
