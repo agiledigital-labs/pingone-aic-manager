@@ -338,6 +338,16 @@ pub enum PushOutcome {
     },
 }
 
+impl PushOutcome {
+    /// Whether the requested local-to-tenant convergence did not complete.
+    pub fn is_failure(&self) -> bool {
+        match self {
+            Self::Pushed | Self::Unchanged | Self::AlreadyInSync => false,
+            Self::NotConfirmed(_) | Self::Conflict(_) | Self::Refused { .. } => true,
+        }
+    }
+}
+
 /// Why a tenant-accepted write could not be confirmed by an immediate read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmationFailure {
@@ -1912,6 +1922,38 @@ mod tests {
     // on the cwd-relative workspace root.
 
     use serde_json::json;
+
+    #[test]
+    fn push_outcome_failure_classification_covers_every_variant() {
+        let conflict = ThreeWay {
+            last_synced: "old".into(),
+            remote: "remote".into(),
+            local: "local".into(),
+        };
+        let cases = [
+            ("pushed", PushOutcome::Pushed, false),
+            (
+                "not confirmed",
+                PushOutcome::NotConfirmed(ConfirmationFailure::Mismatch),
+                true,
+            ),
+            ("unchanged", PushOutcome::Unchanged, false),
+            ("already in sync", PushOutcome::AlreadyInSync, false),
+            ("conflict", PushOutcome::Conflict(conflict), true),
+            (
+                "refused",
+                PushOutcome::Refused {
+                    refusal: Refusal::Unsupported("unknown engine".into()),
+                    source: source_id(b"source"),
+                },
+                true,
+            ),
+        ];
+
+        for (label, outcome, expected) in cases {
+            assert_eq!(outcome.is_failure(), expected, "{label}");
+        }
+    }
 
     #[test]
     fn copy_body_rewrites_only_identity_fields() {
