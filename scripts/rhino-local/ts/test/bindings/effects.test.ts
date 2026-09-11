@@ -105,6 +105,129 @@ describe("openidm", () => {
     ]);
   });
 
+  it("evaluates CREST filters against given.managed with discriminating row sets", () => {
+    const rows = [
+      {
+        _id: "alice",
+        userName: "alice",
+        mail: "alice@example.com",
+        city: "York",
+      },
+      {
+        _id: "alicia",
+        userName: "alicia",
+        mail: "alicia@other.org",
+        city: "York",
+      },
+      { _id: "bob", userName: "bob", mail: "bob@example.com" },
+      {
+        _id: "carol",
+        userName: "carol",
+        mail: "carol@example.com",
+        city: "New York",
+      },
+      { _id: "malice", userName: "malice", mail: "m@x.com" },
+    ];
+    const sandbox = loadBehaviour({
+      managed: { "managed/alpha_user": rows },
+    });
+    const openidm = sandbox.openidm as {
+      query: (
+        resource: string,
+        params: { _queryFilter: string }
+      ) => { result: Array<{ _id: string }> };
+    };
+    function ids(filter: string): string[] {
+      return openidm
+        .query("managed/alpha_user", { _queryFilter: filter })
+        .result.map((row) => row._id);
+    }
+
+    // and binds tighter than or: bob OR (York AND alice-mail) → alice, bob.
+    // If or bound tighter, (bob OR York) AND alice-mail → alice only.
+    expect(
+      ids('userName eq "bob" or city eq "York" and mail eq "alice@example.com"')
+    ).toEqual(["alice", "bob"]);
+
+    expect(ids('userName sw "ali"')).toEqual(["alice", "alicia"]);
+    expect(ids('userName co "ali"')).toEqual(["alice", "alicia", "malice"]);
+    expect(ids("city pr")).toEqual(["alice", "alicia", "carol"]);
+    expect(ids('!(userName eq "bob")')).toEqual([
+      "alice",
+      "alicia",
+      "carol",
+      "malice",
+    ]);
+    expect(ids('city eq "New York"')).toEqual(["carol"]);
+    expect(ids('/name/last eq "Smith"')).toEqual([]);
+  });
+
+  it("matches eq/co against any element of an array-valued field", () => {
+    const sandbox = loadBehaviour({
+      managed: {
+        "managed/alpha_user": [
+          { _id: "alice", mail: ["alice@example.com", "a@x.com"] },
+          { _id: "bob", mail: ["bob@example.com"] },
+        ],
+      },
+    });
+    const openidm = sandbox.openidm as {
+      query: (
+        resource: string,
+        params: { _queryFilter: string }
+      ) => { result: Array<{ _id: string }> };
+    };
+    expect(
+      openidm
+        .query("managed/alpha_user", {
+          _queryFilter: 'mail eq "alice@example.com"',
+        })
+        .result.map((row) => row._id)
+    ).toEqual(["alice"]);
+  });
+
+  it("matches a nested JSON-pointer field, not the parent object", () => {
+    const sandbox = loadBehaviour({
+      managed: {
+        "managed/alpha_user": [
+          { _id: "alice", name: { first: "Alice", last: "Smith" } },
+          { _id: "bob", name: { first: "Bob", last: "Jones" } },
+          { _id: "carol", name: { first: "Carol", last: "Smith" } },
+        ],
+      },
+    });
+    const openidm = sandbox.openidm as {
+      query: (
+        resource: string,
+        params: { _queryFilter: string }
+      ) => { result: Array<{ _id: string }> };
+    };
+    expect(
+      openidm
+        .query("managed/alpha_user", { _queryFilter: '/name/last eq "Smith"' })
+        .result.map((row) => row._id)
+    ).toEqual(["alice", "carol"]);
+  });
+
+  it("throws naming an unsupported filter rather than returning empty", () => {
+    const sandbox = loadBehaviour({
+      managed: {
+        "managed/alpha_user": [{ _id: "alice", userName: "alice" }],
+      },
+    });
+    const openidm = sandbox.openidm as {
+      query: (resource: string, params: { _queryFilter: string }) => unknown;
+    };
+    expect(() =>
+      openidm.query("managed/alpha_user", { _queryFilter: '/_id ne "alice"' })
+    ).toThrow(/unmocked filter "\/_id ne \\"alice\\""/);
+    expect(() =>
+      openidm.query("managed/alpha_user", {
+        _queryFilter: 'not (userName eq "alice")',
+      })
+    ).toThrow(/unmocked filter/);
+  });
+
   it("records actionName and body as content ?? params", () => {
     const withContent = runScript(
       'openidm.action("managed/alpha_user/alice", "reset", { n: 1 }, { q: true });'
@@ -194,13 +317,127 @@ describe("callbacksBuilder", () => {
     ]);
   });
 
-  it("leaves unimplemented callback builders throwing", () => {
-    const sandbox = loadBehaviour();
-    const builder = sandbox.callbacksBuilder as {
-      redirectCallback: (url: string, data: object, method: string) => void;
+  it("records the remaining builder types under their Java simple names", () => {
+    const effects = runScript(
+      [
+        'callbacksBuilder.textInputCallback("Email");',
+        'callbacksBuilder.scriptTextOutputCallback("js");',
+        'callbacksBuilder.pollingWaitCallback("1000", "wait");',
+        'callbacksBuilder.redirectCallback("https://x", { a: 1 }, "GET");',
+        'callbacksBuilder.validatedUsernameCallback("User", {}, false);',
+        'callbacksBuilder.deviceProfileCallback(true, false, "Allow");',
+      ].join("\n")
+    );
+    expect(effects.callbacks.map((cb) => cb.type)).toEqual([
+      "TextInputCallback",
+      "ScriptTextOutputCallback",
+      "PollingWaitCallback",
+      "RedirectCallback",
+      "ValidatedUsernameCallback",
+      "DeviceProfileCallback",
+    ]);
+  });
+
+  it("covers every remaining builder method once", () => {
+    const effects = runScript(
+      [
+        "callbacksBuilder.suspendedTextOutputCallback(0, 'parked');",
+        'callbacksBuilder.languageCallback("en", "GB");',
+        'callbacksBuilder.idPCallback("google", "id", "https://r", ["openid"], "n", "req", "https://req", ["acr"], false);',
+        'callbacksBuilder.httpCallback("Basic", "Negotiate", "Negotiate", 401);',
+        'callbacksBuilder.x509CertificateCallback("cert");',
+        'callbacksBuilder.consentMappingCallback({ n: 1 }, "msg", true);',
+        'callbacksBuilder.kbaCreateCallback("q", ["a"], false);',
+        'callbacksBuilder.selectIdPCallback({ p: true });',
+        'callbacksBuilder.termsAndConditionsCallback("1", "terms", "2026-01-01");',
+        'callbacksBuilder.metadataCallback({ k: 1 });',
+        'callbacksBuilder.stringAttributeInputCallback("mail", "Email", "", true);',
+        'callbacksBuilder.numberAttributeInputCallback("age", "Age", 1, true);',
+        'callbacksBuilder.booleanAttributeInputCallback("ok", "OK", true, true);',
+        'callbacksBuilder.validatedPasswordCallback("pw", false, {}, false);',
+      ].join("\n")
+    );
+    expect(effects.callbacks.map((cb) => cb.type)).toEqual([
+      "SuspendedTextOutputCallback",
+      "LanguageCallback",
+      "IdPCallback",
+      "HttpCallback",
+      "X509CertificateCallback",
+      "ConsentMappingCallback",
+      "KbaCreateCallback",
+      "SelectIdPCallback",
+      "TermsAndConditionsCallback",
+      "MetadataCallback",
+      "StringAttributeInputCallback",
+      "NumberAttributeInputCallback",
+      "BooleanAttributeInputCallback",
+      "ValidatedPasswordCallback",
+    ]);
+  });
+
+  it("distinguishes redirectCallback overloads by arity", () => {
+    const withCookie = runScript(
+      'callbacksBuilder.redirectCallback("https://x", {}, "POST", true);'
+    );
+    const withStatus = runScript(
+      'callbacksBuilder.redirectCallback("https://x", {}, "POST", "status", "cookie");'
+    );
+    expect(withCookie.callbacks[0]).toEqual({
+      type: "RedirectCallback",
+      redirectUrl: "https://x",
+      redirectData: {},
+      method: "POST",
+      setTrackingCookie: true,
+    });
+    expect(withStatus.callbacks[0]).toEqual({
+      type: "RedirectCallback",
+      redirectUrl: "https://x",
+      redirectData: {},
+      method: "POST",
+      statusParameter: "status",
+      redirectBackUrlCookie: "cookie",
+    });
+  });
+});
+
+describe("callbacks (submitted values)", () => {
+  it("returns the submitted value itself, in order, not a callback object", () => {
+    const sandbox = loadBehaviour({
+      callbacks: [
+        { type: "NameCallback", value: "alice" },
+        { type: "NameCallback", value: "alice.admin" },
+        { type: "PasswordCallback", value: "s3cret" },
+        { type: "ConfirmationCallback", value: 1 },
+      ],
+    });
+    const callbacks = sandbox.callbacks as {
+      isEmpty: () => boolean;
+      getNameCallbacks: () => {
+        get: (i: number) => unknown;
+        size: () => number;
+      };
+      getPasswordCallbacks: () => { get: (i: number) => unknown };
+      getConfirmationCallbacks: () => { get: (i: number) => unknown };
+      getChoiceCallbacks: () => { size: () => number };
     };
-    expect(() => builder.redirectCallback("https://x", {}, "GET")).toThrow(
-      /not mocked: callbacksBuilder\.redirectCallback/
+    expect(callbacks.isEmpty()).toBe(false);
+    expect(callbacks.getNameCallbacks().size()).toBe(2);
+    expect(callbacks.getNameCallbacks().get(0)).toBe("alice");
+    expect(callbacks.getNameCallbacks().get(1)).toBe("alice.admin");
+    expect(callbacks.getPasswordCallbacks().get(0)).toBe("s3cret");
+    expect(callbacks.getConfirmationCallbacks().get(0)).toBe(1);
+    expect(callbacks.getChoiceCallbacks().size()).toBe(0);
+  });
+
+  it("treats an explicit empty given.callbacks as a first pass", () => {
+    const sandbox = loadBehaviour({ callbacks: [] });
+    const callbacks = sandbox.callbacks as { isEmpty: () => boolean };
+    expect(callbacks.isEmpty()).toBe(true);
+  });
+
+  it("throws naming given.callbacks when the fixture is missing", () => {
+    expect(() => runScript("callbacks.getNameCallbacks();")).toThrow(
+      /no given\.callbacks/
     );
   });
 });
