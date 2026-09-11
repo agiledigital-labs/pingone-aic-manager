@@ -1,11 +1,21 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../../src/bindings/index.ts";
+import type { RunCaseOptions } from "../../src/bindings/run.ts";
 import { RhinoRunner } from "../../src/runner.ts";
 import {
   blockedCases,
   realCases,
   runnableCases,
 } from "../../cases/real/index.ts";
+import type { RealEntry } from "../../cases/real/load.ts";
+
+function runOptions(entry: RealEntry, sourceName: string): RunCaseOptions {
+  const options: RunCaseOptions = { sourceName, timeoutMs: 5_000 };
+  if (entry.libraries !== undefined) {
+    options.libraries = entry.libraries;
+  }
+  return options;
+}
 
 describe("real scripted-decision corpus", () => {
   let runner: RhinoRunner;
@@ -38,10 +48,7 @@ describe("real scripted-decision corpus", () => {
     }
     for (const entry of runnableCases) {
       it(entry.kase.name, async () => {
-        const result = await runCase(runner, entry.kase, {
-          sourceName: entry.origin,
-          timeoutMs: 5_000,
-        });
+        const result = await runCase(runner, entry.kase, runOptions(entry, entry.origin));
         expect(result.verdict.summary, result.verdict.summary).toBe("");
         expect(result.verdict.pass).toBe(true);
       });
@@ -56,10 +63,7 @@ describe("real scripted-decision corpus", () => {
       }
       it(`${entry.kase.name} — ${blocked.method}`, async () => {
         await expect(
-          runCase(runner, entry.kase, {
-            sourceName: entry.kase.name,
-            timeoutMs: 5_000,
-          })
+          runCase(runner, entry.kase, runOptions(entry, entry.kase.name))
         ).rejects.toThrow(blocked.throw);
       });
     }

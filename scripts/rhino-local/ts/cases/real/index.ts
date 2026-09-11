@@ -1,5 +1,11 @@
 import type { Given } from "../../src/case/types.ts";
-import { hiddenValue, realCase, type BlockedBy, type RealEntry } from "./load.ts";
+import {
+  hiddenValue,
+  librarySource,
+  realCase,
+  type BlockedBy,
+  type RealEntry,
+} from "./load.ts";
 
 /**
  * Parse-error fixtures never reach a binding. The case format has no
@@ -78,7 +84,11 @@ function entry(
   name: string,
   originFile: string,
   expectPayload: Record<string, unknown>,
-  extras: { given?: Given; blocked?: BlockedBy } = {}
+  extras: {
+    given?: Given;
+    blocked?: BlockedBy;
+    libraries?: Record<string, string>;
+  } = {}
 ): RealEntry {
   const init: {
     name: string;
@@ -87,6 +97,7 @@ function entry(
     expect: { outcome: string; callbacks: ReturnType<typeof hiddenValue> };
     given: Given;
     blocked?: BlockedBy;
+    libraries?: Record<string, string>;
   } = {
     name,
     kind,
@@ -100,6 +111,9 @@ function entry(
   if (extras.blocked !== undefined) {
     init.blocked = extras.blocked;
   }
+  if (extras.libraries !== undefined) {
+    init.libraries = extras.libraries;
+  }
   return realCase(init);
 }
 
@@ -107,7 +121,11 @@ function ng(
   name: string,
   originFile: string,
   payload: Record<string, unknown>,
-  extras: { given?: Given; blocked?: BlockedBy } = {}
+  extras: {
+    given?: Given;
+    blocked?: BlockedBy;
+    libraries?: Record<string, string>;
+  } = {}
 ): RealEntry {
   return entry("nextgen", name, originFile, { ok: true, feature: name, ...payload }, extras);
 }
@@ -117,7 +135,11 @@ function ngFeature(
   originFile: string,
   feature: string,
   payload: Record<string, unknown>,
-  extras: { given?: Given; blocked?: BlockedBy } = {}
+  extras: {
+    given?: Given;
+    blocked?: BlockedBy;
+    libraries?: Record<string, string>;
+  } = {}
 ): RealEntry {
   return entry("nextgen", name, originFile, { ok: true, feature, ...payload }, extras);
 }
@@ -126,7 +148,11 @@ function legacy(
   name: string,
   originFile: string,
   payload: Record<string, unknown>,
-  extras: { given?: Given; blocked?: BlockedBy } = {}
+  extras: {
+    given?: Given;
+    blocked?: BlockedBy;
+    libraries?: Record<string, string>;
+  } = {}
 ): RealEntry {
   return entry("legacy", name, originFile, { ok: true, feature: name, ...payload }, extras);
 }
@@ -426,49 +452,126 @@ export const realCases: RealEntry[] = [
 
   ng("string-normalize", "fixtures/string-normalize.script.js", {
     results: STRING_NORMALIZE_RESULTS,
+  }, {
+    libraries: {
+      "rhino-lib-normalize-probe": librarySource("lib-normalize-probe.lib.js"),
+    },
   }),
 
   ngFeature(
     "lib-array-fill-consumer",
     "fixtures/lib-array-fill-consumer.script.js",
     "lib-array-fill-from",
-    { fill: "false,false,false", from: "false,false,false" }
+    {
+      fill: {
+        ok: true,
+        length: 3,
+        joined: "false,false,false",
+        allFalse: true,
+      },
+      from: {
+        ok: true,
+        length: 3,
+        joined: "false,false,false",
+        allFalse: true,
+      },
+    },
+    {
+      libraries: {
+        "rhino-lib-array-fill-probe": librarySource("lib-array-fill-probe.lib.js"),
+      },
+    }
   ),
   ngFeature(
     "lib-const-consumer",
     "fixtures/lib-const-consumer.script.js",
     "lib-top-const",
-    {}
+    { fromConst: "lib-const-ok", fromVar: "lib-var-ok" },
+    {
+      libraries: {
+        "rhino-lib-const-probe": librarySource("lib-const-probe.lib.js"),
+      },
+    }
   ),
   ngFeature(
     "lib-const-loop-consumer",
     "fixtures/lib-const-loop-consumer.script.js",
     "lib-const-loop-in-function",
-    {}
+    // Live (docs/api/12): loop-body const inside a function keeps the first
+    // initializer; the correct series would be "0,2,4".
+    { fromLoopConst: "0,0,0" },
+    {
+      libraries: {
+        "rhino-lib-const-loop-probe": librarySource("lib-const-loop-probe.lib.js"),
+      },
+    }
   ),
   ngFeature(
     "lib-es2015-globals-consumer",
     "fixtures/lib-es2015-globals-consumer.script.js",
     "lib-es2015-globals",
-    {}
+    {
+      globals: {
+        Map: "undefined",
+        Set: "undefined",
+        WeakMap: "undefined",
+        WeakSet: "undefined",
+        Symbol: "undefined",
+        Promise: "undefined",
+        Proxy: "undefined",
+        Reflect: "undefined",
+        JSON: "object",
+      },
+      value: [
+        {
+          name: "new Map + set/get/size",
+          ok: false,
+          error: 'ReferenceError: "Map" is not defined.',
+        },
+        {
+          name: "new Set + add/has/size",
+          ok: false,
+          error: 'ReferenceError: "Set" is not defined.',
+        },
+        { name: "object-as-set fallback", ok: true, value: "a,b" },
+      ],
+    },
+    {
+      libraries: {
+        "rhino-lib-es2015-globals-probe": librarySource(
+          "lib-es2015-globals-probe.lib.js"
+        ),
+      },
+    }
   ),
   ngFeature(
     "lib-java-collections-consumer",
     "fixtures/lib-java-collections-consumer.script.js",
     "lib-java-collections",
-    {}
+    {},
+    {
+      libraries: {
+        "rhino-lib-java-collections-probe": librarySource(
+          "lib-java-collections-probe.lib.js"
+        ),
+      },
+    }
   ),
   ngFeature(
     "lib-openidm-read-consumer",
     "fixtures/lib-openidm-read-consumer.script.js",
     "lib-openidm-read",
-    {},
+    {
+      fromLib: { nameA: "alice", nameB: "bob", score: 1, imputed: false },
+      missResult: { threw: false, value: "null" },
+    },
     {
       given: {
         managed: {
           "managed/alpha_name_variant": [
             {
-              _id: "alice_bob",
+              // Library body hardcodes this id (live seed name, not a person).
+              _id: "aaron_erin",
               nameA: "alice",
               nameB: "bob",
               score: 1,
@@ -477,19 +580,35 @@ export const realCases: RealEntry[] = [
           ],
         },
       },
+      libraries: {
+        "rhino-lib-openidm-read-probe": librarySource(
+          "lib-openidm-read-probe.lib.js"
+        ),
+      },
     }
   ),
   ngFeature(
     "lib-openidm-miss-consumer",
     "fixtures/lib-openidm-miss-consumer.script.js",
     "lib-openidm-miss",
-    {},
+    {
+      // Live (docs/api/10): missing record AND missing type return null.
+      // Local still throws on an unseeded collection (unknownTypeMiss).
+      variantMiss: { threw: false, value: "null" },
+      discrepancyMiss: { threw: false, value: "null" },
+      unknownTypeMiss: { threw: false, value: "null" },
+    },
     {
       given: {
         managed: {
           "managed/idr_name_variants": [],
           "managed/idr_name_variant_discrepancies": [],
         },
+      },
+      libraries: {
+        "rhino-lib-openidm-miss-probe": librarySource(
+          "lib-openidm-miss-probe.lib.js"
+        ),
       },
     }
   ),
