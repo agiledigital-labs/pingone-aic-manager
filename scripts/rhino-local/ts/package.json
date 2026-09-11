@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Generate an AM-safe scripted-decision mock surface from the captured contexts JSON.",
+  "description": "Local Rhino harness: mock-surface generator and typed client for the long-lived JVM runner.",
   "engines": {
     "node": ">=24"
   },

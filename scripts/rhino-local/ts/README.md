@@ -1,11 +1,36 @@
-# rhino-local mock-surface generator
+# rhino-local TypeScript package
 
-Generates the **scripted-decision mock binding surface** from the captured AM
-contexts metadata at `docs/api/bindings/scripted-decision-next.json`. This
-package emits presence, not behaviour: every method throws
+Two jobs, one package:
+
+1. Generate the **scripted-decision mock binding surface** from the captured AM
+   contexts metadata at `docs/api/bindings/scripted-decision-next.json`.
+2. Talk to the long-lived JVM runner (`scripts/rhino-local/run-runner.sh`) so a
+   test can eval a script without starting a JVM per case.
+
+The generator emits presence, not behaviour: every method throws
 `rhino-local: not mocked: <binding>.<method> arity=N overload=[…]` until a
 later slice implements it. A mock that returned `undefined` would turn a
 missing feature into a passing test.
+
+## JVM runner client
+
+`src/runner.ts` spawns `run-runner.sh` (docker + the AM image JDK) and speaks
+line-delimited JSON. Correlate by job `id` — do not assume the JVM answers in
+order. A crashed JVM rejects every pending job rather than hanging. `close()`
+ends stdin and waits for the process; `afterAll` should call it.
+
+Job shape (open enough to carry later mock bindings):
+
+- `source` / `sourceName` — author's script; `sourceName` is Rhino's source
+  name, so a parse error names the author's file and line, not `<eval>`
+- `globals` — JSON values placed in ENGINE_SCOPE Bindings
+- `preamble` — evaluated first so concatenating mocks into `source` is not
+  needed (that would shift line numbers)
+- `timeoutMs` — per-job; AM's `Error("Interrupt.")` past the instruction
+  observer. Omit for the runner's 10s harness default; `0` is AM's no-timeout
+
+Outcomes are machine-readable and distinct: `ok`, `compile_error`,
+`runtime_error`, `timeout`.
 
 ## Artefacts
 
