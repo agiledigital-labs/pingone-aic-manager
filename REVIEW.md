@@ -265,7 +265,44 @@ findings). Each should name the guard that will eventually retire it.
   predicate mixes name-based and content-based arms, the comment must name which
   is which._
 
+- **A promotion or cleanup hook must hang off every path that can reach the
+  state, not only the one you were editing.** Deferring a modal out of an async
+  result handler correctly put the promotion at the end of `apply_event` — and
+  the operator's way out of Search is a **key**, which routes through
+  `keymap::dispatch`, not `apply_event`. Once the event queue drains, the
+  pending pull waits forever and the "waiting for confirmation" toast becomes a
+  lie. _Guard: a test that drives the real key (`keymap::dispatch` with `Esc`)
+  rather than assigning `input_mode` by hand — the hand-assigned version of
+  this test passed against the broken code._
+
+- **Before reusing a `reset_*` helper for a narrower action, read what else it
+  drops.** `ScriptsState::reset_view` clears the filter _and_ cancels a pending
+  pull, which is right for a tenant switch and wrong for `Esc` in Search — so
+  clearing a filter silently discarded a protected-pull confirmation the
+  operator had just been told about. The bug only became reachable when an
+  earlier fix stopped opening the modal immediately, which is the general
+  shape: **a fix that makes state live longer makes every existing consumer of
+  that state a new call site.** _Guard: split the narrow action out
+  (`clear_filter`) so the wide one cannot be reached by accident; one test per
+  caller asserting what survives._
+
 ## Findings log
+
+### 2026-09-11 — the deferred modal that never arrived
+
+- **What:** the fix for "an async result handler must not set `input_mode`"
+  stored the pull and promoted it from the end of `apply_event`. Leaving Search
+  is a key, which never reaches `apply_event`; and `Esc` in Search called
+  `reset_view`, which _discarded_ the pending pull outright. So the standing
+  check was satisfied and the feature was broken two different ways.
+- **Why missed:** the test asserted the promotion by setting
+  `input_mode = Normal` in the test body and calling the promotion function
+  directly — it proved the predicate, never the wiring. Same shape as the
+  repo's existing "could this test fail if the code were wrong?" check, pointed
+  at a **reachability** claim rather than a value.
+- **Guard:** applied — both features now have a `#[tokio::test]` driving
+  `keymap::dispatch` with the real `Esc`, and both go red against either
+  regression (verified by mutation).
 
 ### 2026-08-11 — `write_gitignore()` was called; the gitignore covered nothing
 
