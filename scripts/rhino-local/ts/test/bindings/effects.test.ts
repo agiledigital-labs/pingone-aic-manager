@@ -162,6 +162,30 @@ describe("openidm", () => {
     expect(ids('/name/last eq "Smith"')).toEqual([]);
   });
 
+  it("matches eq/co against any element of an array-valued field", () => {
+    const sandbox = loadBehaviour({
+      managed: {
+        "managed/alpha_user": [
+          { _id: "alice", mail: ["alice@example.com", "a@x.com"] },
+          { _id: "bob", mail: ["bob@example.com"] },
+        ],
+      },
+    });
+    const openidm = sandbox.openidm as {
+      query: (
+        resource: string,
+        params: { _queryFilter: string }
+      ) => { result: Array<{ _id: string }> };
+    };
+    expect(
+      openidm
+        .query("managed/alpha_user", {
+          _queryFilter: 'mail eq "alice@example.com"',
+        })
+        .result.map((row) => row._id)
+    ).toEqual(["alice"]);
+  });
+
   it("matches a nested JSON-pointer field, not the parent object", () => {
     const sandbox = loadBehaviour({
       managed: {
