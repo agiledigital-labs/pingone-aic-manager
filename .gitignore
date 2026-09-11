@@ -57,6 +57,9 @@ TODO.md
 # Never committed: a list of client names IS the client names.
 /.ai/denylist.txt
 
+# Local Rhino mock-surface generator (scripts/rhino-local/ts)
+scripts/rhino-local/ts/node_modules/
+
 # Friction found while using `aic` on real tickets. `gaps/` is the raw inbox,
 # GAPS.md the ranked queue over it. Both are working notes with a finite life:
 # they shrink as the items land and go away entirely when the last one does.
