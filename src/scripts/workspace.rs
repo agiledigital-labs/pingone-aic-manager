@@ -790,10 +790,10 @@ fn prune_sync_mapping_dirs(sync_root: &Path, report: &mut WorkspaceReport) -> Re
         return Ok(());
     };
     for mapping in mappings {
-        let mapping_dir = mapping.path();
-        if !mapping_dir.is_dir() {
+        if !entry_is_dir(&mapping) {
             continue;
         }
+        let mapping_dir = mapping.path();
         prune_child_dirs(&mapping_dir, report)?;
         // Category prune may have emptied the mapping folder.
         prune_if_generated_only(&mapping_dir, report)?;
@@ -806,9 +806,8 @@ fn prune_child_dirs(parent: &Path, report: &mut WorkspaceReport) -> Result<()> {
         return Ok(());
     };
     for entry in entries {
-        let path = entry.path();
-        if path.is_dir() {
-            prune_if_generated_only(&path, report)?;
+        if entry_is_dir(&entry) {
+            prune_if_generated_only(&entry.path(), report)?;
         }
     }
     Ok(())
@@ -822,9 +821,17 @@ fn read_dir_complete(dir: &Path) -> Option<Vec<std::fs::DirEntry>> {
         .and_then(|iter| iter.collect::<std::io::Result<Vec<_>>>().ok())
 }
 
-/// Delete `dir` when every file in it is a known `extra_files` output (or the
-/// directory is already empty). Any `.cjs`, subdirectory, or other file is
-/// treated as user content and the folder is left alone.
+/// True for a real directory. `DirEntry::file_type` does not follow
+/// symlinks; `Path::is_dir` does, and would let a prune walk outside
+/// the workspace.
+fn entry_is_dir(entry: &std::fs::DirEntry) -> bool {
+    entry.file_type().is_ok_and(|t| t.is_dir())
+}
+
+/// Delete `dir` when every entry is a generated scaffold: a file named
+/// `tsconfig.json` (matched by name, not contents) or an AM LIBRARY wrapper
+/// (`am::is_library_wrapper_file`). Any other file, subdirectory, or
+/// symlink is treated as user content and the folder is left alone.
 fn prune_if_generated_only(dir: &Path, report: &mut WorkspaceReport) -> Result<()> {
     let Some(entries) = read_dir_complete(dir) else {
         return Ok(());
@@ -1988,6 +1995,31 @@ mod tests {
         assert!(refreshed.contains("../../types/managed/*.d.ts"));
         assert!(refreshed.contains("../../types/managed/hooks/alpha_user.d.ts"));
         assert!(refreshed.contains("../../types/managed-hook.d.ts"));
+
+        std::fs::remove_dir_all(&tree).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prune_does_not_follow_a_directory_symlink() {
+        let tree = temp_tree();
+        let parent = tree.join("am/alpha");
+        std::fs::create_dir_all(&parent).unwrap();
+
+        let elsewhere = tree.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let far = elsewhere.join("tsconfig.json");
+        std::fs::write(&far, "{}\n").unwrap();
+
+        std::os::unix::fs::symlink(&elsewhere, parent.join("foo")).unwrap();
+
+        let mut report = WorkspaceReport::default();
+        prune_child_dirs(&parent, &mut report).unwrap();
+
+        assert!(far.exists(), "far-side file must survive");
+        assert!(parent.join("foo").exists(), "symlink itself stays");
+        assert!(report.pruned.is_empty());
+        assert!(report.removed.is_empty());
 
         std::fs::remove_dir_all(&tree).ok();
     }
