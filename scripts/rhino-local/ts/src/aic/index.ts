@@ -13,7 +13,11 @@ export type {
   LaneRunner,
 } from "./conform.ts";
 export { diffRecordedEffects, judgeBoth } from "./diff.ts";
-export type { EffectsDisagreement } from "./diff.ts";
+export type {
+  EffectsComparison,
+  EffectsDisagreement,
+  ObservationGap,
+} from "./diff.ts";
 export { emitWrapperJourney, subjectOutcomes } from "./emit-journey.ts";
 export type {
   EmitJourneyOptions,

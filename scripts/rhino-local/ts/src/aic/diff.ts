@@ -1,85 +1,131 @@
 import { deepEqual } from "../case/equal.ts";
+import { diffState, sameMutationValue } from "../case/state.ts";
+import { STATE_CHANNELS } from "../case/types.ts";
 import type {
   Case,
   Channel,
+  EvidenceChannel,
   RecordedEffects,
-  StateBucket,
+  StateChannel,
+  StateMutation,
   Verdict,
 } from "../case/types.ts";
 import { formatValue } from "../case/util.ts";
 import { judge } from "../case/verdict.ts";
 
 export interface EffectsDisagreement {
-  channel: Channel;
+  channel: EvidenceChannel;
   path: string;
   local: string;
   aic: string;
   message: string;
 }
 
-/**
- * Compare two `RecordedEffects` records. This is the conformance output:
- * where the lanes disagree, not whether either lane matched `expect`.
- * `judge()` still runs separately against the same records.
- */
+export interface ObservationGap {
+  channel: EvidenceChannel;
+  path: string;
+  local: string;
+  aic: string;
+  message: string;
+}
+
+export interface EffectsComparison {
+  disagreements: EffectsDisagreement[];
+  observationGaps: ObservationGap[];
+}
+
+type LocatedMutation =
+  | { kind: "bucketed"; bucket: StateChannel; mutation: StateMutation }
+  | {
+      kind: "unbucketed";
+      possibleBuckets: StateChannel[];
+      mutation: StateMutation;
+    };
+
+/** Compare observable effects without turning absent evidence into equality. */
 export function diffRecordedEffects(
   local: RecordedEffects,
   aic: RecordedEffects
-): EffectsDisagreement[] {
-  return [
-    ...diffScalar("outcome", "outcome", local.outcome, aic.outcome),
-    ...diffBucket("sharedState", local.sharedState, aic.sharedState),
-    ...diffBucket("transientState", local.transientState, aic.transientState),
-    ...diffBucket("secureState", local.secureState, aic.secureState),
-    ...diffArray("callbacks", local.callbacks, aic.callbacks),
-    ...diffArray("openidm", local.openidm, aic.openidm),
-    ...diffArray("http", local.http, aic.http),
-    ...diffArray("logs", local.logs, aic.logs),
-  ];
-}
+): EffectsComparison {
+  const disagreements: EffectsDisagreement[] = [];
+  const observationGaps: ObservationGap[] = [];
+  const localUnobserved = new Set(local.evidence?.unobservedChannels ?? []);
+  const aicUnobserved = new Set(aic.evidence?.unobservedChannels ?? []);
 
-function diffScalar(
-  channel: Channel,
-  path: string,
-  local: unknown,
-  aic: unknown
-): EffectsDisagreement[] {
-  if (deepEqual(local, aic)) {
-    return [];
-  }
-  return [
-    disagree(
+  compareScalar(
+    "outcome",
+    local.outcome,
+    aic.outcome,
+    localUnobserved,
+    aicUnobserved,
+    disagreements,
+    observationGaps
+  );
+  compareState(
+    local,
+    aic,
+    localUnobserved,
+    aicUnobserved,
+    disagreements,
+    observationGaps
+  );
+  for (const channel of ["callbacks", "openidm", "http", "logs"] as const) {
+    compareArray(
       channel,
-      path,
-      formatValue(local),
-      formatValue(aic),
-      `${channel}: local ${formatValue(local)}, AIC ${formatValue(aic)}`
-    ),
-  ];
-}
-
-function diffBucket(
-  channel: "sharedState" | "transientState" | "secureState",
-  local: StateBucket,
-  aic: StateBucket
-): EffectsDisagreement[] {
-  return [
-    ...diffScalar(channel, "initial", local.initial, aic.initial),
-    ...diffScalar(channel, "final", local.final, aic.final),
-  ];
-}
-
-function diffArray(channel: Channel, local: unknown[], aic: unknown[]): EffectsDisagreement[] {
-  if (deepEqual(local, aic)) {
-    return [];
+      local[channel],
+      aic[channel],
+      localUnobserved,
+      aicUnobserved,
+      disagreements,
+      observationGaps
+    );
   }
-  const mismatches: EffectsDisagreement[] = [];
+  return { disagreements, observationGaps };
+}
+
+function compareScalar(
+  channel: Channel,
+  local: unknown,
+  aic: unknown,
+  localUnobserved: ReadonlySet<Channel>,
+  aicUnobserved: ReadonlySet<Channel>,
+  disagreements: EffectsDisagreement[],
+  gaps: ObservationGap[]
+): void {
+  if (recordGapIfUnobserved(channel, localUnobserved, aicUnobserved, gaps)) {
+    return;
+  }
+  if (!deepEqual(local, aic)) {
+    disagreements.push(
+      disagree(
+        channel,
+        channel,
+        formatValue(local),
+        formatValue(aic),
+        `${channel}: local ${formatValue(local)}, AIC ${formatValue(aic)}`
+      )
+    );
+  }
+}
+
+function compareArray(
+  channel: "callbacks" | "openidm" | "http" | "logs",
+  local: unknown[],
+  aic: unknown[],
+  localUnobserved: ReadonlySet<Channel>,
+  aicUnobserved: ReadonlySet<Channel>,
+  disagreements: EffectsDisagreement[],
+  gaps: ObservationGap[]
+): void {
+  if (recordGapIfUnobserved(channel, localUnobserved, aicUnobserved, gaps)) {
+    return;
+  }
   const length = Math.max(local.length, aic.length);
   for (let index = 0; index < length; index += 1) {
     if (deepEqual(local[index], aic[index])) {
       continue;
     }
-    mismatches.push(
+    disagreements.push(
       disagree(
         channel,
         `[${index}]`,
@@ -89,11 +135,161 @@ function diffArray(channel: Channel, local: unknown[], aic: unknown[]): EffectsD
       )
     );
   }
-  return mismatches;
+}
+
+function compareState(
+  local: RecordedEffects,
+  aic: RecordedEffects,
+  localUnobserved: ReadonlySet<Channel>,
+  aicUnobserved: ReadonlySet<Channel>,
+  disagreements: EffectsDisagreement[],
+  gaps: ObservationGap[]
+): void {
+  const localMutations = collectState(local, localUnobserved, "local", gaps);
+  const aicMutations = collectState(aic, aicUnobserved, "AIC", gaps);
+  const remaining = aicMutations.slice();
+  for (const localMutation of localMutations) {
+    const index = remaining.findIndex(
+      (candidate) => candidate.mutation.key === localMutation.mutation.key
+    );
+    if (index < 0) {
+      disagreements.push(stateDisagreement(localMutation, undefined));
+      continue;
+    }
+    const aicMutation = remaining[index];
+    remaining.splice(index, 1);
+    if (aicMutation === undefined) {
+      disagreements.push(stateDisagreement(localMutation, undefined));
+      continue;
+    }
+    if (!sameMutationValue(localMutation.mutation, aicMutation.mutation)) {
+      disagreements.push(stateDisagreement(localMutation, aicMutation));
+      continue;
+    }
+    if (localMutation.kind === "bucketed" && aicMutation.kind === "bucketed") {
+      if (localMutation.bucket !== aicMutation.bucket) {
+        disagreements.push(stateDisagreement(localMutation, aicMutation));
+      }
+      continue;
+    }
+    if (!locationsCompatible(localMutation, aicMutation)) {
+      disagreements.push(stateDisagreement(localMutation, aicMutation));
+      continue;
+    }
+    gaps.push({
+      channel: "nodeState",
+      path: localMutation.mutation.key,
+      local: formatLocated(localMutation),
+      aic: formatLocated(aicMutation),
+      message: `nodeState: ${JSON.stringify(localMutation.mutation.key)} value and operation agree, but its bucket is unobservable`,
+    });
+  }
+  for (const aicMutation of remaining) {
+    disagreements.push(stateDisagreement(undefined, aicMutation));
+  }
+}
+
+function collectState(
+  effects: RecordedEffects,
+  unobserved: ReadonlySet<Channel>,
+  lane: string,
+  gaps: ObservationGap[]
+): LocatedMutation[] {
+  const mutations: LocatedMutation[] = [];
+  for (const bucket of STATE_CHANNELS) {
+    if (unobserved.has(bucket)) {
+      gaps.push({
+        channel: bucket,
+        path: bucket,
+        local: lane === "local" ? "unobserved" : "not compared",
+        aic: lane === "AIC" ? "unobserved" : "not compared",
+        message: `${bucket}: ${lane} lane cannot observe this channel`,
+      });
+      continue;
+    }
+    for (const mutation of diffState(
+      effects[bucket].initial,
+      effects[bucket].final
+    )) {
+      mutations.push({ kind: "bucketed", bucket, mutation });
+    }
+  }
+  for (const mutation of effects.evidence?.unbucketedState ?? []) {
+    mutations.push({
+      kind: "unbucketed",
+      possibleBuckets: mutation.possibleBuckets,
+      mutation,
+    });
+  }
+  return mutations;
+}
+
+function locationsCompatible(a: LocatedMutation, b: LocatedMutation): boolean {
+  if (a.kind === "bucketed" && b.kind === "unbucketed") {
+    return b.possibleBuckets.includes(a.bucket);
+  }
+  if (a.kind === "unbucketed" && b.kind === "bucketed") {
+    return a.possibleBuckets.includes(b.bucket);
+  }
+  if (a.kind === "unbucketed" && b.kind === "unbucketed") {
+    return a.possibleBuckets.some((bucket) => b.possibleBuckets.includes(bucket));
+  }
+  return true;
+}
+
+function recordGapIfUnobserved(
+  channel: Channel,
+  local: ReadonlySet<Channel>,
+  aic: ReadonlySet<Channel>,
+  gaps: ObservationGap[]
+): boolean {
+  if (!local.has(channel) && !aic.has(channel)) {
+    return false;
+  }
+  gaps.push({
+    channel,
+    path: channel,
+    local: local.has(channel) ? "unobserved" : "observed",
+    aic: aic.has(channel) ? "unobserved" : "observed",
+    message: `${channel}: lanes cannot be compared because ${local.has(channel) ? "local" : "AIC"} did not observe this channel`,
+  });
+  return true;
+}
+
+function stateDisagreement(
+  local: LocatedMutation | undefined,
+  aic: LocatedMutation | undefined
+): EffectsDisagreement {
+  const key = local?.mutation.key ?? aic?.mutation.key ?? "state";
+  return disagree(
+    "nodeState",
+    key,
+    local === undefined ? "(none)" : formatLocated(local),
+    aic === undefined ? "(none)" : formatLocated(aic),
+    `nodeState: ${JSON.stringify(key)} differed`
+  );
+}
+
+function formatLocated(value: LocatedMutation): string {
+  const location =
+    value.kind === "bucketed"
+      ? value.bucket
+      : `one of ${value.possibleBuckets.join(", ")}`;
+  return `${formatMutation(value.mutation)} in ${location}`;
+}
+
+function formatMutation(mutation: StateMutation): string {
+  if (mutation.operation === "removed") {
+    return `removed (was ${formatValue(mutation.before)})`;
+  }
+  if (mutation.operation === "added") {
+    return `added ${formatValue(mutation.after)}`;
+  }
+  return `changed ${formatValue(mutation.before)} → ${formatValue(mutation.after)}`;
 }
 
 function disagree(
-  channel: Channel,
+  channel: EvidenceChannel,
   path: string,
   local: string,
   aic: string,

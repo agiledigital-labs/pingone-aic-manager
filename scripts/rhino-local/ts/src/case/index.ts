@@ -16,6 +16,7 @@ export {
   OPENIDM_READ_METHODS,
   OPENIDM_WRITE_METHODS,
   STATE_DIFF_KEYS,
+  STATE_CHANNELS,
 } from "./types.ts";
 export type {
   AllowUndeclared,
@@ -24,6 +25,7 @@ export type {
   Case,
   CaseInit,
   Channel,
+  EvidenceChannel,
   Engine,
   EnvInputKey,
   Expect,
@@ -46,8 +48,13 @@ export type {
   OpenidmReadMethod,
   OpenidmWriteMethod,
   Pattern,
+  RecordingEvidence,
   RecordedEffects,
   StateBucket,
+  StateChannel,
   StateDiff,
+  StateMutation,
+  UnbucketedStateMutation,
+  Unverified,
   Verdict,
 } from "./types.ts";

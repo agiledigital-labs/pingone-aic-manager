@@ -25,7 +25,20 @@ describe("runAicLane", () => {
       project: "/tmp/rhino-local-aic-test",
     });
     expect(effects.outcome).toBe("true");
-    expect(effects.sharedState.final).toEqual({ username: "alice", verified: true });
+    expect(effects.sharedState.final).toEqual({ username: "alice" });
+    expect(effects.evidence?.unbucketedState).toEqual([
+      {
+        operation: "added",
+        key: "verified",
+        after: true,
+        possibleBuckets: ["sharedState", "transientState"],
+      },
+    ]);
+    expect(effects.evidence?.unobservedChannels).toEqual([
+      "openidm",
+      "http",
+      "logs",
+    ]);
     expect(effects.openidm).toEqual([]);
     expect(fake.aicArgs.every((args) => args[0] === "--no-prompt")).toBe(true);
     expect(fake.aicArgs.some((args) => args.includes("whoami") && args.includes("--token"))).toBe(
