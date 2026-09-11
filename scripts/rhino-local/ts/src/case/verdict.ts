@@ -6,6 +6,7 @@ import {
   LOG_LEVELS,
   OPENIDM_METHODS,
   OPENIDM_WRITE_METHODS,
+  STATE_CHANNELS,
 } from "./types.ts";
 import type {
   AllowUndeclared,
@@ -13,6 +14,7 @@ import type {
   CallbackEffect,
   Case,
   Channel,
+  EvidenceChannel,
   Expect,
   HttpEffect,
   HttpExpect,
@@ -25,8 +27,13 @@ import type {
   OpenidmExpect,
   OpenidmMethod,
   RecordedEffects,
+  RecordingEvidence,
   StateBucket,
+  StateChannel,
   StateDiff,
+  StateMutation,
+  UnbucketedStateMutation,
+  Unverified,
   Verdict,
 } from "./types.ts";
 import { formatValue, isPlainObject, parseJsonObject, parseJsonValue } from "./util.ts";
@@ -46,6 +53,8 @@ const EFFECTS_KEYS = [
 const WRITE_METHODS: ReadonlySet<string> = new Set(OPENIDM_WRITE_METHODS);
 const OPENIDM_METHOD_SET: ReadonlySet<string> = new Set(OPENIDM_METHODS);
 const LOG_LEVEL_SET: ReadonlySet<string> = new Set(LOG_LEVELS);
+const CHANNEL_SET: ReadonlySet<string> = new Set(EFFECTS_KEYS);
+const STATE_CHANNEL_SET: ReadonlySet<string> = new Set(STATE_CHANNELS);
 
 type Strictness = { [K in AllowUndeclaredChannel]: boolean };
 
@@ -57,36 +66,298 @@ export function judge(input: unknown, effects: unknown): Verdict {
   const kase = validateCase(input);
   const recorded = parseEffects(effects);
   const strictness = resolveStrictness(kase.expect.allowUndeclared);
+  const evidence = recorded.evidence ?? exactEvidence();
+  const unobserved = new Set(evidence.unobservedChannels);
+  const reconciled = reconcileUnbucketedState(
+    kase.expect,
+    evidence.unbucketedState,
+    strictness
+  );
+  const unverified: Unverified[] = [
+    ...reconciled.unverified,
+    ...qualifyUnifiedState(kase.expect, strictness, evidence),
+    ...qualifyUnobserved(kase.expect, strictness, evidence.unobservedChannels),
+  ];
   const mismatches: Mismatch[] = [
-    ...judgeOutcome(kase, recorded),
-    ...judgeState(
+    ...reconciled.mismatches,
+    ...(unobserved.has("outcome") ? [] : judgeOutcome(kase, recorded)),
+    ...(unobserved.has("sharedState") ? [] : judgeState(
       "sharedState",
       kase.expect.sharedState,
       recorded.sharedState,
-      strictness.sharedState
-    ),
-    ...judgeState(
+      strictness.sharedState,
+      reconciled.handled.sharedState
+    )),
+    ...(unobserved.has("transientState") ? [] : judgeState(
       "transientState",
       kase.expect.transientState,
       recorded.transientState,
-      strictness.transientState
-    ),
-    ...judgeState(
+      strictness.transientState,
+      reconciled.handled.transientState
+    )),
+    ...(unobserved.has("secureState") ? [] : judgeState(
       "secureState",
       kase.expect.secureState,
       recorded.secureState,
-      strictness.secureState
-    ),
-    ...judgeCallbacks(kase.expect, recorded, strictness.callbacks),
-    ...judgeOpenidm(kase.expect, recorded, strictness),
-    ...judgeHttp(kase.expect, recorded, strictness.http),
-    ...judgeLogs(kase.expect, recorded, strictness.logs),
+      strictness.secureState,
+      reconciled.handled.secureState
+    )),
+    ...(unobserved.has("callbacks")
+      ? []
+      : judgeCallbacks(kase.expect, recorded, strictness.callbacks)),
+    ...(unobserved.has("openidm")
+      ? []
+      : judgeOpenidm(kase.expect, recorded, strictness)),
+    ...(unobserved.has("http")
+      ? []
+      : judgeHttp(kase.expect, recorded, strictness.http)),
+    ...(unobserved.has("logs")
+      ? []
+      : judgeLogs(kase.expect, recorded, strictness.logs)),
   ];
   return {
     pass: mismatches.length === 0,
+    conclusive: unverified.length === 0,
     portable: isPortable(kase),
     mismatches,
+    unverified,
     summary: mismatches.length === 0 ? "" : formatSummary(kase, mismatches),
+  };
+}
+
+interface StateDeclaration {
+  channel: StateChannel;
+  key: string;
+  operation: StateMutation["operation"];
+  after?: JsonObject[string];
+}
+
+type HandledState = { [K in StateChannel]: Set<string> };
+
+function reconcileUnbucketedState(
+  expect: Expect,
+  mutations: UnbucketedStateMutation[],
+  strictness: Strictness
+): {
+  mismatches: Mismatch[];
+  unverified: Unverified[];
+  handled: HandledState;
+} {
+  const mismatches: Mismatch[] = [];
+  const unverified: Unverified[] = [];
+  const handled: HandledState = {
+    sharedState: new Set(),
+    transientState: new Set(),
+    secureState: new Set(),
+  };
+  for (const mutation of mutations) {
+    const declarations = stateDeclarations(expect, mutation.key);
+    if (declarations.length === 0) {
+      const closed = mutation.possibleBuckets.filter(
+        (bucket) => !strictness[bucket]
+      );
+      if (closed.length > 0) {
+        mismatches.push(
+          miss(
+            "nodeState",
+            mutation.key,
+            "(none)",
+            formatMutation(mutation),
+            `nodeState: undeclared ${formatMutation(mutation)}; bucket is unobservable (could be ${mutation.possibleBuckets.join(", ")})`
+          )
+        );
+      }
+      continue;
+    }
+    for (const declaration of declarations) {
+      handled[declaration.channel].add(declaration.key);
+    }
+    if (declarations.length !== 1) {
+      mismatches.push(
+        miss(
+          "nodeState",
+          mutation.key,
+          declarations.map(formatDeclaration).join(" or "),
+          formatMutation(mutation),
+          `nodeState: ${JSON.stringify(mutation.key)} has multiple bucket expectations, but AIC exposes one unified value`
+        )
+      );
+      continue;
+    }
+    const declaration = declarations[0];
+    if (declaration === undefined) {
+      continue;
+    }
+    if (!mutation.possibleBuckets.includes(declaration.channel)) {
+      mismatches.push(
+        miss(
+          declaration.channel,
+          mutation.key,
+          formatDeclaration(declaration),
+          `${formatMutation(mutation)} in ${mutation.possibleBuckets.join(" or ")}`,
+          `${declaration.channel}: ${JSON.stringify(mutation.key)} cannot be attributed to that bucket`
+        )
+      );
+      continue;
+    }
+    if (!mutationMatchesDeclaration(mutation, declaration)) {
+      mismatches.push(
+        miss(
+          declaration.channel,
+          mutation.key,
+          formatDeclaration(declaration),
+          formatMutation(mutation),
+          `${declaration.channel}: ${JSON.stringify(mutation.key)} differed in unified nodeState`
+        )
+      );
+      continue;
+    }
+    unverified.push({
+      channel: declaration.channel,
+      path: mutation.key,
+      message: `${declaration.channel}: ${JSON.stringify(mutation.key)} ${mutation.operation} value matched, but its bucket is unobservable (could be ${mutation.possibleBuckets.join(", ")})`,
+    });
+  }
+  return { mismatches, unverified, handled };
+}
+
+function stateDeclarations(expect: Expect, key: string): StateDeclaration[] {
+  const declarations: StateDeclaration[] = [];
+  for (const channel of STATE_CHANNELS) {
+    const state = expect[channel];
+    if (Object.prototype.hasOwnProperty.call(state?.added ?? {}, key)) {
+      const after = state?.added?.[key];
+      if (after !== undefined) {
+        declarations.push({ channel, key, operation: "added", after });
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(state?.changed ?? {}, key)) {
+      const after = state?.changed?.[key];
+      if (after !== undefined) {
+        declarations.push({ channel, key, operation: "changed", after });
+      }
+    }
+    if ((state?.removed ?? []).includes(key)) {
+      declarations.push({ channel, key, operation: "removed" });
+    }
+  }
+  return declarations;
+}
+
+function mutationMatchesDeclaration(
+  mutation: StateMutation,
+  declaration: StateDeclaration
+): boolean {
+  if (mutation.operation !== declaration.operation) {
+    return false;
+  }
+  if (mutation.operation === "removed") {
+    return true;
+  }
+  return deepEqual(mutation.after, declaration.after);
+}
+
+function formatMutation(mutation: StateMutation): string {
+  if (mutation.operation === "removed") {
+    return `removed ${formatValue(mutation.key)}`;
+  }
+  if (mutation.operation === "added") {
+    return `added ${formatValue(mutation.key)}=${formatValue(mutation.after)}`;
+  }
+  return `changed ${formatValue(mutation.key)} from ${formatValue(mutation.before)} to ${formatValue(mutation.after)}`;
+}
+
+function formatDeclaration(declaration: StateDeclaration): string {
+  if (declaration.operation === "removed") {
+    return `${declaration.channel} removed ${formatValue(declaration.key)}`;
+  }
+  return `${declaration.channel} ${declaration.operation} ${formatValue(declaration.key)}=${formatValue(declaration.after)}`;
+}
+
+function qualifyUnobserved(
+  expect: Expect,
+  strictness: Strictness,
+  channels: Channel[]
+): Unverified[] {
+  const gaps: Unverified[] = [];
+  for (const channel of channels) {
+    if (!needsObservation(channel, expect, strictness)) {
+      continue;
+    }
+    gaps.push({
+      channel,
+      path: channel,
+      message: `${channel}: the runner cannot observe this channel, so its expectations or undeclared-effect policy were not verified`,
+    });
+  }
+  return gaps;
+}
+
+function qualifyUnifiedState(
+  expect: Expect,
+  strictness: Strictness,
+  evidence: RecordingEvidence
+): Unverified[] {
+  if (evidence.stateBuckets === "exact") {
+    return [];
+  }
+  const needsBuckets =
+    STATE_CHANNELS.some((channel) => stateDiffHasEntries(expect[channel])) ||
+    STATE_CHANNELS.some((channel) => !strictness[channel]);
+  if (!needsBuckets) {
+    return [];
+  }
+  return [
+    {
+      channel: "nodeState",
+      path: "buckets",
+      message:
+        "nodeState: the runner observes one unified view; per-bucket absence and hidden lower-precedence writes were not verified",
+    },
+  ];
+}
+
+function needsObservation(
+  channel: Channel,
+  expect: Expect,
+  strictness: Strictness
+): boolean {
+  if (channel === "outcome") {
+    return true;
+  }
+  if (channel === "sharedState" || channel === "transientState" || channel === "secureState") {
+    return stateDiffHasEntries(expect[channel]) || !strictness[channel];
+  }
+  if (channel === "callbacks") {
+    return (expect.callbacks?.length ?? 0) > 0 || !strictness.callbacks;
+  }
+  if (channel === "openidm") {
+    return (
+      (expect.openidm?.length ?? 0) > 0 ||
+      !strictness.openidmWrites ||
+      !strictness.openidmReads
+    );
+  }
+  if (channel === "http") {
+    return (expect.http?.length ?? 0) > 0 || !strictness.http;
+  }
+  return (expect.logs?.length ?? 0) > 0 || !strictness.logs;
+}
+
+function stateDiffHasEntries(diff: StateDiff | undefined): boolean {
+  return (
+    Object.keys(diff?.added ?? {}).length > 0 ||
+    Object.keys(diff?.changed ?? {}).length > 0 ||
+    (diff?.removed?.length ?? 0) > 0
+  );
+}
+
+function exactEvidence(): RecordingEvidence {
+  return {
+    stateBuckets: "exact",
+    ambientState: {},
+    unbucketedState: [],
+    unobservedChannels: [],
   };
 }
 
@@ -156,7 +427,8 @@ function judgeState(
   channel: "sharedState" | "transientState" | "secureState",
   expected: StateDiff | undefined,
   bucket: StateBucket,
-  allowUndeclared: boolean
+  allowUndeclared: boolean,
+  handled: ReadonlySet<string> = new Set()
 ): Mismatch[] {
   const actual = diffState(bucket.initial, bucket.final);
   const expectedAdded = expected?.added ?? {};
@@ -166,6 +438,9 @@ function judgeState(
   const mismatches: Mismatch[] = [];
 
   for (const key of Object.keys(expectedAdded)) {
+    if (handled.has(key)) {
+      continue;
+    }
     const want = expectedAdded[key];
     if (Object.prototype.hasOwnProperty.call(actual.added, key)) {
       if (!deepEqual(want, actual.added[key])) {
@@ -229,6 +504,9 @@ function judgeState(
   }
 
   for (const key of Object.keys(expectedChanged)) {
+    if (handled.has(key)) {
+      continue;
+    }
     const want = expectedChanged[key];
     if (Object.prototype.hasOwnProperty.call(actual.changed, key)) {
       if (!deepEqual(want, actual.changed[key])) {
@@ -292,6 +570,9 @@ function judgeState(
   }
 
   for (const key of expectedRemoved) {
+    if (handled.has(key)) {
+      continue;
+    }
     if (actual.removed.includes(key)) {
       continue;
     }
@@ -650,7 +931,7 @@ function parseEffects(raw: unknown): RecordedEffects {
   if (raw.outcome !== null && typeof raw.outcome !== "string") {
     throw new Error("rhino-local: effects.outcome must be a string or null");
   }
-  return {
+  const recorded: RecordedEffects = {
     outcome: raw.outcome,
     sharedState: parseStateBucket(raw.sharedState, "effects.sharedState"),
     transientState: parseStateBucket(
@@ -663,6 +944,137 @@ function parseEffects(raw: unknown): RecordedEffects {
     http: parseArray(raw.http, "effects.http", parseHttpEffect),
     logs: parseArray(raw.logs, "effects.logs", parseLogEffect),
   };
+  if (raw.evidence !== undefined) {
+    recorded.evidence = parseRecordingEvidence(raw.evidence);
+    for (const channel of recorded.evidence.unobservedChannels) {
+      if (recordedChannelHasValues(recorded, channel)) {
+        throw new Error(
+          `rhino-local: effects.${channel} cannot contain values while evidence marks it unobserved`
+        );
+      }
+    }
+  }
+  return recorded;
+}
+
+function parseRecordingEvidence(raw: unknown): RecordingEvidence {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: effects.evidence is not an object");
+  }
+  for (const key of [
+    "stateBuckets",
+    "ambientState",
+    "unbucketedState",
+    "unobservedChannels",
+  ]) {
+    if (!(key in raw)) {
+      throw new Error(`rhino-local: effects.evidence is missing ${key}`);
+    }
+  }
+  const unobservedChannels = parseStringArray(
+    raw.unobservedChannels,
+    "effects.evidence.unobservedChannels",
+    CHANNEL_SET
+  ) as Channel[];
+  if (raw.stateBuckets !== "exact" && raw.stateBuckets !== "unified") {
+    throw new Error(
+      'rhino-local: effects.evidence.stateBuckets must be "exact" or "unified"'
+    );
+  }
+  return {
+    stateBuckets: raw.stateBuckets,
+    ambientState: parseJsonObject(
+      raw.ambientState,
+      "effects.evidence.ambientState"
+    ),
+    unbucketedState: parseArray(
+      raw.unbucketedState,
+      "effects.evidence.unbucketedState",
+      parseUnbucketedMutation
+    ),
+    unobservedChannels,
+  };
+}
+
+function parseUnbucketedMutation(
+  raw: unknown,
+  path: string
+): UnbucketedStateMutation {
+  if (!isPlainObject(raw)) {
+    throw new Error(`rhino-local: ${path} is not an object`);
+  }
+  if (typeof raw.operation !== "string") {
+    throw new Error(`rhino-local: ${path}.operation must be a string`);
+  }
+  if (typeof raw.key !== "string") {
+    throw new Error(`rhino-local: ${path}.key must be a string`);
+  }
+  const possibleBuckets = parseStringArray(
+    raw.possibleBuckets,
+    `${path}.possibleBuckets`,
+    STATE_CHANNEL_SET
+  ) as StateChannel[];
+  if (possibleBuckets.length === 0) {
+    throw new Error(`rhino-local: ${path}.possibleBuckets must not be empty`);
+  }
+  if (raw.operation === "added") {
+    return {
+      operation: "added",
+      key: raw.key,
+      after: parseJsonValue(raw.after, `${path}.after`),
+      possibleBuckets,
+    };
+  }
+  if (raw.operation === "changed") {
+    return {
+      operation: "changed",
+      key: raw.key,
+      before: parseJsonValue(raw.before, `${path}.before`),
+      after: parseJsonValue(raw.after, `${path}.after`),
+      possibleBuckets,
+    };
+  }
+  if (raw.operation === "removed") {
+    return {
+      operation: "removed",
+      key: raw.key,
+      before: parseJsonValue(raw.before, `${path}.before`),
+      possibleBuckets,
+    };
+  }
+  throw new Error(
+    `rhino-local: ${path}.operation must be added, changed, or removed`
+  );
+}
+
+function parseStringArray(
+  raw: unknown,
+  path: string,
+  allowed: ReadonlySet<string>
+): string[] {
+  if (!Array.isArray(raw) || raw.some((value) => typeof value !== "string")) {
+    throw new Error(`rhino-local: ${path} must be an array of strings`);
+  }
+  const values = raw as string[];
+  for (const value of values) {
+    if (!allowed.has(value)) {
+      throw new Error(`rhino-local: ${path} contains unknown value ${formatValue(value)}`);
+    }
+  }
+  return [...new Set(values)];
+}
+
+function recordedChannelHasValues(
+  effects: RecordedEffects,
+  channel: Channel
+): boolean {
+  if (channel === "outcome") {
+    return effects.outcome !== null;
+  }
+  if (channel === "sharedState" || channel === "transientState" || channel === "secureState") {
+    return !deepEqual(effects[channel].initial, effects[channel].final);
+  }
+  return effects[channel].length > 0;
 }
 
 function parseStateBucket(raw: unknown, path: string): StateBucket {
@@ -821,7 +1233,7 @@ function formatLogExpect(item: LogExpect): string {
 }
 
 function miss(
-  channel: Channel,
+  channel: EvidenceChannel,
   path: string,
   expected: string,
   actual: string,
