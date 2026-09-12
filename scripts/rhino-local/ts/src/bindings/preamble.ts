@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Given } from "../case/types.ts";
+import type { EnvProfile } from "../profile/types.ts";
 import { bindingsRuntimePath, generatedJsPath } from "../paths.ts";
 
 export interface MockPreambleOptions {
@@ -9,6 +10,12 @@ export interface MockPreambleOptions {
    * alongside the seed.
    */
   libraries?: Record<string, string>;
+  /**
+   * Pulled environment schema. Only the set of declared object types crosses
+   * into the sandbox — every schema rule is enforced in the Node layer, so
+   * there is one implementation of each rather than an AM-safe copy.
+   */
+  profile?: EnvProfile;
 }
 
 /**
@@ -24,6 +31,15 @@ export function mockPreamble(
   const seed: Record<string, unknown> = { ...given };
   if (options.libraries !== undefined) {
     seed.libraries = options.libraries;
+  }
+  if (options.profile !== undefined) {
+    const known: Record<string, true> = {};
+    for (const name of Object.keys(options.profile.objects)) {
+      known[`managed/${name}`] = true;
+    }
+    seed.knownTypes = known;
+    seed.profileTenant = options.profile.tenant;
+    seed.profilePulledAt = options.profile.pulledAt;
   }
   return `${generated}\n${runtime}\n__rhinoLocalSeed(${serializeSeed(seed)});\n`;
 }

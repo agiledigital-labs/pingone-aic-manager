@@ -1164,16 +1164,46 @@ function __rhinoLocalFindRecord(collection, recordId) {
   return { rows: rows, index: -1, record: null };
 }
 
+// Object types this environment declares, from a pulled harness profile.
+// `null` means no profile was supplied, which keeps the pre-profile behaviour:
+// an unseeded collection is always a missing fixture.
+function __rhinoLocalDeclaresType(collection) {
+  if (!__rhinoLocal.knownTypes) {
+    return false;
+  }
+  return __rhinoLocalHas(__rhinoLocal.knownTypes, collection);
+}
+
 function __rhinoLocalRequireCollection(method, collection) {
-  if (!__rhinoLocalHas(__rhinoLocal.managed, collection)) {
+  if (__rhinoLocalHas(__rhinoLocal.managed, collection)) {
+    return __rhinoLocal.managed[collection];
+  }
+  // With a profile, a declared-but-unseeded type is an EMPTY collection, which
+  // is what AIC presents: read returns null rather than failing. Without one we
+  // cannot tell that from a typo, so the miss stays a missing-fixture throw.
+  if (__rhinoLocalDeclaresType(collection)) {
+    __rhinoLocal.managed[collection] = [];
+    return __rhinoLocal.managed[collection];
+  }
+  if (__rhinoLocal.knownTypes) {
     throw new Error(
       "rhino-local: openidm." +
         method +
-        ": no given.managed entry for " +
-        JSON.stringify(collection)
+        ": " +
+        JSON.stringify(collection) +
+        " is not a managed object in environment " +
+        JSON.stringify(__rhinoLocal.profileTenant) +
+        " (pulled " +
+        String(__rhinoLocal.profilePulledAt) +
+        "). Check the name, or re-pull the profile if the tenant has changed."
     );
   }
-  return __rhinoLocal.managed[collection];
+  throw new Error(
+    "rhino-local: openidm." +
+      method +
+      ": no given.managed entry for " +
+      JSON.stringify(collection)
+  );
 }
 
 function __rhinoLocalRequireRecord(method, resource) {
@@ -2082,6 +2112,14 @@ function __rhinoLocalSeed(given) {
   __rhinoLocal.initialTransient = __rhinoLocalClone(__rhinoLocal.transient);
   __rhinoLocal.initialSecure = __rhinoLocalClone(__rhinoLocal.secure);
   __rhinoLocal.managed = __rhinoLocalClone(given.managed || {});
+  // Set of `managed/<name>` this environment declares. Membership only — every
+  // schema RULE (properties, required, enum) is checked in the Node layer, so
+  // there is exactly one implementation of each.
+  __rhinoLocal.knownTypes = given.knownTypes
+    ? __rhinoLocalClone(given.knownTypes)
+    : null;
+  __rhinoLocal.profileTenant = given.profileTenant || null;
+  __rhinoLocal.profilePulledAt = given.profilePulledAt || null;
   __rhinoLocal.esv = __rhinoLocalClone(given.esv || {});
   __rhinoLocal.secrets = __rhinoLocalClone(given.secrets || {});
   __rhinoLocal.libraries = given.libraries
