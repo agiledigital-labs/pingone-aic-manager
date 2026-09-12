@@ -5,6 +5,7 @@ import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import javax.script.ScriptContext;
 import javax.script.SimpleScriptContext;
@@ -118,9 +119,22 @@ public final class Runner {
       preambleName = "<preamble>";
     }
 
+    final List<String> classAllowList;
+    try {
+      classAllowList = Json.optionalStringList(job, "classAllowList");
+    } catch (RuntimeException e) {
+      return errorResponse(id, "protocol_error", e, sourceName, -1, -1, null);
+    }
+
     final Context cx = factory.enterContext();
     try {
       cx.setLanguageVersion(languageVersion);
+      // No list means no shutter, which is the pre-shutter behaviour: every
+      // Java name resolves. Callers that mean to reproduce a script context
+      // pass that context's allowLists.
+      if (classAllowList != null) {
+        cx.setClassShutter(AmClassShutter.of(classAllowList));
+      }
       if (cx instanceof AmContextFactory.ObservedContext) {
         ((AmContextFactory.ObservedContext) cx).timeoutMs = timeoutMs;
       }

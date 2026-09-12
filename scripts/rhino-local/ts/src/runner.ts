@@ -125,6 +125,9 @@ export class RhinoRunner {
     if (job.preambleName !== undefined) {
       payload.preambleName = job.preambleName;
     }
+    if (job.classAllowList !== undefined) {
+      payload.classAllowList = job.classAllowList;
+    }
     return new Promise<JobResponse>((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
       const ok = this.#child.stdin.write(`${JSON.stringify(payload)}\n`);
