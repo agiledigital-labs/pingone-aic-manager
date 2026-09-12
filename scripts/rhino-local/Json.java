@@ -93,6 +93,25 @@ final class Json {
     throw new IllegalArgumentException(key + " must be a number");
   }
 
+  /** A JSON array of strings, or null when the key is absent. */
+  static List<String> optionalStringList(Map<String, Object> obj, String key) {
+    Object value = obj.get(key);
+    if (value == null) {
+      return null;
+    }
+    if (!(value instanceof List)) {
+      throw new IllegalArgumentException(key + " must be an array of strings");
+    }
+    List<String> out = new ArrayList<String>();
+    for (Object item : (List<?>) value) {
+      if (!(item instanceof String)) {
+        throw new IllegalArgumentException(key + " must contain only strings");
+      }
+      out.add((String) item);
+    }
+    return out;
+  }
+
   static boolean optionalBoolean(Map<String, Object> obj, String key, boolean defaultValue) {
     if (!obj.containsKey(key) || obj.get(key) == null) {
       return defaultValue;

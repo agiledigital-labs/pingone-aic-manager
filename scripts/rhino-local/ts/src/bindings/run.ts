@@ -4,6 +4,7 @@ import type { JobResponse } from "../protocol.ts";
 import type { RhinoRunner } from "../runner.ts";
 import { parseHarvest } from "./harvest.ts";
 import { mockPreamble, withHarvest, type MockPreambleOptions } from "./preamble.ts";
+import { decisionNodeClassAllowList } from "./allowlist.ts";
 import { checkSeededManaged } from "../profile/seed.ts";
 import type { EnvProfile } from "../profile/types.ts";
 
@@ -18,6 +19,13 @@ export interface RunCaseOptions {
    * instead of a missing-fixture throw.
    */
   profile?: EnvProfile;
+  /**
+   * Install AM's Java class shutter. On by default: a scripted-decision case
+   * should run behind the same allow-list the tenant enforces, or the harness
+   * is more permissive than AIC and green means nothing. Pass `false` only to
+   * demonstrate the difference.
+   */
+  classShutter?: boolean;
 }
 
 export interface CaseRun {
@@ -48,6 +56,7 @@ export async function runCase(
     preamble: string;
     preambleName: string;
     timeoutMs?: number;
+    classAllowList?: string[];
   } = {
     source: withHarvest(kase.script),
     sourceName: options.sourceName ?? kase.name,
@@ -56,6 +65,15 @@ export async function runCase(
   };
   if (options.timeoutMs !== undefined) {
     request.timeoutMs = options.timeoutMs;
+  }
+  // The legacy evaluator does not enforce the next-gen decision node's
+  // allow-list: `legacy-es2015-globals` records `new java.util.HashMap()`
+  // succeeding on a live legacy run, where next-gen hides it. Installing the
+  // next-gen list there would invent a restriction the tenant does not apply.
+  const shutterApplies =
+    options.classShutter !== false && kase.given.engine !== "legacy";
+  if (shutterApplies) {
+    request.classAllowList = decisionNodeClassAllowList();
   }
   const response = await runner.eval(request);
   if (response.outcome !== "ok") {

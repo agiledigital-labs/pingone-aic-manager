@@ -40,6 +40,13 @@ export interface JobRequest {
   timeoutMs?: number;
   /** JSON values placed in ENGINE_SCOPE Bindings before eval. */
   globals?: { [key: string]: JsonValue };
+  /**
+   * Java class allow-list for this job, as a script context's `allowLists`
+   * entries (exact names, or a trailing `*` meaning prefix). Supplying one
+   * installs AM's class shutter; omitting it leaves every Java name resolvable,
+   * which is the pre-shutter behaviour.
+   */
+  classAllowList?: string[];
   /** Evaluated first, so author line numbers on `source` stay intact. */
   preamble?: string;
   preambleName?: string;
