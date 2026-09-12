@@ -27,6 +27,64 @@ landed. Cause: the last probe `require()`s `rhino-lib-normalize-probe`, and
 `require` was undefined, so `results.every` was false and `emit` set
 `outcome = "error"`. It passes now that `require` evals seeded library bodies.
 
+## Environment profiles (added 2026-09-12)
+
+`npm run pull-profile` pulls `GET /openidm/config/managed` into a normalised
+snapshot at `workspace/<tenant>/harness-profile.json`. The workspace is
+gitignored in full, which is the guard: managed object and property names are
+client business vocabulary, and `check-sensitive-metadata.sh` deliberately
+holds no client-name denylist.
+
+Verified against the sandbox 2026-09-12: 28 objects, 326 properties, all
+recovered — 0 properties normalised to `any`, and object/property/enum/
+relationship/`required` counts recomputed independently off the wire all
+match. `type: ["string","null"]` collapses to `type: "string"` +
+`nullable: true`. Array-of-relationship element schemas survive (42 of them).
+Lifecycle hook **source bodies are dropped**: `text/javascript` occurs 0 times
+in the profile, which is 20.5 KB against the raw document's 212 KB.
+
+What a profile buys, and it is one thing: **type existence**. AIC returns
+`null` both for a real type whose record is absent and for a type that does
+not exist (`docs/api/10`), so a fixture typo is invisible on the tenant. With
+a profile the harness separates them — a declared-but-unseeded type reads as
+an empty collection (`null`, matching AIC), an undeclared one throws naming
+the environment and the pull date. Without a profile the pre-existing
+behaviour is unchanged: any unseeded collection is a missing fixture.
+
+Only the SET of declared type names crosses into the sandbox. Every schema
+rule — properties, `required`, `enum` — is checked in the Node layer, so each
+rule has one implementation rather than an AM-safe second copy that could
+drift from it.
+
+### A deliberate divergence, in the safe direction
+
+An undeclared type throwing is **stricter than AIC**, which returns `null`.
+That is a false fail, not a false pass, and it is the point: the alternative
+is a test that reads nothing and passes. `lib-openidm-miss-consumer` encodes
+the live `null` and therefore cannot pass with a profile loaded. Retire or
+re-scope that case rather than relaxing the check.
+
+### What strict checking found on its first run
+
+Six of the eight fixtures carrying `given.managed` were rejected, and the
+rejections were correct:
+
+- Five identity fixtures seed **AM-side attribute names into an IDM managed
+  record** — `inetUserStatus`, `fr-idm-uuid`, `fr-idm-custom-attrs`. The
+  tenant's `alpha_user` defines `accountStatus` and `_id`; the other two are
+  AM projections with no IDM property of that name. This is exactly the
+  namespace confusion `docs/api/14`'s mapping table exists to resolve, and it
+  was invisible until a schema was available to check against.
+- One fixture names a managed type this environment does not define at all.
+
+Correcting them is not mechanical: the expects encode live AM-side behaviour,
+so a fixture moved into the IDM namespace needs the identity binding to apply
+the mapping on read. Sizing that against the live schema — `alpha_user` has 70
+properties here; `docs/api/14` maps 26 of them, 8 confirmed live. The
+remainder (`frIndexed*`, `effectiveRoles`, `authzRoles`, …) have no recorded
+AM name, so a script reading one through `identity` cannot be tested locally
+until that row is measured.
+
 ## Ranked remaining gaps (measured)
 
 Ranked by how many of the 20 a fix would turn green. Several cases fail for more
