@@ -4,12 +4,20 @@ import type { JobResponse } from "../protocol.ts";
 import type { RhinoRunner } from "../runner.ts";
 import { parseHarvest } from "./harvest.ts";
 import { mockPreamble, withHarvest, type MockPreambleOptions } from "./preamble.ts";
+import { checkSeededManaged } from "../profile/seed.ts";
+import type { EnvProfile } from "../profile/types.ts";
 
 export interface RunCaseOptions {
   timeoutMs?: number;
   sourceName?: string;
   /** AM library script bodies keyed by `require()` id. See mockPreamble. */
   libraries?: Record<string, string>;
+  /**
+   * Pulled environment schema. Supplying one turns on strict fixture checking
+   * and lets a declared-but-unseeded object type read as empty (AIC's `null`)
+   * instead of a missing-fixture throw.
+   */
+  profile?: EnvProfile;
 }
 
 export interface CaseRun {
@@ -28,6 +36,12 @@ export async function runCase(
   options: RunCaseOptions = {}
 ): Promise<CaseRun> {
   const kase = validateCase(input);
+  if (options.profile !== undefined) {
+    // Fail before the JVM sees the case: a fixture that names a property the
+    // environment does not define is a test bug, and saying so here names the
+    // case rather than surfacing as a puzzling mismatch downstream.
+    checkSeededManaged(options.profile, kase.given.managed, kase.name);
+  }
   const request: {
     source: string;
     sourceName: string;
@@ -60,8 +74,12 @@ export async function runCase(
 }
 
 function preambleOptions(options: RunCaseOptions): MockPreambleOptions {
-  if (options.libraries === undefined) {
-    return {};
+  const out: MockPreambleOptions = {};
+  if (options.libraries !== undefined) {
+    out.libraries = options.libraries;
   }
-  return { libraries: options.libraries };
+  if (options.profile !== undefined) {
+    out.profile = options.profile;
+  }
+  return out;
 }
