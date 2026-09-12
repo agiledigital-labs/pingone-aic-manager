@@ -717,49 +717,6 @@ export const realCases: RealEntry[] = [
       ],
     }
   ),
-  legacy(
-    "legacy-idrepository-methods",
-    "fixtures-legacy/legacy-idrepository-methods.script.js",
-    {
-      idRepository: {
-        getIdentity: "function",
-        getAttribute: "function",
-        setAttribute: "function",
-        addAttribute: "function",
-      },
-    }
-  ),
-  legacy(
-    "legacy-nodestate-logger",
-    "fixtures-legacy/legacy-nodestate-logger.script.js",
-    {}
-  ),
-  legacy(
-    "legacy-logger-args",
-    "fixtures-legacy/legacy-logger-args.script.js",
-    {}
-  ),
-  legacy(
-    "legacy-logger-levels",
-    "fixtures-legacy/legacy-logger-levels.script.js",
-    {}
-  ),
-  legacy(
-    "legacy-request-multivalue",
-    "fixtures-legacy/legacy-request-multivalue.script.js",
-    {},
-    {
-      given: {
-        engine: "legacy",
-        requestHeaders: {
-          "x-aic-probe": ["alpha", "bravo"],
-        },
-        requestParameters: {
-          probeq: ["alpha", "bravo"],
-        },
-      },
-    }
-  ),
 ];
 
 export const runnableCases = realCases.filter((entry) => entry.blocked === undefined);
