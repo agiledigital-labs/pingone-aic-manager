@@ -38,13 +38,6 @@ export function aicUnsupportedReason(kase: Case): string | undefined {
   if (objectHasKeys(kase.given.locales)) {
     return "given.locales cannot be seeded by a setup script";
   }
-  if (objectHasKeys(kase.given.existingSession)) {
-    // Seedable in principle — a mini journey run to completion, its cookie
-    // forwarded to the subject (docs/api/09-journeys.md) — but the wrapper
-    // emitter does not do it yet. Skipping says so; running would seed nothing
-    // and grade the result as though the binding had been absent on purpose.
-    return "given.existingSession needs a session-minting mini journey the AIC lane does not run yet";
-  }
   if (objectHasKeys(kase.given.bindings)) {
     return "given.bindings cannot be seeded on AIC (those are engine bindings, not nodeState)";
   }

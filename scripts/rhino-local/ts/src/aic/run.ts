@@ -3,6 +3,7 @@ import type { Case, RecordedEffects } from "../case/types.ts";
 import { repoRoot } from "../paths.ts";
 import { parseAuthenticateCallbacks } from "./callbacks.ts";
 import { emitWrapperJourney, type WrapperJourney } from "./emit-journey.ts";
+import { emitSessionJourney } from "./emit-session.ts";
 import { assembleEffects, parseSubjectDump } from "./record.ts";
 import {
   AicLaneError,
@@ -49,18 +50,87 @@ export async function runAicLane(
     ...(options.tenant !== undefined ? { tenant: options.tenant } : {}),
     project,
   });
+  const runId =
+    options.runId ?? randomUUID().replace(/-/g, "").slice(0, 12);
   const wrapper = emitWrapperJourney(kase, source, {
-    ...(options.runId !== undefined ? { runId: options.runId } : { runId: randomUUID().replace(/-/g, "").slice(0, 12) }),
+    runId,
     ...(options.realm !== undefined ? { realm: options.realm } : {}),
   });
   const created: Created[] = [];
   try {
+    if (kase.given.existingSession !== undefined) {
+      await mintSession(
+        io,
+        session,
+        kase.given.existingSession,
+        wrapper,
+        runId,
+        created
+      );
+    }
     await provision(io, session, wrapper, created);
     const authenticate = await invoke(io, session, wrapper);
     return recordFromAuthenticate(kase, authenticate);
   } finally {
     await cleanup(io, session, wrapper.realm, created);
   }
+}
+
+/**
+ * Run a throwaway journey to completion and put its session cookie on the
+ * subject's invoke. This is the only way to seed `existingSession`: a session
+ * exists only after a journey completes (`docs/api/09-journeys.md`).
+ *
+ * The mini journey is provisioned into the same `created` list as the subject,
+ * so one cleanup removes both even if the subject invoke throws.
+ */
+async function mintSession(
+  io: AicIo,
+  session: TenantSession,
+  existingSession: Record<string, string>,
+  wrapper: WrapperJourney,
+  runId: string,
+  created: Created[]
+): Promise<void> {
+  const minter = emitSessionJourney(existingSession, {
+    runId,
+    realm: wrapper.realm,
+  });
+  await provision(io, session, minter, created);
+  const response = await invoke(io, session, minter);
+  const body = response.body as { tokenId?: unknown };
+  if (typeof body.tokenId !== "string" || body.tokenId.length === 0) {
+    // A journey that returns callbacks has not completed, so there is no
+    // session yet; seeding nothing and running anyway would grade the subject
+    // as though the harness had meant the binding to be absent.
+    throw new AicLaneError(
+      `session-minting journey ${minter.treeName} returned no tokenId${txid(response)}: ${snippet(response)}`
+    );
+  }
+  const cookieName = await fetchCookieName(io, session);
+  wrapper.invoke.cookies[cookieName] = body.tokenId;
+}
+
+/**
+ * The session cookie's name is per-tenant, so it has to be read rather than
+ * assumed (`given.cookieName` is refused on this lane for the same reason).
+ */
+async function fetchCookieName(
+  io: AicIo,
+  session: TenantSession
+): Promise<string> {
+  const response = await amRequest(io, session, {
+    method: "GET",
+    path: "/am/json/serverinfo/*",
+    anonymous: true,
+  });
+  const name = (response.body as { cookieName?: unknown }).cookieName;
+  if (typeof name !== "string" || name.length === 0) {
+    throw new AicLaneError(
+      `GET /am/json/serverinfo/* returned no cookieName (HTTP ${response.status})`
+    );
+  }
+  return name;
 }
 
 async function provision(

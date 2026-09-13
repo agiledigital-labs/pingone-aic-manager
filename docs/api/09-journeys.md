@@ -718,7 +718,33 @@ knowing before you build on it:
 
 **Custom properties survive.** `action.putSessionProperty(k, v)` in the mini
 journey appears verbatim on `existingSession` in the next one — that is the
-supported way to stage session state a test needs.
+supported way to stage session state a test needs. The calls chain
+(`action.goTo("true").putSessionProperty("a", "1").putSessionProperty("b", "2")`
+sets both), and holding the builder in a variable and calling it twice works
+the same way — the builder mutates rather than returning a copy.
+
+**You cannot set a property AM owns.** `putSessionProperty("UserId", …)` and
+`putSessionProperty("AuthLevel", …)` each make the *whole mini journey* fail:
+
+```text
+HTTP 401  {"code":401,"reason":"Unauthorized","message":"Login failure"}
+```
+
+No tokenId, no error naming the property, nothing in the response tying the
+failure to the call — and the journey is otherwise identical to one that
+returns 200. Anything that generates these calls should refuse the AM-owned
+names up front rather than let this surface as an authentication failure. The
+list is the key table in
+[12-script-bindings-matrix.md](12-script-bindings-matrix.md).
+
+**Five properties track the principal**, so `putShared("username", …)` is how
+you set them: `UserId`, `Principals`, `UserToken` (the bare name), plus
+`Principal` and `sun.am.UniversalIdentifier` (the DN
+`id=<principal>,ou=user,o=<realm>,ou=services,ou=am-config`). Measured
+2026-09-14 with two different principals — the remaining properties did not
+track it. Of those, `AMCtxId`, `OidcSid` and `authInstant` are per-run,
+`Service` and `FullLoginURL` name the minting tree, and `Host`/`HostName` are
+the caller's own address; none of them can be predicted by a test.
 
 **Read it as a flat string map**, `for…in` to enumerate. Full key list and the
 type caveat are in
