@@ -192,6 +192,92 @@ function __rhinoLocalRequestMap(values, options) {
   return map;
 }
 
+/**
+ * `existingSession`: a String->String map of AM's own session properties plus
+ * anything a prior journey stored with `putSessionProperty`. Present only when
+ * the request carries a session cookie. Measured 2026-09-14 against a live
+ * tenant on both evaluators (docs/api/12-script-bindings-matrix.md).
+ *
+ * Deliberately NOT a plain object; each difference is one a plain object would
+ * get wrong in the false-pass direction:
+ *   - `hasOwnProperty` is not reachable on AM's wrapper, so a script that calls
+ *     it passes here and throws there. Hence the null prototype.
+ *   - `keySet()` exists and is a trap: the returned java.util.HashMap$KeySet is
+ *     refused by AM's class shutter. Iterate with for...in, as the request maps
+ *     above already require.
+ *   - `String(session)` renders per evaluator: next-gen wraps the map in
+ *     MapScriptWrapper, whose toString is JSON-ish; legacy hands over the raw
+ *     Java map, so it is AbstractMap.toString. Key ORDER is AM's hash order and
+ *     is not reproduced -- seeding order is used instead.
+ */
+function __rhinoLocalSessionMap(values, engine) {
+  var map = typeof Object.create === "function" ? Object.create(null) : {};
+  var names = values ? Object.keys(values) : [];
+  var legacy = engine === "legacy";
+  var i;
+  for (i = 0; i < names.length; i += 1) {
+    map[String(names[i])] = String(values[names[i]]);
+  }
+  __rhinoLocalHide(map, "get", function (key) {
+    __rhinoLocalExpectArity("existingSession.get", arguments, 1);
+    var k = String(key);
+    if (!__rhinoLocalHas(map, k)) {
+      return null;
+    }
+    return map[k];
+  });
+  __rhinoLocalHide(map, "put", function (key, value) {
+    __rhinoLocalExpectArity("existingSession.put", arguments, 2);
+    map[String(key)] = String(value);
+  });
+  __rhinoLocalHide(map, "containsKey", function (key) {
+    __rhinoLocalExpectArity("existingSession.containsKey", arguments, 1);
+    return __rhinoLocalHas(map, String(key));
+  });
+  __rhinoLocalHide(map, "size", function () {
+    return __rhinoLocalSessionKeys(map).length;
+  });
+  __rhinoLocalHide(map, "isEmpty", function () {
+    return __rhinoLocalSessionKeys(map).length === 0;
+  });
+  __rhinoLocalHide(map, "keySet", function () {
+    throw new Error(
+      "rhino-local: existingSession.keySet is blocked by AM's class shutter " +
+        '(Access to Java class "java.util.HashMap$KeySet" is prohibited); ' +
+        "iterate with for...in"
+    );
+  });
+  __rhinoLocalHide(map, "toString", function () {
+    var keys = __rhinoLocalSessionKeys(map);
+    var parts = [];
+    var j;
+    for (j = 0; j < keys.length; j += 1) {
+      if (legacy) {
+        parts.push(keys[j] + "=" + map[keys[j]]);
+      } else {
+        parts.push(
+          JSON.stringify(keys[j]) + ": " + JSON.stringify(map[keys[j]])
+        );
+      }
+    }
+    return legacy
+      ? "{" + parts.join(", ") + "}"
+      : "{ " + parts.join(", ") + " }";
+  });
+  return map;
+}
+
+function __rhinoLocalSessionKeys(map) {
+  var out = [];
+  var k;
+  for (k in map) {
+    if (__rhinoLocalHas(map, k)) {
+      out.push(k);
+    }
+  }
+  return out;
+}
+
 function __rhinoLocalStateMap(bucketName) {
   var map = {};
   __rhinoLocalHide(map, "get", function (key) {
@@ -2159,6 +2245,13 @@ function __rhinoLocalSeed(given) {
     caseInsensitive: false,
     asList: false,
   });
+
+  // Assigned either way: the runner's scope outlives one case, so leaving a
+  // previous case's session installed would seed a binding nobody declared.
+  existingSession =
+    given.existingSession === undefined
+      ? undefined
+      : __rhinoLocalSessionMap(given.existingSession, given.engine);
 
   if (given.realm !== undefined) {
     realm = given.realm;

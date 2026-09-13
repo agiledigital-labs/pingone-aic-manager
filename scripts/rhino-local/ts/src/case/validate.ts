@@ -161,6 +161,14 @@ function parseGiven(raw: unknown, path: string): Given {
     `${path}.requestCookies`
   );
   assignJsonObject(given, "locales", raw.locales, `${path}.locales`);
+  // String->String, because that is what AM stores: every value in the measured
+  // 23-key session was a string, `AuthLevel: "0"` included.
+  assignStringMap(
+    given,
+    "existingSession",
+    raw.existingSession,
+    `${path}.existingSession`
+  );
   assignStringMap(given, "esv", raw.esv, `${path}.esv`);
   assignStringMap(given, "secrets", raw.secrets, `${path}.secrets`);
   if (raw.callbacks !== undefined) {
