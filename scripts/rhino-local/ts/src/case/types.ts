@@ -324,6 +324,16 @@ export interface RecordedEffects {
   logs: LogEffect[];
   /** Omitted by exact recorders; present when a lane has qualified evidence. */
   evidence?: RecordingEvidence;
+  /**
+   * The mock `openidm` store as it stood when the script finished. Evidence
+   * for the post-test residue check, deliberately NOT a judged channel — it
+   * answers "did anything survive that the harness did not create", which is
+   * a property of the test's housekeeping rather than of the script's
+   * behaviour. Only the local lane can produce it; AIC has no way to observe
+   * the tenant's whole store, and pretending otherwise would put an empty
+   * object where "unknown" belongs.
+   */
+  managedStore?: Record<string, JsonObject[]>;
 }
 
 export interface Mismatch {

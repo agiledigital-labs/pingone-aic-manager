@@ -2215,6 +2215,7 @@ function __rhinoLocalHarvest() {
     },
     callbacks: __rhinoLocal.callbacks,
     openidm: __rhinoLocal.openidm,
+    managedStore: __rhinoLocalClone(__rhinoLocal.managed),
     http: __rhinoLocal.http,
     logs: __rhinoLocal.logs,
   });

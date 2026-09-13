@@ -1,6 +1,7 @@
 import { CHANNELS, LOG_LEVELS, OPENIDM_METHODS } from "../case/types.ts";
 import type {
   CallbackEffect,
+  JsonObject,
   HttpEffect,
   LogEffect,
   LogLevel,
@@ -41,7 +42,7 @@ export function parseHarvest(raw: string): RecordedEffects {
   if (parsed.outcome !== null && typeof parsed.outcome !== "string") {
     throw new Error("rhino-local: harvest.outcome must be a string or null");
   }
-  return {
+  const effects: RecordedEffects = {
     outcome: parsed.outcome,
     sharedState: parseBucket(parsed.sharedState, "harvest.sharedState"),
     transientState: parseBucket(parsed.transientState, "harvest.transientState"),
@@ -51,6 +52,25 @@ export function parseHarvest(raw: string): RecordedEffects {
     http: parseArray(parsed.http, "harvest.http", parseHttp),
     logs: parseArray(parsed.logs, "harvest.logs", parseLog),
   };
+  if (parsed.managedStore !== undefined) {
+    effects.managedStore = parseManagedStore(parsed.managedStore);
+  }
+  return effects;
+}
+
+function parseManagedStore(raw: unknown): Record<string, JsonObject[]> {
+  if (!isPlainObject(raw)) {
+    throw new Error("rhino-local: harvest.managedStore is not an object");
+  }
+  const store: Record<string, JsonObject[]> = {};
+  for (const [collection, rows] of Object.entries(raw)) {
+    store[collection] = parseArray(
+      rows,
+      `harvest.managedStore.${collection}`,
+      (value, path) => parseJsonObject(value, path)
+    );
+  }
+  return store;
 }
 
 function parseBucket(raw: unknown, path: string): StateBucket {
