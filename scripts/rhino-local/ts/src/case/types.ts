@@ -12,7 +12,7 @@ export interface JsonObject {
 
 export type Pattern = string | RegExp;
 
-export const CASE_KEYS = ["name", "script", "given", "expect"] as const;
+export const CASE_KEYS = ["name", "script", "outcomes", "given", "expect"] as const;
 export type CaseKey = (typeof CASE_KEYS)[number];
 
 export const ENGINES = ["next-gen", "legacy"] as const;
@@ -253,6 +253,17 @@ export interface Expect {
 export interface CaseInit {
   name: string;
   script: string;
+  /**
+   * The outcome vocabulary this script may produce. Optional here, required
+   * to run on a tenant: AM answers an undeclared outcome with a bare
+   * `401 Login failure` and no callback, byte-identical to a compile error,
+   * so the wrapper journey has to declare every outcome up front and the
+   * only way to be sure it did is for the case to say what they are.
+   *
+   * Declaring it also moves the typo from an opaque tenant 401 to a local
+   * failure in under a second, which is why the local lane enforces it too.
+   */
+  outcomes?: readonly string[];
   given?: Given;
   expect: Expect;
 }
@@ -260,6 +271,7 @@ export interface CaseInit {
 export interface Case {
   name: string;
   script: string;
+  outcomes?: readonly string[];
   given: Given;
   expect: Expect;
 }

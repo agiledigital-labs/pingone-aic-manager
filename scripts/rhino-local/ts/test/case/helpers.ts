@@ -13,6 +13,7 @@ export function makeCase(
   overrides: {
     name?: string;
     script?: string;
+    outcomes?: readonly string[];
     given?: Given;
     expect?: Expect;
   } = {}
@@ -22,6 +23,9 @@ export function makeCase(
     script: overrides.script ?? "am/decision-node/example.js",
     expect: overrides.expect ?? { outcome: "true" },
   };
+  if (overrides.outcomes !== undefined) {
+    init.outcomes = overrides.outcomes;
+  }
   if (overrides.given !== undefined) {
     init.given = overrides.given;
   }

@@ -381,6 +381,28 @@ function judgeOutcome(kase: Case, effects: RecordedEffects): Mismatch[] {
   }
   const actual =
     effects.outcome === null ? "<no outcome>" : formatValue(effects.outcome);
+  // An outcome outside the declared vocabulary is a harness configuration
+  // fault, not the script behaving differently from expectation, and it
+  // supersedes the ordinary mismatch because the ordinary message ("expected
+  // X, actual Y") invites you to go and look at Y's branch — when the real
+  // problem is that Y is not wired into the journey at all. On a tenant this
+  // is the difference between a readable failure and a bare 401.
+  if (
+    kase.outcomes !== undefined &&
+    effects.outcome !== null &&
+    !kase.outcomes.includes(effects.outcome)
+  ) {
+    const declared = kase.outcomes.map((name) => formatValue(name)).join(", ");
+    return [
+      miss(
+        "outcome",
+        "outcome",
+        formatValue(kase.expect.outcome),
+        actual,
+        `outcome: script produced ${actual}, which case.outcomes does not declare [${declared}] — fix the typo or declare it; on a tenant an undeclared outcome answers 401 with no callback, identical to a compile error`
+      ),
+    ];
+  }
   const message =
     effects.outcome === null
       ? `outcome: expected ${formatValue(kase.expect.outcome)}, script produced no outcome`

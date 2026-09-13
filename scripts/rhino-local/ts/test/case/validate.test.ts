@@ -260,3 +260,71 @@ describe("defineCase / validateCase", () => {
     expect(kase.given.bindings).toEqual({ logger: {} });
   });
 });
+
+describe("case.outcomes", () => {
+  it("accepts a vocabulary containing the expected outcome", () => {
+    const kase = defineCase({
+      name: "two-way",
+      script: "am/decision-node/two-way.js",
+      outcomes: ["true", "false"],
+      expect: { outcome: "true" },
+    });
+    expect(kase.outcomes).toEqual(["true", "false"]);
+  });
+
+  it("stays undefined when the case declines to declare", () => {
+    const kase = defineCase({
+      name: "undeclared",
+      script: "am/decision-node/undeclared.js",
+      expect: { outcome: "true" },
+    });
+    expect(kase.outcomes).toBeUndefined();
+  });
+
+  it("rejects an empty vocabulary rather than reading it as no opinion", () => {
+    expect(() =>
+      defineCase({
+        name: "empty",
+        script: "am/decision-node/empty.js",
+        outcomes: [],
+        expect: { outcome: "true" },
+      })
+    ).toThrow(/must not be empty/);
+  });
+
+  it("rejects a duplicate", () => {
+    expect(() =>
+      defineCase({
+        name: "dupe",
+        script: "am/decision-node/dupe.js",
+        outcomes: ["true", "true"],
+        expect: { outcome: "true" },
+      })
+    ).toThrow(/lists "true" twice/);
+  });
+
+  // The discriminating case: a vocabulary that is well-formed on its own and
+  // still wrong, because it does not contain the outcome the case expects.
+  // A check that only validated shape would pass this.
+  it("rejects an expected outcome the vocabulary does not contain", () => {
+    expect(() =>
+      defineCase({
+        name: "mismatched",
+        script: "am/decision-node/mismatched.js",
+        outcomes: ["true", "false"],
+        expect: { outcome: "maybe" },
+      })
+    ).toThrow(/"maybe" is not in case.outcomes/);
+  });
+
+  it("rejects a non-string member", () => {
+    expect(() =>
+      validateCase({
+        name: "bad",
+        script: "am/decision-node/bad.js",
+        outcomes: ["true", 3],
+        expect: { outcome: "true" },
+      })
+    ).toThrow(/case\.outcomes\[1\] must be a non-empty string/);
+  });
+});
