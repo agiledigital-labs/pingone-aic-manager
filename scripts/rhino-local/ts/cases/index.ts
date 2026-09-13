@@ -10,6 +10,7 @@ function script(name: string): string {
 /** Read shared state, branch, set outcome via `action.goTo`. */
 export const decideFromState = defineCase({
   name: "decide-from-state",
+  outcomes: ["true", "false"],
   script: script("decide-from-state.cjs"),
   given: { sharedState: { username: "alice" } },
   expect: { outcome: "true" },
@@ -18,6 +19,7 @@ export const decideFromState = defineCase({
 /** Write shared + transient state, then exit. */
 export const writeState = defineCase({
   name: "write-state",
+  outcomes: ["true"],
   script: script("write-state.cjs"),
   expect: {
     outcome: "true",
@@ -29,6 +31,7 @@ export const writeState = defineCase({
 /** `openidm.read` of a seeded managed record, then copy a field into state. */
 export const openidmRead = defineCase({
   name: "openidm-read",
+  outcomes: ["true"],
   script: script("openidm-read.cjs"),
   given: {
     managed: {

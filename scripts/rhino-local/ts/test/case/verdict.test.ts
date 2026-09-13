@@ -294,3 +294,66 @@ openidm: undeclared write create managed/alpha_user/alice body={"userName":"alic
     );
   });
 });
+
+describe("undeclared outcomes", () => {
+  const declared = { outcomes: ["matched", "notFound"] as const };
+
+  it("reports an undeclared outcome as a configuration fault, not a plain mismatch", () => {
+    const verdict = judge(
+      makeCase({ ...declared, expect: { outcome: "matched" } }),
+      makeEffects({ outcome: "mathced" })
+    );
+    expect(verdict.pass).toBe(false);
+    expect(verdict.summary).toMatch(/case\.outcomes does not declare/);
+    expect(verdict.summary).toMatch(/"matched", "notFound"/);
+  });
+
+  it("raises exactly one mismatch, not the plain one as well", () => {
+    const verdict = judge(
+      makeCase({ ...declared, expect: { outcome: "matched" } }),
+      makeEffects({ outcome: "mathced" })
+    );
+    expect(verdict.mismatches).toHaveLength(1);
+  });
+
+  // The discriminating case. An implementation that fired whenever the
+  // outcome differed — rather than whenever it was undeclared — would pass
+  // every test above and fail this one. "notFound" is a real branch of the
+  // script; taking it when "matched" was expected is ordinary behavioural
+  // disagreement and must read that way.
+  it("leaves a declared-but-unexpected outcome as an ordinary mismatch", () => {
+    const verdict = judge(
+      makeCase({ ...declared, expect: { outcome: "matched" } }),
+      makeEffects({ outcome: "notFound" })
+    );
+    expect(verdict.pass).toBe(false);
+    expect(verdict.summary).toMatch(/expected "matched", actual "notFound"/);
+    expect(verdict.summary).not.toMatch(/does not declare/);
+  });
+
+  it("is inert when the case declares no vocabulary", () => {
+    const verdict = judge(
+      makeCase({ expect: { outcome: "matched" } }),
+      makeEffects({ outcome: "mathced" })
+    );
+    expect(verdict.summary).toMatch(/expected "matched", actual "mathced"/);
+    expect(verdict.summary).not.toMatch(/does not declare/);
+  });
+
+  it("still says 'no outcome' when the script produced none", () => {
+    const verdict = judge(
+      makeCase({ ...declared, expect: { outcome: "matched" } }),
+      makeEffects({ outcome: null })
+    );
+    expect(verdict.summary).toMatch(/script produced no outcome/);
+    expect(verdict.summary).not.toMatch(/does not declare/);
+  });
+
+  it("passes when the outcome is declared and expected", () => {
+    const verdict = judge(
+      makeCase({ ...declared, expect: { outcome: "matched" } }),
+      makeEffects({ outcome: "matched" })
+    );
+    expect(verdict.pass).toBe(true);
+  });
+});

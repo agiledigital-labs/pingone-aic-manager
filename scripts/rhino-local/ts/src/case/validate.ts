@@ -76,7 +76,47 @@ export function validateCase(input: unknown): Case {
     throw new Error("rhino-local: case.expect is required");
   }
   const expect = parseExpect(input.expect, "case.expect");
-  return { name, script, given, expect };
+  const kase: Case = { name, script, given, expect };
+  if (input.outcomes !== undefined) {
+    kase.outcomes = parseOutcomes(input.outcomes, "case.outcomes", expect.outcome);
+  }
+  return kase;
+}
+
+/**
+ * The declared outcome vocabulary. Empty is rejected rather than treated as
+ * "no opinion" — `outcomes: []` reads like a deliberate statement and would
+ * otherwise silently disable the check it was written to request.
+ */
+function parseOutcomes(
+  raw: unknown,
+  path: string,
+  expected: string
+): readonly string[] {
+  if (!Array.isArray(raw)) {
+    throw new Error(`rhino-local: ${path} must be an array of strings`);
+  }
+  if (raw.length === 0) {
+    throw new Error(
+      `rhino-local: ${path} must not be empty; omit the key entirely to decline to declare`
+    );
+  }
+  const seen = new Set<string>();
+  for (const [index, value] of raw.entries()) {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new Error(`rhino-local: ${path}[${index}] must be a non-empty string`);
+    }
+    if (seen.has(value)) {
+      throw new Error(`rhino-local: ${path} lists ${JSON.stringify(value)} twice`);
+    }
+    seen.add(value);
+  }
+  if (!seen.has(expected)) {
+    throw new Error(
+      `rhino-local: case.expect.outcome ${JSON.stringify(expected)} is not in ${path} [${raw.join(", ")}] — the case expects an outcome the script is not declared to produce`
+    );
+  }
+  return raw.slice() as readonly string[];
 }
 
 function parseGiven(raw: unknown, path: string): Given {
