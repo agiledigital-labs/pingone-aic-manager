@@ -31,12 +31,18 @@ export interface Channels {
   params?: WireMap;
   /**
    * `existingSession` — session properties the script sees, as a flat string
-   * map. Setting this costs the AIC lane an extra round trip: a session only
-   * exists once a journey has run to completion, so the lane runs a two-line
-   * mini journey that stores these with `putSessionProperty` and forwards its
-   * cookie to the subject. Nothing else about the subject tree changes —
-   * measured 2026-09-14: an ordinary default tree sees the session, and the
-   * principal need not exist as a managed object.
+   * map. Declaring it at all (`session: {}` included) asks for a logged-in
+   * session; the AIC lane pays for it with an extra round trip, because a
+   * session only exists once a journey has run to completion, so the lane
+   * runs a two-line mini journey and forwards its cookie to the subject.
+   *
+   * Custom properties only. The ones AM sets itself — `UserId`, `AuthLevel`
+   * and the rest — are refused, because `putSessionProperty` cannot override
+   * them and trying fails the whole login with an unexplained 401. The five
+   * AM derives from the principal come from `state.username` instead.
+   *
+   * Nothing about the subject tree changes, and the principal need not exist
+   * as a managed object (both measured 2026-09-14).
    */
   session?: JsonObject;
 }
@@ -48,6 +54,8 @@ export interface RequestDraft {
   headers: Record<string, string[]>;
   params: Record<string, string[]>;
   session: JsonObject;
+  /** Whether either level asked for a session at all. See mergeChannels. */
+  sessionRequested: boolean;
 }
 
 /** A managed record the harness creates and is therefore responsible for. */

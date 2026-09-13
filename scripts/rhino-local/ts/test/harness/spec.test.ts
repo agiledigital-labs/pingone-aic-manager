@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_SESSION_PRINCIPAL } from "../../src/case/session.ts";
 import { z } from "zod";
 import {
   applyInputsAndEsv,
@@ -38,6 +39,7 @@ describe("mergeChannels", () => {
       headers: {},
       params: {},
       session: {},
+      sessionRequested: false,
     });
   });
 });
@@ -117,13 +119,44 @@ describe("toGiven", () => {
 
   it("compiles the session channel to existingSession, merged per key", () => {
     const draft = mergeChannels(
-      { session: { UserId: "alice", rlProbe: "suite" } },
-      { session: { rlProbe: "test" } }
+      { session: { tier: "gold", step: "suite" } },
+      { session: { step: "test" } }
     );
-    expect(toGiven(draft).existingSession).toEqual({
-      UserId: "alice",
-      rlProbe: "test",
+    expect(toGiven(draft).existingSession).toMatchObject({
+      tier: "gold",
+      step: "test",
     });
+  });
+
+  it("mints the AM-derived properties for a session declared empty", () => {
+    // `session: {}` is a request for a logged-in session with no extra
+    // properties — distinct from not asking for one at all.
+    const given = toGiven(
+      mergeChannels({ state: { shared: { username: "alice" } }, session: {} }, undefined)
+    );
+    expect(given.existingSession).toEqual({
+      UserId: "alice",
+      Principals: "alice",
+      UserToken: "alice",
+      Principal: "id=alice,ou=user,o=alpha,ou=services,ou=am-config",
+      "sun.am.UniversalIdentifier":
+        "id=alice,ou=user,o=alpha,ou=services,ou=am-config",
+    });
+  });
+
+  it("falls back to a fixed principal when no username is in state", () => {
+    const given = toGiven(mergeChannels({ session: { tier: "gold" } }, undefined));
+    expect(given.existingSession?.UserId).toBe(DEFAULT_SESSION_PRINCIPAL);
+    expect(given.existingSession?.tier).toBe("gold");
+  });
+
+  it("refuses an AM-owned key, naming the principal mechanism", () => {
+    // Measured: overriding one fails the whole login with a bare 401, so the
+    // alternative to refusing is an unexplained authentication failure.
+    expect(() => toGiven(mergeChannels({ session: { UserId: "bob" } }, undefined)))
+      .toThrow(/set by AM.*state\.username/s);
+    expect(() => toGiven(mergeChannels({ session: { AuthLevel: "9" } }, undefined)))
+      .toThrow(/set by AM/);
   });
 
   it("leaves existingSession absent when no session is declared", () => {
@@ -134,8 +167,8 @@ describe("toGiven", () => {
   });
 
   it("coerces session values to strings and refuses structured ones", () => {
-    expect(toGiven(mergeChannels({ session: { AuthLevel: 0 } }, undefined)).existingSession)
-      .toEqual({ AuthLevel: "0" });
+    expect(toGiven(mergeChannels({ session: { attempts: 0 } }, undefined)).existingSession)
+      .toMatchObject({ attempts: "0" });
     expect(() => toGiven(mergeChannels({ session: { u: { id: "a" } } }, undefined)))
       .toThrow(/session\.u must be a string/);
     expect(() => toGiven(mergeChannels({ session: { u: null } }, undefined)))

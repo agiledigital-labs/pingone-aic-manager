@@ -1,5 +1,10 @@
 import type { z } from "zod";
 import type { Case, Expect, Given, JsonObject } from "../case/types.ts";
+import {
+  AM_OWNED_SESSION_SET,
+  DEFAULT_SESSION_PRINCIPAL,
+  sessionFromPrincipal,
+} from "../case/session.ts";
 import type {
   Channels,
   RequestDraft,
@@ -35,6 +40,11 @@ export function mergeChannels(
     headers: { ...normaliseWire(always?.headers), ...normaliseWire(override?.headers) },
     params: { ...normaliseWire(always?.params), ...normaliseWire(override?.params) },
     session: { ...(always?.session ?? {}), ...(override?.session ?? {}) },
+    // Declared-empty and not-declared are different requests: `session: {}`
+    // asks for a logged-in session with no extra properties, which is a real
+    // case and is invisible if you only look at the merged key count.
+    sessionRequested:
+      always?.session !== undefined || override?.session !== undefined,
   };
 }
 
@@ -126,11 +136,18 @@ export function parseInputs<TSchema extends z.ZodType>(
  * mock, so the AIC lane — which has to put them through a mini journey's
  * `putSessionProperty` — sends exactly what the local lane seeded.
  */
-export function toGiven(draft: RequestDraft, base: Given = {}): Given {
+export function toGiven(
+  draft: RequestDraft,
+  base: Given = {},
+  realm = "alpha"
+): Given {
   const given: Given = { ...base };
-  const session = sessionStrings(draft.session);
-  if (Object.keys(session).length > 0) {
-    given.existingSession = { ...(base.existingSession ?? {}), ...session };
+  if (draft.sessionRequested) {
+    given.existingSession = {
+      ...sessionFromPrincipal(sessionPrincipal(draft), realm),
+      ...(base.existingSession ?? {}),
+      ...sessionStrings(draft.session),
+    };
   }
   if (Object.keys(draft.state.shared).length > 0) {
     given.sharedState = { ...(base.sharedState ?? {}), ...draft.state.shared };
@@ -188,6 +205,11 @@ export type { JsonObject };
 function sessionStrings(session: JsonObject): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(session)) {
+    if (AM_OWNED_SESSION_SET.has(key)) {
+      throw new Error(
+        `rhino-local: session.${key} is set by AM, not by the caller — a mini journey that tries to override it fails the whole login with an unexplained 401. ${key === "UserId" || key === "Principals" || key === "UserToken" || key === "Principal" || key === "sun.am.UniversalIdentifier" ? "Set `state.username` instead; the session is minted for that principal" : "Remove it"}`
+      );
+    }
     if (value === null || typeof value === "object") {
       throw new Error(
         `rhino-local: session.${key} must be a string — AM stores session properties as strings, so a ${value === null ? "null" : "structured value"} cannot survive the round trip`
@@ -196,4 +218,17 @@ function sessionStrings(session: JsonObject): Record<string, string> {
     out[key] = String(value);
   }
   return out;
+}
+
+/**
+ * Who the mini journey logs in as. The principal need not exist as a managed
+ * object (measured 2026-09-14), so this is free; taking it from shared state
+ * means a suite that already sets `username` gets a session for that user
+ * without saying so twice.
+ */
+export function sessionPrincipal(draft: RequestDraft): string {
+  const username = draft.state.shared.username;
+  return typeof username === "string" && username.length > 0
+    ? username
+    : DEFAULT_SESSION_PRINCIPAL;
 }
