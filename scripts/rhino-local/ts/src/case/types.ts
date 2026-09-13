@@ -30,6 +30,7 @@ export const GIVEN_KEYS = [
   "requestParameters",
   "requestCookies",
   "locales",
+  "existingSession",
   "esv",
   "secrets",
   "callbacks",
@@ -50,6 +51,7 @@ export const GIVEN_BINDING_SEEDS = [
   "requestParameters",
   "requestCookies",
   "locales",
+  "existingSession",
 ] as const;
 
 export const EXPECT_KEYS = [
@@ -220,6 +222,13 @@ export interface Given {
   requestParameters?: Record<string, string[]>;
   requestCookies?: Record<string, string>;
   locales?: JsonObject;
+  /**
+   * `existingSession`. Present only when the request carries a session cookie,
+   * and then a String->String map: AM's own session properties plus anything a
+   * prior journey stored with `putSessionProperty`. Measured 2026-09-14 on both
+   * evaluators (docs/api/12-script-bindings-matrix.md).
+   */
+  existingSession?: Record<string, string>;
   esv?: Record<string, string>;
   secrets?: Record<string, string>;
   /**

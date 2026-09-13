@@ -30,10 +30,13 @@ export interface Channels {
   /** Sent on the authenticate request. */
   params?: WireMap;
   /**
-   * `existingSession`. Declared for symmetry and currently inert: nobody has
-   * observed a populated one on either lane, so a mock would be an invention
-   * that both lanes would agree on while both ran the guess. Setting it is
-   * refused rather than silently ignored.
+   * `existingSession` — session properties the script sees, as a flat string
+   * map. Setting this costs the AIC lane an extra round trip: a session only
+   * exists once a journey has run to completion, so the lane runs a two-line
+   * mini journey that stores these with `putSessionProperty` and forwards its
+   * cookie to the subject. Nothing else about the subject tree changes —
+   * measured 2026-09-14: an ordinary default tree sees the session, and the
+   * principal need not exist as a managed object.
    */
   session?: JsonObject;
 }

@@ -578,6 +578,61 @@ Consequences:
   makes the populated arm a measurement of the cookie rather than of the
   probe.
 
+### `existingSession` access surface (both evaluators, 2026-09-14)
+
+Probed on a live tenant by sending a session cookie minted by a two-line mini
+journey (`09-journeys.md` → "Minting a session for a test"), with the same
+journey and script run cookie-less as the negative control — that arm still
+reported `typeof existingSession === "undefined"`, so everything below is a
+measurement of the cookie and not of the probe.
+
+It is **not a plain JavaScript object**. Next-gen wraps the session map in
+`org.forgerock.openam.scripting.javascript.MapScriptWrapper` (the class names
+itself in the arity error below); legacy hands over the Java map directly.
+
+| Access                                  | Result                                                              |
+| --------------------------------------- | ------------------------------------------------------------------- |
+| `typeof existingSession`                | `"object"` with a cookie, `"undefined"` without                     |
+| `session.UserId`, `session["UserId"]`   | the value, as a string                                              |
+| a key that is not set                   | `undefined`                                                         |
+| `for…in`, `Object.keys(...)`            | both enumerate the data keys (23 on a minimal session)              |
+| `"UserId" in session`                   | `true`                                                              |
+| `session.get("UserId")`                 | the value; `get` of an absent key returns **`null`**, not `undefined` |
+| `session.get()`                         | `InternalError: Can't find method …MapScriptWrapper.get().`         |
+| `session.size()`                        | the key count; `put` and `containsKey` are present too              |
+| `session.keySet()`                      | **throws** — see below                                              |
+| `session.hasOwnProperty`                | `undefined` — the wrapper has no `Object` prototype                 |
+| `Object.prototype.hasOwnProperty.call(session, k)` | works                                                    |
+
+Two of these bite:
+
+- **`keySet()` is a trap.** The method exists, and calling it fails with
+  `Access to Java class "java.util.HashMap$KeySet" is prohibited.` — the class
+  shutter refuses the *return value*. Iterate with `for…in`, exactly as
+  `requestHeaders` already requires.
+- **`session.hasOwnProperty(k)` throws**, because the wrapper's prototype is not
+  `Object.prototype`. This is the one that catches people: it is the idiom a
+  developer reaches for, it works against any hand-rolled mock, and it fails
+  only on the tenant.
+
+`String(session)` differs by evaluator, which is the clearest evidence the two
+hand over different objects:
+
+```text
+next-gen   { "Locale": "en_US", "authInstant": "…", "UserId": "alice", … }
+legacy     {Locale=en_US, authInstant=…, UserId=alice, …}
+```
+
+Next-gen's is `MapScriptWrapper`'s own JSON-ish rendering; legacy's is Java's
+`AbstractMap.toString`. Key order is AM's hash order in both, not insertion
+order — do not parse either.
+
+Availability is the same on both evaluators: legacy (`evaluatorVersion: 1.0`)
+sees `existingSession` populated from the same cookie, with the same access
+surface apart from `toString`. `existingSession` is therefore **not** in the
+next-gen-only group listed below, despite the legacy probe there recording it
+absent — that probe simply sent no cookie.
+
 ### Runtime-verified binding presence (LEGACY scripted decision, 2026-06-04)
 
 Same `typeof` probe on a legacy (`evaluatorVersion: 1.0`) scripted decision node

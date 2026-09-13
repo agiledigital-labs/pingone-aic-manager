@@ -120,18 +120,18 @@ export function parseInputs<TSchema extends z.ZodType>(
 /**
  * Turn a resolved draft into a `Given`.
  *
- * `session` is refused rather than dropped. A populated `existingSession` has
- * never been observed on either lane, so anything the harness put there would
- * be an invention that both lanes agreed on — the one failure shape a
- * two-lane design cannot detect.
+ * `session` compiles to `given.existingSession`, whose shape was measured
+ * 2026-09-14 on both evaluators: a String->String map, present only when the
+ * request carries a session cookie. Values are coerced here rather than in the
+ * mock, so the AIC lane — which has to put them through a mini journey's
+ * `putSessionProperty` — sends exactly what the local lane seeded.
  */
 export function toGiven(draft: RequestDraft, base: Given = {}): Given {
-  if (Object.keys(draft.session).length > 0) {
-    throw new Error(
-      "rhino-local: channel `session` is declared but not implemented — a populated existingSession has never been measured, so seeding one would test an invented shape. Remove it, or measure the binding first"
-    );
-  }
   const given: Given = { ...base };
+  const session = sessionStrings(draft.session);
+  if (Object.keys(session).length > 0) {
+    given.existingSession = { ...(base.existingSession ?? {}), ...session };
+  }
   if (Object.keys(draft.state.shared).length > 0) {
     given.sharedState = { ...(base.sharedState ?? {}), ...draft.state.shared };
   }
@@ -176,3 +176,24 @@ export function toCase<TSchema extends z.ZodType>(
 }
 
 export type { JsonObject };
+
+/**
+ * AM session properties are strings — every value in the measured 23-key
+ * session was one, `AuthLevel: "0"` included. A number or boolean is coerced
+ * (it survives the round trip unambiguously); an object or array is refused,
+ * because `putSessionProperty` would stringify it to `[object Object]` on the
+ * AIC lane while a structured mock would keep it here. That divergence is the
+ * false-pass shape this harness exists to prevent.
+ */
+function sessionStrings(session: JsonObject): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(session)) {
+    if (value === null || typeof value === "object") {
+      throw new Error(
+        `rhino-local: session.${key} must be a string — AM stores session properties as strings, so a ${value === null ? "null" : "structured value"} cannot survive the round trip`
+      );
+    }
+    out[key] = String(value);
+  }
+  return out;
+}

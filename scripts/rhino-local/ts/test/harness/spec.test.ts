@@ -115,9 +115,31 @@ describe("toGiven", () => {
     expect(given).toEqual({});
   });
 
-  it("refuses a session rather than dropping it", () => {
-    const draft = mergeChannels({ session: { tokenId: "x" } }, undefined);
-    expect(() => toGiven(draft)).toThrow(/never been measured/);
+  it("compiles the session channel to existingSession, merged per key", () => {
+    const draft = mergeChannels(
+      { session: { UserId: "alice", rlProbe: "suite" } },
+      { session: { rlProbe: "test" } }
+    );
+    expect(toGiven(draft).existingSession).toEqual({
+      UserId: "alice",
+      rlProbe: "test",
+    });
+  });
+
+  it("leaves existingSession absent when no session is declared", () => {
+    // Absent and empty are different bindings: AM installs nothing at all
+    // without a session cookie, so `typeof existingSession` is "undefined".
+    expect(toGiven(mergeChannels({ state: { shared: { a: 1 } } }, undefined)).existingSession)
+      .toBeUndefined();
+  });
+
+  it("coerces session values to strings and refuses structured ones", () => {
+    expect(toGiven(mergeChannels({ session: { AuthLevel: 0 } }, undefined)).existingSession)
+      .toEqual({ AuthLevel: "0" });
+    expect(() => toGiven(mergeChannels({ session: { u: { id: "a" } } }, undefined)))
+      .toThrow(/session\.u must be a string/);
+    expect(() => toGiven(mergeChannels({ session: { u: null } }, undefined)))
+      .toThrow(/session\.u must be a string/);
   });
 });
 

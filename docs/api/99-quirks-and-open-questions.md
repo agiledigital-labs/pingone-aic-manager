@@ -1415,3 +1415,30 @@ Two negatives are worth recording because they cost time to establish:
 The control matters here: the same journey and the same script, invoked without
 the cookie, still reported `undefined`. Without that arm, a populated result
 would have been evidence about the probe rather than about the cookie.
+
+## 2026-09-14 — `existingSession` is a Java map, and two idioms fail on it
+
+Follow-up probes on the same day pinned the **access surface** of the binding
+above, on both evaluators. Full table in
+`docs/api/12-script-bindings-matrix.md` → "`existingSession` access surface".
+The two findings that change how you write a script:
+
+- **`existingSession.keySet()` throws.** The method is present, and the call
+  fails with `Access to Java class "java.util.HashMap$KeySet" is prohibited.`
+  — the class shutter refuses the returned collection, not the call. Iterate
+  with `for…in`, as `requestHeaders` already requires.
+- **`existingSession.hasOwnProperty(k)` throws.** The wrapper's prototype is
+  not `Object.prototype`, so the method does not exist on it;
+  `Object.prototype.hasOwnProperty.call(session, k)` works. This is the
+  dangerous one for a local test harness: the idiom passes against any
+  hand-rolled plain-object mock and fails only on the tenant, which is exactly
+  the failure shape a two-lane harness cannot see by agreeing with itself.
+  `scripts/rhino-local/`'s mock therefore builds the map with a null prototype
+  and throws from `keySet()`.
+
+Also measured: `get()` of an absent key returns `null` (not `undefined`);
+`get()` with no argument is an `InternalError` naming
+`org.forgerock.openam.scripting.javascript.MapScriptWrapper`, which is how the
+wrapper class was identified; and `String(session)` renders JSON-ish on
+next-gen but as Java's `AbstractMap.toString` on legacy — the clearest evidence
+that the two evaluators hand the script different objects.
