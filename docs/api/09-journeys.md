@@ -669,6 +669,68 @@ GET /am/json/serverinfo/*
 or without `Accept-API-Version`; we send `protocol=1.0,resource=1.1`. Putting
 the name in source is one more thing that breaks on another tenancy.
 
+### Minting a session for a test
+
+To give a journey a populated `existingSession`, run a **different** journey to
+completion first and send its cookie on the second call. There is no way to
+seed the binding directly: it is whatever session the request already carries.
+
+Verified 2026-09-14 on the sandbox, with a negative control.
+
+**The mini journey is one scripted decision node.** No Identify Existing User
+node, no callbacks, no real user:
+
+```javascript
+nodeState.putShared("username", "alice");
+action.goTo("true").putSessionProperty("rlProbe", "hello");
+```
+
+Wire its single outcome straight to the success node and leave `noSession`
+false. One round trip returns `{tokenId, successUrl, realm}`:
+
+```text
+POST /am/json/realms/root/realms/alpha/authenticate
+  ?authIndexType=service&authIndexValue=<tree>
+```
+
+**Then send the cookie.** The cookie *name* is tenant-specific — read
+`cookieName` from `GET /am/json/serverinfo/*` — and the value is `tokenId`:
+
+```text
+Cookie: <cookieName>=<tokenId>
+```
+
+The second journey then sees `existingSession` populated. Two things worth
+knowing before you build on it:
+
+- **The principal need not exist.** `alice` above is not a managed user —
+  `GET /openidm/managed/alpha_user/alice` is 404 — and the session still
+  carries `UserId: "alice"`, `Principals: "alice"` and
+  `sun.am.UniversalIdentifier` of
+  `id=alice,ou=user,o=alpha,ou=services,ou=am-config`.
+  `nodeState.putShared("username", …)` is the whole mechanism. This is the same
+  hazard as "a `tokenId` for a user that does not exist" above, used
+  deliberately: it makes session fixtures cheap, and it means a session is not
+  evidence that anybody was authenticated.
+- **The receiving tree needs no special configuration.** The probe tree in this
+  measurement was an ordinary default tree; nothing had to be set to make it
+  accept an existing session.
+
+**Custom properties survive.** `action.putSessionProperty(k, v)` in the mini
+journey appears verbatim on `existingSession` in the next one — that is the
+supported way to stage session state a test needs.
+
+**Read it as a flat string map**, `for…in` to enumerate. Full key list and the
+type caveat are in
+[12-script-bindings-matrix.md](12-script-bindings-matrix.md). There is no
+`username` key; the principal is `UserId`.
+
+A probe that ends by *completing* cannot report anything, because the
+`/authenticate` response for a finished journey carries only
+`{tokenId, successUrl, realm}`. End the probe with
+`callbacksBuilder.hiddenValueCallback(...)` instead, and read the value out of
+the `callbacks` array.
+
 ### Turning `tokenId` into an authorization code
 
 With a session in hand, the OAuth authorize endpoint can be driven without a
