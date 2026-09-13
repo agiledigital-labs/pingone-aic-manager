@@ -21,7 +21,7 @@ describe("subjectOutcomes", () => {
 });
 
 describe("emitWrapperJourney", () => {
-  it("wires setup → subject → per-outcome result → success", () => {
+  it("wires subject → per-outcome result → success, with no setup node", () => {
     const wrapper = emitWrapperJourney(
       caseWith({
         name: "grants when verified",
@@ -35,17 +35,18 @@ describe("emitWrapperJourney", () => {
     expect(wrapper.treeName).toBe("rl-aic-test01");
     expect(wrapper.realm).toBe("alpha");
     expect(wrapper.scripts.map((script) => script.role)).toEqual([
-      "setup",
       "subject",
       "result",
       "result",
     ]);
-    expect(wrapper.scripts[1]?.source).toContain(SUBJECT);
-    expect(wrapper.scripts[1]?.source).toContain(".before =");
-    expect(wrapper.scripts[1]?.source).toContain(".final =");
-    expect(wrapper.scripts[1]?.source).toContain("__rhino_local_snapshot_test01");
+    expect(wrapper.scripts[0]?.source).toContain(SUBJECT);
+    expect(wrapper.scripts[0]?.source).toContain(".before =");
+    expect(wrapper.scripts[0]?.source).toContain(".final =");
+    expect(wrapper.scripts[0]?.source).toContain("__rhino_local_snapshot_test01");
+    // The seed moved into the subject; nothing precedes it any more.
+    expect(wrapper.scripts[0]?.source).toContain("putShared");
+    expect(wrapper.nodes.map((node) => node.displayName)).not.toContain("setup");
 
-    const setup = wrapper.nodes.find((node) => node.displayName === "setup");
     const subject = wrapper.nodes.find(
       (node) => node.displayName === "grants when verified"
     );
@@ -53,30 +54,27 @@ describe("emitWrapperJourney", () => {
     const resultFalse = wrapper.nodes.find(
       (node) => node.displayName === "result false"
     );
-    expect(setup).toBeDefined();
     expect(subject).toBeDefined();
     expect(resultTrue).toBeDefined();
     expect(resultFalse).toBeDefined();
     if (
-      setup === undefined ||
       subject === undefined ||
       resultTrue === undefined ||
       resultFalse === undefined
     ) {
       return;
     }
-    expect(setup.connections).toEqual({ true: subject.id });
     expect(subject.connections).toEqual({
       true: resultTrue.id,
       false: resultFalse.id,
     });
     expect(resultTrue.connections).toEqual({ true: SUCCESS_NODE_ID });
-    expect(wrapper.treeBody.entryNodeId).toBe(setup.id);
-    expect(wrapper.nodeBodies[setup.id]?.inputs).toEqual(["*"]);
-    expect(wrapper.nodeBodies[setup.id]?.outputs).toEqual(["*"]);
+    expect(wrapper.treeBody.entryNodeId).toBe(subject.id);
+    expect(wrapper.nodeBodies[subject.id]?.inputs).toEqual(["*"]);
+    expect(wrapper.nodeBodies[subject.id]?.outputs).toEqual(["*"]);
   });
 
-  it("puts request headers/parameters/cookies on invoke, not in the setup script", () => {
+  it("puts request headers/parameters/cookies on invoke, not in any script", () => {
     const wrapper = emitWrapperJourney(
       caseWith({
         given: {
@@ -93,8 +91,13 @@ describe("emitWrapperJourney", () => {
       parameters: { goto: ["https://example.com/app"] },
       cookies: { sid: "abc" },
     });
-    const setup = wrapper.scripts.find((script) => script.role === "setup");
-    expect(setup?.source).not.toContain("x-forwarded-for");
+    // No script can assign those bindings, so none of them may mention the
+    // values either — a seed that smuggled them into state would look like
+    // the binding working while measuring the harness instead of AM.
+    for (const script of wrapper.scripts) {
+      expect(script.source).not.toContain("x-forwarded-for");
+      expect(script.source).not.toContain("example.com/app");
+    }
   });
 
   it("uses given.realm for the tree identityResource", () => {
@@ -118,7 +121,7 @@ describe("emitWrapperJourney", () => {
     ).toThrow(/next-gen only/);
   });
 
-  it("emits AM-lint-clean setup, instrumented subject and result scripts", async () => {
+  it("emits AM-lint-clean instrumented subject and result scripts", async () => {
     const wrapper = emitWrapperJourney(
       caseWith({
         given: { sharedState: { username: "alice" }, transientState: { t: 1 } },
