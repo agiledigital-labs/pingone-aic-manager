@@ -1374,3 +1374,44 @@ one not); both returned 4 `am-access` events, which is what separates "AIC
 ignored my id" from "the query was wrong" from "the events had not landed yet".
 Events were queryable 9 s after the request, on the first poll — a ceiling, not
 a measurement of the lag.
+
+## 2026-09-14 — `existingSession` measured, and it needs no real user
+
+`existingSession` sat at status **D** with an empty shape column since the
+bindings matrix was written, on the strength of one probe that saw `undefined`.
+That probe simply had no session. Sending a session cookie populates it.
+
+It is a **flat string map** — `for…in` enumerates it, values are strings
+(`AuthLevel` is `"0"`) — with 23 keys on a minimal journey-issued session, plus
+whatever a prior journey set with `action.putSessionProperty`. There is no
+`username`; the principal is `UserId` / `Principals`.
+
+The part worth knowing is how cheap a session is. The mini journey that mints
+one is a single scripted decision node:
+
+```javascript
+nodeState.putShared("username", "alice");
+action.goTo("true").putSessionProperty("rlProbe", "hello");
+```
+
+No Identify Existing User node, no callbacks, and **no such user**:
+`GET /openidm/managed/alpha_user/alice` is 404, and the session still carries
+`UserId: "alice"` and a `sun.am.UniversalIdentifier` DN for an entry that does
+not exist. That is the same trap already recorded in `09-journeys.md` — a
+`tokenId` is not evidence a journey did its work — seen from the other side and
+used deliberately, because it makes session fixtures free.
+
+Two negatives are worth recording because they cost time to establish:
+
+- The receiving tree needs **no** configuration to accept an existing session.
+  An ordinary default tree sees it.
+- A probe journey that runs to **completion** cannot report anything. The
+  `/authenticate` response for a finished journey is only
+  `{tokenId, successUrl, realm}` — no state, no session, no callbacks. The
+  first version of this probe wrote its findings to shared state and to a
+  session property and returned neither, which read as a broken script rather
+  than a missing channel. End a probe with a `hiddenValueCallback`.
+
+The control matters here: the same journey and the same script, invoked without
+the cookie, still reported `undefined`. Without that arm, a populated result
+would have been evidence about the probe rather than about the cookie.
