@@ -126,11 +126,11 @@ describe("toCase", () => {
     const draft = mergeChannels({ state: { shared: { a: 1 } } }, undefined);
     const kase = toCase(
       { name: "resolve-identity", script: "src", outcomes: ["matched", "notFound"] },
-      "matches one",
+      "resolve-identity > matches one",
       draft,
       { outcome: "matched" }
     );
-    expect(kase.name).toBe("resolve-identity › matches one");
+    expect(kase.name).toBe("resolve-identity > matches one");
     expect(kase.outcomes).toEqual(["matched", "notFound"]);
     expect(kase.given.sharedState).toEqual({ a: 1 });
   });
