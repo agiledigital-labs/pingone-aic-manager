@@ -156,13 +156,18 @@ export function toGiven(draft: RequestDraft, base: Given = {}): Given {
 /** Assemble the `Case` both lanes are judged against. One definition. */
 export function toCase<TSchema extends z.ZodType>(
   spec: Pick<SuiteSpec<TSchema>, "name" | "script" | "outcomes">,
-  testName: string,
+  /**
+   * Used verbatim. The vitest adapter supplies an already-qualified
+   * "describe > test" path, so prefixing the suite name here would print it
+   * twice in every failure message.
+   */
+  caseName: string,
   draft: RequestDraft,
   expect: Expect,
   base: Given = {}
 ): Case {
   return {
-    name: `${spec.name} › ${testName}`,
+    name: caseName,
     script: spec.script,
     outcomes: spec.outcomes,
     given: toGiven(draft, base),

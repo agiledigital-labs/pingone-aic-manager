@@ -1,0 +1,268 @@
+import type { z } from "zod";
+import { judge } from "../case/index.ts";
+import type { Case, Expect, JsonObject, RecordedEffects, Verdict } from "../case/types.ts";
+import { runCase } from "../bindings/index.ts";
+import type { RhinoRunner } from "../runner.ts";
+import { ledgerToManaged, localIdmHandle } from "./idm.ts";
+import { describeResidue, findResidue } from "./residue.ts";
+import {
+  applyInputsAndEsv,
+  mergeChannels,
+  normaliseWire,
+  parseInputs,
+  toCase,
+} from "./spec.ts";
+import type {
+  Channels,
+  FixtureSpec,
+  IdmHandle,
+  RequestDraft,
+  SuiteSpec,
+  WireMap,
+} from "./types.ts";
+
+export interface RunResult {
+  kase: Case;
+  effects: RecordedEffects;
+  verdict: Verdict;
+}
+
+export interface CheckContext<TInput> {
+  input: TInput;
+  effects: RecordedEffects;
+}
+
+export interface LeaseOptions {
+  runner: RhinoRunner;
+  timeoutMs?: number;
+  /** A test that deliberately leaves a record behind and asserts on it. */
+  allowResidue?: boolean;
+  /**
+   * How to name the run in failure messages. Supplied by the vitest adapter
+   * so this module stays framework-free — the residue check and the merge
+   * logic are worth unit-testing without a test runner in the way.
+   */
+  testName?: () => string;
+}
+
+type Check<TInput> = (idm: IdmHandle, ctx: CheckContext<TInput>) => void | Promise<void>;
+
+/**
+ * One test's run, assembled lazily.
+ *
+ * Deliberately NOT a thenable. A builder that is also a promise invites an
+ * `await` halfway through the chain, after which `.check()` is appending to a
+ * run that has already settled — a bug that reads as working code. Making
+ * `.expect()` the only terminal turns that whole class into a type error.
+ */
+export class RunBuilder<TInput> {
+  readonly #lease: Lease<z.ZodType>;
+  readonly #testName: string;
+  readonly #rawInput: unknown;
+  #override: Channels = {};
+  readonly #checks: Check<TInput>[] = [];
+
+  constructor(lease: Lease<z.ZodType>, testName: string, rawInput: unknown) {
+    this.#lease = lease;
+    this.#testName = testName;
+    this.#rawInput = rawInput;
+  }
+
+  state(state: Channels["state"]): this {
+    this.#override = { ...this.#override, state: mergeState(this.#override.state, state) };
+    return this;
+  }
+
+  esv(esv: Readonly<Record<string, string>>): this {
+    this.#override = { ...this.#override, esv: { ...this.#override.esv, ...esv } };
+    return this;
+  }
+
+  headers(headers: WireMap): this {
+    this.#override = { ...this.#override, headers: { ...this.#override.headers, ...headers } };
+    return this;
+  }
+
+  params(params: WireMap): this {
+    this.#override = { ...this.#override, params: { ...this.#override.params, ...params } };
+    return this;
+  }
+
+  session(session: JsonObject): this {
+    this.#override = { ...this.#override, session: { ...this.#override.session, ...session } };
+    return this;
+  }
+
+  /**
+   * Assert against real IDM state and the raw response. `idm` is the mock
+   * store locally and REST against the tenant remotely, so a check written
+   * once means the same thing on both lanes. Fail by throwing — vitest's
+   * `expect` is the point, and the declarative `expect` block stays for what
+   * it is good at.
+   */
+  check(fn: Check<TInput>): this {
+    this.#checks.push(fn);
+    return this;
+  }
+
+  /** The only terminal. */
+  async expect(expected: Expect): Promise<RunResult> {
+    return this.#lease.execute(
+      this.#testName,
+      this.#rawInput,
+      this.#override,
+      expected,
+      this.#checks as Check<unknown>[]
+    );
+  }
+}
+
+export class Lease<TSchema extends z.ZodType> {
+  readonly #spec: SuiteSpec<TSchema>;
+  readonly #options: LeaseOptions;
+  /** Everything the harness created, in creation order. */
+  #suiteLedger: FixtureSpec[] = [];
+  #testLedger: FixtureSpec[] = [];
+
+  constructor(spec: SuiteSpec<TSchema>, options: LeaseOptions) {
+    this.#spec = spec;
+    this.#options = options;
+  }
+
+  /** Suite-scoped fixtures, created once before the first test. */
+  open(): void {
+    this.#suiteLedger = [];
+    for (const fixture of Object.values(this.#spec.fixtures ?? {})) {
+      this.#suiteLedger.push(fixture);
+    }
+  }
+
+  readonly fixtures = {
+    create: (type: string, record: JsonObject | JsonObject[]): Promise<void> => {
+      for (const one of Array.isArray(record) ? record : [record]) {
+        this.#testLedger.push({ type, record: one });
+      }
+      return Promise.resolve();
+    },
+  };
+
+  run(input?: z.input<TSchema>): RunBuilder<z.output<TSchema>> {
+    return new RunBuilder(
+      this as unknown as Lease<z.ZodType>,
+      this.#options.testName?.() ?? this.#spec.name,
+      input
+    );
+  }
+
+  /**
+   * Drained after every test. The per-test ledger goes; the suite's stays
+   * until close(). Clearing only at teardown would let test 3 see test 1's
+   * records, which is the cross-test interference this design exists to
+   * remove.
+   */
+  endTest(): Promise<void> {
+    this.#testLedger = [];
+    return Promise.resolve();
+  }
+
+  /** Suite teardown: drop what the suite created, alongside the journey. */
+  close(): Promise<void> {
+    this.#testLedger = [];
+    this.#suiteLedger = [];
+    return Promise.resolve();
+  }
+
+  ledger(): readonly FixtureSpec[] {
+    return [...this.#suiteLedger, ...this.#testLedger];
+  }
+
+  async execute(
+    testName: string,
+    rawInput: unknown,
+    override: Channels,
+    expected: Expect,
+    checks: readonly Check<unknown>[]
+  ): Promise<RunResult> {
+    const input = parseInputs(this.#spec, rawInput);
+    const draft = mergeChannels(this.#spec.always, override);
+    if (this.#spec.beforeRun !== undefined) {
+      await this.#spec.beforeRun({
+        input: input as z.output<TSchema>,
+        request: draft,
+        fixtures: this.fixtures,
+      });
+    }
+    applyInputsAndEsv(draft, input);
+    const ledger = this.ledger();
+    const kase = toCase(this.#spec, testName, draft, expected, {
+      managed: ledgerToManaged(ledger),
+    });
+    const effects = await runCase(this.#options.runner, kase, {
+      ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
+    });
+    const verdict = judge(kase, effects.effects);
+
+    const store = cloneStore(effects.effects.managedStore);
+    const idm = localIdmHandle(store ?? {}, () => undefined);
+    for (const check of checks) {
+      await check(idm, { input, effects: effects.effects });
+    }
+    if (this.#spec.cleanup !== undefined) {
+      await this.#spec.cleanup(idm, { input: input as z.output<TSchema> });
+    }
+    // The store is diffed AFTER cleanup ran, which is the only ordering that
+    // tests the cleanup rather than the script.
+    if (this.#options.allowResidue !== true) {
+      const residue = findResidue(store, ledger);
+      if (residue.length > 0) {
+        throw new Error(`rhino-local: ${kase.name}\n  ${describeResidue(residue)}`);
+      }
+    }
+    return { kase, effects: effects.effects, verdict };
+  }
+}
+
+export interface Suite<TSchema extends z.ZodType> {
+  spec: SuiteSpec<TSchema>;
+  lease(options: LeaseOptions): Lease<TSchema>;
+}
+
+export function defineSuite<TSchema extends z.ZodType>(
+  spec: SuiteSpec<TSchema>
+): Suite<TSchema> {
+  if (spec.outcomes.length === 0) {
+    throw new Error(
+      `rhino-local: suite ${JSON.stringify(spec.name)} must declare its outcomes — a tenant answers an undeclared outcome with a bare 401 and no callback`
+    );
+  }
+  return {
+    spec,
+    lease: (options) => new Lease(spec, options),
+  };
+}
+
+/** A managed record the suite creates once, for the whole file. */
+export function managed(type: string, record: JsonObject): FixtureSpec {
+  return { type, record };
+}
+
+function mergeState(
+  a: Channels["state"],
+  b: Channels["state"]
+): NonNullable<Channels["state"]> {
+  return {
+    shared: { ...(a?.shared ?? {}), ...(b?.shared ?? {}) },
+    transient: { ...(a?.transient ?? {}), ...(b?.transient ?? {}) },
+  };
+}
+
+function cloneStore(
+  store: Record<string, JsonObject[]> | undefined
+): Record<string, JsonObject[]> | undefined {
+  return store === undefined
+    ? undefined
+    : (JSON.parse(JSON.stringify(store)) as Record<string, JsonObject[]>);
+}
+
+export { normaliseWire };
+export type { RequestDraft, SuiteSpec };
