@@ -63,12 +63,31 @@ checks instead — see [04-scripts.md](04-scripts.md).
 ## Transaction tracing
 
 AM responses include `X-ForgeRock-TransactionId: <uuid>`. Log it on errors so
-that future `/monitoring/logs` queries can filter by
-`payload/transactionId eq …`.
+that future `/monitoring/logs` queries can find the request.
+
+**The header is also accepted on the request, and the supplied value wins**
+(verified 2026-09-14). Send `x-forgerock-transactionid: <your-id>` and the
+response echoes it back unchanged — no override by the edge, no decoration —
+and `/monitoring/logs` serves the resulting events under it. A caller that
+names its own id therefore knows the log key *before* it makes the call,
+instead of having to read a response header and correlate afterwards.
+
+AM stores the id with a `/N/M` sub-request suffix appended
+(`<your-id>/0/0`, `<your-id>/0/1`), but the log query matches on a **prefix**,
+so the bare id you sent retrieves them — see
+[08-logs.md](08-logs.md#transaction-id-matching-is-a-prefix-match) for the
+matching rule and the collision it creates for sequentially numbered ids.
 
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-09-14
+- Calls: `GET /am/json/realms/root/realms/alpha/scripts?_queryFilter=true`
+  sent twice — once with `x-forgerock-transactionid: <supplied-id>`, once
+  without as a control. The supplied arm returned 200 echoing the header
+  verbatim; the control returned a bare server-generated UUID. Both arms'
+  events were then retrievable from `/monitoring/logs`, which is what makes
+  the supplied-id claim about logging and not only about the response header.
 - Date: 2026-05-17
 - Verified the entire "header cheat sheet" table above by making one live call
   per row (where credentials allow).

@@ -1334,3 +1334,43 @@ retrying, and not a syntax failure.
 
 Documented in `docs/api/04-scripts.md` ("Syntax validation") and
 `docs/api/11-idm-endpoints.md` ("Syntax validation").
+
+## 2026-09-14 — transaction ids: the caller picks them, matching is by prefix
+
+Two claims in this repo were wrong, and they were wrong in opposite directions.
+
+`02-headers-and-versioning.md` described `X-ForgeRock-TransactionId` as
+something **AM responses include** — read it off the response, correlate later.
+It is also accepted on the *request*, and the supplied value wins: the response
+echoes it back unchanged and `/monitoring/logs` serves the events under it. A
+caller can therefore know the log key before it makes the call. That is the
+difference between "find the logs for the request that just failed" and
+"fetch the logs for the id I already wrote into the failure record".
+
+`08-logs.md` claimed `aic logs tx` was **an exact match on the full transaction
+id, not a prefix match**. It is a prefix match. AM stores a request under
+`<root>/0/0` and `<root>/0/1`, and querying the bare `<root>` returns both —
+which is precisely why supplying your own undecorated root works at all. The
+old claim and the new capability are linked: had the exact-match claim been
+true, a supplied id would have been useless, because you would have had to
+guess AM's suffix to query for it.
+
+The trap is in the same property. Prefix matching does not respect the
+boundaries a caller imagines between its own ids:
+
+```text
+query <stem>-1   ->  <stem>-1/0/0   <stem>-1/0/1   <stem>-10/0/0  <stem>-10/0/1
+query <stem>-10  ->  <stem>-10/0/0  <stem>-10/0/1
+```
+
+A run that numbers its steps `-1`, `-2`, … `-10` has step 1 silently absorb
+step 10. Nothing errors, and the failure is *extra* events rather than missing
+ones, so it reads as a fuller log rather than as a bug — the worst shape for
+something a human only looks at when already debugging something else. Zero-pad
+any sequential suffix.
+
+Measured on the sandbox with a control arm (one request supplying the header,
+one not); both returned 4 `am-access` events, which is what separates "AIC
+ignored my id" from "the query was wrong" from "the events had not landed yet".
+Events were queryable 9 s after the request, on the first poll — a ceiling, not
+a measurement of the lag.

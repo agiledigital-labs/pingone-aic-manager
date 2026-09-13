@@ -80,7 +80,7 @@ session (onboarding); otherwise paste console-created keys.
 | `source`              | string (comma-separated)          | Required. e.g. `am-access`, `idm-everything`.                                                                                                                                                   |
 | `beginTime`           | ISO 8601 (`2026-05-17T10:00:00Z`) | ≤24h before `endTime`; exclusive at an exact event timestamp.                                                                                                                                   |
 | `endTime`             | ISO 8601                          | Required if `beginTime` set; inclusive at an exact event timestamp.                                                                                                                             |
-| `transactionId`       | string                            | **Direct top-level param** — `&transactionId=<id>` filters to one transaction. This is the working path (verified via the `gt`-style call), not `_queryFilter`.                                 |
+| `transactionId`       | string                            | **Direct top-level param** — `&transactionId=<id>` filters to one transaction. This is the working path (verified via the `gt`-style call), not `_queryFilter`. Matches on a **prefix**, not an exact id — see below. The caller may also choose the id: send `x-forgerock-transactionid` on the AM request (`02-headers-and-versioning.md`). |
 | `_queryFilter`        | CREST filter                      | Barely usable — `payload/transactionId eq "abc"` works; most other `payload/*` fields return **500**. No array indexing. Prefer the `transactionId` param, then filter client-side. See Quirks. |
 | `_pageSize`           | int                               | Default 1000, max 1000.                                                                                                                                                                         |
 | `_pagedResultsCookie` | opaque                            | From previous page.                                                                                                                                                                             |
@@ -225,15 +225,54 @@ curl -sS "$TENANT_BASE_URL/monitoring/logs/sources" \
   code. `am-core` is verbose enough (~1,000 events in 20s on UAT, with
   `idm-core` adding ~8,400) that this matters for any feature that greps logs by
   logger or message.
-- **`aic logs tx` is an exact match on the full transaction id**, including the
-  `-request-N/M` suffix — it is not a prefix match. Sub-requests AM makes while
-  serving a request (notably the SAML `/am/AuthConsumer` POST) carry a
-  _different_ root id and will not be returned. To follow one user action across
-  transactions, `aic logs range` a few seconds either side and group by
-  `payload.transactionId`. See `06-saml.md` → "Diagnosing a rejected assertion"
-  for a worked example.
+- **`aic logs tx` matches on a PREFIX of the transaction id** — corrected
+  2026-09-14; this entry previously claimed an exact match on the full id
+  including the `-request-N/M` suffix, and that is wrong. AM stores the id
+  decorated (`<root>/0/0`, `<root>/0/1`) and querying the bare undecorated
+  root returns those children. See "Transaction id matching is a prefix match"
+  below for the measurement and the collision it creates.
+  Sub-requests AM makes while serving a request (notably the SAML
+  `/am/AuthConsumer` POST) carry a _different_ root id and are still not
+  returned — that half of the old entry stands. To follow one user action
+  across genuinely different roots, `aic logs range` a few seconds either side
+  and group by `payload.transactionId`. See `06-saml.md` → "Diagnosing a
+  rejected assertion" for a worked example.
 - **`transactionId` appears twice** in payload (top-level and inside `mdc`).
   They should match; use the top-level one.
+
+## Transaction id matching is a prefix match
+
+Verified 2026-09-14 on the sandbox, against `am-access`.
+
+`&transactionId=<id>` (and therefore `aic logs tx <id>`) returns every event
+whose stored `transactionId` **starts with** the value given. Two consequences,
+one useful and one dangerous.
+
+**Useful:** AM appends a sub-request suffix to whatever root it has, so one
+request is stored as `<root>/0/0` and `<root>/0/1`. Querying the bare `<root>`
+retrieves both. A caller that supplies its own root id (see
+`02-headers-and-versioning.md`) can therefore query for it verbatim, and a
+caller that uses one root *stem* across several requests can fetch all of them
+in a single call.
+
+**Dangerous:** the prefix relation also holds between ids the caller thinks are
+distinct. Two requests sent as `<stem>-1` and `<stem>-10`:
+
+```text
+query <stem>-1   ->  <stem>-1/0/0   <stem>-1/0/1   <stem>-10/0/0  <stem>-10/0/1
+query <stem>-10  ->  <stem>-10/0/0  <stem>-10/0/1
+```
+
+Step 1's query silently absorbs step 10's events. Nothing errors; the answer is
+simply wrong, and wrong in the direction of returning *more* than asked for,
+which reads as a fuller log rather than as a bug. **Any scheme that numbers
+sub-requests must zero-pad** (`<stem>-01` … `<stem>-99`) so that no id is a
+prefix of another.
+
+**Availability:** the events were queryable on the first poll, 9 s after the
+request, including the two fetches themselves. That is a ceiling rather than a
+measurement of the lag, taken on one source and one request type — do not quote
+it as "logs appear within 9 seconds".
 
 ## Source IDs (verified)
 
@@ -343,6 +382,15 @@ user explicitly syncs `--source idm-core` or `--source am-core`.
 
 - Tenant: `tenant.example.com` (the pingone-aic-manager
   sandbox)
+- Date: 2026-09-14 — transaction-id matching and caller-supplied ids
+- Calls: `GET /am/json/realms/root/realms/alpha/scripts?_queryFilter=true`
+  with `x-forgerock-transactionid` supplied, plus a control with no header.
+  `aic logs tx --source am-access` then fetched both. The control is what makes
+  the result readable: an empty return for the supplied arm alone would have
+  meant "AIC ignores supplied ids", and an empty return for both would have
+  meant "the query or the lag is wrong" — both arms returning 4 events
+  distinguishes them. A second pair sent as `<stem>-1` / `<stem>-10` established
+  the prefix behaviour and the padding requirement.
 - Date: 2026-06-30 (journey join key re-corrected 2026-07-01 — full
   `trackingIds[0]`, not the stripped base or tree `_id`)
 - Calls:
