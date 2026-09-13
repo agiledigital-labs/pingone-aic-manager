@@ -7,7 +7,6 @@ import {
   SUCCESS_NODE_ID,
 } from "./constants.ts";
 import { emitResultScript } from "./emit-result.ts";
-import { emitSetupScript } from "./emit-setup.ts";
 import { instrumentSubject } from "./emit-subject.ts";
 
 export interface EmitJourneyOptions {
@@ -27,7 +26,7 @@ export interface ScriptResource {
   id: string;
   name: string;
   source: string;
-  role: "setup" | "subject" | "result";
+  role: "subject" | "result";
   /** Baked-in outcome, only for `role: "result"`. */
   outcome?: string;
 }
@@ -89,14 +88,8 @@ export function emitWrapperJourney(
   const nextId = options.idFactory ?? randomUUID;
   const outcomes = subjectOutcomes(kase);
   const treeName = `${RESOURCE_PREFIX}-${runId}`;
-  const instrumented = instrumentSubject(source, runId);
+  const instrumented = instrumentSubject(source, runId, kase.given);
 
-  const setupScript: ScriptResource = {
-    id: nextId(),
-    name: `${treeName}-setup`,
-    source: emitSetupScript(kase.given),
-    role: "setup",
-  };
   const subjectScript: ScriptResource = {
     id: nextId(),
     name: `${treeName}-subject`,
@@ -148,21 +141,12 @@ export function emitWrapperJourney(
     scriptId: subjectScript.id,
     outcomes,
     connections: subjectConnections,
-    x: 320,
-    y: 200,
-  };
-  const setupNode: NodeResource = {
-    id: nextId(),
-    displayName: "setup",
-    scriptId: setupScript.id,
-    outcomes: [SETUP_OUTCOME],
-    connections: { [SETUP_OUTCOME]: subjectNode.id },
     x: 80,
     y: 200,
   };
 
-  const nodes = [setupNode, subjectNode, ...resultNodes];
-  const scripts = [setupScript, subjectScript, ...resultScripts];
+  const nodes = [subjectNode, ...resultNodes];
+  const scripts = [subjectScript, ...resultScripts];
   const treeNodes: Record<string, unknown> = {};
   for (const node of nodes) {
     treeNodes[node.id] = {
@@ -177,7 +161,7 @@ export function emitWrapperJourney(
 
   const treeBody: Record<string, unknown> = {
     identityResource: `managed/${realm}_user`,
-    entryNodeId: setupNode.id,
+    entryNodeId: subjectNode.id,
     innerTreeOnly: false,
     description: "rhino-local AIC lane throwaway. Safe to delete.",
     noSession: false,
