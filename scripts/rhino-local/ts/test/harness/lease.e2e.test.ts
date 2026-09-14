@@ -18,6 +18,8 @@ const SCRIPT = [
   "}",
 ].join("\n");
 
+const cleanedInputs: string[] = [];
+
 const suite = defineSuite({
   name: "resolve-identity",
   script: SCRIPT,
@@ -40,6 +42,10 @@ const suite = defineSuite({
       userName: input.userId,
       preferredLocale: input.locale,
     });
+  },
+  cleanup: (_idm, { input }) => {
+    cleanedInputs.push(input.userId);
+    return Promise.resolve();
   },
 });
 
@@ -119,5 +125,21 @@ describe("resolve-identity", () => {
       });
     expect(run.kase.outcomes).toEqual(["matched", "notFound"]);
     expect(run.verdict.summary, run.verdict.summary).toBe("");
+  });
+
+  it("runs cleanup when a final check throws", async () => {
+    const before = cleanedInputs.length;
+    await expect(
+      lease
+        .run({ userId: USER_IDS.dave })
+        .check(() => {
+          throw new Error("deliberate check failure");
+        })
+        .expect({
+          outcome: "matched",
+          allowUndeclared: { openidmReads: true, logs: true, sharedState: true },
+        })
+    ).rejects.toThrow(/deliberate check failure/);
+    expect(cleanedInputs.slice(before)).toEqual([USER_IDS.dave]);
   });
 });
