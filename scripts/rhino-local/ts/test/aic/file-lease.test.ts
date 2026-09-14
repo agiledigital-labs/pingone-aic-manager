@@ -77,6 +77,39 @@ describe("AicFileLease", () => {
     await lease.close();
   });
 
+  it("fails unsupported input by default before mutating the subject", async () => {
+    const fake = new FakeLeaseTenant();
+    const lease = makeLease(fake);
+    await lease.open();
+    const arms = fake.events.filter((event) => event === "arm").length;
+    await expect(
+      lease.run(request("legacy", "alpha", { engine: "legacy" }))
+    ).rejects.toThrow(/AIC lane unsupported/);
+    expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
+    await lease.close();
+  });
+
+  it("only skips unsupported input when explicitly configured", async () => {
+    const fake = new FakeLeaseTenant();
+    const lease = new AicFileLease({
+      id: "file-lease-test",
+      suiteName: "file lease test",
+      source: SOURCE,
+      outcomes: ["done"],
+      unsupported: "skip",
+      project: "/tmp/rhino-local-aic-test",
+      io: fake.io,
+    });
+    await lease.open();
+    const arms = fake.events.filter((event) => event === "arm").length;
+    const report = await lease.run(
+      request("legacy", "alpha", { engine: "legacy" })
+    );
+    expect(report.passes[0]?.aic.skipped).toMatch(/legacy engine/);
+    expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
+    await lease.close();
+  });
+
   it("treats create status on subject replacement as staleness", async () => {
     const fake = new FakeLeaseTenant({ armStatus: 201 });
     const lease = makeLease(fake);

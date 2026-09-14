@@ -1,15 +1,39 @@
 import { relative } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, expect } from "vitest";
 import type { z } from "zod";
+import type { File, Suite as VitestSuite } from "vitest";
+import { AicFileLease } from "../aic/file-lease.ts";
+import { chainFromRunResult } from "../aic/conform.ts";
+import type { AicIo } from "../aic/tenant.ts";
 import { clearAicTrace, takeAicTrace } from "../aic/trace.ts";
 import { packageRoot } from "../paths.ts";
 import { RhinoRunner } from "../runner.ts";
 import { recordFailureIfAny } from "./failures.ts";
-import { Lease, type LeaseOptions, type Suite } from "./lease.ts";
+import {
+  Lease,
+  type LeaseLane,
+  type LeaseOptions,
+  type Suite,
+} from "./lease.ts";
+
+export interface UseLeaseAicOptions {
+  id: string;
+  realm?: string;
+  tenant?: string;
+  project?: string;
+  unsupported?: "fail" | "skip";
+}
 
 export interface UseLeaseOptions extends Partial<Omit<LeaseOptions, "runner">> {
   spawnTimeoutMs?: number;
+  aic?: UseLeaseAicOptions;
+  /** Injected fake seam for adapter tests; production uses the default AIC I/O. */
+  aicIo?: AicIo;
+  /** Injected filesystem seam for adapter tests. */
+  aicStateDir?: string;
 }
+
+const aicLeaseByFile = new Map<string, string>();
 
 /**
  * Take a lease for one test file, and register its own lifecycle.
@@ -25,6 +49,21 @@ export function useLease<TSchema extends z.ZodType>(
   options: UseLeaseOptions = {}
 ): Lease<TSchema> {
   let runner: RhinoRunner | undefined;
+  let aicLease: AicFileLease | undefined;
+  let aicFile: string | undefined;
+  const lane: LeaseLane | undefined =
+    options.aic === undefined
+      ? undefined
+      : {
+          run: ({ result, source }) => {
+            if (aicLease === undefined) {
+              throw new Error("rhino-local: AIC lease used before beforeAll completed");
+            }
+            return aicLease.run({ ...chainFromRunResult(result), source });
+          },
+          endTest: () =>
+            aicLease?.endTest() ?? Promise.resolve(),
+        };
   const lease = new Lease(suite.spec, {
     get runner(): RhinoRunner {
       if (runner === undefined) {
@@ -36,12 +75,34 @@ export function useLease<TSchema extends z.ZodType>(
     },
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(options.allowResidue !== undefined ? { allowResidue: options.allowResidue } : {}),
+    ...(lane === undefined ? {} : { lane }),
     testName: () => expect.getState().currentTestName ?? suite.spec.name,
   } as LeaseOptions);
 
-  beforeAll(async () => {
+  beforeAll(async (scope) => {
     runner = await RhinoRunner.spawn();
     lease.open();
+    if (options.aic !== undefined) {
+      aicFile = vitestFilePath(scope);
+      claimAicLeaseForFile(aicFile, options.aic.id);
+      aicLease = new AicFileLease({
+        id: options.aic.id,
+        suiteName: suite.spec.name,
+        source: suite.spec.script,
+        outcomes: suite.spec.outcomes,
+        ...(options.aic.realm === undefined ? {} : { realm: options.aic.realm }),
+        ...(options.aic.tenant === undefined ? {} : { tenant: options.aic.tenant }),
+        ...(options.aic.project === undefined ? {} : { project: options.aic.project }),
+        ...(options.aic.unsupported === undefined
+          ? {}
+          : { unsupported: options.aic.unsupported }),
+        ...(options.aicIo === undefined ? {} : { io: options.aicIo }),
+        ...(options.aicStateDir === undefined
+          ? {}
+          : { stateDir: options.aicStateDir }),
+      });
+      await aicLease.open();
+    }
   }, options.spawnTimeoutMs ?? 60_000);
 
   beforeEach((context) => {
@@ -68,9 +129,49 @@ export function useLease<TSchema extends z.ZodType>(
   });
 
   afterAll(async () => {
-    await lease.close();
-    await runner?.close();
+    const errors: unknown[] = [];
+    try {
+      await aicLease?.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await lease.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      await runner?.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (aicFile !== undefined) {
+      releaseAicLeaseForFile(aicFile, options.aic?.id);
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "rhino-local lease teardown failed");
+    }
   }, 30_000);
 
   return lease;
+}
+
+export function claimAicLeaseForFile(file: string, id: string): void {
+  const existing = aicLeaseByFile.get(file);
+  if (existing !== undefined) {
+    throw new Error(
+      `rhino-local: test file already has AIC lease ${JSON.stringify(existing)}; split ${JSON.stringify(id)} into another file`
+    );
+  }
+  aicLeaseByFile.set(file, id);
+}
+
+export function releaseAicLeaseForFile(file: string, id?: string): void {
+  if (id === undefined || aicLeaseByFile.get(file) === id) {
+    aicLeaseByFile.delete(file);
+  }
+}
+
+function vitestFilePath(scope: Readonly<VitestSuite | File>): string {
+  return "filepath" in scope ? scope.filepath : scope.file.filepath;
 }

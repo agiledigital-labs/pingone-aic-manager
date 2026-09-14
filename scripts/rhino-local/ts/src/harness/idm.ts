@@ -2,11 +2,8 @@ import type { JsonObject, JsonValue } from "../case/types.ts";
 import type { FixtureSpec, IdmHandle } from "./types.ts";
 
 /**
- * `cleanup()` runs against this on both lanes — the mock store locally, REST
- * against the tenant remotely. That is the whole point of the abstraction: a
- * cleanup written directly against REST could not run locally, and the local
- * residue check would then prove nothing about the code that actually runs
- * on the tenant.
+ * Local `check()` and `cleanup()` handle. A tenant-backed counterpart does not
+ * exist yet; AIC-enabled conformance reports expose that observation gap.
  */
 export function localIdmHandle(
   store: Record<string, JsonObject[]>,
