@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
     "lint:am": "eslint --config eslint.am.config.js generated src/bindings cases --max-warnings 0",
-    "pull-profile": "node bin/pull-profile.ts"
+    "pull-profile": "node bin/pull-profile.ts",
+    "show-log": "node bin/show-log.ts"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
