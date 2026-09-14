@@ -628,10 +628,7 @@ replay them.
 deletes a throwaway graph around one call. The Vitest adapter instead sends
 `chainFromRunResult()` to its pre-opened `AicFileLease`.
 
-### Estimated call cost — not measured
-
-These figures are design estimates for capacity planning. They are not live
-measurements of the implementation.
+### Call cost — formula measured 2026-09-14
 
 Let `O` be the number of distinct subject outcomes after adding `true` and
 `false`. The reusable graph has an estimated `R = 2O + 3` resources: one
@@ -646,12 +643,28 @@ tree. For `N` one-pass cases without sessions or managed fixtures:
 = 2 + 4R + 3N
 ```
 
-For the smallest outcome graph, `O = 3` and `R = 9`, producing the design
-estimate `38 + 3N`. Ten cases are therefore estimated at 68 calls. Each
-additional outcome adds two graph resources and an estimated eight
-file-lifetime calls. Step chains add authenticate calls; managed fixtures,
-lazy session minting, cookie-name discovery, and bearer refresh add separate
-costs. The maintainer will measure the actual call counts after deployment.
+For the smallest outcome graph, `O = 3` and `R = 9`, giving **`38 + 3N`**.
+
+**Measured 2026-09-14** against the sandbox tenant: a three-case file lease
+counted through an instrumented `AicIo` made **47 calls** — exactly `38 + 3×3`
+— broken down as 2 CLI, 21 `GET`, 12 `PUT`, 9 `DELETE` and 3 `authenticate`,
+with 10 provisioning `PUT`s landing before the first `authenticate` and the
+remaining 2 being the later cases arming the subject slot. All three cases
+passed on both lanes with no disagreements. The formula above is therefore
+measured at `N = 3`, not merely derived; the per-case marginal cost of **3**
+is the number that matters, against **30** before the lease.
+
+| Cases in a file | Before | With the lease |
+| ---------------: | -----: | -------------: |
+|                3 |     90 |         **47** |
+|               10 |    300 |         **68** |
+|               20 |    600 |         **98** |
+
+Each additional outcome adds two graph resources and an estimated eight
+file-lifetime calls — that part is still derived, not measured. Step chains add
+one authenticate per pass; managed fixtures, lazy session minting, cookie-name
+discovery and bearer refresh add separate costs, none of which this measurement
+exercised.
 
 ## Unsettled
 
