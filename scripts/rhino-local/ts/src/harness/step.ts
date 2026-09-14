@@ -42,9 +42,11 @@ export interface StepSpec<TInput> {
    */
   reply: CallbackReply[] | ((ctx: StepContext<TInput>) => CallbackReply[]);
   /**
-   * Asserted after this pass and before the reply is submitted — the point of
-   * the chain is to check the world between two halves of a journey, not only
-   * at the end. Fail by throwing.
+   * Asserted on each lane after this pass and before the reply is submitted —
+   * the point of the chain is to check the world between two halves of a
+   * journey, not only at the end. AIC cannot dump intermediate node state
+   * without adding a script-visible callback, so `effects.evidence` marks
+   * those channels unobserved there. Fail by throwing.
    */
   check?: (idm: IdmHandle, ctx: StepContext<TInput>) => void | Promise<void>;
 }

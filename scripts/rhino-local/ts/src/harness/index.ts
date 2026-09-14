@@ -7,6 +7,9 @@ export type {
   StepResult,
   Suite,
   CheckContext,
+  Check,
+  LeaseLaneCheck,
+  LeaseLaneHooks,
 } from "./lease.ts";
 export { carryGiven, submittedCallbacks } from "./step.ts";
 export type { CallbackReply, StepContext, StepExpect, StepSpec } from "./step.ts";

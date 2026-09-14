@@ -55,11 +55,11 @@ export function useLease<TSchema extends z.ZodType>(
     options.aic === undefined
       ? undefined
       : {
-          run: ({ result, source }) => {
+          run: ({ result, source, hooks }) => {
             if (aicLease === undefined) {
               throw new Error("rhino-local: AIC lease used before beforeAll completed");
             }
-            return aicLease.run({ ...chainFromRunResult(result), source });
+            return aicLease.run({ ...chainFromRunResult(result), source, hooks });
           },
           endTest: () =>
             aicLease?.endTest() ?? Promise.resolve(),
