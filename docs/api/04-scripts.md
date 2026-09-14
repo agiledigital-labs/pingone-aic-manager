@@ -623,7 +623,48 @@ curl -X PUT "$TENANT_BASE_URL/am/json/realms/root/realms/alpha/scripts/$ID" \
   opt-in call — and it answers **200 with `success: false`**, not a 4xx, so a
   caller that only checks the status code sees every script as valid.
 
+### Request-body ceiling, and what it is not (verified 2026-09-14)
+
+There is **no script-specific size limit**. A script whose decoded source was
+2 MiB, then 3 MiB, then 3,928,064 bytes was accepted (201 on create, 200 on
+update) and read back **byte-exact** every time, ASCII and 3-byte UTF-8 alike.
+
+The ceiling is on the **request body**, and it is 5 MiB. Binary search on a
+script with a 21-byte source and a padded `description` — so nothing about the
+script content varied — put the boundary between a 5,242,816-byte body
+(accepted) and a 5,243,988-byte body (refused). 5 MiB is 5,242,880, which sits
+between them.
+
+Over the line, AM answers **400** with
+`The request could not be processed because the request size is too large`.
+It never truncates: every accepted write read back identical, and every
+refusal was a clean 400 with nothing stored.
+
+For base64 script source that works out to roughly 3.9 MB of decoded JavaScript
+before the envelope matters — far beyond anything a generated script reaches,
+so a harness needs no size guard, only the confirming read it already does.
+
+### `description` round-trips exactly (verified 2026-09-14)
+
+A script's `description` comes back from `GET` byte-identical to what was
+`PUT`, at every length and content tested: 202, 255, 1024 and 4096 characters;
+`:`-delimited identifiers; the punctuation set
+`" < > & ; \ / % + = ? # @ ~ ^ |`; multibyte (`café — ünïcode ☃`); leading and
+trailing whitespace, which is **preserved, not trimmed**; and the empty string.
+
+This makes `description` usable as an ownership marker that survives a
+write/read-back comparison — which is what `scripts/rhino-local/` needs it for.
+
 ## Verified against
+
+- Date: 2026-09-14 — script size and `description` round trip, realm `alpha`,
+  throwaway scripts created and deleted per arm. Sizes were binary-searched on
+  create and update with a decode-and-compare after every accepted write; the
+  body-size boundary was isolated with a 21-byte script and a padded
+  `description`, so script content was held fixed while body size varied. An
+  earlier run of the size arms was discarded: `jq --arg` exceeded ARG_MAX above
+  ~98 KB, so the 400s it recorded were the probe's, not the tenant's. No
+  reproduce script — the probes were scratch files, not committed.
 
 - Tenant: `<your-tenant>.forgeblocks.com`
 - Date: 2026-09-09 (`?_action=validate` — a valid script returned
