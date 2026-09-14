@@ -176,6 +176,19 @@ export async function addJournalFixture(
   }
 }
 
+export async function addJournalResources(
+  path: string,
+  resources: readonly CreatedResource[]
+): Promise<void> {
+  const journal = await requireJournal(path);
+  for (const resource of resources) {
+    if (!journal.resources.some((item) => sameResource(item, resource))) {
+      journal.resources.push({ ...resource });
+    }
+  }
+  await writeLeaseJournal(path, journal);
+}
+
 export async function removeJournalFixture(
   path: string,
   fixture: { type: string; id: string }
@@ -215,6 +228,19 @@ function processExists(pid: number): boolean {
   } catch (error) {
     return hasCode(error, "EPERM");
   }
+}
+
+function sameResource(left: CreatedResource, right: CreatedResource): boolean {
+  if (left.kind !== right.kind) {
+    return false;
+  }
+  if (left.kind === "tree" && right.kind === "tree") {
+    return left.name === right.name;
+  }
+  if (left.kind !== "tree" && right.kind !== "tree") {
+    return left.id === right.id;
+  }
+  return false;
 }
 
 function hasCode(error: unknown, code: string): boolean {

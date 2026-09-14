@@ -196,7 +196,7 @@ async function mintSession(
     realm: wrapper.realm,
   });
   await provisionJourney(io, session, minter, created);
-  const response = await invoke(
+  const response = await invokeJourney(
     io,
     session,
     minter,
@@ -219,7 +219,7 @@ async function mintSession(
  * The session cookie's name is per-tenant, so it has to be read rather than
  * assumed (`given.cookieName` is refused on this lane for the same reason).
  */
-async function fetchCookieName(
+export async function fetchCookieName(
   io: AicIo,
   session: TenantSession
 ): Promise<string> {
@@ -337,7 +337,7 @@ export async function driveJourney(
   proof?: { leaseDigest: string; invocationNonce: string; subjectDigest: string }
 ): Promise<RecordedEffects[]> {
   const passes: RecordedEffects[] = [];
-  let response = await invoke(io, session, wrapper, tx.next());
+  let response = await invokeJourney(io, session, wrapper, tx.next());
   for (const [index, reply] of replies.entries()) {
     const kase = cases[index] as Case;
     const label = kase.name;
@@ -351,7 +351,7 @@ export async function driveJourney(
       assembleEffects({ given: kase.given, callbacks: parsed.callbacks })
     );
     const body = fillCallbackInputs(response.body, reply, label);
-    response = await invoke(io, session, wrapper, tx.next(), body);
+    response = await invokeJourney(io, session, wrapper, tx.next(), body);
   }
   passes.push(recordFromAuthenticate(cases[cases.length - 1] as Case, response, proof));
   return passes;
@@ -374,7 +374,7 @@ function emitCase(cases: readonly Case[]): Case {
   return outcomes.size === 0 ? first : { ...first, outcomes: [...outcomes] };
 }
 
-async function invoke(
+export async function invokeJourney(
   io: AicIo,
   session: TenantSession,
   wrapper: WrapperJourney,
