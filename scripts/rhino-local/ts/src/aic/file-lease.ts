@@ -360,7 +360,11 @@ export class AicFileLease {
     if (subjectDigest === undefined) {
       throw new AicLaneError("leased subject instrumentation produced no digest");
     }
-    // TODO(live): measure the maximum accepted script size for create and update.
+    // No size guard: there is no script-specific limit, and the 5 MiB
+    // request-body ceiling is orders of magnitude above any generated subject
+    // (measured 2026-09-14, `docs/api/04-scripts.md`). Over it AM answers a
+    // clean 400 and stores nothing, so the confirming read below is the only
+    // check this needs — it never truncates.
     const body = {
       _id: this.identity.ids.subjectScript,
       name: `${this.identity.treeName}-subject`,
@@ -454,9 +458,11 @@ export class AicFileLease {
       await provisionJourney(this.#io, session, emitted, this.#sessionCreated);
       this.#sessionWrapper = emitted;
     } else {
-      // TODO(live): prove an updated reusable minter script is what the next
-      // invocation executes. The confirming GET catches storage drift but not
-      // an unmeasured compiled-script cache.
+      // A replaced minter script IS what the next invocation executes
+      // (measured 2026-09-14): one file minted a session carrying "A", this
+      // branch replaced the same script id to carry "B", and the subject
+      // journey 1.1s later saw "B". AM does not serve a cached compile here,
+      // so the slot is safe to reuse.
       const script = emitted.scripts[0] as WrapperJourney["scripts"][number];
       const body = scriptBody(script, this.identity.marker);
       const path = `${realmJsonPath(this.#realm)}/scripts/${script.id}`;
