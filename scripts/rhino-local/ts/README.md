@@ -65,7 +65,14 @@ npm run typecheck
 npm run lint
 npm run lint:am
 npm run measure   # JVM startup + per-job timings (needs docker + AM image)
+npm run show-log  # fetch AIC logs for a failed test (needs `aic login`)
 ```
+
+When a test that hit the AIC lane fails, `useLease` appends a JSONL record
+under `failures/` (gitignored, per-checkout). `npm run show-log` lists those
+newest first and fetches with `aic logs tx` — the stem first, so one call
+covers a whole authenticate chain. It never issues a range query. Logs open
+in `$LOGS_EDITOR` or `$EDITOR`; with neither set they print to stdout.
 
 `npm run generate` reads the captured JSON (offline; it does not call the
 tenant) and overwrites the two artefacts. Completeness tests fail if the
