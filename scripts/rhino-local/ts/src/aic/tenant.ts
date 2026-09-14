@@ -42,6 +42,12 @@ export interface AicIo {
   http(req: HttpRequest): Promise<HttpResponse>;
 }
 
+export const AM_CONFIG_API_VERSION = "protocol=2.0,resource=1.0";
+
+export function amConfigHeaders(): Array<[string, string]> {
+  return [["Accept-API-Version", AM_CONFIG_API_VERSION]];
+}
+
 export class AicLaneError extends Error {
   readonly status?: number;
   readonly transactionId?: string;

@@ -74,6 +74,7 @@ export function mockChain(
       },
     ],
   };
+  const resources = new Map<string, Record<string, unknown>>();
 
   fake.io = {
     aic(args) {
@@ -96,7 +97,11 @@ export function mockChain(
     http(req: HttpRequest): Promise<HttpResponse> {
       const url = new URL(req.url);
       if (req.method === "GET") {
-        return Promise.resolve(json(404, { code: 404 }));
+        return Promise.resolve(
+          resources.has(url.pathname)
+            ? json(200, resources.get(url.pathname))
+            : json(404, { code: 404 })
+        );
       }
       if (req.method === "DELETE") {
         return Promise.resolve(json(200, {}));
@@ -124,6 +129,7 @@ export function mockChain(
             fake.subjectOutcomes = body.outcomes as string[];
           }
         }
+        resources.set(url.pathname, readBack(url.pathname, body));
         return Promise.resolve(json(201, { _id: "created" }));
       }
       fake.authPosts.push(String(req.body));
@@ -139,6 +145,33 @@ export function mockChain(
     },
   };
   return fake;
+}
+
+function readBack(
+  path: string,
+  body: Record<string, unknown>
+): Record<string, unknown> {
+  if (path.includes("/scripts/")) {
+    return {
+      ...body,
+      createdBy: "server",
+      creationDate: 1,
+      lastModifiedBy: "server",
+      lastModifiedDate: 1,
+    };
+  }
+  if (path.includes("/nodes/ScriptedDecisionNode/")) {
+    return { ...body, _id: "node", _rev: "rev", _type: {}, _outcomes: [] };
+  }
+  const nodes = body.nodes as Record<string, Record<string, unknown>>;
+  return {
+    ...body,
+    _id: "tree",
+    _rev: "rev",
+    nodes: Object.fromEntries(
+      Object.entries(nodes).map(([id, node]) => [id, { version: "1.0", ...node }])
+    ),
+  };
 }
 
 function json(status: number, body: unknown): HttpResponse {

@@ -48,10 +48,22 @@ export { emitResultScript } from "./emit-result.ts";
 export { instrumentSubject } from "./emit-subject.ts";
 export type { InstrumentedSubject } from "./emit-subject.ts";
 export type { ManagedFixture } from "./managed.ts";
+export {
+  confirmResourceSnapshot,
+  nodeRequestProjection,
+  resourceRequestProjection,
+} from "./resource-snapshot.ts";
+export type { AicResourceKind } from "./resource-snapshot.ts";
 export { assembleEffects, classifyFinal, parseSubjectDump } from "./record.ts";
 export type { SubjectDump } from "./record.ts";
 export { runAicChain, runAicLane } from "./run.ts";
 export type { AicReply, RunAicOptions } from "./run.ts";
-export { AicLaneError, connectTenant, defaultAicIo } from "./tenant.ts";
+export {
+  AicLaneError,
+  AM_CONFIG_API_VERSION,
+  amConfigHeaders,
+  connectTenant,
+  defaultAicIo,
+} from "./tenant.ts";
 export type { AicIo, TenantSession } from "./tenant.ts";
 export { aicUnsupportedReason } from "./unsupported.ts";

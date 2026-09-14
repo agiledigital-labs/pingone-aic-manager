@@ -62,6 +62,13 @@ describe("runAicLane", () => {
     const authenticate = fake.httpCalls.find((call) => call.method === "POST");
     expect(puts.some((call) => call.url.includes("/trees/rl-aic-test01"))).toBe(true);
     expect(puts.some((call) => call.url.includes("/scripts/"))).toBe(true);
+    const firstPut = fake.httpCalls.findIndex((call) => call.method === "PUT");
+    expect(fake.httpCalls.slice(0, firstPut).every((call) => call.method === "GET")).toBe(true);
+    for (const put of puts) {
+      const index = fake.httpCalls.indexOf(put);
+      expect(fake.httpCalls[index + 1]?.method).toBe("GET");
+      expect(fake.httpCalls[index + 1]?.url).toBe(put.url);
+    }
     expect(deletes.length).toBe(puts.length);
     expect(deletes.some((call) => call.url.includes("/trees/rl-aic-test01"))).toBe(true);
     expect(authenticate?.url).toContain("authIndexType=service");
@@ -120,6 +127,27 @@ describe("runAicLane", () => {
       expect(error).toBeInstanceOf(AicLaneError);
       expect(String(error)).not.toContain(PLACEHOLDER_BASE);
       expect(String(error)).toContain("<redacted>");
+    }
+  });
+
+  it("refuses server-normalized script source without printing it", async () => {
+    const fake = mockTenant({ normalizedScriptSource: "server changed source" });
+    await expect(
+      runAicLane(caseWith(), SUBJECT, {
+        io: fake.io,
+        runId: "normalized",
+        project: "/tmp/rhino-local-aic-test",
+      })
+    ).rejects.toThrow(/confirming read did not match/);
+    try {
+      await runAicLane(caseWith(), SUBJECT, {
+        io: mockTenant({ normalizedScriptSource: "server changed source" }).io,
+        runId: "normalized-secret",
+        project: "/tmp/rhino-local-aic-test",
+      });
+    } catch (error) {
+      expect(String(error)).not.toContain(SUBJECT.trim());
+      expect(String(error)).not.toContain("server changed source");
     }
   });
 
@@ -376,6 +404,7 @@ function mockTenant(
     managedReadStatus?: number;
     managedReadOmit?: readonly string[];
     managedDeleteStatus?: number;
+    normalizedScriptSource?: string;
   } = {}
 ): { io: AicIo; httpCalls: HttpRequest[]; aicArgs: string[][] } {
   const existing = new Set(options.existing ?? []);
@@ -398,6 +427,7 @@ function mockTenant(
     ],
   };
   let managedRecord: Record<string, unknown> | undefined;
+  const resources = new Map<string, Record<string, unknown>>();
 
   const io: AicIo = {
     async aic(args) {
@@ -439,9 +469,15 @@ function mockTenant(
         if (existing.has(path)) {
           return json(200, { _id: "already-there" });
         }
+        const resource = resources.get(path);
+        if (resource !== undefined) {
+          return json(200, resource);
+        }
         return json(404, { code: 404 });
       }
       if (req.method === "PUT") {
+        const body = JSON.parse(String(req.body)) as Record<string, unknown>;
+        resources.set(path, readBack(path, body, options.normalizedScriptSource));
         return json(201, { _id: "created" });
       }
       if (req.method === "DELETE") {
@@ -473,6 +509,47 @@ function mockTenant(
     },
   };
   return { io, httpCalls, aicArgs };
+}
+
+function readBack(
+  path: string,
+  body: Record<string, unknown>,
+  normalizedScriptSource?: string
+): Record<string, unknown> {
+  if (path.includes("/scripts/")) {
+    return {
+      ...body,
+      ...(normalizedScriptSource === undefined
+        ? {}
+        : { script: Buffer.from(normalizedScriptSource, "utf8").toString("base64") }),
+      createdBy: "server",
+      creationDate: 1,
+      lastModifiedBy: "server",
+      lastModifiedDate: 1,
+    };
+  }
+  if (path.includes("/nodes/ScriptedDecisionNode/")) {
+    return {
+      ...body,
+      _id: path.slice(path.lastIndexOf("/") + 1),
+      _rev: "rev",
+      _type: { server: true },
+      _outcomes: [],
+    };
+  }
+  const nodes = body.nodes as Record<string, Record<string, unknown>>;
+  return {
+    ...body,
+    _id: path.slice(path.lastIndexOf("/") + 1),
+    _rev: "rev",
+    innerTreeOnly: false,
+    noSession: false,
+    mustRun: false,
+    transactionalOnly: false,
+    nodes: Object.fromEntries(
+      Object.entries(nodes).map(([id, node]) => [id, { version: "1.0", ...node }])
+    ),
+  };
 }
 
 function ok(stdout: string): CliResult {

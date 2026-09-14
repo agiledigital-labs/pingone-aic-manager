@@ -14,7 +14,13 @@ import {
 } from "./managed.ts";
 import { assembleEffects, parseSubjectDump } from "./record.ts";
 import {
+  confirmResourceSnapshot,
+  resourceRequestProjection,
+  type AicResourceKind,
+} from "./resource-snapshot.ts";
+import {
   AicLaneError,
+  amConfigHeaders,
   amRequest,
   connectTenant,
   defaultAicIo,
@@ -238,18 +244,20 @@ async function provision(
   created: Created[]
 ): Promise<void> {
   const base = realmJsonPath(wrapper.realm);
-  await refuseIfExists(
-    io,
-    session,
-    "GET",
-    `${base}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(wrapper.treeName)}`,
-    `tree ${wrapper.treeName}`
-  );
+  const resources: Array<{
+    kind: AicResourceKind;
+    path: string;
+    label: string;
+    body: Record<string, unknown>;
+    created: Created;
+  }> = [];
   for (const script of wrapper.scripts) {
-    await refuseIfExists(io, session, "GET", `${base}/scripts/${script.id}`, `script ${script.id}`);
-  }
-  for (const script of wrapper.scripts) {
-    const body = JSON.stringify({
+    resources.push({
+      kind: "script",
+      path: `${base}/scripts/${script.id}`,
+      label: `script ${script.name}`,
+      created: { kind: "script", id: script.id },
+      body: {
       _id: script.id,
       name: script.name,
       description: "rhino-local AIC lane throwaway. Safe to delete.",
@@ -258,37 +266,52 @@ async function provision(
       language: "JAVASCRIPT",
       context: "AUTHENTICATION_TREE_DECISION_NODE",
       evaluatorVersion: "2.0",
+      },
     });
-    const response = await amRequest(io, session, {
-      method: "PUT",
-      path: `${base}/scripts/${script.id}`,
-      body,
-    });
-    expectOk(response, `PUT script ${script.name}`);
-    created.push({ kind: "script", id: script.id });
   }
   for (const node of wrapper.nodes) {
     const nodeBody = wrapper.nodeBodies[node.id];
     if (nodeBody === undefined) {
       throw new AicLaneError(`missing node body for ${node.id}`);
     }
-    const path = `${base}/realm-config/authentication/authenticationtrees/nodes/ScriptedDecisionNode/${node.id}`;
-    await refuseIfExists(io, session, "GET", path, `node ${node.id}`);
+    resources.push({
+      kind: "node",
+      path: `${base}/realm-config/authentication/authenticationtrees/nodes/ScriptedDecisionNode/${node.id}`,
+      label: `node ${node.displayName}`,
+      created: { kind: "node", id: node.id },
+      body: nodeBody,
+    });
+  }
+  resources.push({
+    kind: "tree",
+    path: `${base}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(wrapper.treeName)}`,
+    label: `tree ${wrapper.treeName}`,
+    created: { kind: "tree", name: wrapper.treeName },
+    body: wrapper.treeBody,
+  });
+  for (const resource of resources) {
+    await refuseIfExists(io, session, resource.path, resource.label);
+  }
+  for (const resource of resources) {
+    const submitted = resourceRequestProjection(resource.kind, resource.body);
     const response = await amRequest(io, session, {
       method: "PUT",
-      path,
-      body: JSON.stringify(nodeBody),
+      path: resource.path,
+      headers: amConfigHeaders(),
+      body: JSON.stringify(submitted),
     });
-    expectOk(response, `PUT node ${node.displayName}`);
-    created.push({ kind: "node", id: node.id });
+    if (response.status !== 201) {
+      expectStatus(response, `PUT ${resource.label}`, 201);
+    }
+    created.push(resource.created);
+    const confirmation = await amRequest(io, session, {
+      method: "GET",
+      path: resource.path,
+      headers: amConfigHeaders(),
+    });
+    expectStatus(confirmation, `confirm ${resource.label}`, 200);
+    confirmResourceSnapshot(resource.kind, submitted, confirmation.body);
   }
-  const treeResponse = await amRequest(io, session, {
-    method: "PUT",
-    path: `${base}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(wrapper.treeName)}`,
-    body: JSON.stringify(wrapper.treeBody),
-  });
-  expectOk(treeResponse, `PUT tree ${wrapper.treeName}`);
-  created.push({ kind: "tree", name: wrapper.treeName });
 }
 
 /**
@@ -437,16 +460,19 @@ async function cleanup(
         response = await amRequest(io, session, {
           method: "DELETE",
           path: `${base}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(item.name)}`,
+          headers: amConfigHeaders(),
         });
       } else if (item.kind === "node") {
         response = await amRequest(io, session, {
           method: "DELETE",
           path: `${base}/realm-config/authentication/authenticationtrees/nodes/ScriptedDecisionNode/${item.id}`,
+          headers: amConfigHeaders(),
         });
       } else {
         response = await amRequest(io, session, {
           method: "DELETE",
           path: `${base}/scripts/${item.id}`,
+          headers: amConfigHeaders(),
         });
       }
       expectDeleted(response, `AIC ${item.kind}`);
@@ -483,11 +509,14 @@ function expectDeleted(response: AmResponse, label: string): void {
 async function refuseIfExists(
   io: AicIo,
   session: TenantSession,
-  method: string,
   path: string,
   label: string
 ): Promise<void> {
-  const response = await amRequest(io, session, { method, path });
+  const response = await amRequest(io, session, {
+    method: "GET",
+    path,
+    headers: amConfigHeaders(),
+  });
   if (response.status === 404) {
     return;
   }
@@ -502,12 +531,12 @@ async function refuseIfExists(
   );
 }
 
-function expectOk(response: AmResponse, label: string): void {
-  if (response.status >= 200 && response.status < 300) {
+function expectStatus(response: AmResponse, label: string, status: number): void {
+  if (response.status === status) {
     return;
   }
   throw new AicLaneError(
-    `${label} HTTP ${response.status}${txid(response)}: ${snippet(response)}`,
+    `${label} returned HTTP ${response.status}, expected ${status}${txid(response)}: ${snippet(response)}`,
     {
       status: response.status,
       ...(response.transactionId !== undefined
