@@ -88,7 +88,6 @@ export class AicFileLease {
   #queue: Promise<void> = Promise.resolve();
   #lock: LeaseLock | undefined;
   #paths: LeaseStatePaths | undefined;
-  #connectedAt = 0;
   #sessionWrapper: WrapperJourney | undefined;
   #sessionCreated: CreatedResource[] = [];
   #cookieName: string | undefined;
@@ -129,7 +128,6 @@ export class AicFileLease {
         ...(this.#options.tenant === undefined ? {} : { tenant: this.#options.tenant }),
         project: this.#project,
       });
-      this.#connectedAt = Date.now();
       this.#paths = leaseStatePaths(
         this.#session.baseUrl,
         this.#identity,
@@ -244,14 +242,9 @@ export class AicFileLease {
     managedFixtures: readonly ManagedFixture[]
   ): Promise<readonly RecordedEffects[]> {
     const session = this.#session as TenantSession;
-    // TODO(live): establish whether `aic whoami --token` refreshes a long-lived
-    // file reliably. Until then, refuse to use a bearer at the documented
-    // refresh threshold instead of guessing that it remains usable.
-    if (Date.now() - this.#connectedAt >= 838_000) {
-      throw new AicLaneError(
-        "AIC file lease bearer reached its refresh threshold; long-file refresh is not live-verified"
-      );
-    }
+    // TODO(live): establish whether `aic whoami --token` refreshes a
+    // long-lived file reliably and when refresh is required. No threshold is
+    // assumed here; an expired bearer makes the authenticated request fail.
     if (managedFixtures.length > 0) {
       this.#releaseManagedLock = await acquireManagedFixtureLock(
         session,
