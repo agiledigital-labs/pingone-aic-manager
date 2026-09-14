@@ -572,6 +572,49 @@ the lanes in the one binding a step chain exists to exercise. Each intermediate
 pass is consequently marked `aicObserved: false` and reports an
 `ObservationGap`; the final pass is marked observed and is fully diffed.
 
+## Cost per case — measured 2026-09-14, and why cutover waits
+
+The AIC lane was designed to replace a wrapper-journey + jest harness that cost
+**28 round trips per case**. The projection for the new design was **2** — one
+subject `PUT` and one `authenticate` — but that projection assumed a **per-file
+lease** that provisions the journey once. That piece was never built:
+`runAicChain` provisions and tears down a whole journey on every run.
+
+Measured by counting every call through an instrumented `AicIo`, for the
+smallest possible case (`outcomes: ["done"]`, so the subject declares
+`true`/`false`/`done` and gets three result nodes):
+
+| Calls | What                                                          |
+| -----: | ------------------------------------------------------------- |
+|      2 | `aic ctx list` + `aic whoami --token` (session setup)         |
+|      9 | existence `GET`s — 4 scripts, 4 nodes, 1 tree (`refuseIfExists`) |
+|      9 | `PUT`s — 4 scripts, 4 nodes, 1 tree                           |
+|  **1** | **`POST /authenticate` — the only call that runs the test**   |
+|      9 | `DELETE`s — 4 nodes, 4 scripts, 1 tree                        |
+| **30** | total                                                         |
+
+So the AIC lane is currently **slightly more expensive per case than the
+harness it exists to replace**, and 29 of the 30 calls are scaffolding. Adding
+outcomes makes it worse: each extra outcome in the union adds a result script
+and a result node, which is four more calls (GET, PUT, DELETE, plus the node's
+own trio) per case.
+
+Cutting over now would make the suite slower, not faster. With a per-file lease
+the scaffolding is paid once per file and each case costs one subject `PUT`
+plus one `authenticate`:
+
+| Cases in a file | Today (30N) | Per-file lease (29 + 2N) |
+| ---------------: | ----------: | ------------------------: |
+|               1 |          30 |                        31 |
+|              10 |         300 |                        49 |
+|              20 |         600 |                        69 |
+
+The existence `GET`s are worth keeping — at 9 per *file* they are negligible,
+and they are what stops a run overwriting a resource it did not create.
+
+**Conclusion: the per-file lease is the blocker for cutover, not a later
+optimisation.** Nothing else on the list changes the arithmetic.
+
 ## Unsettled
 
 - Whether AIC actually sets `org.forgerock.am.scripting.disableES6=true`, or
