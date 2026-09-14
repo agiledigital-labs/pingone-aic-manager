@@ -250,9 +250,16 @@ export class AicFileLease {
     hooks: LeaseLaneHooks
   ): Promise<readonly RecordedEffects[]> {
     const session = this.#session as TenantSession;
-    // TODO(live): establish whether `aic whoami --token` refreshes a
-    // long-lived file reliably and when refresh is required. No threshold is
-    // assumed here; an expired bearer makes the authenticated request fail.
+    // The bearer captured at open() is NOT refreshed here, deliberately.
+    // Measured 2026-09-14: the agent rotates on its own ~898s schedule and
+    // `whoami --token` can hand back a token already near the end of that
+    // cycle, so neither the file's age nor the token's tells you whether it is
+    // still good — a prophylactic refresh would cost a CLI call per case and
+    // still not guarantee one. `amRequest` instead refreshes and retries once
+    // on a non-anonymous 401, which closes the gap completely for the price of
+    // one wasted request on the rare occasion the bearer dies mid-file.
+    // `/authenticate` is anonymous and carries no bearer, so a journey
+    // invocation is unaffected either way.
     if (managedFixtures.length > 0) {
       this.#releaseManagedLock = await acquireManagedFixtureLock(
         session,

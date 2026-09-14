@@ -682,8 +682,12 @@ is the number that matters, against **30** before the lease.
 Each additional outcome adds two graph resources and an estimated eight
 file-lifetime calls — that part is still derived, not measured. Step chains add
 one authenticate per pass; checks and cleanup add their actual `IdmHandle`
-operations. Managed fixtures, lazy session minting, cookie-name discovery and
-bearer refresh add separate costs. The live 47-call measurement exercised none
+operations. Managed fixtures, lazy session minting and
+cookie-name discovery add separate costs. Bearer refresh does not: the token
+captured at open is reused, and is re-fetched only after a non-anonymous 401
+(measured 2026-09-14 — `aic whoami --token` can hand back a token already near
+the end of the agent's ~898s rotation, so refreshing on a schedule would cost a
+call per case and still guarantee nothing). The live 47-call measurement exercised none
 of those additions; an offline fake-I/O regression separately pins a two-pass
 chain with one step read, one final read, and one cleanup delete at 45 calls.
 
