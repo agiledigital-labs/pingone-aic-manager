@@ -216,7 +216,10 @@ export function createDefaultIo(
     openEditor,
     async writeView(contents) {
       await mkdir(failuresDir, { recursive: true });
-      await writeFile(latestLogsPath, contents, { encoding: "utf8" });
+      // 0600: this holds a live tenant's log bodies — hostnames, client ips,
+      // request headers. The directory is gitignored, but the file should not
+      // be world-readable either.
+      await writeFile(latestLogsPath, contents, { encoding: "utf8", mode: 0o600 });
       return latestLogsPath;
     },
   };
@@ -241,9 +244,17 @@ async function readSelection(count: number): Promise<number[]> {
   }
 }
 
+/**
+ * `shell: true` is deliberate — `$EDITOR` is routinely a command line
+ * (`code -w`, `vim -p`), not a bare executable. But an args array WITH a shell
+ * is what Node deprecated in DEP0190, because the shell re-splits what was
+ * already separated. So build the one command string the shell will actually
+ * run, and quote the path ourselves.
+ */
 function openEditor(editor: string, file: string): Promise<void> {
+  const command = `${editor} ${shellQuote(file)}`;
   return new Promise((resolve, reject) => {
-    const child = spawn(editor, [file], { stdio: "inherit", shell: true });
+    const child = spawn(command, { stdio: "inherit", shell: true });
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0 || code === null) {
@@ -281,4 +292,9 @@ function range(start: number, end: number): number[] {
     out.push(index);
   }
   return out;
+}
+
+/** Single-quote for a POSIX shell, closing and reopening around any quote. */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
