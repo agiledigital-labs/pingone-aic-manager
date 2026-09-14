@@ -345,7 +345,8 @@ Two earlier claims here were WRONG — do not repeat them:
   base (its own logging instance) and matches node `trackingIds[0]` only by
   coincidence of prefix — it is **not** the join.
 
-Verified against `<client-checkout>/logs/prod-logs.json` (4,152 am-authentication events):
+Verified against the prod log corpus's `prod-logs.json` (4,152
+am-authentication events; `.ai/local.md` names the checkout):
 grouping on full `trackingIds[0]` yields **322 executions** (median 19 nodes
 each, max 49), of which 138 have a matching tree event (tree `trackingIds[0]` ∈
 node `trackingIds[0]`; tree `_id` matches → 0) and 184 are node-only. Distinct
@@ -401,7 +402,7 @@ user explicitly syncs `--source idm-core` or `--source am-core`.
     confirming the api-key auth failure mode.
   - Source list above + `transactionId`/`beginTime`/`endTime`/
     `_pagedResultsCookie` query shapes confirmed against working reference
-    scripts (`<client-checkout>/logs/`).
+    scripts (the same prod log corpus; `.ai/local.md` names it).
   - `/keys` full lifecycle verified live via an **admin-user bearer**
     (`idmAdminClient` PKCE, scope `openid fr:idm:*`): `GET /keys` → 200 (CREST
     envelope, elements `{api_key_id, created_at, name}`);
@@ -415,7 +416,8 @@ user explicitly syncs `--source idm-core` or `--source am-core`.
     `source=idm-config`, and `source=idm-access`.
   - `idm-everything` sample composition: about 99% `idm-core`; raw string
     payloads with no `_id`, no `eventName`, and no user.
-  - `am-authentication` join verified against `<client-checkout>/logs/prod-logs.json`
+  - `am-authentication` join verified against the prod log corpus's
+    `prod-logs.json`
     (4,152 am-authentication events) AND cross-checked against AIC's own
     `Journey-Node-History` export (146,159 rows): the per-execution key is the
     **full `trackingIds[0]`** (322 executions, median 19 nodes, 138 with a

@@ -20,6 +20,12 @@ surprising about it.
 `docs/api/*.md` cite evidence from checkouts by `~/w/…` path. Record which of
 them actually exist here; mark the rest missing so an agent stops looking.
 
+**A client checkout's path belongs here and nowhere else** — not in a committed
+doc, not even with the client's name swapped for a placeholder. The path shape
+alone announces that a client corpus exists and roughly what is in it, which is
+the thing worth not publishing; the committed docs cite the evidence and defer
+to this file for where it lives.
+
 - `<repo>`: `/path/to/<repo>` — <why you'd open it>
 - `<repo>`: **not present on this machine** — cited in `docs/api/<file>.md`
 

@@ -867,13 +867,14 @@ Verified 2026-05-20: SA bearer minted from a Pattern-1-bootstrapped SA had
   create (200 → `{name, api_key_id, api_key_secret, created_at}`, secret once),
   DELETE `/keys/{id}` (204). So Phase 1 auto-mints at cookie/userpass
   onboarding + the log-only env flow; SA-only tenants paste. (4) Couldn't get a
-  200 from `/monitoring/logs` — the only key on hand (`<client-checkout>/logs/gt`) had
-  been rotated (401). Auth model (api-key headers, not bearer) reconfirmed.
+  200 from `/monitoring/logs` — the only key on hand (from the prod log
+  corpus) had been rotated (401). Auth model (api-key headers, not bearer) reconfirmed.
 - **2026-07-01** — \*\*[SUPERSEDED 2026-07-01 (same day) — see the next entry
   - `08-logs.md`; the "corrected" key in this bullet is ALSO WRONG]\*\*
     **Journey-progress join key corrected (`08-logs.md`).** My own 2026-06-30
     taxonomy claim "node and tree events share `transactionId`; join on that" is
-    **wrong**. Verified against `<client-checkout>/logs/prod-logs.json` (14,470 events;
+    **wrong**. Verified against the prod log corpus's `prod-logs.json` (14,470
+    events;
     3,538 `AM-NODE-LOGIN-COMPLETED`, 138 `AM-TREE-LOGIN-COMPLETED`):
     `transactionId` is a **per-HTTP-request** id (`Root=1-…/0`, `…-request-2/0`)
     that differs within one journey execution. The correct grouping key is the
