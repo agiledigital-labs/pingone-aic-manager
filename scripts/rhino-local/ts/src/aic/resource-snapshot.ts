@@ -40,8 +40,9 @@ export function resourceRequestProjection(
 /**
  * Return the snapshot from the confirming GET, never from submitted bytes.
  *
- * TODO(live): prove script and tree description markers round-trip exactly.
- * Until then they remain in the comparison, so any normalization fails closed.
+ * Script and tree `description` round-trips byte-exact (measured 2026-09-14,
+ * `docs/api/04-scripts.md`), so the marker stays in the comparison rather than
+ * being normalized away — a rewritten marker is a real failure, not noise.
  */
 export function confirmResourceSnapshot(
   kind: AicResourceKind,
