@@ -487,6 +487,53 @@ The 24 are the corpus working as a measuring instrument rather than failing.
 precisely located fidelity gap, which is what the corpus is for.
 `docs/rhino-local-gaps.md` holds the ranked list.
 
+## Step chains — both lanes (2026-09-14)
+
+A journey that asks the user a question runs the same node twice. One `Case`
+per pass; `.step({ expect, reply, check })` on the lease declares a suspended
+pass, and `runAicChain(cases, source, { replies })` runs the same chain against
+a tenant — one journey, provisioned once, entered once per pass.
+
+**What carries between passes was measured, not assumed.** Shared state
+survives; transient state is dropped, not promoted to secure state; and
+`resumedFromSuspend` stays `false` (it belongs to `action.suspend()`). The
+probe and its controls are in `docs/api/09-journeys.md` → "What survives a
+callback round trip"; the consequence for the harness is
+`src/harness/step.ts::carryGiven`.
+
+That measurement is the point of the two lanes. Carrying transient state is the
+plausible guess, and a harness making it would agree with itself forever: the
+mock carries the value, the script reads it, both passes go green, and the same
+script loses the value on a tenant. Mutating `carryGiven` to carry it fails four
+tests, three of them through the real JVM.
+
+**The AIC lane checks the carry rather than repeating it.** Each pass is handed
+the `Given` the local lane computed for it, and `verifySeedsVisible` compares
+that against the tenant's own `before` snapshot. Verified live 2026-09-14: a
+two-pass chain agreed on both lanes with zero disagreements, and the control —
+the same chain with pass 2's `Given` altered to claim transient state had
+survived — failed with `AIC subject state did not contain the declared seed
+"scratch"`. Without that arm the green run would have been evidence about the
+harness talking to itself.
+
+Two consequences elsewhere:
+
+- The subject's state seed is wrapped in `if (callbacks.isEmpty())`. A node
+  re-executes from the top, so an unguarded seed would overwrite whatever the
+  earlier pass left with the request's original values — the chain would
+  silently restart on every step and still look like it worked.
+- `expect.outcome` is now `string | null`. A pass that suspends reaches no
+  outcome, and the only way to say that before was to name one the script never
+  produces.
+
+**Still local-only:** intermediate passes are not observed on the tenant. The
+subject could emit its state dump alongside its own callbacks on every suspend,
+which would make them observable — but that extra `HiddenValueCallback` would
+be visible to a script calling `callbacks.getHiddenValueCallbacks()`, which is
+a divergence between the lanes in the one binding a step chain exists to
+exercise. The honest alternative is what is there: intermediate state channels
+are reported as unobserved on AIC.
+
 ## Unsettled
 
 - Whether AIC actually sets `org.forgerock.am.scripting.disableES6=true`, or
