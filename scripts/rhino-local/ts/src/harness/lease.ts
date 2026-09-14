@@ -1,17 +1,27 @@
 import type { z } from "zod";
 import { judge } from "../case/index.ts";
-import type { Case, Expect, JsonObject, RecordedEffects, Verdict } from "../case/types.ts";
+import type {
+  Case,
+  CallbackEffect,
+  Expect,
+  JsonObject,
+  RecordedEffects,
+  Verdict,
+} from "../case/types.ts";
 import { runCase } from "../bindings/index.ts";
 import type { RhinoRunner } from "../runner.ts";
 import { ledgerToManaged, localIdmHandle } from "./idm.ts";
 import { describeResidue, findResidue } from "./residue.ts";
 import {
   applyInputsAndEsv,
+  caseWithGiven,
   mergeChannels,
   normaliseWire,
   parseInputs,
-  toCase,
+  toGiven,
 } from "./spec.ts";
+import { carryGiven, submittedCallbacks } from "./step.ts";
+import type { CallbackReply, StepContext, StepSpec } from "./step.ts";
 import type {
   Channels,
   FixtureSpec,
@@ -25,6 +35,17 @@ export interface RunResult {
   kase: Case;
   effects: RecordedEffects;
   verdict: Verdict;
+  /** One entry per suspended pass, in order. Empty for a single-pass run. */
+  steps: StepResult[];
+}
+
+/** One pass of a step chain: what it was asked, what it did, what was sent back. */
+export interface StepResult {
+  kase: Case;
+  effects: RecordedEffects;
+  verdict: Verdict;
+  /** Exactly what the next pass was handed as `given.callbacks`. */
+  submitted: CallbackEffect[];
 }
 
 export interface CheckContext<TInput> {
@@ -61,6 +82,7 @@ export class RunBuilder<TInput> {
   readonly #rawInput: unknown;
   #override: Channels = {};
   readonly #checks: Check<TInput>[] = [];
+  readonly #steps: StepSpec<TInput>[] = [];
 
   constructor(lease: Lease<z.ZodType>, testName: string, rawInput: unknown) {
     this.#lease = lease;
@@ -94,6 +116,29 @@ export class RunBuilder<TInput> {
   }
 
   /**
+   * Declare one suspended pass: what the script must send, what the client
+   * sends back, and what must be true of the world in between.
+   *
+   * Passes run in declaration order and the terminal `.expect()` judges the
+   * one after the last step, so a two-callback journey is two `.step()` calls
+   * and one `.expect()`. A step whose expectations fail aborts the chain
+   * rather than replying anyway: every later pass is seeded from this one, so
+   * continuing would report a cascade of failures that all trace back here.
+   */
+  step(spec: StepSpec<TInput>): this {
+    this.#steps.push(spec);
+    return this;
+  }
+
+  /** The same, for a chain built from data. */
+  steps(specs: readonly StepSpec<TInput>[]): this {
+    for (const spec of specs) {
+      this.#steps.push(spec);
+    }
+    return this;
+  }
+
+  /**
    * Assert against real IDM state and the raw response. `idm` is the mock
    * store locally and REST against the tenant remotely, so a check written
    * once means the same thing on both lanes. Fail by throwing — vitest's
@@ -112,7 +157,8 @@ export class RunBuilder<TInput> {
       this.#rawInput,
       this.#override,
       expected,
-      this.#checks as Check<unknown>[]
+      this.#checks as Check<unknown>[],
+      this.#steps as StepSpec<unknown>[]
     );
   }
 }
@@ -181,7 +227,8 @@ export class Lease<TSchema extends z.ZodType> {
     rawInput: unknown,
     override: Channels,
     expected: Expect,
-    checks: readonly Check<unknown>[]
+    checks: readonly Check<unknown>[],
+    steps: readonly StepSpec<unknown>[] = []
   ): Promise<RunResult> {
     const input = parseInputs(this.#spec, rawInput);
     const draft = mergeChannels(this.#spec.always, override);
@@ -194,9 +241,19 @@ export class Lease<TSchema extends z.ZodType> {
     }
     applyInputsAndEsv(draft, input);
     const ledger = this.ledger();
-    const kase = toCase(this.#spec, testName, draft, expected, {
-      managed: ledgerToManaged(ledger),
-    });
+    let given = toGiven(draft, { managed: ledgerToManaged(ledger) });
+    if (steps.length > 0 && given.callbacks === undefined) {
+      // Declaring a step says the script suspends, and a script that suspends
+      // reads `callbacks` to tell its first pass from its later ones. AM's
+      // first pass carries an empty list, so seed one rather than leaving the
+      // binding unseeded and failing on a read the chain guarantees.
+      given = { ...given, callbacks: [] };
+    }
+    const stepResults: StepResult[] = [];
+    for (const [index, step] of steps.entries()) {
+      given = await this.#runStep(testName, index, step, given, input, stepResults);
+    }
+    const kase = caseWithGiven(this.#spec, testName, given, expected);
     const effects = await runCase(this.#options.runner, kase, {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
     });
@@ -218,7 +275,56 @@ export class Lease<TSchema extends z.ZodType> {
         throw new Error(`rhino-local: ${kase.name}\n  ${describeResidue(residue)}`);
       }
     }
-    return { kase, effects: effects.effects, verdict };
+    return { kase, effects: effects.effects, verdict, steps: stepResults };
+  }
+
+  /**
+   * Run one suspended pass and return the seed for the next.
+   *
+   * The step's `check` is handed the run's own store rather than a copy, so a
+   * record it deletes really is gone from the pass that follows. A copy would
+   * let a cleanup written between two halves of a journey look like it worked
+   * while the next pass still saw the record.
+   */
+  async #runStep(
+    testName: string,
+    index: number,
+    step: StepSpec<unknown>,
+    given: Case["given"],
+    input: Record<string, unknown>,
+    results: StepResult[]
+  ): Promise<Case["given"]> {
+    const kase = caseWithGiven(this.#spec, `${testName} [step ${index + 1}]`, given, {
+      ...(step.expect ?? {}),
+      outcome: null,
+    });
+    const run = await runCase(this.#options.runner, kase, {
+      ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
+    });
+    const verdict = judge(kase, run.effects);
+    if (!verdict.pass) {
+      throw new Error(`rhino-local: ${kase.name}\n${verdict.summary}`);
+    }
+    const context: StepContext<unknown> = {
+      input,
+      step: index + 1,
+      callbacks: run.effects.callbacks,
+      effects: run.effects,
+    };
+    if (step.check !== undefined) {
+      if (run.effects.managedStore === undefined) {
+        run.effects.managedStore = {};
+      }
+      await step.check(
+        localIdmHandle(run.effects.managedStore, () => undefined),
+        context
+      );
+    }
+    const replies: readonly CallbackReply[] =
+      typeof step.reply === "function" ? step.reply(context) : step.reply;
+    const submitted = submittedCallbacks(run.effects.callbacks, replies, kase.name);
+    results.push({ kase, effects: run.effects, verdict, submitted });
+    return carryGiven(given, run.effects, submitted);
   }
 }
 

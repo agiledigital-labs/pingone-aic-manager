@@ -357,3 +357,26 @@ describe("undeclared outcomes", () => {
     expect(verdict.pass).toBe(true);
   });
 });
+
+describe("a suspended pass", () => {
+  it("passes when the script decides nothing", () => {
+    const kase = makeCase({
+      expect: { outcome: null, callbacks: [{ type: "NameCallback" }] },
+    });
+    const verdict = judge(
+      kase,
+      makeEffects({ outcome: null, callbacks: [{ type: "NameCallback" }] })
+    );
+    expect(verdict.summary, verdict.summary).toBe("");
+    expect(verdict.pass).toBe(true);
+  });
+
+  it("says the pass failed to stop and ask, not that it produced nothing", () => {
+    const kase = makeCase({ expect: { outcome: null } });
+    const verdict = judge(kase, makeEffects({ outcome: "true" }));
+    expect(verdict.pass).toBe(false);
+    expect(verdict.summary).toMatch(
+      /expected the pass to suspend with callbacks and decide nothing, but it reached "true"/
+    );
+  });
+});

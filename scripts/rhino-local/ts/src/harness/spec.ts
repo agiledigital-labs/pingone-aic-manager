@@ -183,11 +183,28 @@ export function toCase<TSchema extends z.ZodType>(
   expect: Expect,
   base: Given = {}
 ): Case {
+  return caseWithGiven(spec, caseName, toGiven(draft, base), expect);
+}
+
+/**
+ * The same `Case`, from a `Given` that is already resolved.
+ *
+ * A step chain's later passes cannot go through `toCase`: `toGiven` layers the
+ * draft over the base, so the request's original seeds would win over what the
+ * previous pass actually left in state — the chain would silently restart from
+ * the top on every step.
+ */
+export function caseWithGiven<TSchema extends z.ZodType>(
+  spec: Pick<SuiteSpec<TSchema>, "name" | "script" | "outcomes">,
+  caseName: string,
+  given: Given,
+  expect: Expect
+): Case {
   return {
     name: caseName,
     script: spec.script,
     outcomes: spec.outcomes,
-    given: toGiven(draft, base),
+    given,
     expect,
   };
 }
