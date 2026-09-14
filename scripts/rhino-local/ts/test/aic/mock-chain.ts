@@ -7,6 +7,7 @@ const PLACEHOLDER_BASE = "https://tenant.example.com";
 export interface FakeChain {
   io: AicIo;
   authPosts: string[];
+  authHeaders: Array<Array<[string, string]>>;
   treesCreated: string[];
   subjectSource: string;
   subjectOutcomes: string[];
@@ -56,6 +57,7 @@ export function mockChain(
   const fake: FakeChain = {
     io: undefined as unknown as AicIo,
     authPosts: [],
+    authHeaders: [],
     treesCreated: [],
     subjectSource: "",
     subjectOutcomes: [],
@@ -125,6 +127,7 @@ export function mockChain(
         return Promise.resolve(json(201, { _id: "created" }));
       }
       fake.authPosts.push(String(req.body));
+      fake.authHeaders.push(req.headerLines);
       const response = options.responses?.[fake.authPosts.length - 1];
       if (response !== undefined) {
         return Promise.resolve(json(200, response));

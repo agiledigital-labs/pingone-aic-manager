@@ -1,9 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HARNESS_CALLBACK_ID } from "../../src/aic/constants.ts";
-import type { HttpRequest, HttpResponse } from "../../src/aic/http.ts";
+import { headerValues, type HttpRequest, type HttpResponse } from "../../src/aic/http.ts";
 import { runAicLane } from "../../src/aic/run.ts";
 import { AicLaneError, type AicIo, type CliResult } from "../../src/aic/tenant.ts";
+import { clearAicTrace, peekAicTrace } from "../../src/aic/trace.ts";
+import { TX_HEADER } from "../../src/aic/txid.ts";
 import { caseWith } from "./helpers.ts";
+
+afterEach(() => {
+  clearAicTrace();
+});
 
 const PLACEHOLDER_BASE = "https://tenant.example.com";
 const SUBJECT = 'nodeState.putShared("verified", true);\naction.goTo("true");\n';
@@ -66,6 +72,10 @@ describe("runAicLane", () => {
       ]
     );
     expect(authenticate?.headerLines.some(([name]) => name === "Authorization")).toBe(false);
+    const sent = headerValues(authenticate?.headerLines ?? [], TX_HEADER);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatch(/-01$/);
+    expect(peekAicTrace()?.passIds).toEqual(sent);
   });
 
   it("refuses to overwrite an existing tree", async () => {
@@ -222,6 +232,60 @@ describe("runAicLane", () => {
       warning.mockRestore();
     }
   });
+
+  it("does not number the session-minting journey as a subject pass", async () => {
+    const fake = mockTenant();
+    await runAicLane(
+      caseWith({
+        given: { existingSession: { UserId: "alice", tier: "gold" } },
+      }),
+      SUBJECT,
+      {
+        io: fake.io,
+        runId: "session1",
+        project: "/tmp/rhino-local-aic-test",
+      }
+    );
+    const authenticates = fake.httpCalls.filter(
+      (call) => call.method === "POST" && call.url.includes("/authenticate")
+    );
+    expect(authenticates).toHaveLength(2);
+    const mint = authenticates.find((call) =>
+      call.url.includes("authIndexValue=rl-aic-session1-session")
+    );
+    const subject = authenticates.find((call) =>
+      /authIndexValue=rl-aic-session1(?:&|$)/.test(call.url)
+    );
+    const mintId = headerValues(mint?.headerLines ?? [], TX_HEADER)[0];
+    const subjectId = headerValues(subject?.headerLines ?? [], TX_HEADER)[0];
+    expect(mintId !== undefined && mintId.length > 0).toBe(true);
+    expect(subjectId).toMatch(/-01$/);
+    expect(mintId === subjectId).toBe(false);
+    expect(subjectId?.startsWith(`${mintId}-`)).toBe(false);
+    expect(peekAicTrace()?.passIds).toEqual([subjectId]);
+  });
+
+  it("ignores an author-supplied transaction header rather than sending two", async () => {
+    const fake = mockTenant();
+    await runAicLane(
+      caseWith({
+        given: { requestHeaders: { [TX_HEADER]: ["author-supplied"] } },
+      }),
+      SUBJECT,
+      {
+        io: fake.io,
+        runId: "txhdr",
+        project: "/tmp/rhino-local-aic-test",
+      }
+    );
+    const authenticate = fake.httpCalls.find(
+      (call) => call.method === "POST" && call.url.includes("/authenticate")
+    );
+    const sent = headerValues(authenticate?.headerLines ?? [], TX_HEADER);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toBe("author-supplied");
+    expect(sent[0]).toMatch(/-01$/);
+  });
 });
 
 function managedCase() {
@@ -290,6 +354,9 @@ function mockTenant(
       const url = new URL(req.url);
       const path = url.pathname;
       if (req.method === "GET") {
+        if (path.includes("/serverinfo/")) {
+          return json(200, { cookieName: "testCookie" });
+        }
         if (path.startsWith("/openidm/managed/")) {
           const status = options.managedReadStatus ?? (managedRecord === undefined ? 404 : 200);
           return json(status, status === 200 ? managedRecord : { code: status });
@@ -321,6 +388,10 @@ function mockTenant(
         return json(status, status === 201 ? managedRecord : { code: status });
       }
       if (req.method === "POST" && path.endsWith("/authenticate")) {
+        const tree = url.searchParams.get("authIndexValue") ?? "";
+        if (tree.endsWith("-session")) {
+          return json(200, { tokenId: "minted-session-token" });
+        }
         return json(options.authenticateStatus ?? 200, authenticateBody);
       }
       return json(500, { message: `unexpected ${req.method} ${path}` });

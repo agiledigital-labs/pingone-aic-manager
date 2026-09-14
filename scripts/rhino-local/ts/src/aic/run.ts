@@ -23,6 +23,8 @@ import {
   type AmResponse,
   type TenantSession,
 } from "./tenant.ts";
+import { beginSingleTrace, beginTrace, clearAicTrace } from "./trace.ts";
+import { TX_HEADER } from "./txid.ts";
 import { aicUnsupportedReason } from "./unsupported.ts";
 
 /** One submitted callback value, matched to an emitted callback by type. */
@@ -147,9 +149,12 @@ export async function runAicChain(
         runId,
         created
       );
+      // Mint succeeded: its one-off id is harness plumbing, not a subject pass.
+      // A mint *failure* leaves that trace in place so show-log can fetch it.
+      clearAicTrace();
     }
     await provision(io, session, wrapper, created);
-    return await drive(io, session, wrapper, cases, replies);
+    return await drive(io, session, wrapper, cases, replies, beginTrace(session.tenantName));
   } finally {
     try {
       await cleanup(io, session, wrapper.realm, created, seededManaged);
@@ -166,6 +171,11 @@ export async function runAicChain(
  *
  * The mini journey is provisioned into the same `created` list as the subject,
  * so one cleanup removes both even if the subject invoke throws.
+ *
+ * Its authenticate call is *not* a numbered pass of the subject stem: pass 1
+ * of the script under test must stay `-01`. Minting gets its own uuid so a
+ * mint failure is still look-up-able; a successful mint is cleared before the
+ * subject runs.
  */
 async function mintSession(
   io: AicIo,
@@ -180,7 +190,12 @@ async function mintSession(
     realm: wrapper.realm,
   });
   await provision(io, session, minter, created);
-  const response = await invoke(io, session, minter);
+  const response = await invoke(
+    io,
+    session,
+    minter,
+    beginSingleTrace(session.tenantName)
+  );
   const body = response.body as { tokenId?: unknown };
   if (typeof body.tokenId !== "string" || body.tokenId.length === 0) {
     // A journey that returns callbacks has not completed, so there is no
@@ -290,10 +305,11 @@ async function drive(
   session: TenantSession,
   wrapper: WrapperJourney,
   cases: readonly Case[],
-  replies: readonly (readonly AicReply[])[]
+  replies: readonly (readonly AicReply[])[],
+  tx: { next: () => string }
 ): Promise<RecordedEffects[]> {
   const passes: RecordedEffects[] = [];
-  let response = await invoke(io, session, wrapper);
+  let response = await invoke(io, session, wrapper, tx.next());
   for (const [index, reply] of replies.entries()) {
     const kase = cases[index] as Case;
     const label = kase.name;
@@ -307,7 +323,7 @@ async function drive(
       assembleEffects({ given: kase.given, callbacks: parsed.callbacks })
     );
     const body = fillCallbackInputs(response.body, reply, label);
-    response = await invoke(io, session, wrapper, body);
+    response = await invoke(io, session, wrapper, tx.next(), body);
   }
   passes.push(recordFromAuthenticate(cases[cases.length - 1] as Case, response));
   return passes;
@@ -334,6 +350,7 @@ async function invoke(
   io: AicIo,
   session: TenantSession,
   wrapper: WrapperJourney,
+  transactionId: string,
   body = "{}"
 ): Promise<AmResponse> {
   const url = new URL(
@@ -348,6 +365,7 @@ async function invoke(
   }
   const headers: Array<[string, string]> = [
     ["Accept-API-Version", "protocol=1.0,resource=2.1"],
+    [TX_HEADER, transactionId],
   ];
   for (const [key, values] of Object.entries(wrapper.invoke.headers)) {
     if (isReservedInvokeHeader(key)) {
@@ -505,7 +523,8 @@ function isReservedInvokeHeader(name: string): boolean {
     lower === "host" ||
     lower === "content-length" ||
     lower === "transfer-encoding" ||
-    lower === "connection"
+    lower === "connection" ||
+    lower === TX_HEADER
   );
 }
 

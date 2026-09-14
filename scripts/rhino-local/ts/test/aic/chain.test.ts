@@ -1,8 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { fillCallbackInputs } from "../../src/aic/callbacks.ts";
+import { headerValues } from "../../src/aic/http.ts";
 import { runAicChain } from "../../src/aic/run.ts";
+import { clearAicTrace, peekAicTrace } from "../../src/aic/trace.ts";
+import { TX_HEADER } from "../../src/aic/txid.ts";
 import { caseWith } from "./helpers.ts";
-import { mockChain } from "./mock-chain.ts";
+import { callbackResponse, finalResponse, mockChain } from "./mock-chain.ts";
+
+afterEach(() => {
+  clearAicTrace();
+});
+
 const SCRIPT = [
   "if (callbacks.isEmpty()) {",
   '  nodeState.putShared("stage", "asked");',
@@ -146,5 +154,67 @@ describe("runAicChain", () => {
         }
       )
     ).rejects.toThrow(/the journey finished before this step ran/);
+  });
+
+  it("sends a shared stem with zero-padded step numbers on every authenticate", async () => {
+    const fake = mockChain({ before: { username: "alice", stage: "asked" } });
+    await runAicChain(
+      [
+        caseWith({ name: "ask", expect: { outcome: null } }),
+        caseWith({ name: "answer", expect: { outcome: "done" } }),
+      ],
+      SCRIPT,
+      {
+        io: fake.io,
+        runId: "chain-tx",
+        project: "/tmp/rhino-local-aic-test",
+        replies: [[{ type: "NameCallback", value: "alice" }]],
+      }
+    );
+    const ids = fake.authHeaders.map((headers) => headerValues(headers, TX_HEADER)[0]);
+    expect(ids).toHaveLength(2);
+    const first = ids[0];
+    const second = ids[1];
+    expect(first).toMatch(/-01$/);
+    expect(second).toMatch(/-02$/);
+    const stem = first?.slice(0, -3);
+    expect(stem !== undefined && stem.length > 0).toBe(true);
+    expect(second).toBe(`${stem}-02`);
+    expect(second?.startsWith(first ?? "")).toBe(false);
+    expect(peekAicTrace()).toEqual({
+      stem,
+      passIds: ids,
+      tenantName: "sandbox",
+    });
+  });
+
+  it("steps 1 and 10 of a live chain are not prefixes of one another", async () => {
+    const asking = callbackResponse("NameCallback", "jwt-1");
+    const fake = mockChain({
+      responses: [...Array.from({ length: 9 }, () => asking), finalResponse("done")],
+    });
+    const cases = Array.from({ length: 10 }, (_, index) =>
+      caseWith({
+        name: `pass-${index + 1}`,
+        expect: { outcome: index === 9 ? "done" : null },
+      })
+    );
+    const replies = Array.from({ length: 9 }, () => [
+      { type: "NameCallback", value: "x" },
+    ]);
+    await runAicChain(cases, SCRIPT, {
+      io: fake.io,
+      runId: "chain-10",
+      project: "/tmp/rhino-local-aic-test",
+      replies,
+    });
+    const ids = fake.authHeaders.map((headers) => headerValues(headers, TX_HEADER)[0] ?? "");
+    expect(ids).toHaveLength(10);
+    const one = ids[0] ?? "";
+    const ten = ids[9] ?? "";
+    expect(one.endsWith("-01")).toBe(true);
+    expect(ten.endsWith("-10")).toBe(true);
+    expect(ten.startsWith(one)).toBe(false);
+    expect(one.startsWith(ten)).toBe(false);
   });
 });
