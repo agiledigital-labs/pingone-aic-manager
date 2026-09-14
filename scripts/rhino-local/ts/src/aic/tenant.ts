@@ -181,11 +181,61 @@ function parseCtxList(stdout: string): CtxRow[] {
   return rows;
 }
 
+/**
+ * Re-ask the agent for this tenant's bearer and adopt it.
+ *
+ * MEASURED 2026-09-14 over 20 minutes: `aic whoami --token` always hands back
+ * a token that works *right now*, but says nothing about how much life is left
+ * in it. The first token this probe was given was rejected 401 five minutes
+ * later, while a token fetched moments after it stayed good for the next ten —
+ * the agent rotates on its own ~898s schedule, so what you get depends on where
+ * in that cycle you asked. A bearer captured once at open() and held for a
+ * whole file is therefore unsafe, however short the file.
+ */
+export async function refreshSessionToken(
+  io: AicIo,
+  session: TenantSession
+): Promise<void> {
+  const args = ["--no-prompt", "--project", session.project, "whoami", "--token"];
+  if (session.tenantName.length > 0) {
+    args.push("--tenant", session.tenantName);
+  }
+  const whoami = await io.aic(args);
+  if (whoami.status !== 0) {
+    throw new AicLaneError(
+      `aic whoami --token failed while refreshing the bearer (status ${whoami.status}): ${trim(whoami.stderr || whoami.stdout)}`
+    );
+  }
+  const token = whoami.stdout.trim();
+  if (token.length === 0) {
+    throw new AicLaneError("aic whoami --token printed an empty token on refresh");
+  }
+  session.token = token;
+}
+
 export function realmJsonPath(realm: string): string {
   return `/am/json/realms/root/realms/${realm}`;
 }
 
 export async function amRequest(
+  io: AicIo,
+  session: TenantSession,
+  req: AmRequest
+): Promise<AmResponse> {
+  const first = await sendAmRequest(io, session, req);
+  // A 401 on an authenticated config call means the bearer died under us, not
+  // that the request was wrong — so refresh once and retry. Anonymous calls
+  // are excluded deliberately: `/authenticate` answers a journey that reached
+  // no declared outcome with a bare 401, and that is a verdict, not an
+  // expired token.
+  if (first.status !== 401 || req.anonymous === true) {
+    return first;
+  }
+  await refreshSessionToken(io, session);
+  return sendAmRequest(io, session, req);
+}
+
+async function sendAmRequest(
   io: AicIo,
   session: TenantSession,
   req: AmRequest
