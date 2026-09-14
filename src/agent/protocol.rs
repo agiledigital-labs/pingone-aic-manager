@@ -58,7 +58,15 @@ pub enum Request {
     SetIdleTimeout { secs: u64 },
     /// Return a valid bearer token for the named tenant, minting one if the
     /// cached token is missing or within 60s of expiry.
-    GetToken { tenant: String },
+    ///
+    /// `min_ttl_secs` raises that floor for callers who hand the token to
+    /// something else and cannot retry cheaply. `None` keeps the 60s default,
+    /// which is right for a request the daemon is about to make itself.
+    GetToken {
+        tenant: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_ttl_secs: Option<u32>,
+    },
     /// Store or replace an encrypted vault artifact's per-tenant secret. `kind`
     /// names the artifact ([`crate::config::VaultArtifact::kind`], e.g.
     /// `"log-keys"`); `value` is the opaque JSON payload the feature serialised.
@@ -207,7 +215,7 @@ mod tests {
 
         let actual = serde_json::to_value(&wire).expect("serialise");
         let expected = serde_json::json!({
-            "protocol_version": 2,
+            "protocol_version": 3,
             "op": "api_call",
             "tenant": "sandbox",
             "method": "PUT",
@@ -239,7 +247,7 @@ mod tests {
 
         let actual = serde_json::to_value(&wire).expect("serialise");
         let expected = serde_json::json!({
-            "protocol_version": 2,
+            "protocol_version": 3,
             "op": "api_call",
             "tenant": "sandbox",
             "method": "GET",
@@ -292,6 +300,39 @@ mod tests {
                 assert!(if_match.is_none());
             }
             other => panic!("expected an api_call, got {other:?}"),
+        }
+    }
+
+    /// A daemon built before `min_ttl_secs` existed is not the risk here — the
+    /// version bump refuses it outright. This covers the other direction: a
+    /// request that genuinely omits the field means "no opinion", not zero.
+    #[test]
+    fn get_token_without_a_floor_decodes_to_no_floor() {
+        let decoded: Request = serde_json::from_value(serde_json::json!({
+            "op": "get_token",
+            "tenant": "sandbox",
+        }))
+        .expect("a get_token with no floor is still a valid request");
+
+        match decoded {
+            Request::GetToken { min_ttl_secs, .. } => assert_eq!(min_ttl_secs, None),
+            other => panic!("expected a get_token, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_token_round_trips_a_floor() {
+        let wire = serde_json::to_value(WireRequest::current(Request::GetToken {
+            tenant: "sandbox".into(),
+            min_ttl_secs: Some(840),
+        }))
+        .expect("serialises");
+
+        assert_eq!(wire["min_ttl_secs"], 840);
+
+        match serde_json::from_value::<Request>(wire).expect("round trips") {
+            Request::GetToken { min_ttl_secs, .. } => assert_eq!(min_ttl_secs, Some(840)),
+            other => panic!("expected a get_token, got {other:?}"),
         }
     }
 

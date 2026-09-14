@@ -184,13 +184,20 @@ function parseCtxList(stdout: string): CtxRow[] {
 /**
  * Re-ask the agent for this tenant's bearer and adopt it.
  *
- * MEASURED 2026-09-14 over 20 minutes: `aic whoami --token` always hands back
- * a token that works *right now*, but says nothing about how much life is left
+ * MEASURED 2026-09-14 over 20 minutes: `aic whoami --token` handed back a
+ * token that worked *right now* and said nothing about how much life was left
  * in it. The first token this probe was given was rejected 401 five minutes
  * later, while a token fetched moments after it stayed good for the next ten —
- * the agent rotates on its own ~898s schedule, so what you get depends on where
- * in that cycle you asked. A bearer captured once at open() and held for a
- * whole file is therefore unsafe, however short the file.
+ * the agent rotated on its own ~898s schedule, so what you got depended on
+ * where in that cycle you asked.
+ *
+ * `aic` now guarantees `--token` at least 840 of those seconds, minting when
+ * the cached token is below the floor (MEASURED 2026-09-15: with 823s left the
+ * TTL jumped to 899 across the call, and with 864s left it did not move). That
+ * removes the reason this refresh usually fired, and none of the reasons it
+ * must stay: a file may run longer than the floor, the tenant may revoke, and
+ * an older `aic` on someone else's PATH makes no such promise. So the 401 retry
+ * remains the correctness mechanism and the floor is only what makes it rare.
  */
 export async function refreshSessionToken(
   io: AicIo,

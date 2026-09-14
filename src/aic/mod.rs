@@ -53,10 +53,19 @@ impl AicClient {
     }
 
     pub async fn bearer(&self) -> Result<String> {
+        self.bearer_with_min_ttl(auth::MIN_TTL_FOR_OUR_OWN_REQUEST)
+            .await
+    }
+
+    /// A bearer with at least `min_ttl` seconds left, minting a fresh one if
+    /// the cached token is shorter-lived than that. A floor above the token's
+    /// full lifetime mints on every call, which is a waste rather than an
+    /// error — the tenant's TTL is the real ceiling and no caller can raise it.
+    pub async fn bearer_with_min_ttl(&self, min_ttl: i64) -> Result<String> {
         // Check cache first
         {
             let cache = self.token_cache.lock().unwrap();
-            if let Some(t) = cache.get_valid() {
+            if let Some(t) = cache.get_with_min_ttl(min_ttl) {
                 return Ok(t.to_string());
             }
         }

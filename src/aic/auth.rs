@@ -11,6 +11,16 @@ use uuid::Uuid;
 use crate::config::tenant::Tenant;
 use crate::{Error, Result};
 
+/// What AIC issues, when it does not say otherwise (`docs/api/00-auth.md`).
+/// It is a ceiling on every TTL floor below: no caller can ask for more life
+/// than the tenant hands out.
+pub const ISSUED_TOKEN_TTL: i64 = 898;
+
+/// Enough life for a request we are about to make ourselves. `bearer()`'s
+/// token is used within milliseconds, so the only thing this has to cover is
+/// the round trip.
+pub const MIN_TTL_FOR_OUR_OWN_REQUEST: i64 = 60;
+
 pub struct TokenCache {
     token: Option<String>,
     expires_at: i64,
@@ -24,13 +34,22 @@ impl TokenCache {
         }
     }
 
-    pub fn get_valid(&self) -> Option<&str> {
-        let now = unix_now();
-        if self.expires_at > now + 60 {
+    /// The cached token, if it still has at least `min_ttl` seconds to live.
+    ///
+    /// The floor is the caller's, not the cache's: a request about to be sent
+    /// needs only enough life to arrive, while a token handed to an external
+    /// process is out of our hands the moment we print it and has to outlive
+    /// whatever that process does with it.
+    pub fn get_with_min_ttl(&self, min_ttl: i64) -> Option<&str> {
+        if self.expires_at > unix_now() + min_ttl {
             self.token.as_deref()
         } else {
             None
         }
+    }
+
+    pub fn get_valid(&self) -> Option<&str> {
+        self.get_with_min_ttl(MIN_TTL_FOR_OUR_OWN_REQUEST)
     }
 
     pub fn store(&mut self, token: String, expires_at: i64) {
@@ -165,7 +184,7 @@ pub async fn mint_token(
         .as_str()
         .ok_or_else(|| Error::Auth("no access_token in response".into()))?
         .to_string();
-    let expires_in = json["expires_in"].as_i64().unwrap_or(898);
+    let expires_in = json["expires_in"].as_i64().unwrap_or(ISSUED_TOKEN_TTL);
     let expires_at = now + expires_in;
 
     Ok((access_token, expires_at))
@@ -188,6 +207,35 @@ pub fn public_jwk(private_jwk: &serde_json::Value) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use super::{MIN_TTL_FOR_OUR_OWN_REQUEST, TokenCache, unix_now};
+
+    /// The floor is the caller's. A token with ~8 minutes left is fine for a
+    /// request we are about to send and NOT fine for one we hand to a script
+    /// that will hold it — an implementation that ignores `min_ttl` passes the
+    /// first of these and fails the second.
+    #[test]
+    fn a_higher_floor_rejects_a_token_a_lower_floor_accepts() {
+        let mut cache = TokenCache::new();
+        cache.store("t".into(), unix_now() + 500);
+
+        assert_eq!(
+            cache.get_with_min_ttl(MIN_TTL_FOR_OUR_OWN_REQUEST),
+            Some("t")
+        );
+        assert_eq!(cache.get_with_min_ttl(840), None);
+    }
+
+    #[test]
+    fn a_token_past_its_floor_is_withheld_even_though_it_has_not_expired() {
+        let mut cache = TokenCache::new();
+        cache.store("t".into(), unix_now() + 30);
+
+        // Still valid on the wire for another 30s, and still refused: the
+        // point of the floor is to not hand out a token that dies mid-use.
+        assert!(cache.expires_at() > unix_now());
+        assert_eq!(cache.get_valid(), None);
+    }
+
     use super::mint_token;
     use crate::Error;
     use crate::config::{Tenant, TenantTheme};

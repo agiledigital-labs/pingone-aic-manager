@@ -313,7 +313,10 @@ async fn handle(
             state.write().await.idle_timeout = Duration::from_secs(secs);
             Response::Ok
         }
-        Request::GetToken { tenant } => match do_get_token(&tenant, state).await {
+        Request::GetToken {
+            tenant,
+            min_ttl_secs,
+        } => match do_get_token(&tenant, min_ttl_secs, state).await {
             Ok(Some((token, expires_at))) => Response::Token {
                 access_token: token,
                 expires_at,
@@ -457,8 +460,10 @@ async fn do_status(state: Arc<RwLock<AgentState>>) -> StatusInfo {
 /// `Response::Locked`. `Ok(Some(_))` on success, `Err` on any other failure.
 async fn do_get_token(
     tenant: &str,
+    min_ttl_secs: Option<u32>,
     state: Arc<RwLock<AgentState>>,
 ) -> Result<Option<(String, i64)>> {
+    let min_ttl = min_ttl_secs.map_or(crate::aic::auth::MIN_TTL_FOR_OUR_OWN_REQUEST, i64::from);
     if !state.read().await.is_unlocked() {
         return Ok(None);
     }
@@ -475,7 +480,7 @@ async fn do_get_token(
         let client = s.clients.get(tenant).cloned();
         drop(s);
         if let Some(client) = client {
-            let token = client.bearer().await?;
+            let token = client.bearer_with_min_ttl(min_ttl).await?;
             let expires_at = client.token_cache.lock().unwrap().expires_at();
             return Ok(Some((token, expires_at)));
         }
@@ -484,7 +489,7 @@ async fn do_get_token(
     // Slow path: derive the JWK from the refreshed vault cache and retain the
     // AicClient for its token-cache + HTTP-connection-pool benefit.
     let client = build_client(tenant, state.clone()).await?;
-    let token = client.bearer().await?;
+    let token = client.bearer_with_min_ttl(min_ttl).await?;
     let expires_at = client.token_cache.lock().unwrap().expires_at();
     Ok(Some((token, expires_at)))
 }
