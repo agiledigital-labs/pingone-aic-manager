@@ -48,7 +48,7 @@ pub use client::AgentClient;
 pub use protocol::{ApiCallRequest, CachedTokenInfo, Request, Response, StatusInfo};
 
 /// CLI-to-agent wire protocol version. Bump this for incompatible changes.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 pub fn socket_path() -> PathBuf {
     project_paths().agent_socket_path()

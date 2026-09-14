@@ -174,6 +174,16 @@ has not been saved yet, the line says it is unset and points to
 `aic settings set operator.name <name>`. `--token` remains exactly one bare
 token on stdout.
 
+`--token` also guarantees the token's remaining life. The agent's own floor is
+60s, which is right for a request it is about to make itself and far too short
+for a token handed to another process that will hold it — so `--token` asks for
+at least **840s** and the agent mints a fresh one when the cached token is
+below that. AIC issues 898s tokens, so in practice a scripted caller always
+gets more than fourteen minutes, and the cached token is reused only within the
+first minute of its life. Plain `whoami` deliberately sends no floor: its job is
+to report the cache, and refreshing would make `expires:` say the same thing
+every time.
+
 Unlike the other `ctx` verbs, `rm` needs an unlocked agent: it reads the vault
 to find out what the tenant owns, and withdraws a signing key from the tenant
 itself.

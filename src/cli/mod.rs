@@ -136,7 +136,11 @@ pub enum Command {
     Whoami {
         #[arg(long, help = "Tenant to target")]
         tenant: Option<String>,
-        #[arg(long, help = "Print only the full bearer token for scripting")]
+        #[arg(
+            long,
+            help = "Print only the full bearer token for scripting (freshly minted \
+                    unless the cached one still has most of its life left)"
+        )]
         token: bool,
     },
     /// ESV operations (variables, secrets).
@@ -1209,6 +1213,15 @@ async fn ctx(cmd: CtxCommand) -> Result<()> {
     Ok(())
 }
 
+/// The life `whoami --token` guarantees its caller, in seconds.
+///
+/// AIC issues 898s tokens (`docs/api/00-auth.md`), so this is not a promise of
+/// 840 fresh seconds — it is a promise of 840 REMAINING seconds, which costs a
+/// mint only when the cached token is already about a minute old. Raising it to
+/// 898 or beyond would mint on literally every call without ever handing out
+/// more life, because a token is below its own issue TTL the instant it exists.
+const SCRIPTED_TOKEN_MIN_TTL: u32 = 840;
+
 async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
     let cfg =
         ProjectConfig::load()?.ok_or_else(|| Error::Config("no .aic/config.toml here".into()))?;
@@ -1224,6 +1237,13 @@ async fn whoami(tenant_arg: Option<String>, token_only: bool) -> Result<()> {
     match client
         .send(&Request::GetToken {
             tenant: tenant.clone(),
+            // `--token` hands the bearer to another process, which then holds it
+            // for as long as it likes; the daemon's own 60s floor is far too
+            // short for that, and the caller cannot see how much life is left
+            // because it only ever receives the string. Plain `whoami` sends no
+            // floor on purpose — its job is to REPORT the cache, and a refresh
+            // would make its `expires:` line say the same thing every time.
+            min_ttl_secs: token_only.then_some(SCRIPTED_TOKEN_MIN_TTL),
         })
         .await?
     {
@@ -1480,6 +1500,17 @@ pub(crate) fn redact(token: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// `--token`'s floor sits strictly between the daemon's own floor and what
+    /// the tenant issues. Above the issue TTL it would mint on every call while
+    /// handing out no more life; at or below the daemon's floor it would be a
+    /// no-op and `--token` would go back to printing near-dead tokens.
+    #[test]
+    fn the_scripted_token_floor_is_between_the_internal_floor_and_the_issue_ttl() {
+        let floor = i64::from(super::SCRIPTED_TOKEN_MIN_TTL);
+        assert!(floor > crate::aic::auth::MIN_TTL_FOR_OUR_OWN_REQUEST);
+        assert!(floor < crate::aic::auth::ISSUED_TOKEN_TTL);
+    }
+
     use super::*;
 
     /// A throwaway tree with `.aic/` at its root, plus `nested/` beneath it.
