@@ -858,6 +858,36 @@ three-step flow that does is in
 
 ## Verified against
 
+### Node and tree write/read-back normalization — 2026-09-14
+
+Measured to build a content comparator for a *reused* wrapper journey: what the
+tenant adds, owns, or rewrites between a `PUT` and the confirming `GET`.
+Throwaway resources under deterministic UUIDv5 ids, all deleted afterwards.
+
+- Tenant: `<your-tenant>.forgeblocks.com`
+- **Deterministic UUIDv5 ids are accepted** for scripts and for
+  `ScriptedDecisionNode`, and a tree referencing a UUIDv5 node id provisions and
+  resolves (all three `PUT`s returned **201**). Ids need not be random v4.
+- **A `ScriptedDecisionNode` `PUT` accepts more than the documented
+  projection.** Both a minimal body (`script`, `outcomes`) and a richer one
+  carrying `_id`, `_type` and `_outcomes` returned **201**. An earlier reading
+  of this doc implied the richer body would be rejected; it is not. The control
+  is that both bodies were sent in the same pass against the same tenant.
+- **`_type` and `_outcomes` are server-owned.** Sent on the rich body, they came
+  back **changed** — the tenant replaces them with its own canonical form. Send
+  them and a naive comparator reports drift on every confirming read. Strip them
+  from the request and treat them as server-added on the response.
+- Node read-back adds `_id`, `_rev`, `outputs`, `inputs` (plus `_type` and
+  `_outcomes` when they were not sent). Nothing sent was dropped.
+- Tree read-back adds `_id`, `_rev`, `innerTreeOnly`, `noSession`, `mustRun`,
+  `transactionalOnly`, and a `version` key **inside each `nodes` entry**. That
+  `version` is the entire reason a whole-`nodes` comparison reports a change.
+- **Connections survive exactly**, values and key order both
+  (`true,false,done` sent, `true,false,done` returned). `displayName`,
+  `nodeType` and the `x`/`y` coordinates were returned unchanged.
+- No reproduce script — the probe was a scratch file, not committed.
+
+
 - Tenant: `<your-tenant>.forgeblocks.com`
 - Date: 2026-05-17
 - Calls: `GET …/authenticationtrees/trees?_queryFilter=true&_pageSize=1` (200
