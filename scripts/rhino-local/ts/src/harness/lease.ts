@@ -300,11 +300,14 @@ export class Lease<TSchema extends z.ZodType> {
 
     const store = cloneStore(effects.effects.managedStore);
     const idm = localIdmHandle(store ?? {}, () => undefined);
-    for (const check of checks) {
-      await check(idm, { input, effects: effects.effects });
-    }
-    if (this.#spec.cleanup !== undefined) {
-      await this.#spec.cleanup(idm, { input: input as z.output<TSchema> });
+    try {
+      for (const check of checks) {
+        await check(idm, { input, effects: effects.effects });
+      }
+    } finally {
+      if (this.#spec.cleanup !== undefined) {
+        await this.#spec.cleanup(idm, { input: input as z.output<TSchema> });
+      }
     }
     // The store is diffed AFTER cleanup ran, which is the only ordering that
     // tests the cleanup rather than the script.
