@@ -856,7 +856,22 @@ three-step flow that does is in
 - **`transactionalOnly: true`** journeys can't issue an SSO session — used for
   step-up MFA inside another flow.
 
+### Tree `description` round-trips exactly (verified 2026-09-14)
+
+Same result as the script `description` (`04-scripts.md`): a tree's
+`description` comes back from `GET` byte-identical to what was `PUT` — tested
+at 202 and 1024 characters and with multibyte content. Whitespace is
+preserved.
+
+So a tree description is a usable ownership marker, and a comparator may keep
+it in the confirming-read comparison rather than normalizing it away.
+
 ## Verified against
+
+- Date: 2026-09-14 — tree `description` round trip, realm `alpha`: throwaway
+  trees created with 202- and 1024-character and multibyte descriptions, read
+  back and compared byte-for-byte, then deleted. No reproduce script — the
+  probes were scratch files, not committed.
 
 ### Node and tree write/read-back normalization — 2026-09-14
 
