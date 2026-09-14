@@ -1,6 +1,16 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { HARNESS_CALLBACK_ID } from "../../src/aic/constants.ts";
 import { AicFileLease } from "../../src/aic/file-lease.ts";
+import { createLeaseIdentity } from "../../src/aic/lease-identity.ts";
+import {
+  leaseStatePaths,
+  newLeaseJournal,
+  readLeaseJournal,
+  writeLeaseJournal,
+} from "../../src/aic/lease-lock.ts";
 import type { HttpRequest, HttpResponse } from "../../src/aic/http.ts";
 import type { AicIo } from "../../src/aic/tenant.ts";
 import { makeEffects } from "../case/helpers.ts";
@@ -83,6 +93,72 @@ describe("AicFileLease", () => {
     expect(fake.calls.filter((call) => call.method === "DELETE")).toHaveLength(2);
     await lease.close();
   });
+
+  it("probes an old journal's explicit outcome ids after the vocabulary shrinks", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-old-journal-"));
+    try {
+      const old = createLeaseIdentity({
+        id: "file-lease-test",
+        source: SOURCE,
+        outcomes: ["done", "old-outcome"],
+        ownerToken: "old-owner",
+      });
+      const paths = leaseStatePaths("https://tenant.example.com", old, stateDir);
+      const oldResult = old.ids.resultScripts["old-outcome"] as string;
+      await writeLeaseJournal(
+        paths.journalPath,
+        newLeaseJournal(paths, old, "alpha", [{ kind: "script", id: oldResult }])
+      );
+      const fake = new FakeLeaseTenant();
+      fake.seed(`/am/json/realms/root/realms/alpha/scripts/${oldResult}`, {
+        _id: oldResult,
+      });
+      const lease = new AicFileLease({
+        id: "file-lease-test",
+        suiteName: "file lease test",
+        source: SOURCE,
+        outcomes: ["done"],
+        project: "/tmp/rhino-local-aic-test",
+        stateDir,
+        io: fake.io,
+      });
+      await expect(lease.open()).rejects.toThrow(new RegExp(oldResult));
+      expect(
+        fake.calls.some((call) => new URL(call.url).pathname.endsWith(oldResult))
+      ).toBe(true);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("retains the journal when teardown only partially deletes the graph", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-partial-close-"));
+    try {
+      const fake = new FakeLeaseTenant({ deleteFailureAt: 2 });
+      const lease = new AicFileLease({
+        id: "partial-close",
+        suiteName: "partial close",
+        source: SOURCE,
+        outcomes: ["done"],
+        project: "/tmp/rhino-local-aic-test",
+        stateDir,
+        io: fake.io,
+      });
+      await lease.open();
+      const paths = leaseStatePaths(
+        "https://tenant.example.com",
+        lease.identity,
+        stateDir
+      );
+      await expect(lease.close()).rejects.toThrow(/cleanup failed/);
+      expect(await readLeaseJournal(paths.journalPath)).toMatchObject({
+        aicId: "partial-close",
+      });
+      expect(fake.calls.filter((call) => call.method === "DELETE")).toHaveLength(9);
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
 });
 
 function makeLease(fake: FakeLeaseTenant): AicFileLease {
@@ -128,6 +204,7 @@ interface FakeLeaseOptions {
   wrongNonce?: boolean;
   wrongLeaseDigest?: boolean;
   corruptCreateConfirmation?: number;
+  deleteFailureAt?: number;
 }
 
 class FakeLeaseTenant {
@@ -141,6 +218,7 @@ class FakeLeaseTenant {
   #nonce = "";
   #subjectDigest = "";
   #leaseDigest = "";
+  #deleteCount = 0;
 
   constructor(options: FakeLeaseOptions = {}) {
     this.#options = options;
@@ -201,6 +279,10 @@ class FakeLeaseTenant {
         return json(exists ? (this.#options.armStatus ?? 200) : 201, {});
       }
       if (req.method === "DELETE") {
+        this.#deleteCount += 1;
+        if (this.#deleteCount === this.#options.deleteFailureAt) {
+          return json(500, { code: 500 });
+        }
         this.#resources.delete(path);
         return json(200, {});
       }
@@ -234,6 +316,10 @@ class FakeLeaseTenant {
     return this.calls.filter(
       (call) => call.method === "PUT" && new URL(call.url).pathname.endsWith(suffix)
     );
+  }
+
+  seed(path: string, body: Record<string, unknown>): void {
+    this.#resources.set(path, body);
   }
 }
 

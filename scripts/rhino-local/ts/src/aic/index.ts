@@ -51,6 +51,21 @@ export type { ManagedFixture } from "./managed.ts";
 export { AicFileLease } from "./file-lease.ts";
 export type { AicFileLeaseOptions, AicLeaseRunRequest } from "./file-lease.ts";
 export {
+  acquireLeaseLock,
+  addJournalFixture,
+  leaseStatePaths,
+  newLeaseJournal,
+  readLeaseJournal,
+  removeJournalFixture,
+  removeLeaseJournal,
+  writeLeaseJournal,
+} from "./lease-lock.ts";
+export type {
+  LeaseJournal,
+  LeaseLock,
+  LeaseStatePaths,
+} from "./lease-lock.ts";
+export {
   confirmResourceSnapshot,
   nodeRequestProjection,
   resourceRequestProjection,

@@ -8,6 +8,16 @@ import { conformChain, type ChainConformanceReport, type LocalChainResult } from
 import { emitLeasedJourney, type WrapperJourney } from "./emit-journey.ts";
 import { instrumentSubject } from "./emit-subject.ts";
 import { createLeaseIdentity, type LeaseIdentity } from "./lease-identity.ts";
+import {
+  acquireLeaseLock,
+  leaseStatePaths,
+  newLeaseJournal,
+  readLeaseJournal,
+  removeLeaseJournal,
+  writeLeaseJournal,
+  type LeaseLock,
+  type LeaseStatePaths,
+} from "./lease-lock.ts";
 import { managedSeedMatches } from "./managed.ts";
 import { confirmResourceSnapshot } from "./resource-snapshot.ts";
 import {
@@ -41,6 +51,10 @@ export interface AicFileLeaseOptions {
   project?: string;
   unsupported?: "fail" | "skip";
   io?: AicIo;
+  /** Test seam; production state defaults to the machine temp directory. */
+  stateDir?: string;
+  /** Test seam for proving a live lock fails closed without a long wait. */
+  lockTimeoutMs?: number;
 }
 
 export interface AicLeaseRunRequest extends LocalChainResult {
@@ -58,6 +72,8 @@ export class AicFileLease {
   #created: CreatedResource[] = [];
   #state: "new" | "opening" | "open" | "closed" = "new";
   #queue: Promise<void> = Promise.resolve();
+  #lock: LeaseLock | undefined;
+  #paths: LeaseStatePaths | undefined;
 
   constructor(options: AicFileLeaseOptions) {
     this.#options = options;
@@ -93,6 +109,26 @@ export class AicFileLease {
         ...(this.#options.tenant === undefined ? {} : { tenant: this.#options.tenant }),
         project: this.#project,
       });
+      this.#paths = leaseStatePaths(
+        this.#session.baseUrl,
+        this.#identity,
+        this.#options.stateDir
+      );
+      this.#lock = await acquireLeaseLock(this.#paths, this.#identity, {
+        ...(this.#options.lockTimeoutMs === undefined
+          ? {}
+          : { timeoutMs: this.#options.lockTimeoutMs }),
+      });
+      await this.#handleOlderJournal();
+      await writeLeaseJournal(
+        this.#paths.journalPath,
+        newLeaseJournal(
+          this.#paths,
+          this.#identity,
+          this.#realm,
+          staticResources(this.#wrapper)
+        )
+      );
       await provisionJourney(this.#io, this.#session, this.#wrapper, this.#created);
       this.#state = "open";
     } catch (error) {
@@ -130,15 +166,23 @@ export class AicFileLease {
       return;
     }
     await this.#queue;
-    const session = this.#session;
-    const errors =
-      session === undefined
-        ? []
-        : await deleteCreatedResources(this.#io, session, this.#realm, this.#created);
-    if (errors.length === 0) {
-      this.#created = [];
+    let errors: string[] = [];
+    try {
+      const session = this.#session;
+      errors =
+        session === undefined
+          ? []
+          : await deleteCreatedResources(this.#io, session, this.#realm, this.#created);
+      if (errors.length === 0) {
+        this.#created = [];
+        if (this.#paths !== undefined) {
+          await removeLeaseJournal(this.#paths.journalPath);
+        }
+      }
+    } finally {
+      this.#state = "closed";
+      await this.#lock?.release();
     }
-    this.#state = "closed";
     if (errors.length > 0) {
       throw new AicLaneError(`AIC file lease cleanup failed: ${errors.join("; ")}`);
     }
@@ -269,19 +313,85 @@ export class AicFileLease {
   }
 
   async #cleanupAfterFailedOpen(): Promise<void> {
-    if (this.#session === undefined || this.#created.length === 0) {
+    if (this.#session !== undefined && this.#created.length > 0) {
+      const errors = await deleteCreatedResources(
+        this.#io,
+        this.#session,
+        this.#realm,
+        this.#created
+      );
+      if (errors.length === 0) {
+        this.#created = [];
+        if (this.#paths !== undefined) {
+          await removeLeaseJournal(this.#paths.journalPath);
+        }
+      }
+    }
+    await this.#lock?.release();
+  }
+
+  async #handleOlderJournal(): Promise<void> {
+    const paths = this.#paths as LeaseStatePaths;
+    const journal = await readLeaseJournal(paths.journalPath);
+    if (journal === undefined) {
       return;
     }
-    const errors = await deleteCreatedResources(
-      this.#io,
-      this.#session,
-      this.#realm,
-      this.#created
-    );
-    if (errors.length === 0) {
-      this.#created = [];
+    const residue: string[] = [];
+    for (const resource of journal.resources) {
+      const path = resourcePath(journal.realm, resource);
+      const response = await amRequest(this.#io, this.#session as TenantSession, {
+        method: "GET",
+        path,
+        headers: amConfigHeaders(),
+      });
+      if (response.status === 404) {
+        continue;
+      }
+      if (response.status >= 200 && response.status < 300) {
+        residue.push(resourceLabel(resource));
+        continue;
+      }
+      throw new AicLaneError(
+        `could not probe older AIC lease journal resource ${resourceLabel(resource)} (HTTP ${response.status})`
+      );
     }
+    if (journal.managedFixtures.length > 0) {
+      residue.push(
+        ...journal.managedFixtures.map((fixture) => `${fixture.type}/${fixture.id}`)
+      );
+    }
+    if (residue.length > 0) {
+      throw new AicLaneError(
+        `AIC file lease ${JSON.stringify(journal.aicId)} has owned residue: ${residue.join(", ")}`
+      );
+    }
+    await removeLeaseJournal(paths.journalPath);
   }
+}
+
+function staticResources(wrapper: WrapperJourney): CreatedResource[] {
+  return [
+    ...wrapper.scripts.map((script) => ({ kind: "script" as const, id: script.id })),
+    ...wrapper.nodes.map((node) => ({ kind: "node" as const, id: node.id })),
+    { kind: "tree" as const, name: wrapper.treeName },
+  ];
+}
+
+function resourcePath(realm: string, resource: CreatedResource): string {
+  const base = realmJsonPath(realm);
+  if (resource.kind === "script") {
+    return `${base}/scripts/${resource.id}`;
+  }
+  if (resource.kind === "node") {
+    return `${base}/realm-config/authentication/authenticationtrees/nodes/ScriptedDecisionNode/${resource.id}`;
+  }
+  return `${base}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(resource.name)}`;
+}
+
+function resourceLabel(resource: CreatedResource): string {
+  return resource.kind === "tree"
+    ? `tree ${resource.name}`
+    : `${resource.kind} ${resource.id}`;
 }
 
 function assertConformance(report: ChainConformanceReport): void {
