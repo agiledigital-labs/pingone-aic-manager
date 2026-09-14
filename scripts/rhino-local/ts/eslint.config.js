@@ -11,6 +11,7 @@ export default tseslint.config(
       "eslint.am.config.js",
       "src/bindings/rhino/**",
       "cases/**/*.cjs",
+      "failures/**",
     ],
   },
   eslint.configs.recommended,
