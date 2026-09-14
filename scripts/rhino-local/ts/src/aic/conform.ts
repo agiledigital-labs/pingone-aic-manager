@@ -13,6 +13,7 @@ import {
   type ObservationGap,
 } from "./diff.ts";
 import { judge } from "../case/verdict.ts";
+import { managedSeedMatches, type ManagedFixture } from "./managed.ts";
 import { runAicChain, runAicLane, type AicReply } from "./run.ts";
 import { aicUnsupportedReason } from "./unsupported.ts";
 
@@ -51,12 +52,15 @@ export interface LocalChainResult {
   cases: readonly Case[];
   localEffects: readonly RecordedEffects[];
   replies: readonly (readonly AicReply[])[];
+  /** Present only when the local result came through the lease fixture ledger. */
+  managedFixtures?: readonly ManagedFixture[];
 }
 
 export type AicChainRunner = (args: {
   cases: readonly Case[];
   source: string;
   replies: readonly (readonly AicReply[])[];
+  managedFixtures?: readonly ManagedFixture[];
 }) => Promise<readonly RecordedEffects[]>;
 
 export interface ChainConformanceInput extends LocalChainResult {
@@ -127,8 +131,14 @@ export async function conformChain(
   const local = input.cases.map((kase, index) =>
     observedResult(kase, input.localEffects[index] as RecordedEffects)
   );
+  const harnessOwnsManaged =
+    input.managedFixtures !== undefined &&
+    managedSeedMatches(
+      (input.cases[0] as Case).given.managed,
+      input.managedFixtures
+    );
   const unsupported = input.cases.flatMap((kase) => {
-    const reason = aicUnsupportedReason(kase);
+    const reason = aicUnsupportedReason(kase, { harnessOwnsManaged });
     return reason === undefined ? [] : [`${kase.name}: ${reason}`];
   });
   const aicRunner = input.aic === "tenant" ? tenantChainRunner : input.aic;
@@ -169,6 +179,7 @@ export function chainFromRunResult(result: RunResult): LocalChainResult {
     cases: [...result.steps.map((step) => step.kase), result.kase],
     localEffects: [...result.steps.map((step) => step.effects), result.effects],
     replies: result.steps.map((step) => submittedToAicReplies(step.submitted)),
+    managedFixtures: result.fixtures,
   };
 }
 
@@ -210,6 +221,9 @@ async function runChainLane(
       cases: input.cases,
       source: input.source,
       replies: input.replies,
+      ...(input.managedFixtures !== undefined
+        ? { managedFixtures: input.managedFixtures }
+        : {}),
     });
     if (effects.length !== input.cases.length) {
       throw new Error(
@@ -306,5 +320,13 @@ function skipResult(reason: string): LaneResult {
 
 const tenantRunner: LaneRunner = ({ kase, source }) => runAicLane(kase, source);
 
-const tenantChainRunner: AicChainRunner = ({ cases, source, replies }) =>
-  runAicChain(cases, source, { replies });
+const tenantChainRunner: AicChainRunner = ({
+  cases,
+  source,
+  replies,
+  managedFixtures,
+}) =>
+  runAicChain(cases, source, {
+    replies,
+    ...(managedFixtures !== undefined ? { managedFixtures } : {}),
+  });

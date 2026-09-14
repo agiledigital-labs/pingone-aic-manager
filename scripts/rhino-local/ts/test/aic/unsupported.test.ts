@@ -16,7 +16,7 @@ describe("aicUnsupportedReason", () => {
     ).toBeUndefined();
   });
 
-  it("skips managed fixtures rather than run against tenant data", () => {
+  it("skips author-declared managed data rather than use tenant state", () => {
     const reason = aicUnsupportedReason(
       caseWith({
         given: { managed: { alpha_user: [{ userName: "alice" }] } },

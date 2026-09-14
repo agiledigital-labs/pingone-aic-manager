@@ -467,13 +467,34 @@ Ambient keys are visible in the subject's `before` snapshot, so the subject
 script really can read them — previously we only knew they existed by the time
 the result node ran.
 
-### The portability guard fires correctly
+### The portability guard and managed-fixture provenance
 
-`openidm-read` declares `given.managed` and the lane refused it:
+The managed-fixture lifecycle below is offline-tested and awaits live tenant
+verification.
+
+An author-written `given.managed` still makes the lane refuse the case:
 `given.managed is environment-dependent; AIC lane skips rather than run against
-whatever the tenant holds`. That is the designed behaviour — an
-environment-dependent case is skipped with a reason, never run against
-whatever state the tenant happens to be in.
+whatever the tenant holds`. A `Case` cannot distinguish that declaration from
+records the harness owns, so the case alone is deliberately insufficient.
+
+`Lease.execute()` now records its fixture ledger separately on `RunResult`, and
+`chainFromRunResult()` carries that provenance into `conformChain()`. It is
+accepted only when it exactly matches the first pass's `given.managed`; later
+passes may differ because the subject itself can create, mutate or delete IDM
+records. A manually assembled chain has no ledger provenance and stays skipped.
+
+Before provisioning the subject, the AIC lane creates every owned fixture with
+`POST /openidm/managed/{type}?_action=create`, including `_id` in the body. A
+412 is a collision, never an update, and aborts before the subject. Every 201 is
+followed by a GET that checks the declared fields; every successfully created
+record is deleted in reverse order even when that check or the subject fails.
+
+Managed-fixture runs are serialized per tenant with a process-independent lock
+under the OS temporary directory. This lets parallel test files wait instead of
+racing on a shared `_id`; the cost is that all managed-fixture conformance runs
+against one tenant execute one at a time. A collision while holding the lock is
+therefore reported as pre-existing tenant state or a fixture leaked by an
+earlier run.
 
 ### Real-script corpus, same day
 
