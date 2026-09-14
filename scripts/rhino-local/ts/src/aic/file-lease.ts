@@ -279,6 +279,23 @@ export class AicFileLease {
       failure = error;
     }
     const cleanupErrors = await this.#cleanupManaged();
+    for (const fixture of managedFixtures) {
+      const identity = fixtureIdentity(fixture);
+      if (
+        !this.#seededManaged.some(
+          (seeded) => seeded.type === fixture.type && seeded.id === identity.id
+        )
+      ) {
+        try {
+          await removeJournalFixture(this.#journalPath(), {
+            type: fixture.type,
+            id: identity.id,
+          });
+        } catch (error) {
+          cleanupErrors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
     if (failure !== undefined) {
       if (cleanupErrors.length > 0) {
         throw new AggregateError(
@@ -511,6 +528,9 @@ export class AicFileLease {
           await removeLeaseJournal(this.#paths.journalPath);
         }
       }
+    }
+    if (this.#created.length === 0 && this.#paths !== undefined) {
+      await removeLeaseJournal(this.#paths.journalPath);
     }
     await this.#lock?.release();
   }

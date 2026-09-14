@@ -187,6 +187,40 @@ describe("AicFileLease", () => {
     await lease.close();
   });
 
+  it("removes a journal when preflight finds a resource it does not own", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-preflight-journal-"));
+    try {
+      const identity = createLeaseIdentity({
+        id: "file-lease-test",
+        source: SOURCE,
+        outcomes: ["done"],
+      });
+      const fake = new FakeLeaseTenant();
+      fake.seed(
+        `/am/json/realms/root/realms/alpha/scripts/${identity.ids.subjectScript}`,
+        { _id: identity.ids.subjectScript }
+      );
+      const lease = new AicFileLease({
+        id: "file-lease-test",
+        suiteName: "file lease test",
+        source: SOURCE,
+        outcomes: ["done"],
+        project: "/tmp/rhino-local-aic-test",
+        stateDir,
+        io: fake.io,
+      });
+      await expect(lease.open()).rejects.toThrow(/refusing to overwrite/);
+      const paths = leaseStatePaths(
+        "https://tenant.example.com",
+        identity,
+        stateDir
+      );
+      expect(await readLeaseJournal(paths.journalPath)).toBeUndefined();
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("probes an old journal's explicit outcome ids after the vocabulary shrinks", async () => {
     const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-old-journal-"));
     try {
@@ -323,19 +357,38 @@ describe("AicFileLease", () => {
   });
 
   it("fails closed on a managed create collision before subject mutation", async () => {
-    const fake = new FakeLeaseTenant({ managedCreateStatus: 412 });
-    const lease = makeLease(fake);
-    await lease.open();
-    const arms = fake.events.filter((event) => event === "arm").length;
-    await expect(
-      lease.run(
-        request("managed-collision", "alpha", {
-          managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
-        }, [MANAGED_FIXTURE])
-      )
-    ).rejects.toThrow(/managed fixture collision/);
-    expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
-    await lease.close();
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-managed-collision-"));
+    try {
+      const fake = new FakeLeaseTenant({ managedCreateStatus: 412 });
+      const lease = new AicFileLease({
+        id: "file-lease-test",
+        suiteName: "file lease test",
+        source: SOURCE,
+        outcomes: ["done"],
+        project: "/tmp/rhino-local-aic-test",
+        stateDir,
+        io: fake.io,
+      });
+      await lease.open();
+      const arms = fake.events.filter((event) => event === "arm").length;
+      await expect(
+        lease.run(
+          request("managed-collision", "alpha", {
+            managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
+          }, [MANAGED_FIXTURE])
+        )
+      ).rejects.toThrow(/managed fixture collision/);
+      expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
+      const paths = leaseStatePaths(
+        "https://tenant.example.com",
+        lease.identity,
+        stateDir
+      );
+      expect((await readLeaseJournal(paths.journalPath))?.managedFixtures).toEqual([]);
+      await lease.close();
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
   });
 
   it("reuses one lazy session minter and one cookie-name lookup", async () => {

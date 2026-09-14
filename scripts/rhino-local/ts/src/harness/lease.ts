@@ -78,6 +78,8 @@ export interface LeaseOptions {
    * logic are worth unit-testing without a test runner in the way.
    */
   testName?: () => string;
+  /** Fixed tenant realm; the Vitest AIC adapter supplies it to both lanes. */
+  realm?: string;
   /** Cross-feature port implemented by the tenant-aware AIC vertical. */
   lane?: LeaseLane;
 }
@@ -232,8 +234,11 @@ export class Lease<TSchema extends z.ZodType> {
    * remove.
    */
   async endTest(): Promise<void> {
-    await this.#options.lane?.endTest();
-    this.#testLedger = [];
+    try {
+      await this.#options.lane?.endTest();
+    } finally {
+      this.#testLedger = [];
+    }
   }
 
   /** Suite teardown: drop what the suite created, alongside the journey. */
@@ -266,7 +271,16 @@ export class Lease<TSchema extends z.ZodType> {
     }
     applyInputsAndEsv(draft, input);
     const ledger = this.ledger();
-    let given = toGiven(draft, { managed: ledgerToManaged(ledger) });
+    let given = toGiven(
+      draft,
+      {
+        managed: ledgerToManaged(ledger),
+        ...(this.#options.realm === undefined
+          ? {}
+          : { realm: this.#options.realm }),
+      },
+      this.#options.realm
+    );
     if (steps.length > 0 && given.callbacks === undefined) {
       // Declaring a step says the script suspends, and a script that suspends
       // reads `callbacks` to tell its first pass from its later ones. AM's

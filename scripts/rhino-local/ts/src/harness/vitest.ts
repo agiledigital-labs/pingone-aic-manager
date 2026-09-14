@@ -24,7 +24,8 @@ export interface UseLeaseAicOptions {
   unsupported?: "fail" | "skip";
 }
 
-export interface UseLeaseOptions extends Partial<Omit<LeaseOptions, "runner">> {
+export interface UseLeaseOptions
+  extends Partial<Omit<LeaseOptions, "runner" | "lane" | "realm">> {
   spawnTimeoutMs?: number;
   aic?: UseLeaseAicOptions;
   /** Injected fake seam for adapter tests; production uses the default AIC I/O. */
@@ -50,7 +51,6 @@ export function useLease<TSchema extends z.ZodType>(
 ): Lease<TSchema> {
   let runner: RhinoRunner | undefined;
   let aicLease: AicFileLease | undefined;
-  let aicFile: string | undefined;
   const lane: LeaseLane | undefined =
     options.aic === undefined
       ? undefined
@@ -76,6 +76,7 @@ export function useLease<TSchema extends z.ZodType>(
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(options.allowResidue !== undefined ? { allowResidue: options.allowResidue } : {}),
     ...(lane === undefined ? {} : { lane }),
+    ...(options.aic === undefined ? {} : { realm: options.aic.realm ?? "alpha" }),
     testName: () => expect.getState().currentTestName ?? suite.spec.name,
   } as LeaseOptions);
 
@@ -83,8 +84,7 @@ export function useLease<TSchema extends z.ZodType>(
     runner = await RhinoRunner.spawn();
     lease.open();
     if (options.aic !== undefined) {
-      aicFile = vitestFilePath(scope);
-      claimAicLeaseForFile(aicFile, options.aic.id);
+      claimAicLeaseForFile(vitestFilePath(scope), options.aic.id);
       aicLease = new AicFileLease({
         id: options.aic.id,
         suiteName: suite.spec.name,
@@ -144,9 +144,6 @@ export function useLease<TSchema extends z.ZodType>(
       await runner?.close();
     } catch (error) {
       errors.push(error);
-    }
-    if (aicFile !== undefined) {
-      releaseAicLeaseForFile(aicFile, options.aic?.id);
     }
     if (errors.length > 0) {
       throw new AggregateError(errors, "rhino-local lease teardown failed");
