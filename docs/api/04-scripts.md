@@ -802,6 +802,31 @@ Audit history:
   this verification never issued), which is itself the evidence that the SA DN
   cannot distinguish concurrent writers.
 
+### A replaced script is live on the next invocation — 2026-09-14
+
+- Tenant: `<your-tenant>.forgeblocks.com`
+- Question: does `PUT`ting new source to an existing script id take effect on
+  the **next** `/authenticate` of a journey that already exists, or does AM
+  serve a cached compilation bound to the node?
+- Method: provisioned one throwaway journey whose scripted decision node
+  returned `NONCE-AAAA` in a `HiddenValueCallback`. Invoked it twice as a
+  **positive control** — both returned `NONCE-AAAA`, which is what makes the
+  later readings non-vacuous. Then `PUT` the same script id with source
+  returning `NONCE-BBBB` (**200**, an update), confirmed by `GET` that the
+  stored base64 decoded to source containing `NONCE-BBBB` and not
+  `NONCE-AAAA`, and invoked the **unchanged** journey five times immediately
+  and again at +2s, +5s, +15s and +30s.
+- Result: all nine post-update invocations returned `NONCE-BBBB`. No stale
+  execution at any delay.
+- Discriminating observation: a single `NONCE-AAAA` after the confirming `GET`
+  would have proved per-node compilation caching or asynchronous propagation.
+  None occurred.
+- Scope: one tenant, one journey, sequential calls from one client, so this
+  does **not** establish behaviour across cluster nodes under concurrent load.
+  It establishes that no client-observable staleness window exists on the
+  ordinary path.
+- No reproduce script — the probe was a scratch file, not committed.
+
 ### `evaluatorVersion` presence across the realm — 2026-08-14
 
 Sandbox, realm `alpha`, contributed by the sibling
