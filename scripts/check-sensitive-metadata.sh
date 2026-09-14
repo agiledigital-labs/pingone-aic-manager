@@ -93,7 +93,14 @@ decode_base64url() {
 # Cheap pre-filter: only lines that could possibly match a rule are worth the
 # per-line analysis. Without this a full-tree scan forks greps for every line
 # of every file and takes minutes.
-CANDIDATE_RE='forgeblocks|sts\.windows\.net|entityid|trustedproviders|metaalias|SAML2MetaCache|setToPrototolMap|assertionConsumerService|singleLogoutService|nameIdService|AuthConsumer|\|saml2|aHR0c'
+# A sibling-checkout path whose directory segment has been anonymised. The
+# anonymising IS the tell: nobody writes `~/w/<client>/…` about a checkout that
+# belongs to this project, so the placeholder marks the path as a client's and
+# the path shape then announces that a client corpus exists and what is in it.
+# Cite the evidence in a committed doc; let `.ai/local.md` say where it lives.
+CLIENT_CHECKOUT_RE='~/w/(<[^/>]*>|\{[^/}]*\}|client-[a-z])'
+
+CANDIDATE_RE='~/w/|forgeblocks|sts\.windows\.net|entityid|trustedproviders|metaalias|SAML2MetaCache|setToPrototolMap|assertionConsumerService|singleLogoutService|nameIdService|AuthConsumer|\|saml2|aHR0c'
 if [ -n "$DENY_RE" ]; then
   CANDIDATE_RE="$CANDIDATE_RE|$DENY_RE"
 fi
@@ -208,6 +215,9 @@ redact_stream() {
         printf '%s' "$host" | grep -qiE "$PLACEHOLDER_HOST" && continue
         line=${line//"$cand"/<entityId64>}
       done
+      # Rule 7's counterpart. Dropping the `~/w/` prefix is the whole point:
+      # there is no shape worth preserving here, because the shape IS the leak.
+      line=$(sed -E "s#$CLIENT_CHECKOUT_RE#<client-checkout>#g" <<<"$line")
       printf '%s\n' "$line"
     done
   }
@@ -288,6 +298,16 @@ scan_text() {
       report "$file" "$line" "denylist" "matched an external deny pattern" \
         "remove the value; see \$SENSITIVE_DENYLIST"
     fi
+
+    # Rule 7 — a client checkout's path, placeholder and all. Unlike every
+    # rule above it, this one fires on text that has ALREADY been redacted:
+    # swapping the client's name for `<client>` leaves the path shape, and the
+    # shape is what says a client corpus exists and roughly what is in it.
+    if grep -qE "$CLIENT_CHECKOUT_RE" <<<"$content"; then
+      report "$file" "$line" "client-checkout-path" \
+        "$(grep -oE "$CLIENT_CHECKOUT_RE[^ \`\"',)]*" <<<"$content" | head -1)" \
+        "cite the evidence, not the path; \`.ai/local.md\` records where it lives"
+    fi
   done
 }
 
@@ -351,6 +371,9 @@ case "$MODE" in
     # base64 (GNU coreutils 8.32, the CI runner) tells these apart; a lenient
     # 9.x decodes both either way.
     probe "base64url url (2-char pad)" '"_id": "aHR0cHM6Ly9zc28uYWNtZS5jb20uYQ"'
+    probe "client checkout path" 'the corpus lives in `~/w/<client>/sandbox-scripts`'
+    probe "client checkout, reserved name" 'cited against `~/w/client-a/logs/prod-logs.json`'
+    negative "our own sibling checkout" 'patterns borrowed from `~/w/tally` and `~/w/aic/who-changed`'
     negative "placeholder host"   'https://<your-tenant>.forgeblocks.com/am'
     negative "placeholder guid"   'https://sts.windows.net/00000000-0000-0000-0000-000000000000/|saml2'
     negative "placeholder entity" '"entityId": "https://sp-b.example.com"'
@@ -369,6 +392,8 @@ case "$MODE" in
       '"entityId": "https://sp-b.example.com"'
       '    "https://sp-b.example.com|saml2"'
       '  "valueBase64": "aGVsbG8="'
+      'patterns borrowed from `~/w/tally` and `~/w/aic/who-changed`'
+      'the corpus lives in `<client-checkout>/sandbox-scripts`'
     )
     for fixture in "${for_idempotence[@]}"; do
       if [ "$(printf '%s\n' "$fixture" | redact_stream)" = "$fixture" ]; then
@@ -394,7 +419,8 @@ case "$MODE" in
       '    "https://acs.acme.com.au/am/AuthConsumer/metaAlias/alpha/sp"' \
       '  ]' \
       '  "trustedProviders": ["https://sts.windows.net/7f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b/|saml2"]' \
-      '  "_id": "aHR0cHM6Ly9zc28uYWNtZS5jb20uYXU"' | redact_stream)
+      '  "_id": "aHR0cHM6Ly9zc28uYWNtZS5jb20uYXU"' \
+      'corpus at ~/w/<client>/sandbox-scripts and ~/w/client-a/logs' | redact_stream)
     left=$(findings=0; scan_text "roundtrip" < <(grep -iEn "$CANDIDATE_RE" <<<"$roundtrip"); echo "F=$findings")
     if [[ "$left" == *"F=0"* ]]; then
       echo "ok    redact output passes the checker (round-trip)"

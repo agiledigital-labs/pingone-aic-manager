@@ -12,8 +12,8 @@ copied assumptions.
 >
 > - **D** — Documented by Ping (URL cited).
 > - **V** — Runtime-verified in the sandbox via `scripts/rhino-script-tester/`.
-> - **I** — Inferred from the existing sandbox corpus
->   (`<client-checkout>/sandbox-scripts`) — real scripts use it, so it must work, but not
+> - **I** — Inferred from the existing sandbox corpus (a client checkout, which
+>   `.ai/local.md` locates) — real scripts use it, so it must work, but not
 >   isolated-probe confirmed.
 > - **U** — Unknown / not yet verified. **Do not** encode as fact in types or
 >   lint.

@@ -481,12 +481,16 @@ worked example.
 ## 10. When unsure
 
 - **Read `.ai/local.md` if it exists.** It records this machine's sandbox tenant
-  and sibling-checkout paths. Several `docs/api/*.md` files cite evidence from
-  sibling checkouts by `~/w/…` path (`<client-checkout>/logs`, `~/w/aic/who-changed`,
-  `<client-checkout>/sandbox-scripts`, and `~/w/headless-vi` in
-  `docs/vici-editor-plan.md`). Those paths are **not** guaranteed to exist here;
-  `local.md` says which ones do. If a doc cites one you cannot find, say so
-  rather than inventing what it would have contained.
+  and sibling-checkout paths. Several docs cite evidence from sibling checkouts
+  — two AIC-adjacent ones this repo owns (`~/w/aic/who-changed`, and
+  `~/w/headless-vi` in `docs/vici-editor-plan.md`), and two client checkouts
+  that are **named only in `local.md`**: a prod log corpus and a production
+  script corpus. A committed file must not spell a client checkout's path, even
+  with the name replaced by a placeholder — the path shape alone says a client
+  corpus exists and roughly what is in it. Cite the evidence, say `local.md`
+  names where it lives, and stop there. None of these are guaranteed to exist
+  on a given machine; if a doc cites one you cannot find, say so rather than
+  inventing what it would have contained.
 - **Default to reading `docs/api/`** rather than searching the web. The web
   sources we already mined had errors (Q1, Q2 in 99-…); our verified docs win.
 - **If the docs don't cover it, verify before coding.** Use
