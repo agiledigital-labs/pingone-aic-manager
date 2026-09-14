@@ -802,6 +802,20 @@ Audit history:
   this verification never issued), which is itself the evidence that the SA DN
   cannot distinguish concurrent writers.
 
+### Script write/read-back is byte-exact — 2026-09-14
+
+- Tenant: `<your-tenant>.forgeblocks.com`
+- `PUT` a script whose source carried escaped quotes, backslashes, non-ASCII
+  (`é`, `中`) and the U+2028/U+2029 line separators, then `GET` it and
+  base64-decode: **237 bytes sent, 237 bytes returned, buffers identical.** The
+  tenant does not re-encode, re-wrap or normalize stored source.
+- The confirming read adds exactly four server-owned fields — `createdBy`,
+  `creationDate`, `lastModifiedBy`, `lastModifiedDate` — and changes nothing
+  that was sent.
+- Consequence for two-way sync: a content comparator may compare decoded source
+  bytes directly, and needs to ignore only those four keys.
+- No reproduce script — the probe was a scratch file, not committed.
+
 ### A replaced script is live on the next invocation — 2026-09-14
 
 - Tenant: `<your-tenant>.forgeblocks.com`
