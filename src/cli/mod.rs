@@ -1079,14 +1079,49 @@ async fn stop() -> Result<()> {
             return Ok(());
         }
     };
-    match client.send(&Request::Shutdown).await? {
-        Response::Ok => {
+    match client.send(&Request::Shutdown).await {
+        Ok(Response::Ok) => {
             println!("agent stopping");
             Ok(())
         }
-        Response::Error { message } => Err(Error::Config(message)),
-        other => Err(Error::Config(format!("unexpected reply: {other:?}"))),
+        Ok(Response::Error { message }) => Err(Error::Config(message)),
+        // Everything else means the daemon would not take the request — a
+        // protocol version it does not share, a reply this build cannot parse,
+        // a socket that closed mid-exchange. `stop` is the documented remedy
+        // for exactly those, so it must not be the one command that needs a
+        // working conversation to run; otherwise the advice is circular and the
+        // operator is told to run the thing that just failed.
+        Ok(other) => signal_stop(&sock, &format!("unexpected reply: {other:?}")),
+        Err(e) => signal_stop(&sock, &e.to_string()),
     }
+}
+
+/// Stop the daemon without talking to it: SIGTERM the pid it recorded, then
+/// clear the socket. Falls back to reporting `reason` if there is no pid to
+/// signal, because a stale socket with no live owner is not a failure to stop.
+fn signal_stop(sock: &std::path::Path, reason: &str) -> Result<()> {
+    let pid = read_pid_or_zero();
+    if pid == 0 {
+        let _ = std::fs::remove_file(sock);
+        return Err(Error::Config(format!(
+            "agent did not accept a shutdown request ({reason}), and {} names no \
+             pid to signal; remove {} by hand if it persists",
+            agent::pid_path().display(),
+            sock.display()
+        )));
+    }
+
+    // SAFETY: `kill` with a signal number is a plain libc call; an exited pid
+    // yields ESRCH rather than any action on this process.
+    let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if sent != 0 {
+        let _ = std::fs::remove_file(sock);
+        println!("no agent running (pid {pid} is gone; removed stale socket)");
+        return Ok(());
+    }
+
+    println!("agent stopping (pid {pid} signalled: {reason})");
+    Ok(())
 }
 
 async fn status() -> Result<()> {
