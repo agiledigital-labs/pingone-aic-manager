@@ -1,10 +1,7 @@
 import type { JsonObject, JsonValue } from "../case/types.ts";
 import type { FixtureSpec, IdmHandle } from "./types.ts";
 
-/**
- * Local `check()` and `cleanup()` handle. A tenant-backed counterpart does not
- * exist yet; AIC-enabled conformance reports expose that observation gap.
- */
+/** Local `check()` and `cleanup()` handle over one run's harvested store. */
 export function localIdmHandle(
   store: Record<string, JsonObject[]>,
   onDelete: (resource: string) => void
