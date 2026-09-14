@@ -12,16 +12,27 @@ function objectHasKeys(value: object | undefined): boolean {
  * is evidence, not coincidence.
  *
  * Environment-dependent inputs (`esv` / `secrets` / `managed` / `http`) are
- * skipped rather than silently running against whatever the tenant holds —
- * that is the S4 portability rule, applied here as a hard skip.
+ * skipped rather than silently running against whatever the tenant holds.
+ * The one exception is managed state whose fixture-ledger provenance was
+ * checked by the caller; later chain passes may then carry records the subject
+ * itself created without turning the tenant lane back off.
  */
-export function aicUnsupportedReason(kase: Case): string | undefined {
+export function aicUnsupportedReason(
+  kase: Case,
+  options: { harnessOwnsManaged?: boolean } = {}
+): string | undefined {
   if (kase.given.engine === "legacy") {
     return "legacy engine: AIC wrapper emit is next-gen only (legacy results go through JavaImporter + Action.send, not callbacksBuilder)";
   }
   if (!isPortable(kase)) {
-    const declared = ENV_INPUT_KEYS.filter((key) => hasDeclaredEnv(kase.given, key));
-    return `given.${declared.join(", ")} is environment-dependent; AIC lane skips rather than run against whatever the tenant holds`;
+    const declared = ENV_INPUT_KEYS.filter(
+      (key) =>
+        hasDeclaredEnv(kase.given, key) &&
+        !(key === "managed" && options.harnessOwnsManaged === true)
+    );
+    if (declared.length > 0) {
+      return `given.${declared.join(", ")} is environment-dependent; AIC lane skips rather than run against whatever the tenant holds`;
+    }
   }
   if (kase.given.resumedFromSuspend === true) {
     return "given.resumedFromSuspend=true cannot be seeded on a first authenticate";

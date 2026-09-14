@@ -459,7 +459,7 @@ describe("conformChain", () => {
     expect(invoked).toBe(false);
   });
 
-  it("skips the whole chain when any pass is unsupported", async () => {
+  it("skips the whole chain for author-declared managed state", async () => {
     let invoked = false;
     const report = await conformChain({
       cases: [
@@ -486,6 +486,39 @@ describe("conformChain", () => {
     expect(report.passes.every((pass) => pass.aic.effects === undefined)).toBe(
       true
     );
+  });
+
+  it("runs ledger-created managed state and forwards its provenance", async () => {
+    const fixture = {
+      type: "managed/alpha_user",
+      record: { _id: "fixture-alice", userName: "alice" },
+    };
+    const kase = caseWith({
+      name: "owned managed fixture",
+      given: { managed: { [fixture.type]: [fixture.record] } },
+    });
+    const effects = makeEffects();
+    const local: RunResult = {
+      kase,
+      effects,
+      verdict: judge(kase, effects),
+      fixtures: [fixture],
+      steps: [],
+    };
+    const chain = chainFromRunResult(local);
+    let received: unknown;
+    const report = await conformChain({
+      ...chain,
+      source: 'action.goTo("true");',
+      aic: async (input) => {
+        received = input.managedFixtures;
+        return [effects];
+      },
+    });
+
+    expect(received).toEqual([fixture]);
+    expect(report.passes[0]?.aic.skipped).toBeUndefined();
+    expect(report.passes[0]?.aic.verdict).toMatchObject({ pass: true });
   });
 
   it("anti-silencing: surfaces a final-effects disagreement", async () => {
@@ -544,6 +577,7 @@ describe("conformChain", () => {
       kase: finalCase,
       effects: finalEffects,
       verdict: judge(finalCase, finalEffects),
+      fixtures: [],
       steps: [
         {
           kase: stepCase,
@@ -561,6 +595,7 @@ describe("conformChain", () => {
       cases: [stepCase, finalCase],
       localEffects: [stepEffects, finalEffects],
       replies: [[{ type: "NameCallback", value: "alice" }]],
+      managedFixtures: [],
     });
   });
 });

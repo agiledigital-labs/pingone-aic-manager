@@ -35,6 +35,8 @@ export interface RunResult {
   kase: Case;
   effects: RecordedEffects;
   verdict: Verdict;
+  /** Fixture provenance for the AIC lane; author-declared managed data has none. */
+  fixtures: readonly FixtureSpec[];
   /**
    * One entry per suspended pass, in order. Empty for a single-pass run.
    * `aic/chainFromRunResult` consumes these recorded cases and submissions;
@@ -279,7 +281,13 @@ export class Lease<TSchema extends z.ZodType> {
         throw new Error(`rhino-local: ${kase.name}\n  ${describeResidue(residue)}`);
       }
     }
-    return { kase, effects: effects.effects, verdict, steps: stepResults };
+    return {
+      kase,
+      effects: effects.effects,
+      verdict,
+      fixtures: ledger,
+      steps: stepResults,
+    };
   }
 
   /**

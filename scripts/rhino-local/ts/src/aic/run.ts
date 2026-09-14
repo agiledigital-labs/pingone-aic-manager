@@ -4,6 +4,14 @@ import { repoRoot } from "../paths.ts";
 import { fillCallbackInputs, parseAuthenticateCallbacks } from "./callbacks.ts";
 import { emitWrapperJourney, type WrapperJourney } from "./emit-journey.ts";
 import { emitSessionJourney } from "./emit-session.ts";
+import {
+  acquireManagedFixtureLock,
+  deleteManagedFixture,
+  managedSeedMatches,
+  seedManagedFixtures,
+  type ManagedFixture,
+  type SeededManagedFixture,
+} from "./managed.ts";
 import { assembleEffects, parseSubjectDump } from "./record.ts";
 import {
   AicLaneError,
@@ -29,6 +37,8 @@ export interface RunAicOptions {
   realm?: string;
   runId?: string;
   project?: string;
+  /** Harness-owned records from the local lease's fixture ledger. */
+  managedFixtures?: readonly ManagedFixture[];
   /**
    * One entry per suspended pass, in order: what the client submits to advance
    * the journey. Omit for a single-pass case. The journey is provisioned once
@@ -68,6 +78,11 @@ export async function runAicLane(
  * state across a suspend, say — fails loudly here instead of agreeing with
  * itself locally.
  *
+ * Managed state is accepted only with a fixture ledger that exactly matches
+ * the first pass. Those records are create-only seeded, read back, and removed
+ * around the whole journey while a per-tenant lock excludes parallel fixture
+ * runs. Later passes may carry managed changes made by the subject itself.
+ *
  * `options.replies` must hold one entry per suspended pass, so
  * `replies.length === cases.length - 1`.
  */
@@ -87,8 +102,17 @@ export async function runAicChain(
       `runAicChain: ${cases.length} passes need ${cases.length - 1} reply sets, got ${replies.length}`
     );
   }
+  const managedFixtures = options.managedFixtures ?? [];
+  const harnessOwnsManaged =
+    options.managedFixtures !== undefined &&
+    managedSeedMatches(first.given.managed, managedFixtures);
+  if (options.managedFixtures !== undefined && !harnessOwnsManaged) {
+    throw new AicLaneError(
+      "managed fixture provenance does not match the first pass's given.managed seed"
+    );
+  }
   for (const kase of cases) {
-    const reason = aicUnsupportedReason(kase);
+    const reason = aicUnsupportedReason(kase, { harnessOwnsManaged });
     if (reason !== undefined) {
       throw new AicLaneError(`AIC lane skipped: ${reason}`);
     }
@@ -107,7 +131,13 @@ export async function runAicChain(
     ...(options.realm !== undefined ? { realm: options.realm } : {}),
   });
   const created: Created[] = [];
+  const seededManaged: SeededManagedFixture[] = [];
+  const releaseManagedLock =
+    managedFixtures.length === 0
+      ? async (): Promise<void> => Promise.resolve()
+      : await acquireManagedFixtureLock(session, last.name);
   try {
+    await seedManagedFixtures(io, session, managedFixtures, seededManaged);
     if (kase.given.existingSession !== undefined) {
       await mintSession(
         io,
@@ -121,7 +151,11 @@ export async function runAicChain(
     await provision(io, session, wrapper, created);
     return await drive(io, session, wrapper, cases, replies);
   } finally {
-    await cleanup(io, session, wrapper.realm, created);
+    try {
+      await cleanup(io, session, wrapper.realm, created, seededManaged);
+    } finally {
+      await releaseManagedLock();
+    }
   }
 }
 
@@ -373,37 +407,59 @@ async function cleanup(
   io: AicIo,
   session: TenantSession,
   realm: string,
-  created: Created[]
+  created: Created[],
+  seededManaged: readonly SeededManagedFixture[]
 ): Promise<void> {
   const base = realmJsonPath(realm);
   const errors: string[] = [];
   for (const item of created.slice().reverse()) {
     try {
+      let response: AmResponse;
       if (item.kind === "tree") {
-        await amRequest(io, session, {
+        response = await amRequest(io, session, {
           method: "DELETE",
           path: `${base}/realm-config/authentication/authenticationtrees/trees/${encodeURIComponent(item.name)}`,
         });
       } else if (item.kind === "node") {
-        await amRequest(io, session, {
+        response = await amRequest(io, session, {
           method: "DELETE",
           path: `${base}/realm-config/authentication/authenticationtrees/nodes/ScriptedDecisionNode/${item.id}`,
         });
       } else {
-        await amRequest(io, session, {
+        response = await amRequest(io, session, {
           method: "DELETE",
           path: `${base}/scripts/${item.id}`,
         });
       }
+      expectDeleted(response, `AIC ${item.kind}`);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  for (const fixture of seededManaged.slice().reverse()) {
+    try {
+      await deleteManagedFixture(io, session, fixture);
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
   if (errors.length > 0) {
-    // Cleanup is best-effort; leftover throwaways are namespaced rl-aic-*.
-    // Surface the failures without hiding the run result (this is finally).
+    // Cleanup is best-effort so one failed delete does not prevent the rest.
+    // Surface every leak without hiding the subject failure (this is finally).
     process.emitWarning(`rhino-local AIC cleanup: ${errors.join("; ")}`);
   }
+}
+
+function expectDeleted(response: AmResponse, label: string): void {
+  if (
+    response.status === 404 ||
+    (response.status >= 200 && response.status < 300)
+  ) {
+    return;
+  }
+  throw new AicLaneError(
+    `delete ${label} returned HTTP ${response.status}: ${snippet(response)}`
+  );
 }
 
 async function refuseIfExists(
