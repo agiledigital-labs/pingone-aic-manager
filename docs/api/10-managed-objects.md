@@ -1083,6 +1083,20 @@ on create, or when actually rotating it.
 
 ## Verified against
 
+- Date: 2026-09-14 — fixture seeding through the rhino-local harness's own
+  `seedManagedFixtures` (`scripts/rhino-local/ts/src/aic/managed.ts`), realm
+  `alpha`; every record created was deleted afterward. Four arms:
+  a `managed/alpha_user` with `password` created (201) but its GET omitted
+  `password`; the same record without `password`, keeping mixed-case
+  `mail: "Mixed.Case@Example.com"`, round-tripped exactly; and a
+  `managed/alpha_user` with the readable `_id` `rl-probe-user-01` was refused
+  400 `Invalid Attribute Syntax` naming `fr-idm-uuid`, where a
+  `managed/alpha_role` with the readable `_id` `rl-fix-role-01` had created
+  cleanly. The fourth planted a record by hand at an id a fixture then
+  claimed: the create was refused and the planted record was afterward
+  byte-identical, same `_rev`, confirming `POST ?_action=create` does not
+  upsert. No reproduce script — the probes were scratch files, not committed.
+
 - Date: 2026-09-07 — throwaway `test_post_hook_subject` carrying all four
   create/update hooks plus `test_post_hook_event`. Create produced exactly
   `onCreate` + `postCreate`; a subsequent PATCH added exactly `onUpdate` +
