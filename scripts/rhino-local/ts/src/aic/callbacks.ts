@@ -88,3 +88,66 @@ function parseOneCallback(
   }
   return { effect };
 }
+
+/**
+ * Build the body that answers a pass's callbacks.
+ *
+ * AM wants the whole `/authenticate` response back with each callback's
+ * `input` slot filled, so the response is cloned and edited rather than
+ * rebuilt — `authId` and every field the harness does not understand survive
+ * untouched. Replies are matched to callbacks by type, in order, exactly as
+ * the local lane's `submittedCallbacks` matches them; a reply the pass never
+ * asked for is refused rather than dropped, because a chain that silently
+ * ignores a reply is a test asserting something it never sent.
+ *
+ * Callbacks with no reply keep whatever AM put in their input slot. That is
+ * the tenant's own default, which is the one case where a default is not a
+ * guess (an unanswered HiddenValueCallback comes back holding its `id`,
+ * measured 2026-09-14).
+ */
+export function fillCallbackInputs(
+  body: unknown,
+  replies: readonly { type: string; value: JsonValue }[],
+  label: string
+): string {
+  if (!isPlainObject(body)) {
+    throw new Error(`rhino-local: ${label}: authenticate body is not an object`);
+  }
+  const clone = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
+  const rawCallbacks = Array.isArray(clone.callbacks) ? clone.callbacks : [];
+  const pending = new Map<string, JsonValue[]>();
+  for (const reply of replies) {
+    const queue = pending.get(reply.type);
+    if (queue === undefined) {
+      pending.set(reply.type, [reply.value]);
+    } else {
+      queue.push(reply.value);
+    }
+  }
+  for (const raw of rawCallbacks) {
+    if (!isPlainObject(raw) || typeof raw.type !== "string") {
+      continue;
+    }
+    const queue = pending.get(raw.type);
+    if (queue === undefined || queue.length === 0) {
+      continue;
+    }
+    const input = raw.input;
+    if (!Array.isArray(input) || input.length === 0 || !isPlainObject(input[0])) {
+      throw new Error(
+        `rhino-local: ${label}: cannot answer a ${raw.type} — it has no input slot`
+      );
+    }
+    input[0].value = queue.shift() as JsonValue;
+  }
+  const leftover = [...pending.entries()].filter(([, queue]) => queue.length > 0);
+  if (leftover.length > 0) {
+    const detail = leftover
+      .map(([type, queue]) => `${queue.length} unused ${type}`)
+      .join("; ");
+    throw new Error(
+      `rhino-local: ${label} replied to callbacks the pass did not send — ${detail}`
+    );
+  }
+  return JSON.stringify(clone);
+}

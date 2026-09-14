@@ -146,7 +146,7 @@ export interface InstrumentedSubject {
  *
  * The seed is applied BEFORE the `before` snapshot, matching what the setup
  * node did: seeded values are the script's starting state, not a mutation it
- * made.
+ * made. It is applied only on the node's FIRST pass — see the guard below.
  */
 export function instrumentSubject(
   authorSource: string,
@@ -169,12 +169,18 @@ export function instrumentSubject(
       HELPERS,
       `return { snapshot: snapshot, seed: seed };`,
       `}());`,
-      `${bindingName}.seed(${jsonParseCall(given.sharedState ?? {})}, function (k, v) {`,
-      `  nodeState.putShared(k, v);`,
-      `});`,
-      `${bindingName}.seed(${jsonParseCall(given.transientState ?? {})}, function (k, v) {`,
-      `  nodeState.putTransient(k, v);`,
-      `});`,
+      `// Seed once. A node that sends callbacks re-executes from the top when`,
+      `// the client answers, and re-seeding there would overwrite whatever the`,
+      `// earlier pass left in state with the request's original values — the`,
+      `// chain would silently restart from the top on every step.`,
+      `if (callbacks.isEmpty()) {`,
+      `  ${bindingName}.seed(${jsonParseCall(given.sharedState ?? {})}, function (k, v) {`,
+      `    nodeState.putShared(k, v);`,
+      `  });`,
+      `  ${bindingName}.seed(${jsonParseCall(given.transientState ?? {})}, function (k, v) {`,
+      `    nodeState.putTransient(k, v);`,
+      `  });`,
+      `}`,
       `${bindingName}.before = ${bindingName}.snapshot(nodeState);`,
       `// rhino-local author source begins`,
       body,

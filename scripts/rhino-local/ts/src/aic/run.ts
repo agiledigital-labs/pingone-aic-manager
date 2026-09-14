@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { Case, RecordedEffects } from "../case/types.ts";
+import type { Case, JsonValue, RecordedEffects } from "../case/types.ts";
 import { repoRoot } from "../paths.ts";
-import { parseAuthenticateCallbacks } from "./callbacks.ts";
+import { fillCallbackInputs, parseAuthenticateCallbacks } from "./callbacks.ts";
 import { emitWrapperJourney, type WrapperJourney } from "./emit-journey.ts";
 import { emitSessionJourney } from "./emit-session.ts";
 import { assembleEffects, parseSubjectDump } from "./record.ts";
@@ -17,12 +17,25 @@ import {
 } from "./tenant.ts";
 import { aicUnsupportedReason } from "./unsupported.ts";
 
+/** One submitted callback value, matched to an emitted callback by type. */
+export interface AicReply {
+  type: string;
+  value: JsonValue;
+}
+
 export interface RunAicOptions {
   io?: AicIo;
   tenant?: string;
   realm?: string;
   runId?: string;
   project?: string;
+  /**
+   * One entry per suspended pass, in order: what the client submits to advance
+   * the journey. Omit for a single-pass case. The journey is provisioned once
+   * and every pass re-enters the same node, which is what makes this the
+   * counterpart of the local lane's `.step()` chain rather than N runs.
+   */
+  replies?: readonly (readonly AicReply[])[];
 }
 
 type Created =
@@ -40,10 +53,47 @@ export async function runAicLane(
   source: string,
   options: RunAicOptions = {}
 ): Promise<RecordedEffects> {
-  const reason = aicUnsupportedReason(kase);
-  if (reason !== undefined) {
-    throw new AicLaneError(`AIC lane skipped: ${reason}`);
+  const passes = await runAicChain([kase], source, options);
+  return passes[passes.length - 1] as RecordedEffects;
+}
+
+/**
+ * Run a step chain on a tenant: one journey, one node, entered once per case.
+ *
+ * `cases` is one `Case` per pass — `cases[0].given` seeds the journey and every
+ * later `given` is what the local lane computed for that pass. Handing the
+ * carried seeds over rather than recomputing them here is the whole point of
+ * the two lanes: the tenant's own `before` snapshot is checked against them
+ * (`verifySeedsVisible`), so a carry rule that is wrong — carrying transient
+ * state across a suspend, say — fails loudly here instead of agreeing with
+ * itself locally.
+ *
+ * `options.replies` must hold one entry per suspended pass, so
+ * `replies.length === cases.length - 1`.
+ */
+export async function runAicChain(
+  cases: readonly Case[],
+  source: string,
+  options: RunAicOptions = {}
+): Promise<RecordedEffects[]> {
+  const first = cases[0];
+  const last = cases[cases.length - 1];
+  if (first === undefined || last === undefined) {
+    throw new AicLaneError("runAicChain needs at least one case");
   }
+  const replies = options.replies ?? [];
+  if (replies.length !== cases.length - 1) {
+    throw new AicLaneError(
+      `runAicChain: ${cases.length} passes need ${cases.length - 1} reply sets, got ${replies.length}`
+    );
+  }
+  for (const kase of cases) {
+    const reason = aicUnsupportedReason(kase);
+    if (reason !== undefined) {
+      throw new AicLaneError(`AIC lane skipped: ${reason}`);
+    }
+  }
+  const kase = emitCase(cases);
   const project = options.project ?? repoRoot;
   const io = options.io ?? defaultAicIo(project);
   const session = await connectTenant(io, {
@@ -69,8 +119,7 @@ export async function runAicLane(
       );
     }
     await provision(io, session, wrapper, created);
-    const authenticate = await invoke(io, session, wrapper);
-    return recordFromAuthenticate(kase, authenticate);
+    return await drive(io, session, wrapper, cases, replies);
   } finally {
     await cleanup(io, session, wrapper.realm, created);
   }
@@ -193,10 +242,65 @@ async function provision(
   created.push({ kind: "tree", name: wrapper.treeName });
 }
 
+/**
+ * Invoke the journey, then answer each declared pass in turn.
+ *
+ * Every pass re-enters the same node, so the tenant carries state between them
+ * on its own terms — which is the point: the local lane has to model that, and
+ * this is what it is modelled against. A pass that reaches the result node
+ * while replies are still pending is an error, because the chain then asserts
+ * against a journey shorter than it described.
+ */
+async function drive(
+  io: AicIo,
+  session: TenantSession,
+  wrapper: WrapperJourney,
+  cases: readonly Case[],
+  replies: readonly (readonly AicReply[])[]
+): Promise<RecordedEffects[]> {
+  const passes: RecordedEffects[] = [];
+  let response = await invoke(io, session, wrapper);
+  for (const [index, reply] of replies.entries()) {
+    const kase = cases[index] as Case;
+    const label = kase.name;
+    const parsed = parseAuthenticateCallbacks(response.body);
+    if (parsed.dumpRaw !== undefined) {
+      throw new AicLaneError(
+        `${label}: the journey finished before this step ran — the script decided an outcome instead of sending callbacks`
+      );
+    }
+    passes.push(
+      assembleEffects({ given: kase.given, callbacks: parsed.callbacks })
+    );
+    const body = fillCallbackInputs(response.body, reply, label);
+    response = await invoke(io, session, wrapper, body);
+  }
+  passes.push(recordFromAuthenticate(cases[cases.length - 1] as Case, response));
+  return passes;
+}
+
+/**
+ * The case the wrapper journey is emitted from: the first pass's seed, with
+ * every outcome any pass may reach declared on the subject node. A tenant
+ * answers an undeclared outcome with a bare 401, so a chain whose last pass
+ * decides something the first never mentions has to say so up front.
+ */
+function emitCase(cases: readonly Case[]): Case {
+  const first = cases[0] as Case;
+  const outcomes = new Set<string>(first.outcomes ?? []);
+  for (const kase of cases) {
+    if (kase.expect.outcome !== null) {
+      outcomes.add(kase.expect.outcome);
+    }
+  }
+  return outcomes.size === 0 ? first : { ...first, outcomes: [...outcomes] };
+}
+
 async function invoke(
   io: AicIo,
   session: TenantSession,
-  wrapper: WrapperJourney
+  wrapper: WrapperJourney,
+  body = "{}"
 ): Promise<AmResponse> {
   const url = new URL(
     `${session.baseUrl}${realmJsonPath(wrapper.realm)}/authenticate`
@@ -228,7 +332,7 @@ async function invoke(
     method: "POST",
     path: pathAndQuery,
     headers,
-    body: "{}",
+    body,
     anonymous: true,
   });
   if (response.status < 200 || response.status >= 300) {
