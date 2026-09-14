@@ -31,7 +31,7 @@ describe("useLease AIC adapter", () => {
     expect(firstDelete).toBeGreaterThan(authenticate);
   });
   const lease = useLease(suite, {
-    aic: { id: "vitest-aic-adapter" },
+    aic: { id: "vitest-aic-adapter", realm: "bravo" },
     aicIo: fake.io,
     timeoutMs: 10_000,
   });
@@ -45,6 +45,7 @@ describe("useLease AIC adapter", () => {
       .expect({ outcome: "done" });
 
     expect(run.conformance?.passes).toHaveLength(1);
+    expect(run.kase.given.realm).toBe("bravo");
     expect(run.conformance?.passes[0]?.aic.verdict?.pass).toBe(true);
     expect(run.conformance?.observationGaps).toContainEqual(
       expect.objectContaining({
