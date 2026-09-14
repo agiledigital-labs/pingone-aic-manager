@@ -54,3 +54,10 @@ export const amEslintConfigPath = join(
   "am",
   "eslint.config.js"
 );
+
+/** Per-checkout dump of failed AIC-lane tests. Gitignored; not `/tmp`. */
+export const failuresDir = join(packageRoot, "failures");
+
+export const failuresPath = join(failuresDir, "failures.jsonl");
+
+export const latestLogsPath = join(failuresDir, "latest-logs.json");
