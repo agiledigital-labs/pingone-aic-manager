@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defineSuite, useLease } from "../../src/harness/index.ts";
+import { aicWhenEnabled, defineSuite, useLease } from "../../src/harness/index.ts";
 
 /**
  * A two-pass journey in one node: ask for a name, then use it.
@@ -8,19 +8,31 @@ import { defineSuite, useLease } from "../../src/harness/index.ts";
  * must come back `null` — measured 2026-09-14 on a live tenant, transient
  * state does not survive a callback round trip.
  */
+/**
+ * The record this journey writes has to satisfy the TENANT, not just the local
+ * mock store (all measured 2026-09-14, docs/api/10-managed-objects.md): an
+ * `alpha_user` `_id` must be a UUID because it is the `fr-idm-uuid` RDN,
+ * `mail`/`givenName`/`sn` are required by policy, and an undeclared property
+ * such as a bare `status` is a 400. So the pending marker lives in a declared
+ * generic slot under a fixed UUID.
+ */
+const PENDING_ID = "00000000-0000-4000-8000-0000000000fe";
+const PENDING = `managed/alpha_user/${PENDING_ID}`;
+
 const SCRIPT = [
   "if (callbacks.isEmpty()) {",
-  '  openidm.create("managed/alpha_user", "pending", {',
-  '    _id: "pending", userName: "pending", status: "awaiting-name"',
+  `  openidm.create("managed/alpha_user", "${PENDING_ID}", {`,
+  `    _id: "${PENDING_ID}", userName: "rl-pending", mail: "rl-pending@example.com",`,
+  '    givenName: "Pending", sn: "Record", frUnindexedString1: "awaiting-name"',
   "  });",
   '  nodeState.putShared("stage", "asked");',
   '  nodeState.putTransient("scratch", "vanishes");',
   '  callbacksBuilder.nameCallback("User Name");',
   "} else {",
   "  var name = String(callbacks.getNameCallbacks().get(0));",
-  '  var pending = openidm.read("managed/alpha_user/pending");',
+  `  var pending = openidm.read("${PENDING}");`,
   '  nodeState.putShared("username", name);',
-  '  nodeState.putShared("carriedStatus", String(pending.status));',
+  '  nodeState.putShared("carriedStatus", String(pending.frUnindexedString1));',
   '  nodeState.putShared("scratchOnResume", String(nodeState.get("scratch")));',
   '  action.goTo("done");',
   "}",
@@ -31,12 +43,15 @@ const suite = defineSuite({
   script: SCRIPT,
   outcomes: ["done"],
   cleanup: async (idm) => {
-    await idm.delete("managed/alpha_user/pending");
+    await idm.delete(PENDING);
   },
 });
 
 describe("step chain", () => {
-  const lease = useLease(suite, { timeoutMs: 10_000 });
+  const lease = useLease(suite, {
+    timeoutMs: 10_000,
+    ...aicWhenEnabled("ask-for-a-name"),
+  });
 
   it("carries state, the store and the reply across a suspend", async () => {
     let seenInStep = "";
@@ -51,8 +66,8 @@ describe("step chain", () => {
         },
         check: async (idm, ctx) => {
           expect(ctx.step).toBe(1);
-          const pending = await idm.read("managed/alpha_user/pending");
-          seenInStep = String(pending?.status);
+          const pending = await idm.read(PENDING);
+          seenInStep = String(pending?.frUnindexedString1);
         },
         reply: [{ type: "NameCallback", value: "alice" }],
       })
