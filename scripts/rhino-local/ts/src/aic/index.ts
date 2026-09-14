@@ -1,16 +1,21 @@
 /**
- * AIC wrapper-journey lane. One case definition (`src/case`) drives this
+ * AIC wrapper-journey lane. The same case definitions (`src/case`) drive this
  * lane and the local Rhino lane; both are judged by `judge()` in verdict.ts.
  */
 export { HARNESS_CALLBACK_ID, FAILURE_NODE_ID, SUCCESS_NODE_ID } from "./constants.ts";
 export { parseAuthenticateCallbacks } from "./callbacks.ts";
 export type { AuthenticateCallbacks } from "./callbacks.ts";
-export { conform } from "./conform.ts";
+export { chainFromRunResult, conform, conformChain } from "./conform.ts";
 export type {
+  AicChainRunner,
+  ChainConformanceInput,
+  ChainConformanceReport,
+  ChainPassReport,
   ConformanceInput,
   ConformanceReport,
   LaneResult,
   LaneRunner,
+  LocalChainResult,
 } from "./conform.ts";
 export { diffRecordedEffects, judgeBoth } from "./diff.ts";
 export type {
@@ -31,8 +36,8 @@ export { instrumentSubject } from "./emit-subject.ts";
 export type { InstrumentedSubject } from "./emit-subject.ts";
 export { assembleEffects, classifyFinal, parseSubjectDump } from "./record.ts";
 export type { SubjectDump } from "./record.ts";
-export { runAicLane } from "./run.ts";
-export type { RunAicOptions } from "./run.ts";
+export { runAicChain, runAicLane } from "./run.ts";
+export type { AicReply, RunAicOptions } from "./run.ts";
 export { AicLaneError, connectTenant, defaultAicIo } from "./tenant.ts";
 export type { AicIo, TenantSession } from "./tenant.ts";
 export { aicUnsupportedReason } from "./unsupported.ts";
