@@ -898,6 +898,65 @@ rejects the word form `not (/description eq "lkj")` with HTTP 400
 fallback form either: `_queryFilter=/_id eq ["asdf"]` returns the same parse
 error. Do not offer `ne` or `in` in script-template query validation.
 
+### Record read / query / delete for a test harness (verified 2026-09-14)
+
+Measured against `managed/alpha_user` in realm `alpha` with one throwaway
+fixture, created and deleted inside the probe. This is the contract a
+tenant-backed `IdmHandle` in `scripts/rhino-local/` has to implement, and the
+three traps below are all cases where the tenant answers 200 with the wrong
+answer rather than failing.
+
+| Call                                   | Status | Body                                     |
+| -------------------------------------- | ------ | ---------------------------------------- |
+| `POST .../alpha_user?_action=create`   | 201    | the full materialized record             |
+| `GET .../alpha_user/<present id>`      | 200    | the full materialized record             |
+| `GET .../alpha_user/<absent id>`       | 404    | `{code, reason, message}`                |
+| `GET .../alpha_user?_queryFilter=…`    | 200    | `{result, resultCount, …}`, `[]` if none |
+| `DELETE .../alpha_user/<present id>`   | 200    | **the deleted record**, not empty        |
+| `DELETE .../alpha_user/<absent id>`    | 404    | `{code, reason, message}`                |
+
+**A read returns the whole schema, not what you wrote.** A record created with
+five properties read back with roughly sixty keys: every declared property is
+materialized, unset ones as `null` or `[]`, plus `_id` and `_rev`. A harness
+comparing a read against the record it submitted must compare the declared
+fields only — a local mock that stores what the script wrote will never match
+this shape.
+
+**Delete answers 200 with the deleted record.** Not 204 and not an empty body,
+so a handle that treats "no body" as the success signal reads a successful
+delete as a failure.
+
+**404 messages are HTML-escaped and name the directory DN**, e.g.
+`No Such Entry: The search base entry &#39;fr-idm-uuid&#61;…,ou&#61;user,…&#39;
+does not exist`. Map the status to absence; do not parse the message.
+
+**Query filter encoding.** `_queryFilter=<field> eq "<value>"`, spaces and
+quotes percent-encoded, is what matches. `_fields=*` changes nothing — rows
+already carry every field. `totalPagedResults` comes back `-1` with policy
+`NONE`, so `resultCount` is the only count to read.
+
+Three ways a filter silently matches nothing, all HTTP 200:
+
+- **A double quote in the value cannot be escaped.** `sn eq "Twelve\" B"`
+  parses and returns zero rows, where the same record matches
+  `sn eq "Twelve B"`. An encoder must refuse a value containing `"` rather
+  than emit a backslash escape.
+- **An unknown field name is not an error.** `nosuchfield eq "x"` → 200,
+  `resultCount: 0`.
+- **A number matches quoted or unquoted.** `frIndexedInteger1 eq 7` and
+  `frIndexedInteger1 eq "7"` both matched the same integer-valued field, so
+  quoting cannot be used to distinguish a string from a number.
+
+`true`, `false` and `3.5` all parse as literals. **`eq null` is a 400** —
+there is no null literal; ask for absence with `!(field pr)`. A malformed
+filter is 400 `A value could not be parsed as a valid query filter`, as is the
+word form `not (…)` (see the 2026-07-03 notes above).
+
+**`mail` is required by policy on `alpha_user`.** The same create body was
+refused `403 {"code":403,"message":"Policy validation failed"}` without it and
+accepted 201 with it, nothing else changed. The message names no field, so a
+fixture missing a policy-required property fails opaquely.
+
 ### Querying a child of an object-valued property (verified 2026-09-07)
 
 Yes: use a slash-separated JSON path in the CREST filter. A throwaway custom
@@ -1082,6 +1141,15 @@ on create, or when actually rotating it.
   script calls as well as REST ones.
 
 ## Verified against
+
+- Date: 2026-09-14 — `IdmHandle` semantics for the rhino-local harness, realm
+  `alpha`. One `managed/alpha_user` fixture created and deleted per arm:
+  read present / read absent / delete present / delete absent / create, and
+  nine `_queryFilter` forms including a positive control that returned the
+  fixture. The first run of the filter arms was discarded — its fixture create
+  had 403'd, so every query returned zero rows for the wrong reason; the
+  re-run carries the control that distinguishes "no match" from "nothing to
+  match". No reproduce script — the probes were scratch files, not committed.
 
 - Date: 2026-09-14 — fixture seeding through the rhino-local harness's own
   `seedManagedFixtures` (`scripts/rhino-local/ts/src/aic/managed.ts`), realm
