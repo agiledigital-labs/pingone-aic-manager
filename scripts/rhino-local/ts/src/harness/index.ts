@@ -1,6 +1,8 @@
 export { defineSuite, Lease, managed, RunBuilder } from "./lease.ts";
 export type {
   LeaseOptions,
+  LeaseLane,
+  LeaseLaneRunRequest,
   RunResult,
   StepResult,
   Suite,
@@ -8,8 +10,12 @@ export type {
 } from "./lease.ts";
 export { carryGiven, submittedCallbacks } from "./step.ts";
 export type { CallbackReply, StepContext, StepExpect, StepSpec } from "./step.ts";
-export { useLease } from "./vitest.ts";
-export type { UseLeaseOptions } from "./vitest.ts";
+export {
+  claimAicLeaseForFile,
+  releaseAicLeaseForFile,
+  useLease,
+} from "./vitest.ts";
+export type { UseLeaseAicOptions, UseLeaseOptions } from "./vitest.ts";
 export { localIdmHandle, ledgerToManaged, splitResource } from "./idm.ts";
 export { describeResidue, findResidue } from "./residue.ts";
 export type { ResidueEntry } from "./residue.ts";

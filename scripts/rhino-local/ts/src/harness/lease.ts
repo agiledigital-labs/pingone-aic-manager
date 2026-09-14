@@ -1,4 +1,10 @@
+/**
+ * Framework-free local lease and the narrow lane port used by AIC. Tenant
+ * lifecycle and I/O stay in `aic/file-lease.ts`; this module only hands the
+ * already-recorded local run across that boundary.
+ */
 import type { z } from "zod";
+import type { ChainConformanceReport } from "../aic/conform.ts";
 import { judge } from "../case/index.ts";
 import type {
   Case,
@@ -43,6 +49,8 @@ export interface RunResult {
    * the AIC lane must not reconstruct them from the final case.
    */
   steps: StepResult[];
+  /** Present when this lease automatically checked the completed run on AIC. */
+  conformance?: ChainConformanceReport;
 }
 
 /** One pass of a step chain: what it was asked, what it did, what was sent back. */
@@ -70,6 +78,18 @@ export interface LeaseOptions {
    * logic are worth unit-testing without a test runner in the way.
    */
   testName?: () => string;
+  /** Cross-feature port implemented by the tenant-aware AIC vertical. */
+  lane?: LeaseLane;
+}
+
+export interface LeaseLane {
+  run(request: LeaseLaneRunRequest): Promise<ChainConformanceReport>;
+  endTest(): Promise<void>;
+}
+
+export interface LeaseLaneRunRequest {
+  result: RunResult;
+  source: string;
 }
 
 type Check<TInput> = (idm: IdmHandle, ctx: CheckContext<TInput>) => void | Promise<void>;
@@ -145,11 +165,10 @@ export class RunBuilder<TInput> {
   }
 
   /**
-   * Assert against real IDM state and the raw response. `idm` is the mock
-   * store locally and REST against the tenant remotely, so a check written
-   * once means the same thing on both lanes. Fail by throwing — vitest's
-   * `expect` is the point, and the declarative `expect` block stays for what
-   * it is good at.
+   * Assert against the local IDM store and raw response. The AIC lane does not
+   * yet have a tenant-backed `IdmHandle`; opted-in reports record that explicit
+   * observation gap instead of pretending this closure ran remotely. Fail by
+   * throwing — vitest's `expect` remains the assertion surface.
    */
   check(fn: Check<TInput>): this {
     this.#checks.push(fn);
@@ -212,9 +231,9 @@ export class Lease<TSchema extends z.ZodType> {
    * records, which is the cross-test interference this design exists to
    * remove.
    */
-  endTest(): Promise<void> {
+  async endTest(): Promise<void> {
+    await this.#options.lane?.endTest();
     this.#testLedger = [];
-    return Promise.resolve();
   }
 
   /** Suite teardown: drop what the suite created, alongside the journey. */
@@ -281,13 +300,32 @@ export class Lease<TSchema extends z.ZodType> {
         throw new Error(`rhino-local: ${kase.name}\n  ${describeResidue(residue)}`);
       }
     }
-    return {
+    const result: RunResult = {
       kase,
       effects: effects.effects,
       verdict,
       fixtures: ledger,
       steps: stepResults,
     };
+    if (this.#options.lane !== undefined) {
+      const conformance = await this.#options.lane.run({
+        result,
+        source: this.#spec.script,
+      });
+      const gap = {
+        channel: "openidm" as const,
+        path: "checks/cleanup",
+        local: "local IdmHandle only",
+        aic: "not replayed",
+        message:
+          "openidm: step/final check() hooks and suite cleanup ran against the local store only; no tenant-backed IdmHandle exists",
+      };
+      conformance.observationGaps.push(gap);
+      const final = conformance.passes[conformance.passes.length - 1];
+      final?.observationGaps.push(gap);
+      result.conformance = conformance;
+    }
+    return result;
   }
 
   /**
