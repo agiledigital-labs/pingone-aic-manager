@@ -572,48 +572,86 @@ the lanes in the one binding a step chain exists to exercise. Each intermediate
 pass is consequently marked `aicObserved: false` and reports an
 `ObservationGap`; the final pass is marked observed and is fully diffed.
 
-## Cost per case — measured 2026-09-14, and why cutover waits
+## Per-file AIC lease
 
-The AIC lane was designed to replace a wrapper-journey + jest harness that cost
-**28 round trips per case**. The projection for the new design was **2** — one
-subject `PUT` and one `authenticate` — but that projection assumed a **per-file
-lease** that provisions the journey once. That piece was never built:
-`runAicChain` provisions and tears down a whole journey on every run.
+`useLease()` accepts an AIC opt-in alongside the local options:
 
-Measured by counting every call through an instrumented `AicIo`, for the
-smallest possible case (`outcomes: ["done"]`, so the subject declares
-`true`/`false`/`done` and gets three result nodes):
+```ts
+const lease = useLease(suite, {
+  aic: {
+    id: "ask-for-a-name",
+    realm: "alpha",
+    unsupported: "fail",
+  },
+});
+```
 
-| Calls | What                                                          |
-| -----: | ------------------------------------------------------------- |
-|      2 | `aic ctx list` + `aic whoami --token` (session setup)         |
-|      9 | existence `GET`s — 4 scripts, 4 nodes, 1 tree (`refuseIfExists`) |
-|      9 | `PUT`s — 4 scripts, 4 nodes, 1 tree                           |
-|  **1** | **`POST /authenticate` — the only call that runs the test**   |
-|      9 | `DELETE`s — 4 nodes, 4 scripts, 1 tree                        |
-| **30** | total                                                         |
+The stable `id` derives the tree name and UUIDv5 script/node ids. Source edits
+do not move those addresses. `beforeAll` takes a same-host process lock,
+connects once, refuses any pre-existing deterministic resource, writes an
+identifier-only ownership journal, and provisions the complete outcome graph.
+`realm` defaults to `alpha` and is also seeded into the local lane, so a
+non-default target does not compare two different realm bindings. `tenant`
+selects an AIC context and `project` selects the CLI project; both otherwise
+use the current defaults.
+Every successful write is immediately read back and compared through the
+resource's request projection. Submitted bytes are never treated as a
+confirmed snapshot.
 
-So the AIC lane is currently **slightly more expensive per case than the
-harness it exists to replace**, and 29 of the 30 calls are scaffolding. Adding
-outcomes makes it worse: each extra outcome in the union adds a result script
-and a result node, and each of those costs a `GET`, a `PUT` and a `DELETE` —
-six more calls per case.
+Each test is serialized through one mutable subject slot. The runner replaces
+and confirms that script, then invokes the unchanged tree with a per-invocation
+nonce, subject digest, and structural lease digest. A mismatch fails the test.
+Managed fixtures retain their shorter per-run lifetime and tenant lock. A
+session-minter graph is provisioned lazily, then its script is replaced and
+confirmed when a later run needs different session properties.
 
-Cutting over now would make the suite slower, not faster. With a per-file lease
-the scaffolding is paid once per file and each case costs one subject `PUT`
-plus one `authenticate`:
+`afterEach` drains dynamic fixture cleanup before the local ledger is cleared.
+`afterAll` deletes the session-minter graph, the main graph, and then the
+journal; partial deletion keeps the journal and fails teardown. The journal
+contains ids and ownership metadata only — never source, seeds, tokens, base
+URLs, or hostnames. A stale journal probes exactly its recorded resources and
+does not scan tenant collections.
 
-| Cases in a file | Today (30N) | Per-file lease (29 + 2N) |
-| ---------------: | ----------: | ------------------------: |
-|               1 |          30 |                        31 |
-|              10 |         300 |                        49 |
-|              20 |         600 |                        69 |
+Only one AIC-enabled `useLease()` is allowed per Vitest file. A local lock
+cannot exclude another host, and atomic create preconditions have not been
+established for these AM resources, so simultaneous use of the same `aic.id`
+on different hosts remains unsupported.
 
-The existence `GET`s are worth keeping — at 9 per *file* they are negligible,
-and they are what stops a run overwriting a resource it did not create.
+Unsupported input fails by default. `unsupported: "skip"` is required to keep
+skip semantics. `RunResult.conformance` records every AIC pass, disagreement,
+and observation gap. In particular, `check()` and `cleanup()` execute against
+the local `IdmHandle` only. The report explicitly marks the `openidm` channel
+for those hooks as unobserved remotely; it does not drop, fake, or claim to
+replay them.
 
-**Conclusion: the per-file lease is the blocker for cutover, not a later
-optimisation.** Nothing else on the list changes the arithmetic.
+`runAicChain()` remains a one-shot compatibility facade that provisions and
+deletes a throwaway graph around one call. The Vitest adapter instead sends
+`chainFromRunResult()` to its pre-opened `AicFileLease`.
+
+### Estimated call cost — not measured
+
+These figures are design estimates for capacity planning. They are not live
+measurements of the implementation.
+
+Let `O` be the number of distinct subject outcomes after adding `true` and
+`false`. The reusable graph has an estimated `R = 2O + 3` resources: one
+subject script/node pair, one result script/node pair per outcome, and one
+tree. For `N` one-pass cases without sessions or managed fixtures:
+
+```text
+2 CLI session calls
++ 3R at open       (existence GET + PUT + confirming GET)
++ R at close       (DELETE)
++ 3N per run       (subject PUT + confirming GET + authenticate)
+= 2 + 4R + 3N
+```
+
+For the smallest outcome graph, `O = 3` and `R = 9`, producing the design
+estimate `38 + 3N`. Ten cases are therefore estimated at 68 calls. Each
+additional outcome adds two graph resources and an estimated eight
+file-lifetime calls. Step chains add authenticate calls; managed fixtures,
+lazy session minting, cookie-name discovery, and bearer refresh add separate
+costs. The maintainer will measure the actual call counts after deployment.
 
 ## Unsettled
 
@@ -629,9 +667,18 @@ optimisation.** Nothing else on the list changes the arithmetic.
 - Whether a script that intentionally depends on wrapper ambient state should
   declare the required value in `given`, or be classified as environment
   dependent. The local lane does not seed hidden AM defaults.
-- Live verification that the subject instrumentation executes after
-  `action.goTo`, and that its before/after payload survives the transition to
-  the result node. Unit tests cannot establish those AM runtime properties.
+- Runtime verification that the full nonce/digest lease manifest survives the
+  `action.goTo()` transition and callback serialization. The earlier live
+  snapshot established post-`goTo()` execution, but not the complete lease
+  proof envelope used by the reusable runner.
+- Maximum accepted generated script size, exact script/tree description-marker
+  round trips, reusable session-minter replacement visibility, and bearer
+  refresh over a long file. The implementation confirms stored content and
+  otherwise fails closed where it can; these tenant behaviours still need
+  dedicated live experiments.
+- Whether `If-None-Match: *` provides an atomic create guard for AM scripts,
+  nodes, and trees. Until measured, cross-host simultaneous execution of one
+  `aic.id` is unsupported.
 - `AMWrapFactory` behaviour and the class shutter allowlist. Approximating the
   shutter is still acceptable; using AM's class is not free.
 - How the generated mock `.cjs` should be loaded: `preamble` vs concatenating

@@ -74,6 +74,59 @@ newest first and fetches with `aic logs tx` — the stem first, so one call
 covers a whole authenticate chain. It never issues a range query. Logs open
 in `$LOGS_EDITOR` or `$EDITOR`; with neither set they print to stdout.
 
+## Per-file AIC lease
+
+Opt a suite into automatic local-versus-AIC checking through `useLease`:
+
+```ts
+const lease = useLease(suite, {
+  aic: {
+    id: "resolve-identity",
+    realm: "alpha",
+    unsupported: "fail",
+  },
+});
+```
+
+`id` is a stable, repository-chosen lease identity. The adapter opens one
+deterministically named journey before the file, replaces and confirms its
+subject script for each run, invokes it, and deletes the graph after the file.
+`realm` defaults to `alpha` and seeds the same realm into the local lane;
+`tenant` selects an AIC context, and `project` selects the CLI project and
+binary location. Both are optional and otherwise use the current defaults.
+The returned `RunResult.conformance` contains the per-pass AIC verdict,
+disagreements, and observation gaps. A file may have only one AIC-enabled
+`useLease`; split different scripts or outcome vocabularies into separate test
+files.
+
+Unsupported input fails by default. `unsupported: "skip"` is the explicit
+opt-out for a suite that must retain skip behaviour. `check()` and `cleanup()`
+still run against the local store only: no tenant-backed `IdmHandle` exists,
+so an AIC-enabled report records an `openidm` observation gap instead of
+claiming those hooks ran remotely.
+
+Every AM write is followed by a confirming read. A process lock excludes the
+same lease on one host, and an identifier-only journal makes stale owned
+resources discoverable after process death. Simultaneous use of the same
+`aic.id` on different hosts is unsupported because no atomic AM create
+precondition has been established. Generated subject and session-minter source
+can contain test seeds while a lease is open; never put credentials or real
+secrets in them.
+
+For capacity planning only, the design estimate uses `O` distinct subject
+outcomes after adding `true` and `false`, and `R = 2O + 3` graph resources. For
+`N` one-pass cases without managed fixtures or sessions, the estimated call
+count is `2 + 4R + 3N`: two CLI session calls, three calls per resource at
+open, one delete per resource at close, and three calls per case. At the
+smallest `R = 9`, that is an estimated `38 + 3N`, or 68 calls for ten cases.
+Each additional outcome adds an estimated eight file-lifetime calls. These are
+design estimates, not tenant measurements; step chains, managed fixtures,
+session minting, and credential refresh add calls.
+
+`runAicChain()` remains the one-shot compatibility facade for external callers.
+It provisions and deletes a throwaway graph per call. `useLease()` uses the
+pre-opened file runner and does not route through that facade.
+
 `npm run generate` reads the captured JSON (offline; it does not call the
 tenant) and overwrites the two artefacts. Completeness tests fail if the
 artefacts drift from the JSON, if a method is dropped, or if you forget to
