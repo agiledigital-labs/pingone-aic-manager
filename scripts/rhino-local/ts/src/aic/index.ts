@@ -23,14 +23,27 @@ export type {
   EffectsDisagreement,
   ObservationGap,
 } from "./diff.ts";
-export { emitWrapperJourney, subjectOutcomes } from "./emit-journey.ts";
+export { emitLeasedJourney, emitWrapperJourney, subjectOutcomes } from "./emit-journey.ts";
 export type {
   EmitJourneyOptions,
+  LeasedJourneyOptions,
   NodeResource,
   ScriptResource,
   WrapperInvoke,
   WrapperJourney,
 } from "./emit-journey.ts";
+export {
+  AIC_LEASE_NAMESPACE,
+  createLeaseIdentity,
+  normalizedLeaseOutcomes,
+  sha256,
+  uuidV5,
+} from "./lease-identity.ts";
+export type {
+  LeaseIdentity,
+  LeaseIdentityOptions,
+  LeaseResourceIds,
+} from "./lease-identity.ts";
 export { emitResultScript } from "./emit-result.ts";
 export { instrumentSubject } from "./emit-subject.ts";
 export type { InstrumentedSubject } from "./emit-subject.ts";

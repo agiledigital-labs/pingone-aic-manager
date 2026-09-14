@@ -15,7 +15,11 @@ const HEADER = `\
  * Does not compare against `expect`. The runner builds `RecordedEffects`
  * from the dump; `judge()` in verdict.ts is the only pass/fail implementation.
  */
-export function emitResultScript(outcome: string, snapshotKey: string): string {
+export function emitResultScript(
+  outcome: string,
+  snapshotKey: string,
+  leaseDigest?: string
+): string {
   const idLit = jsStringLiteral(HARNESS_CALLBACK_ID);
   const outcomeLit = jsStringLiteral(outcome);
   const keyLit = jsStringLiteral(snapshotKey);
@@ -26,7 +30,10 @@ export function emitResultScript(outcome: string, snapshotKey: string): string {
     `var __rhinoLocalPayload = JSON.stringify({`,
     `  outcome: __rhinoLocalOutcome,`,
     `  before: __rhinoLocalSnapshots.before,`,
-    `  final: __rhinoLocalSnapshots.final`,
+    `  final: __rhinoLocalSnapshots.final${leaseDigest === undefined ? "" : ","}`,
+    ...(leaseDigest === undefined
+      ? []
+      : [`  leaseDigest: ${jsStringLiteral(leaseDigest)}`]),
     `});`,
     `if (callbacks.isEmpty()) {`,
     `  callbacksBuilder.hiddenValueCallback(${idLit}, __rhinoLocalPayload);`,
