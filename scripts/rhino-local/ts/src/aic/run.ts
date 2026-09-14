@@ -56,7 +56,7 @@ export interface RunAicOptions {
   replies?: readonly (readonly AicReply[])[];
 }
 
-type Created =
+export type CreatedResource =
   | { kind: "script"; id: string }
   | { kind: "node"; id: string }
   | { kind: "tree"; name: string };
@@ -138,7 +138,7 @@ export async function runAicChain(
     runId,
     ...(options.realm !== undefined ? { realm: options.realm } : {}),
   });
-  const created: Created[] = [];
+  const created: CreatedResource[] = [];
   const seededManaged: SeededManagedFixture[] = [];
   const releaseManagedLock =
     managedFixtures.length === 0
@@ -159,8 +159,8 @@ export async function runAicChain(
       // A mint *failure* leaves that trace in place so show-log can fetch it.
       clearAicTrace();
     }
-    await provision(io, session, wrapper, created);
-    return await drive(io, session, wrapper, cases, replies, beginTrace(session.tenantName));
+    await provisionJourney(io, session, wrapper, created);
+    return await driveJourney(io, session, wrapper, cases, replies, beginTrace(session.tenantName));
   } finally {
     try {
       await cleanup(io, session, wrapper.realm, created, seededManaged);
@@ -189,13 +189,13 @@ async function mintSession(
   existingSession: Record<string, string>,
   wrapper: WrapperJourney,
   runId: string,
-  created: Created[]
+  created: CreatedResource[]
 ): Promise<void> {
   const minter = emitSessionJourney(existingSession, {
     runId,
     realm: wrapper.realm,
   });
-  await provision(io, session, minter, created);
+  await provisionJourney(io, session, minter, created);
   const response = await invoke(
     io,
     session,
@@ -237,11 +237,11 @@ async function fetchCookieName(
   return name;
 }
 
-async function provision(
+export async function provisionJourney(
   io: AicIo,
   session: TenantSession,
   wrapper: WrapperJourney,
-  created: Created[]
+  created: CreatedResource[]
 ): Promise<void> {
   const base = realmJsonPath(wrapper.realm);
   const resources: Array<{
@@ -249,9 +249,13 @@ async function provision(
     path: string;
     label: string;
     body: Record<string, unknown>;
-    created: Created;
+    created: CreatedResource;
   }> = [];
   for (const script of wrapper.scripts) {
+    const description =
+      typeof wrapper.treeBody.description === "string"
+        ? wrapper.treeBody.description
+        : "rhino-local AIC lane throwaway. Safe to delete.";
     resources.push({
       kind: "script",
       path: `${base}/scripts/${script.id}`,
@@ -260,7 +264,7 @@ async function provision(
       body: {
       _id: script.id,
       name: script.name,
-      description: "rhino-local AIC lane throwaway. Safe to delete.",
+      description,
       script: Buffer.from(script.source, "utf8").toString("base64"),
       default: false,
       language: "JAVASCRIPT",
@@ -323,13 +327,14 @@ async function provision(
  * while replies are still pending is an error, because the chain then asserts
  * against a journey shorter than it described.
  */
-async function drive(
+export async function driveJourney(
   io: AicIo,
   session: TenantSession,
   wrapper: WrapperJourney,
   cases: readonly Case[],
   replies: readonly (readonly AicReply[])[],
-  tx: { next: () => string }
+  tx: { next: () => string },
+  proof?: { leaseDigest: string; invocationNonce: string; subjectDigest: string }
 ): Promise<RecordedEffects[]> {
   const passes: RecordedEffects[] = [];
   let response = await invoke(io, session, wrapper, tx.next());
@@ -348,7 +353,7 @@ async function drive(
     const body = fillCallbackInputs(response.body, reply, label);
     response = await invoke(io, session, wrapper, tx.next(), body);
   }
-  passes.push(recordFromAuthenticate(cases[cases.length - 1] as Case, response));
+  passes.push(recordFromAuthenticate(cases[cases.length - 1] as Case, response, proof));
   return passes;
 }
 
@@ -424,12 +429,25 @@ async function invoke(
   return response;
 }
 
-function recordFromAuthenticate(kase: Case, response: AmResponse): RecordedEffects {
+function recordFromAuthenticate(
+  kase: Case,
+  response: AmResponse,
+  proof?: { leaseDigest: string; invocationNonce: string; subjectDigest: string }
+): RecordedEffects {
   const parsed = parseAuthenticateCallbacks(response.body);
   if (parsed.dumpRaw !== undefined) {
+    const dump = parseSubjectDump(parsed.dumpRaw);
+    if (
+      proof !== undefined &&
+      (dump.leaseDigest !== proof.leaseDigest ||
+        dump.invocationNonce !== proof.invocationNonce ||
+        dump.subjectDigest !== proof.subjectDigest)
+    ) {
+      throw new AicLaneError("AIC runtime lease manifest did not match the armed subject");
+    }
     return assembleEffects({
       given: kase.given,
-      dump: parseSubjectDump(parsed.dumpRaw),
+      dump,
       callbacks: parsed.callbacks,
     });
   }
@@ -448,9 +466,30 @@ async function cleanup(
   io: AicIo,
   session: TenantSession,
   realm: string,
-  created: Created[],
+  created: CreatedResource[],
   seededManaged: readonly SeededManagedFixture[]
 ): Promise<void> {
+  const errors = await deleteCreatedResources(io, session, realm, created);
+  for (const fixture of seededManaged.slice().reverse()) {
+    try {
+      await deleteManagedFixture(io, session, fixture);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (errors.length > 0) {
+    // Cleanup is best-effort so one failed delete does not prevent the rest.
+    // Surface every leak without hiding the subject failure (this is finally).
+    process.emitWarning(`rhino-local AIC cleanup: ${errors.join("; ")}`);
+  }
+}
+
+export async function deleteCreatedResources(
+  io: AicIo,
+  session: TenantSession,
+  realm: string,
+  created: readonly CreatedResource[]
+): Promise<string[]> {
   const base = realmJsonPath(realm);
   const errors: string[] = [];
   for (const item of created.slice().reverse()) {
@@ -480,18 +519,7 @@ async function cleanup(
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
-  for (const fixture of seededManaged.slice().reverse()) {
-    try {
-      await deleteManagedFixture(io, session, fixture);
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
-    }
-  }
-  if (errors.length > 0) {
-    // Cleanup is best-effort so one failed delete does not prevent the rest.
-    // Surface every leak without hiding the subject failure (this is finally).
-    process.emitWarning(`rhino-local AIC cleanup: ${errors.join("; ")}`);
-  }
+  return errors;
 }
 
 function expectDeleted(response: AmResponse, label: string): void {

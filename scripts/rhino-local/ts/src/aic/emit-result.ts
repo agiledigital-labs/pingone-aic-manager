@@ -30,7 +30,9 @@ export function emitResultScript(
     `var __rhinoLocalPayload = JSON.stringify({`,
     `  outcome: __rhinoLocalOutcome,`,
     `  before: __rhinoLocalSnapshots.before,`,
-    `  final: __rhinoLocalSnapshots.final${leaseDigest === undefined ? "" : ","}`,
+    `  final: __rhinoLocalSnapshots.final,`,
+    `  invocationNonce: __rhinoLocalSnapshots.invocationNonce,`,
+    `  subjectDigest: __rhinoLocalSnapshots.subjectDigest${leaseDigest === undefined ? "" : ","}`,
     ...(leaseDigest === undefined
       ? []
       : [`  leaseDigest: ${jsStringLiteral(leaseDigest)}`]),
