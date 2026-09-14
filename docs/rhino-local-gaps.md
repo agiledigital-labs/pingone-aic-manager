@@ -177,9 +177,10 @@ purpose. Live does not distinguish that from a missing record.
 
 Pushback, as invited: the probe fixtures are the richest source of
 scripted-decision bodies _with recorded live behaviour_ in this repo. They are
-probes, not production journey scripts. A production corpus would be the client-a
-sandbox checkout, and it is not here. Converting probes is still the right move
-— they are the scripts whose live outcomes we can actually assert.
+probes, not production journey scripts. A production corpus would be the client
+sandbox checkout named in `.ai/local.md`, and it is not here. Converting probes
+is still the right move — they are the scripts whose live outcomes we can
+actually assert.
 
 ## What was converted
 
