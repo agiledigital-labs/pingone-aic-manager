@@ -596,8 +596,8 @@ smallest possible case (`outcomes: ["done"]`, so the subject declares
 So the AIC lane is currently **slightly more expensive per case than the
 harness it exists to replace**, and 29 of the 30 calls are scaffolding. Adding
 outcomes makes it worse: each extra outcome in the union adds a result script
-and a result node, which is four more calls (GET, PUT, DELETE, plus the node's
-own trio) per case.
+and a result node, and each of those costs a `GET`, a `PUT` and a `DELETE` —
+six more calls per case.
 
 Cutting over now would make the suite slower, not faster. With a per-file lease
 the scaffolding is paid once per file and each case costs one subject `PUT`
