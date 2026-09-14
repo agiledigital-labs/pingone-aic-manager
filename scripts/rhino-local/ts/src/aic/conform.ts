@@ -173,7 +173,11 @@ export async function conformChain(
   };
 }
 
-/** Convert `Lease.execute()` output without re-running or reconstructing it. */
+/**
+ * Convert `Lease.execute()` output without re-running or reconstructing it.
+ * External one-shot callers may use this too; `useLease()` sends it to the
+ * file's already-open `AicFileLease`, not to `runAicChain()`.
+ */
 export function chainFromRunResult(result: RunResult): LocalChainResult {
   return {
     cases: [...result.steps.map((step) => step.kase), result.kase],

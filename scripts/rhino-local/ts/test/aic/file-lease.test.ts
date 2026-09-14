@@ -16,6 +16,7 @@ import type { AicIo } from "../../src/aic/tenant.ts";
 import { headerValues } from "../../src/aic/http.ts";
 import { TX_HEADER } from "../../src/aic/txid.ts";
 import type { ManagedFixture } from "../../src/aic/managed.ts";
+import { runAicChain } from "../../src/aic/run.ts";
 import type { Given } from "../../src/case/types.ts";
 import { makeEffects } from "../case/helpers.ts";
 import { caseWith } from "./helpers.ts";
@@ -30,6 +31,54 @@ const MANAGED_FIXTURE: ManagedFixture = {
 };
 
 describe("AicFileLease", () => {
+  it("returns the same effects as the one-shot compatibility facade", async () => {
+    const directFake = new FakeLeaseTenant();
+    const input = request("parity");
+    const direct = await runAicChain(input.cases, SOURCE, {
+      io: directFake.io,
+      project: "/tmp/rhino-local-aic-test",
+      runId: "effect-parity",
+      replies: input.replies,
+    });
+
+    const leasedFake = new FakeLeaseTenant();
+    const lease = makeLease(leasedFake);
+    await lease.open();
+    const report = await lease.run(input);
+    const leased = report.passes.map((pass) => pass.aic.effects);
+    expect(leased).toEqual(direct);
+    await lease.close();
+  });
+
+  it("applies the same managed-provenance refusal in both runners", async () => {
+    const input = request("wrong provenance", "alpha", {
+      managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
+    });
+    const directFake = new FakeLeaseTenant();
+    await expect(
+      runAicChain(input.cases, SOURCE, {
+        io: directFake.io,
+        project: "/tmp/rhino-local-aic-test",
+        runId: "provenance",
+        replies: input.replies,
+        managedFixtures: [],
+      })
+    ).rejects.toThrow(/managed fixture provenance/);
+    expect(directFake.calls).toEqual([]);
+
+    const leasedFake = new FakeLeaseTenant();
+    const lease = makeLease(leasedFake);
+    await lease.open();
+    const arms = leasedFake.events.filter((event) => event === "arm").length;
+    await expect(
+      lease.run({ ...input, managedFixtures: [] })
+    ).rejects.toThrow(/managed fixture provenance/);
+    expect(leasedFake.events.filter((event) => event === "arm")).toHaveLength(
+      arms
+    );
+    await lease.close();
+  });
+
   it("provisions once, arms and invokes twice, then tears down once", async () => {
     const fake = new FakeLeaseTenant();
     const lease = makeLease(fake);
