@@ -8,6 +8,7 @@ import {
 } from "./constants.ts";
 import { emitResultScript } from "./emit-result.ts";
 import { instrumentSubject } from "./emit-subject.ts";
+import type { LeaseIdentity } from "./lease-identity.ts";
 
 export interface EmitJourneyOptions {
   /** Short token used in tree/script names. Must match `[A-Za-z0-9-]{1,32}`. */
@@ -53,6 +54,12 @@ export interface WrapperJourney {
   nodeBodies: Record<string, Record<string, unknown>>;
   subjectOutcomes: string[];
   invoke: WrapperInvoke;
+}
+
+export interface LeasedJourneyOptions {
+  identity: LeaseIdentity;
+  realm: string;
+  suiteName: string;
 }
 
 const RUN_ID_PATTERN = /^[A-Za-z0-9-]{1,32}$/;
@@ -202,6 +209,92 @@ export function emitWrapperJourney(
   };
 }
 
+/** Emit the fixed graph owned by one file lease. */
+export function emitLeasedJourney(options: LeasedJourneyOptions): WrapperJourney {
+  const { identity } = options;
+  const inertSource = [
+    `// ${identity.marker}`,
+    "// Inert until the owning file lease arms this subject slot.",
+    'throw new Error("rhino-local AIC subject invoked before it was armed");',
+    "",
+  ].join("\n");
+  const subjectScript: ScriptResource = {
+    id: identity.ids.subjectScript,
+    name: `${identity.treeName}-subject`,
+    source: inertSource,
+    role: "subject",
+  };
+  const resultScripts: ScriptResource[] = identity.outcomes.map((outcome) => ({
+    id: identity.ids.resultScripts[outcome] as string,
+    name: `${identity.treeName}-result-${slug(outcome)}`,
+    source: `${`// ${identity.marker}\n`}${emitResultScript(
+      outcome,
+      identity.snapshotKey,
+      identity.structuralDigest
+    )}`,
+    role: "result",
+    outcome,
+  }));
+  const resultNodes: NodeResource[] = identity.outcomes.map((outcome, index) => ({
+    id: identity.ids.resultNodes[outcome] as string,
+    displayName: `result ${outcome}`,
+    scriptId: identity.ids.resultScripts[outcome] as string,
+    outcomes: [SETUP_OUTCOME],
+    connections: { [SETUP_OUTCOME]: SUCCESS_NODE_ID },
+    x: 560,
+    y: 80 + index * 140,
+  }));
+  const subjectConnections = Object.fromEntries(
+    identity.outcomes.map((outcome) => [
+      outcome,
+      identity.ids.resultNodes[outcome] as string,
+    ])
+  );
+  const subjectNode: NodeResource = {
+    id: identity.ids.subjectNode,
+    displayName: options.suiteName,
+    scriptId: subjectScript.id,
+    outcomes: [...identity.outcomes],
+    connections: subjectConnections,
+    x: 80,
+    y: 200,
+  };
+  const nodes = [subjectNode, ...resultNodes];
+  const treeNodes = Object.fromEntries(
+    nodes.map((node) => [
+      node.id,
+      {
+        connections: node.connections,
+        displayName: node.displayName,
+        nodeType: "ScriptedDecisionNode",
+        x: node.x,
+        y: node.y,
+      },
+    ])
+  );
+  const nodeBodies = Object.fromEntries(
+    nodes.map((node) => [node.id, leasedScriptedDecisionBody(node)])
+  );
+  return {
+    treeName: identity.treeName,
+    realm: options.realm,
+    identityResource: `managed/${options.realm}_user`,
+    scripts: [subjectScript, ...resultScripts],
+    nodes,
+    treeBody: {
+      identityResource: `managed/${options.realm}_user`,
+      entryNodeId: subjectNode.id,
+      description: identity.marker,
+      enabled: true,
+      uiConfig: { categories: '["Test"]' },
+      nodes: treeNodes,
+    },
+    nodeBodies,
+    subjectOutcomes: [...identity.outcomes],
+    invoke: { headers: {}, parameters: {}, cookies: {} },
+  };
+}
+
 function scriptedDecisionBody(node: NodeResource): Record<string, unknown> {
   return {
     _id: node.id,
@@ -211,6 +304,15 @@ function scriptedDecisionBody(node: NodeResource): Record<string, unknown> {
       name: "Scripted Decision",
     },
     _outcomes: node.outcomes.map((id) => ({ id, displayName: id })),
+    inputs: ["*"],
+    outputs: ["*"],
+    outcomes: node.outcomes,
+    script: node.scriptId,
+  };
+}
+
+function leasedScriptedDecisionBody(node: NodeResource): Record<string, unknown> {
+  return {
     inputs: ["*"],
     outputs: ["*"],
     outcomes: node.outcomes,
