@@ -74,6 +74,22 @@ if [ "${REQUIRE_SENSITIVE_DENYLIST:-0}" = 1 ] && [ -z "$DENY_RE" ]; then
   exit 2
 fi
 
+# Decode a base64url candidate. Pads to a multiple of 4 first: base64url drops
+# the padding, and a STRICT `base64 -d` (GNU coreutils 8.32, as on the CI
+# runner) then refuses the whole string, while a lenient one (9.x, as on some
+# dev machines) decodes it happily. That difference is invisible — the decode
+# fails quietly, the rule never fires, and CI passes a file a developer's
+# machine would have caught. Measured 2026-09-14: the selftest's own
+# `aHR0cHM6Ly9zc28uYWNtZS5jb20uYXU` fixture is 31 characters, so it needs one
+# `=`, and it is exactly the case that failed only in CI.
+decode_base64url() {
+  _b64_value=$(printf '%s' "$1" | tr '_-' '/+')
+  while [ $(( ${#_b64_value} % 4 )) -ne 0 ]; do
+    _b64_value="${_b64_value}="
+  done
+  printf '%s' "$_b64_value" | base64 -d 2>/dev/null | tr -d '\0'
+}
+
 # Cheap pre-filter: only lines that could possibly match a rule are worth the
 # per-line analysis. Without this a full-tree scan forks greps for every line
 # of every file and takes minutes.
@@ -186,7 +202,7 @@ redact_stream() {
     # checker uses, so the two cannot disagree about what counts as encoded.
     while IFS= read -r line; do
       for cand in $(grep -oE 'aHR0c[A-Za-z0-9_-]{11,}' <<<"$line" 2>/dev/null); do
-        decoded=$(printf '%s' "$cand" | tr '_-' '/+' | base64 -d 2>/dev/null | tr -d '\0')
+        decoded=$(decode_base64url "$cand")
         grep -qiE '^https?://' <<<"$decoded" || continue
         host=$(sed -E 's|https?://||; s|[/?#].*||' <<<"$decoded")
         printf '%s' "$host" | grep -qiE "$PLACEHOLDER_HOST" && continue
@@ -257,8 +273,7 @@ scan_text() {
     # really are encoded URLs instead of forking base64 for every long token.
     while read -r cand; do
       [ ${#cand} -ge 16 ] || continue
-      decoded=$(printf '%s' "$cand" | tr '_-' '/+' \
-        | base64 -d 2>/dev/null | tr -d '\0') || continue
+      decoded=$(decode_base64url "$cand") || continue
       grep -qiE '^https?://' <<<"$decoded" || continue
       host=$(sed -E 's|https?://||; s|[/?#].*||' <<<"$decoded")
       is_placeholder_host "$host" && continue
@@ -330,6 +345,12 @@ case "$MODE" in
     probe "ACS array value"       '  "https://sso.acme.com.au/am/AuthConsumer/metaAlias/alpha/sp"'
     probe "mixed-case entityId"  '"entityId": "https://sso.acme.com.au"'
     probe "base64url url"        '"_id": "aHR0cHM6Ly9zc28uYWNtZS5jb20uYXU"'
+    # One fixture per padding residue. base64url strips the '=' padding, and a
+    # strict base64 -d refuses an unpadded string outright — so a decoder that
+    # forgot to re-pad fires on neither, and does it silently. Only a strict
+    # base64 (GNU coreutils 8.32, the CI runner) tells these apart; a lenient
+    # 9.x decodes both either way.
+    probe "base64url url (2-char pad)" '"_id": "aHR0cHM6Ly9zc28uYWNtZS5jb20uYQ"'
     negative "placeholder host"   'https://<your-tenant>.forgeblocks.com/am'
     negative "placeholder guid"   'https://sts.windows.net/00000000-0000-0000-0000-000000000000/|saml2'
     negative "placeholder entity" '"entityId": "https://sp-b.example.com"'
