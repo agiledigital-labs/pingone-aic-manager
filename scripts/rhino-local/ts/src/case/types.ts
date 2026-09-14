@@ -248,7 +248,14 @@ export interface Given {
 }
 
 export interface Expect {
-  outcome: string;
+  /**
+   * The outcome the script must reach, or `null` for "must not decide" — a
+   * pass that queued callbacks and suspended. A suspended pass is a real
+   * expectation, not an absence of one: measured 2026-09-14, a next-gen node
+   * that sends callbacks returns no outcome at all, and the only way to say so
+   * without `null` is to name an outcome the script never produces.
+   */
+  outcome: string | null;
   sharedState?: StateDiff;
   transientState?: StateDiff;
   secureState?: StateDiff;

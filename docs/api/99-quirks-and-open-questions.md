@@ -1442,3 +1442,34 @@ Also measured: `get()` of an absent key returns `null` (not `undefined`);
 wrapper class was identified; and `String(session)` renders JSON-ish on
 next-gen but as Java's `AbstractMap.toString` on legacy — the clearest evidence
 that the two evaluators hand the script different objects.
+
+## 2026-09-14 — transient state does not survive a callback round trip
+
+A scripted decision node that sends callbacks re-executes from the top when the
+client submits them. Measured on a live tenant with one node: a value written
+with `nodeState.putShared` is still there on the resumed pass; a value written
+with `nodeState.putTransient` reads back `null` and is **absent from
+`nodeState.keys()`**.
+
+It is dropped, not promoted into secure state. `nodeState.get` reads
+transient → secure → shared, so a promotion would have been visible. The
+control — reading a key nobody ever set — returned the same `null`, which is
+what makes the transient read a genuine miss rather than an artefact of the
+probe.
+
+This is the sharp edge for anything simulating a suspend locally. Carrying
+transient state across the round trip is the plausible guess, it is wrong, and
+it is invisible: a script that stashes a secret in transient state before
+asking the user a question goes green in the mock and loses the secret on the
+tenant. `scripts/rhino-local/ts/src/harness/step.ts` drops it, and the
+discriminating test fails if that is changed.
+
+The same run pinned two smaller things. **`resumedFromSuspend` is `false` on a
+callback resume** — it belongs to `action.suspend()`, so it cannot be used to
+tell a node's first pass from its later ones; `callbacks.isEmpty()` is the
+idiom that works. And an **unanswered `HiddenValueCallback` is submitted
+holding its own `id`**, not the value the script sent out, so echoing the
+callbacks array back unchanged is not the same as submitting nothing.
+
+Full table and the probe's controls: `docs/api/09-journeys.md` → "What survives
+a callback round trip".

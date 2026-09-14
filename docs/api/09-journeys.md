@@ -757,6 +757,53 @@ A probe that ends by *completing* cannot report anything, because the
 `callbacksBuilder.hiddenValueCallback(...)` instead, and read the value out of
 the `callbacks` array.
 
+### What survives a callback round trip (verified 2026-09-14)
+
+When a scripted decision node sends callbacks, the whole node re-executes from
+the top once the client submits them. What it can still see is not what you
+would guess.
+
+| Written on the first pass       | Visible on the resumed pass |
+| ------------------------------- | --------------------------- |
+| `nodeState.putShared(k, v)`     | **yes** — and still in `nodeState.keys()` |
+| `nodeState.putTransient(k, v)`  | **no** — `nodeState.get(k)` is `null` and the key is gone from `keys()` |
+
+Transient state is **dropped, not promoted to secure state**. `nodeState.get`
+reads transient → secure → shared, so a promoted value would have come back;
+it did not, and it was absent from `keys()` too. That is the trap: a harness
+that carries transient across a suspend lets a script that stashes a secret
+there pass locally and fail on a tenant.
+
+`resumedFromSuspend` is **`false`** on a callback resume. It belongs to
+`action.suspend()` — the suspended-tree/magic-link feature — not to an ordinary
+callback round trip. Do not read it as "am I on the second pass"; use
+`callbacks.isEmpty()`, which is how AM's own idioms do it.
+
+The measurement, one node, outcomes `["true"]`, ending in a result node that
+dumps a HiddenValueCallback:
+
+```text
+shared:    "s1"           putShared survived
+transient: "<null>"       putTransient did not
+neverSet:  "<null>"       control: a key nobody set reads the same
+resumed:   "false"        resumedFromSuspend on a callback resume
+submitted: "probe-reply"  control: this really is pass 2
+keys:      [probeShared, realm, authLevel]
+```
+
+`neverSet` is the control that makes `transient: "<null>"` mean something — it
+proves a miss and a drop are indistinguishable, so the transient read really is
+a miss. `submitted` is the control that proves the second POST re-entered the
+same node rather than starting a new journey.
+
+Two smaller observations from the same run. An **unanswered**
+`HiddenValueCallback` comes back with its own `id` as the submitted input
+(`input: [{name: "IDToken1", value: "__probe"}]`), not the value the script
+sent out — so a client that echoes the array back unchanged is not submitting
+nothing. And the ambient state differs between passes: `keys()` listed `realm`
+and `authLevel` on the resumed pass but not `maxAuthenticationSessionDuration`,
+which is another reason to diff per channel rather than compare whole states.
+
 ### Turning `tokenId` into an authorization code
 
 With a session in hand, the OAuth authorize endpoint can be driven without a
@@ -903,6 +950,15 @@ three-step flow that does is in
   follow-up `GET` returned **404**. Both probe objects (this tree and the script
   probe in `04-scripts.md`) were deleted and their removal confirmed, and the
   realm was re-listed afterwards.
+
+- Date: 2026-09-14
+- Calls: `PUT …/scripts/{uuid}` ×2, `PUT …/nodes/ScriptedDecisionNode/{uuid}`
+  ×2, `PUT …/authenticationtrees/trees/rl-probe-…`,
+  `POST …/authenticate?authIndexType=service&authIndexValue=rl-probe-…` (200,
+  NameCallback), then the same POST with the callback filled (200,
+  HiddenValueCallback carrying the report above). Every resource deleted
+  afterwards. Establishes what survives a callback round trip and that
+  `resumedFromSuspend` is false on one.
 
 ## Source citations
 

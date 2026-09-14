@@ -82,6 +82,27 @@ describe("defineCase / validateCase", () => {
     );
   });
 
+  it("accepts a null outcome for a pass that suspends", () => {
+    const kase = defineCase({
+      name: "asks for a name",
+      script: "am/decision-node/ask.js",
+      outcomes: ["done"],
+      expect: { outcome: null, callbacks: [{ type: "NameCallback" }] },
+    });
+    expect(kase.expect.outcome).toBeNull();
+    // The vocabulary still stands for the passes that DO decide; a suspended
+    // pass simply has nothing to check against it.
+    expect(kase.outcomes).toEqual(["done"]);
+  });
+
+  it("rejects an outcome that is neither a string nor null", () => {
+    const input = validInput();
+    (input.expect as Record<string, unknown>).outcome = 7;
+    expect(() => defineCase(input)).toThrow(
+      /outcome must be a string, or null for a pass that suspends/
+    );
+  });
+
   it("rejects a missing outcome rather than asserting nothing", () => {
     const input = validInput();
     const expectBlock = input.expect as unknown as Record<string, unknown>;

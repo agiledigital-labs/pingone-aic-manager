@@ -381,6 +381,24 @@ function judgeOutcome(kase: Case, effects: RecordedEffects): Mismatch[] {
   }
   const actual =
     effects.outcome === null ? "<no outcome>" : formatValue(effects.outcome);
+  const wanted =
+    kase.expect.outcome === null
+      ? "<no outcome>"
+      : formatValue(kase.expect.outcome);
+  // Expecting no outcome is expecting a suspend, so say that rather than
+  // "expected <no outcome>, actual \"true\"" — the script did not fail to
+  // produce something, it failed to stop and ask.
+  if (kase.expect.outcome === null) {
+    return [
+      miss(
+        "outcome",
+        "outcome",
+        wanted,
+        actual,
+        `outcome: expected the pass to suspend with callbacks and decide nothing, but it reached ${actual}`
+      ),
+    ];
+  }
   // An outcome outside the declared vocabulary is a harness configuration
   // fault, not the script behaving differently from expectation, and it
   // supersedes the ordinary mismatch because the ordinary message ("expected
@@ -397,7 +415,7 @@ function judgeOutcome(kase: Case, effects: RecordedEffects): Mismatch[] {
       miss(
         "outcome",
         "outcome",
-        formatValue(kase.expect.outcome),
+        wanted,
         actual,
         `outcome: script produced ${actual}, which case.outcomes does not declare [${declared}] — fix the typo or declare it; on a tenant an undeclared outcome answers 401 with no callback, identical to a compile error`
       ),
@@ -405,11 +423,9 @@ function judgeOutcome(kase: Case, effects: RecordedEffects): Mismatch[] {
   }
   const message =
     effects.outcome === null
-      ? `outcome: expected ${formatValue(kase.expect.outcome)}, script produced no outcome`
-      : `outcome: expected ${formatValue(kase.expect.outcome)}, actual ${actual}`;
-  return [
-    miss("outcome", "outcome", formatValue(kase.expect.outcome), actual, message),
-  ];
+      ? `outcome: expected ${wanted}, script produced no outcome`
+      : `outcome: expected ${wanted}, actual ${actual}`;
+  return [miss("outcome", "outcome", wanted, actual, message)];
 }
 
 function diffState(

@@ -91,7 +91,7 @@ export function validateCase(input: unknown): Case {
 function parseOutcomes(
   raw: unknown,
   path: string,
-  expected: string
+  expected: string | null
 ): readonly string[] {
   if (!Array.isArray(raw)) {
     throw new Error(`rhino-local: ${path} must be an array of strings`);
@@ -111,7 +111,10 @@ function parseOutcomes(
     }
     seen.add(value);
   }
-  if (!seen.has(expected)) {
+  // A suspended pass reaches no outcome, so it cannot be checked against the
+  // vocabulary — and the vocabulary still matters, because the wrapper journey
+  // has to declare every outcome the LATER passes may produce.
+  if (expected !== null && !seen.has(expected)) {
     throw new Error(
       `rhino-local: case.expect.outcome ${JSON.stringify(expected)} is not in ${path} [${raw.join(", ")}] — the case expects an outcome the script is not declared to produce`
     );
@@ -203,8 +206,10 @@ function parseExpect(raw: unknown, path: string): Expect {
       `rhino-local: ${path}.outcome is required (engine-neutral; use "true" whether the script returns via action.goTo or a legacy outcome variable)`
     );
   }
-  if (typeof raw.outcome !== "string") {
-    throw new Error(`rhino-local: ${path}.outcome must be a string`);
+  if (raw.outcome !== null && typeof raw.outcome !== "string") {
+    throw new Error(
+      `rhino-local: ${path}.outcome must be a string, or null for a pass that suspends with callbacks`
+    );
   }
   const expect: Expect = { outcome: raw.outcome };
   if (raw.sharedState !== undefined) {

@@ -59,12 +59,20 @@ const RUN_ID_PATTERN = /^[A-Za-z0-9-]{1,32}$/;
 
 /**
  * Outcomes declared on the subject node. Always includes `true` and `false`
- * plus `expect.outcome`, so a script that takes the other branch still reaches
- * a result node that can dump state.
+ * plus `expect.outcome` and everything `case.outcomes` declares, so a script
+ * that takes the other branch still reaches a result node that can dump state.
+ * A pass expected to suspend has no outcome to add, which is why the declared
+ * vocabulary is folded in as well — otherwise a step chain would wire up only
+ * the outcomes its first pass mentions.
  */
 export function subjectOutcomes(kase: Case): string[] {
   const set = new Set<string>(["true", "false"]);
-  set.add(kase.expect.outcome);
+  if (kase.expect.outcome !== null) {
+    set.add(kase.expect.outcome);
+  }
+  for (const outcome of kase.outcomes ?? []) {
+    set.add(outcome);
+  }
   return [...set];
 }
 
