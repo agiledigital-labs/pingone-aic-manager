@@ -469,8 +469,9 @@ the result node ran.
 
 ### The portability guard and managed-fixture provenance
 
-The managed-fixture lifecycle below is offline-tested and awaits live tenant
-verification.
+The managed-fixture lifecycle below is offline-tested and was exercised live
+by the maintainer on 2026-09-14, including successful create/read/delete and a
+collision control that left the pre-existing record byte-identical.
 
 An author-written `given.managed` still makes the lane refuse the case:
 `given.managed is environment-dependent; AIC lane skips rather than run against
@@ -486,8 +487,19 @@ records. A manually assembled chain has no ledger provenance and stays skipped.
 Before provisioning the subject, the AIC lane creates every owned fixture with
 `POST /openidm/managed/{type}?_action=create`, including `_id` in the body. A
 412 is a collision, never an update, and aborts before the subject. Every 201 is
-followed by a GET that checks the declared fields; every successfully created
-record is deleted in reverse order even when that check or the subject fails.
+followed by a GET that proves the record is readable and checks every declared
+field that GET can expose. The only measured exception is
+`managed/alpha_user.password`: a live create accepted it, but GET omitted the
+write-only field. The harness therefore cannot prove the submitted password
+landed; it still checks `_id` and every other declared field exactly. Do not add
+another read-back exception without live evidence.
+
+`managed/alpha_user` fixture ids are rejected locally unless they are
+36-character UUIDs, before the create request is sent. Live measurement showed
+that user `_id` is the `fr-idm-uuid` RDN; `managed/alpha_role` accepted a
+readable id, so the early constraint is deliberately type-specific. Every
+successfully created record is deleted in reverse order even when the seed
+check or the subject fails.
 
 Managed-fixture runs are serialized per tenant with a process-independent lock
 under the OS temporary directory. This lets parallel test files wait instead of

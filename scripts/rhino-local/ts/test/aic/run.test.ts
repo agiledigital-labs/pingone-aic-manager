@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HARNESS_CALLBACK_ID } from "../../src/aic/constants.ts";
 import { headerValues, type HttpRequest, type HttpResponse } from "../../src/aic/http.ts";
+import type { ManagedFixture } from "../../src/aic/managed.ts";
 import { runAicLane } from "../../src/aic/run.ts";
 import { AicLaneError, type AicIo, type CliResult } from "../../src/aic/tenant.ts";
 import { clearAicTrace, peekAicTrace } from "../../src/aic/trace.ts";
@@ -13,10 +14,11 @@ afterEach(() => {
 
 const PLACEHOLDER_BASE = "https://tenant.example.com";
 const SUBJECT = 'nodeState.putShared("verified", true);\naction.goTo("true");\n';
-const MANAGED_FIXTURE = {
+const MANAGED_ID = "00000000-0000-4000-8000-000000000001";
+const MANAGED_FIXTURE: ManagedFixture = {
   type: "managed/alpha_user",
-  record: { _id: "fixture-alice", userName: "alice" },
-} as const;
+  record: { _id: MANAGED_ID, userName: "alice" },
+};
 
 describe("runAicLane", () => {
   it("creates namespaced resources, invokes authenticate, records effects, and deletes", async () => {
@@ -136,14 +138,14 @@ describe("runAicLane", () => {
     );
     const check = fake.httpCalls.findIndex(
       (call) =>
-        call.method === "GET" && call.url.includes("/fixture-alice")
+        call.method === "GET" && call.url.includes(`/${MANAGED_ID}`)
     );
     const subject = fake.httpCalls.findIndex(
       (call) => call.method === "POST" && call.url.includes("/authenticate")
     );
     const remove = fake.httpCalls.findIndex(
       (call) =>
-        call.method === "DELETE" && call.url.includes("/fixture-alice")
+        call.method === "DELETE" && call.url.includes(`/${MANAGED_ID}`)
     );
     expect(create).toBeGreaterThanOrEqual(0);
     expect(check).toBeGreaterThan(create);
@@ -152,6 +154,72 @@ describe("runAicLane", () => {
     expect(JSON.parse(String(fake.httpCalls[create]?.body))).toEqual(
       MANAGED_FIXTURE.record
     );
+  });
+
+  it("accepts an alpha_user fixture when GET omits its write-only password", async () => {
+    const fake = mockTenant({ managedReadOmit: ["password"] });
+    const fixture: ManagedFixture = {
+      type: "managed/alpha_user",
+      record: {
+        _id: "00000000-0000-4000-8000-000000000002",
+        userName: "password-fixture",
+        password: "Test-only password 1!",
+      },
+    };
+
+    await runAicLane(managedCase(fixture), SUBJECT, {
+      io: fake.io,
+      runId: "managed-password",
+      project: "/tmp/rhino-local-aic-test",
+      managedFixtures: [fixture],
+    });
+
+    expect(
+      fake.httpCalls.some(
+        (call) => call.method === "POST" && call.url.includes("/authenticate")
+      )
+    ).toBe(true);
+  });
+
+  it("anti-silencing: refuses a fixture whose readable field did not land", async () => {
+    const fake = mockTenant({ managedReadOmit: ["userName"] });
+    await expect(
+      runAicLane(managedCase(), SUBJECT, {
+        io: fake.io,
+        runId: "managed-missing-field",
+        project: "/tmp/rhino-local-aic-test",
+        managedFixtures: [MANAGED_FIXTURE],
+      })
+    ).rejects.toThrow(/did not contain the declared field "userName"/);
+    expect(
+      fake.httpCalls.some(
+        (call) => call.method === "POST" && call.url.includes("/authenticate")
+      )
+    ).toBe(false);
+  });
+
+  it("refuses a readable alpha_user id before creating the fixture", async () => {
+    const fixture: ManagedFixture = {
+      type: "managed/alpha_user",
+      record: { _id: "readable-user", userName: "alice" },
+    };
+    const fake = mockTenant();
+
+    await expect(
+      runAicLane(managedCase(fixture), SUBJECT, {
+        io: fake.io,
+        runId: "managed-user-id",
+        project: "/tmp/rhino-local-aic-test",
+        managedFixtures: [fixture],
+      })
+    ).rejects.toThrow(
+      /managed\/alpha_user.*readable-user.*36-character UUID.*managed\/alpha_role/
+    );
+    expect(
+      fake.httpCalls.some(
+        (call) => call.method === "POST" && call.url.includes("?_action=create")
+      )
+    ).toBe(false);
   });
 
   it("refuses a managed fixture collision and never invokes the subject", async () => {
@@ -163,7 +231,7 @@ describe("runAicLane", () => {
         project: "/tmp/rhino-local-aic-test",
         managedFixtures: [MANAGED_FIXTURE],
       })
-    ).rejects.toThrow(/collision.*fixture-alice/);
+    ).rejects.toThrow(new RegExp(`collision.*${MANAGED_ID}`));
     expect(
       fake.httpCalls.some(
         (call) => call.method === "POST" && call.url.includes("/authenticate")
@@ -180,7 +248,7 @@ describe("runAicLane", () => {
         project: "/tmp/rhino-local-aic-test",
         managedFixtures: [MANAGED_FIXTURE],
       })
-    ).rejects.toThrow(/fixture-alice.*not readable after create/);
+    ).rejects.toThrow(new RegExp(`${MANAGED_ID}.*not readable after create`));
     expect(
       fake.httpCalls.some(
         (call) => call.method === "POST" && call.url.includes("/authenticate")
@@ -188,7 +256,8 @@ describe("runAicLane", () => {
     ).toBe(false);
     expect(
       fake.httpCalls.some(
-        (call) => call.method === "DELETE" && call.url.includes("/fixture-alice")
+        (call) =>
+          call.method === "DELETE" && call.url.includes(`/${MANAGED_ID}`)
       )
     ).toBe(true);
   });
@@ -208,7 +277,7 @@ describe("runAicLane", () => {
     );
     const remove = fake.httpCalls.findIndex(
       (call) =>
-        call.method === "DELETE" && call.url.includes("/fixture-alice")
+        call.method === "DELETE" && call.url.includes(`/${MANAGED_ID}`)
     );
     expect(remove).toBeGreaterThan(subject);
   });
@@ -226,7 +295,7 @@ describe("runAicLane", () => {
         managedFixtures: [MANAGED_FIXTURE],
       });
       expect(warning).toHaveBeenCalledWith(
-        expect.stringMatching(/fixture-alice.*HTTP 500/)
+        expect.stringMatching(new RegExp(`${MANAGED_ID}.*HTTP 500`))
       );
     } finally {
       warning.mockRestore();
@@ -288,11 +357,11 @@ describe("runAicLane", () => {
   });
 });
 
-function managedCase() {
+function managedCase(fixture: ManagedFixture = MANAGED_FIXTURE) {
   return caseWith({
     given: {
       managed: {
-        [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record],
+        [fixture.type]: [fixture.record],
       },
     },
   });
@@ -305,6 +374,7 @@ function mockTenant(
     authenticateBody?: unknown;
     managedCreateStatus?: number;
     managedReadStatus?: number;
+    managedReadOmit?: readonly string[];
     managedDeleteStatus?: number;
   } = {}
 ): { io: AicIo; httpCalls: HttpRequest[]; aicArgs: string[][] } {
@@ -327,7 +397,7 @@ function mockTenant(
       },
     ],
   };
-  let managedRecord: unknown;
+  let managedRecord: Record<string, unknown> | undefined;
 
   const io: AicIo = {
     async aic(args) {
@@ -359,7 +429,12 @@ function mockTenant(
         }
         if (path.startsWith("/openidm/managed/")) {
           const status = options.managedReadStatus ?? (managedRecord === undefined ? 404 : 200);
-          return json(status, status === 200 ? managedRecord : { code: status });
+          const readRecord =
+            managedRecord === undefined ? undefined : { ...managedRecord };
+          for (const key of options.managedReadOmit ?? []) {
+            delete readRecord?.[key];
+          }
+          return json(status, status === 200 ? readRecord : { code: status });
         }
         if (existing.has(path)) {
           return json(200, { _id: "already-there" });
@@ -383,7 +458,7 @@ function mockTenant(
       ) {
         const status = options.managedCreateStatus ?? 201;
         if (status === 201) {
-          managedRecord = JSON.parse(String(req.body));
+          managedRecord = JSON.parse(String(req.body)) as Record<string, unknown>;
         }
         return json(status, status === 201 ? managedRecord : { code: status });
       }
