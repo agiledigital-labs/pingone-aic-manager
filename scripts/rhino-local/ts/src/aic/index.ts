@@ -48,6 +48,8 @@ export { emitResultScript } from "./emit-result.ts";
 export { instrumentSubject } from "./emit-subject.ts";
 export type { InstrumentedSubject } from "./emit-subject.ts";
 export type { ManagedFixture } from "./managed.ts";
+export { AicFileLease } from "./file-lease.ts";
+export type { AicFileLeaseOptions, AicLeaseRunRequest } from "./file-lease.ts";
 export {
   confirmResourceSnapshot,
   nodeRequestProjection,

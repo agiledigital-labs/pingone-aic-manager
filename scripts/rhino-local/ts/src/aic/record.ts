@@ -17,6 +17,9 @@ export interface SubjectDump {
   outcome: string;
   before: JsonObject;
   final: JsonObject;
+  leaseDigest?: string;
+  invocationNonce?: string;
+  subjectDigest?: string;
 }
 
 /**
@@ -48,6 +51,13 @@ export function parseSubjectDump(raw: unknown): SubjectDump {
     outcome: raw.outcome,
     before: parseJsonObject(raw.before, "dump.before"),
     final: parseJsonObject(raw.final, "dump.final"),
+    ...(typeof raw.leaseDigest === "string" ? { leaseDigest: raw.leaseDigest } : {}),
+    ...(typeof raw.invocationNonce === "string"
+      ? { invocationNonce: raw.invocationNonce }
+      : {}),
+    ...(typeof raw.subjectDigest === "string"
+      ? { subjectDigest: raw.subjectDigest }
+      : {}),
   };
 }
 

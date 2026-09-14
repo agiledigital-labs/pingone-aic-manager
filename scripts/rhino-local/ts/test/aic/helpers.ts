@@ -10,6 +10,7 @@ export function caseWith(
   overrides: {
     name?: string;
     script?: string;
+    outcomes?: readonly string[];
     given?: Given;
     expect?: Expect;
   } = {}
