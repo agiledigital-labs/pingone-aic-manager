@@ -27,7 +27,6 @@ import {
   deleteManagedFixture,
   fixtureIdentity,
   managedResource,
-  managedSeedMatches,
   seedManagedFixtures,
   type ManagedFixture,
   type SeededManagedFixture,
@@ -39,6 +38,7 @@ import {
   fetchCookieName,
   invokeJourney,
   provisionJourney,
+  validateAicRun,
   type AicReply,
   type CreatedResource,
 } from "./run.ts";
@@ -53,7 +53,6 @@ import {
   type TenantSession,
 } from "./tenant.ts";
 import { beginSingleTrace, beginTrace, clearAicTrace } from "./trace.ts";
-import { aicUnsupportedReason } from "./unsupported.ts";
 import { repoRoot } from "../paths.ts";
 
 export interface AicFileLeaseOptions {
@@ -462,20 +461,14 @@ export class AicFileLease {
   }
 
   #validate(request: AicLeaseRunRequest): void {
-    if (request.cases.length === 0) {
-      throw new AicLaneError("AIC file lease needs at least one case");
-    }
+    const validation = validateAicRun(
+      request.cases,
+      request.replies,
+      request.managedFixtures
+    );
     if (request.source !== this.#options.source) {
       throw new AicLaneError("AIC file lease source differs from the suite source used at open");
     }
-    if (request.replies.length !== request.cases.length - 1) {
-      throw new AicLaneError(
-        `AIC file lease: ${request.cases.length} passes need ${request.cases.length - 1} reply sets, got ${request.replies.length}`
-      );
-    }
-    const harnessOwnsManaged =
-      request.managedFixtures !== undefined &&
-      managedSeedMatches(request.cases[0]?.given.managed, request.managedFixtures);
     for (const kase of request.cases) {
       if (kase.script !== this.#options.source) {
         throw new AicLaneError(`${kase.name}: case source differs from the leased suite source`);
@@ -494,10 +487,14 @@ export class AicFileLease {
           `${kase.name}: outcome ${JSON.stringify(kase.expect.outcome)} is outside the leased vocabulary`
         );
       }
-      const unsupported = aicUnsupportedReason(kase, { harnessOwnsManaged });
-      if (unsupported !== undefined && this.#options.unsupported !== "skip") {
-        throw new AicLaneError(`${kase.name}: AIC lane unsupported: ${unsupported}`);
-      }
+    }
+    if (
+      validation.unsupported.length > 0 &&
+      this.#options.unsupported !== "skip"
+    ) {
+      throw new AicLaneError(
+        `AIC lane unsupported: ${validation.unsupported.join("; ")}`
+      );
     }
   }
 

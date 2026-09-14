@@ -75,8 +75,8 @@ export {
 export type { AicResourceKind } from "./resource-snapshot.ts";
 export { assembleEffects, classifyFinal, parseSubjectDump } from "./record.ts";
 export type { SubjectDump } from "./record.ts";
-export { runAicChain, runAicLane } from "./run.ts";
-export type { AicReply, RunAicOptions } from "./run.ts";
+export { runAicChain, runAicLane, validateAicRun } from "./run.ts";
+export type { AicReply, AicRunValidation, RunAicOptions } from "./run.ts";
 export {
   AicLaneError,
   AM_CONFIG_API_VERSION,

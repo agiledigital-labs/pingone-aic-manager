@@ -56,6 +56,11 @@ export interface RunAicOptions {
   replies?: readonly (readonly AicReply[])[];
 }
 
+export interface AicRunValidation {
+  harnessOwnsManaged: boolean;
+  unsupported: string[];
+}
+
 export type CreatedResource =
   | { kind: "script"; id: string }
   | { kind: "node"; id: string }
@@ -76,7 +81,10 @@ export async function runAicLane(
 }
 
 /**
- * Run a step chain on a tenant: one journey, one node, entered once per case.
+ * One-shot compatibility facade: run a step chain on a tenant, provisioning
+ * and deleting one throwaway journey around this call. `useLease()` does not
+ * call this function; it hands the recorded chain to its pre-opened
+ * `AicFileLease` so stable resources are reused across tests.
  *
  * `cases` is one `Case` per pass — `cases[0].given` seeds the journey and every
  * later `given` is what the local lane computed for that pass. Handing the
@@ -99,31 +107,12 @@ export async function runAicChain(
   source: string,
   options: RunAicOptions = {}
 ): Promise<RecordedEffects[]> {
-  const first = cases[0];
-  const last = cases[cases.length - 1];
-  if (first === undefined || last === undefined) {
-    throw new AicLaneError("runAicChain needs at least one case");
-  }
   const replies = options.replies ?? [];
-  if (replies.length !== cases.length - 1) {
-    throw new AicLaneError(
-      `runAicChain: ${cases.length} passes need ${cases.length - 1} reply sets, got ${replies.length}`
-    );
-  }
+  const validation = validateAicRun(cases, replies, options.managedFixtures);
+  const last = cases[cases.length - 1] as Case;
   const managedFixtures = options.managedFixtures ?? [];
-  const harnessOwnsManaged =
-    options.managedFixtures !== undefined &&
-    managedSeedMatches(first.given.managed, managedFixtures);
-  if (options.managedFixtures !== undefined && !harnessOwnsManaged) {
-    throw new AicLaneError(
-      "managed fixture provenance does not match the first pass's given.managed seed"
-    );
-  }
-  for (const kase of cases) {
-    const reason = aicUnsupportedReason(kase, { harnessOwnsManaged });
-    if (reason !== undefined) {
-      throw new AicLaneError(`AIC lane skipped: ${reason}`);
-    }
+  if (validation.unsupported.length > 0) {
+    throw new AicLaneError(`AIC lane skipped: ${validation.unsupported.join("; ")}`);
   }
   const kase = emitCase(cases);
   const project = options.project ?? repoRoot;
@@ -168,6 +157,40 @@ export async function runAicChain(
       await releaseManagedLock();
     }
   }
+}
+
+/**
+ * Shared fail-closed validation for the throwaway and reusable runners.
+ * Lease-specific source, realm, and outcome constraints remain with the
+ * lease because the one-shot facade has no pre-opened graph to compare.
+ */
+export function validateAicRun(
+  cases: readonly Case[],
+  replies: readonly (readonly AicReply[])[],
+  managedFixtures?: readonly ManagedFixture[]
+): AicRunValidation {
+  const first = cases[0];
+  if (first === undefined) {
+    throw new AicLaneError("runAicChain needs at least one case");
+  }
+  if (replies.length !== cases.length - 1) {
+    throw new AicLaneError(
+      `runAicChain: ${cases.length} passes need ${cases.length - 1} reply sets, got ${replies.length}`
+    );
+  }
+  const harnessOwnsManaged =
+    managedFixtures !== undefined &&
+    managedSeedMatches(first.given.managed, managedFixtures);
+  if (managedFixtures !== undefined && !harnessOwnsManaged) {
+    throw new AicLaneError(
+      "managed fixture provenance does not match the first pass's given.managed seed"
+    );
+  }
+  const unsupported = cases.flatMap((kase) => {
+    const reason = aicUnsupportedReason(kase, { harnessOwnsManaged });
+    return reason === undefined ? [] : [`${kase.name}: ${reason}`];
+  });
+  return { harnessOwnsManaged, unsupported };
 }
 
 /**
