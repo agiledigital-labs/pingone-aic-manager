@@ -74,7 +74,10 @@ export interface FixtureCreator {
   create(type: string, record: JsonObject | JsonObject[]): Promise<void>;
 }
 
-/** What `cleanup` is handed: the same surface on both lanes, by design. */
+/**
+ * What checks and cleanup receive on both lanes. The surface is shared, but
+ * record shape is not projected: AIC reads retain tenant-materialized fields.
+ */
 export interface IdmHandle {
   read(resource: string): Promise<JsonObject | null>;
   query(type: string, filter: Readonly<Record<string, JsonValue>>): Promise<JsonObject[]>;

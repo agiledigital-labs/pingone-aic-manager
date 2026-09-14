@@ -61,6 +61,11 @@ export interface AicRunValidation {
   unsupported: string[];
 }
 
+export type AicPassObserver = (
+  index: number,
+  effects: RecordedEffects
+) => void | Promise<void>;
+
 export type CreatedResource =
   | { kind: "script"; id: string }
   | { kind: "node"; id: string }
@@ -357,7 +362,8 @@ export async function driveJourney(
   cases: readonly Case[],
   replies: readonly (readonly AicReply[])[],
   tx: { next: () => string },
-  proof?: { leaseDigest: string; invocationNonce: string; subjectDigest: string }
+  proof?: { leaseDigest: string; invocationNonce: string; subjectDigest: string },
+  observePass?: AicPassObserver
 ): Promise<RecordedEffects[]> {
   const passes: RecordedEffects[] = [];
   let response = await invokeJourney(io, session, wrapper, tx.next());
@@ -370,13 +376,19 @@ export async function driveJourney(
         `${label}: the journey finished before this step ran — the script decided an outcome instead of sending callbacks`
       );
     }
-    passes.push(
-      assembleEffects({ given: kase.given, callbacks: parsed.callbacks })
-    );
+    const effects = assembleEffects({
+      given: kase.given,
+      callbacks: parsed.callbacks,
+    });
+    passes.push(effects);
+    await observePass?.(index, effects);
     const body = fillCallbackInputs(response.body, reply, label);
     response = await invokeJourney(io, session, wrapper, tx.next(), body);
   }
-  passes.push(recordFromAuthenticate(cases[cases.length - 1] as Case, response, proof));
+  const finalIndex = cases.length - 1;
+  const final = recordFromAuthenticate(cases[finalIndex] as Case, response, proof);
+  passes.push(final);
+  await observePass?.(finalIndex, final);
   return passes;
 }
 

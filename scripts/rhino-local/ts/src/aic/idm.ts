@@ -19,10 +19,13 @@ export function tenantIdmHandle(io: AicIo, session: TenantSession): IdmHandle {
       if (response.status === 404) {
         return null;
       }
-      if (response.status !== 200 || !isPlainObject(response.body)) {
+      if (response.status !== 200) {
         throw statusError("read managed record", response.status, "200 or 404");
       }
-      return response.body as JsonObject;
+      if (!isManagedRecord(response.body)) {
+        throw new AicLaneError("read managed record returned no materialized record");
+      }
+      return response.body;
     },
 
     async query(type, filter) {
@@ -38,7 +41,7 @@ export function tenantIdmHandle(io: AicIo, session: TenantSession): IdmHandle {
       const resultCount = response.body.resultCount;
       if (
         !Array.isArray(result) ||
-        !result.every(isPlainObject) ||
+        !result.every(isManagedRecord) ||
         typeof resultCount !== "number"
       ) {
         throw new AicLaneError(
@@ -56,8 +59,11 @@ export function tenantIdmHandle(io: AicIo, session: TenantSession): IdmHandle {
       if (response.status === 404) {
         return;
       }
-      if (response.status !== 200 || !isPlainObject(response.body)) {
+      if (response.status !== 200) {
         throw statusError("delete managed record", response.status, "200 or 404");
+      }
+      if (!isManagedRecord(response.body)) {
+        throw new AicLaneError("delete managed record returned no deleted record");
       }
     },
   };
@@ -120,6 +126,10 @@ function encodeFilterValue(field: string, value: JsonValue): string {
 
 function hasControlCharacter(value: string): boolean {
   return [...value].some((character) => character.charCodeAt(0) < 0x20);
+}
+
+function isManagedRecord(value: unknown): value is JsonObject {
+  return isPlainObject(value) && typeof value._id === "string";
 }
 
 function unsupportedFilterValue(field: string, detail: string): AicLaneError {

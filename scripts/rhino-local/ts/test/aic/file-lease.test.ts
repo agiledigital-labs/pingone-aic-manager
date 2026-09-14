@@ -116,6 +116,65 @@ describe("AicFileLease", () => {
     await lease.close();
   });
 
+  it("replays step and final checks at the matching authenticate boundaries", async () => {
+    const fake = new FakeLeaseTenant({ stepChain: true });
+    const lease = makeLease(fake);
+    await lease.open();
+    const first = caseWith({
+      name: "hooks [step 1]",
+      script: SOURCE,
+      outcomes: ["done"],
+      given: { realm: "alpha", callbacks: [] },
+      expect: { outcome: null, callbacks: [{ type: "NameCallback" }] },
+    });
+    const final = caseWith({
+      name: "hooks",
+      script: SOURCE,
+      outcomes: ["done"],
+      given: {
+        realm: "alpha",
+        callbacks: [{ type: "NameCallback", value: "alice" }],
+      },
+      expect: { outcome: "done" },
+    });
+    await lease.run({
+      cases: [first, final],
+      source: SOURCE,
+      localEffects: [
+        makeEffects({ outcome: null, callbacks: [{ type: "NameCallback" }] }),
+        makeEffects({ outcome: "done" }),
+      ],
+      replies: [[{ type: "NameCallback", value: "alice" }]],
+      hooks: {
+        stepChecks: [async (idm) => {
+          await idm.read("managed/alpha_user/step-check");
+        }],
+        finalChecks: [async (idm) => {
+          await idm.read("managed/alpha_user/final-check");
+        }],
+        cleanup: async (idm) => {
+          await idm.delete("managed/alpha_user/hook-cleanup");
+        },
+      },
+    });
+    await lease.close();
+
+    expect(
+      fake.events.filter(
+        (event) => event === "authenticate" || event.startsWith("hook-")
+      )
+    ).toEqual([
+      "authenticate",
+      "hook-read:step-check",
+      "authenticate",
+      "hook-read:final-check",
+      "hook-delete:hook-cleanup",
+    ]);
+    // Base one-chain cost is 42; these three IdmHandle operations are real
+    // tenant calls and therefore lift the measured fake-I/O arithmetic to 45.
+    expect(fake.calls.length + fake.aicCalls).toBe(45);
+  });
+
   it("refuses a realm mismatch before mutating the subject", async () => {
     const fake = new FakeLeaseTenant();
     const lease = makeLease(fake);
@@ -341,6 +400,46 @@ describe("AicFileLease", () => {
     await lease.close();
   });
 
+  it("runs cleanup after a thrown AIC check and before fixture deletion", async () => {
+    const fake = new FakeLeaseTenant();
+    const lease = makeLease(fake);
+    await lease.open();
+    const input = request(
+      "check-failure",
+      "alpha",
+      { managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] } },
+      [MANAGED_FIXTURE]
+    );
+    let failure: unknown;
+    try {
+      await lease.run({
+        ...input,
+        hooks: {
+          stepChecks: [],
+          finalChecks: [() => {
+            throw new Error("do not expose this message");
+          }],
+          cleanup: async (idm) => {
+            await idm.delete("managed/alpha_user/hook-cleanup");
+          },
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(
+      /local final check\(\) 1 passed; AIC final check\(\) 1 threw Error/
+    );
+    expect((failure as Error).message).not.toContain("do not expose this message");
+
+    const cleanup = fake.events.indexOf("hook-delete:hook-cleanup");
+    const fixtureDelete = fake.events.indexOf("managed-delete");
+    expect(cleanup).toBeGreaterThan(fake.events.indexOf("authenticate"));
+    expect(fixtureDelete).toBeGreaterThan(cleanup);
+    await lease.close();
+  });
+
   it("deletes managed fixtures when subject replacement reports create", async () => {
     const fake = new FakeLeaseTenant({ armStatus: 201 });
     const lease = makeLease(fake);
@@ -371,14 +470,30 @@ describe("AicFileLease", () => {
       });
       await lease.open();
       const arms = fake.events.filter((event) => event === "arm").length;
+      const input = request(
+        "managed-collision",
+        "alpha",
+        { managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] } },
+        [MANAGED_FIXTURE]
+      );
       await expect(
-        lease.run(
-          request("managed-collision", "alpha", {
-            managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
-          }, [MANAGED_FIXTURE])
-        )
+        lease.run({
+          ...input,
+          hooks: {
+            stepChecks: [],
+            finalChecks: [],
+            cleanup: async (idm) => {
+              await idm.delete(
+                `managed/alpha_user/${String(MANAGED_FIXTURE.record._id)}`
+              );
+            },
+          },
+        })
       ).rejects.toThrow(/managed fixture collision/);
       expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
+      expect(fake.events).not.toContain(
+        `hook-delete:${String(MANAGED_FIXTURE.record._id)}`
+      );
       const paths = leaseStatePaths(
         "https://tenant.example.com",
         lease.identity,
@@ -451,6 +566,7 @@ function request(
       }),
     ],
     replies: [],
+    hooks: { stepChecks: [], finalChecks: [] },
     ...(managedFixtures === undefined ? {} : { managedFixtures }),
   };
 }
@@ -464,6 +580,7 @@ interface FakeLeaseOptions {
   deleteFailureAt?: number;
   subjectAuthStatus?: number;
   managedCreateStatus?: number;
+  stepChain?: boolean;
 }
 
 class FakeLeaseTenant {
@@ -481,6 +598,7 @@ class FakeLeaseTenant {
   #deleteCount = 0;
   #sessionTree = "";
   #managedRecord: Record<string, unknown> | undefined;
+  #subjectAuthCount = 0;
 
   constructor(options: FakeLeaseOptions = {}) {
     this.#options = options;
@@ -509,10 +627,13 @@ class FakeLeaseTenant {
           return json(200, { cookieName: "testCookie" });
         }
         if (path.startsWith("/openidm/managed/")) {
-          this.events.push("managed-read");
-          return this.#managedRecord === undefined
-            ? json(404, { code: 404 })
-            : json(200, this.#managedRecord);
+          const id = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1));
+          if (this.#managedRecord?._id === id) {
+            this.events.push("managed-read");
+            return json(200, this.#managedRecord);
+          }
+          this.events.push(`hook-read:${id}`);
+          return json(404, { code: 404 });
         }
         if (path.includes("/scripts/") && this.#armCount > 0 && this.#resources.has(path)) {
           this.events.push("confirm-arm");
@@ -555,9 +676,15 @@ class FakeLeaseTenant {
       }
       if (req.method === "DELETE") {
         if (path.startsWith("/openidm/managed/")) {
-          this.events.push("managed-delete");
-          this.#managedRecord = undefined;
-          return json(200, {});
+          const id = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1));
+          if (this.#managedRecord?._id === id) {
+            const deleted = this.#managedRecord;
+            this.events.push("managed-delete");
+            this.#managedRecord = undefined;
+            return json(200, deleted);
+          }
+          this.events.push(`hook-delete:${id}`);
+          return json(404, { code: 404 });
         }
         this.#deleteCount += 1;
         if (this.#deleteCount === this.#options.deleteFailureAt) {
@@ -583,11 +710,24 @@ class FakeLeaseTenant {
         return json(200, { tokenId: `session-${this.events.length}` });
       }
       this.events.push("authenticate");
+      this.#subjectAuthCount += 1;
       const transactionId = headerValues(req.headerLines, TX_HEADER)[0];
       if (transactionId !== undefined) {
         this.subjectTransactionIds.push(transactionId);
       }
       const status = this.#options.subjectAuthStatus ?? 200;
+      if (status === 200 && this.#options.stepChain === true && this.#subjectAuthCount === 1) {
+        return json(200, {
+          authId: "step-auth-id",
+          callbacks: [
+            {
+              type: "NameCallback",
+              output: [],
+              input: [{ name: "IDToken1", value: "" }],
+            },
+          ],
+        });
+      }
       return json(status, status === 200 ? {
         callbacks: [
           {

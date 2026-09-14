@@ -1,9 +1,13 @@
 /**
- * Owns the reusable AM graph behind the harness's framework-free lane port.
- * The Vitest composition root constructs this tenant-aware side of the seam.
+ * Owns the reusable AM graph and tenant-backed check/cleanup replay behind the
+ * harness's framework-free lane port. The Vitest composition root constructs
+ * this tenant-aware side of the seam.
  */
 import { randomUUID } from "node:crypto";
 import type { Case, RecordedEffects } from "../case/types.ts";
+import { judge } from "../case/verdict.ts";
+import type { LeaseLaneHooks } from "../harness/lease.ts";
+import { tenantIdmHandle } from "./idm.ts";
 import { conformChain, type ChainConformanceReport, type LocalChainResult } from "./conform.ts";
 import { emitLeasedJourney, type WrapperJourney } from "./emit-journey.ts";
 import { emitLeasedSessionJourney } from "./emit-session.ts";
@@ -39,6 +43,7 @@ import {
   invokeJourney,
   provisionJourney,
   validateAicRun,
+  type AicPassObserver,
   type AicReply,
   type CreatedResource,
 } from "./run.ts";
@@ -73,6 +78,7 @@ export interface AicFileLeaseOptions {
 
 export interface AicLeaseRunRequest extends LocalChainResult {
   source: string;
+  hooks: LeaseLaneHooks;
 }
 
 export class AicFileLease {
@@ -168,7 +174,8 @@ export class AicFileLease {
             args.cases,
             args.source,
             args.replies,
-            args.managedFixtures ?? []
+            args.managedFixtures ?? [],
+            request.hooks
           ),
       });
       assertConformance(report);
@@ -239,7 +246,8 @@ export class AicFileLease {
     cases: readonly Case[],
     source: string,
     replies: readonly (readonly AicReply[])[],
-    managedFixtures: readonly ManagedFixture[]
+    managedFixtures: readonly ManagedFixture[],
+    hooks: LeaseLaneHooks
   ): Promise<readonly RecordedEffects[]> {
     const session = this.#session as TenantSession;
     // TODO(live): establish whether `aic whoami --token` refreshes a
@@ -261,6 +269,7 @@ export class AicFileLease {
     }
     let effects: readonly RecordedEffects[] | undefined;
     let failure: unknown;
+    let fixturesReady = false;
     try {
       await seedManagedFixtures(
         this.#io,
@@ -268,15 +277,34 @@ export class AicFileLease {
         managedFixtures,
         this.#seededManaged
       );
+      fixturesReady = true;
       let sessionCookie: { name: string; value: string } | undefined;
       const existingSession = cases[0]?.given.existingSession;
       if (existingSession !== undefined) {
         sessionCookie = await this.#mintSession(existingSession);
         clearAicTrace();
       }
-      effects = await this.#armAndDrive(cases, source, replies, sessionCookie);
+      effects = await this.#armAndDrive(
+        cases,
+        source,
+        replies,
+        hooks,
+        sessionCookie
+      );
     } catch (error) {
       failure = error;
+    }
+    if (fixturesReady && hooks.cleanup !== undefined) {
+      try {
+        await hooks.cleanup(tenantIdmHandle(this.#io, session));
+      } catch (error) {
+        const cleanupFailure = laneHookError(
+          cases[cases.length - 1]?.name ?? this.identity.id,
+          "cleanup()",
+          error
+        );
+        failure = combineHookFailure(failure, cleanupFailure);
+      }
     }
     const cleanupErrors = await this.#cleanupManaged();
     for (const fixture of managedFixtures) {
@@ -317,6 +345,7 @@ export class AicFileLease {
     cases: readonly Case[],
     source: string,
     replies: readonly (readonly AicReply[])[],
+    hooks: LeaseLaneHooks,
     sessionCookie?: { name: string; value: string }
   ): Promise<readonly RecordedEffects[]> {
     const session = this.#session as TenantSession;
@@ -374,6 +403,28 @@ export class AicFileLease {
     if (sessionCookie !== undefined) {
       wrapper.invoke.cookies[sessionCookie.name] = sessionCookie.value;
     }
+    const observePass: AicPassObserver = async (index, effects) => {
+      const final = index === cases.length - 1;
+      if (!final && !judge(cases[index] as Case, effects).pass) {
+        return;
+      }
+      const stepCheck = hooks.stepChecks[index];
+      const checks = final
+        ? hooks.finalChecks
+        : stepCheck === undefined
+          ? []
+          : [stepCheck];
+      for (const [checkIndex, check] of checks.entries()) {
+        try {
+          await check(tenantIdmHandle(this.#io, session), effects);
+        } catch (error) {
+          const label = final
+            ? `final check() ${checkIndex + 1}`
+            : `step ${index + 1} check()`;
+          throw laneHookError(cases[index]?.name ?? this.identity.id, label, error);
+        }
+      }
+    };
     return driveJourney(
       this.#io,
       session,
@@ -385,7 +436,8 @@ export class AicFileLease {
         leaseDigest: this.identity.structuralDigest,
         invocationNonce: nonce,
         subjectDigest,
-      }
+      },
+      observePass
     );
   }
 
@@ -476,6 +528,11 @@ export class AicFileLease {
       request.replies,
       request.managedFixtures
     );
+    if (request.hooks.stepChecks.length !== request.replies.length) {
+      throw new AicLaneError(
+        `AIC file lease received ${request.hooks.stepChecks.length} step hook slots for ${request.replies.length} steps`
+      );
+    }
     if (request.source !== this.#options.source) {
       throw new AicLaneError("AIC file lease source differs from the suite source used at open");
     }
@@ -590,6 +647,37 @@ export class AicFileLease {
     }
     return this.#paths.journalPath;
   }
+}
+
+class AicLaneHookError extends AicLaneError {}
+
+function laneHookError(name: string, hook: string, error: unknown): AicLaneHookError {
+  return new AicLaneHookError(
+    `local and AIC lanes disagreed for ${JSON.stringify(name)}: local ${hook} passed; AIC ${hook} threw ${safeErrorKind(error)}`
+  );
+}
+
+function combineHookFailure(
+  failure: unknown,
+  cleanupFailure: AicLaneHookError
+): unknown {
+  if (failure === undefined) {
+    return cleanupFailure;
+  }
+  const message =
+    failure instanceof AicLaneHookError
+      ? `${failure.message}; ${cleanupFailure.message}`
+      : "AIC run and suite cleanup both failed";
+  return new AggregateError([failure, cleanupFailure], message);
+}
+
+function safeErrorKind(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "a non-Error value";
+  }
+  return /^(?:Error|[A-Za-z][A-Za-z0-9]*Error)$/.test(error.name)
+    ? error.name
+    : "an Error";
 }
 
 function staticResources(wrapper: WrapperJourney): CreatedResource[] {

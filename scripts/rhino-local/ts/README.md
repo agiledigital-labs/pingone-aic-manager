@@ -100,10 +100,18 @@ disagreements, and observation gaps. A file may have only one AIC-enabled
 files.
 
 Unsupported input fails by default. `unsupported: "skip"` is the explicit
-opt-out for a suite that must retain skip behaviour. `check()` and `cleanup()`
-still run against the local store only: no tenant-backed `IdmHandle` exists,
-so an AIC-enabled report records an `openidm` observation gap instead of
-claiming those hooks ran remotely.
+opt-out for a suite that must retain skip behaviour. Step and final `check()`
+hooks replay against a tenant-backed `IdmHandle` at their matching response
+boundaries. Suite `cleanup()` runs afterwards in a `finally`, before fixture
+deletion, even if a check throws. The remote handle returns full materialized
+tenant records rather than projecting them to the local mock's shape, so assert
+the fields a check needs instead of whole-record equality. An AIC-only throw is
+reported as a lane disagreement naming the remote hook.
+
+Object-form queries reject values that cannot be represented faithfully as the
+measured CREST `eq` filter (quotes, nulls, arrays/objects, control characters,
+and non-finite numbers) before making a request. Unknown fields are not
+preflighted because AIC reports them as a successful zero-row query.
 
 Every AM write is followed by a confirming read. A process lock excludes the
 same lease on one host, and an identifier-only journal makes stale owned
@@ -115,13 +123,14 @@ secrets in them.
 
 For capacity planning only, the design estimate uses `O` distinct subject
 outcomes after adding `true` and `false`, and `R = 2O + 3` graph resources. For
-`N` one-pass cases without managed fixtures or sessions, the estimated call
-count is `2 + 4R + 3N`: two CLI session calls, three calls per resource at
+`N` one-pass cases without managed fixtures or sessions, the base call count is
+`2 + 4R + 3N`: two CLI session calls, three calls per resource at
 open, one delete per resource at close, and three calls per case. At the
 smallest `R = 9`, that is an estimated `38 + 3N`, or 68 calls for ten cases.
-Each additional outcome adds an estimated eight file-lifetime calls. These are
-design estimates, not tenant measurements; step chains, managed fixtures,
-session minting, and credential refresh add calls.
+Each `IdmHandle` read, encodable query, or delete in checks/cleanup adds one REST
+call. Each additional outcome adds an estimated eight file-lifetime calls.
+Step chains, managed fixtures, session minting, and credential refresh add
+calls too.
 
 `runAicChain()` remains the one-shot compatibility facade for external callers.
 It provisions and deletes a throwaway graph per call. `useLease()` uses the

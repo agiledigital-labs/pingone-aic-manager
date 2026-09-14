@@ -13,7 +13,7 @@ const suite = defineSuite({
   outcomes: ["done"],
   inputs: z.object({ note: z.string() }),
   cleanup: async (idm) => {
-    await idm.read("managed/alpha_user/local-only-cleanup");
+    await idm.delete("managed/alpha_user/remote-cleanup");
   },
 });
 
@@ -47,17 +47,58 @@ describe("useLease AIC adapter", () => {
     expect(run.conformance?.passes).toHaveLength(1);
     expect(run.kase.given.realm).toBe("bravo");
     expect(run.conformance?.passes[0]?.aic.verdict?.pass).toBe(true);
-    expect(run.conformance?.observationGaps).toContainEqual(
-      expect.objectContaining({
-        channel: "openidm",
-        path: "checks/cleanup",
-        local: "local IdmHandle only",
-        aic: "not replayed",
-      })
+    expect(run.conformance?.observationGaps).not.toContainEqual(
+      expect.objectContaining({ path: "checks/cleanup" })
+    );
+    expect(fake.requests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "GET",
+          url: "https://tenant.invalid/openidm/managed/alpha_user/local-only-check",
+        }),
+        expect.objectContaining({
+          method: "DELETE",
+          url: "https://tenant.invalid/openidm/managed/alpha_user/remote-cleanup",
+        }),
+      ])
     );
     expect(fake.events).toEqual(
       expect.arrayContaining(["static-create", "arm", "authenticate"])
     );
+  });
+
+  it("reports an AIC-only check throw as a lane disagreement and still cleans up", async () => {
+    const before = fake.requests.length;
+    await expect(
+      lease
+        .run({ note: "not-secret" })
+        .check(async (idm) => {
+          const record = await idm.read("managed/alpha_user/materialized-shape");
+          if (
+            record !== null &&
+            Object.prototype.hasOwnProperty.call(record, "tenantOnly")
+          ) {
+            throw new Error("tenant shape differs");
+          }
+        })
+        .expect({ outcome: "done" })
+    ).rejects.toThrow(
+      /local and AIC lanes disagreed.*local final check\(\) 1 passed; AIC final check\(\) 1 threw Error/
+    );
+
+    const requests = fake.requests.slice(before);
+    const check = requests.findIndex(
+      (request) =>
+        request.method === "GET" &&
+        new URL(request.url).pathname.endsWith("/materialized-shape")
+    );
+    const cleanup = requests.findIndex(
+      (request) =>
+        request.method === "DELETE" &&
+        new URL(request.url).pathname.endsWith("/remote-cleanup")
+    );
+    expect(check).toBeGreaterThanOrEqual(0);
+    expect(cleanup).toBeGreaterThan(check);
   });
 
 });
@@ -79,6 +120,7 @@ describe("useLease without AIC opt-in", () => {
 
 class AdapterAicIo {
   readonly events: string[] = [];
+  readonly requests: HttpRequest[] = [];
   calls = 0;
   readonly #resources = new Map<string, Record<string, unknown>>();
   #nonce = "";
@@ -108,14 +150,31 @@ class AdapterAicIo {
 
   #http(request: HttpRequest): Promise<HttpResponse> {
     this.calls += 1;
+    this.requests.push(request);
     const url = new URL(request.url);
     const path = url.pathname;
     if (request.method === "GET") {
+      if (path.endsWith("/openidm/managed/alpha_user/materialized-shape")) {
+        return Promise.resolve(
+          json(200, {
+            _id: "materialized-shape",
+            _rev: "1",
+            tenantOnly: null,
+            roles: [],
+          })
+        );
+      }
       return Promise.resolve(
         this.#resources.has(path)
           ? json(200, this.#resources.get(path))
           : json(404, { code: 404 })
       );
+    }
+    if (
+      request.method === "DELETE" &&
+      path.startsWith("/openidm/managed/")
+    ) {
+      return Promise.resolve(json(404, { code: 404 }));
     }
     if (request.method === "PUT") {
       const body = JSON.parse(String(request.body)) as Record<string, unknown>;

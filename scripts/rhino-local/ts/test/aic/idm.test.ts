@@ -79,11 +79,14 @@ describe("tenantIdmHandle", () => {
     expect(fake.calls.map((call) => call.method)).toEqual(["DELETE", "DELETE"]);
   });
 
-  it("rejects an empty delete response instead of assuming 204", async () => {
-    const fake = new FakeIdmIo([{ status: 204, headers: [], body: "" }]);
+  it.each([
+    ["HTTP 204", { status: 204, headers: [], body: "" }],
+    ["an empty HTTP 200 object", json(200, {})],
+  ])("rejects %s instead of assuming status alone proves deletion", async (_label, response) => {
+    const fake = new FakeIdmIo([response]);
     await expect(
       tenantIdmHandle(fake.io, SESSION).delete("managed/alpha_user/alice")
-    ).rejects.toThrow(/HTTP 204, expected 200 or 404/);
+    ).rejects.toThrow(/expected 200 or 404|no deleted record/);
   });
 });
 

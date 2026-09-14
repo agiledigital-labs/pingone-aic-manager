@@ -619,10 +619,26 @@ on different hosts remains unsupported.
 
 Unsupported input fails by default. `unsupported: "skip"` is required to keep
 skip semantics. `RunResult.conformance` records every AIC pass, disagreement,
-and observation gap. In particular, `check()` and `cleanup()` execute against
-the local `IdmHandle` only. The report explicitly marks the `openidm` channel
-for those hooks as unobserved remotely; it does not drop, fake, or claim to
-replay them.
+and observation gap. Step `check()` hooks run after the matching AIC response
+and before the next authenticate POST; final checks run after the final
+response. Suite `cleanup()` then runs in a `finally` before managed fixtures are
+deleted, including when an AIC check throws. The local lane uses the same
+checks → cleanup → residue ordering.
+
+The tenant-backed `IdmHandle` is intentionally faithful rather than projected.
+`read()` and `query()` return the whole materialized tenant records, including
+server fields and schema defaults such as `null` and `[]`. A check shared by
+both lanes should therefore assert the fields it needs rather than whole-record
+equality. If a closure passes locally and throws on AIC, the error identifies
+that as a lane disagreement and names the AIC hook that threw.
+
+Object-form `query()` filters are translated to a conjunction of CREST `eq`
+expressions. Values containing a double quote or control character, `null`,
+arrays, objects, non-finite numbers, and unsafe field syntax are rejected
+before I/O rather than sent as a filter that may silently match nothing. The
+handle does not claim to detect unknown fields: AIC answers those with an
+indistinguishable successful zero-row result. `delete()` accepts the measured
+200 response carrying the deleted record and treats 404 as already absent.
 
 `runAicChain()` remains a one-shot compatibility facade that provisions and
 deletes a throwaway graph around one call. The Vitest adapter instead sends
@@ -643,7 +659,10 @@ tree. For `N` one-pass cases without sessions or managed fixtures:
 = 2 + 4R + 3N
 ```
 
-For the smallest outcome graph, `O = 3` and `R = 9`, giving **`38 + 3N`**.
+For the smallest outcome graph, `O = 3` and `R = 9`, giving **`38 + 3N`** before
+user hooks. If those hooks perform `H` `IdmHandle` operations, each encodable
+read, query, or delete is one REST call, so the total is **`38 + 3N + H`**.
+Rejected query filters make no call.
 
 **Measured 2026-09-14** against the sandbox tenant: a three-case file lease
 counted through an instrumented `AicIo` made **47 calls** — exactly `38 + 3×3`
@@ -662,9 +681,11 @@ is the number that matters, against **30** before the lease.
 
 Each additional outcome adds two graph resources and an estimated eight
 file-lifetime calls — that part is still derived, not measured. Step chains add
-one authenticate per pass; managed fixtures, lazy session minting, cookie-name
-discovery and bearer refresh add separate costs, none of which this measurement
-exercised.
+one authenticate per pass; checks and cleanup add their actual `IdmHandle`
+operations. Managed fixtures, lazy session minting, cookie-name discovery and
+bearer refresh add separate costs. The live 47-call measurement exercised none
+of those additions; an offline fake-I/O regression separately pins a two-pass
+chain with one step read, one final read, and one cleanup delete at 45 calls.
 
 ## Unsettled
 

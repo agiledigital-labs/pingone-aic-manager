@@ -1,7 +1,7 @@
 /**
  * Framework-free local lease and the narrow lane port used by AIC. Tenant
- * lifecycle and I/O stay in `aic/file-lease.ts`; this module only hands the
- * already-recorded local run across that boundary.
+ * lifecycle and I/O stay in `aic/file-lease.ts`; this module hands the
+ * recorded local run and its bound check/cleanup hooks across that boundary.
  */
 import type { z } from "zod";
 import type { ChainConformanceReport } from "../aic/conform.ts";
@@ -92,9 +92,25 @@ export interface LeaseLane {
 export interface LeaseLaneRunRequest {
   result: RunResult;
   source: string;
+  hooks: LeaseLaneHooks;
 }
 
-type Check<TInput> = (idm: IdmHandle, ctx: CheckContext<TInput>) => void | Promise<void>;
+export type Check<TInput> = (
+  idm: IdmHandle,
+  ctx: CheckContext<TInput>
+) => void | Promise<void>;
+
+export type LeaseLaneCheck = (
+  idm: IdmHandle,
+  effects: RecordedEffects
+) => void | Promise<void>;
+
+/** Hooks bound to parsed input but replayed with each lane's own effects/IDM. */
+export interface LeaseLaneHooks {
+  stepChecks: readonly (LeaseLaneCheck | undefined)[];
+  finalChecks: readonly LeaseLaneCheck[];
+  cleanup?: (idm: IdmHandle) => void | Promise<void>;
+}
 
 /**
  * One test's run, assembled lazily.
@@ -166,12 +182,7 @@ export class RunBuilder<TInput> {
     return this;
   }
 
-  /**
-   * Assert against the local IDM store and raw response. The AIC lane does not
-   * yet have a tenant-backed `IdmHandle`; opted-in reports record that explicit
-   * observation gap instead of pretending this closure ran remotely. Fail by
-   * throwing — vitest's `expect` remains the assertion surface.
-   */
+  /** Assert against each lane's IDM store and response. Fail by throwing. */
   check(fn: Check<TInput>): this {
     this.#checks.push(fn);
     return this;
@@ -328,18 +339,8 @@ export class Lease<TSchema extends z.ZodType> {
       const conformance = await this.#options.lane.run({
         result,
         source: this.#spec.script,
+        hooks: this.#laneHooks(input, checks, steps),
       });
-      const gap = {
-        channel: "openidm" as const,
-        path: "checks/cleanup",
-        local: "local IdmHandle only",
-        aic: "not replayed",
-        message:
-          "openidm: step/final check() hooks and suite cleanup ran against the local store only; no tenant-backed IdmHandle exists",
-      };
-      conformance.observationGaps.push(gap);
-      const final = conformance.passes[conformance.passes.length - 1];
-      final?.observationGaps.push(gap);
       result.conformance = conformance;
     }
     return result;
@@ -392,6 +393,39 @@ export class Lease<TSchema extends z.ZodType> {
     const submitted = submittedCallbacks(run.effects.callbacks, replies, kase.name);
     results.push({ kase, effects: run.effects, verdict, submitted });
     return carryGiven(given, run.effects, submitted);
+  }
+
+  #laneHooks(
+    input: Record<string, unknown>,
+    checks: readonly Check<unknown>[],
+    steps: readonly StepSpec<unknown>[]
+  ): LeaseLaneHooks {
+    const cleanup = this.#spec.cleanup;
+    return {
+      stepChecks: steps.map((step, index) => {
+        const check = step.check;
+        return check === undefined
+          ? undefined
+          : (idm, effects) =>
+              check(idm, {
+                input,
+                step: index + 1,
+                callbacks: effects.callbacks,
+                effects,
+              });
+      }),
+      finalChecks: checks.map(
+        (check) => (idm, effects) => check(idm, { input, effects })
+      ),
+      ...(cleanup === undefined
+        ? {}
+        : {
+            cleanup: (idm: IdmHandle) =>
+              cleanup(idm, {
+                input: input as z.output<TSchema>,
+              }),
+          }),
+    };
   }
 }
 
