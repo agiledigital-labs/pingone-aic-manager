@@ -6,23 +6,38 @@ import { randomUUID } from "node:crypto";
 import type { Case, RecordedEffects } from "../case/types.ts";
 import { conformChain, type ChainConformanceReport, type LocalChainResult } from "./conform.ts";
 import { emitLeasedJourney, type WrapperJourney } from "./emit-journey.ts";
+import { emitLeasedSessionJourney } from "./emit-session.ts";
 import { instrumentSubject } from "./emit-subject.ts";
 import { createLeaseIdentity, type LeaseIdentity } from "./lease-identity.ts";
 import {
   acquireLeaseLock,
+  addJournalFixture,
+  addJournalResources,
   leaseStatePaths,
   newLeaseJournal,
   readLeaseJournal,
   removeLeaseJournal,
+  removeJournalFixture,
   writeLeaseJournal,
   type LeaseLock,
   type LeaseStatePaths,
 } from "./lease-lock.ts";
-import { managedSeedMatches } from "./managed.ts";
+import {
+  acquireManagedFixtureLock,
+  deleteManagedFixture,
+  fixtureIdentity,
+  managedResource,
+  managedSeedMatches,
+  seedManagedFixtures,
+  type ManagedFixture,
+  type SeededManagedFixture,
+} from "./managed.ts";
 import { confirmResourceSnapshot } from "./resource-snapshot.ts";
 import {
   deleteCreatedResources,
   driveJourney,
+  fetchCookieName,
+  invokeJourney,
   provisionJourney,
   type AicReply,
   type CreatedResource,
@@ -37,7 +52,7 @@ import {
   type AicIo,
   type TenantSession,
 } from "./tenant.ts";
-import { beginTrace } from "./trace.ts";
+import { beginSingleTrace, beginTrace, clearAicTrace } from "./trace.ts";
 import { aicUnsupportedReason } from "./unsupported.ts";
 import { repoRoot } from "../paths.ts";
 
@@ -74,6 +89,12 @@ export class AicFileLease {
   #queue: Promise<void> = Promise.resolve();
   #lock: LeaseLock | undefined;
   #paths: LeaseStatePaths | undefined;
+  #connectedAt = 0;
+  #sessionWrapper: WrapperJourney | undefined;
+  #sessionCreated: CreatedResource[] = [];
+  #cookieName: string | undefined;
+  #seededManaged: SeededManagedFixture[] = [];
+  #releaseManagedLock: (() => Promise<void>) | undefined;
 
   constructor(options: AicFileLeaseOptions) {
     this.#options = options;
@@ -109,6 +130,7 @@ export class AicFileLease {
         ...(this.#options.tenant === undefined ? {} : { tenant: this.#options.tenant }),
         project: this.#project,
       });
+      this.#connectedAt = Date.now();
       this.#paths = leaseStatePaths(
         this.#session.baseUrl,
         this.#identity,
@@ -144,7 +166,13 @@ export class AicFileLease {
       this.#validate(request);
       const report = await conformChain({
         ...request,
-        aic: (args) => this.#runEffects(args.cases, args.source, args.replies),
+        aic: (args) =>
+          this.#runEffects(
+            args.cases,
+            args.source,
+            args.replies,
+            args.managedFixtures ?? []
+          ),
       });
       assertConformance(report);
       return report;
@@ -159,6 +187,10 @@ export class AicFileLease {
 
   async endTest(): Promise<void> {
     await this.#queue;
+    const errors = await this.#cleanupManaged();
+    if (errors.length > 0) {
+      throw new AicLaneError(`AIC managed fixture cleanup failed: ${errors.join("; ")}`);
+    }
   }
 
   async close(): Promise<void> {
@@ -166,21 +198,39 @@ export class AicFileLease {
       return;
     }
     await this.#queue;
-    let errors: string[] = [];
+    const errors: string[] = [];
     try {
       const session = this.#session;
-      errors =
-        session === undefined
-          ? []
-          : await deleteCreatedResources(this.#io, session, this.#realm, this.#created);
+      errors.push(...(await this.#cleanupManaged()));
+      if (session !== undefined) {
+        errors.push(
+          ...(await deleteCreatedResources(
+            this.#io,
+            session,
+            this.#realm,
+            this.#sessionCreated
+          ))
+        );
+        errors.push(
+          ...(await deleteCreatedResources(
+            this.#io,
+            session,
+            this.#realm,
+            this.#created
+          ))
+        );
+      }
       if (errors.length === 0) {
         this.#created = [];
+        this.#sessionCreated = [];
         if (this.#paths !== undefined) {
           await removeLeaseJournal(this.#paths.journalPath);
         }
       }
     } finally {
       this.#state = "closed";
+      await this.#releaseManagedLock?.();
+      this.#releaseManagedLock = undefined;
       await this.#lock?.release();
     }
     if (errors.length > 0) {
@@ -191,7 +241,74 @@ export class AicFileLease {
   async #runEffects(
     cases: readonly Case[],
     source: string,
-    replies: readonly (readonly AicReply[])[]
+    replies: readonly (readonly AicReply[])[],
+    managedFixtures: readonly ManagedFixture[]
+  ): Promise<readonly RecordedEffects[]> {
+    const session = this.#session as TenantSession;
+    // TODO(live): establish whether `aic whoami --token` refreshes a long-lived
+    // file reliably. Until then, refuse to use a bearer at the documented
+    // refresh threshold instead of guessing that it remains usable.
+    if (Date.now() - this.#connectedAt >= 838_000) {
+      throw new AicLaneError(
+        "AIC file lease bearer reached its refresh threshold; long-file refresh is not live-verified"
+      );
+    }
+    if (managedFixtures.length > 0) {
+      this.#releaseManagedLock = await acquireManagedFixtureLock(
+        session,
+        cases[cases.length - 1]?.name ?? this.identity.id
+      );
+      const identities = managedFixtures.map((fixture) => fixtureIdentity(fixture));
+      for (const [index, identity] of identities.entries()) {
+        const fixture = managedFixtures[index] as ManagedFixture;
+        await addJournalFixture(this.#journalPath(), {
+          type: fixture.type,
+          id: identity.id,
+        });
+      }
+    }
+    let effects: readonly RecordedEffects[] | undefined;
+    let failure: unknown;
+    try {
+      await seedManagedFixtures(
+        this.#io,
+        session,
+        managedFixtures,
+        this.#seededManaged
+      );
+      let sessionCookie: { name: string; value: string } | undefined;
+      const existingSession = cases[0]?.given.existingSession;
+      if (existingSession !== undefined) {
+        sessionCookie = await this.#mintSession(existingSession);
+        clearAicTrace();
+      }
+      effects = await this.#armAndDrive(cases, source, replies, sessionCookie);
+    } catch (error) {
+      failure = error;
+    }
+    const cleanupErrors = await this.#cleanupManaged();
+    if (failure !== undefined) {
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          [failure, ...cleanupErrors.map((message) => new AicLaneError(message))],
+          "AIC run and managed fixture cleanup both failed"
+        );
+      }
+      throw failure;
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AicLaneError(
+        `AIC managed fixture cleanup failed: ${cleanupErrors.join("; ")}`
+      );
+    }
+    return effects as readonly RecordedEffects[];
+  }
+
+  async #armAndDrive(
+    cases: readonly Case[],
+    source: string,
+    replies: readonly (readonly AicReply[])[],
+    sessionCookie?: { name: string; value: string }
   ): Promise<readonly RecordedEffects[]> {
     const session = this.#session as TenantSession;
     const wrapper = this.#wrapper as WrapperJourney;
@@ -245,6 +362,9 @@ export class AicFileLease {
       parameters: copyArrayMap(first.given.requestParameters),
       cookies: { ...(first.given.requestCookies ?? {}) },
     };
+    if (sessionCookie !== undefined) {
+      wrapper.invoke.cookies[sessionCookie.name] = sessionCookie.value;
+    }
     return driveJourney(
       this.#io,
       session,
@@ -260,6 +380,87 @@ export class AicFileLease {
     );
   }
 
+  async #mintSession(
+    existingSession: Record<string, string>
+  ): Promise<{ name: string; value: string }> {
+    const session = this.#session as TenantSession;
+    const emitted = emitLeasedSessionJourney(existingSession, {
+      identity: this.identity,
+      realm: this.#realm,
+    });
+    if (this.#sessionWrapper === undefined) {
+      await addJournalResources(this.#journalPath(), staticResources(emitted));
+      await provisionJourney(this.#io, session, emitted, this.#sessionCreated);
+      this.#sessionWrapper = emitted;
+    } else {
+      // TODO(live): prove an updated reusable minter script is what the next
+      // invocation executes. The confirming GET catches storage drift but not
+      // an unmeasured compiled-script cache.
+      const script = emitted.scripts[0] as WrapperJourney["scripts"][number];
+      const body = scriptBody(script, this.identity.marker);
+      const path = `${realmJsonPath(this.#realm)}/scripts/${script.id}`;
+      const update = await amRequest(this.#io, session, {
+        method: "PUT",
+        path,
+        headers: amConfigHeaders(),
+        body: JSON.stringify(body),
+      });
+      if (update.status !== 200) {
+        throw new AicLaneError(
+          `session-minter update returned HTTP ${update.status}, expected 200`
+        );
+      }
+      const confirmation = await amRequest(this.#io, session, {
+        method: "GET",
+        path,
+        headers: amConfigHeaders(),
+      });
+      if (confirmation.status !== 200) {
+        throw new AicLaneError(
+          `session-minter confirming read returned HTTP ${confirmation.status}, expected 200`
+        );
+      }
+      confirmResourceSnapshot("script", body, confirmation.body);
+      this.#sessionWrapper.scripts[0] = script;
+    }
+    const response = await invokeJourney(
+      this.#io,
+      session,
+      this.#sessionWrapper,
+      beginSingleTrace(session.tenantName)
+    );
+    const tokenId = (response.body as { tokenId?: unknown }).tokenId;
+    if (typeof tokenId !== "string" || tokenId.length === 0) {
+      throw new AicLaneError("session-minter returned no tokenId");
+    }
+    this.#cookieName ??= await fetchCookieName(this.#io, session);
+    return { name: this.#cookieName, value: tokenId };
+  }
+
+  async #cleanupManaged(): Promise<string[]> {
+    const errors: string[] = [];
+    for (const fixture of this.#seededManaged.slice().reverse()) {
+      try {
+        await deleteManagedFixture(this.#io, this.#session as TenantSession, fixture);
+        await removeJournalFixture(this.#journalPath(), fixture);
+        this.#seededManaged = this.#seededManaged.filter(
+          (item) => item.type !== fixture.type || item.id !== fixture.id
+        );
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (this.#releaseManagedLock !== undefined && this.#seededManaged.length === 0) {
+      try {
+        await this.#releaseManagedLock();
+        this.#releaseManagedLock = undefined;
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    return errors;
+  }
+
   #validate(request: AicLeaseRunRequest): void {
     if (request.cases.length === 0) {
       throw new AicLaneError("AIC file lease needs at least one case");
@@ -271,12 +472,6 @@ export class AicFileLease {
       throw new AicLaneError(
         `AIC file lease: ${request.cases.length} passes need ${request.cases.length - 1} reply sets, got ${request.replies.length}`
       );
-    }
-    if ((request.managedFixtures?.length ?? 0) > 0) {
-      throw new AicLaneError("managed fixtures are not available on this file-lease slice");
-    }
-    if (request.cases.some((kase) => kase.given.existingSession !== undefined)) {
-      throw new AicLaneError("existingSession is not available on this file-lease slice");
     }
     const harnessOwnsManaged =
       request.managedFixtures !== undefined &&
@@ -355,9 +550,20 @@ export class AicFileLease {
         `could not probe older AIC lease journal resource ${resourceLabel(resource)} (HTTP ${response.status})`
       );
     }
-    if (journal.managedFixtures.length > 0) {
-      residue.push(
-        ...journal.managedFixtures.map((fixture) => `${fixture.type}/${fixture.id}`)
+    for (const fixture of journal.managedFixtures) {
+      const response = await amRequest(this.#io, this.#session as TenantSession, {
+        method: "GET",
+        path: managedResource(fixture.type, fixture.id),
+      });
+      if (response.status === 404) {
+        continue;
+      }
+      if (response.status >= 200 && response.status < 300) {
+        residue.push(`${fixture.type}/${fixture.id}`);
+        continue;
+      }
+      throw new AicLaneError(
+        `could not probe older managed fixture ${fixture.type}/${fixture.id} (HTTP ${response.status})`
       );
     }
     if (residue.length > 0) {
@@ -366,6 +572,13 @@ export class AicFileLease {
       );
     }
     await removeLeaseJournal(paths.journalPath);
+  }
+
+  #journalPath(): string {
+    if (this.#paths === undefined) {
+      throw new AicLaneError("AIC file lease journal path is unavailable");
+    }
+    return this.#paths.journalPath;
   }
 }
 
@@ -392,6 +605,22 @@ function resourceLabel(resource: CreatedResource): string {
   return resource.kind === "tree"
     ? `tree ${resource.name}`
     : `${resource.kind} ${resource.id}`;
+}
+
+function scriptBody(
+  script: WrapperJourney["scripts"][number],
+  description: string
+): Record<string, unknown> {
+  return {
+    _id: script.id,
+    name: script.name,
+    description,
+    script: Buffer.from(script.source, "utf8").toString("base64"),
+    default: false,
+    language: "JAVASCRIPT",
+    context: "AUTHENTICATION_TREE_DECISION_NODE",
+    evaluatorVersion: "2.0",
+  };
 }
 
 function assertConformance(report: ChainConformanceReport): void {

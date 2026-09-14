@@ -13,10 +13,21 @@ import {
 } from "../../src/aic/lease-lock.ts";
 import type { HttpRequest, HttpResponse } from "../../src/aic/http.ts";
 import type { AicIo } from "../../src/aic/tenant.ts";
+import { headerValues } from "../../src/aic/http.ts";
+import { TX_HEADER } from "../../src/aic/txid.ts";
+import type { ManagedFixture } from "../../src/aic/managed.ts";
+import type { Given } from "../../src/case/types.ts";
 import { makeEffects } from "../case/helpers.ts";
 import { caseWith } from "./helpers.ts";
 
 const SOURCE = 'action.goTo("done");\n';
+const MANAGED_FIXTURE: ManagedFixture = {
+  type: "managed/alpha_user",
+  record: {
+    _id: "00000000-0000-4000-8000-000000000099",
+    userName: "leased-user",
+  },
+};
 
 describe("AicFileLease", () => {
   it("provisions once, arms and invokes twice, then tears down once", async () => {
@@ -159,6 +170,111 @@ describe("AicFileLease", () => {
       await rm(stateDir, { recursive: true, force: true });
     }
   });
+
+  it("brackets a managed run with create/read/delete and clears its journal entry", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "rhino-local-managed-lease-"));
+    try {
+      const fake = new FakeLeaseTenant();
+      const lease = new AicFileLease({
+        id: "managed-lease",
+        suiteName: "managed lease",
+        source: SOURCE,
+        outcomes: ["done"],
+        project: "/tmp/rhino-local-aic-test",
+        stateDir,
+        io: fake.io,
+      });
+      await lease.open();
+      await lease.run(
+        request("managed", "alpha", {
+          managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
+        }, [MANAGED_FIXTURE])
+      );
+      const create = fake.events.indexOf("managed-create");
+      const read = fake.events.indexOf("managed-read");
+      const authenticate = fake.events.indexOf("authenticate");
+      const remove = fake.events.indexOf("managed-delete");
+      expect(create).toBeGreaterThanOrEqual(0);
+      expect(read).toBeGreaterThan(create);
+      expect(authenticate).toBeGreaterThan(read);
+      expect(remove).toBeGreaterThan(authenticate);
+      const paths = leaseStatePaths(
+        "https://tenant.example.com",
+        lease.identity,
+        stateDir
+      );
+      expect((await readLeaseJournal(paths.journalPath))?.managedFixtures).toEqual([]);
+      await lease.close();
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("deletes managed fixtures when subject authentication fails", async () => {
+    const fake = new FakeLeaseTenant({ subjectAuthStatus: 401 });
+    const lease = makeLease(fake);
+    await lease.open();
+    await expect(
+      lease.run(
+        request("managed-failure", "alpha", {
+          managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
+        }, [MANAGED_FIXTURE])
+      )
+    ).rejects.toThrow(/authenticate HTTP 401/);
+    expect(fake.events).toContain("managed-delete");
+    await lease.close();
+  });
+
+  it("deletes managed fixtures when subject replacement reports create", async () => {
+    const fake = new FakeLeaseTenant({ armStatus: 201 });
+    const lease = makeLease(fake);
+    await lease.open();
+    await expect(
+      lease.run(
+        request("managed-update-failure", "alpha", {
+          managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
+        }, [MANAGED_FIXTURE])
+      )
+    ).rejects.toThrow(/expected 200/);
+    expect(fake.events).toContain("managed-delete");
+    await lease.close();
+  });
+
+  it("fails closed on a managed create collision before subject mutation", async () => {
+    const fake = new FakeLeaseTenant({ managedCreateStatus: 412 });
+    const lease = makeLease(fake);
+    await lease.open();
+    const arms = fake.events.filter((event) => event === "arm").length;
+    await expect(
+      lease.run(
+        request("managed-collision", "alpha", {
+          managed: { [MANAGED_FIXTURE.type]: [MANAGED_FIXTURE.record] },
+        }, [MANAGED_FIXTURE])
+      )
+    ).rejects.toThrow(/managed fixture collision/);
+    expect(fake.events.filter((event) => event === "arm")).toHaveLength(arms);
+    await lease.close();
+  });
+
+  it("reuses one lazy session minter and one cookie-name lookup", async () => {
+    const fake = new FakeLeaseTenant();
+    const lease = makeLease(fake);
+    await lease.open();
+    await lease.run(request("session-a", "alpha", { existingSession: { tier: "a" } }));
+    await lease.run(request("session-b", "alpha", { existingSession: { tier: "b" } }));
+    const minterPuts = fake.putsFor(`/scripts/${lease.identity.ids.sessionScript}`);
+    expect(minterPuts).toHaveLength(2);
+    const minterSources = minterPuts.map((call) => {
+      const body = JSON.parse(String(call.body)) as { script: string };
+      return Buffer.from(body.script, "base64").toString("utf8");
+    });
+    expect(minterSources[0]).toContain('"tier", "a"');
+    expect(minterSources[1]).toContain('"tier", "b"');
+    expect(fake.calls.filter((call) => call.url.includes("/serverinfo/"))).toHaveLength(1);
+    expect(fake.subjectTransactionIds).toHaveLength(2);
+    expect(fake.subjectTransactionIds.every((id) => /-01$/.test(id))).toBe(true);
+    await lease.close();
+  });
 });
 
 function makeLease(fake: FakeLeaseTenant): AicFileLease {
@@ -172,12 +288,17 @@ function makeLease(fake: FakeLeaseTenant): AicFileLease {
   });
 }
 
-function request(name: string, realm = "alpha") {
+function request(
+  name: string,
+  realm = "alpha",
+  given: Given = {},
+  managedFixtures?: readonly ManagedFixture[]
+) {
   const kase = caseWith({
     name,
     script: SOURCE,
     outcomes: ["done"],
-    given: { realm },
+    given: { ...given, realm },
     expect: { outcome: "done" },
   });
   return {
@@ -195,6 +316,7 @@ function request(name: string, realm = "alpha") {
       }),
     ],
     replies: [],
+    ...(managedFixtures === undefined ? {} : { managedFixtures }),
   };
 }
 
@@ -205,12 +327,15 @@ interface FakeLeaseOptions {
   wrongLeaseDigest?: boolean;
   corruptCreateConfirmation?: number;
   deleteFailureAt?: number;
+  subjectAuthStatus?: number;
+  managedCreateStatus?: number;
 }
 
 class FakeLeaseTenant {
   readonly calls: HttpRequest[] = [];
   readonly events: string[] = [];
   aicCalls = 0;
+  readonly subjectTransactionIds: string[] = [];
   readonly #resources = new Map<string, Record<string, unknown>>();
   readonly #options: FakeLeaseOptions;
   #staticCreates = 0;
@@ -219,6 +344,8 @@ class FakeLeaseTenant {
   #subjectDigest = "";
   #leaseDigest = "";
   #deleteCount = 0;
+  #sessionTree = "";
+  #managedRecord: Record<string, unknown> | undefined;
 
   constructor(options: FakeLeaseOptions = {}) {
     this.#options = options;
@@ -241,7 +368,17 @@ class FakeLeaseTenant {
     http: async (req) => {
       this.calls.push(req);
       const path = new URL(req.url).pathname;
+      const url = new URL(req.url);
       if (req.method === "GET") {
+        if (path.includes("/serverinfo/")) {
+          return json(200, { cookieName: "testCookie" });
+        }
+        if (path.startsWith("/openidm/managed/")) {
+          this.events.push("managed-read");
+          return this.#managedRecord === undefined
+            ? json(404, { code: 404 })
+            : json(200, this.#managedRecord);
+        }
         if (path.includes("/scripts/") && this.#armCount > 0 && this.#resources.has(path)) {
           this.events.push("confirm-arm");
         }
@@ -270,6 +407,9 @@ class FakeLeaseTenant {
               this.#leaseDigest = digest;
             }
           }
+          if (path.includes("/trees/") && Object.keys(body.nodes as object).length === 1) {
+            this.#sessionTree = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1));
+          }
         }
         const read = readBack(path, body);
         if (this.#options.corruptCreateConfirmation === this.#staticCreates) {
@@ -279,6 +419,11 @@ class FakeLeaseTenant {
         return json(exists ? (this.#options.armStatus ?? 200) : 201, {});
       }
       if (req.method === "DELETE") {
+        if (path.startsWith("/openidm/managed/")) {
+          this.events.push("managed-delete");
+          this.#managedRecord = undefined;
+          return json(200, {});
+        }
         this.#deleteCount += 1;
         if (this.#deleteCount === this.#options.deleteFailureAt) {
           return json(500, { code: 500 });
@@ -286,8 +431,29 @@ class FakeLeaseTenant {
         this.#resources.delete(path);
         return json(200, {});
       }
+      if (
+        req.method === "POST" &&
+        path.startsWith("/openidm/managed/") &&
+        url.searchParams.get("_action") === "create"
+      ) {
+        this.events.push("managed-create");
+        const status = this.#options.managedCreateStatus ?? 201;
+        if (status === 201) {
+          this.#managedRecord = JSON.parse(String(req.body)) as Record<string, unknown>;
+        }
+        return json(status, this.#managedRecord ?? { code: status });
+      }
+      if (url.searchParams.get("authIndexValue") === this.#sessionTree) {
+        this.events.push("session-authenticate");
+        return json(200, { tokenId: `session-${this.events.length}` });
+      }
       this.events.push("authenticate");
-      return json(200, {
+      const transactionId = headerValues(req.headerLines, TX_HEADER)[0];
+      if (transactionId !== undefined) {
+        this.subjectTransactionIds.push(transactionId);
+      }
+      const status = this.#options.subjectAuthStatus ?? 200;
+      return json(status, status === 200 ? {
         callbacks: [
           {
             type: "HiddenValueCallback",
@@ -308,7 +474,7 @@ class FakeLeaseTenant {
             ],
           },
         ],
-      });
+      } : { code: status });
     },
   };
 

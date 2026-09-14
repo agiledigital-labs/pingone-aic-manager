@@ -45,6 +45,7 @@ export type {
   LeaseResourceIds,
 } from "./lease-identity.ts";
 export { emitResultScript } from "./emit-result.ts";
+export { emitLeasedSessionJourney } from "./emit-session.ts";
 export { instrumentSubject } from "./emit-subject.ts";
 export type { InstrumentedSubject } from "./emit-subject.ts";
 export type { ManagedFixture } from "./managed.ts";
@@ -53,6 +54,7 @@ export type { AicFileLeaseOptions, AicLeaseRunRequest } from "./file-lease.ts";
 export {
   acquireLeaseLock,
   addJournalFixture,
+  addJournalResources,
   leaseStatePaths,
   newLeaseJournal,
   readLeaseJournal,

@@ -5,6 +5,7 @@ import {
 } from "../case/session.ts";
 import { RESOURCE_PREFIX, SUCCESS_NODE_ID } from "./constants.ts";
 import type { NodeResource, ScriptResource, WrapperJourney } from "./emit-journey.ts";
+import type { LeaseIdentity } from "./lease-identity.ts";
 import { jsStringLiteral } from "./js.ts";
 
 /**
@@ -104,4 +105,46 @@ export function emitSessionJourney(
     subjectOutcomes: ["true"],
     invoke: { headers: {}, parameters: {}, cookies: {} },
   };
+}
+
+/** Deterministic session-minter resources owned by a file lease. */
+export function emitLeasedSessionJourney(
+  session: Record<string, string>,
+  options: { identity: LeaseIdentity; realm: string }
+): WrapperJourney {
+  const emitted = emitSessionJourney(session, {
+    runId: options.identity.idHash,
+    realm: options.realm,
+  });
+  const script = emitted.scripts[0] as ScriptResource;
+  const node = emitted.nodes[0] as NodeResource;
+  script.id = options.identity.ids.sessionScript;
+  script.name = `${options.identity.ids.sessionTree}-mint`;
+  script.source = `// ${options.identity.marker}\n${script.source}`;
+  node.id = options.identity.ids.sessionNode;
+  node.scriptId = script.id;
+  emitted.treeName = options.identity.ids.sessionTree;
+  emitted.treeBody = {
+    ...emitted.treeBody,
+    entryNodeId: node.id,
+    description: options.identity.marker,
+    nodes: {
+      [node.id]: {
+        connections: node.connections,
+        displayName: node.displayName,
+        nodeType: "ScriptedDecisionNode",
+        x: node.x,
+        y: node.y,
+      },
+    },
+  };
+  emitted.nodeBodies = {
+    [node.id]: {
+      inputs: ["*"],
+      outputs: ["*"],
+      outcomes: node.outcomes,
+      script: script.id,
+    },
+  };
+  return emitted;
 }

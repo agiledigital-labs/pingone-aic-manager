@@ -182,7 +182,7 @@ async function checkSeededManaged(
   }
 }
 
-function fixtureIdentity(fixture: ManagedFixture): {
+export function fixtureIdentity(fixture: ManagedFixture): {
   collection: string;
   id: string;
   resource: string;
@@ -208,7 +208,7 @@ function fixtureIdentity(fixture: ManagedFixture): {
   return { collection, id, resource: `${collection}/${encodeURIComponent(id)}` };
 }
 
-function managedResource(type: string, id: string): string {
+export function managedResource(type: string, id: string): string {
   const match = /^managed\/([^/]+)$/.exec(type);
   if (match === null || match[1] === undefined) {
     throw new AicLaneError(`managed fixture type ${JSON.stringify(type)} must be managed/<type>`);
