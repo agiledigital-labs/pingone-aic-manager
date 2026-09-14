@@ -652,8 +652,12 @@ export class AicFileLease {
 class AicLaneHookError extends AicLaneError {}
 
 function laneHookError(name: string, hook: string, error: unknown): AicLaneHookError {
+  // The kind goes in the message and the original goes on `cause`: the message
+  // must not carry arbitrary assertion text, but a remote check reporting only
+  // "threw Error" tells you nothing about what it actually found.
   return new AicLaneHookError(
-    `local and AIC lanes disagreed for ${JSON.stringify(name)}: local ${hook} passed; AIC ${hook} threw ${safeErrorKind(error)}`
+    `local and AIC lanes disagreed for ${JSON.stringify(name)}: local ${hook} passed; AIC ${hook} threw ${safeErrorKind(error)}`,
+    { cause: error }
   );
 }
 
