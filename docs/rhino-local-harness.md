@@ -526,13 +526,18 @@ Two consequences elsewhere:
   outcome, and the only way to say that before was to name one the script never
   produces.
 
-**Still local-only:** intermediate passes are not observed on the tenant. The
-subject could emit its state dump alongside its own callbacks on every suspend,
-which would make them observable — but that extra `HiddenValueCallback` would
-be visible to a script calling `callbacks.getHiddenValueCallbacks()`, which is
-a divergence between the lanes in the one binding a step chain exists to
-exercise. The honest alternative is what is there: intermediate state channels
-are reported as unobserved on AIC.
+`conformChain()` takes the cases, local effects, and submitted replies already
+recorded by `Lease.execute()`; `chainFromRunResult()` is the bridge. The AIC
+lane therefore cannot re-run the local chain or recompute its carry. Every pass
+is judged by the shared `judge()`, while only the final pass is lane-diffed.
+
+Intermediate passes are not observed on the tenant. The subject could emit its
+state dump alongside its own callbacks on every suspend, which would make them
+observable — but that extra `HiddenValueCallback` would be visible to a script
+calling `callbacks.getHiddenValueCallbacks()`, which is a divergence between
+the lanes in the one binding a step chain exists to exercise. Each intermediate
+pass is consequently marked `aicObserved: false` and reports an
+`ObservationGap`; the final pass is marked observed and is fully diffed.
 
 ## Unsettled
 

@@ -35,7 +35,11 @@ export interface RunResult {
   kase: Case;
   effects: RecordedEffects;
   verdict: Verdict;
-  /** One entry per suspended pass, in order. Empty for a single-pass run. */
+  /**
+   * One entry per suspended pass, in order. Empty for a single-pass run.
+   * `aic/chainFromRunResult` consumes these recorded cases and submissions;
+   * the AIC lane must not reconstruct them from the final case.
+   */
   steps: StepResult[];
 }
 

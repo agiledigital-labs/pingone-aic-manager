@@ -1,10 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { decideFromState, writeState } from "../../cases/index.ts";
-import { conform } from "../../src/aic/conform.ts";
+import {
+  chainFromRunResult,
+  conform,
+  conformChain,
+} from "../../src/aic/conform.ts";
 import { diffRecordedEffects } from "../../src/aic/diff.ts";
 import { assembleEffects } from "../../src/aic/record.ts";
+import { runAicChain, type AicReply } from "../../src/aic/run.ts";
 import { judge } from "../../src/case/verdict.ts";
+import type { RunResult } from "../../src/harness/lease.ts";
 import { caseWith } from "./helpers.ts";
+import {
+  callbackResponse,
+  finalResponse,
+  mockChain,
+} from "./mock-chain.ts";
 import { makeEffects, bucket } from "../case/helpers.ts";
 
 describe("diffRecordedEffects", () => {
@@ -364,5 +375,192 @@ describe("conform", () => {
     expect(report.local.skipped).toMatch(/bindings lane/);
     expect(report.aic.skipped).toMatch(/no AIC runner/);
     expect(report.disagreements).toEqual([]);
+  });
+});
+
+describe("conformChain", () => {
+  it("reports every pass and marks intermediate AIC observations as gaps", async () => {
+    const cases = [
+      caseWith({
+        name: "three-pass [step 1]",
+        expect: { outcome: null, callbacks: [{ type: "NameCallback" }] },
+      }),
+      caseWith({
+        name: "three-pass [step 2]",
+        expect: { outcome: null, callbacks: [{ type: "ChoiceCallback" }] },
+      }),
+      caseWith({ name: "three-pass", expect: { outcome: "done" } }),
+    ];
+    const localEffects = [
+      makeEffects({ outcome: null, callbacks: [{ type: "NameCallback" }] }),
+      makeEffects({ outcome: null, callbacks: [{ type: "ChoiceCallback" }] }),
+      makeEffects({ outcome: "done" }),
+    ];
+    const replies: AicReply[][] = [
+      [{ type: "NameCallback", value: "alice" }],
+      [{ type: "ChoiceCallback", value: 0 }],
+    ];
+    const fake = mockChain({
+      responses: [
+        callbackResponse("NameCallback", "jwt-1"),
+        callbackResponse("ChoiceCallback", "jwt-2"),
+        finalResponse("done"),
+      ],
+    });
+    const report = await conformChain({
+      cases,
+      localEffects,
+      replies,
+      source: 'action.goTo("done");',
+      aic: ({ cases: chainCases, source, replies: chainReplies }) =>
+        runAicChain(chainCases, source, {
+          io: fake.io,
+          runId: "conform1",
+          project: "/tmp/rhino-local-aic-test",
+          replies: chainReplies,
+        }),
+    });
+
+    expect(report.passes).toHaveLength(3);
+    expect(report.passes.map((pass) => pass.aicObserved)).toEqual([
+      false,
+      false,
+      true,
+    ]);
+    expect(
+      report.passes.slice(0, 2).map((pass) => pass.observationGaps)
+    ).toEqual([
+      [expect.objectContaining({ path: "pass", aic: "unobserved" })],
+      [expect.objectContaining({ path: "pass", aic: "unobserved" })],
+    ]);
+    expect(report.passes[2]?.disagreements).toEqual([]);
+    expect(report.passes.every((pass) => pass.local.verdict?.pass === true)).toBe(
+      true
+    );
+    expect(report.passes.every((pass) => pass.aic.verdict?.pass === true)).toBe(
+      true
+    );
+  });
+
+  it("refuses a reply arity mismatch before invoking the AIC lane", async () => {
+    let invoked = false;
+    await expect(
+      conformChain({
+        cases: [caseWith({ name: "ask" }), caseWith({ name: "finish" })],
+        localEffects: [makeEffects(), makeEffects()],
+        replies: [],
+        source: 'action.goTo("true");',
+        aic: async () => {
+          invoked = true;
+          return [];
+        },
+      })
+    ).rejects.toThrow(/2 passes need 1 reply sets, got 0/);
+    expect(invoked).toBe(false);
+  });
+
+  it("skips the whole chain when any pass is unsupported", async () => {
+    let invoked = false;
+    const report = await conformChain({
+      cases: [
+        caseWith({ name: "portable" }),
+        caseWith({
+          name: "tenant-dependent",
+          given: { managed: { alpha_user: [{ userName: "alice" }] } },
+        }),
+      ],
+      localEffects: [makeEffects(), makeEffects()],
+      replies: [[]],
+      source: 'action.goTo("true");',
+      aic: async () => {
+        invoked = true;
+        return [];
+      },
+    });
+
+    expect(invoked).toBe(false);
+    expect(report.passes.map((pass) => pass.aic.skipped)).toEqual([
+      expect.stringMatching(/whole chain.*given\.managed/),
+      expect.stringMatching(/whole chain.*given\.managed/),
+    ]);
+    expect(report.passes.every((pass) => pass.aic.effects === undefined)).toBe(
+      true
+    );
+  });
+
+  it("anti-silencing: surfaces a final-effects disagreement", async () => {
+    const ask = caseWith({
+      name: "final disagreement [step 1]",
+      expect: { outcome: null, callbacks: [{ type: "NameCallback" }] },
+    });
+    const finish = caseWith({
+      name: "final disagreement",
+      expect: { outcome: "done" },
+    });
+    const asking = makeEffects({
+      outcome: null,
+      callbacks: [{ type: "NameCallback" }],
+    });
+    const fake = mockChain({
+      responses: [
+        callbackResponse("NameCallback", "jwt-1"),
+        finalResponse("denied"),
+      ],
+    });
+    const report = await conformChain({
+      cases: [ask, finish],
+      localEffects: [asking, makeEffects({ outcome: "done" })],
+      replies: [[{ type: "NameCallback", value: "alice" }]],
+      source: 'action.goTo("done");',
+      aic: ({ cases, source, replies }) =>
+        runAicChain(cases, source, {
+          io: fake.io,
+          runId: "conform2",
+          project: "/tmp/rhino-local-aic-test",
+          replies,
+        }),
+    });
+
+    expect(report.passes[1]?.aic.verdict).toMatchObject({ pass: false });
+    expect(report.passes[1]?.disagreements).toContainEqual(
+      expect.objectContaining({
+        channel: "outcome",
+        local: '"done"',
+        aic: '"denied"',
+      })
+    );
+    expect(report.disagreements).toEqual(report.passes[1]?.disagreements);
+  });
+
+  it("bridges a RunResult without submitting unanswered callbacks", () => {
+    const stepCase = caseWith({
+      name: "bridge [step 1]",
+      expect: { outcome: null },
+    });
+    const finalCase = caseWith({ name: "bridge" });
+    const stepEffects = makeEffects({ outcome: null });
+    const finalEffects = makeEffects();
+    const result: RunResult = {
+      kase: finalCase,
+      effects: finalEffects,
+      verdict: judge(finalCase, finalEffects),
+      steps: [
+        {
+          kase: stepCase,
+          effects: stepEffects,
+          verdict: judge(stepCase, stepEffects),
+          submitted: [
+            { type: "NameCallback", value: "alice", prompt: "Name" },
+            { type: "HiddenValueCallback", id: "unanswered" },
+          ],
+        },
+      ],
+    };
+
+    expect(chainFromRunResult(result)).toEqual({
+      cases: [stepCase, finalCase],
+      localEffects: [stepEffects, finalEffects],
+      replies: [[{ type: "NameCallback", value: "alice" }]],
+    });
   });
 });
