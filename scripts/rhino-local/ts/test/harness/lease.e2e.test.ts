@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { defineSuite, managed, useLease } from "../../src/harness/index.ts";
+import {
+  aicWhenEnabled,
+  defineSuite,
+  managed,
+  useLease,
+} from "../../src/harness/index.ts";
 
 const USER_IDS = {
   alice: "00000000-0000-4000-8000-000000000011",
@@ -37,10 +42,19 @@ const suite = defineSuite({
   },
   beforeRun: ({ input, request, fixtures }) => {
     request.state.shared.correlationId = `c-${input.userId}`;
+    // Two tenant rules the local mock store does not enforce, both measured
+    // 2026-09-14 (docs/api/10-managed-objects.md): every property must be
+    // DECLARED on the managed schema, so the locale rides in one of the
+    // tenant's generic string slots rather than an invented
+    // `preferredLocale`; and `mail`, `givenName` and `sn` are required by
+    // policy on alpha_user.
     return fixtures.create("managed/alpha_user", {
       _id: input.userId,
       userName: input.userId,
-      preferredLocale: input.locale,
+      mail: `${input.userId}@example.com`,
+      givenName: "Fixture",
+      sn: input.userId,
+      frUnindexedString1: input.locale,
     });
   },
   cleanup: (_idm, { input }) => {
@@ -50,7 +64,10 @@ const suite = defineSuite({
 });
 
 describe("resolve-identity", () => {
-  const lease = useLease(suite, { timeoutMs: 10_000 });
+  const lease = useLease(suite, {
+    timeoutMs: 10_000,
+    ...aicWhenEnabled("resolve-identity"),
+  });
 
   it("matches the seeded candidate", async () => {
     const run = await lease

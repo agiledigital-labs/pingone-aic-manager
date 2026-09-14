@@ -952,10 +952,26 @@ there is no null literal; ask for absence with `!(field pr)`. A malformed
 filter is 400 `A value could not be parsed as a valid query filter`, as is the
 word form `not (…)` (see the 2026-07-03 notes above).
 
-**`mail` is required by policy on `alpha_user`.** The same create body was
-refused `403 {"code":403,"message":"Policy validation failed"}` without it and
-accepted 201 with it, nothing else changed. The message names no field, so a
-fixture missing a policy-required property fails opaquely.
+**`mail`, `givenName` and `sn` are required by policy on `alpha_user`.** A
+create missing any of them is refused `403 Policy validation failed` — and the
+body names every offender, in `detail.failedPolicyRequirements`:
+
+```json
+{"code":403,"reason":"Forbidden","message":"Policy validation failed",
+ "detail":{"result":false,"failedPolicyRequirements":[
+   {"policyRequirements":[{"policyRequirement":"REQUIRED"}],"property":"givenName"},
+   {"policyRequirements":[{"policyRequirement":"REQUIRED"}],"property":"sn"}]}}
+```
+
+Read `detail`, not `message`. The top-level message is the same opaque string
+whatever failed, which is what makes this look unattributable when a client
+logs only `code` and `message`.
+
+**An undeclared property is a different refusal.** A create carrying a
+property the managed schema does not declare is `400 Bad Request`,
+`Request content includes undeclared attributes: ["preferredLocale"]` — so the
+name is in `message` here, not in `detail`. A local mock that stores whatever
+it is handed will accept such a record happily.
 
 ### Querying a child of an object-valued property (verified 2026-09-07)
 

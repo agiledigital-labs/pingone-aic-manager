@@ -46,6 +46,29 @@ it. Jars land in gitignored `.rhino-local/`. The Node client spawns
 `run-runner.sh`; that script compiles the Java sources inside the image when
 they are stale.
 
+### Running the AIC lane
+
+`npm test` runs the **local lane only**. Opt the tenant lane in per
+invocation:
+
+```bash
+RHINO_LOCAL_AIC=1 npm --prefix scripts/rhino-local/ts test
+```
+
+It is off by default because the tenant lane needs an unlocked agent
+(`aic login`) and network, and CI has neither — a checkout without them must
+still be able to run the whole suite. Suites opt in by spreading
+`aicWhenEnabled("<unique-id>")` into their `useLease` options; the id seeds
+the deterministic resource ids, so it must be unique per file.
+
+**A suite that passes locally can still fail on the tenant, and that is the
+point.** Cutting the two existing e2e suites over found four rules the local
+mock store does not enforce, every one of which had been invisible: an
+`alpha_user` `_id` must be a UUID, `mail`/`givenName`/`sn` are required by
+policy, and an undeclared property is refused outright. A script or fixture
+written against the mock alone will assert happily against records the tenant
+would never have stored.
+
 ## Local Context configuration
 
 The probe (`scripts/rhino-local/Probe.java`) reproduces AM 8.1.1's
