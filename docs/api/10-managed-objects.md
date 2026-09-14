@@ -70,6 +70,27 @@ single-node test reproduces. Prefer create-based acquisition over PUT-upsert,
 but do not treat any managed-object create as a hard mutex in a replicated
 deployment without further validation.
 
+### Record fields and ids are object-type-specific
+
+The maintainer measured two fixture-relevant differences on the sandbox on
+2026-09-14:
+
+- `managed/alpha_user.password` is write-only. A create containing `password`
+  returned 201 and produced a readable record, but the subsequent GET omitted
+  `password`; teardown then deleted the record. A control retaining mixed-case
+  `mail` without `password` round-tripped exactly. No other field has been
+  established as write-only by this measurement.
+- A caller-chosen `managed/alpha_user._id` is the `fr-idm-uuid` RDN and must be
+  a 36-character UUID. The readable id `rl-probe-user-01` was rejected with 400
+  `Invalid Attribute Syntax`, while `managed/alpha_role` accepted the readable
+  id `rl-fix-role-01`. Do not generalize the user constraint to every managed
+  object type.
+
+Consequently, confirming a user create with GET can prove that the record and
+its readable fields landed, but cannot prove the submitted password value.
+Client-set user ids should be generated as UUIDs; readable labels belong in a
+field such as `userName`, not `_id`.
+
 ### `managed/alpha_lock` advisory-lock type (sandbox, 2026-06-10)
 
 A minimal custom type `alpha_lock` was added to the sandbox `managed` schema for

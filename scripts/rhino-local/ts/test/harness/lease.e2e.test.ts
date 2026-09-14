@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineSuite, managed, useLease } from "../../src/harness/index.ts";
 
+const USER_IDS = {
+  alice: "00000000-0000-4000-8000-000000000011",
+  bob: "00000000-0000-4000-8000-000000000012",
+  carol: "00000000-0000-4000-8000-000000000013",
+  dave: "00000000-0000-4000-8000-000000000014",
+} as const;
+
 const SCRIPT = [
   'var user = openidm.read("managed/alpha_user/" + nodeState.get("userId"));',
   'if (user === null) { action.goTo("notFound"); } else {',
@@ -41,11 +48,11 @@ describe("resolve-identity", () => {
 
   it("matches the seeded candidate", async () => {
     const run = await lease
-      .run({ userId: "alice" })
+      .run({ userId: USER_IDS.alice })
       .expect({
         outcome: "matched",
-        sharedState: { added: { matchedId: "alice" } },
-        logs: [{ level: "info", message: "matched alice" }],
+        sharedState: { added: { matchedId: USER_IDS.alice } },
+        logs: [{ level: "info", message: `matched ${USER_IDS.alice}` }],
         allowUndeclared: { openidmReads: true },
       });
     expect(run.verdict.summary, run.verdict.summary).toBe("");
@@ -53,13 +60,13 @@ describe("resolve-identity", () => {
 
   it("applies declared defaults and the always channels", async () => {
     const run = await lease
-      .run({ userId: "bob" })
+      .run({ userId: USER_IDS.bob })
       .check((_idm, { input }) => {
-        expect(input).toEqual({ userId: "bob", locale: "en-AU" });
+        expect(input).toEqual({ userId: USER_IDS.bob, locale: "en-AU" });
       })
       .expect({
         outcome: "matched",
-        sharedState: { added: { matchedId: "bob" } },
+        sharedState: { added: { matchedId: USER_IDS.bob } },
         allowUndeclared: { openidmReads: true, logs: true },
       });
 
@@ -68,24 +75,28 @@ describe("resolve-identity", () => {
     expect(run.kase.given.sharedState).toMatchObject({
       realmName: "alpha",
       "esv.idr.match.threshold": "0.80",
-      correlationId: "c-bob",
-      userId: "bob",
+      correlationId: `c-${USER_IDS.bob}`,
+      userId: USER_IDS.bob,
       locale: "en-AU",
     });
   });
 
   it("sees the suite fixture and its own, and not another test's", async () => {
     const run = await lease
-      .run({ userId: "carol" })
+      .run({ userId: USER_IDS.carol })
       .check(async (idm) => {
         expect(await idm.read("managed/alpha_role/idr-reviewer")).not.toBeNull();
-        expect(await idm.read("managed/alpha_user/carol")).not.toBeNull();
+        expect(
+          await idm.read(`managed/alpha_user/${USER_IDS.carol}`)
+        ).not.toBeNull();
         // alice belonged to the first test; afterEach dropped her.
-        expect(await idm.read("managed/alpha_user/alice")).toBeNull();
+        expect(
+          await idm.read(`managed/alpha_user/${USER_IDS.alice}`)
+        ).toBeNull();
       })
       .expect({
         outcome: "matched",
-        sharedState: { added: { matchedId: "carol" } },
+        sharedState: { added: { matchedId: USER_IDS.carol } },
         allowUndeclared: { openidmReads: true, logs: true },
       });
     expect(run.verdict.summary, run.verdict.summary).toBe("");
@@ -100,10 +111,10 @@ describe("resolve-identity", () => {
 
   it("reports an undeclared outcome as a configuration fault", async () => {
     const run = await lease
-      .run({ userId: "dave" })
+      .run({ userId: USER_IDS.dave })
       .expect({
         outcome: "matched",
-        sharedState: { added: { matchedId: "dave" } },
+        sharedState: { added: { matchedId: USER_IDS.dave } },
         allowUndeclared: { openidmReads: true, logs: true },
       });
     expect(run.kase.outcomes).toEqual(["matched", "notFound"]);

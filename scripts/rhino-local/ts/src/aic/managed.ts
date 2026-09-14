@@ -22,6 +22,18 @@ interface LockOwner {
   label: string;
 }
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Fields the maintainer measured as accepted on create but omitted by GET.
+ * Additions need their own live evidence; skipping every absent field would
+ * let a silently dropped readable value pass the seed check.
+ */
+const READBACK_EXEMPT_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  "managed/alpha_user": ["password"],
+};
+
 /** Whether the first pass's managed seed came exactly from this fixture ledger. */
 export function managedSeedMatches(
   managed: Given["managed"],
@@ -155,10 +167,14 @@ async function checkSeededManaged(
     );
   }
   for (const [key, expected] of Object.entries(fixture.record)) {
+    const present = Object.prototype.hasOwnProperty.call(response.body, key);
     if (
-      !Object.prototype.hasOwnProperty.call(response.body, key) ||
-      !deepEqual(response.body[key], expected)
+      !present &&
+      READBACK_EXEMPT_FIELDS[fixture.type]?.includes(key) === true
     ) {
+      continue;
+    }
+    if (!present || !deepEqual(response.body[key], expected)) {
       throw new AicLaneError(
         `managed fixture ${resource} did not contain the declared field ${JSON.stringify(key)} after create`
       );
@@ -181,6 +197,11 @@ function fixtureIdentity(fixture: ManagedFixture): {
   if (typeof id !== "string" || id.length === 0) {
     throw new AicLaneError(
       `managed fixture ${fixture.type} needs a non-empty string _id`
+    );
+  }
+  if (fixture.type === "managed/alpha_user" && !UUID_PATTERN.test(id)) {
+    throw new AicLaneError(
+      `managed/alpha_user fixture _id ${JSON.stringify(id)} must be a 36-character UUID because user _id is the fr-idm-uuid RDN; managed/alpha_role accepts readable ids instead`
     );
   }
   const collection = `/openidm/managed/${encodeURIComponent(match[1])}`;
