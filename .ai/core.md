@@ -108,9 +108,19 @@ deliberately does **not** do — `docs/api/03-esvs.md` has example values that
 rewriting would destroy.
 
 CI also runs **Gitleaks** over the history for the orthogonal class: PEM/JWK
-material, API secrets, provider tokens. Baseline verified clean over 396
-commits on 2026-08-26; the 36 findings a working-tree scan reports are all in
-`target/` and the gitignored `workspace/`, none in tracked files.
+material, API secrets, provider tokens. Baseline verified clean over 600
+commits on 2026-09-15 (gitleaks 8.30.1, the version CI pins); the findings a
+working-tree scan reports are all in `target/` and the gitignored `workspace/`,
+none in tracked files.
+
+`.gitleaks.toml` extends the stock ruleset — it never replaces it — and holds
+one allowlist: an AM script id is a UUID, and `accessTokenModificationScript` /
+`accessTokenMayActScript` contain "Token", which `generic-api-key` reads as a
+token assignment. **Allowlist by shape, never by fingerprint.** A fingerprint
+pins a commit hash, and this history was rewritten on 2026-09-15, so every
+fingerprint taken before that names a commit which no longer exists. Any new
+entry needs the same discriminating control the first one has: a value of the
+wrong shape in the same key must still fire.
 
 Enable the hook once per clone: `git config core.hooksPath .githooks`. CI runs
 the same check over the whole tree, so `--no-verify` only moves the failure to
