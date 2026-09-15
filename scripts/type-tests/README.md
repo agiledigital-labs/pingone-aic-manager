@@ -30,7 +30,10 @@ One directory per script family, holding four files:
   include set the matching Rust `leaf_tsconfig` emits; the Rust test
   `type_test_leaf_manifests_are_subsets_of_the_real_leaf_configs` fails if a
   manifest names a declaration the real leaf does not, so a leaf here can be
-  smaller than a shipped one but never a fiction.
+  smaller than a shipped one but never a fiction. That test also requires
+  every directory under `leaves/` to appear in its list: this runner
+  discovers directories itself, so a leaf nobody registers would compile
+  here and skip the subset assertion.
 - any `*.d.ts` in the leaf directory — copied in and left in place for both
   runs. These are a test AUGMENTATION and sit OUTSIDE the subset assertion,
   which only sees the `types` manifest: a leaf is a template subset **plus**
@@ -51,6 +54,24 @@ nothing to the conditional types under test and would make the gate depend on
 three pinned third-party versions. If a future test needs one, install the
 `@types` packages the shipped `package.json` already names rather than
 weakening the leaf.
+
+## Leaves
+
+Five. The interesting coverage is the conditional types and the
+generation-split globals, not "the file compiled".
+
+| Leaf                    | Workspace | What it pins                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nextgen-decision-node` | am        | slf4j logger arity; managed-record projection (below); `Lookup<T>` via `requestParameters.get`; the next-gen decision-node contract (`action.goTo` chaining, `outcome = "next"`, `nodeState.putShared` chaining, `callbacks.isEmpty`, `existingSession` possibly undefined, `idRepository.getIdentity`); **absence** of the legacy-only globals (`sharedState`, `transientState`, `JavaImporter`), of the legacy `IdRepository.getAttribute` merge, and of classic Debug `logger.message` |
+| `legacy-access-token`   | am        | classic Debug logger arity; the measured access-token-modification surface; next-gen-only methods (`setPermissions`, `getAttributeValues`, `exists`) and the `secrets` binding absent here                                                                                                                                                                                                                                                                                                |
+| `legacy-oidc-claims`    | am        | rhino + the OIDC overlay only (no `common.d.ts`); Debug logger; AMIdentity `HashSet` shape                                                                                                                                                                                                                                                                                                                                                                                                |
+| `idm-endpoint`          | idm       | the IDM copy of the managed-record projection (below)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `idm-managed-hook`      | idm       | hook overlay + slf4j logger arity                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+
+There is no `legacy-decision-node` leaf. `decision-node-legacy.d.ts` stays
+uncompiled by this gate on purpose: anything more than a trivial edit to a
+legacy decision node means upgrading it to next-gen. What still protects the
+next-gen author is the absence rows in `nextgen-decision-node`.
 
 ## Run
 
@@ -111,3 +132,7 @@ interface, and the two `OpenIdm` interfaces differ on purpose.
 generated `types/managed/hooks/*.d.ts` and `types/sync/*.d.ts` overlays, and the
 `../lib/*` path alias that only next-gen leaves get. None of them carry
 conditional types today; add coverage when one does.
+
+The legacy scripted-decision overlay is also uncovered, and that is
+intentional — see Leaves above. Do not add a `legacy-decision-node` leaf to
+close it.
