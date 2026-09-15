@@ -289,7 +289,7 @@ does not rebuild it: run `cargo build` before measuring any behaviour through
 `aic`, or you measure the previous build. `.ai/local.md` records the local
 detail and the wrong measurement this caused.
 
-**The gate CI enforces** (`.github/workflows/ci.yml`) — run all four before
+**The gate CI enforces** (`.github/workflows/ci.yml`) — run all five before
 declaring a change green, because the DuckDB log-store lives behind an opt-in
 feature and rots silently otherwise:
 
@@ -300,6 +300,19 @@ cargo test
 cargo clippy --all-targets --features logs-store -- -D warnings
 cargo test --features logs-store
 ```
+
+CI runs six more that these do not cover: the sensitive-metadata scanner
+(`--selftest`, `--tracked`, the pushed range), gitleaks over the history, and
+the two TypeScript gates — `scripts/type-tests/run.sh` and `npm run type-check`
+in `src/scripts/templates/typescript`. No cargo gate compiles a shipped `.d.ts`
+at all, so the Rust tests can be green while the declarations they emit do not
+type-check.
+
+`scripts/release-check.sh` runs **all eleven** and refuses to report ready if
+any fails, so before a release that is the one command to run. It also fails
+when `ci.yml` gains or loses a step it does not account for — the two drifted
+apart before, and a release cut from a stale gate list is discovered by a red
+build after the tag is public.
 
 For TUI work, follow the visual + interaction rules in `docs/DESIGN.md`
 (borderless panels, tally-style tabs, semantic colors). Don't redebate them.
