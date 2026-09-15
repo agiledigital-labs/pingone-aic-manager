@@ -104,3 +104,24 @@ var qexpRow = qexp.result[0];
 if (qexpRow) {
   qexpRow.manager._ref; // expect: TS18047 — expansion is nullable on a row too
 }
+
+// --- decision-node contract (next-gen) -------------------------------------
+// Presence/absence of these names is the generation split. An edit that
+// moves a legacy-only global into the shared or next-gen overlay would tell
+// an editor the binding exists in a context where it is undefined at runtime.
+
+outcome = 42; // expect: TS2322 — pins the type, not just the name
+
+sharedState.put("k", "v"); // expect: TS2304 — legacy-only global, absent next-gen
+transientState.get("k"); // expect: TS2304 — legacy-only global, absent next-gen
+JavaImporter(); // expect: TS2304 — legacy-only, absent next-gen
+
+idRepository.getAttribute("u", "mail"); // expect: TS2339 — legacy IdRepository merge must not be visible
+
+logger.message("plain"); // expect: TS2339 — classic Debug name; next-gen is slf4j info/debug/warn
+
+// existingSession's `| undefined`: the accept file's guard survives losing it,
+// because a definite ExistingSession still type-checks inside `if (existingSession)`.
+/** @type {ExistingSession} */
+var sessionMustExist = existingSession; // expect: TS2322 — may be undefined
+logger.info("{}", sessionMustExist.Principal);

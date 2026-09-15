@@ -147,3 +147,38 @@ var realmParam = requestParameters.get("realm");
 if (realmParam && realmParam.includes("alpha")) {
   logger.info("realm param present");
 }
+
+// --- decision-node contract (next-gen) -------------------------------------
+// The rows above pin logger arity, Lookup<T>, and the managed-record
+// projection. None of them touch a decision-node binding. These do. Each call
+// is correct at runtime on the next-gen engine; a non-chaining edit, a missing
+// global, or a type that dropped `| undefined` breaks one of them.
+
+// Action methods chain: `withStage` returning void compiles the first call and
+// rejects the second, so a one-shot `.goTo(...)` would not catch it.
+action.goTo("next").withStage("s");
+
+// Both engines set the journey outcome by assignment (next-gen also has
+// `action`). `StringLike` is the interesting half; the reject file pins that
+// a number is not.
+outcome = "next";
+
+// putShared returns NodeState, the same chaining hazard as Action.
+nodeState.putShared("k", "v").putTransient("t", 1);
+
+if (callbacks.isEmpty()) {
+  logger.info("no callbacks");
+}
+
+// existingSession is declared `| undefined` because it is absent when there
+// is no session. The guard is the requiredness half; the reject file pins
+// the undefined, because `ExistingSession` is assignable to
+// `ExistingSession | undefined` and this block would survive losing it.
+if (existingSession) {
+  logger.info("principal {}", existingSession.Principal);
+}
+
+// Next-gen IdRepository is getIdentity, not the legacy getAttribute merge.
+// The reject file is the discriminating half of that claim.
+var ident = idRepository.getIdentity("alice");
+logger.info("user {}", ident.getName());
