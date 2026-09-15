@@ -1280,9 +1280,15 @@ mod tests {
     /// A manifest is allowed to be a SUBSET (the leaves skip declarations that
     /// pull in npm type packages, and the generated managed/hook overlays), but
     /// never a superset and never an invention.
+    ///
+    /// The list below is also a closed set: every directory under
+    /// `scripts/type-tests/leaves/` must appear in it. `run.sh` discovers leaf
+    /// directories itself, so a leaf nobody registers here would compile in CI
+    /// and skip this subset assertion entirely.
     #[test]
     fn type_test_leaf_manifests_are_subsets_of_the_real_leaf_configs() {
         use crate::scripts::{am, managed_hooks};
+        use std::collections::BTreeSet;
 
         let idm_endpoint = MANAGED
             .iter()
@@ -1306,6 +1312,29 @@ mod tests {
         ];
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/type-tests/leaves");
+        let registered: BTreeSet<&str> = leaves.iter().map(|(name, _)| *name).collect();
+        let on_disk: BTreeSet<String> = std::fs::read_dir(&root)
+            .unwrap_or_else(|e| panic!("type-test leaves dir: {e}"))
+            .map(|entry| entry.unwrap_or_else(|e| panic!("type-test leaves dir: {e}")))
+            .filter(|entry| {
+                entry
+                    .file_type()
+                    .unwrap_or_else(|e| panic!("type-test leaf entry: {e}"))
+                    .is_dir()
+            })
+            .map(|entry| {
+                entry
+                    .file_name()
+                    .into_string()
+                    .unwrap_or_else(|name| panic!("type-test leaf name is not utf-8: {name:?}"))
+            })
+            .collect();
+        assert_eq!(
+            registered,
+            on_disk.iter().map(String::as_str).collect::<BTreeSet<_>>(),
+            "every directory under scripts/type-tests/leaves/ must appear in this \
+             list; a leaf nobody registers is silently exempt from the subset assertion"
+        );
         for (leaf, tsconfig) in leaves {
             let manifest = std::fs::read_to_string(root.join(leaf).join("types"))
                 .unwrap_or_else(|e| panic!("type-test leaf {leaf}: {e}"));
