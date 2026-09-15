@@ -1474,3 +1474,58 @@ callbacks array back unchanged is not the same as submitting nothing.
 
 Full table and the probe's controls: `docs/api/09-journeys.md` → "What survives
 a callback round trip".
+
+## 2026-09-16 — SAML `importEntity` wants base64URL, and says "invalid" for everything
+
+`POST …/realm-config/saml2/remote/?_action=importEntity` takes
+`{"standardMetadata": "<base64url of the XML>"}`. The **URL-safe alphabet is
+mandatory**: the identical document encoded as standard base64 is rejected with
+`400 Invalid standard metadata value in request` — the same message an **empty
+body** gets, and the same message a raw XML string gets. Padding is the one
+thing that does not matter; base64url with and without `=` both import.
+
+The trap is that the error is indistinguishable across three unrelated causes,
+so the obvious debugging move — "my XML must be malformed" — is wrong and
+expensive. `docs/api/06-saml.md` carries the four-way encoding table; the
+falsifying case is the byte-identical document that 400s in one alphabet and
+200s in the other.
+
+Nothing in frodo-lib or fr-config-manager said which alphabet, and the previous
+version of `06-saml.md` listed the body shape as an open question ("JSON wrapper
+around the XML, or multipart?"). It is a JSON wrapper.
+
+Three smaller contradictions from the same pass:
+
+- **`06-saml.md` said "Always send `Accept-API-Version: protocol=2.1,resource=1.0`".**
+  It is optional on this family — a request with no such header at all returns
+  200. `resource=2.0` returns `404 Resource '' not found`, which reads as a bad
+  path rather than a bad version. Corrected in place.
+- **A CoT `PUT` that returns 500 has still written the document.** Every
+  `500 An error occurred while updating the COT memberships` observed left
+  `trustedProviders` exactly as submitted. Treating a 5xx as "nothing happened"
+  is wrong here, and the resulting state is precisely the two-sided split that
+  file's headline section warns about.
+- **`DELETE` on a SAML entity edits every CoT that listed it.** A throwaway CoT
+  holding one member came back empty immediately after that entity was deleted,
+  with no CoT write of ours in between. Any undo of an entity delete has to
+  restore CoT documents too.
+
+## 2026-09-16 — a SAML signing certificate is not in the SAML entity
+
+`serviceProvider.assertionContent.signingAndEncryption.secretIdAndAlgorithms`
+reads `{}` on every live entity, and the metadata export still carries a
+certificate — which makes it look as though the cert is hidden somewhere unseen.
+It is not hidden: the entity holds at most a **label identifier**
+(`secretIdIdentifier`), and the key lives in AM's secret store under
+`am.applications.federation.entity.providers.saml2.<identifier>.{signing,encryption,mtls}`.
+Unset, AM falls back to
+`am.default.applications.federation.entity.providers.saml2.{sp,idp}.…`.
+
+Measured rather than read: setting `secretIdIdentifier` to a made-up string on a
+throwaway SP made exactly those three labels appear in the realm's
+secret-mapping schema enum (`docs/api/15-secret-mappings.md`), and deleting the
+entity removed them again.
+
+The consequence for tooling is a routing one: **rotating a SAML signing key is
+an ESV secret-mapping operation, not a SAML one.** A "SAML certificate" command
+that only touches `realm-config/saml2` cannot work.
