@@ -1,0 +1,34 @@
+# Gitleaks configuration.
+#
+# CI runs `gitleaks git .` over the whole history for the class
+# `check-sensitive-metadata.sh` deliberately does not cover: PEM/JWK material,
+# API secrets, provider tokens. This file extends the stock ruleset; it never
+# replaces it.
+#
+# Allowlist entries go in by SHAPE, not by fingerprint. A fingerprint pins a
+# commit hash, and this repo's history has been rewritten once already — every
+# fingerprint recorded before that rewrite now names a commit that does not
+# exist. A shape survives the rewrite and covers the next occurrence too.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+AM script ids are UUIDs, and several of the config keys that hold one contain
+the substring "Token" (accessTokenModificationScript, accessTokenMayActScript).
+The stock generic-api-key rule reads that as a token assignment. The value is
+an object id — it names a script, it does not authenticate anything, and it is
+useless without a bearer for the tenant that holds it.
+
+Narrow on purpose: the key must end in "Script" and the value must be a bare
+lowercase UUID. A real secret in one of these fields would not be UUID-shaped,
+and Azure tenant GUIDs — the one UUID in this project that IS sensitive — are
+caught by rule 3 of scripts/check-sensitive-metadata.sh, which gitleaks does
+not duplicate.
+"""
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = [
+  '''(?i)script"?\s*[:=]\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"''',
+]
