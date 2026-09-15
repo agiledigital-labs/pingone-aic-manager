@@ -8,8 +8,21 @@
 # prints the material needed to choose a version and write release notes:
 # the current version, the last tag, and the commit range since it.
 #
-# Gate output (fmt/clippy/test) is captured and only shown on failure, so a
-# passing run stays quiet.
+# THE GATES HERE ARE THE GATES CI RUNS. Not a subset, and not a paraphrase —
+# the same commands, in the same order, with the same flags. A release cut from
+# a tree this script called ready must not then fail CI, because by then the tag
+# is pushed and the artifacts are published.
+#
+# That parity used to be maintained by hand and rotted: for several releases
+# this script ran `cargo clippy`/`cargo test` without `--features logs-store`,
+# so it could report "ready to release" with the DuckDB log store broken, and
+# it ran neither the sensitive-metadata scanner nor gitleaks nor the TypeScript
+# type gates at all. `ci_parity` below now fails when .github/workflows/ci.yml
+# gains or loses a step this script does not account for, so the next divergence
+# is a loud failure here rather than a red build after the release is public.
+#
+# Gate output is captured and only shown on failure, so a passing run stays
+# quiet.
 #
 # Exit codes: 0 ready, 1 not ready (reason printed to stderr).
 
@@ -18,6 +31,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 cd "$ROOT"
+
+CI_YML=".github/workflows/ci.yml"
 
 LOG="$(mktemp -t release-check-XXXXXX.log)"
 trap 'rm -f "$LOG"' EXIT
@@ -29,6 +44,22 @@ fail() {
 
 step() { printf '  %-34s' "$1"; }
 ok() { echo "ok"; }
+
+# Run one gate, quietly. Output accumulates in $LOG across the whole run — the
+# test-suite budget below reads the cargo output back out of it — and only the
+# tail is shown, on failure.
+gate() {
+  local label="$1" remedy="$2"
+  shift 2
+  step "$label"
+  if "$@" >>"$LOG" 2>&1; then
+    ok
+  else
+    echo
+    tail -40 "$LOG" >&2
+    fail "$remedy"
+  fi
+}
 
 echo "checking release preconditions"
 
@@ -63,29 +94,183 @@ step "gh authenticated"
 gh auth status >>"$LOG" 2>&1 || fail "gh not authenticated (see: gh auth login)"
 ok
 
-step "cargo fmt"
-cargo fmt --all --check >>"$LOG" 2>&1 || {
-  echo
-  cat "$LOG" >&2
-  fail "formatting differs (run: cargo fmt --all)"
+# --- CI parity ---------------------------------------------------------------
+#
+# Every `- name:` step in ci.yml must appear in exactly one of these lists.
+# REPRODUCED means this script runs the same command below; SETUP means the step
+# provisions the GitHub runner and has no local equivalent (this machine already
+# has a toolchain). Adding a CI step without deciding which it is fails here.
+
+CI_STEPS_REPRODUCED=(
+  "Scanner selftest"
+  "Scan tracked files"
+  "Scan introduced history"
+  "Gitleaks (credentials)"
+  "Format"
+  "Clippy (default)"
+  "Test (default)"
+  "Clippy (logs-store)"
+  "Test (logs-store)"
+  "Type tests (accept + reject)"
+  "TypeScript project type-check"
+)
+
+CI_STEPS_SETUP=(
+  "Install system dependencies"
+  "Install Rust toolchain"
+  "Cache cargo build"
+  "Install Node"
+  "Install TypeScript"
+)
+
+step "ci.yml parity"
+[ -f "$CI_YML" ] || fail "$CI_YML is missing — this script mirrors it and cannot check itself"
+mapfile -t ci_steps < <(grep -oP '^      - name: \K.*' "$CI_YML")
+[ "${#ci_steps[@]}" -gt 0 ] || fail "found no steps in $CI_YML — the parser needs updating"
+
+known=("${CI_STEPS_REPRODUCED[@]}" "${CI_STEPS_SETUP[@]}")
+in_list() {
+  local needle="$1" item
+  shift
+  for item in "$@"; do [ "$item" = "$needle" ] && return 0; done
+  return 1
 }
+
+for s in "${ci_steps[@]}"; do
+  in_list "$s" "${known[@]}" || fail "$CI_YML has a step this script does not account for:
+  \"$s\"
+  Either run it below and add it to CI_STEPS_REPRODUCED, or add it to
+  CI_STEPS_SETUP if it only provisions the runner."
+done
+for s in "${known[@]}"; do
+  in_list "$s" "${ci_steps[@]}" || fail "this script expects a CI step that no longer exists:
+  \"$s\"
+  It was removed or renamed in $CI_YML; update the lists here to match."
+done
 ok
 
-step "cargo clippy"
-cargo clippy --workspace --all-targets -- -D warnings >>"$LOG" 2>&1 || {
-  echo
-  tail -40 "$LOG" >&2
-  fail "clippy warnings"
-}
-ok
+# --- sensitive metadata ------------------------------------------------------
+#
+# REQUIRE_SENSITIVE_DENYLIST=1 matches CI, and matters more here than anywhere:
+# without it the scanner silently runs its shape rules only, so a run with no
+# denylist in the environment looks exactly like a clean one. .envrc exports
+# SENSITIVE_DENYLIST; direnv, or `source .envrc`, puts it in scope.
+export REQUIRE_SENSITIVE_DENYLIST=1
 
-step "cargo test"
-cargo test --workspace >>"$LOG" 2>&1 || {
-  echo
-  tail -40 "$LOG" >&2
-  fail "tests failing"
-}
-ok
+if [ -z "${SENSITIVE_DENYLIST_CONTENT:-}" ] &&
+  { [ -z "${SENSITIVE_DENYLIST:-}" ] || [ ! -f "${SENSITIVE_DENYLIST}" ]; }; then
+  fail "no sensitive-metadata denylist in the environment.
+  CI requires one and so does a release. Set SENSITIVE_DENYLIST to a file
+  outside the repo (\`source .envrc\`, or let direnv do it)."
+fi
+
+# --selftest first, for the reason ci.yml gives: a scanner whose rules silently
+# stopped matching reports every tree clean forever.
+gate "metadata: scanner selftest" \
+  "the scanner's own rules do not all fire — fix the scanner before trusting a clean scan" \
+  scripts/check-sensitive-metadata.sh --selftest
+
+gate "metadata: tracked files" \
+  "tenant or client metadata in tracked files (see the findings above)" \
+  scripts/check-sensitive-metadata.sh --tracked
+
+# CI scans only the range it received; a release scans the whole history, which
+# is the superset — every blob that a clone of this tag can reach.
+gate "metadata: full history" \
+  "tenant or client metadata reachable in history (see the findings above)" \
+  scripts/check-sensitive-metadata.sh --history
+
+# --- gitleaks ----------------------------------------------------------------
+#
+# The version is read from ci.yml rather than repeated, so the two cannot pin
+# different binaries. Orthogonal to the scanner above: that one knows the shape
+# of tenant and client metadata, this one knows credentials.
+GITLEAKS_VERSION="$(grep -oP '^\s+GITLEAKS_VERSION:\s*\K\S+' "$CI_YML" | head -1)"
+[ -n "$GITLEAKS_VERSION" ] || fail "could not read GITLEAKS_VERSION from $CI_YML"
+
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/pingone-aic-manager"
+GITLEAKS_BIN="$CACHE/gitleaks-$GITLEAKS_VERSION"
+
+if command -v gitleaks >/dev/null 2>&1 &&
+  [ "$(gitleaks version 2>/dev/null)" = "$GITLEAKS_VERSION" ]; then
+  GITLEAKS_BIN="$(command -v gitleaks)"
+elif [ ! -x "$GITLEAKS_BIN" ]; then
+  step "gitleaks: fetch $GITLEAKS_VERSION"
+  mkdir -p "$CACHE"
+  tmp="$(mktemp -d)"
+  if curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+    | tar -xz -C "$tmp" gitleaks >>"$LOG" 2>&1; then
+    mv "$tmp/gitleaks" "$GITLEAKS_BIN"
+    rm -rf "$tmp"
+    ok
+  else
+    rm -rf "$tmp"
+    echo
+    fail "could not fetch gitleaks $GITLEAKS_VERSION.
+  CI runs it, so a release cannot skip it. Install it on PATH at that exact
+  version, or make the download work and re-run."
+  fi
+fi
+
+# --redact so a finding names the rule and file without printing the secret.
+# .gitleaks.toml is picked up from the repo root automatically.
+gate "gitleaks: credentials in history" \
+  "gitleaks found credential material in history (see above).
+  If it is a false positive, allowlist it by SHAPE in .gitleaks.toml — never by
+  fingerprint, which pins a commit hash this repo has rewritten before." \
+  "$GITLEAKS_BIN" git . --redact --no-banner --exit-code 1
+
+# --- cargo -------------------------------------------------------------------
+
+gate "cargo fmt" \
+  "formatting differs (run: cargo fmt --all)" \
+  cargo fmt --all -- --check
+
+gate "cargo clippy" \
+  "clippy warnings" \
+  cargo clippy --all-targets -- -D warnings
+
+gate "cargo test" \
+  "tests failing" \
+  cargo test
+
+# The DuckDB local log-store is behind the opt-in `logs-store` feature. It rots
+# silently without this: nothing in a default build compiles it.
+gate "cargo clippy (logs-store)" \
+  "clippy warnings under --features logs-store" \
+  cargo clippy --all-targets --features logs-store -- -D warnings
+
+gate "cargo test (logs-store)" \
+  "tests failing under --features logs-store" \
+  cargo test --features logs-store
+
+# --- script workspace types --------------------------------------------------
+#
+# The .d.ts files under src/scripts/templates/ carry real logic, and no cargo
+# gate compiles any of it — the Rust tests check the strings that emit those
+# files, never what tsc makes of them.
+
+command -v node >/dev/null 2>&1 || fail "node is not on PATH; CI type-checks the
+  script workspace templates and a release cannot skip it."
+command -v npm >/dev/null 2>&1 || fail "npm is not on PATH; CI type-checks the
+  script workspace templates and a release cannot skip it."
+
+# run.sh prefers a tsc on PATH and falls back to npx. CI installs typescript@5
+# explicitly; here whichever is present is what a local `script watch` would
+# use, so it is the faithful thing to gate on.
+gate "script template type tests" \
+  "the shipped .d.ts declarations do not type-check (accept/reject fixtures)" \
+  scripts/type-tests/run.sh
+
+# `npm run type-check` is the project's own entry point and runs BOTH programs —
+# the endpoint program under the narrow IDM runtime lib, the tests under node.
+gate "typescript project type-check" \
+  "the TypeScript endpoint project does not type-check" \
+  bash -c 'cd src/scripts/templates/typescript &&
+           npm install --no-audit --no-fund &&
+           npm run type-check'
+
+# --- budgets -----------------------------------------------------------------
 
 # Wall-clock budget on the unit suite. The grep guard in src/lib.rs catches
 # cryptographic keygen called DIRECTLY from a test module; it cannot see a test
@@ -125,7 +310,7 @@ ready to release.
   current version   $version
   last tag          $last_tag
   commits since     $count
-  tests passing     $passed (across $tests binaries)
+  tests passing     $passed (across $tests binaries, both feature sets)
 
 commits in $range:
 
