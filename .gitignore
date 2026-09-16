@@ -70,3 +70,6 @@ scripts/rhino-local/ts/node_modules/
 # scripts/rhino-local/fetch-jars.sh. Never commit a jar.
 /.rhino-local/
 /.ai/agent/
+
+# agent offload prompts and logs
+.ai/offload/
