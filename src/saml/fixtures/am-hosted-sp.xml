@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-authored AM-style hosted-SP metadata: the negative control. Nothing here
+  is on the strip list and nothing is signed, so `sanitise` must return these
+  bytes unchanged. Without it a sanitiser that deleted everything would still
+  pass the Entra pair.
+-->
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
+                  entityID="https://sp-a.example.com">
+  <SPSSODescriptor AuthnRequestsSigned="true"
+                   WantAssertionsSigned="true"
+                   protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing">
+      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <ds:KeyName>sp-a-signing</ds:KeyName>
+        <ds:X509Data>
+          <ds:X509Certificate>
+          MIIDETCCAfmgAwIBAgIUNVmz0jNDaDhQjFml3xBss5FRjnkwDQYJKoZIhvcNAQEL
+          BQAwGDEWMBQGA1UEAwwNYW0tc3AtZml4dHVyZTAeFw0yNjA5MTUyMDM5NTFaFw0z
+          NjA5MTIyMDM5NTFaMBgxFjAUBgNVBAMMDWFtLXNwLWZpeHR1cmUwggEiMA0GCSqG
+          SIb3DQEBAQUAA4IBDwAwggEKAoIBAQCjqgbgOz6g9n62enMJ0731uJke/xVUXB3O
+          Ks6y4NMiMcuzzROvr6viSvdcWzORNAyAQy/8cHtcK6EhKYA3XLty2rbz2OpZAB7O
+          QF9AeHr4LsKlICeqWALXnStkEcyHlTfgF3ooa9tRNgiTAt5gQazX1Bs/T6ugzTb+
+          Ql2N89etAhnoCgYzjmKSgAIwOO1OgwWEp8aj1Fh9uU8NYlLTqc8fMUZt8jaEcHHb
+          j4g3tTLG0xNwKehTlVQ9iqXBknm5eFnSyY+QtLDiFnnzCR8MeNF6jixiW1HvnQbY
+          XwHS1ci2xvGAkEPH1uR0dyGqotGY52BuGWAsk/JUl5e7yD63XbIJAgMBAAGjUzBR
+          MB0GA1UdDgQWBBTErm46R36T19DPZDl5IEKcg0WZoDAfBgNVHSMEGDAWgBTErm46
+          R36T19DPZDl5IEKcg0WZoDAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUA
+          A4IBAQBAWGp5pMyAP63rTdXGgFIDO4WnMLXR97zF3DO+Qpl5AWWcav/IN2RTyObL
+          lgeO48uPWJ8NAjKfIEsvBelUORXqzpQDHHd+iAJLH/E01pgkmvmZmED46bIYyHXc
+          3PBILkpEsyzgi+nWlqvCQGF7HcXj5U88oh9QbfO0CZiaWMpAj0KQNRrRKRgA0i5j
+          zmfWRQTI9v/yE0h5FnKJ9YVf7SLE0MIMknpGxUKq/nv5Z4Gr9an745GCYDnlwcLX
+          jIW7U/84ZNNRnxGHIuFKgk4S45QPSXb44rzFR0hxwOmeRs4MISc5UaFhBeT02NlI
+          Xlx7OEUWsIlnI0atkOV5yZR5Vxa0
+          </ds:X509Certificate>
+        </ds:X509Data>
+      </ds:KeyInfo>
+    </KeyDescriptor>
+    <KeyDescriptor use="encryption">
+      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <ds:KeyName>sp-a-encryption</ds:KeyName>
+        <ds:X509Data>
+          <ds:X509Certificate>
+          MIIDGTCCAgGgAwIBAgIUCh5aiOWIK6d/KV4sCmpkYlUU43UwDQYJKoZIhvcNAQEL
+          BQAwHDEaMBgGA1UEAwwRYW0tc3AtZml4dHVyZS1lbmMwHhcNMjYwOTE1MjAzOTUx
+          WhcNMzYwOTEyMjAzOTUxWjAcMRowGAYDVQQDDBFhbS1zcC1maXh0dXJlLWVuYzCC
+          ASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAM9HFK4xh6q+ptNwkFaeHRmO
+          V/vYtlqoV7XoAyzCH7MFTPtUfafgLU01+N/eG3G/YMurmnEX8EWsfrciectGYEGd
+          M/cycJi7OaKXILsaUOVUNxFJmkWe+NFIiyJPFZSczusRPMDoJAsqtp+lePUr/fiv
+          oCAcx7EO0+vlO4svJVMw2jWrg5lUpSv+L1L9WEPhzrElsczlvczYndZnvAILa0Y+
+          VYBfQSep99DNev+ufKxdKy05JuLxAc8GZ11/PiKuq4hPbfdYsFckJLw+lT7imNtR
+          EV3qqtQqSobVQygDMWROBZrg4AZe5r3LIdANGs6pQeQIPqbNaz9x4Gwc9+a+srMC
+          AwEAAaNTMFEwHQYDVR0OBBYEFDNJJZ8ORn2aScFO3i9AhHBOkNHVMB8GA1UdIwQY
+          MBaAFDNJJZ8ORn2aScFO3i9AhHBOkNHVMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZI
+          hvcNAQELBQADggEBACEFxEkNYsFWYpCH0WmllNPhEUAiaFIsBSTj+4kDS3nuIPjz
+          SLmRQGnPC+Oi+RO7pUzZ3gDctw7E0Blq3+qNolZwxWJ2C9py+oLaISp/21ldkALT
+          wQCQqm+Ads5AOAN9zO8KvSd3IRCTYdToiKfWV8qwdjFWYOk5yhpkdyM2ErQF74ST
+          WKxuANhNwkrlEO3mGRv0Y7QsNlozlyvbNAKvyzM2Mll1ej2Wc+PNV+afFuh5HSVW
+          PLaB0qSJqiVD6JWo3LBDPikMlaSp7yFDzQHKxXVunE2YC7PjeQeR/chU/rLcSWwH
+          C0YKIbBdAhSppg+hExHPAMBky2dY72ClbH1XDA4=
+          </ds:X509Certificate>
+        </ds:X509Data>
+      </ds:KeyInfo>
+      <EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc">
+        <KeySize xmlns="http://www.w3.org/2001/04/xmlenc#">128</KeySize>
+      </EncryptionMethod>
+    </KeyDescriptor>
+    <SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+                         Location="https://tenant.example.com/am/SPSloRedirect/metaAlias/alpha/sp-a"
+                         ResponseLocation="https://tenant.example.com/am/SPSloRedirect/metaAlias/alpha/sp-a" />
+    <NameIDFormat>urn:oasis:names:tc:SAML:2.0:nameid-format:persistent</NameIDFormat>
+    <AssertionConsumerService index="0"
+                              isDefault="true"
+                              Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+                              Location="https://tenant.example.com/am/AuthConsumer/metaAlias/alpha/sp-a" />
+  </SPSSODescriptor>
+  <Organization>
+    <OrganizationName xml:lang="en">Example Org</OrganizationName>
+    <OrganizationDisplayName xml:lang="en">Example Org</OrganizationDisplayName>
+    <OrganizationURL xml:lang="en">https://sp-a.example.com</OrganizationURL>
+  </Organization>
+</EntityDescriptor>

@@ -103,6 +103,7 @@ inquire    = "0.7"
 nucleo-matcher = "0.3"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 duckdb = { version = "1.4", features = ["bundled", "json", "chrono"], optional = true }
+quick-xml = "0.41.0"
 
 [features]
 logs-store = ["dep:duckdb"]

@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hand-authored from the SAML 2.0 metadata and WS-Federation schemas to match
+  the SHAPE of an Entra ID `federationmetadata.xml`. No byte of it came from a
+  tenant: the GUID is the all-zeros placeholder and the certificate is a
+  throwaway self-signed key generated for this file.
+
+  Endpoint attributes sit one per line so no line pairs an element name with a
+  host; `scripts/check-sensitive-metadata.sh` reads lines, not elements, and a
+  reflow would hand it a false positive to argue with.
+-->
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
+                  xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
+                  ID="_00000000-0000-0000-0000-000000000000"
+                  entityID="https://sts.windows.net/00000000-0000-0000-0000-000000000000/">
+  <ds:Signature>
+    <ds:SignedInfo>
+      <ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#" />
+      <ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256" />
+      <ds:Reference URI="#_00000000-0000-0000-0000-000000000000">
+        <ds:Transforms>
+          <ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature" />
+          <ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#" />
+        </ds:Transforms>
+        <ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" />
+        <ds:DigestValue>c3R1Yi1kaWdlc3QtdmFsdWUtbm90LWEtcmVhbC1kaWdlc3Q=</ds:DigestValue>
+      </ds:Reference>
+    </ds:SignedInfo>
+    <ds:SignatureValue>c3R1Yi1zaWduYXR1cmUtdmFsdWUtbm90LWEtcmVhbC1zaWduYXR1cmU=</ds:SignatureValue>
+    <ds:KeyInfo>
+      <ds:X509Data>
+        <ds:X509Certificate>MIIDETCCAfmgAwIBAgIUPDwVuO9VFoxgId2MtnXgvpa8SWAwDQYJKoZIhvcNAQELBQAwGDEWMBQGA1UEAwwNZW50cmEtZml4dHVyZTAeFw0yNjA5MTUyMDM5NTFaFw0zNjA5MTIyMDM5NTFaMBgxFjAUBgNVBAMMDWVudHJhLWZpeHR1cmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC3hOm/M9kQm2e1zCsY0onkesCXymXCuDoxsGetnClzv1gAwwn69qHytRm79CfHm4kMO2/dhHrBor6LWmFaTiz59nngJJCxMxDwn1OWVL8yFbIt4+Z0My9ZAryR8vzlAP3spL3DFtrxoZZow+PYARbK4J4TzPfOkz7AsSOnLIWFQe4G2ZqzmzUMtTUju8fcmGqSZ7qQXTvVjhE9X6WrSaicaxtwKCGeWFkMGLtw5T7xvjeWTI+pL0TvZ+G4d0eFT/1L9jCZWHuqlh2eHadD1HkYrfW/i5SVYO/BP0FutQ+Cpj2lUdqscJIzoW9AKIhfpP5EPt6cybGLR+adMolQVxUPAgMBAAGjUzBRMB0GA1UdDgQWBBSuWH1BKW09dPz5hDTixN1VagJH6zAfBgNVHSMEGDAWgBSuWH1BKW09dPz5hDTixN1VagJH6zAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQArHokMKcQwuelOo0Xyc0NwVifj2wmqBYGFhYIl792yUE9QxjRu+bLlwe/2SrfmWQq3z290EKEVYaes2/2u240Mf7MIJNj0KhZJfmWx+diFyeCyXQOv3lsQFzY5PxXGzKIc2RCO2P1muEtmQP3kOyb1bPjnVwRX4repHvp8v+nZv9Oq0TbzMeB9eFR7/JUfdVYtyrBTgYJJmCaiktXm7uUD+pBjAbwB61hAqib9xkqiJqpaS3VxvEUpb4vczw5HxTx5AOxiE2rtk4ht88ARCFliwyhLiYttqMIsHAv3AWmFbg5ql7crDUXDPdDbugdzywIChqQZDwZrSM64Xxr7q+9n</ds:X509Certificate>
+      </ds:X509Data>
+    </ds:KeyInfo>
+  </ds:Signature>
+  <RoleDescriptor xsi:type="fed:SecurityTokenServiceType"
+                  protocolSupportEnumeration="http://docs.oasis-open.org/wsfed/federation/200706"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xmlns:fed="http://docs.oasis-open.org/wsfed/federation/200706">
+    <KeyDescriptor use="signing">
+      <ds:KeyInfo>
+        <ds:X509Data>
+          <ds:X509Certificate>MIIDETCCAfmgAwIBAgIUPDwVuO9VFoxgId2MtnXgvpa8SWAwDQYJKoZIhvcNAQELBQAwGDEWMBQGA1UEAwwNZW50cmEtZml4dHVyZTAeFw0yNjA5MTUyMDM5NTFaFw0zNjA5MTIyMDM5NTFaMBgxFjAUBgNVBAMMDWVudHJhLWZpeHR1cmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC3hOm/M9kQm2e1zCsY0onkesCXymXCuDoxsGetnClzv1gAwwn69qHytRm79CfHm4kMO2/dhHrBor6LWmFaTiz59nngJJCxMxDwn1OWVL8yFbIt4+Z0My9ZAryR8vzlAP3spL3DFtrxoZZow+PYARbK4J4TzPfOkz7AsSOnLIWFQe4G2ZqzmzUMtTUju8fcmGqSZ7qQXTvVjhE9X6WrSaicaxtwKCGeWFkMGLtw5T7xvjeWTI+pL0TvZ+G4d0eFT/1L9jCZWHuqlh2eHadD1HkYrfW/i5SVYO/BP0FutQ+Cpj2lUdqscJIzoW9AKIhfpP5EPt6cybGLR+adMolQVxUPAgMBAAGjUzBRMB0GA1UdDgQWBBSuWH1BKW09dPz5hDTixN1VagJH6zAfBgNVHSMEGDAWgBSuWH1BKW09dPz5hDTixN1VagJH6zAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQArHokMKcQwuelOo0Xyc0NwVifj2wmqBYGFhYIl792yUE9QxjRu+bLlwe/2SrfmWQq3z290EKEVYaes2/2u240Mf7MIJNj0KhZJfmWx+diFyeCyXQOv3lsQFzY5PxXGzKIc2RCO2P1muEtmQP3kOyb1bPjnVwRX4repHvp8v+nZv9Oq0TbzMeB9eFR7/JUfdVYtyrBTgYJJmCaiktXm7uUD+pBjAbwB61hAqib9xkqiJqpaS3VxvEUpb4vczw5HxTx5AOxiE2rtk4ht88ARCFliwyhLiYttqMIsHAv3AWmFbg5ql7crDUXDPdDbugdzywIChqQZDwZrSM64Xxr7q+9n</ds:X509Certificate>
+        </ds:X509Data>
+      </ds:KeyInfo>
+    </KeyDescriptor>
+    <fed:ClaimTypesOffered xmlns:auth="http://docs.oasis-open.org/wsfed/authorization/200706">
+      <auth:ClaimType Uri="http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
+                      Optional="true">
+        <auth:DisplayName>E-Mail Address</auth:DisplayName>
+        <auth:Description>The e-mail address of the user.</auth:Description>
+      </auth:ClaimType>
+    </fed:ClaimTypesOffered>
+    <fed:SecurityTokenServiceEndpoint>
+      <wsa:EndpointReference xmlns:wsa="http://www.w3.org/2005/08/addressing">
+        <wsa:Address>https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/wsfed</wsa:Address>
+      </wsa:EndpointReference>
+    </fed:SecurityTokenServiceEndpoint>
+  </RoleDescriptor>
+  <RoleDescriptor xsi:type="fed:ApplicationServiceType"
+                  protocolSupportEnumeration="http://docs.oasis-open.org/wsfed/federation/200706"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xmlns:fed="http://docs.oasis-open.org/wsfed/federation/200706">
+    <KeyDescriptor use="signing">
+      <ds:KeyInfo>
+        <ds:X509Data>
+          <ds:X509Certificate>MIIDETCCAfmgAwIBAgIUPDwVuO9VFoxgId2MtnXgvpa8SWAwDQYJKoZIhvcNAQELBQAwGDEWMBQGA1UEAwwNZW50cmEtZml4dHVyZTAeFw0yNjA5MTUyMDM5NTFaFw0zNjA5MTIyMDM5NTFaMBgxFjAUBgNVBAMMDWVudHJhLWZpeHR1cmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC3hOm/M9kQm2e1zCsY0onkesCXymXCuDoxsGetnClzv1gAwwn69qHytRm79CfHm4kMO2/dhHrBor6LWmFaTiz59nngJJCxMxDwn1OWVL8yFbIt4+Z0My9ZAryR8vzlAP3spL3DFtrxoZZow+PYARbK4J4TzPfOkz7AsSOnLIWFQe4G2ZqzmzUMtTUju8fcmGqSZ7qQXTvVjhE9X6WrSaicaxtwKCGeWFkMGLtw5T7xvjeWTI+pL0TvZ+G4d0eFT/1L9jCZWHuqlh2eHadD1HkYrfW/i5SVYO/BP0FutQ+Cpj2lUdqscJIzoW9AKIhfpP5EPt6cybGLR+adMolQVxUPAgMBAAGjUzBRMB0GA1UdDgQWBBSuWH1BKW09dPz5hDTixN1VagJH6zAfBgNVHSMEGDAWgBSuWH1BKW09dPz5hDTixN1VagJH6zAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQArHokMKcQwuelOo0Xyc0NwVifj2wmqBYGFhYIl792yUE9QxjRu+bLlwe/2SrfmWQq3z290EKEVYaes2/2u240Mf7MIJNj0KhZJfmWx+diFyeCyXQOv3lsQFzY5PxXGzKIc2RCO2P1muEtmQP3kOyb1bPjnVwRX4repHvp8v+nZv9Oq0TbzMeB9eFR7/JUfdVYtyrBTgYJJmCaiktXm7uUD+pBjAbwB61hAqib9xkqiJqpaS3VxvEUpb4vczw5HxTx5AOxiE2rtk4ht88ARCFliwyhLiYttqMIsHAv3AWmFbg5ql7crDUXDPdDbugdzywIChqQZDwZrSM64Xxr7q+9n</ds:X509Certificate>
+        </ds:X509Data>
+      </ds:KeyInfo>
+    </KeyDescriptor>
+    <fed:PassiveRequestorEndpoint>
+      <wsa:EndpointReference xmlns:wsa="http://www.w3.org/2005/08/addressing">
+        <wsa:Address>https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/wsfed</wsa:Address>
+      </wsa:EndpointReference>
+    </fed:PassiveRequestorEndpoint>
+  </RoleDescriptor>
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing">
+      <ds:KeyInfo>
+        <ds:X509Data>
+          <ds:X509Certificate>MIIDETCCAfmgAwIBAgIUPDwVuO9VFoxgId2MtnXgvpa8SWAwDQYJKoZIhvcNAQELBQAwGDEWMBQGA1UEAwwNZW50cmEtZml4dHVyZTAeFw0yNjA5MTUyMDM5NTFaFw0zNjA5MTIyMDM5NTFaMBgxFjAUBgNVBAMMDWVudHJhLWZpeHR1cmUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC3hOm/M9kQm2e1zCsY0onkesCXymXCuDoxsGetnClzv1gAwwn69qHytRm79CfHm4kMO2/dhHrBor6LWmFaTiz59nngJJCxMxDwn1OWVL8yFbIt4+Z0My9ZAryR8vzlAP3spL3DFtrxoZZow+PYARbK4J4TzPfOkz7AsSOnLIWFQe4G2ZqzmzUMtTUju8fcmGqSZ7qQXTvVjhE9X6WrSaicaxtwKCGeWFkMGLtw5T7xvjeWTI+pL0TvZ+G4d0eFT/1L9jCZWHuqlh2eHadD1HkYrfW/i5SVYO/BP0FutQ+Cpj2lUdqscJIzoW9AKIhfpP5EPt6cybGLR+adMolQVxUPAgMBAAGjUzBRMB0GA1UdDgQWBBSuWH1BKW09dPz5hDTixN1VagJH6zAfBgNVHSMEGDAWgBSuWH1BKW09dPz5hDTixN1VagJH6zAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQArHokMKcQwuelOo0Xyc0NwVifj2wmqBYGFhYIl792yUE9QxjRu+bLlwe/2SrfmWQq3z290EKEVYaes2/2u240Mf7MIJNj0KhZJfmWx+diFyeCyXQOv3lsQFzY5PxXGzKIc2RCO2P1muEtmQP3kOyb1bPjnVwRX4repHvp8v+nZv9Oq0TbzMeB9eFR7/JUfdVYtyrBTgYJJmCaiktXm7uUD+pBjAbwB61hAqib9xkqiJqpaS3VxvEUpb4vczw5HxTx5AOxiE2rtk4ht88ARCFliwyhLiYttqMIsHAv3AWmFbg5ql7crDUXDPdDbugdzywIChqQZDwZrSM64Xxr7q+9n</ds:X509Certificate>
+        </ds:X509Data>
+      </ds:KeyInfo>
+    </KeyDescriptor>
+    <SingleLogoutService
+        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+        Location="https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/saml2" />
+    <SingleSignOnService
+        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+        Location="https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/saml2" />
+    <SingleSignOnService
+        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+        Location="https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/saml2" />
+  </IDPSSODescriptor>
+</EntityDescriptor>

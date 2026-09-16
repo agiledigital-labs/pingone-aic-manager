@@ -963,3 +963,34 @@ findings). Each should name the guard that will eventually retire it.
   `save_private_file`, `write_current_context`, `access::ops::backup_document`).
   Resolved by R1 on 2026-09-11 with absolute `ProjectPaths` and explicit paths
   in the daemon tests.
+
+### 2026-09-16 — inspect CLI test re-reads the input, not the command output
+
+- **What:** `inspect_command_reads_the_same_file_the_library_does` called
+  `run(Inspect)` then `metadata::inspect` on the *input file*. Deleting
+  `print_json` (or returning `Ok(())` without inspecting) would leave it green.
+  The sanitise sibling is the right shape: it asserts bytes `run` wrote.
+- **Why missed:** the test name claims the CLI and the library agree, which is
+  true of two independent reads of the same fixture. Standing check "could this
+  fail if the code were wrong" already covers it; this is another instance.
+- **Guard:** not applied for stdout (inspect prints JSON, no `--out`). The CLI
+  path now goes through `inspect_file`, and the test asserts roles +
+  `would_remove` on that result. A stdout-capture or `CARGO_BIN_EXE_aic`
+  integration test would close the rest. `--output` was also renamed to `--out`
+  to match `jwt-bearer key export` / `access get`.
+
+### 2026-09-16 — sanitiser scanner treated tokenisation as XML
+
+- **What:** Codex review of `saml/metadata` (`41c9aa2..9fb53e4`). The scanner
+  accepted two roots, `--` in comments, and invalid UTF-8; matched
+  `RoleDescriptor`/`Signature` by local name so `ext:RoleDescriptor` and
+  `html:Signature` fired; default sanitise stripped a signature from a
+  signed-but-clean document. The inspect CLI test still did not assert stdout.
+- **Why missed:** fixture tests and prefix tests never varied namespace URIs or
+  used a signed document with nothing else to strip. Standing check "could this
+  fail if the code were wrong" already named the inspect test.
+- **Guard:** applied — `NsReader` + UTF-8/comment/trailing-root checks;
+  expanded-name matching (SAML / XMLDSig / WS-Fed); signature cuts only when
+  another cut would change the bytes; `tests/saml_metadata_cli.rs` drives the
+  binary. Discriminating cases: two roots, bad comment, invalid UTF-8,
+  `urn:not-wsfed` RoleDescriptor kept, signed-clean keeps `ds:Signature`.
