@@ -159,6 +159,37 @@ fn decide_remove(force: bool) -> RemoveDecision {
     }
 }
 
+/// Whether `secretmap remove` may target this label.
+///
+/// Presence on the tenant is the only permit criterion. The schema enum is the
+/// set of labels AM currently advertises as *usable*; it is not the set of
+/// mappings that exist. Orphans (SAML `secretIdIdentifier` rotation, entity
+/// delete) drop out of the enum while remaining listed — and those are the
+/// mappings cleanup has to be able to delete.
+#[derive(Debug, PartialEq, Eq)]
+enum RemoveLabelDecision {
+    /// Mapping exists on the tenant — proceed (still subject to `--force`).
+    Mapped,
+    /// Not listed, but the label is still advertised — idempotent no-op.
+    Unmapped,
+    /// Neither listed nor advertised — treat as a typo.
+    Unknown,
+}
+
+fn decide_remove_label(
+    secret_id: &str,
+    advertised: &[String],
+    mapped: &[String],
+) -> RemoveLabelDecision {
+    if mapped.iter().any(|id| id == secret_id) {
+        RemoveLabelDecision::Mapped
+    } else if advertised.iter().any(|id| id == secret_id) {
+        RemoveLabelDecision::Unmapped
+    } else {
+        RemoveLabelDecision::Unknown
+    }
+}
+
 fn near_matches<'a>(secret_id: &str, valid: &'a [String]) -> Vec<&'a str> {
     let needle = secret_id.to_lowercase();
     let leaf = secret_id
@@ -296,36 +327,56 @@ pub async fn run(cmd: SecretmapCommand) -> Result<()> {
             let tenant_name = tenant.name;
             let realm = realm_arg("secretmap", realm)?;
 
-            let valid = api::valid_secret_ids(&tenant_name, &realm).await?;
-            if !valid.iter().any(|candidate| candidate == &secret_id) {
-                return Err(Error::Config(invalid_label_message(&secret_id, &valid)));
-            }
-
             let current = match api::read_mapping(&tenant_name, &realm, &secret_id).await {
-                Ok(mapping) => mapping,
-                Err(error) if api_not_found(&error) => {
-                    println!("already unmapped: {secret_id} ({tenant_name}/{realm})");
-                    return Ok(());
-                }
+                Ok(mapping) => Some(mapping),
+                Err(error) if api_not_found(&error) => None,
                 Err(error) => return Err(error),
             };
-            let current_alias = api::parse_mapping(&current)
-                .alias
-                .unwrap_or_else(|| "(unset)".to_string());
+            let mapped: Vec<String> = current
+                .as_ref()
+                .map(|_| vec![secret_id.clone()])
+                .unwrap_or_default();
+            // Schema enum is only needed to distinguish "already unmapped" from
+            // a typo. An existing mapping is removable whether or not the enum
+            // still advertises its label.
+            let advertised = if mapped.is_empty() {
+                api::valid_secret_ids(&tenant_name, &realm).await?
+            } else {
+                Vec::new()
+            };
 
-            match decide_remove(force) {
-                RemoveDecision::NeedsForce => {
-                    eprintln!("would remove mapping {secret_id} (currently → {current_alias})");
-                    Err(Error::Config(
-                        "pass --force to remove this secret mapping".into(),
-                    ))
-                }
-                RemoveDecision::Delete => {
-                    api::delete_mapping(&tenant_name, &realm, &secret_id).await?;
-                    println!(
-                        "removed mapping {secret_id} (was → {current_alias}) ({tenant_name}/{realm})"
-                    );
+            match decide_remove_label(&secret_id, &advertised, &mapped) {
+                RemoveLabelDecision::Unknown => Err(Error::Config(invalid_label_message(
+                    &secret_id,
+                    &advertised,
+                ))),
+                RemoveLabelDecision::Unmapped => {
+                    println!("already unmapped: {secret_id} ({tenant_name}/{realm})");
                     Ok(())
+                }
+                RemoveLabelDecision::Mapped => {
+                    let current = current.expect("Mapped implies GET succeeded");
+                    let current_alias = api::parse_mapping(&current)
+                        .alias
+                        .unwrap_or_else(|| "(unset)".to_string());
+
+                    match decide_remove(force) {
+                        RemoveDecision::NeedsForce => {
+                            eprintln!(
+                                "would remove mapping {secret_id} (currently → {current_alias})"
+                            );
+                            Err(Error::Config(
+                                "pass --force to remove this secret mapping".into(),
+                            ))
+                        }
+                        RemoveDecision::Delete => {
+                            api::delete_mapping(&tenant_name, &realm, &secret_id).await?;
+                            println!(
+                                "removed mapping {secret_id} (was → {current_alias}) ({tenant_name}/{realm})"
+                            );
+                            Ok(())
+                        }
+                    }
                 }
             }
         }
@@ -396,6 +447,45 @@ mod tests {
         assert_eq!(decide_remove(false), RemoveDecision::NeedsForce);
         assert_ne!(decide_remove(false), RemoveDecision::Delete);
         assert_eq!(decide_remove(true), RemoveDecision::Delete);
+    }
+
+    #[test]
+    fn remove_label_permits_orphan_absent_from_schema_enum() {
+        let advertised = vec!["am.services.saml2.metadata.signing.RSA".to_string()];
+        let mapped =
+            vec!["am.applications.federation.entity.providers.saml2.aicrot1.signing".to_string()];
+        let orphan = &mapped[0];
+        assert!(
+            !advertised.iter().any(|id| id == orphan),
+            "fixture: the orphan must be absent from the schema enum"
+        );
+
+        assert_eq!(
+            decide_remove_label(orphan, &advertised, &mapped),
+            RemoveLabelDecision::Mapped
+        );
+    }
+
+    #[test]
+    fn remove_label_is_unmapped_when_advertised_but_not_listed() {
+        let advertised = vec!["am.services.saml2.metadata.signing.RSA".to_string()];
+        let mapped: Vec<String> = vec![];
+
+        assert_eq!(
+            decide_remove_label(&advertised[0], &advertised, &mapped),
+            RemoveLabelDecision::Unmapped
+        );
+    }
+
+    #[test]
+    fn remove_label_is_unknown_when_neither_advertised_nor_listed() {
+        let advertised = vec!["am.services.saml2.metadata.signing.RSA".to_string()];
+        let mapped: Vec<String> = vec![];
+
+        assert_eq!(
+            decide_remove_label("nope.not.a.label", &advertised, &mapped),
+            RemoveLabelDecision::Unknown
+        );
     }
 
     #[test]
