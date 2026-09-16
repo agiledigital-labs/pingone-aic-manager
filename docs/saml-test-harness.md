@@ -572,6 +572,59 @@ After `rotate-rm` the remaining `KeyName` is the **new** kid, not the original.
 A completed rotation replaces the signing cert in metadata, it does not revert
 to the old one. **Measured.**
 
+### Why the count sequence is not the assertion
+
+`1 -> 2 -> 1` is necessary and nowhere near sufficient. `rotate-add` inserts at
+the **highest** priority; `rotate-rm` deletes the **lowest**. So a `rotate-rm`
+that deleted the _new_ provider instead of the old one is a no-op rollback that
+produces exactly the same three numbers. A harness asserting on counts alone
+would certify a completed rotation having rotated nothing — which is the one
+failure it exists to catch.
+
+`verify-rotate` therefore asserts **identity**, in both directions:
+
+- the signing key left standing must **be** the one `rotate-add` published;
+- no key that predated the rotation may still be published.
+
+Counts stay, as a secondary assertion.
+
+Keys are compared by the **SHA-256 of the DER** decoded from
+`<ds:X509Certificate>`, not by `<ds:KeyName>`. Keycloak publishes a `KeyName`;
+AIC publishes none at all (`docs/api/06-saml.md`), so a `KeyName` comparison
+would be vacuous against the peer this harness exists to test. `KeyName` is the
+fallback for a `KeyDescriptor` with no certificate, and a key with neither makes
+`verify-rotate` refuse rather than match unknown against unknown.
+
+The guard has been seen to fail. `rotate-rm` was inverted to delete the
+highest-priority provider (`min_by` → `max_by`) and `verify-rotate` re-run
+against the same live realm:
+
+```text
+signing KeyDescriptors: 1 -> 2 -> 1
+verify-rotate aic-idp: rotate-rm removed the key rotate-add published
+  (IDPSSODescriptor/<sha256-of-new-cert>); the descriptor is back to its
+  pre-rotation certificate and nothing rotated
+```
+
+The count line is unchanged — that is the point. **Measured 2026-09-17**,
+Keycloak 26.4.7; the unmodified script passed against the same realm immediately
+before and after, so the red came from the mutation and not from the state.
+
+### Counts are per role descriptor
+
+`status` and `verify-rotate` count `KeyDescriptor`s **within each role
+descriptor** and never across the document, and key identities are
+role-qualified for the same reason. The distinction is invisible on Keycloak — a
+realm publishes one `IDPSSODescriptor`, a broker alias one `SPSSODescriptor` —
+but an AIC entity can hold the `identityProvider` and `serviceProvider` roles at
+once, and a whole-document count would silently add the two roles' keys
+together. `status` prints one line per role:
+
+```text
+  KeyDescriptor IDPSSODescriptor: total=1 signing=1 encryption=0 unspecified=0
+  IDPSSODescriptor  <sha256-of-cert>  KeyName=<kid>
+```
+
 This is the fixture `aic saml` will use to ask AIC: after you upload metadata
 that now has two signing `KeyDescriptor`s, do you replace the stored cert or add
 a second? Then after metadata shrinks to one, do you drop the old cert? That AIC
@@ -616,6 +669,7 @@ not treat this list as a verified AIC bug list.
 | Two realms, two entity IDs, IdP descriptor vs broker SP descriptor                          | measured           |
 | Default descriptor has 1 signing `KeyDescriptor`, 0 encryption                              | measured           |
 | Rotation 1 → 2 → 1 signing `KeyDescriptor`s; new key listed first                           | measured           |
+| Inverting `rotate-rm` leaves that count sequence unchanged (so counts cannot discriminate)  | measured           |
 | `WantAuthnRequestsSigned="true"` with `saml.client.signature=false` on the only SAML client | measured           |
 | `entityId` is the SP; `idpEntityId` is the remote IdP                                       | measured           |
 | `import-config` takes the first `NameIDFormat` (persistent)                                 | measured           |
