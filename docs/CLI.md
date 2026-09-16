@@ -1150,7 +1150,7 @@ locked daemon.
 
 ```bash
 aic saml metadata inspect <FILE>
-aic saml metadata sanitise <FILE> [--output PATH] [--keep-signature]
+aic saml metadata sanitise <FILE> [--out PATH] [--keep-signature]
 ```
 
 `inspect` prints JSON describing the document: entity id, SAML 2.0 roles,
@@ -1158,7 +1158,7 @@ whether it is signed, endpoints, certificate fingerprints, and what `sanitise`
 would remove at default options.
 
 `sanitise` splices the original buffer rather than parsing and reserialising.
-It writes the result to `--output`, or to stdout if that flag is omitted. The
+It writes the result to `--out`, or to stdout if that flag is omitted. The
 removal report goes to stderr, one line per element. Default options strip an
 enveloped signature (it would not cover the bytes we emit) plus elements on
 the strip list; `--keep-signature` keeps the signature and, if anything else
