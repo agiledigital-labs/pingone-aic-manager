@@ -106,6 +106,7 @@ CI_STEPS_REPRODUCED=(
   "Scan tracked files"
   "Scan introduced history"
   "Gitleaks (credentials)"
+  "Shellcheck (all scripts)"
   "Format"
   "Clippy (default)"
   "Test (default)"
@@ -219,6 +220,16 @@ gate "gitleaks: credentials in history" \
   If it is a false positive, allowlist it by SHAPE in .gitleaks.toml — never by
   fingerprint, which pins a commit hash this repo has rewritten before." \
   "$GITLEAKS_BIN" git . --redact --no-banner --exit-code 1
+
+# --- shell -------------------------------------------------------------------
+#
+# scripts/shellcheck-all.sh holds the severity and the not-yet-clean list, so CI
+# and this script cannot drift into linting different files at different bars.
+
+gate "shellcheck" \
+  "shellcheck findings in a tracked script (see above), or an exemption in
+  scripts/shellcheck-all.sh that is no longer needed" \
+  scripts/shellcheck-all.sh
 
 # --- cargo -------------------------------------------------------------------
 
