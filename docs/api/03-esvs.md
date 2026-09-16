@@ -115,6 +115,28 @@ effectively immutable post-create; to change them, delete and recreate.
 - `loadedVersion` = the version currently in memory; `""` when nothing is loaded yet.
 - If `useInPlaceholders=true` and `activeVersion != loadedVersion`, a restart is pending.
 
+### A `pem` secret can carry a key pair, and that is how AM gets a signing key
+
+`encoding: pem` accepts a **concatenated private key and certificate** —
+`cat key.pem cert.pem` — not just a certificate. That is the shape an AM secret
+label expects for a signing or encryption purpose, so an ESV secret plus one
+secret mapping is how a SAML2 entity gets a signing key on AIC
+(`docs/api/15-secret-mappings.md`, and the procedure in `docs/api/06-saml.md`).
+
+Two consequences that only show up in that use:
+
+- **Create it with `useInPlaceholders: false`.** A key consumed through the
+  secret store is never substituted into config, so it does not need the
+  placeholder machinery — and a `false` secret is `loaded: true` on creation,
+  which makes the whole operation restart-free. With placeholders on you get
+  `loaded: false`, `loadedVersion: ""` and a pending restart for no benefit.
+- **Every ENABLED version is live at once, not just `activeVersion`.** AM
+  publishes a certificate for each ENABLED version of the mapped secret — the
+  measured case put **two** `<KeyDescriptor use="signing">` elements in exported
+  SAML metadata, newest first — which is what makes a key rollover possible.
+  `disable` a version and its certificate stops being published within seconds.
+  So `activeVersion` is "the one AM prefers", not "the only one that counts".
+
 ### Secret version
 
 Versions list is a bare array, newest-first. **No `_id` field** (the earlier
@@ -270,6 +292,16 @@ $SCRIPTS/verify-endpoint.sh "/environment/startup?_action=restart" -X POST
   between the delete and recreate.
 - Negative: `GET /environment/esv` → 404. (Ping docs' "ESV aggregate" path
   doesn't exist on AIC.)
+- **2026-09-16, sandbox, `pem` key pair (throwaway, deleted):**
+  `aic esv secret create … --encoding pem --no-placeholders` with a value of
+  `cat key.pem cert.pem` (RSA-2048 self-signed, `openssl req -x509`) → created,
+  and `GET /environment/secrets/{id}` immediately read `loaded: true`,
+  `loadedVersion: "1"`. `add-version` with a second key pair → `activeVersion`
+  and `loadedVersion` both `2`, with version 1 still ENABLED. A control secret
+  created the same minute **with** placeholders read `loaded: false`,
+  `loadedVersion: ""`. `GET /environment/startup` stayed `ready` throughout; the
+  tenant was not restarted. Downstream effect (both certificates published in
+  SAML metadata, and the 4–5 s propagation) is in `docs/api/06-saml.md`.
 
 ## Source citations
 

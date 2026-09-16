@@ -1529,3 +1529,43 @@ entity removed them again.
 The consequence for tooling is a routing one: **rotating a SAML signing key is
 an ESV secret-mapping operation, not a SAML one.** A "SAML certificate" command
 that only touches `realm-config/saml2` cannot work.
+
+## 2026-09-16 — the schema's own help text is wrong about mapping cleanup
+
+The SAML2 entity schema describes `secretIdIdentifier` with: *"When the secret
+label identifier for a given role is modified, the corresponding mapping is
+removed if it isn't referenced by other entities."* Over REST it is not.
+
+Measured on a throwaway hosted SP in the sandbox `bravo`, with only one entity
+referencing the identifier — the case the sentence is explicitly about:
+repointing the entity from `aicrot1` to `aicrot2` left
+`…saml2.aicrot1.signing` listed by `GET STORE/mappings?_queryFilter=true`, and
+so did deleting the entity outright. Only the **labels** disappear (from the
+schema `enum`); the mapping rows stay.
+
+Two things follow, both in `docs/api/15-secret-mappings.md`:
+
+- Rotation tooling has to delete the mapping itself, and has to do it **before**
+  the identifier changes or the entity goes.
+- `aic secretmap remove` cannot delete an orphan, because it validates the label
+  against the enum that the entity's removal just emptied. `DELETE
+  STORE/mappings/{label}` works. This is an `aic` defect, not an API one.
+
+Contrast with `DELETE` on a SAML entity, which *does* silently edit every CoT
+that listed it (previous entry): AM cascades into circles of trust and does not
+cascade into secret mappings. Neither behaviour is guessable from the other.
+
+## 2026-09-16 — AM's multi-alias key rollover does not exist on AIC
+
+In self-managed AM, a secret mapping may carry several aliases and that is the
+documented way to publish a next signing key. On AIC the ESV store refuses it:
+`400 Invalid config: Only a single alias per mapping is allowed for this secret
+store type` (first seen 2026-06-17 on `alpha`, re-confirmed 2026-09-16 on
+`bravo` against a SAML signing label).
+
+The rollover mechanism that *does* work is **versions of one ESV secret**: AM
+publishes a `<KeyDescriptor>` for every ENABLED version of the mapped secret, so
+adding a version gives two certificates in the exported metadata and disabling
+the old one takes it away again — within seconds, with no tenant restart. Any
+guidance transcribed from AM documentation about aliases-as-rotation is wrong
+here. Full measurement in `docs/api/06-saml.md`.

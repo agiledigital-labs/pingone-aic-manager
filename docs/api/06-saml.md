@@ -296,11 +296,13 @@ GET /am/saml2/jsp/exportmetadata.jsp?entityid=<url-encoded entityId>&realm=/<rea
   forgotten `realm=/bravo` produces the `ERROR :` body above rather than the
   entity you meant.
 
-## Where the signing certificate lives
+## Where the signing certificate lives, and how to rotate it
 
 Short answer: **not in the SAML entity.** The entity holds only a *label
-identifier*; the key material lives in AM's secret store and is bound to a
-secret label.
+identifier*; the key material lives in AM's secret store, is bound to a secret
+label, and on AIC that label is backed by an **ESV secret**. A SAML signing-key
+rotation is therefore an ESV + secret-mapping operation with one SAML field in
+front of it — measured end to end 2026-09-16 (see "Verified against").
 
 The field is:
 
@@ -313,34 +315,134 @@ a plain string, whose schema description spells out the mechanism: setting it to
 `am.applications.federation.entity.providers.saml2.demo.signing` and
 `…demo.encryption`. Left unset (it is `{}` on every live entity in the sandbox
 `bravo`, hosted or remote), AM falls back to the role-wide defaults
-`am.default.applications.federation.entity.providers.saml2.{sp,idp}.{signing,encryption,mtls}`.
+`am.default.applications.federation.entity.providers.saml2.{sp,idp}.{signing,encryption,mtls}`,
+which on a stock tenant resolve to ForgeRock's built-in `CN=rsajwtsigningkey`
+(signing) and `CN=test` (encryption) certificates.
 
-Verified by construction rather than by reading: a throwaway hosted SP was
-`PUT` with `secretIdIdentifier: "probe3key"`, after which the realm's
-**secret-mapping schema enum** (`…/secrets/stores/GoogleSecretManagerSecretStoreProvider/ESV/mappings?_action=schema`,
-see `docs/api/15-secret-mappings.md`) gained exactly three new labels —
-`am.applications.federation.entity.providers.saml2.probe3key.{signing,encryption,mtls}`
-— which vanished again when the entity was deleted. Nothing but that one string
-was changed.
+On a **remote** entity the same string lives at
+`<role>.assertionContent.secrets.secretIdIdentifier` — a group whose only
+property is that one field. It is not a place a peer certificate is kept; see
+"`assertionContent.secrets`" below.
 
-So a SAML signing-key rotation in `aic` is **an ESV secret-mapping operation,
-not a SAML operation**:
+### The rotation procedure, as performed
 
-1. `PUT` the entity with a `secretIdIdentifier` (this creates the labels).
-2. Map an ESV secret onto `am.applications.federation.entity.providers.saml2.<id>.signing`
-   via `src/secretmap/` (`docs/api/15-secret-mappings.md`).
-3. Re-export the metadata and hand it to the peer.
+Each step below was run against a throwaway hosted SP in the sandbox `bravo`
+and checked by re-exporting `exportmetadata.jsp` and fingerprinting the
+`<ds:X509Certificate>` it returned.
 
-Setting `secretIdIdentifier` alone changes nothing visible: the exported
-metadata kept the stock `rsajwtsigningkey` signing certificate and the `test`
-encryption certificate, because the new labels resolve to the same defaults
-until a mapping exists. **A rotation was not carried through** — steps 2 and 3
-are documented from the object model, not measured.
+1. **`PUT` the entity with a `secretIdIdentifier`** (any string; it namespaces
+   the labels). This creates three labels —
+   `am.applications.federation.entity.providers.saml2.<id>.{signing,encryption,mtls}`
+   — in the realm's secret-mapping schema enum, and nothing else. The exported
+   metadata does **not** change: the new labels are unmapped, so resolution
+   still falls through to the defaults. Remember `PUT` is a full replace.
+2. **Create an ESV secret holding the key pair.** `encoding: pem`,
+   `useInPlaceholders: false`, value = the **private key PEM and the
+   certificate PEM concatenated** (`cat key.pem cert.pem`). A
+   `useInPlaceholders:false` secret is `loaded: true` the moment it is created,
+   which is what makes step 4 restart-free.
+3. **Map the label onto it**:
+   `PUT STORE/mappings/am.applications.federation.entity.providers.saml2.<id>.signing`
+   with `{"secretId":"<that label>","aliases":["esv-…"]}`
+   (`docs/api/15-secret-mappings.md`; `aic secretmap set` does this).
+4. **Re-export the metadata and hand it to the peer.** The certificate in the
+   `<KeyDescriptor use="signing">` is now the one from the ESV secret.
 
-For a **remote** entity the peer's certificate is not in the JSON at all. It is
-held with the standard metadata and comes back only through
-`exportmetadata.jsp`. There is no REST field to compare, so any "has my peer's
-cert changed?" check has to diff exported XML.
+`encryption` and `mtls` rotate the same way through their own labels; mapping
+`…<id>.signing` alone leaves the encryption `KeyDescriptor` on the tenant
+default, which is how the per-purpose granularity was confirmed.
+
+### Replace or add: the published set is the ESV secret's ENABLED versions
+
+**A rollover publishes two `<KeyDescriptor use="signing">` elements, and the
+mechanism is ESV secret versions — not a "next signing key" field.** There is
+no such field anywhere in the entity schema.
+
+- One ENABLED version → **one** signing `KeyDescriptor`, carrying that version's
+  certificate. Mapping a label replaces the default certificate; it does not add
+  to it.
+- Add a second version (`POST /environment/secrets/{id}/versions?_action=create`,
+  or `aic esv secret add-version`) and the export carries **two** signing
+  `KeyDescriptor`s — **the active (newest ENABLED) version first, the older one
+  second** — which is exactly the pre-trust window a relying party needs.
+- Disable the old version (`aic esv secret disable <id> <v>`) and the export
+  drops back to one. The published set tracks the ENABLED versions, in both
+  directions.
+- The `<KeyDescriptor use="encryption">` is untouched throughout: it resolves
+  its own label.
+
+So the rollover is: add a version → re-export → let the peer load the
+two-certificate metadata → disable (then destroy) the old version → re-export.
+
+**AM's other rotation mechanism — several aliases on one mapping — is not
+available on AIC.** A mapping `PUT` carrying two aliases is refused with
+`400 Invalid config: Only a single alias per mapping is allowed for this secret
+store type`. Versions of one ESV secret are the only way to publish two
+certificates for one purpose.
+
+AM emits **no `<ds:KeyName>`** in either `KeyDescriptor`, so a peer holding
+two-certificate metadata can only tell them apart by the certificates
+themselves.
+
+### Propagation: no restart, no cache flush, seconds
+
+Every change above was visible in `exportmetadata.jsp` within **single-digit
+seconds** — the mapping `PUT` and the export that showed the new certificate
+were 12 s apart including the export round trip, and enabling/disabling a
+version showed up 4–5 s later. `GET /environment/startup` read `restartStatus:
+ready` before, during and after; **`?_action=restart` was never called.**
+
+The control for that claim is the `useInPlaceholders` flag, not luck: a probe
+secret created with `useInPlaceholders: true` came back `loaded: false`,
+`loadedVersion: ""` — the state that does need a restart. A secret created with
+`useInPlaceholders: false` is `loaded: true` immediately. SAML signing keys are
+resolved through the secret store rather than substituted into config, so they
+belong in the second class. Create the ESV secret with placeholders **off** and
+the whole rotation is restart-free; create it with them on and you have bought
+yourself a tenant restart.
+
+### The three cleanup traps
+
+All three were measured, and all three matter to any `aic saml rotate`:
+
+- **Changing `secretIdIdentifier` does not remove the old mapping**, despite the
+  schema's help text saying "the corresponding mappings are removed if they
+  aren't referenced by other entities". After repointing the entity from
+  `aicrot1` to `aicrot2`, the `…aicrot1.signing` mapping was still listed while
+  `…aicrot1.*` had vanished from the label enum.
+- **Deleting the entity does not remove the mapping either.** Same orphan, and
+  the labels disappear from the enum the moment the entity goes.
+- **An orphaned mapping cannot be deleted with `aic secretmap remove`**, because
+  the CLI validates the label against that enum and the label is no longer in
+  it ("… is not a valid secret label"). `DELETE STORE/mappings/{label}` removes
+  it (200, echoing the object). Deleting the mapping is a step the rotation
+  tooling has to take *before* the identifier changes or the entity goes.
+
+### Uploading a certificate: there is no REST surface for it
+
+For a **hosted** entity, nothing in the ~100 KB schema can carry key material.
+The only certificate-shaped property in the whole hosted schema is
+`serviceProvider.assertionContent.clientAuthentication.excludeClientCertificate`
+— a boolean that suppresses the mTLS certificate in the exported metadata — and
+`?_action=importEntity` is **501** on `hosted`. The ESV secret plus a mapping is
+the only route to a hosted entity's key material over REST. If the console
+appears to accept an uploaded key pair, it is doing something REST does not
+expose; nothing here can confirm or deny that, and no field was found that such
+an upload could be landing in.
+
+For a **remote** entity the peer's certificate is not in the JSON at all. It
+arrives inside `standardMetadata` on `?_action=importEntity`, is held with the
+standard metadata, and comes back only through `exportmetadata.jsp`. There is
+no REST field to compare, so any "has my peer's cert changed?" check has to
+diff exported XML.
+
+### `assertionContent.secrets`
+
+Present on remote entities, absent on hosted ones. The remote schema says it
+holds exactly **one** property, `secretIdIdentifier`, with the same
+label-identifier semantics as the hosted field — it is where the identifier
+moved to for a role that has no signing/digest algorithm choices, not a
+per-entity slot for the peer's certificate.
 
 ## The schema endpoint
 
@@ -776,9 +878,10 @@ non-sandbox tenant, or you will send a UAT token to the sandbox host.
 
 ## Verified against
 
-Two independent passes. The 2026-08-12 pass was read-only against a UAT tenant
-and is the basis for the diagnosis sections; the 2026-09-16 pass exercised the
-write surface against the sandbox.
+Three passes. The 2026-08-12 pass was read-only against a UAT tenant and is the
+basis for the diagnosis sections; the first 2026-09-16 pass exercised the write
+surface against the sandbox; the second 2026-09-16 pass carried a signing-key
+rotation through end to end.
 
 ### 2026-08-12 — read-only, UAT `bravo`
 
@@ -900,9 +1003,63 @@ Calls made, and what each one settles:
   `cotlist`; the evidence is that REST CoT writes *fail in the places a
   cotlist-updating write would fail* and that entity deletes cascade. A
   federation test is still the only proof.
-- **Not established:** a signing-key rotation end to end. `secretIdIdentifier`
-  was set and the resulting secret labels observed, but no ESV secret was mapped
-  onto them and no re-signed assertion was produced.
+- **Superseded:** this session left "a signing-key rotation end to end" as not
+  established. The session below carried one through; only "which key signs"
+  remains open.
+
+### 2026-09-16 (second session) — signing-key rotation, sandbox `bravo`
+
+Everything in "Where the signing certificate lives, and how to rotate it" comes
+from this pass. It answers the "not established" bullet the earlier session left
+behind.
+
+- Tenant: `<your-tenant>.forgeblocks.com` (**sandbox**), realm `bravo`. Token
+  from the agent via `scripts/verify-endpoint.sh` (sanitised output; `--raw`
+  never used).
+- **Method.** One throwaway hosted SP, `https://sp-rotate-probe.example.com`
+  (metaAlias `/bravo/sp-rotate-probe`), created with `?_action=create` and never
+  placed in a circle of trust — so no CoT was touched and the delete could not
+  cascade. Three RSA-2048 self-signed certificates generated locally with
+  `openssl req -x509` (`CN=aic-rotate-probe-{a,b,c}`). Every observation is the
+  **SHA-256 of the DER** decoded out of `<ds:X509Certificate>` in the exported
+  metadata, compared against the fingerprint of the certificate on disk.
+- **Positive control.** The "before" fingerprint is known and named, not merely
+  "unchanged": the stock entity exported `CN=rsajwtsigningkey` for signing and
+  `CN=test` for encryption. A procedure that could not see a change would have
+  had to show that same pair after the mapping, and it did not.
+
+| Step (in order)                                                      | Result                                                             |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `POST …/saml2/hosted/?_action=create`                                | 201; `secretIdAndAlgorithms: {}`                                   |
+| `GET exportmetadata.jsp` (baseline)                                  | 1 signing `KeyDescriptor` = `CN=rsajwtsigningkey`; 1 encryption = `CN=test` |
+| `PUT` entity with `secretIdIdentifier: "aicrot1"`                    | 200; 3 labels `…saml2.aicrot1.{signing,encryption,mtls}` appear in `aic secretmap list-labels --realm bravo` |
+| `GET exportmetadata.jsp` (control)                                   | **both fingerprints unchanged** — the identifier alone rotates nothing |
+| `aic esv secret create … --encoding pem --no-placeholders` (key + cert A) | created; `loaded: true`, `loadedVersion: "1"` immediately          |
+| `aic secretmap set …aicrot1.signing esv-…` (12:23:13Z)               | 200                                                                |
+| `GET exportmetadata.jsp` (12:23:25Z)                                 | **1** signing `KeyDescriptor`, fingerprint = certificate A; encryption still `CN=test` |
+| `aic esv secret add-version` (key + cert B), export ~10 s later      | **2** signing `KeyDescriptor`s: B (active, v2) first, A (v1) second |
+| `aic esv secret disable … 1`, then export                           | back to **1** (B), within 5 s                                      |
+| `aic esv secret enable … 1`, then export                            | back to **2**, within 4 s                                          |
+| `PUT` entity with `secretIdIdentifier: "aicrot2"`, then export      | back to `CN=rsajwtsigningkey`; `…aicrot1.*` gone from the label enum, **the `…aicrot1.signing` mapping still listed** |
+| `PUT` entity back to `aicrot1`, then export                         | both probe certificates again                                      |
+| `PUT` mapping with `aliases: [esv-…-signing2, esv-…-signing]`       | **400** `Invalid config: Only a single alias per mapping is allowed for this secret store type` |
+| `DELETE` the entity                                                 | 200; labels gone from the enum, **mapping still listed** (orphan)  |
+| `aic secretmap remove …aicrot1.signing --realm bravo --force`        | refused: `"…" is not a valid secret label` — the CLI validates against the enum the delete just emptied |
+| `DELETE STORE/mappings/…aicrot1.signing`                            | 200, echoes the object                                             |
+| `GET /environment/startup`, sampled throughout                      | `restartStatus: ready` every time; `?_action=restart` **never called** |
+| Placeholder control: `aic esv secret create` with placeholders on   | `loaded: false`, `loadedVersion: ""` — the class that does need a restart; deleted again |
+| `POST …/saml2/{hosted,remote}?_action=schema`, scanned for key material | hosted: only `…clientAuthentication.excludeClientCertificate` (boolean); remote: `assertionContent.secrets` = `{secretIdIdentifier}` only |
+
+- **Cleanup confirmed.** Entity list and secret-mapping list were captured before
+  and after and `diff`ed: 10 entities and 6 mappings, identical both times. Both
+  throwaway ESV secrets deleted; `aic esv secret list` shows none matching
+  `aic-rotate-probe`. `restartStatus` still `ready`. No pre-existing entity,
+  mapping, ESV secret or CoT was written to.
+- **Not established by this pass:** *which* of the two published certificates AM
+  actually signs with during a rollover. The metadata order (active version
+  first) is the only evidence here, and ordering is not proof. Settling it needs
+  a live federation: sign an AuthnRequest or an assertion and read the
+  certificate out of the `<ds:Signature>`.
 
 ## Source citations
 
@@ -932,11 +1089,18 @@ from exactly this reading and was wrong.
   `importEntity` is ignored and `?_action=create` has no equivalent, so every
   path is a second `PUT` on the CoT — which is the call that can 500 half-way.
   There may be a console-only flow that does both atomically.
-- **Does mapping an ESV secret onto
-  `am.applications.federation.entity.providers.saml2.<id>.signing` actually
-  change the exported certificate**, and is a restart or cache flush needed? The
-  labels appear the moment `secretIdIdentifier` is set; nothing beyond that was
-  measured.
-- **Is `assertionContent.secrets`** (present on a remote IdP, absent on a hosted
-  one) the peer certificate in some form? It reads as `{}` on a freshly imported
-  entity, so it may be where a per-entity override would land.
+- **Which of the two published certificates does AM sign with** during a
+  rollover? The metadata lists the active ESV secret version first, which is the
+  natural reading, but ordering is not proof. Answering it needs a live
+  federation and a look at the `<ds:Signature>` on a real message. Closed by
+  measurement on 2026-09-16: *that* mapping an ESV secret onto
+  `…saml2.<id>.signing` changes the exported certificate, that the published set
+  is the secret's ENABLED versions, and that no restart is involved.
+- **Does a peer reliably accept two-certificate metadata?** AM publishes both
+  with no `<ds:KeyName>` to tell them apart, so the peer has to try both. Ping
+  and Entra do; a hand-rolled SP may not. This is a property of the peer, not of
+  AIC, and it is the thing that decides whether a rollover window is safe.
+- **Is `mtls` on a SAML entity ever used on AIC?** The third label appears
+  alongside `signing` and `encryption` whenever `secretIdIdentifier` is set, and
+  `excludeClientCertificate` exists to keep it out of the metadata, but nothing
+  here exercised it.

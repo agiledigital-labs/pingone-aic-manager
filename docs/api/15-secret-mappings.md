@@ -158,6 +158,43 @@ Families on the sandbox:
 
 Fallback for anything unrecognised: humanise the dotted id.
 
+## The label list is not fixed — SAML entities mint their own
+
+Most of the ~190 labels are AM constants. The SAML2 per-entity ones are not:
+they appear and disappear with the entity that names them.
+
+Setting a hosted or remote entity's
+`…signingAndEncryption.secretIdAndAlgorithms.secretIdIdentifier` (or, on a
+remote entity, `assertionContent.secrets.secretIdIdentifier`) to `X` adds
+exactly three labels to this realm's enum —
+
+```
+am.applications.federation.entity.providers.saml2.X.{signing,encryption,mtls}
+```
+
+— and deleting the entity, or repointing it at a different identifier, removes
+them again. This is the route by which a SAML signing certificate is rotated on
+AIC; `docs/api/06-saml.md` has the procedure end to end.
+
+**A mapping outlives its label.** Measured 2026-09-16 in the sandbox `bravo`:
+after the entity was repointed from `aicrot1` to `aicrot2`, and again after the
+entity was deleted outright, `…saml2.aicrot1.signing` was **still listed by
+`GET STORE/mappings?_queryFilter=true`** while `…aicrot1.*` had gone from the
+enum. The entity schema's own help text claims the mapping is removed when the
+identifier changes ("the corresponding mappings are removed if they aren't
+referenced by other entities"); over REST it is not.
+
+That leaves an orphan pointing at an ESV secret which may itself be deleted, and
+it is the state a rotation naturally produces. Two consequences:
+
+- **Delete the mapping first**, before changing `secretIdIdentifier` and before
+  deleting the entity. Nothing downstream will do it for you.
+- **`aic secretmap remove` cannot clean one up.** It validates the label against
+  the enum, and the orphan's label is no longer in it, so it refuses with
+  `"…" is not a valid secret label`. `DELETE STORE/mappings/{label}` still works
+  (200, echoing the object). The validation is right for `set` and wrong for
+  `remove`: removal should not require the label still to be advertised.
+
 ## Examples
 
 ```bash
@@ -211,7 +248,9 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "$AV" -H "Content-Type: appl
 - **No descriptions from the API** — `enumNames`/`enum_titles` just repeat the
   raw labels. Helper text is ours to curate (see Helper text).
 - **secretId must be in the schema `enum`.** You can only map labels AM
-  advertises; you can't invent arbitrary purposes.
+  advertises; you can't invent arbitrary purposes. But the enum is **not
+  static** — SAML2 entity labels come and go with their entity, and a mapping
+  survives the label's removal. See "The label list is not fixed".
 
 ## Verified against
 
@@ -241,6 +280,26 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "$AV" -H "Content-Type: appl
   other four types empty. `bravo` realm `…/ESV/mappings` → 200 (per-realm).
 - Console HAR also shows `?_action=getCreatableTypes` and the store-level
   `?_action=schema`/`?_action=getCreatableTypes` returning 200.
+
+### 2026-09-16 — dynamic SAML2 labels, sandbox `bravo`
+
+Evidence collected while rotating a SAML signing key; the full table is in
+`docs/api/06-saml.md`'s "2026-09-16 (second session)" block. Relevant here:
+
+- `POST STORE/mappings?_action=schema` before/after a throwaway hosted SP was
+  `PUT` with `secretIdIdentifier: "aicrot1"`: the enum gained exactly
+  `…saml2.aicrot1.{signing,encryption,mtls}`, and lost them again when the
+  identifier changed and when the entity was deleted.
+- `PUT STORE/mappings/…aicrot1.signing` with
+  `{"secretId":"…","aliases":["esv-…"]}` → 200; a second `PUT` carrying **two**
+  aliases → `400 "Only a single alias per mapping is allowed for this secret
+  store type"`, re-confirming the 2026-06-17 finding on a different realm and a
+  different label family.
+- `GET STORE/mappings?_queryFilter=true` after the entity `DELETE` → the mapping
+  is still there (orphan). `aic secretmap remove … --force` → refused,
+  `"…" is not a valid secret label`. `DELETE STORE/mappings/{label}` → 200.
+- Mapping list captured before and after the whole exercise and `diff`ed: 6
+  mappings, identical. Nothing pre-existing was written to.
 
 ## Source citations
 
