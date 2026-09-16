@@ -36,7 +36,7 @@ pub enum MetadataCommand {
         file: PathBuf,
         /// Write the spliced XML here. Default: stdout.
         #[arg(long, value_name = "PATH")]
-        output: Option<PathBuf>,
+        out: Option<PathBuf>,
         /// Keep an enveloped signature that no longer matches the content.
         #[arg(long)]
         keep_signature: bool,
@@ -62,18 +62,15 @@ pub async fn run(command: SamlCommand) -> Result<()> {
 
 fn run_metadata(command: MetadataCommand) -> Result<()> {
     match command {
-        MetadataCommand::Inspect { file } => {
-            let xml = read_xml(&file)?;
-            print_json(&metadata::inspect(&xml)?)
-        }
+        MetadataCommand::Inspect { file } => print_json(&inspect_file(&file)?),
         MetadataCommand::Sanitise {
             file,
-            output,
+            out,
             keep_signature,
         } => {
             let xml = read_xml(&file)?;
             let result = metadata::sanitise(&xml, SanitiseOpts { keep_signature })?;
-            write_xml(output.as_deref(), &result.bytes)?;
+            write_xml(out.as_deref(), &result.bytes)?;
             for removal in &result.removed {
                 eprintln!("{removal}");
             }
@@ -85,6 +82,10 @@ fn run_metadata(command: MetadataCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn inspect_file(path: &Path) -> Result<metadata::MetadataDoc> {
+    Ok(metadata::inspect(&read_xml(path)?)?)
 }
 
 fn read_xml(path: &Path) -> Result<Vec<u8>> {
@@ -133,7 +134,7 @@ mod tests {
         run(SamlCommand::Metadata {
             command: MetadataCommand::Sanitise {
                 file: input,
-                output: Some(output.clone()),
+                out: Some(output.clone()),
                 keep_signature: false,
             },
         })
@@ -161,11 +162,13 @@ mod tests {
         .await
         .expect("inspect");
 
-        let doc = metadata::inspect(&std::fs::read(&input).expect("read input")).expect("parse");
+        let doc = inspect_file(&input).expect("parse");
         assert_eq!(
             doc.entity_id,
             "https://sts.windows.net/00000000-0000-0000-0000-000000000000/"
         );
+        assert_eq!(doc.roles, vec![metadata::Role::IdentityProvider]);
+        assert_eq!(doc.would_remove.len(), 3);
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
@@ -179,7 +182,7 @@ mod tests {
         run(SamlCommand::Metadata {
             command: MetadataCommand::Sanitise {
                 file: input,
-                output: Some(output.clone()),
+                out: Some(output.clone()),
                 keep_signature: true,
             },
         })
@@ -218,7 +221,7 @@ mod tests {
             "metadata",
             "sanitise",
             "in.xml",
-            "--output",
+            "--out",
             "out.xml",
             "--keep-signature",
         ])
@@ -228,7 +231,7 @@ mod tests {
                 SamlCommand::Metadata {
                     command:
                         MetadataCommand::Sanitise {
-                            output,
+                            out,
                             keep_signature,
                             ..
                         },
@@ -237,7 +240,7 @@ mod tests {
         else {
             panic!("expected saml metadata sanitise");
         };
-        assert_eq!(output.as_deref(), Some(Path::new("out.xml")));
+        assert_eq!(out.as_deref(), Some(Path::new("out.xml")));
         assert!(keep_signature);
     }
 }
