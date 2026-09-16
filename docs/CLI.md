@@ -1159,10 +1159,12 @@ would remove at default options.
 
 `sanitise` splices the original buffer rather than parsing and reserialising.
 It writes the result to `--out`, or to stdout if that flag is omitted. The
-removal report goes to stderr, one line per element. Default options strip an
-enveloped signature (it would not cover the bytes we emit) plus elements on
-the strip list; `--keep-signature` keeps the signature and, if anything else
-was removed, prints a warning that it is now stale.
+removal report goes to stderr, one line per element. Default options strip
+WS-Federation `RoleDescriptor`s and, only when that (or another) cut would
+change the document, an enveloped XML signature — a signed document that
+needs no other stripping is left intact. `--keep-signature` keeps the
+signature and, if anything else was removed, prints a warning that it is
+now stale.
 
 There is no `import`, `export`, `list`, `get`, or `delete` yet.
 

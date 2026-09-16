@@ -22,31 +22,31 @@ use std::ops::Range;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use quick_xml::Reader;
+use quick_xml::NsReader;
 use quick_xml::XmlVersion;
 use quick_xml::escape::unescape;
 use quick_xml::events::{BytesStart, Event};
+use quick_xml::name::{Namespace, ResolveResult};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 type Result<T> = std::result::Result<T, MetadataError>;
 
-/// Element local names stripped before a document is handed to AM.
+/// SAML 2.0 metadata. Root, roles, and key descriptors live here.
+const SAML_NS: &[u8] = b"urn:oasis:names:tc:SAML:2.0:metadata";
+/// XML Signature. A `Signature` in any other namespace is not an enveloped
+/// signature over this document.
+const DSIG_NS: &[u8] = b"http://www.w3.org/2000/09/xmldsig#";
+/// WS-Federation. Entra's extra roles are in this namespace, not SAML's.
 ///
-/// Data, not code: one row per finding, so a second rejection cause costs one
-/// line and the removal report names which row fired.
-///
-/// **`RoleDescriptor` is not verified against AM's importer.** It is here
-/// because Entra's `federationmetadata.xml` carries two WS-Federation roles
-/// that are not SAML 2.0 at all, and because a mandatory removal report turns
-/// a still-failing import into "we stripped X and it still failed" rather
-/// than a mystery. A live import (slice S7) is what can promote this to a
-/// verified claim in `docs/api/06-saml.md`.
-const STRIP_LOCAL_NAMES: &[&str] = &["RoleDescriptor"];
+/// **Not verified against AM's importer.** A live import is what can promote
+/// this to a claim in `docs/api/06-saml.md`. Matching the namespace (not the
+/// prefix, not the local name alone) is what stops `ext:RoleDescriptor` in
+/// some other vocabulary from being deleted.
+const WSFED_NS: &[u8] = b"http://docs.oasis-open.org/wsfed/federation/200706";
 
-/// The XML-Signature element. Kept out of [`STRIP_LOCAL_NAMES`] because it is
-/// conditional on `--keep-signature`, and because its reason differs: not that
-/// AM rejects it, but that it signs bytes we are about to change.
+/// The XML-Signature element. Conditional on `--keep-signature`, and only
+/// removed when some *other* cut would change the signed bytes.
 const SIGNATURE_LOCAL_NAME: &str = "Signature";
 
 /// The one root element this module accepts. `EntitiesDescriptor` — an
@@ -83,7 +83,10 @@ pub enum Role {
 }
 
 impl Role {
-    fn from_local_name(name: &str) -> Option<Self> {
+    fn from_expanded_name(name: &str, ns: Option<&[u8]>) -> Option<Self> {
+        if ns != Some(SAML_NS) {
+            return None;
+        }
         match name {
             "IDPSSODescriptor" => Some(Self::IdentityProvider),
             "SPSSODescriptor" => Some(Self::ServiceProvider),
@@ -222,8 +225,7 @@ pub fn inspect(xml: &[u8]) -> Result<MetadataDoc> {
         signed: scan.signed,
         endpoints: scan.endpoints,
         certs: scan.certs,
-        would_remove: scan
-            .cuts
+        would_remove: cuts_for_opts(scan.cuts, SanitiseOpts::default())
             .into_iter()
             .map(|cut| cut.removal)
             .collect::<Vec<_>>(),
@@ -238,19 +240,39 @@ pub fn inspect(xml: &[u8]) -> Result<MetadataDoc> {
 pub fn sanitise(xml: &[u8], opts: SanitiseOpts) -> Result<Sanitised> {
     let scan = scan(xml)?;
     let kept_signature = opts.keep_signature && scan.signed;
-    let (ranges, removed): (Vec<_>, Vec<_>) = scan
-        .cuts
-        .into_iter()
-        .filter(|cut| {
-            !(opts.keep_signature && cut.removal.reason == RemovalReason::EnvelopedSignature)
-        })
-        .map(|cut| (cut.range, cut.removal))
-        .unzip();
+    let cuts = cuts_for_opts(scan.cuts, opts);
+    let changed = cuts
+        .iter()
+        .any(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature);
+    let (ranges, removed): (Vec<_>, Vec<_>) =
+        cuts.into_iter().map(|cut| (cut.range, cut.removal)).unzip();
     Ok(Sanitised {
         bytes: splice(xml, &ranges),
-        stale_signature: kept_signature && !removed.is_empty(),
+        stale_signature: kept_signature && changed,
         removed,
     })
+}
+
+/// Default sanitise drops an enveloped signature only when some other cut
+/// would change the signed bytes. `--keep-signature` drops signature cuts
+/// always, and sets [`Sanitised::stale_signature`] when content still changes.
+fn cuts_for_opts(cuts: Vec<Cut>, opts: SanitiseOpts) -> Vec<Cut> {
+    if opts.keep_signature {
+        return cuts
+            .into_iter()
+            .filter(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature)
+            .collect();
+    }
+    if cuts
+        .iter()
+        .any(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature)
+    {
+        cuts
+    } else {
+        cuts.into_iter()
+            .filter(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature)
+            .collect()
+    }
 }
 
 /// Fingerprint the certificates a document publishes.
@@ -287,8 +309,14 @@ struct PendingKey {
 }
 
 fn scan(xml: &[u8]) -> Result<Scan> {
-    let mut reader = Reader::from_reader(xml);
+    std::str::from_utf8(xml).map_err(|error| MetadataError::Malformed {
+        offset: error.valid_up_to(),
+        detail: "input is not valid UTF-8".into(),
+    })?;
+
+    let mut reader = NsReader::from_reader(xml);
     reader.config_mut().check_end_names = true;
+    reader.config_mut().check_comments = true;
     reader.config_mut().expand_empty_elements = false;
 
     let mut path: Vec<String> = Vec::new();
@@ -308,33 +336,69 @@ fn scan(xml: &[u8]) -> Result<Scan> {
 
     loop {
         let start = position(&reader);
-        let event = reader
-            .read_event()
-            .map_err(|error| MetadataError::Malformed {
-                offset: start,
-                detail: error.to_string(),
-            })?;
+        let (resolved, event) =
+            reader
+                .read_resolved_event()
+                .map_err(|error| MetadataError::Malformed {
+                    offset: start,
+                    detail: error.to_string(),
+                })?;
+        let ns = match resolved {
+            ResolveResult::Bound(Namespace(uri)) => Some(uri.to_vec()),
+            ResolveResult::Unknown(prefix) => {
+                return Err(MetadataError::Malformed {
+                    offset: start,
+                    detail: format!(
+                        "unknown namespace prefix '{}'",
+                        String::from_utf8_lossy(&prefix)
+                    ),
+                });
+            }
+            ResolveResult::Unbound => None,
+        };
         let end = position(&reader);
+        let ns = ns.as_deref();
 
         match event {
+            Event::Decl(decl) => {
+                if let Some(enc) = decl.encoding() {
+                    let enc = enc.map_err(|error| MetadataError::Malformed {
+                        offset: start,
+                        detail: error.to_string(),
+                    })?;
+                    if !enc.eq_ignore_ascii_case(b"utf-8") && !enc.eq_ignore_ascii_case(b"utf8") {
+                        return Err(MetadataError::Malformed {
+                            offset: start,
+                            detail: format!(
+                                "unsupported encoding '{}'; only UTF-8 is accepted",
+                                String::from_utf8_lossy(&enc)
+                            ),
+                        });
+                    }
+                }
+            }
             Event::Start(element) | Event::Empty(element) => {
                 let empty = end > start && xml[start..end].ends_with(b"/>");
                 let name = local_name(&element);
 
+                if root_seen && path.is_empty() {
+                    return Err(trailing(start, &name));
+                }
+
                 if !root_seen {
                     root_seen = true;
-                    if name != ROOT_LOCAL_NAME {
+                    if name != ROOT_LOCAL_NAME || ns != Some(SAML_NS) {
                         return Err(MetadataError::NotEntityMetadata { root: name });
                     }
                     entity_id = attribute(&element, "entityID", start)?;
                 }
 
-                if let Some(role) = Role::from_local_name(&name) {
+                if let Some(role) = Role::from_expanded_name(&name, ns) {
                     if !scan.roles.contains(&role) {
                         scan.roles.push(role);
                     }
                 }
-                if name == SIGNATURE_LOCAL_NAME {
+                if name == SIGNATURE_LOCAL_NAME && ns == Some(DSIG_NS) {
                     scan.signed = true;
                 }
                 if let (Some(binding), Some(location)) = (
@@ -348,7 +412,7 @@ fn scan(xml: &[u8]) -> Result<Scan> {
                         location,
                     });
                 }
-                if name == "KeyDescriptor" {
+                if name == "KeyDescriptor" && ns == Some(SAML_NS) {
                     pending_key = Some(PendingKey {
                         key_use: attribute(&element, "use", start)?,
                         key_name: None,
@@ -362,7 +426,7 @@ fn scan(xml: &[u8]) -> Result<Scan> {
                 // reporting it separately would tell an operator about bytes
                 // that were never theirs to keep.
                 if open_cut.is_none()
-                    && let Some(reason) = strip_reason(&name)
+                    && let Some(reason) = strip_reason(&name, ns)
                 {
                     let removal = Removal {
                         element: qualified_name(&element),
@@ -409,6 +473,15 @@ fn scan(xml: &[u8]) -> Result<Scan> {
                 }
             }
             Event::Text(text) => {
+                if root_seen && path.is_empty() {
+                    let raw = text.decode().map_err(|error| MetadataError::Malformed {
+                        offset: start,
+                        detail: error.to_string(),
+                    })?;
+                    if !raw.chars().all(char::is_whitespace) {
+                        return Err(trailing(start, "text"));
+                    }
+                }
                 if let Some(key) = &mut pending_key {
                     let raw = text.decode().map_err(|error| MetadataError::Malformed {
                         offset: start,
@@ -445,13 +518,21 @@ fn scan(xml: &[u8]) -> Result<Scan> {
     Ok(scan)
 }
 
-fn strip_reason(local_name: &str) -> Option<RemovalReason> {
-    if local_name == SIGNATURE_LOCAL_NAME {
+fn trailing(offset: usize, what: &str) -> MetadataError {
+    MetadataError::Malformed {
+        offset,
+        detail: format!("trailing {what} after the root element"),
+    }
+}
+
+fn strip_reason(local_name: &str, ns: Option<&[u8]>) -> Option<RemovalReason> {
+    if local_name == SIGNATURE_LOCAL_NAME && ns == Some(DSIG_NS) {
         return Some(RemovalReason::EnvelopedSignature);
     }
-    STRIP_LOCAL_NAMES
-        .contains(&local_name)
-        .then_some(RemovalReason::UnsupportedRole)
+    if local_name == "RoleDescriptor" && ns == Some(WSFED_NS) {
+        return Some(RemovalReason::UnsupportedRole);
+    }
+    None
 }
 
 /// The nearest enclosing role descriptor. `EntityDescriptor` is the document
@@ -465,7 +546,7 @@ fn enclosing_descriptor(path: &[String]) -> Option<String> {
         .cloned()
 }
 
-fn position(reader: &Reader<&[u8]>) -> usize {
+fn position(reader: &NsReader<&[u8]>) -> usize {
     // The input is an in-memory slice, so its length fits a usize by
     // construction.
     reader.buffer_position() as usize
@@ -666,7 +747,9 @@ mod tests {
                 stripped.clone(),
                 1,
             ),
-            ("no prefix at all", prefixed(""), stripped.clone(), 1),
+            // Unprefixed in the SAML default namespace is a SAML RoleDescriptor,
+            // not WS-Fed. Matching the local name alone used to delete it.
+            ("no prefix at all", prefixed(""), prefixed("").clone(), 0),
             (
                 "a longer name that merely starts with it",
                 format!("{HEAD}\n  <RoleDescriptorExtension>keep</RoleDescriptorExtension>{TAIL}"),
@@ -753,6 +836,46 @@ mod tests {
         )
         .expect("fixture parses");
         assert!(!kept.stale_signature);
+    }
+
+    const SIGNED_CLEAN: &str = "<?xml version=\"1.0\"?>\n\
+        <EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\"\n\
+        \x20                 entityID=\"https://idp.example.com\">\n\
+        \x20 <ds:Signature xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\">\
+        <ds:SignedInfo/></ds:Signature>\n\
+        \x20 <IDPSSODescriptor protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\"/>\n\
+        </EntityDescriptor>\n";
+
+    #[test]
+    fn a_signed_document_with_nothing_else_to_strip_keeps_its_signature() {
+        // Discriminating control for the default: Signature is removed because
+        // we are about to change signed bytes, not because AM rejects it.
+        let result = clean(SIGNED_CLEAN);
+        assert!(
+            String::from_utf8(result.bytes.clone())
+                .expect("utf-8")
+                .contains("<ds:Signature"),
+            "default sanitise deleted a signature over unchanged content"
+        );
+        assert!(result.removed.is_empty(), "{:?}", result.removed);
+        let doc = inspect(SIGNED_CLEAN.as_bytes()).expect("parses");
+        assert!(doc.signed);
+        assert!(doc.would_remove.is_empty(), "{:?}", doc.would_remove);
+    }
+
+    #[test]
+    fn a_role_descriptor_in_some_other_namespace_is_not_stripped() {
+        let input = format!(
+            "{HEAD}\n  <ext:RoleDescriptor xmlns:ext=\"urn:not-wsfed\" \
+             protocolSupportEnumeration=\"urn:x\"/>{TAIL}"
+        );
+        let result = clean(&input);
+        assert_eq!(
+            String::from_utf8(result.bytes).expect("utf-8"),
+            input,
+            "stripped a RoleDescriptor that was not WS-Federation"
+        );
+        assert!(result.removed.is_empty(), "{:?}", result.removed);
     }
 
     // ── inspection ──────────────────────────────────────────────────────────
@@ -857,6 +980,18 @@ mod tests {
             ("no entityID", "<EntityDescriptor />"),
             ("empty input", ""),
             (
+                "two top-level EntityDescriptors",
+                "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"https://sp-a.example.com\"/><EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"https://sp-b.example.com\"/>",
+            ),
+            (
+                "an XML-invalid comment",
+                "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"https://sp-a.example.com\"><!-- bad -- comment --></EntityDescriptor>",
+            ),
+            (
+                "a root in some other namespace",
+                "<html:EntityDescriptor xmlns:html=\"urn:not-saml\" entityID=\"https://sp-a.example.com\"/>",
+            ),
+            (
                 "a certificate that is not base64",
                 "<EntityDescriptor entityID=\"x\"><KeyDescriptor use=\"signing\">\
                  <X509Certificate>not base64 !!</X509Certificate></KeyDescriptor>\
@@ -877,6 +1012,9 @@ mod tests {
                 "{case}: cert_refs accepted it"
             );
         }
+
+        let invalid_utf8 = b"<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"x\">\xff\xfe</EntityDescriptor>";
+        assert!(inspect(invalid_utf8).is_err(), "invalid UTF-8 was accepted");
     }
 
     #[test]
@@ -884,7 +1022,9 @@ mod tests {
         // The empty-element form takes a different branch from the
         // start/end pair, and an unhandled `<RoleDescriptor />` would leave
         // the cut open and swallow the rest of the document.
-        let input = format!("{HEAD}\n  <fed:RoleDescriptor xmlns:fed=\"urn:x\" />{TAIL}");
+        let input = format!(
+            "{HEAD}\n  <fed:RoleDescriptor xmlns:fed=\"http://docs.oasis-open.org/wsfed/federation/200706\" />{TAIL}"
+        );
         let result = clean(&input);
         assert_eq!(
             String::from_utf8(result.bytes).expect("output is utf-8"),
