@@ -9,9 +9,15 @@ Local Keycloak peer for the forthcoming `aic saml` CLI. Two realms:
 scripts/saml-harness/harness.sh up
 scripts/saml-harness/harness.sh status
 scripts/saml-harness/harness.sh metadata aic-idp
+scripts/saml-harness/harness.sh verify-rotate aic-idp
 scripts/saml-harness/harness.sh down     # keeps the volume
 scripts/saml-harness/harness.sh reset    # wipes the volume
 ```
+
+`verify-rotate` adds a signing key, removes the old one, and asserts the
+surviving `KeyDescriptor` **is** the certificate it just published and **is
+not** a pre-rotation one. Counts cannot tell those apart: deleting either key
+leaves the same `1 -> 2 -> 1` sequence.
 
 Admin console: <http://localhost:18080/admin> (`admin` / `admin`, local-dev).
 

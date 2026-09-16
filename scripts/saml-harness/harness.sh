@@ -66,6 +66,34 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+# Every command but `help` shells out to all four — metadata and the rotation
+# commands go through pretty_xml/key_report just as `up` goes through docker.
+# Checked once, in main, so a machine without python3 gets this script's own
+# message instead of a raw interpreter error from inside a pipeline.
+need_tools() {
+  need docker
+  need curl
+  need jq
+  need python3
+}
+
+# Every scratch file goes in one directory removed by a single EXIT trap: each
+# `die` below is an early exit past whatever `rm -f` the caller wrote after it.
+#
+# A directory and not a tracked list, because `tmp="$(tmpfile)"` runs tmpfile in
+# a subshell — an array appended to there is lost in the parent, so a list-based
+# tracker silently cleans nothing. Measured: 37 files survived a run.
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/aic-saml-harness.XXXXXX")"
+
+cleanup_tmp() {
+  rm -rf "$WORKDIR"
+}
+trap cleanup_tmp EXIT
+
+tmpfile() {
+  mktemp "${WORKDIR}/f.XXXXXX"
+}
+
 usage() {
   cat <<EOF
 Usage: $0 <command> [args]
@@ -84,7 +112,8 @@ Certificate rotation (measured against the descriptor, not inferred)
   rotate-add [realm] Add a higher-priority rsa-generated signing key
   rotate-rm  [realm] Remove the lowest-priority rsa-generated signing key
   verify-rotate [realm]
-                     Count signing KeyDescriptors, add, count, remove, count
+                     Add then remove, and assert the surviving signing key IS
+                     the added one and is NOT a pre-rotation one
 
 Peer registration (paste AIC metadata in; never a URL fetch)
   register-sp <file> Import an SPSSODescriptor as a SAML client in ${REALM_IDP}
@@ -160,21 +189,24 @@ ensure_token() {
 
 # kc_req METHOD PATH [curl args…]
 # Sets KC_CODE and KC_BODY. Does not fail on HTTP errors.
+#
+# One scratch file for the whole run, reused (curl -o truncates) so the dozens
+# of calls a `status` makes do not each add an entry the EXIT trap must clean.
+KC_TMP=""
+
 kc_req() {
   local method="$1"
   local path="$2"
   shift 2
-  local tmp
   ensure_token
-  tmp="$(mktemp)"
+  [ -n "$KC_TMP" ] || KC_TMP="$(tmpfile)"
   KC_CODE="$(
-    curl -sS -o "$tmp" -w '%{http_code}' -X "$method" \
+    curl -sS -o "$KC_TMP" -w '%{http_code}' -X "$method" \
       -H "Authorization: Bearer ${TOKEN}" \
       -H "Content-Type: application/json" \
       "${CURL_BASE}${path}" "$@"
   )"
-  KC_BODY="$(cat "$tmp")"
-  rm -f "$tmp"
+  KC_BODY="$(cat "$KC_TMP")"
 }
 
 kc_expect() {
@@ -227,20 +259,121 @@ fetch_descriptor() {
 }
 
 # stdin: SAML metadata XML
-# stdout: "total signing encryption unspecified"
-count_key_descriptors() {
+# stdout: one space-separated record per line —
+#   role <label> <total> <signing> <encryption> <unspecified>
+#   key  <label> <use> <identity> <KeyName|->
+#
+# Counts are scoped to the enclosing role descriptor and never summed across
+# roles. A Keycloak realm descriptor has one IDPSSODescriptor, but an AIC entity
+# can hold both identityProvider and serviceProvider roles, and a whole-document
+# count would silently add the two together.
+#
+# <identity> is what a key is compared BY. It is the SHA-256 of the DER decoded
+# from <ds:X509Certificate>, because AIC emits no <ds:KeyName> at all (measured,
+# docs/api/06-saml.md) and a comparison keyed on KeyName would be vacuous there.
+# KeyName is the fallback (prefixed "kid:") when there is no certificate, and
+# "unknown" when there is neither — callers that compare identities must refuse
+# that value rather than match it against itself.
+key_report() {
   python3 -c '
+import base64
+import binascii
+import hashlib
 import sys
 import xml.etree.ElementTree as ET
-raw = sys.stdin.read()
-root = ET.fromstring(raw)
-ns = "urn:oasis:names:tc:SAML:2.0:metadata"
-keys = list(root.iter("{%s}KeyDescriptor" % ns))
-def n(use):
-    return sum(1 for k in keys if k.get("use") == use)
-unspec = sum(1 for k in keys if k.get("use") is None)
-print("%d %d %d %d" % (len(keys), n("signing"), n("encryption"), unspec))
+
+MD = "urn:oasis:names:tc:SAML:2.0:metadata"
+DS = "http://www.w3.org/2000/09/xmldsig#"
+
+# Every metadata element that may contain a KeyDescriptor of its own.
+ROLES = (
+    "IDPSSODescriptor",
+    "SPSSODescriptor",
+    "AuthnAuthorityDescriptor",
+    "AttributeAuthorityDescriptor",
+    "PDPDescriptor",
+    "RoleDescriptor",
+    "AffiliationDescriptor",
+)
+
+root = ET.fromstring(sys.stdin.read())
+
+def local(el):
+    return el.tag.split("}", 1)[1] if "}" in el.tag else el.tag
+
+roles = []
+seen = {}
+for el in root.iter():
+    name = local(el)
+    if el.tag == "{%s}%s" % (MD, name) and name in ROLES:
+        seen[name] = seen.get(name, 0) + 1
+        label = name if seen[name] == 1 else "%s#%d" % (name, seen[name])
+        roles.append((label, el))
+
+report = []
+owned = set()
+for label, el in roles:
+    keys = list(el.iter("{%s}KeyDescriptor" % MD))
+    owned.update(id(k) for k in keys)
+    report.append((label, keys))
+
+# Anything outside a role descriptor is reported separately rather than folded
+# into a neighbouring role, so a malformed document cannot inflate a real role.
+loose = [k for k in root.iter("{%s}KeyDescriptor" % MD) if id(k) not in owned]
+if loose or not report:
+    report.append(("(entity)", loose))
+
+def identity(k):
+    cert = k.find(".//{%s}X509Certificate" % DS)
+    if cert is not None and cert.text and cert.text.strip():
+        try:
+            der = base64.b64decode("".join(cert.text.split()), validate=True)
+        except (binascii.Error, ValueError):
+            der = None
+        if der:
+            return hashlib.sha256(der).hexdigest()
+    name = keyname(k)
+    return "kid:" + name if name != "-" else "unknown"
+
+def keyname(k):
+    kn = k.find(".//{%s}KeyName" % DS)
+    if kn is not None and kn.text and kn.text.strip():
+        return "_".join(kn.text.split())
+    return "-"
+
+out = sys.stdout
+for label, keys in report:
+    def n(use):
+        return sum(1 for k in keys if k.get("use") == use)
+    unspec = sum(1 for k in keys if k.get("use") is None)
+    out.write("role %s %d %d %d %d\n"
+              % (label, len(keys), n("signing"), n("encryption"), unspec))
+    for k in keys:
+        out.write("key %s %s %s %s\n"
+                  % (label, k.get("use") or "unspecified", identity(k), keyname(k)))
 '
+}
+
+# stdin: key_report output
+# stdout: "<role> <total> <signing> <encryption> <unspecified>", one role per line
+rep_role_counts() {
+  awk '$1 == "role" { printf "%s %s %s %s %s\n", $2, $3, $4, $5, $6 }'
+}
+
+# stdin: key_report output; stdout: signing KeyDescriptors across all roles
+rep_signing_count() {
+  awk '$1 == "role" { s += $4 } END { print s + 0 }'
+}
+
+# stdin: key_report output; stdout: sorted "<role>/<identity>" per signing key.
+# Role-qualified so two roles that publish the same certificate stay distinct.
+rep_signing_ids() {
+  awk '$1 == "key" && $3 == "signing" { print $2 "/" $4 }' | sort
+}
+
+# stdin: key_report output; stdout: human line per signing key
+rep_signing_labels() {
+  awk '$1 == "key" && $3 == "signing" { printf "  %s  %s  KeyName=%s\n", $2, $4, $5 }'
 }
 
 pretty_xml() {
@@ -258,17 +391,19 @@ sys.stdout.write("\n")
 '
 }
 
+# One fetch, one parse; callers that want both counts and identities keep the
+# report in a variable rather than refetching the descriptor per question.
+descriptor_report() {
+  local realm="$1"
+  fetch_descriptor "$realm" | key_report
+}
+
 signing_count() {
   local realm="$1"
-  fetch_descriptor "$realm" | count_key_descriptors | awk '{print $2}'
+  descriptor_report "$realm" | rep_signing_count
 }
 
 cmd_up() {
-  need docker
-  need curl
-  need jq
-  need python3
-
   if container_running; then
     log "container ${CONTAINER_NAME} already running"
   elif container_exists; then
@@ -294,7 +429,6 @@ cmd_up() {
 }
 
 cmd_down() {
-  need docker
   if container_exists; then
     log "removing container ${CONTAINER_NAME} (volume ${VOLUME_NAME} kept)"
     docker rm -f "$CONTAINER_NAME" >/dev/null
@@ -304,7 +438,6 @@ cmd_down() {
 }
 
 cmd_reset() {
-  need docker
   cmd_down
   if docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1; then
     log "removing volume ${VOLUME_NAME}"
@@ -454,11 +587,6 @@ bootstrap() {
 }
 
 cmd_status() {
-  need docker
-  need curl
-  need jq
-  need python3
-
   if ! container_exists; then
     log "container ${CONTAINER_NAME}: absent"
     log "volume ${VOLUME_NAME}: $(docker volume inspect "$VOLUME_NAME" >/dev/null 2>&1 && echo present || echo absent)"
@@ -488,19 +616,21 @@ cmd_status() {
       printf 'realm %s: missing (run: %s up)\n' "$realm" "$0"
       continue
     fi
-    local uid
+    local uid report role kd_total kd_signing kd_enc kd_unspec
     uid="$(user_id "$realm" "$TEST_USER")"
-    local kd_total kd_signing kd_enc kd_unspec
-    read -r kd_total kd_signing kd_enc kd_unspec <<EOF
-$(fetch_descriptor "$realm" | count_key_descriptors)
-EOF
+    report="$(descriptor_report "$realm")"
     printf 'realm %s\n' "$realm"
     printf '  entityID:     %s/realms/%s\n' "$PUBLIC_BASE" "$realm"
     printf '  descriptor:   %s/realms/%s/protocol/saml/descriptor\n' "$PUBLIC_BASE" "$realm"
     printf '  user:         %s (%s) %s\n' "$TEST_USER" "$TEST_EMAIL" \
       "$([ -n "$uid" ] && echo present || echo MISSING)"
-    printf '  KeyDescriptor total=%s signing=%s encryption=%s unspecified=%s\n' \
-      "$kd_total" "$kd_signing" "$kd_enc" "$kd_unspec"
+    # Per role descriptor, never summed: an entity holding two roles publishes
+    # two independent key sets.
+    while read -r role kd_total kd_signing kd_enc kd_unspec; do
+      printf '  KeyDescriptor %s: total=%s signing=%s encryption=%s unspecified=%s\n' \
+        "$role" "$kd_total" "$kd_signing" "$kd_enc" "$kd_unspec"
+    done < <(printf '%s\n' "$report" | rep_role_counts)
+    printf '%s\n' "$report" | rep_signing_labels
     kc_req GET "/admin/realms/${realm}/components?type=org.keycloak.keys.KeyProvider"
     kc_expect 200 "list key providers in ${realm}"
     printf '%s' "$KC_BODY" | jq -r '
@@ -539,29 +669,25 @@ cmd_metadata() {
   [ -n "$realm" ] || die "usage: $0 metadata <realm>"
   container_running || die "container not running; try: $0 up"
   local tmp code
-  tmp="$(mktemp)"
+  tmp="$(tmpfile)"
   code="$(curl -sS -o "$tmp" -w '%{http_code}' \
     "${CURL_BASE}/realms/${realm}/protocol/saml/descriptor")"
   if [ "$code" != "200" ]; then
-    rm -f "$tmp"
     die "GET /realms/${realm}/protocol/saml/descriptor -> HTTP ${code}"
   fi
   pretty_xml <"$tmp"
-  rm -f "$tmp"
 }
 
 cmd_sp_metadata() {
   container_running || die "container not running; try: $0 up"
   local tmp code
-  tmp="$(mktemp)"
+  tmp="$(tmpfile)"
   code="$(curl -sS -o "$tmp" -w '%{http_code}' \
     "${CURL_BASE}/realms/${REALM_SP}/broker/${IDP_ALIAS}/endpoint/descriptor")"
   if [ "$code" != "200" ]; then
-    rm -f "$tmp"
     die "GET broker descriptor -> HTTP ${code} (is identity provider ${IDP_ALIAS} present?)"
   fi
   pretty_xml <"$tmp"
-  rm -f "$tmp"
 }
 
 rsa_generated_json() {
@@ -574,9 +700,10 @@ rsa_generated_json() {
 cmd_rotate_add() {
   local realm="${1:-$REALM_IDP}"
   container_running || die "container not running; try: $0 up"
-  local parent max_pri new_pri before after
+  local parent max_pri new_pri before after before_rep after_rep added_ids
   parent="$(realm_uuid "$realm")"
-  before="$(signing_count "$realm")"
+  before_rep="$(descriptor_report "$realm")"
+  before="$(printf '%s\n' "$before_rep" | rep_signing_count)"
   max_pri="$(
     rsa_generated_json "$realm" | jq -r '
       if length == 0 then 0
@@ -601,9 +728,16 @@ cmd_rotate_add() {
        }'
   )"
   kc_expect 201 "add rsa-generated at priority ${new_pri}"
-  after="$(signing_count "$realm")"
+  after_rep="$(descriptor_report "$realm")"
+  after="$(printf '%s\n' "$after_rep" | rep_signing_count)"
   log "added rsa-generated-rotation-${new_pri} in ${realm}"
   log "signing KeyDescriptors: ${before} -> ${after}"
+  # Name the key that appeared, so `rotate-add` on its own says what it
+  # published rather than only that the count went up.
+  added_ids="$(comm -13 \
+    <(printf '%s\n' "$before_rep" | rep_signing_ids) \
+    <(printf '%s\n' "$after_rep" | rep_signing_ids))"
+  [ -z "$added_ids" ] || log "published signing key: $(printf '%s' "$added_ids" | tr '\n' ' ')"
   printf '%s\n' "$after"
 }
 
@@ -632,21 +766,77 @@ cmd_rotate_rm() {
   printf '%s\n' "$after"
 }
 
+# Refuse to compare keys that cannot be told apart: key_report emits "unknown"
+# for a KeyDescriptor carrying neither a certificate nor a KeyName, and matching
+# those against each other would make the identity assertion below vacuous.
+verify_identifiable() {
+  local report="$1" realm="$2" when="$3"
+  if rep_signing_ids <"$report" | grep -q '/unknown$'; then
+    die "verify-rotate ${realm}: a signing KeyDescriptor ${when} carries neither a certificate nor a KeyName; cannot verify which key survived"
+  fi
+}
+
+# The assertion this harness exists for.
+#
+# Counts alone cannot see the failure that matters. rotate-add inserts at the
+# HIGHEST priority and rotate-rm deletes the LOWEST, so a rotate-rm that removed
+# the NEW provider instead of the old one yields the identical count sequence
+# 1 -> 2 -> 1 and would be certified as a completed rotation while the published
+# certificate never changed. Identity is therefore primary and counts secondary:
+# the key left standing must BE the one rotate-add published, and no key that
+# predated the rotation may still be published.
+#
+# Keys are compared by the SHA-256 of their certificate (KeyName only as a
+# fallback) because AIC publishes no <ds:KeyName>; see key_report.
 cmd_verify_rotate() {
   local realm="${1:-$REALM_IDP}"
   container_running || die "container not running; try: $0 up"
-  local c0 c1 c2
-  c0="$(signing_count "$realm")"
+
+  local r0 r1 r2 c0 c1 c2 new_keys new_count old_survivors
+  r0="$(tmpfile)"
+  r1="$(tmpfile)"
+  r2="$(tmpfile)"
+
+  descriptor_report "$realm" >"$r0"
+  verify_identifiable "$r0" "$realm" "before rotation"
+  c0="$(rep_signing_count <"$r0")"
   log "verify-rotate ${realm}: before=${c0}"
+  rep_signing_labels <"$r0" >&2
+
   cmd_rotate_add "$realm" >/dev/null
-  c1="$(signing_count "$realm")"
+  descriptor_report "$realm" >"$r1"
+  verify_identifiable "$r1" "$realm" "after rotate-add"
+  c1="$(rep_signing_count <"$r1")"
   log "verify-rotate ${realm}: after-add=${c1}"
+  rep_signing_labels <"$r1" >&2
+
+  # The key rotate-add published: present after the add, absent before it.
+  new_keys="$(comm -13 <(rep_signing_ids <"$r0") <(rep_signing_ids <"$r1"))"
+  new_count="$(printf '%s\n' "$new_keys" | grep -c . || true)"
+  [ "$new_count" -eq 1 ] \
+    || die "verify-rotate ${realm}: rotate-add published ${new_count} new signing key(s), expected exactly 1"
+
   cmd_rotate_rm "$realm" >/dev/null
-  c2="$(signing_count "$realm")"
+  descriptor_report "$realm" >"$r2"
+  verify_identifiable "$r2" "$realm" "after rotate-rm"
+  c2="$(rep_signing_count <"$r2")"
   log "verify-rotate ${realm}: after-rm=${c2}"
+  rep_signing_labels <"$r2" >&2
+
   printf 'signing KeyDescriptors: %s -> %s -> %s\n' "$c0" "$c1" "$c2"
+  printf 'rotated to: %s\n' "$new_keys"
+
+  # Primary, in both directions: the new key survived AND every old one went.
+  rep_signing_ids <"$r2" | grep -Fxq -- "$new_keys" \
+    || die "verify-rotate ${realm}: rotate-rm removed the key rotate-add published (${new_keys}); the descriptor is back to its pre-rotation certificate and nothing rotated"
+
+  old_survivors="$(comm -12 <(rep_signing_ids <"$r0") <(rep_signing_ids <"$r2"))"
+  [ -z "$old_survivors" ] \
+    || die "verify-rotate ${realm}: pre-rotation signing key(s) still published after rotate-rm: $(printf '%s' "$old_survivors" | tr '\n' ' ')"
+
+  # Secondary: the counts the descriptor has always been checked on.
   if [ "$c1" -ne $((c0 + 1)) ] || [ "$c2" -ne "$c0" ]; then
-    die "rotation did not move the descriptor as expected"
+    die "verify-rotate ${realm}: rotation did not move the descriptor count as expected"
   fi
 }
 
@@ -655,17 +845,18 @@ cmd_register_sp() {
   [ -n "$file" ] && [ -f "$file" ] || die "usage: $0 register-sp <spssodescriptor.xml>"
   container_running || die "container not running; try: $0 up"
   ensure_token
-  local tmp conv client_id existing
-  tmp="$(mktemp)"
-  conv="$(mktemp)"
+  local tmp code conv client_id existing
+  tmp="$(tmpfile)"
+  code="$(tmpfile)"
+  conv="$(tmpfile)"
   # Converter consumes a JSON string that is the XML (Content-Type application/json,
   # body = the descriptor). Measured 200 for SPSSODescriptor, 500 for IDPSSODescriptor.
   curl -sS -o "$tmp" -w '%{http_code}' -X POST \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Content-Type: application/json" \
     --data-binary @"$file" \
-    "${CURL_BASE}/admin/realms/${REALM_IDP}/client-description-converter" >"${tmp}.code"
-  KC_CODE="$(cat "${tmp}.code")"
+    "${CURL_BASE}/admin/realms/${REALM_IDP}/client-description-converter" >"$code"
+  KC_CODE="$(cat "$code")"
   if [ "$KC_CODE" != "200" ]; then
     die "client-description-converter HTTP ${KC_CODE} (need an SPSSODescriptor, not an IdP descriptor): $(head -c 400 "$tmp")"
   fi
@@ -685,7 +876,6 @@ cmd_register_sp() {
     kc_expect 201 "create SAML client ${client_id}"
     log "created SAML client ${client_id} in ${REALM_IDP}"
   fi
-  rm -f "$tmp" "${tmp}.code" "$conv"
 }
 
 cmd_register_idp() {
@@ -693,9 +883,10 @@ cmd_register_idp() {
   [ -n "$file" ] && [ -f "$file" ] || die "usage: $0 register-idp <idpssodescriptor.xml>"
   container_running || die "container not running; try: $0 up"
   ensure_token
-  local imported merged
-  imported="$(mktemp)"
-  merged="$(mktemp)"
+  local imported code merged
+  imported="$(tmpfile)"
+  code="$(tmpfile)"
+  merged="$(tmpfile)"
   # Multipart file upload. JSON fromUrl 500s from this container (the server
   # cannot fetch the host's published port); AIC cannot fetch localhost either,
   # so file/paste is the only path that matters.
@@ -703,8 +894,8 @@ cmd_register_idp() {
     -H "Authorization: Bearer ${TOKEN}" \
     -F "providerId=saml" \
     -F "file=@${file};type=application/xml" \
-    "${CURL_BASE}/admin/realms/${REALM_SP}/identity-provider/import-config" >"${imported}.code"
-  KC_CODE="$(cat "${imported}.code")"
+    "${CURL_BASE}/admin/realms/${REALM_SP}/identity-provider/import-config" >"$code"
+  KC_CODE="$(cat "$code")"
   [ "$KC_CODE" = "200" ] || die "import-config HTTP ${KC_CODE}: $(cat "$imported")"
 
   local sp_entity existing_cfg
@@ -750,14 +941,13 @@ cmd_register_idp() {
     kc_expect 201 "create identity provider ${IDP_ALIAS}"
     log "created identity provider ${IDP_ALIAS} in ${REALM_SP} from ${file}"
   fi
-  rm -f "$imported" "${imported}.code" "$merged"
 }
 
 cmd_wire_loopback() {
   container_running || die "container not running; try: $0 up"
   local idp_xml sp_xml
-  idp_xml="$(mktemp)"
-  sp_xml="$(mktemp)"
+  idp_xml="$(tmpfile)"
+  sp_xml="$(tmpfile)"
   curl -fsS "${CURL_BASE}/realms/${REALM_IDP}/protocol/saml/descriptor" >"$idp_xml"
   cmd_register_idp "$idp_xml"
   # After import, wantAuthnRequestsSigned becomes true (copied from the IdP
@@ -765,7 +955,6 @@ cmd_wire_loopback() {
   # and register that as the SAML client on the IdP side.
   curl -fsS "${CURL_BASE}/realms/${REALM_SP}/broker/${IDP_ALIAS}/endpoint/descriptor" >"$sp_xml"
   cmd_register_sp "$sp_xml"
-  rm -f "$idp_xml" "$sp_xml"
   log "loopback wired: ${REALM_SP} brokers from ${REALM_IDP}"
   log "initiate at ${PUBLIC_BASE}/realms/${REALM_SP}/account/"
 }
@@ -775,10 +964,13 @@ main() {
   if [ $# -gt 0 ]; then
     shift
   fi
+  if [ "$cmd" != help ] && [ "$cmd" != -h ] && [ "$cmd" != --help ]; then
+    need_tools
+  fi
   case "$cmd" in
-    up) up_cmd_check; cmd_up "$@" ;;
+    up) cmd_up "$@" ;;
     down) cmd_down "$@" ;;
-    reset) up_cmd_check; cmd_reset "$@" ;;
+    reset) cmd_reset "$@" ;;
     status) cmd_status "$@" ;;
     metadata) cmd_metadata "$@" ;;
     sp-metadata) cmd_sp_metadata "$@" ;;
@@ -796,11 +988,5 @@ main() {
   esac
 }
 
-up_cmd_check() {
-  need docker
-  need curl
-  need jq
-  need python3
-}
 
 main "$@"
