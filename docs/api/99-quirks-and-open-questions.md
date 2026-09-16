@@ -1547,9 +1547,10 @@ Two things follow, both in `docs/api/15-secret-mappings.md`:
 
 - Rotation tooling has to delete the mapping itself, and has to do it **before**
   the identifier changes or the entity goes.
-- `aic secretmap remove` cannot delete an orphan, because it validates the label
-  against the enum that the entity's removal just emptied. `DELETE
-  STORE/mappings/{label}` works. This is an `aic` defect, not an API one.
+- `aic secretmap remove` used to refuse orphans for the same reason: it gated on
+  the enum the entity's removal had just emptied. It now keys off whether the
+  mapping exists. `DELETE STORE/mappings/{label}` always worked — the refusal
+  was an `aic` defect, not an API one.
 
 Contrast with `DELETE` on a SAML entity, which *does* silently edit every CoT
 that listed it (previous entry): AM cascades into circles of trust and does not
