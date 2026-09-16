@@ -189,11 +189,11 @@ it is the state a rotation naturally produces. Two consequences:
 
 - **Delete the mapping first**, before changing `secretIdIdentifier` and before
   deleting the entity. Nothing downstream will do it for you.
-- **`aic secretmap remove` cannot clean one up.** It validates the label against
-  the enum, and the orphan's label is no longer in it, so it refuses with
-  `"…" is not a valid secret label`. `DELETE STORE/mappings/{label}` still works
-  (200, echoing the object). The validation is right for `set` and wrong for
-  `remove`: removal should not require the label still to be advertised.
+- **`aic secretmap remove` deletes by existence, not by schema enum.** A mapping
+  `GET STORE/mappings?_queryFilter=true` still lists is removable even if its
+  label has dropped out of `secretId.enum`. `set` still validates against the
+  enum — don't map a label nothing will read. `DELETE STORE/mappings/{label}`
+  also works directly (200, echoing the object).
 
 ## Examples
 
@@ -247,10 +247,12 @@ curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "$AV" -H "Content-Type: appl
   Unlike trees/OAuth (which 400 on a body `_id`), here the body carries the label.
 - **No descriptions from the API** — `enumNames`/`enum_titles` just repeat the
   raw labels. Helper text is ours to curate (see Helper text).
-- **secretId must be in the schema `enum`.** You can only map labels AM
-  advertises; you can't invent arbitrary purposes. But the enum is **not
-  static** — SAML2 entity labels come and go with their entity, and a mapping
-  survives the label's removal. See "The label list is not fixed".
+- **secretId must be in the schema `enum` to create a mapping.** You can only
+  map labels AM advertises; you can't invent arbitrary purposes. But the enum is
+  **not static** — SAML2 entity labels come and go with their entity, and a
+  mapping survives the label's removal. Removal — `DELETE`, and
+  `aic secretmap remove` — keys off whether the mapping exists, not whether the
+  label is still advertised. See "The label list is not fixed".
 
 ## Verified against
 
@@ -296,8 +298,10 @@ Evidence collected while rotating a SAML signing key; the full table is in
   store type"`, re-confirming the 2026-06-17 finding on a different realm and a
   different label family.
 - `GET STORE/mappings?_queryFilter=true` after the entity `DELETE` → the mapping
-  is still there (orphan). `aic secretmap remove … --force` → refused,
-  `"…" is not a valid secret label`. `DELETE STORE/mappings/{label}` → 200.
+  is still there (orphan). At measurement time `aic secretmap remove … --force`
+  → refused, `"…" is not a valid secret label`, because it gated on the enum;
+  `DELETE STORE/mappings/{label}` → 200. The CLI now keys removal off existence
+  rather than the enum (see above).
 - Mapping list captured before and after the whole exercise and `diff`ed: 6
   mappings, identical. Nothing pre-existing was written to.
 

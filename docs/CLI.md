@@ -1152,8 +1152,12 @@ aic secretmap list [--realm alpha] [--json]            # configured mappings
 aic secretmap list-labels [--realm alpha] [--json]     # valid AM secret labels (alias: labels)
 aic secretmap get <secret-label> [--realm alpha]       # one raw mapping
 aic secretmap set <secret-label> <esv-secret-id> [--realm alpha] [--force]
-aic secretmap remove <secret-label> [--realm alpha]    # alias: delete
+aic secretmap remove <secret-label> [--realm alpha] [--force]  # alias: delete
 ```
+
+`remove` deletes a mapping that exists on the tenant, even if its label is no
+longer in `list-labels` (SAML entity identifier changes leave such orphans).
+`set` still requires a label from `list-labels`.
 
 ---
 
