@@ -310,6 +310,51 @@ pub fn cert_refs(xml: &[u8]) -> Result<Vec<CertRef>> {
     Ok(scan(xml)?.certs)
 }
 
+/// Whether the document's root element is a SAML 2.0 `<EntityDescriptor>`.
+///
+/// Deliberately weaker than [`inspect`], and the difference is the point. The
+/// metadata-export JSP reports failure with HTTP 200 and a plain-text body
+/// (`docs/api/06-saml.md`), so something has to tell a metadata document from
+/// a message — and that question is only about the root element. A *roleless*
+/// entity exports a bare `<EntityDescriptor/>` with no `entityID` at all,
+/// which is a successful export that [`inspect`] rejects with
+/// [`MetadataError::NoEntityId`]; a certificate this scanner dislikes is
+/// likewise a complaint about content, not evidence that the export failed.
+///
+/// The namespace is checked, so `<html:EntityDescriptor xmlns:html="...">` is
+/// not one.
+pub fn is_entity_descriptor(xml: &[u8]) -> bool {
+    if std::str::from_utf8(xml).is_err() {
+        return false;
+    }
+    let mut reader = NsReader::from_reader(xml);
+    reader.config_mut().check_end_names = false;
+    reader.config_mut().check_comments = false;
+    reader.config_mut().expand_empty_elements = false;
+    loop {
+        match reader.read_resolved_event() {
+            Ok((resolved, Event::Start(element) | Event::Empty(element))) => {
+                let namespace = match resolved {
+                    ResolveResult::Bound(Namespace(ns)) => Some(ns),
+                    _ => None,
+                };
+                return local_name(&element) == ROOT_LOCAL_NAME && namespace == Some(SAML_NS);
+            }
+            // Only a prolog may precede the root: declaration, DOCTYPE,
+            // comments, processing instructions, whitespace. Text with
+            // content before any element means this is not an XML document at
+            // all -- which is exactly how the JSP's error body arrives.
+            Ok((_, Event::Text(text))) => {
+                if !text.iter().all(u8::is_ascii_whitespace) {
+                    return false;
+                }
+            }
+            Ok((_, Event::Decl(_) | Event::DocType(_) | Event::Comment(_) | Event::PI(_))) => {}
+            Ok(_) | Err(_) => return false,
+        }
+    }
+}
+
 // ── the scanner ─────────────────────────────────────────────────────────────
 
 struct Cut {
@@ -1585,5 +1630,64 @@ mod tests {
             format!("{HEAD}{TAIL}")
         );
         assert_eq!(result.removed.len(), 1);
+    }
+
+    /// `is_entity_descriptor` is what stands between a 200 that failed and a
+    /// file called `entity.xml`, so it is tested on the boundary cases
+    /// `inspect` deliberately treats differently.
+    #[test]
+    fn is_entity_descriptor_answers_root_identity_only() {
+        let cases: [(&str, String, bool); 8] = [
+            ("a full document", format!("{HEAD}{TAIL}"), true),
+            (
+                // inspect() rejects this with NoEntityId; the export that
+                // produced it still succeeded.
+                "a roleless entity's bare self-closing descriptor",
+                format!("<EntityDescriptor xmlns=\"{SAML_URI}\"/>"),
+                true,
+            ),
+            (
+                "a prolog in front of it",
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- note -->\n\
+                     <EntityDescriptor xmlns=\"{SAML_URI}\"/>"
+                ),
+                true,
+            ),
+            (
+                "a prefixed but correctly bound root",
+                format!("<md:EntityDescriptor xmlns:md=\"{SAML_URI}\"/>"),
+                true,
+            ),
+            (
+                // The discriminating case for the namespace check: same local
+                // name, wrong namespace.
+                "the right local name in the wrong namespace",
+                "<EntityDescriptor xmlns=\"urn:not-saml\"/>".to_string(),
+                false,
+            ),
+            (
+                "an EntitiesDescriptor aggregate",
+                format!("<EntitiesDescriptor xmlns=\"{SAML_URI}\"/>"),
+                false,
+            ),
+            (
+                "the JSP's plain-text failure body",
+                "ERROR : No metadata for entity found.".to_string(),
+                false,
+            ),
+            ("nothing at all", String::new(), false),
+        ];
+
+        for (what, xml, expected) in cases {
+            assert_eq!(is_entity_descriptor(xml.as_bytes()), expected, "{what}");
+        }
+    }
+
+    #[test]
+    fn is_entity_descriptor_rejects_bytes_that_are_not_utf8() {
+        assert!(!is_entity_descriptor(
+            b"<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\">\xff\xfe"
+        ));
     }
 }
