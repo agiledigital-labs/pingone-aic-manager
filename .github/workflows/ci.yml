@@ -71,6 +71,23 @@ jobs:
             | tar -xz -C /tmp gitleaks
           /tmp/gitleaks git . --redact --no-banner --exit-code 1
 
+  # No toolchain and no network beyond the checkout, like the metadata job.
+  # The repo is ~30 shell scripts and nothing linted any of them.
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installed on the hosted image today; installing only when it is absent
+      # means this step does not quietly stop running if that changes.
+      - name: Shellcheck (all scripts)
+        run: |
+          command -v shellcheck >/dev/null 2>&1 \
+            || { sudo apt-get update && sudo apt-get install -y shellcheck; }
+          shellcheck --version
+          scripts/shellcheck-all.sh
+
   gate:
     name: fmt + clippy + test
     runs-on: ubuntu-22.04
