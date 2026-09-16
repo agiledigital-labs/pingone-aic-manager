@@ -15,7 +15,12 @@
 //!
 //! **Parse failure is refusal, never pass-through** — the same philosophy as
 //! `src/pullguard.rs`. A document we could not read is a document we cannot
-//! promise anything about.
+//! promise anything about. Tokenising is not validating, so the scanner adds
+//! what `quick_xml` does not check: exactly one root element, which events are
+//! legal in each of XML's three document sections, and an
+//! expanded name for every element *and* every attribute — an undeclared
+//! prefix anywhere on an element is a refusal, because we cannot know what
+//! name it was meant to be.
 
 use std::fmt;
 use std::ops::Range;
@@ -26,7 +31,7 @@ use quick_xml::NsReader;
 use quick_xml::XmlVersion;
 use quick_xml::escape::unescape;
 use quick_xml::events::{BytesStart, Event};
-use quick_xml::name::{Namespace, ResolveResult};
+use quick_xml::name::{Namespace, NamespaceResolver, QName, ResolveResult};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -37,17 +42,28 @@ const SAML_NS: &[u8] = b"urn:oasis:names:tc:SAML:2.0:metadata";
 /// XML Signature. A `Signature` in any other namespace is not an enveloped
 /// signature over this document.
 const DSIG_NS: &[u8] = b"http://www.w3.org/2000/09/xmldsig#";
-/// WS-Federation. Entra's extra roles are in this namespace, not SAML's.
+/// WS-Federation. Entra authors extra roles as SAML's abstract
+/// `{SAML}RoleDescriptor` with `xsi:type` a QName in this namespace
+/// (`SecurityTokenServiceType`, `ApplicationServiceType`). Matching that
+/// expanded type — not the element's namespace, not the prefix — is what
+/// hits real Entra metadata and leaves a SAML `RoleDescriptor` without
+/// that type alone.
 ///
 /// **Not verified against AM's importer.** A live import is what can promote
-/// this to a claim in `docs/api/06-saml.md`. Matching the namespace (not the
-/// prefix, not the local name alone) is what stops `ext:RoleDescriptor` in
-/// some other vocabulary from being deleted.
+/// this to a claim in `docs/api/06-saml.md`.
 const WSFED_NS: &[u8] = b"http://docs.oasis-open.org/wsfed/federation/200706";
+/// `xsi:type` lives here. A bare `type` attribute is a different name.
+const XSI_NS: &[u8] = b"http://www.w3.org/2001/XMLSchema-instance";
 
-/// The XML-Signature element. Conditional on `--keep-signature`, and only
-/// removed when some *other* cut would change the signed bytes.
+/// The XML-Signature element. Only a *direct child* of `EntityDescriptor`
+/// signs the whole document; one further down signs the role it sits in.
+/// Conditional on `--keep-signature`, and only removed when some *other* cut
+/// would change the bytes it covers.
 const SIGNATURE_LOCAL_NAME: &str = "Signature";
+
+/// The five entities XML predefines. Any other name needs a DTD declaration
+/// to have a replacement text at all, and we do not read DTDs.
+const PREDEFINED_ENTITIES: [&str; 5] = ["amp", "lt", "gt", "quot", "apos"];
 
 /// The one root element this module accepts. `EntitiesDescriptor` — an
 /// aggregate of several entities — is legal SAML metadata and is refused
@@ -138,9 +154,11 @@ pub struct CertRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RemovalReason {
-    /// On [`STRIP_LOCAL_NAMES`].
+    /// A WS-Federation role: SAML's abstract `RoleDescriptor` given a
+    /// WS-Federation `xsi:type` — `wsfed_role_type` holds the full selector.
     UnsupportedRole,
-    /// An enveloped signature over content this rewrite changes.
+    /// An enveloped signature over the whole document, when this rewrite
+    /// changes bytes it covers.
     EnvelopedSignature,
 }
 
@@ -189,8 +207,11 @@ impl fmt::Display for Removal {
 pub struct MetadataDoc {
     pub entity_id: String,
     pub roles: Vec<Role>,
-    /// Whether the document carries an enveloped signature at all — a fact
-    /// about the document, separate from whether we would remove it.
+    /// Whether the document carries an enveloped signature over *itself* — a
+    /// `Signature` that is a direct child of `EntityDescriptor`. A signature
+    /// further down covers one role; removing a *sibling* role leaves it
+    /// verifying, so it is neither counted here nor removed. A fact about the
+    /// document, separate from whether we would remove it.
     pub signed: bool,
     pub endpoints: Vec<Endpoint>,
     pub certs: Vec<CertRef>,
@@ -253,9 +274,15 @@ pub fn sanitise(xml: &[u8], opts: SanitiseOpts) -> Result<Sanitised> {
     })
 }
 
-/// Default sanitise drops an enveloped signature only when some other cut
-/// would change the signed bytes. `--keep-signature` drops signature cuts
-/// always, and sets [`Sanitised::stale_signature`] when content still changes.
+/// Default sanitise drops the document's enveloped signature only when some
+/// other cut would change the bytes it covers. `--keep-signature` drops
+/// signature cuts always, and sets [`Sanitised::stale_signature`] when content
+/// still changes.
+///
+/// Scope matters and the scanner has already applied it: the only
+/// [`RemovalReason::EnvelopedSignature`] cut that reaches here is a direct
+/// child of `EntityDescriptor`, so "any other cut" really does mean "inside
+/// the bytes this signature signs".
 fn cuts_for_opts(cuts: Vec<Cut>, opts: SanitiseOpts) -> Vec<Cut> {
     if opts.keep_signature {
         return cuts
@@ -308,6 +335,34 @@ struct PendingKey {
     certs: Vec<(usize, String)>,
 }
 
+/// Which of XML's three document sections an event arrived in.
+///
+/// The grammar is `prolog element Misc*`, and it is the *only* thing that
+/// makes a second XML declaration, a `DOCTYPE` after the root, or a stray
+/// CDATA section ill-formed — each of them tokenises perfectly. `quick_xml`
+/// is a tokeniser, so this is ours to enforce, and the scanner matches every
+/// event kind against it rather than ignoring the kinds it does not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    /// Everything before the root element's start tag.
+    Prolog,
+    /// Inside the root element.
+    Root,
+    /// Everything after the root element's end tag.
+    Epilog,
+}
+
+impl Section {
+    /// How to name this section in a refusal, as the tail of a sentence.
+    fn placement(self) -> &'static str {
+        match self {
+            Self::Prolog => "before the root element",
+            Self::Root => "inside the root element",
+            Self::Epilog => "after the root element",
+        }
+    }
+}
+
 fn scan(xml: &[u8]) -> Result<Scan> {
     std::str::from_utf8(xml).map_err(|error| MetadataError::Malformed {
         offset: error.valid_up_to(),
@@ -324,6 +379,7 @@ fn scan(xml: &[u8]) -> Result<Scan> {
     let mut pending_key: Option<PendingKey> = None;
     let mut entity_id: Option<String> = None;
     let mut root_seen = false;
+    let mut any_event_seen = false;
 
     let mut scan = Scan {
         entity_id: String::new(),
@@ -345,22 +401,32 @@ fn scan(xml: &[u8]) -> Result<Scan> {
                 })?;
         let ns = match resolved {
             ResolveResult::Bound(Namespace(uri)) => Some(uri.to_vec()),
-            ResolveResult::Unknown(prefix) => {
-                return Err(MetadataError::Malformed {
-                    offset: start,
-                    detail: format!(
-                        "unknown namespace prefix '{}'",
-                        String::from_utf8_lossy(&prefix)
-                    ),
-                });
-            }
+            ResolveResult::Unknown(prefix) => return Err(unknown_prefix(start, &prefix)),
             ResolveResult::Unbound => None,
         };
         let end = position(&reader);
         let ns = ns.as_deref();
+        let first_event = !any_event_seen;
+        any_event_seen = true;
+        let section = if !root_seen {
+            Section::Prolog
+        } else if path.is_empty() {
+            Section::Epilog
+        } else {
+            Section::Root
+        };
 
+        // Every event kind is matched, and every arm decides against
+        // `section`. A wildcard arm here is how a second XML declaration, a
+        // misplaced `DOCTYPE` and a trailing CDATA section all used to pass.
         match event {
             Event::Decl(decl) => {
+                // A declaration is legal exactly once, as the first thing in
+                // the document. Anywhere else it is character data pretending
+                // to be a prolog.
+                if !first_event {
+                    return Err(misplaced(start, "an XML declaration", section));
+                }
                 if let Some(enc) = decl.encoding() {
                     let enc = enc.map_err(|error| MetadataError::Malformed {
                         offset: start,
@@ -377,20 +443,36 @@ fn scan(xml: &[u8]) -> Result<Scan> {
                     }
                 }
             }
+            Event::DocType(_) => {
+                // Legal in the prolog only. We read no DTD, so any entity it
+                // declares is refused where it is *used* — see
+                // `Event::GeneralRef` below.
+                if section != Section::Prolog {
+                    return Err(misplaced(start, "a DOCTYPE declaration", section));
+                }
+            }
+            // Legal in all three sections, and neither is content we read.
+            // Splicing carries their bytes through untouched.
+            Event::Comment(_) | Event::PI(_) => {}
             Event::Start(element) | Event::Empty(element) => {
                 let empty = end > start && xml[start..end].ends_with(b"/>");
                 let name = local_name(&element);
+                // Read every attribute now, resolved, so an undeclared prefix
+                // on one we never look at is still a refusal.
+                let attrs = Attrs::read(&element, reader.resolver(), start)?;
 
-                if root_seen && path.is_empty() {
-                    return Err(trailing(start, &name));
-                }
-
-                if !root_seen {
-                    root_seen = true;
-                    if name != ROOT_LOCAL_NAME || ns != Some(SAML_NS) {
-                        return Err(MetadataError::NotEntityMetadata { root: name });
+                match section {
+                    Section::Epilog => {
+                        return Err(misplaced(start, &format!("<{name}>"), section));
                     }
-                    entity_id = attribute(&element, "entityID", start)?;
+                    Section::Prolog => {
+                        root_seen = true;
+                        if name != ROOT_LOCAL_NAME || ns != Some(SAML_NS) {
+                            return Err(MetadataError::NotEntityMetadata { root: name });
+                        }
+                        entity_id = attrs.unqualified("entityID").map(str::to_owned);
+                    }
+                    Section::Root => {}
                 }
 
                 if let Some(role) = Role::from_expanded_name(&name, ns) {
@@ -398,23 +480,26 @@ fn scan(xml: &[u8]) -> Result<Scan> {
                         scan.roles.push(role);
                     }
                 }
-                if name == SIGNATURE_LOCAL_NAME && ns == Some(DSIG_NS) {
+                // Only a direct child of the root signs the whole document;
+                // `path` holds just the root at that point.
+                let enveloped_signature =
+                    name == SIGNATURE_LOCAL_NAME && ns == Some(DSIG_NS) && path.len() == 1;
+                if enveloped_signature {
                     scan.signed = true;
                 }
-                if let (Some(binding), Some(location)) = (
-                    attribute(&element, "Binding", start)?,
-                    attribute(&element, "Location", start)?,
-                ) {
+                if let (Some(binding), Some(location)) =
+                    (attrs.unqualified("Binding"), attrs.unqualified("Location"))
+                {
                     scan.endpoints.push(Endpoint {
                         descriptor: enclosing_descriptor(&path),
                         kind: name.clone(),
-                        binding,
-                        location,
+                        binding: binding.to_owned(),
+                        location: location.to_owned(),
                     });
                 }
                 if name == "KeyDescriptor" && ns == Some(SAML_NS) {
                     pending_key = Some(PendingKey {
-                        key_use: attribute(&element, "use", start)?,
+                        key_use: attrs.unqualified("use").map(str::to_owned),
                         key_name: None,
                         depth: path.len(),
                         certs: Vec::new(),
@@ -425,13 +510,19 @@ fn scan(xml: &[u8]) -> Result<Scan> {
                 // nested inside one already being removed goes with it, and
                 // reporting it separately would tell an operator about bytes
                 // that were never theirs to keep.
+                let strip = if enveloped_signature {
+                    Some((RemovalReason::EnvelopedSignature, None))
+                } else {
+                    wsfed_role_type(&name, ns, &attrs, reader.resolver(), start)?
+                        .map(|xsi_type| (RemovalReason::UnsupportedRole, Some(xsi_type)))
+                };
                 if open_cut.is_none()
-                    && let Some(reason) = strip_reason(&name, ns)
+                    && let Some((reason, xsi_type)) = strip
                 {
                     let removal = Removal {
                         element: qualified_name(&element),
                         local_name: name.clone(),
-                        xsi_type: attribute(&element, "type", start)?,
+                        xsi_type,
                         line: line_at(xml, start),
                         reason,
                     };
@@ -473,35 +564,81 @@ fn scan(xml: &[u8]) -> Result<Scan> {
                 }
             }
             Event::Text(text) => {
-                if root_seen && path.is_empty() {
-                    let raw = text.decode().map_err(|error| MetadataError::Malformed {
-                        offset: start,
-                        detail: error.to_string(),
-                    })?;
-                    if !raw.chars().all(char::is_whitespace) {
-                        return Err(trailing(start, "text"));
+                let raw = text.decode().map_err(|error| MetadataError::Malformed {
+                    offset: start,
+                    detail: error.to_string(),
+                })?;
+                match section {
+                    Section::Root if pending_key.is_some() => {
+                        let body = unescape(&raw)
+                            .map_err(|error| MetadataError::Malformed {
+                                offset: start,
+                                detail: error.to_string(),
+                            })?
+                            .into_owned();
+                        take_key_text(pending_key.as_mut(), &path, line_at(xml, start), body);
                     }
-                }
-                if let Some(key) = &mut pending_key {
-                    let raw = text.decode().map_err(|error| MetadataError::Malformed {
-                        offset: start,
-                        detail: error.to_string(),
-                    })?;
-                    let body = unescape(&raw)
-                        .map_err(|error| MetadataError::Malformed {
-                            offset: start,
-                            detail: error.to_string(),
-                        })?
-                        .into_owned();
-                    match path.last().map(String::as_str) {
-                        Some("X509Certificate") => key.certs.push((line_at(xml, start), body)),
-                        Some("KeyName") => key.key_name = Some(body.trim().to_string()),
-                        _ => {}
+                    // Character data we do not read. Splicing preserves it.
+                    Section::Root => {}
+                    // Whitespace around the root is the only character data
+                    // the prolog and the epilog may hold.
+                    Section::Prolog | Section::Epilog => {
+                        if !raw.chars().all(char::is_whitespace) {
+                            return Err(misplaced(start, "text", section));
+                        }
                     }
                 }
             }
+            Event::CData(cdata) => {
+                if section != Section::Root {
+                    return Err(misplaced(start, "a CDATA section", section));
+                }
+                // Character data with no escaping. A certificate written this
+                // way is still a certificate, and skipping the event would
+                // report a `<KeyDescriptor>` as carrying none.
+                let body = cdata.decode().map_err(|error| MetadataError::Malformed {
+                    offset: start,
+                    detail: error.to_string(),
+                })?;
+                take_key_text(
+                    pending_key.as_mut(),
+                    &path,
+                    line_at(xml, start),
+                    body.into_owned(),
+                );
+            }
+            Event::GeneralRef(reference) => {
+                if section != Section::Root {
+                    return Err(misplaced(start, "an entity reference", section));
+                }
+                let name = reference
+                    .decode()
+                    .map_err(|error| MetadataError::Malformed {
+                        offset: start,
+                        detail: error.to_string(),
+                    })?
+                    .into_owned();
+                // A reference splits the character data around it, so a value
+                // we actually read would arrive as fragments. Refusing beats
+                // fingerprinting half a certificate.
+                if let Some(holder) = reading_key_text(pending_key.as_ref(), &path) {
+                    return Err(MetadataError::Malformed {
+                        offset: start,
+                        detail: format!("an entity reference inside <{holder}>"),
+                    });
+                }
+                // Elsewhere it is text we do not read and splicing preserves
+                // it verbatim — but only if we can be sure it *has* a
+                // replacement text. A DTD-declared entity does not qualify:
+                // we never read the DTD.
+                if !reference.is_char_ref() && !PREDEFINED_ENTITIES.contains(&name.as_str()) {
+                    return Err(MetadataError::Malformed {
+                        offset: start,
+                        detail: format!("undeclared entity reference '&{name};'"),
+                    });
+                }
+            }
             Event::Eof => break,
-            _ => {}
         }
     }
 
@@ -518,21 +655,141 @@ fn scan(xml: &[u8]) -> Result<Scan> {
     Ok(scan)
 }
 
-fn trailing(offset: usize, what: &str) -> MetadataError {
+/// An event that tokenised cleanly but is not legal where it appeared.
+fn misplaced(offset: usize, what: &str, section: Section) -> MetadataError {
     MetadataError::Malformed {
         offset,
-        detail: format!("trailing {what} after the root element"),
+        detail: format!("{what} {}", section.placement()),
     }
 }
 
-fn strip_reason(local_name: &str, ns: Option<&[u8]>) -> Option<RemovalReason> {
-    if local_name == SIGNATURE_LOCAL_NAME && ns == Some(DSIG_NS) {
-        return Some(RemovalReason::EnvelopedSignature);
+/// The `<KeyDescriptor>` child whose character data we are reading, if any.
+/// Both are leaf elements holding exactly one value.
+fn reading_key_text<'a>(pending_key: Option<&PendingKey>, path: &'a [String]) -> Option<&'a str> {
+    pending_key?;
+    match path.last().map(String::as_str) {
+        Some(holder @ ("X509Certificate" | "KeyName")) => Some(holder),
+        _ => None,
     }
-    if local_name == "RoleDescriptor" && ns == Some(WSFED_NS) {
-        return Some(RemovalReason::UnsupportedRole);
+}
+
+/// File one run of character data against the `<KeyDescriptor>` being read.
+/// Called for `Text` and for `CData`, which differ only in escaping.
+fn take_key_text(pending_key: Option<&mut PendingKey>, path: &[String], line: usize, body: String) {
+    let Some(key) = pending_key else { return };
+    match path.last().map(String::as_str) {
+        Some("X509Certificate") => key.certs.push((line, body)),
+        Some("KeyName") => key.key_name = Some(body.trim().to_string()),
+        _ => {}
     }
-    None
+}
+
+/// The WS-Federation `xsi:type` of a role Entra adds and AM's importer
+/// rejects, or `None` when this element is not one.
+///
+/// The whole selector, in expanded names:
+///
+/// - the element is `{SAML}RoleDescriptor` — SAML's *abstract* role, which is
+///   what real Entra metadata and the WS-Federation specification both emit.
+///   The element is **not** in the WS-Federation namespace; only its type is;
+/// - it carries an `{XSI}type` attribute — a bare `type` is a different name;
+/// - that attribute's value, read as a QName in this element's own namespace
+///   scope, is in [`WSFED_NS`].
+///
+/// Every part is an expanded name, so the `fed:` or `wsfed:` prefix a
+/// particular document happens to author never enters into it. Any WS-Fed
+/// type counts: Entra's `SecurityTokenServiceType` and
+/// `ApplicationServiceType` are the two seen in the wild, not a closed list.
+fn wsfed_role_type(
+    local_name: &str,
+    ns: Option<&[u8]>,
+    attrs: &Attrs,
+    resolver: &NamespaceResolver,
+    offset: usize,
+) -> Result<Option<String>> {
+    if local_name != "RoleDescriptor" || ns != Some(SAML_NS) {
+        return Ok(None);
+    }
+    let Some(raw) = attrs.get(Some(XSI_NS), "type") else {
+        return Ok(None);
+    };
+    // An unprefixed QName *value* resolves against the default namespace,
+    // unlike an attribute *name* — hence `true`. Schema collapses the
+    // surrounding whitespace a QName value may carry; the report still names
+    // the value as the file spells it.
+    let (resolved, _) = resolver.resolve(QName(raw.trim().as_bytes()), true);
+    match resolved {
+        ResolveResult::Bound(Namespace(uri)) if uri == WSFED_NS => Ok(Some(raw.to_owned())),
+        ResolveResult::Unknown(prefix) => Err(unknown_prefix(offset, &prefix)),
+        ResolveResult::Bound(_) | ResolveResult::Unbound => Ok(None),
+    }
+}
+
+/// Every attribute of one element, each name resolved to its expanded form.
+///
+/// Read once per element rather than once per lookup, because the check that
+/// matters most is the one on the attributes we *don't* read: an undeclared
+/// prefix anywhere on the element means we cannot say what the element
+/// carries, and this module refuses what it cannot read.
+struct Attrs {
+    /// `(namespace, local name, normalised value)`, in document order. An
+    /// unprefixed attribute name has no namespace — the default namespace
+    /// applies to element names only.
+    items: Vec<(Option<Vec<u8>>, String, String)>,
+}
+
+impl Attrs {
+    fn read(element: &BytesStart<'_>, resolver: &NamespaceResolver, offset: usize) -> Result<Self> {
+        let mut items = Vec::new();
+        for attribute in element.attributes() {
+            let attribute = attribute.map_err(|error| MetadataError::Malformed {
+                offset,
+                detail: error.to_string(),
+            })?;
+            let (resolved, local) = resolver.resolve_attribute(attribute.key);
+            let ns = match resolved {
+                ResolveResult::Bound(Namespace(uri)) => Some(uri.to_vec()),
+                ResolveResult::Unknown(prefix) => return Err(unknown_prefix(offset, &prefix)),
+                ResolveResult::Unbound => None,
+            };
+            let value = attribute
+                .normalized_value(XmlVersion::default())
+                .map_err(|error| MetadataError::Malformed {
+                    offset,
+                    detail: error.to_string(),
+                })?;
+            items.push((
+                ns,
+                String::from_utf8_lossy(local.as_ref()).into_owned(),
+                value.into_owned(),
+            ));
+        }
+        Ok(Self { items })
+    }
+
+    fn get(&self, ns: Option<&[u8]>, local: &str) -> Option<&str> {
+        self.items
+            .iter()
+            .find(|(item_ns, item_local, _)| item_ns.as_deref() == ns && item_local == local)
+            .map(|(_, _, value)| value.as_str())
+    }
+
+    /// An attribute the SAML schema declares unqualified — `entityID`,
+    /// `Binding`, `Location`, `use`. A prefixed `ext:entityID` is a
+    /// *different* name and must not answer for the one the schema requires.
+    fn unqualified(&self, local: &str) -> Option<&str> {
+        self.get(None, local)
+    }
+}
+
+fn unknown_prefix(offset: usize, prefix: &[u8]) -> MetadataError {
+    MetadataError::Malformed {
+        offset,
+        detail: format!(
+            "unknown namespace prefix '{}'",
+            String::from_utf8_lossy(prefix)
+        ),
+    }
 }
 
 /// The nearest enclosing role descriptor. `EntityDescriptor` is the document
@@ -561,29 +818,6 @@ fn local_name(element: &BytesStart<'_>) -> String {
 
 fn qualified_name(element: &BytesStart<'_>) -> String {
     String::from_utf8_lossy(element.name().as_ref()).into_owned()
-}
-
-/// One attribute, matched on its local name so `xsi:type` and a bare `type`
-/// read the same. Malformed attributes are a parse failure, not an absent
-/// value.
-fn attribute(element: &BytesStart<'_>, local: &str, offset: usize) -> Result<Option<String>> {
-    for attribute in element.attributes() {
-        let attribute = attribute.map_err(|error| MetadataError::Malformed {
-            offset,
-            detail: error.to_string(),
-        })?;
-        if attribute.key.local_name().as_ref() != local.as_bytes() {
-            continue;
-        }
-        let value = attribute
-            .normalized_value(XmlVersion::default())
-            .map_err(|error| MetadataError::Malformed {
-                offset,
-                detail: error.to_string(),
-            })?;
-        return Ok(Some(value.into_owned()));
-    }
-    Ok(None)
 }
 
 /// SHA-256 over the DER the base64 body decodes to. AM wraps its exports at
@@ -678,8 +912,8 @@ mod tests {
             report(&clean(ENTRA)),
             vec![
                 "line 16: removed <ds:Signature> — enveloped signature; it would not cover the bytes we emit",
-                "line 36: removed <fed:RoleDescriptor xsi:type=\"fed:SecurityTokenServiceType\"> — not a SAML 2.0 role; on the strip list",
-                "line 60: removed <fed:RoleDescriptor xsi:type=\"fed:ApplicationServiceType\"> — not a SAML 2.0 role; on the strip list",
+                "line 36: removed <RoleDescriptor xsi:type=\"fed:SecurityTokenServiceType\"> — not a SAML 2.0 role; on the strip list",
+                "line 60: removed <RoleDescriptor xsi:type=\"fed:ApplicationServiceType\"> — not a SAML 2.0 role; on the strip list",
             ]
         );
     }
@@ -704,27 +938,7 @@ mod tests {
         assert!(result.removed.is_empty(), "{:?}", result.removed);
     }
 
-    // ── prefix handling ─────────────────────────────────────────────────────
-
-    /// A document whose only prefixed element is the one under test, so every
-    /// prefix spelling has the *same* expected output.
-    fn prefixed(prefix: &str) -> String {
-        let (qualified, declaration) = if prefix.is_empty() {
-            (String::new(), String::new())
-        } else {
-            (
-                format!("{prefix}:"),
-                format!(" xmlns:{prefix}=\"http://docs.oasis-open.org/wsfed/federation/200706\""),
-            )
-        };
-        format!(
-            "{HEAD}\
-             \n  <{qualified}RoleDescriptor{declaration} protocolSupportEnumeration=\"urn:x\">\
-             \n    <KeyDescriptor use=\"signing\" />\
-             \n  </{qualified}RoleDescriptor>\
-             {TAIL}"
-        )
-    }
+    // ── WS-Fed RoleDescriptor matching ──────────────────────────────────────
 
     const HEAD: &str = "<?xml version=\"1.0\"?>\n\
         <EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\"\n\
@@ -732,24 +946,87 @@ mod tests {
     const TAIL: &str = "\n  <SPSSODescriptor \
         protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\" />\n\
         </EntityDescriptor>\n";
+    const WSFED_URI: &str = "http://docs.oasis-open.org/wsfed/federation/200706";
+    const XSI_URI: &str = "http://www.w3.org/2001/XMLSchema-instance";
+    const SAML_URI: &str = "urn:oasis:names:tc:SAML:2.0:metadata";
+    const DSIG_URI: &str = "http://www.w3.org/2000/09/xmldsig#";
+
+    /// Real Entra shape: `{SAML}RoleDescriptor` with `xsi:type` a QName in
+    /// WS-Fed, whatever prefix the document bound that URI to.
+    fn entra_shaped(prefix: &str, type_local: &str) -> String {
+        format!(
+            "{HEAD}\n  <RoleDescriptor xmlns:{prefix}=\"{WSFED_URI}\" xmlns:xsi=\"{XSI_URI}\" \
+             xsi:type=\"{prefix}:{type_local}\" protocolSupportEnumeration=\"urn:x\">\
+             \n    <KeyDescriptor use=\"signing\" />\
+             \n  </RoleDescriptor>{TAIL}"
+        )
+    }
 
     #[test]
-    fn the_strip_list_matches_a_whole_local_name_whatever_the_prefix() {
+    fn wsfed_roles_match_saml_roledescriptor_plus_xsi_type() {
         let stripped = format!("{HEAD}{TAIL}");
         // Each case: what goes in, what must come out, how many removals.
-        // The three prefixes must agree; the three negatives are the ones a
-        // substring matcher gets wrong while passing every fixture test.
+        // The first three are the real Entra form with different prefixes and
+        // type local names; the rest are the matchers a plausible-but-wrong
+        // implementation agrees with the fixture on.
         let cases: &[(&str, String, String, usize)] = &[
-            ("entra's fed: prefix", prefixed("fed"), stripped.clone(), 1),
             (
-                "another tenant's prefix",
-                prefixed("wsfed"),
+                "entra's fed: type prefix",
+                entra_shaped("fed", "SecurityTokenServiceType"),
                 stripped.clone(),
                 1,
             ),
-            // Unprefixed in the SAML default namespace is a SAML RoleDescriptor,
-            // not WS-Fed. Matching the local name alone used to delete it.
-            ("no prefix at all", prefixed(""), prefixed("").clone(), 0),
+            (
+                "another tenant's type prefix",
+                entra_shaped("wsfed", "ApplicationServiceType"),
+                stripped.clone(),
+                1,
+            ),
+            (
+                "a WS-Fed type that is not one of Entra's two names",
+                entra_shaped("fed", "SomeFutureType"),
+                stripped.clone(),
+                1,
+            ),
+            (
+                // A QName *value* with no prefix resolves against the default
+                // namespace, unlike an attribute *name*. Here the element is
+                // SAML through a prefix and the type is WS-Fed through the
+                // default declaration — the mirror image of the usual shape.
+                "an xsi:type with no prefix at all",
+                format!(
+                    "{HEAD}\n  <md:RoleDescriptor xmlns:md=\"{SAML_URI}\" xmlns=\"{WSFED_URI}\" \
+                     xmlns:xsi=\"{XSI_URI}\" xsi:type=\"SecurityTokenServiceType\" \
+                     protocolSupportEnumeration=\"urn:x\"/>{TAIL}"
+                ),
+                stripped.clone(),
+                1,
+            ),
+            (
+                // Schema collapses the whitespace around a QName value.
+                "an xsi:type padded with whitespace",
+                format!(
+                    "{HEAD}\n  <RoleDescriptor xmlns:fed=\"{WSFED_URI}\" xmlns:xsi=\"{XSI_URI}\" \
+                     xsi:type=\" fed:SecurityTokenServiceType \" \
+                     protocolSupportEnumeration=\"urn:x\"/>{TAIL}"
+                ),
+                stripped.clone(),
+                1,
+            ),
+            (
+                "a SAML RoleDescriptor with no xsi:type",
+                format!(
+                    "{HEAD}\n  <RoleDescriptor protocolSupportEnumeration=\"urn:x\">\
+                     \n    <KeyDescriptor use=\"signing\" />\
+                     \n  </RoleDescriptor>{TAIL}"
+                ),
+                format!(
+                    "{HEAD}\n  <RoleDescriptor protocolSupportEnumeration=\"urn:x\">\
+                     \n    <KeyDescriptor use=\"signing\" />\
+                     \n  </RoleDescriptor>{TAIL}"
+                ),
+                0,
+            ),
             (
                 "a longer name that merely starts with it",
                 format!("{HEAD}\n  <RoleDescriptorExtension>keep</RoleDescriptorExtension>{TAIL}"),
@@ -863,6 +1140,91 @@ mod tests {
         assert!(doc.would_remove.is_empty(), "{:?}", doc.would_remove);
     }
 
+    /// One `<ds:Signature>`, small enough to read inside a fixture literal.
+    fn dsig() -> String {
+        format!("<ds:Signature xmlns:ds=\"{DSIG_URI}\"><ds:SignedInfo/></ds:Signature>")
+    }
+
+    /// The WS-Federation role every case below has cut out from under it.
+    fn wsfed_role() -> String {
+        format!(
+            "<RoleDescriptor xmlns:xsi=\"{XSI_URI}\" xmlns:fed=\"{WSFED_URI}\" \
+             xsi:type=\"fed:SecurityTokenServiceType\""
+        )
+    }
+
+    #[test]
+    fn only_a_signature_over_the_whole_document_is_invalidated() {
+        // A signature signs the subtree it hangs off. Removing a WS-Fed role
+        // changes the document, so a signature on `EntityDescriptor` can no
+        // longer verify — but one on a *retained sibling* role covers bytes
+        // this rewrite never touches, and deleting it destroys a valid
+        // signature to no purpose.
+        let sig = dsig();
+        let role = wsfed_role();
+        let idp = "<IDPSSODescriptor protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">";
+
+        // case, document, expected reasons, does a signature survive, `signed`
+        let cases: &[(&str, String, Vec<RemovalReason>, bool, bool)] = &[
+            (
+                "a signature on a retained role survives a sibling being cut",
+                format!("{HEAD}\n  {role} />\n  {idp}{sig}</IDPSSODescriptor>{TAIL}"),
+                vec![RemovalReason::UnsupportedRole],
+                true,
+                false,
+            ),
+            (
+                "the document's own signature goes when a role is cut",
+                format!("{HEAD}\n  {sig}\n  {role} />{TAIL}"),
+                vec![
+                    RemovalReason::EnvelopedSignature,
+                    RemovalReason::UnsupportedRole,
+                ],
+                false,
+                true,
+            ),
+            (
+                "a signature inside the cut role goes with it, unreported",
+                format!("{HEAD}\n  {role}>{sig}</RoleDescriptor>{TAIL}"),
+                vec![RemovalReason::UnsupportedRole],
+                false,
+                false,
+            ),
+            (
+                "a role signature with nothing else to strip is left alone",
+                format!("{HEAD}\n  {idp}{sig}</IDPSSODescriptor>{TAIL}"),
+                vec![],
+                true,
+                false,
+            ),
+        ];
+
+        for (case, input, reasons, signature_survives, signed) in cases {
+            let result = clean(input);
+            assert_eq!(
+                result
+                    .removed
+                    .iter()
+                    .map(|removal| removal.reason)
+                    .collect::<Vec<_>>(),
+                *reasons,
+                "{case}"
+            );
+            assert_eq!(
+                String::from_utf8(result.bytes)
+                    .expect("utf-8")
+                    .contains("<ds:Signature"),
+                *signature_survives,
+                "{case}"
+            );
+            assert_eq!(
+                inspect(input.as_bytes()).expect("parses").signed,
+                *signed,
+                "{case}: `signed` reports the document's own signature"
+            );
+        }
+    }
+
     #[test]
     fn a_role_descriptor_in_some_other_namespace_is_not_stripped() {
         let input = format!(
@@ -874,6 +1236,53 @@ mod tests {
             String::from_utf8(result.bytes).expect("utf-8"),
             input,
             "stripped a RoleDescriptor that was not WS-Federation"
+        );
+        assert!(result.removed.is_empty(), "{:?}", result.removed);
+    }
+
+    #[test]
+    fn a_wsfed_element_named_roledescriptor_is_not_the_entra_form() {
+        // The previous matcher keyed on `{WSFED}RoleDescriptor`. Real Entra
+        // (and the WS-Federation spec) put the element in the SAML namespace.
+        let input = format!(
+            "{HEAD}\n  <fed:RoleDescriptor xmlns:fed=\"{WSFED_URI}\" \
+             protocolSupportEnumeration=\"urn:x\"/>{TAIL}"
+        );
+        let result = clean(&input);
+        assert_eq!(
+            String::from_utf8(result.bytes).expect("utf-8"),
+            input,
+            "stripped {{WS-Fed}}RoleDescriptor; Entra's form is {{SAML}}RoleDescriptor + xsi:type"
+        );
+        assert!(result.removed.is_empty(), "{:?}", result.removed);
+    }
+
+    #[test]
+    fn a_bare_type_attribute_is_not_xsi_type() {
+        let input = format!(
+            "{HEAD}\n  <RoleDescriptor xmlns:fed=\"{WSFED_URI}\" \
+             type=\"fed:SecurityTokenServiceType\" protocolSupportEnumeration=\"urn:x\"/>{TAIL}"
+        );
+        let result = clean(&input);
+        assert_eq!(
+            String::from_utf8(result.bytes).expect("utf-8"),
+            input,
+            "matched a bare type attribute as xsi:type"
+        );
+        assert!(result.removed.is_empty(), "{:?}", result.removed);
+    }
+
+    #[test]
+    fn an_xsi_type_in_some_other_namespace_is_not_stripped() {
+        let input = format!(
+            "{HEAD}\n  <RoleDescriptor xmlns:xsi=\"{XSI_URI}\" xmlns:other=\"urn:not-wsfed\" \
+             xsi:type=\"other:SecurityTokenServiceType\" protocolSupportEnumeration=\"urn:x\"/>{TAIL}"
+        );
+        let result = clean(&input);
+        assert_eq!(
+            String::from_utf8(result.bytes).expect("utf-8"),
+            input,
+            "stripped a RoleDescriptor whose xsi:type was not WS-Federation"
         );
         assert!(result.removed.is_empty(), "{:?}", result.removed);
     }
@@ -966,36 +1375,110 @@ mod tests {
 
     #[test]
     fn unreadable_or_unexpected_input_is_refused_rather_than_passed_through() {
-        let cases: &[(&str, &str)] = &[
-            ("unclosed element", "<EntityDescriptor entityID=\"x\">"),
+        // Each case must fail for the reason its name gives, so every one that
+        // gets as far as the root element declares the SAML namespace: without
+        // it the root check fires first and the case proves nothing.
+        let root = format!("<EntityDescriptor xmlns=\"{SAML_URI}\"");
+        let entity = format!("{root} entityID=\"https://sp-a.example.com\"");
+        let cases: &[(&str, String)] = &[
+            ("unclosed element", format!("{entity}>")),
+            ("mismatched end tag", format!("{entity}></Other>")),
             (
-                "mismatched end tag",
-                "<EntityDescriptor entityID=\"x\"></Other>",
+                "not metadata at all",
+                "<html><body>hello</body></html>".to_string(),
             ),
-            ("not metadata at all", "<html><body>hello</body></html>"),
             (
                 "an aggregate of entities",
-                "<EntitiesDescriptor><EntityDescriptor entityID=\"x\" /></EntitiesDescriptor>",
+                format!("<EntitiesDescriptor>{entity} /></EntitiesDescriptor>"),
             ),
-            ("no entityID", "<EntityDescriptor />"),
-            ("empty input", ""),
+            ("no entityID", format!("{root} />")),
+            ("empty input", String::new()),
             (
                 "two top-level EntityDescriptors",
-                "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"https://sp-a.example.com\"/><EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"https://sp-b.example.com\"/>",
+                format!("{entity}/><EntityDescriptor xmlns=\"{SAML_URI}\" entityID=\"https://sp-b.example.com\"/>"),
             ),
             (
                 "an XML-invalid comment",
-                "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"https://sp-a.example.com\"><!-- bad -- comment --></EntityDescriptor>",
+                format!("{entity}><!-- bad -- comment --></EntityDescriptor>"),
             ),
             (
                 "a root in some other namespace",
-                "<html:EntityDescriptor xmlns:html=\"urn:not-saml\" entityID=\"https://sp-a.example.com\"/>",
+                "<html:EntityDescriptor xmlns:html=\"urn:not-saml\" entityID=\"https://sp-a.example.com\"/>".to_string(),
             ),
             (
                 "a certificate that is not base64",
-                "<EntityDescriptor entityID=\"x\"><KeyDescriptor use=\"signing\">\
-                 <X509Certificate>not base64 !!</X509Certificate></KeyDescriptor>\
-                 </EntityDescriptor>",
+                format!(
+                    "{entity}><KeyDescriptor use=\"signing\">\
+                     <X509Certificate>not base64 !!</X509Certificate></KeyDescriptor>\
+                     </EntityDescriptor>"
+                ),
+            ),
+            (
+                "an undeclared prefix on xsi:type's QName",
+                format!(
+                    "{entity}><RoleDescriptor xmlns:xsi=\"{XSI_URI}\" \
+                     xsi:type=\"nope:SecurityTokenServiceType\"/></EntityDescriptor>"
+                ),
+            ),
+            (
+                "an undeclared xsi prefix on RoleDescriptor",
+                format!(
+                    "{entity}><RoleDescriptor xsi:type=\"fed:SecurityTokenServiceType\" \
+                     xmlns:fed=\"{WSFED_URI}\"/></EntityDescriptor>"
+                ),
+            ),
+            // ── namespace-resolved attribute names ──────────────────────────
+            (
+                // Nothing reads `bad:attr`, which is the point: an element
+                // carrying a name we cannot expand is an element we cannot
+                // describe.
+                "an undeclared prefix on an attribute nothing reads",
+                format!("{entity} bad:attr=\"1\"/>"),
+            ),
+            (
+                // `entityID` is unqualified in the schema. Matching on the
+                // local name alone let a foreign vocabulary's attribute
+                // satisfy the one AM compares assertions against.
+                "a prefixed entityID standing in for the required one",
+                format!("{root} xmlns:ext=\"urn:x\" ext:entityID=\"https://sp-a.example.com\"/>"),
+            ),
+            // ── document sections ───────────────────────────────────────────
+            ("text before the root element", format!("hello{entity}/>")),
+            (
+                "an XML declaration that is not the first thing",
+                format!("<!-- c -->\n<?xml version=\"1.0\"?>{entity}/>"),
+            ),
+            (
+                "a second XML declaration after the root",
+                format!("<?xml version=\"1.0\"?>{entity}/><?xml version=\"1.0\"?>"),
+            ),
+            (
+                "a DOCTYPE after the root",
+                format!("{entity}/><!DOCTYPE EntityDescriptor>"),
+            ),
+            (
+                "a CDATA section after the root",
+                format!("{entity}/><![CDATA[trailing]]>"),
+            ),
+            (
+                "an entity reference after the root",
+                format!("{entity}/>&amp;"),
+            ),
+            // ── references we cannot resolve ────────────────────────────────
+            (
+                "an entity reference with no declaration to define it",
+                format!("{entity}><Organization>&oops;</Organization></EntityDescriptor>"),
+            ),
+            (
+                // Predefined, so its replacement text is known — but it splits
+                // the character data, and half a certificate must not be
+                // fingerprinted as if it were whole.
+                "an entity reference splitting a certificate body",
+                format!(
+                    "{entity}><KeyDescriptor use=\"signing\">\
+                     <X509Certificate>AAEC&amp;AwQ=</X509Certificate></KeyDescriptor>\
+                     </EntityDescriptor>"
+                ),
             ),
         ];
         for (case, xml) in cases {
@@ -1018,12 +1501,83 @@ mod tests {
     }
 
     #[test]
+    fn legal_furniture_around_and_inside_the_root_is_accepted() {
+        // The control for the table above, which a scanner that refused every
+        // document would satisfy on its own. Each of these is well-formed XML
+        // that a real export can contain, and must survive byte for byte.
+        let body = format!(
+            "<EntityDescriptor xmlns=\"{SAML_URI}\" entityID=\"https://sp-a.example.com\">\
+             <SPSSODescriptor protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\" />\
+             </EntityDescriptor>"
+        );
+        let cases: &[(&str, String)] = &[
+            (
+                "a declaration, a DOCTYPE, a comment and a PI in the prolog",
+                format!(
+                    "<?xml version=\"1.0\"?>\n<!DOCTYPE EntityDescriptor>\n\
+                     <!-- hand-authored -->\n<?target data?>\n{body}"
+                ),
+            ),
+            (
+                "a comment, a PI and whitespace in the epilog",
+                format!("{body}\n<!-- trailing note -->\n<?target data?>\n"),
+            ),
+            (
+                "a predefined entity in text we never read",
+                format!(
+                    "<EntityDescriptor xmlns=\"{SAML_URI}\" entityID=\"https://sp-a.example.com\">\
+                     <Organization><OrganizationName>Cats &amp; Dogs</OrganizationName>\
+                     </Organization></EntityDescriptor>"
+                ),
+            ),
+            (
+                "a character reference in text we never read",
+                format!(
+                    "<EntityDescriptor xmlns=\"{SAML_URI}\" entityID=\"https://sp-a.example.com\">\
+                     <Organization><OrganizationName>&#65;cme</OrganizationName>\
+                     </Organization></EntityDescriptor>"
+                ),
+            ),
+        ];
+        for (case, xml) in cases {
+            let result = sanitise(xml.as_bytes(), SanitiseOpts::default())
+                .unwrap_or_else(|error| panic!("{case}: {error}"));
+            assert_eq!(
+                String::from_utf8(result.bytes).expect("utf-8"),
+                *xml,
+                "{case}"
+            );
+            assert!(result.removed.is_empty(), "{case}: {:?}", result.removed);
+        }
+    }
+
+    #[test]
+    fn a_certificate_written_as_cdata_reads_the_same_as_one_in_plain_text() {
+        // CDATA arrives as its own event. Ignoring that event would report a
+        // KeyDescriptor as carrying no certificate at all — a silent nothing,
+        // not an error.
+        let document = |body: &str| {
+            format!(
+                "<EntityDescriptor xmlns=\"{SAML_URI}\" entityID=\"https://sp-a.example.com\">\
+                 <KeyDescriptor use=\"signing\"><ds:KeyInfo xmlns:ds=\"{DSIG_URI}\">\
+                 <ds:X509Data><X509Certificate>{body}</X509Certificate></ds:X509Data>\
+                 </ds:KeyInfo></KeyDescriptor></EntityDescriptor>"
+            )
+        };
+        let plain = cert_refs(document("AAECAwQ=").as_bytes()).expect("plain text parses");
+        let cdata = cert_refs(document("<![CDATA[AAECAwQ=]]>").as_bytes()).expect("CDATA parses");
+        assert_eq!(plain.len(), 1, "{plain:?}");
+        assert_eq!(cdata, plain);
+    }
+
+    #[test]
     fn a_self_closing_strip_list_element_is_removed_whole() {
         // The empty-element form takes a different branch from the
         // start/end pair, and an unhandled `<RoleDescriptor />` would leave
         // the cut open and swallow the rest of the document.
         let input = format!(
-            "{HEAD}\n  <fed:RoleDescriptor xmlns:fed=\"http://docs.oasis-open.org/wsfed/federation/200706\" />{TAIL}"
+            "{HEAD}\n  <RoleDescriptor xmlns:xsi=\"{XSI_URI}\" xmlns:fed=\"{WSFED_URI}\" \
+             xsi:type=\"fed:SecurityTokenServiceType\" />{TAIL}"
         );
         let result = clean(&input);
         assert_eq!(

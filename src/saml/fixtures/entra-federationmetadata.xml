@@ -33,10 +33,10 @@
       </ds:X509Data>
     </ds:KeyInfo>
   </ds:Signature>
-  <fed:RoleDescriptor xsi:type="fed:SecurityTokenServiceType"
-                      protocolSupportEnumeration="http://docs.oasis-open.org/wsfed/federation/200706"
-                      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                      xmlns:fed="http://docs.oasis-open.org/wsfed/federation/200706">
+  <RoleDescriptor xsi:type="fed:SecurityTokenServiceType"
+                  protocolSupportEnumeration="http://docs.oasis-open.org/wsfed/federation/200706"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xmlns:fed="http://docs.oasis-open.org/wsfed/federation/200706">
     <KeyDescriptor use="signing">
       <ds:KeyInfo>
         <ds:X509Data>
@@ -56,11 +56,11 @@
         <wsa:Address>https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/wsfed</wsa:Address>
       </wsa:EndpointReference>
     </fed:SecurityTokenServiceEndpoint>
-  </fed:RoleDescriptor>
-  <fed:RoleDescriptor xsi:type="fed:ApplicationServiceType"
-                      protocolSupportEnumeration="http://docs.oasis-open.org/wsfed/federation/200706"
-                      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-                      xmlns:fed="http://docs.oasis-open.org/wsfed/federation/200706">
+  </RoleDescriptor>
+  <RoleDescriptor xsi:type="fed:ApplicationServiceType"
+                  protocolSupportEnumeration="http://docs.oasis-open.org/wsfed/federation/200706"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xmlns:fed="http://docs.oasis-open.org/wsfed/federation/200706">
     <KeyDescriptor use="signing">
       <ds:KeyInfo>
         <ds:X509Data>
@@ -73,7 +73,7 @@
         <wsa:Address>https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/wsfed</wsa:Address>
       </wsa:EndpointReference>
     </fed:PassiveRequestorEndpoint>
-  </fed:RoleDescriptor>
+  </RoleDescriptor>
   <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
     <KeyDescriptor use="signing">
       <ds:KeyInfo>
