@@ -203,7 +203,7 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::oauth::cli::OauthCommand,
     },
-    /// Offline SAML 2.0 metadata transforms (no tenant, no network).
+    /// SAML 2.0 entity providers and metadata (read-only).
     Saml {
         #[command(subcommand)]
         command: crate::saml::cli::SamlCommand,
@@ -2119,6 +2119,22 @@ mod tests {
             (vec!["aic", "oauth", "list"], true),
             (vec!["aic", "saml", "metadata", "inspect", "in.xml"], false),
             (vec!["aic", "saml", "metadata", "sanitise", "in.xml"], false),
+            // `saml` splits three ways, and the middle row is the one worth
+            // pinning: `metadata export` reaches the tenant, but over a JSP
+            // that takes no authentication, so demanding an unlock would
+            // require a credential the request never sends.
+            (
+                vec![
+                    "aic",
+                    "saml",
+                    "metadata",
+                    "export",
+                    "https://sp.example.com",
+                ],
+                false,
+            ),
+            (vec!["aic", "saml", "list"], true),
+            (vec!["aic", "saml", "show", "https://sp.example.com"], true),
             (vec!["aic", "secretmap", "list"], true),
             (vec!["aic", "workspace", "init"], true),
             (vec!["aic", "script", "list"], true),
