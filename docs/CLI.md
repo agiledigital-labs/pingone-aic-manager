@@ -1143,15 +1143,68 @@ intermediate state retains a working key.
 
 ---
 
-## `aic saml` — SAML 2.0 metadata (offline)
+## `aic saml` — SAML 2.0 entity providers and metadata
 
-Local file transforms. No tenant, no agent, no bearer — these work against a
-locked daemon.
+Read-only. Realm-scoped, CLI-only (no TUI tab). Nothing here writes to a
+tenant: create, import, delete and circle-of-trust membership are later slices.
 
 ```bash
+aic saml list [--location hosted|remote] [--role idp|sp] [--realm alpha] [--json]
+aic saml show <ENTITY-ID> [--location hosted|remote] [--realm alpha] [--json]
+aic saml metadata export <ENTITY-ID> [--realm alpha] [--out PATH]
 aic saml metadata inspect <FILE>
 aic saml metadata sanitise <FILE> [--out PATH] [--keep-signature]
 ```
+
+### Which verbs need an unlocked agent
+
+Only `list` and `show`. `metadata inspect` and `metadata sanitise` are local
+file rewrites, and **`metadata export` reaches the tenant over an endpoint that
+takes no authentication at all** — verified by fetching it with and without a
+bearer and comparing the bodies byte for byte
+(`docs/api/06-saml.md`). It therefore sends no credential, never starts or
+unlocks the agent, and works against a locked daemon.
+
+### `list`
+
+One `GET` of the realm's whole entity collection; `--location` and `--role`
+filter the result client-side, because `?_queryFilter=true` is a **400** on the
+`/hosted` and `/remote` sub-collections and works only on their parent. An
+entity may hold **both** roles, and `--role` tests membership, so a dual-role
+entity appears under `--role idp` and `--role sp` alike. An entity with no role
+blocks is legal and lists with `-` for its roles.
+
+The empty-list line names the realm it searched. The project default is
+`alpha`, and a tenant's SAML entities commonly live in `bravo`, so "nothing
+here" must not read as "this tenant has no SAML".
+
+### `show`
+
+`--location` is **inferred** when omitted, from one list call. The full read is
+`…/saml2/{location}/{entityId64}`, and the *right* id in the *wrong* collection
+answers 404 — which reads as "that entity does not exist". If the id is not in
+the realm at all, the error says so and points at `list`.
+
+Default output is a summary: entity id, location, and per role the `metaAlias`
+and the signing secret identifier. `--json` prints the raw document. The
+summary reads leaves, not keys: a full entity carries every group key with `{}`
+inside when nothing in it is set, so key presence says nothing.
+
+### `metadata export`
+
+`GET /am/saml2/jsp/exportmetadata.jsp?entityid=…&realm=/<realm>`. Writes the
+XML to `--out`, or to stdout.
+
+**Failures come back as HTTP 200**, with no `Content-Type` and a plain-text
+body beginning `ERROR : `, so the status code is useless and the body is what
+is classified. A response that is neither a SAML `<EntityDescriptor>` nor an
+`ERROR :` message is refused too, and quoted back — writing a login page or a
+proxy error to `entity.xml` is exactly what the 200 invites. Nothing is written
+unless the body is metadata.
+
+`--realm` is always sent: omitting it on the wire selects the **root** realm,
+not the current one.
+
 
 `inspect` prints JSON describing the document: entity id, SAML 2.0 roles,
 whether it carries a signature over itself, endpoints, certificate fingerprints,
@@ -1169,13 +1222,18 @@ the signature on a document that needs no other stripping. `--keep-signature`
 keeps the signature and, if anything else was removed, prints a warning that it
 is now stale.
 
+### `metadata inspect` / `metadata sanitise`
+
 Both refuse a document they cannot fully read rather than passing it through:
 one root `EntityDescriptor` and no more, a namespace binding for every prefix on
 every element _and attribute_, nothing but comments, processing instructions and
 whitespace outside the root, and no entity reference whose replacement text we
 would have to guess.
 
-There is no `import`, `export`, `list`, `get`, or `delete` yet.
+There is no `import`, `create`, or `delete` yet, and no circle-of-trust verb:
+CoT membership is stored in two places and REST exposes only one, so a CLI that
+showed `trustedProviders` as "the" membership would be confidently wrong
+(`docs/api/06-saml.md`).
 
 ---
 

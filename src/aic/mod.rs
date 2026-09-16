@@ -92,6 +92,47 @@ impl AicClient {
         self.check_response(resp).await
     }
 
+    /// `GET` a non-JSON body with **no** `Authorization` header.
+    ///
+    /// The one endpoint this exists for is AM's SAML metadata-export JSP,
+    /// which is unauthenticated (verified: the body is byte-identical with and
+    /// without a bearer, `docs/api/06-saml.md`) and answers `text/xml`. Both
+    /// halves are the reason it is not `get`: that path attaches the
+    /// service-account bearer and decodes the body as JSON.
+    ///
+    /// Sending no credential is the point, not a shortcut. An endpoint that
+    /// does not need the service-account bearer must not receive it, and this
+    /// method has no way to attach one. Confinement still holds: [`Self::url`]
+    /// prefixes the tenant base URL unconditionally, so the request cannot
+    /// leave the tenant host whatever `path` says.
+    ///
+    /// A non-2xx status is still an error — but note that for the JSP a
+    /// *failed* export is a 200, so the caller must classify the body too.
+    pub async fn get_text_unauthenticated(&self, path: &str) -> Result<String> {
+        let resp = self
+            .unauthenticated_request(reqwest::Method::GET, path)
+            .send()
+            .await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        if status.is_success() {
+            Ok(body)
+        } else {
+            Err(Error::Api {
+                status: status.as_u16(),
+                body,
+            })
+        }
+    }
+
+    fn unauthenticated_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+    ) -> reqwest::RequestBuilder {
+        self.http.request(method, self.url(path))
+    }
+
     /// Write method — checks prod confirmation for prod-themed tenants.
     /// `api_version` overrides the `Accept-API-Version` header (default
     /// `resource=1.0`); AM scripts pass `protocol=2.0,resource=1.0`.
@@ -323,6 +364,26 @@ mod tests {
                 .starts_with("Bearer ")
         );
         assert!(request.headers().get("accept-api-version").is_none());
+    }
+
+    #[test]
+    fn unauthenticated_request_sends_no_credential_and_stays_on_the_tenant() {
+        let client = AicClient::new(
+            tenant("https://tenant.example".into()),
+            serde_json::Value::Null,
+        );
+        let request = client
+            .unauthenticated_request(reqwest::Method::GET, "/am/saml2/jsp/exportmetadata.jsp?x=1")
+            .build()
+            .unwrap();
+
+        // The point of the method: the metadata JSP needs no bearer, so it
+        // must not be handed one.
+        assert!(request.headers().get("authorization").is_none());
+        assert_eq!(
+            request.url().as_str(),
+            "https://tenant.example/am/saml2/jsp/exportmetadata.jsp?x=1"
+        );
     }
 
     #[test]
