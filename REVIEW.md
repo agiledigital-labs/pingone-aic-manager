@@ -978,3 +978,19 @@ findings). Each should name the guard that will eventually retire it.
   `would_remove` on that result. A stdout-capture or `CARGO_BIN_EXE_aic`
   integration test would close the rest. `--output` was also renamed to `--out`
   to match `jwt-bearer key export` / `access get`.
+
+### 2026-09-16 — sanitiser scanner treated tokenisation as XML
+
+- **What:** Codex review of `saml/metadata` (`41c9aa2..9fb53e4`). The scanner
+  accepted two roots, `--` in comments, and invalid UTF-8; matched
+  `RoleDescriptor`/`Signature` by local name so `ext:RoleDescriptor` and
+  `html:Signature` fired; default sanitise stripped a signature from a
+  signed-but-clean document. The inspect CLI test still did not assert stdout.
+- **Why missed:** fixture tests and prefix tests never varied namespace URIs or
+  used a signed document with nothing else to strip. Standing check "could this
+  fail if the code were wrong" already named the inspect test.
+- **Guard:** applied — `NsReader` + UTF-8/comment/trailing-root checks;
+  expanded-name matching (SAML / XMLDSig / WS-Fed); signature cuts only when
+  another cut would change the bytes; `tests/saml_metadata_cli.rs` drives the
+  binary. Discriminating cases: two roots, bad comment, invalid UTF-8,
+  `urn:not-wsfed` RoleDescriptor kept, signed-clean keeps `ds:Signature`.
