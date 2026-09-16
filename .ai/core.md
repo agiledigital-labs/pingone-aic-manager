@@ -301,14 +301,15 @@ cargo clippy --all-targets --features logs-store -- -D warnings
 cargo test --features logs-store
 ```
 
-CI runs six more that these do not cover: the sensitive-metadata scanner
-(`--selftest`, `--tracked`, the pushed range), gitleaks over the history, and
-the two TypeScript gates — `scripts/type-tests/run.sh` and `npm run type-check`
-in `src/scripts/templates/typescript`. No cargo gate compiles a shipped `.d.ts`
-at all, so the Rust tests can be green while the declarations they emit do not
-type-check.
+CI runs seven more that these do not cover: the sensitive-metadata scanner
+(`--selftest`, `--tracked`, the pushed range), gitleaks over the history,
+`scripts/shellcheck-all.sh`, and the two TypeScript gates —
+`scripts/type-tests/run.sh` and `npm run type-check` in
+`src/scripts/templates/typescript`. No cargo gate compiles a shipped `.d.ts` at
+all, so the Rust tests can be green while the declarations they emit do not
+type-check, and no cargo gate reads a line of shell.
 
-`scripts/release-check.sh` runs **all eleven** and refuses to report ready if
+`scripts/release-check.sh` runs **all twelve** and refuses to report ready if
 any fails, so before a release that is the one command to run. It also fails
 when `ci.yml` gains or loses a step it does not account for — the two drifted
 apart before, and a release cut from a stale gate list is discovered by a red
