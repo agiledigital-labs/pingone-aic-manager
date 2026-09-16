@@ -138,6 +138,19 @@ findings). Each should name the guard that will eventually retire it.
   `to_vec` returning `Err` for every daemon call with a fully green suite.
   _Guard: assert on `WireRequest::current(...)` with `protocol_version` in the
   expected literal, so the shape pin and the version check are one test._
+- **When one collection is auto-discovered and a second, hand-maintained list
+  validates it, assert the two are equal — and assert it the way the discoverer
+  discovers.** A runner that globs its inputs and a Rust test that checks them
+  against a literal array are two registries that drift in one direction only:
+  the input nobody registered still runs, and silently skips every assertion the
+  list exists to make. Seen 2026-09-15 with `scripts/type-tests/leaves/` —
+  `run.sh` globbed `leaves/*/` while
+  `type_test_leaf_manifests_are_subsets_of_the_real_leaf_configs` iterated a
+  `[(&str, String); 5]`, so a sixth leaf would compile in CI and prove nothing.
+  The equality assertion is the guard; the second half is that the two must
+  agree on what an input _is_ (see the symlink divergence in the log below).
+  _Guard: **applied** for the type-test leaves; ask it of any new
+  discovery-plus-registry pair._
 
 - **Lifting a shared line is not the same as removing the duplication.** When a
   finding says "lift X into the shared module and use it from both", check what
@@ -298,7 +311,37 @@ findings). Each should name the guard that will eventually retire it.
   instances. _Guard: `repo_hygiene::no_process_cwd_mutation_under_cfg_test`
   rejects `set_current_dir` below any `#[cfg(test)]` boundary._
 
+- **A count is not an identity.** When a check measures how many of something
+  exist before and after an operation, ask which *distinct* outcomes produce the
+  same count. Add/remove pairs, rotations and swaps are the usual offenders: the
+  cardinality returns to where it started whether the right element or the wrong
+  one was removed. Assert *which* element survived, not how many. Doubly so when
+  the discriminating fact is already recorded in a doc or a done-note — prose
+  that states the invariant is evidence the author knew it, and evidence the
+  guard does not encode it. _Guard: none automatable; this is a review
+  judgement._
+
 ## Findings log
+
+### 2026-09-16 — a harness that counts instead of identifying
+
+- **What:** `scripts/saml-harness/harness.sh`'s `verify-rotate` asserted only
+  that signing `KeyDescriptor`s went `1 -> 2 -> 1`. `rotate-add` inserts at the
+  highest priority and `rotate-rm` deletes the lowest, so a bug that deleted the
+  *new* provider instead of the *old* one yields the identical count sequence
+  and passes. The harness would report a completed certificate rotation having
+  performed a no-op rollback — and producing a genuinely rotated cert is the
+  whole reason it exists.
+- **Why missed:** the review that mattered was the author's own, and the
+  discriminating fact had already been measured and written down in prose
+  (`docs/saml-test-harness.md`: "After `rotate-rm` the remaining `KeyName` is
+  the **new** kid. **Measured.**"). Knowing a fact and asserting it are
+  different acts, and a done-note that quotes the measurement reads exactly like
+  a guard that encodes it.
+- **Guard:** have `cmd_rotate_add` capture the added provider's kid and have
+  `cmd_verify_rotate` assert the surviving `<ds:KeyName>` equals it and differs
+  from the pre-rotation kid. Not applied — reported to the author.
+
 
 ### 2026-09-11 — the deferred modal that never arrived
 
@@ -994,3 +1037,34 @@ findings). Each should name the guard that will eventually retire it.
   another cut would change the bytes; `tests/saml_metadata_cli.rs` drives the
   binary. Discriminating cases: two roots, bad comment, invalid UTF-8,
   `urn:not-wsfed` RoleDescriptor kept, signed-clean keeps `ds:Signature`.
+### 2026-09-15 — type-test leaves: a discovered runner, a hand-maintained validator
+
+- **What:** `scripts/type-tests/run.sh` discovers leaf directories with a
+  `leaves/*/` glob; the Rust subset test validated a hand-maintained list of
+  five names. A leaf directory nobody added to that list would be compiled by
+  the gate and exempted from the assertion that its `types` manifest is a real
+  subset of the shipped `leaf_tsconfig` — the one thing stopping a leaf from
+  testing a fiction. Separately, the `nextgen-decision-node` leaf pinned logger
+  arity and the managed-record projection but never touched the decision-node
+  contract it exists to cover (no `outcome`, no `action.goTo`, no `nodeState`),
+  so the generation split between `decision-node-next.d.ts` and
+  `decision-node-legacy.d.ts` was uncompiled in both directions.
+- **Why missed:** the subset test reads as exhaustive — it iterates a list and
+  checks every entry — and nothing in it is wrong. The gap is in what the list
+  does not contain, which no assertion inside the loop can see. The fixture gap
+  hid the same way: `run.sh` printed `ok nextgen-decision-node accept`, and
+  "the leaf passes" was read as "the leaf covers its family".
+- **Guard:** applied in `2421c99` — the test now asserts the registered set
+  equals the set of directories on disk, and fails with the offending name.
+  Mutation-verified: adding an unregistered `zz-stray-probe/` turns it red.
+  Contract coverage applied in `a406d44`, with all four absence rows
+  mutation-verified (moving `sharedState`, `transientState`, `JavaImporter` or
+  the legacy `IdRepository.getAttribute` into the shared overlay turns the
+  reject file red).
+- **Residual — the two registries disagree on what a directory is.** The guard
+  filters `DirEntry::file_type().is_dir()`, which is **false** for a symlink to
+  a directory; bash's `leaves/*/` glob matches one (verified). So a symlinked
+  leaf is still compiled by `run.sh` and still exempt from the subset check.
+  Note this is the opposite of the `.ai/core.md` `is_dir()` ban, which governs
+  walkers that write or delete; this walker only reads, and here following the
+  link is what matches the runner. _Fix: `entry.path().is_dir()`._
