@@ -203,6 +203,11 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::oauth::cli::OauthCommand,
     },
+    /// Offline SAML 2.0 metadata transforms (no tenant, no network).
+    Saml {
+        #[command(subcommand)]
+        command: crate::saml::cli::SamlCommand,
+    },
     /// Secret mappings from AM labels to ESV secrets.
     Secretmap {
         #[command(subcommand)]
@@ -301,6 +306,11 @@ impl Command {
             // Without this it skips the unlock and fails deeper in, on
             // whatever error a locked daemon happens to return.
             Self::Ctx { command } => matches!(command, CtxCommand::Rm { .. }),
+            // `saml metadata` is a local file rewrite. Classifying the group
+            // as `true` would force an unlock for a transform that never
+            // talks to a tenant. The inner match is what later import/export
+            // verbs have to update.
+            Self::Saml { command } => crate::saml::cli::needs_tenant_auth(command),
             Self::Agent { .. }
             | Self::Login { .. }
             | Self::Logout
@@ -363,6 +373,7 @@ pub(crate) async fn dispatch(
         Some(Command::JwtBearer { command }) => crate::jwtbearer::cli::run(command).await,
         Some(Command::Auth { options }) => crate::jwtbearer::cli::run_auth(options).await,
         Some(Command::Oauth { command }) => crate::oauth::cli::run(command).await,
+        Some(Command::Saml { command }) => crate::saml::cli::run(command).await,
         Some(Command::Secretmap { command }) => crate::secretmap::cli::run(command).await,
         Some(Command::Workspace { command }) => crate::scripts::cli::run_workspace(command).await,
         Some(Command::Script { command }) => {
@@ -2106,6 +2117,8 @@ mod tests {
                 true,
             ),
             (vec!["aic", "oauth", "list"], true),
+            (vec!["aic", "saml", "metadata", "inspect", "in.xml"], false),
+            (vec!["aic", "saml", "metadata", "sanitise", "in.xml"], false),
             (vec!["aic", "secretmap", "list"], true),
             (vec!["aic", "workspace", "init"], true),
             (vec!["aic", "script", "list"], true),
@@ -2138,6 +2151,7 @@ mod tests {
                 | Command::JwtBearer { .. }
                 | Command::Auth { .. }
                 | Command::Oauth { .. }
+                | Command::Saml { .. }
                 | Command::Secretmap { .. }
                 | Command::Workspace { .. }
                 | Command::Script { .. } => {}

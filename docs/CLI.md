@@ -1143,6 +1143,42 @@ intermediate state retains a working key.
 
 ---
 
+## `aic saml` — SAML 2.0 metadata (offline)
+
+Local file transforms. No tenant, no agent, no bearer — these work against a
+locked daemon.
+
+```bash
+aic saml metadata inspect <FILE>
+aic saml metadata sanitise <FILE> [--out PATH] [--keep-signature]
+```
+
+`inspect` prints JSON describing the document: entity id, SAML 2.0 roles,
+whether it carries a signature over itself, endpoints, certificate fingerprints,
+and what `sanitise` would remove at default options.
+
+`sanitise` splices the original buffer rather than parsing and reserialising. It
+writes the result to `--out`, or to stdout if that flag is omitted. The removal
+report goes to stderr, one line per element. Default options strip SAML
+`RoleDescriptor`s whose `xsi:type` resolves to a WS-Federation type — the shape
+Entra emits — and, only when that (or another) cut changes bytes it covers, the
+document's enveloped XML signature. Scope decides that second part: only a
+`Signature` that is a direct child of `EntityDescriptor` signs the whole
+document, so a signature on a role the rewrite keeps is left alone, and so is
+the signature on a document that needs no other stripping. `--keep-signature`
+keeps the signature and, if anything else was removed, prints a warning that it
+is now stale.
+
+Both refuse a document they cannot fully read rather than passing it through:
+one root `EntityDescriptor` and no more, a namespace binding for every prefix on
+every element _and attribute_, nothing but comments, processing instructions and
+whitespace outside the root, and no entity reference whose replacement text we
+would have to guess.
+
+There is no `import`, `export`, `list`, `get`, or `delete` yet.
+
+---
+
 ## `aic secretmap` — AM secret-label → ESV-secret mappings
 
 Realm-scoped. Re-point AM secret _labels_ (purposes) at existing ESV secrets.

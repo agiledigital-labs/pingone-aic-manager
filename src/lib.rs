@@ -20,6 +20,7 @@ pub mod onboard;
 pub mod policy;
 pub(crate) mod pullguard;
 pub mod roles;
+pub mod saml;
 pub mod scripts;
 pub mod secretmap;
 pub mod secrets;
