@@ -2390,8 +2390,12 @@ mod tests {
         );
         let nested = format!(
             "{HEAD}\n  <Extensions>\n    <ext:Container xmlns:ext=\"urn:x\">\n      \
-             {role}\n      <IDPSSODescriptor protocolSupportEnumeration=\"{PROTOCOL_URI}\" />\n    \
-             </ext:Container>\n  </Extensions>{TAIL}"
+             {role}\n      <IDPSSODescriptor protocolSupportEnumeration=\"{PROTOCOL_URI}\">\n        \
+             <SingleSignOnService Binding=\"urn:x\" Location=\"https://sp-b.example.com/sso\" />\n      \
+             </IDPSSODescriptor>\n    </ext:Container>\n  </Extensions>\n  \
+             <SPSSODescriptor protocolSupportEnumeration=\"{PROTOCOL_URI}\">\n    \
+             <AssertionConsumerService Binding=\"urn:x\" Location=\"https://sp-a.example.com/acs\" />\n  \
+             </SPSSODescriptor>\n</EntityDescriptor>\n"
         );
 
         let result = clean(&nested);
@@ -2405,6 +2409,22 @@ mod tests {
         assert_eq!(
             inspect(nested.as_bytes()).expect("parses").roles,
             vec![Role::ServiceProvider]
+        );
+
+        // Endpoints are attributed the same way, and an extension's nested
+        // role is not a role — so the endpoint inside it belongs to none,
+        // while the one under the real SPSSODescriptor still belongs to that.
+        assert_eq!(
+            inspect(nested.as_bytes())
+                .expect("parses")
+                .endpoints
+                .iter()
+                .map(|endpoint| (endpoint.descriptor.as_deref(), endpoint.kind.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (None, "SingleSignOnService"),
+                (Some("SPSSODescriptor"), "AssertionConsumerService"),
+            ]
         );
 
         // The control: the same element as a direct child of the root *is* a
