@@ -19,6 +19,9 @@ use crate::{Error, Result};
 pub(crate) struct AicClient {
     pub tenant: Tenant,
     http: reqwest::Client,
+    /// The same transport with redirects switched off, for the one endpoint
+    /// that sends no credential — see [`Self::get_text_unauthenticated`].
+    http_no_redirect: reqwest::Client,
     pub token_cache: Arc<Mutex<TokenCache>>,
     /// The private JWK used to mint tokens.
     jwk: serde_json::Value,
@@ -40,13 +43,24 @@ impl AicClient {
         // one and every `AicClient` verb to forward it; until then a hung
         // *response* is still unbounded, and the connect timeout only catches
         // the common case of a host that never answers.
-        let http = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
+        let builder =
+            || reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(10));
+        let http = builder().build().expect("failed to build reqwest client");
+        // Confinement to the tenant is the point of the unauthenticated
+        // transport, and `url()` only confines the request we *send*. reqwest
+        // follows up to ten redirects by default, so a 302 could hand the
+        // SAML metadata classifier a valid-looking descriptor fetched from
+        // somewhere else entirely, which it would then write to --out. A
+        // redirect off this path is a tenant misconfiguration or an
+        // interception; either way the answer is to stop, not to follow.
+        let http_no_redirect = builder()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("failed to build reqwest client");
         Self {
             tenant,
             http,
+            http_no_redirect,
             token_cache: Arc::new(Mutex::new(TokenCache::new())),
             jwk,
         }
@@ -102,9 +116,16 @@ impl AicClient {
     ///
     /// Sending no credential is the point, not a shortcut. An endpoint that
     /// does not need the service-account bearer must not receive it, and this
-    /// method has no way to attach one. Confinement still holds: [`Self::url`]
-    /// prefixes the tenant base URL unconditionally, so the request cannot
-    /// leave the tenant host whatever `path` says.
+    /// method has no way to attach one.
+    ///
+    /// Confinement takes two things, and used to have one. [`Self::url`]
+    /// prefixes the tenant base URL unconditionally, so the request we
+    /// *send* cannot leave the tenant host whatever `path` says — and then
+    /// reqwest's default policy would have followed up to ten redirects off
+    /// it. The response body here is classified and written to a file, so a
+    /// 302 was enough to save another host's document under the entity's
+    /// name. This transport does not follow redirects at all: a 3xx arrives
+    /// as the non-success status it is.
     ///
     /// A non-2xx status is still an error — but note that for the JSP a
     /// *failed* export is a 200, so the caller must classify the body too.
@@ -130,7 +151,7 @@ impl AicClient {
         method: reqwest::Method,
         path: &str,
     ) -> reqwest::RequestBuilder {
-        self.http.request(method, self.url(path))
+        self.http_no_redirect.request(method, self.url(path))
     }
 
     /// Write method — checks prod confirmation for prod-themed tenants.
@@ -367,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn unauthenticated_request_sends_no_credential_and_stays_on_the_tenant() {
+    fn unauthenticated_request_sends_no_credential_and_is_addressed_at_the_tenant() {
         let client = AicClient::new(
             tenant("https://tenant.example".into()),
             serde_json::Value::Null,
@@ -380,9 +401,85 @@ mod tests {
         // The point of the method: the metadata JSP needs no bearer, so it
         // must not be handed one.
         assert!(request.headers().get("authorization").is_none());
+        // Addressed at, not confined to. This is a property of the request we
+        // build; where the *response* can come from is the redirect policy,
+        // and the test below is the one that proves it.
         assert_eq!(
             request.url().as_str(),
             "https://tenant.example/am/saml2/jsp/exportmetadata.jsp?x=1"
+        );
+    }
+
+    /// Following a redirect is the one way an unauthenticated GET can leave
+    /// the tenant, and the SAML metadata classifier writes what comes back to
+    /// a file under the entity's name. No credential is exposed either way —
+    /// the hazard is the *body*, not the request.
+    #[tokio::test]
+    async fn an_unauthenticated_get_does_not_follow_a_redirect_off_the_tenant() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+
+        // The host the redirect points at. It serves a perfectly valid
+        // descriptor, which is exactly the hazard: followed, that document
+        // would be classified as a successful export and saved.
+        let elsewhere = TcpListener::bind("127.0.0.1:0").expect("bind the other host");
+        let elsewhere_port = elsewhere.local_addr().expect("its port").port();
+        let (contacted, was_contacted) = mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = elsewhere.accept() {
+                let _ = contacted.send(());
+                let body = "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\"/>";
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\
+                         Connection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+
+        let redirector = TcpListener::bind("127.0.0.1:0").expect("bind the tenant");
+        let base = format!(
+            "http://127.0.0.1:{}",
+            redirector.local_addr().expect("its port").port()
+        );
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = redirector.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{elsewhere_port}/moved\r\n\
+                     Content-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+        });
+
+        let client = AicClient::new(tenant(base), serde_json::Value::Null);
+        let result = client
+            .get_text_unauthenticated("/am/saml2/jsp/exportmetadata.jsp?x=1")
+            .await;
+
+        // The redirect is reported as the failure it is, rather than followed
+        // and then indistinguishable from a real export.
+        assert!(
+            matches!(result, Err(Error::Api { status: 302, .. })),
+            "{result:?}"
+        );
+        assert!(
+            was_contacted.try_recv().is_err(),
+            "the redirect target was contacted; its document could have been saved"
         );
     }
 
