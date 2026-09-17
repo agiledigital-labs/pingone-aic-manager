@@ -25,7 +25,12 @@
 //! (`{}` is a **201** with a UUID name, and a role block without
 //! `services.metaAlias` is a 500 naming no field), and `delete` reads the
 //! circle-of-trust collection first because an entity `DELETE` silently
-//! rewrites every CoT that listed the entity.
+//! rewrites every CoT that listed the entity — then reads it **again**
+//! afterwards, because AM performs that cascade and the delete response says
+//! nothing about it. Neither write reports a post-state it did not measure:
+//! [`spec::created_lines`] separates the id AM echoed from the role and alias
+//! that were only sent, and [`spec::cascade_outcome_lines`] is a diff of two
+//! reads.
 //!
 //! **There is no circle-of-trust *write* verb, and `cot list` / `cot show` are
 //! not membership.** AM stores membership twice — the CoT document's

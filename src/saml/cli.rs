@@ -269,9 +269,11 @@ async fn run_cot(command: CotCommand) -> Result<()> {
 
 /// List the realm's circles of trust.
 ///
-/// The caveat goes to **stderr** in both modes, so `--json` stays a clean
-/// stream while a human piping it still reads the one thing that stops the
-/// output being mistaken for the membership the runtime enforces.
+/// The caveat is part of the **human** rendering and goes to stdout with it,
+/// the way [`spec::cot_show_lines`] ends its block — including when the realm
+/// has none, which is the reading most likely to be taken as proof that
+/// nothing trusts anything. `--json` puts it on stderr instead, so the JSON
+/// stream stays clean for a caller that is parsing it.
 async fn cot_list(
     tenant_arg: Option<String>,
     realm_arg_value: Option<String>,
@@ -288,10 +290,11 @@ async fn cot_list(
     let cots = spec::sort_cots(spec::cots(&documents)?);
     if cots.is_empty() {
         println!("no circles of trust in realm {realm}");
-        return Ok(());
+    } else {
+        print_table(&spec::COT_LIST_HEADERS, &spec::cot_rows(&cots));
     }
-    print_table(&spec::COT_LIST_HEADERS, &spec::cot_rows(&cots));
-    eprintln!("{}", spec::COT_MEMBERSHIP_CAVEAT);
+    println!();
+    println!("{}", spec::COT_MEMBERSHIP_CAVEAT);
     Ok(())
 }
 
@@ -352,18 +355,17 @@ async fn create_hosted(
     }
 
     let created = api::create_hosted(&tenant, &realm, body, ok.confirmed_prod).await?;
-    // The 201 body is a stub, not the created document, so this reports what
-    // was asked for plus the id AM assigned — never a summary of the response.
-    let assigned = created
-        .get("entityId")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_else(|| request.entity_id.trim());
-    println!(
-        "created hosted SAML entity provider {assigned} ({}) in {tenant}/{realm} \
-         with metaAlias {}",
-        request.role.wire(),
-        request.meta_alias.trim()
-    );
+    // The 201 body is a stub, not the created document. `spec::created_lines`
+    // is what keeps the report honest about that: the id is AM's, the role and
+    // the alias are ours, and nothing here was read back.
+    for line in spec::created_lines(
+        created.get("entityId").and_then(serde_json::Value::as_str),
+        &request,
+        &tenant,
+        &realm,
+    ) {
+        println!("{line}");
+    }
     Ok(())
 }
 
