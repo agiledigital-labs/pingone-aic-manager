@@ -40,8 +40,52 @@ fn inspect_stdout_is_the_library_json() {
         "https://sts.windows.net/00000000-0000-0000-0000-000000000000/"
     );
     assert_eq!(doc["roles"], serde_json::json!(["identityProvider"]));
-    assert_eq!(doc["certs"].as_array().map(Vec::len), Some(3));
-    assert_eq!(doc["would_remove"].as_array().map(Vec::len), Some(3));
+
+    // Identities, not counts. Three certificates of the right *number* is
+    // what a scanner produces from this document whether it fingerprinted the
+    // enveloped signature's key and dropped a role's, hashed the base64 text
+    // instead of the DER, or attributed a key to the wrong role — and the
+    // role is what a rotation will address a key by.
+    const ENTRA_CERT: &str = "5f50984266ddca8c23154e9c6549ddf6c38f5b3b6f32d9315e8108000cebf33c";
+    assert_eq!(
+        doc["certs"],
+        serde_json::json!([
+            { "descriptor": "RoleDescriptor", "key_use": "signing", "key_name": null, "sha256": ENTRA_CERT },
+            { "descriptor": "RoleDescriptor", "key_use": "signing", "key_name": null, "sha256": ENTRA_CERT },
+            { "descriptor": "IDPSSODescriptor", "key_use": "signing", "key_name": null, "sha256": ENTRA_CERT },
+        ])
+    );
+
+    // The removal report is the only record that a document was changed, so
+    // it is asserted as the operator reads it: which element, on which line,
+    // and for which of the two reasons — the signature and the WS-Federation
+    // roles have different remedies.
+    assert_eq!(
+        doc["would_remove"],
+        serde_json::json!([
+            {
+                "element": "ds:Signature",
+                "local_name": "Signature",
+                "xsi_type": null,
+                "line": 16,
+                "reason": "enveloped-signature",
+            },
+            {
+                "element": "RoleDescriptor",
+                "local_name": "RoleDescriptor",
+                "xsi_type": "fed:SecurityTokenServiceType",
+                "line": 36,
+                "reason": "unsupported-role",
+            },
+            {
+                "element": "RoleDescriptor",
+                "local_name": "RoleDescriptor",
+                "xsi_type": "fed:ApplicationServiceType",
+                "line": 60,
+                "reason": "unsupported-role",
+            },
+        ])
+    );
 }
 
 #[test]

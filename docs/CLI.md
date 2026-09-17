@@ -1200,7 +1200,16 @@ body beginning `ERROR : `, so the status code is useless and the body is what
 is classified. A response that is neither a SAML `<EntityDescriptor>` nor an
 `ERROR :` message is refused too, and quoted back — writing a login page or a
 proxy error to `entity.xml` is exactly what the 200 invites. Nothing is written
-unless the body is metadata.
+unless the body is metadata, and "is metadata" means the whole body parses as
+one well-formed `EntityDescriptor` document: a correctly namespaced start tag
+with the response truncated after it is a failure, not an export. The two
+things a *successful* export may still carry are a missing `entityID` (a
+roleless entity really does export a bare descriptor) and a certificate body
+this tool cannot decode.
+
+The request follows **no redirects**. `--out` is written from the body that
+comes back, so a 302 would be enough to save another host's descriptor under
+this entity's name; a redirect is reported as the failure it is.
 
 `--realm` is always sent: omitting it on the wire selects the **root** realm,
 not the current one.
@@ -1224,11 +1233,25 @@ is now stale.
 
 ### `metadata inspect` / `metadata sanitise`
 
-Both refuse a document they cannot fully read rather than passing it through:
-one root `EntityDescriptor` and no more, a namespace binding for every prefix on
-every element _and attribute_, nothing but comments, processing instructions and
-whitespace outside the root, and no entity reference whose replacement text we
-would have to guess.
+Both refuse a document they cannot fully read rather than passing it through —
+the same boundary `metadata export` classifies against, so the two cannot
+disagree. One root `EntityDescriptor` and no more; a namespace binding for
+every prefix on every element _and attribute_; nothing but comments,
+processing instructions and whitespace outside the root; no entity reference
+whose replacement text we would have to guess; and the XML 1.0 productions a
+tokeniser walks past — legal element and attribute names, one `DOCTYPE`, an
+XML declaration with a version, a legal character everywhere a character
+appears, no literal `]]>`, no character reference to something Unicode has no
+character for, and no two attributes resolving to one expanded name.
+
+`inspect` reports a certificate by the role that publishes it. A dual-role
+entity can publish `use="signing"` from both its IdP and its SP role with no
+`KeyName` on either, so `use` and fingerprint alone name two different keys
+identically. A `<KeyDescriptor>` outside a role descriptor is refused rather
+than reported with a role it does not have. Extension content is left alone:
+only a *direct child* of `EntityDescriptor` is a role this entity publishes, so
+an `<Extensions>` container holding something shaped like a WS-Federation role
+is neither stripped nor counted.
 
 There is no `import`, `create`, or `delete` yet, and no circle-of-trust verb:
 CoT membership is stored in two places and REST exposes only one, so a CLI that
