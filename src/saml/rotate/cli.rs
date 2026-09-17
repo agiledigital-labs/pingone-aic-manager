@@ -67,7 +67,7 @@ pub enum RotateCommand {
     Init {
         /// The entity ID, exactly as the tenant stores it.
         entity_id: String,
-        /// The label namespace to mint, e.g. `sp-a`. Letters, digits, `-`, `_`.
+        /// The label namespace to mint, e.g. `spa`. Letters and digits only.
         #[arg(long)]
         identifier: String,
         /// The ESV secret to create or adopt, e.g. `esv-saml-sp-a-signing`.

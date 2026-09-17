@@ -203,7 +203,7 @@ pub enum Command {
         #[command(subcommand)]
         command: crate::oauth::cli::OauthCommand,
     },
-    /// SAML 2.0 entity providers and metadata (read-only).
+    /// SAML 2.0 entity providers, metadata and certificate rotation.
     Saml {
         #[command(subcommand)]
         command: crate::saml::cli::SamlCommand,

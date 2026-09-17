@@ -102,7 +102,13 @@ impl From<KeyPairError> for crate::Error {
 }
 
 /// A validated `cat key.pem cert.pem` value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` is **hand-written and redacting**, not derived: `value` holds a
+/// private key verbatim, and a derived `Debug` puts it in any panic message a
+/// failed `assert_eq!` produces, in any `{:?}` a future caller reaches for, and
+/// in any error chain that formats its context — none of which is a place a
+/// private key may appear (`.ai/core.md` §3, "tokens stay in memory").
+#[derive(Clone, PartialEq, Eq)]
 pub struct KeyPair {
     /// The bytes that were validated, verbatim.
     ///
@@ -121,6 +127,26 @@ pub struct KeyPair {
     /// certificate be recognised in the tenant's own export rather than assumed
     /// to be there.
     pub sha256: String,
+}
+
+impl std::fmt::Debug for KeyPair {
+    /// Name the certificate, never the key.
+    ///
+    /// The fingerprint is the field that makes a debug line useful — it is the
+    /// identity every other layer reports — and it is derived from the public
+    /// certificate, so printing it discloses nothing the tenant's own metadata
+    /// export does not already publish.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KeyPair")
+            .field("value", &"<private key redacted>")
+            .field(
+                "certificate_der",
+                &format!("{} bytes", self.certificate_der.len()),
+            )
+            .field("sha256", &self.sha256)
+            .finish()
+    }
 }
 
 /// Validate a proposed ESV secret value as a SAML signing key pair.

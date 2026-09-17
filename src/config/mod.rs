@@ -845,7 +845,10 @@ impl ProjectConfig {
              settings.toml\n\
              local-config/\n\
              backups/\n\
-             *.log\n",
+             *.log\n\
+             # Which ESV secret version holds which SAML certificate. No key\n\
+             # material, but it names the tenant, its realms and its entities.\n\
+             saml-rotations.json\n",
         );
         content
     }
@@ -1162,6 +1165,16 @@ mod tests {
         // Every tenant snapshot written below ProjectConfig::dir() is private
         // project state; a write_gitignore() call alone does not cover it.
         assert!(content.lines().any(|line| line == "backups/"));
+        // Same class, and the one that got missed: `aic saml rotate` writes
+        // .aic/saml-rotations.json, which names the tenant, its realms and its
+        // entity ids. This repo's own top-level .gitignore has `.aic/`, so the
+        // gap is invisible here — it opens in a scaffolded project whose
+        // .gitignore does not, where this file is the only cover. Any new
+        // runtime file written under ProjectConfig::dir() needs a line here.
+        assert!(
+            content.lines().any(|line| line == "saml-rotations.json"),
+            "a new .aic/ runtime file must be added to gitignore_content"
+        );
         // Both known stems must resolve back from their wire `kind`.
         assert_eq!(VaultArtifact::from_kind("keys"), Some(VaultArtifact::Jwks));
         assert_eq!(

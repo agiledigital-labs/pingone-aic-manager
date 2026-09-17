@@ -198,8 +198,8 @@ what "rotate a certificate" even means. This document made none of these calls.
 
 ### What `aic` can do today
 
-As of 2026-09-17, `aic saml` is **read-only** (`docs/CLI.md` — check it before
-assuming this is still true; verbs are being added):
+As of 2026-09-18, `aic saml` reads **and writes** (`docs/CLI.md` is the full
+reference; check it before assuming this table is still complete):
 
 | Verb                                                         | Unlocked agent?                  |
 | ------------------------------------------------------------ | -------------------------------- |
@@ -208,11 +208,19 @@ assuming this is still true; verbs are being added):
 | `aic saml metadata export <ENTITY-ID> --realm <r> [--out P]` | **no** — the JSP takes no bearer |
 | `aic saml metadata inspect <FILE>`                           | no — local file                  |
 | `aic saml metadata sanitise <FILE> [--out P]`                | no — local file                  |
+| `aic saml cot list \| show [--realm …]`                      | yes                              |
+| `aic saml create-hosted <ENTITY-ID> --role … --meta-alias …` | yes                              |
+| `aic saml import <FILE> [--dry-run]`                         | yes                              |
+| `aic saml delete <ENTITY-ID> [--force]`                      | yes                              |
+| `aic saml rotate status \| init \| stage \| complete`         | yes                              |
 
-There is no `import`, no `create`, no `delete` and no circle-of-trust verb, so
-the steps below that need one give the REST call from `docs/api/06-saml.md`
-instead. `scripts/verify-endpoint.sh` is a `GET` helper and will not make those
-writes; the console or a hand-rolled `curl` with the agent's bearer will.
+The only thing still missing is a circle-of-trust **write** verb: `cot list`
+and `cot show` read the CoT document, but nothing here creates a circle or
+edits its membership, so a step below that needs one gives the REST call from
+`docs/api/06-saml.md` instead. That gap is deliberate — membership is stored
+twice and REST exposes only half of it, so a write verb could not confirm its
+own result. `scripts/verify-endpoint.sh` is a `GET` helper and will not make
+that write; the console or a hand-rolled `curl` with the agent's bearer will.
 
 Run every `aic` invocation with `--no-prompt`, so a locked daemon fails fast
 instead of waiting for a master password (`.ai/core.md` §8).
