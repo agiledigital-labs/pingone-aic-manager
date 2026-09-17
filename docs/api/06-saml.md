@@ -336,12 +336,23 @@ could: **which** published certificate a given ESV secret version holds, which
 is not readable at all and so is recorded locally at stage time
 (`docs/CLI.md`).
 
-1. **`PUT` the entity with a `secretIdIdentifier`** (any string; it namespaces
-   the labels). This creates three labels —
+1. **`PUT` the entity with a `secretIdIdentifier`** (**ASCII letters and digits
+   only** — see the note below; it namespaces the labels). This creates three
+   labels —
    `am.applications.federation.entity.providers.saml2.<id>.{signing,encryption,mtls}`
    — in the realm's secret-mapping schema enum, and nothing else. The exported
    metadata does **not** change: the new labels are unmapped, so resolution
    still falls through to the defaults. Remember `PUT` is a full replace.
+> **The identifier is alphanumeric, and nothing said so until it was tried.**
+> `-` and `_` come back as `400 Invalid character present in Secret ID
+> Identifier`, from the entity `PUT` itself, naming no field beyond that phrase.
+> Measured 2026-09-18: `sp-rotate-test` and `sp_rotate_test` were both refused;
+> `sprotatetest` and `SpRotate1` were both accepted, so digits and mixed case
+> are fine. This page previously said "any string", and the reason that survived
+> is worth noting — every identifier the 2026-09-16 run probed (`aicrot1`,
+> `aicrot2`, `probe3key`) happened to be alphanumeric, so the rule was never
+> under test. The schema endpoint does not express the constraint either.
+
 2. **Create an ESV secret holding the key pair.** `encoding: pem`,
    `useInPlaceholders: false`, value = the **private key PEM and the
    certificate PEM concatenated** (`cat key.pem cert.pem`). A
@@ -884,10 +895,12 @@ non-sandbox tenant, or you will send a UAT token to the sandbox host.
 
 ## Verified against
 
-Three passes. The 2026-08-12 pass was read-only against a UAT tenant and is the
+Four passes. The 2026-08-12 pass was read-only against a UAT tenant and is the
 basis for the diagnosis sections; the first 2026-09-16 pass exercised the write
 surface against the sandbox; the second 2026-09-16 pass carried a signing-key
-rotation through end to end.
+rotation through end to end; the 2026-09-18 pass ran that rotation again
+through `aic saml rotate` rather than by hand, which is what surfaced the
+identifier rule.
 
 ### 2026-08-12 — read-only, UAT `bravo`
 
@@ -1110,3 +1123,39 @@ from exactly this reading and was wrong.
   alongside `signing` and `encryption` whenever `secretIdIdentifier` is set, and
   `excludeClientCertificate` exists to keep it out of the metadata, but nothing
   here exercised it.
+
+### 2026-09-18 — the rotation driven by `aic saml rotate`, sandbox `alpha`
+
+- Tenant: sandbox, realm `alpha` (empty of SAML entities before and after)
+- Date: 2026-09-18
+- Everything below was run through the CLI, not by hand, which is the point:
+  the 2026-09-16 pass made the same calls with `curl` and chose its own
+  identifiers, and two of these findings only appear when something else
+  chooses them.
+
+| Step (in order)                                                        | Result                                                                 |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `create-hosted https://sp-a.example.com --role sp --meta-alias /alpha/rotate-test` | 201                                                        |
+| `rotate status` (baseline)                                             | `unconfigured`; 1 signing certificate, the realm-wide default          |
+| `rotate init --identifier sp-rotate-test`                              | **400** `Invalid character present in Secret ID Identifier`, from the entity `PUT` |
+| `rotate init --identifier sp_rotate_test`                              | **400**, same message — so `_` is refused too                          |
+| `rotate init --identifier sprotatetest`                                | 200; entity read back and compared whole; ESV secret created; label mapped |
+| `rotate init --identifier SpRotate1` (second entity)                   | 200 — digits and mixed case are accepted                               |
+| `metadata export` after init                                           | signing = certificate A; encryption unchanged; **no restart**          |
+| `rotate stage` (certificate B)                                         | `version 2 added`; export shows **both**, B first                      |
+| `rotate status` while staged                                           | B attributed to version 2 from the local record; A reported as unattributed |
+| `rotate complete` without `--force`                                    | refused — retiring a published certificate needs confirmation          |
+| `rotate complete --force`                                              | version 1 `DISABLED`; export shows **only** B, ~6 s end to end         |
+| `import` of Entra metadata, entity id ending `/`                       | `importedEntities` echoes the id **byte-identically**, trailing slash kept |
+| `delete` the entity, then `secretmap list` / `esv secret list`         | both the mapping and the ESV secret survive — the orphan trap, again   |
+| `secretmap remove …sprotatetest.signing --force`                       | **200** — the defect the 2026-09-16 pass hit here is fixed             |
+| `esv secret delete`, then relist                                       | clean; realm `alpha` empty again                                       |
+
+- **What the trailing slash settles.** `compare_imported` is an exact set
+  comparison, and the open worry was that AM might normalise an Entra id (they
+  end in `/`) and make every Entra import report a false mismatch. It does not
+  normalise. No speculative normalisation is needed, and none should be added —
+  the slash is identity-significant and exact comparison fails closed.
+- **Cleanup confirmed.** `aic saml list --realm alpha` returned "no SAML entity
+  providers" before and after; no mapping or ESV secret matching the probe names
+  remained; the local rotation journal is `[]`.
