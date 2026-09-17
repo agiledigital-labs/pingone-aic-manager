@@ -55,9 +55,16 @@
 //! check actually reads. [`spec::COT_MEMBERSHIP_CAVEAT`] is the sentence every
 //! CoT rendering carries for that reason; it is load-bearing, not decoration.
 //!
-//! Certificate rotation is a later slice.
+//! **Certificate rotation lives in [`rotate`]**, and the reason it is a
+//! submodule rather than another verb here is that it is barely about SAML: an
+//! AIC SAML signing certificate is not in the entity at all. The entity holds a
+//! `secretIdIdentifier`, which is a label into AM's secret store, and on AIC
+//! that label is backed by an ESV secret — so a rollover adds an ESV secret
+//! *version* and spans `saml/`, `esv/` and `secretmap/`. There is nothing to
+//! upload and no metadata to push.
 
 pub mod api;
 pub mod cli;
 pub mod metadata;
+pub mod rotate;
 pub mod spec;
