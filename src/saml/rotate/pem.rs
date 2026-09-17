@@ -104,6 +104,14 @@ impl From<KeyPairError> for crate::Error {
 /// A validated `cat key.pem cert.pem` value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyPair {
+    /// The bytes that were validated, verbatim.
+    ///
+    /// **Verbatim is the point.** This is what gets base64'd into the ESV
+    /// secret version, and nothing here re-armours or re-wraps it: a value
+    /// this module reassembled would be a value nothing checked, and the
+    /// check is the only thing standing between a mismatched pair and a peer
+    /// rejecting assertions hours later.
+    pub value: String,
     /// The certificate's DER bytes, as decoded from its armour.
     pub certificate_der: Vec<u8>,
     /// Lowercase hex SHA-256 over those DER bytes.
@@ -161,6 +169,7 @@ pub fn validate_key_pair(bytes: &[u8]) -> Result<KeyPair, KeyPairError> {
     }
 
     Ok(KeyPair {
+        value: text.to_string(),
         sha256: hex(&Sha256::digest(&cert_der)),
         certificate_der: cert_der,
     })

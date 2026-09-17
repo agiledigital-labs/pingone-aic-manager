@@ -154,6 +154,27 @@ fn import_request(realm: &str, body: Value, confirmed_prod: bool) -> SamlRequest
     }
 }
 
+/// `PUT …/saml2/{location}/{entityId64}` — a **full replace**.
+///
+/// There is no create-by-`PUT` (an unknown id is a 404) and no `If-Match`: a
+/// stale header and a bogus `_rev` in the body were both accepted with 200.
+/// So the body has to be a whole document that was just read, and the caller
+/// has to read it back (`docs/api/06-saml.md`).
+fn update_entity_request(
+    realm: &str,
+    location: Location,
+    entity_id: &str,
+    body: Value,
+    confirmed_prod: bool,
+) -> SamlRequest {
+    SamlRequest {
+        method: "PUT",
+        path: entity_path(realm, location, entity_id),
+        body: Some(body),
+        confirmed_prod,
+    }
+}
+
 fn delete_entity_request(
     realm: &str,
     location: Location,
@@ -250,6 +271,34 @@ pub async fn delete_entity(
     confirmed_prod: bool,
 ) -> Result<Value> {
     delete_entity_request(realm, location, entity_id, confirmed_prod)
+        .send(tenant)
+        .await
+}
+
+/// Replace an entity provider's whole document.
+///
+/// **This is a full replace with no optimistic concurrency.** `{"entityId":
+/// "<same id>"}` answers 200 and silently deletes the entire role block,
+/// `metaAlias` and all, leaving a roleless shell whose metadata export
+/// collapses to `<EntityDescriptor/>`. So the body must be a document this
+/// caller read and then changed, never one it assembled, and the caller must
+/// read the entity back afterwards: a 200 here is not evidence of anything.
+///
+/// The `permit` carries the same compile-time routing proof as
+/// [`import_entity`]'s: [`crate::saml::rotate::spec::InitPermit`] can only be
+/// minted by `rotate::spec::authorize_init`, so a `--dry-run` cannot reach
+/// this call. `rotate::ops::set_identifier` is the only caller, and it owns
+/// the read-modify-write-verify sequence.
+pub async fn update_entity(
+    tenant: &str,
+    realm: &str,
+    location: Location,
+    entity_id: &str,
+    body: Value,
+    confirmed_prod: bool,
+    _permit: &crate::saml::rotate::spec::InitPermit,
+) -> Result<Value> {
+    update_entity_request(realm, location, entity_id, body, confirmed_prod)
         .send(tenant)
         .await
 }
