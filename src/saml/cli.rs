@@ -37,6 +37,7 @@ use crate::cli::{
 };
 use crate::saml::api;
 use crate::saml::metadata::{self, SanitiseOpts};
+use crate::saml::rotate::cli::RotateCommand;
 use crate::saml::spec::{self, ExportOutcome, HostedCreate, Located, Location, Role};
 use crate::{Error, Result};
 
@@ -141,6 +142,15 @@ pub enum SamlCommand {
         #[command(flatten)]
         force: OperationForce,
     },
+    /// Roll the certificate a SAML role signs with.
+    ///
+    /// An AIC SAML signing certificate is not in the entity — the entity holds
+    /// a label, and the key is a version of the ESV secret that label maps to.
+    /// So a rollover adds a secret version, not a new entity pointer.
+    Rotate {
+        #[command(subcommand)]
+        command: RotateCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -229,6 +239,11 @@ pub fn needs_tenant_auth(command: &SamlCommand) -> bool {
             | MetadataCommand::Sanitise { .. }
             | MetadataCommand::Export { .. } => false,
         },
+        // Exhaustive for the same reason, one level down: every `rotate` verb
+        // reads the entity, the mapping and the ESV secret over the bearer —
+        // including `status`, whose one unauthenticated call is the metadata
+        // export the other three reads are correlated against.
+        SamlCommand::Rotate { command } => crate::saml::rotate::cli::needs_tenant_auth(command),
     }
 }
 
@@ -286,6 +301,7 @@ pub async fn run(command: SamlCommand) -> Result<()> {
             yes,
             force,
         } => delete(tenant, realm, &entity_id, location, yes, force).await,
+        SamlCommand::Rotate { command } => crate::saml::rotate::cli::run(command).await,
     }
 }
 
