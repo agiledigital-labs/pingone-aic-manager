@@ -791,6 +791,54 @@ fn meta_alias_error(realm: &str, meta_alias: &str) -> crate::Error {
     ))
 }
 
+/// What `aic saml create-hosted` prints, split by who said it.
+///
+/// The 201 body is a **stub** — `_id`, `_rev`, `entityId` — not the created
+/// document, so the only thing here AM confirmed is the id. The role and the
+/// alias are what was *sent*, and saying so is the same discipline as
+/// re-reading the circles of trust after a delete: a report must not state a
+/// post-state nothing measured (`.ai/core.md` §5).
+///
+/// `assigned` is the `entityId` the 201 carried, if any. Two of its three
+/// states are failures the operator has to be told about, because AM's answer
+/// to a create it did not like is still a 201:
+///
+/// - a **different** id means the request's `entityId` did not take, which is
+///   precisely the UUID-minting behaviour the CLI exists to prevent;
+/// - **no** id means nothing confirmed what was created at all.
+pub fn created_lines(
+    assigned: Option<&str>,
+    request: &HostedCreate,
+    tenant: &str,
+    realm: &str,
+) -> Vec<String> {
+    let requested = request.entity_id.trim();
+    let named = assigned.map(str::trim).filter(|id| !id.is_empty());
+    let mut lines = vec![format!(
+        "created hosted SAML entity provider {} in {tenant}/{realm}",
+        named.unwrap_or(requested)
+    )];
+    match named {
+        Some(id) if id != requested => lines.push(format!(
+            "warning: AM named it {id}, not the requested {requested} — the entityId \
+             in the request did not take"
+        )),
+        None => lines.push(format!(
+            "warning: the 201 carried no entityId, so the id of what was created is \
+             unconfirmed; the request asked for {requested}"
+        )),
+        Some(_) => {}
+    }
+    lines.push(format!(
+        "role {} and metaAlias {} are what was sent; the 201 body is a stub, so nothing \
+         was read back — `aic saml show {} --realm {realm}` shows what AM stored",
+        request.role.wire(),
+        request.meta_alias.trim(),
+        named.unwrap_or(requested)
+    ));
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1631,5 +1679,71 @@ mod tests {
             lines[1]
         );
         assert!(!lines[1].contains("removed from"), "{:?}", lines[1]);
+    }
+
+    /// The create report must separate what AM confirmed (the id in the 201)
+    /// from what was merely sent (the role and the alias), and must not read a
+    /// 201 as proof that the request took: AM answers 201 to a create it
+    /// renamed, and to one whose body it ignored entirely.
+    #[test]
+    fn the_create_report_separates_what_am_confirmed_from_what_was_sent() {
+        let request = HostedCreate {
+            entity_id: "https://sp-b.example.com".to_string(),
+            role: Role::Sp,
+            meta_alias: "/bravo/client-b-sp".to_string(),
+        };
+
+        let echoed = created_lines(
+            Some("https://sp-b.example.com"),
+            &request,
+            "sandbox",
+            "bravo",
+        )
+        .join("\n");
+        assert!(
+            echoed.contains(
+                "created hosted SAML entity provider https://sp-b.example.com \
+                 in sandbox/bravo"
+            ),
+            "{echoed}"
+        );
+        assert!(
+            !echoed.contains("warning"),
+            "an echoed id is the expected case: {echoed}"
+        );
+        assert!(
+            echoed.contains("are what was sent") && echoed.contains("nothing was read back"),
+            "the role and alias were never read back and the report must say so: {echoed}"
+        );
+
+        // The UUID case. A count of lines would not tell these apart; the id
+        // AM named is the identity that matters.
+        let renamed = created_lines(
+            Some("9f2c0f38-0000-0000-0000-000000000000"),
+            &request,
+            "sandbox",
+            "bravo",
+        )
+        .join("\n");
+        assert!(
+            renamed.contains("warning: AM named it 9f2c0f38-0000-0000-0000-000000000000"),
+            "{renamed}"
+        );
+        assert!(
+            renamed.contains("not the requested https://sp-b.example.com"),
+            "{renamed}"
+        );
+
+        for missing in [None, Some(""), Some("  ")] {
+            let unconfirmed = created_lines(missing, &request, "sandbox", "bravo").join("\n");
+            assert!(
+                unconfirmed.contains("the 201 carried no entityId"),
+                "{missing:?} is not a confirmation: {unconfirmed}"
+            );
+            assert!(
+                unconfirmed.contains("https://sp-b.example.com"),
+                "the requested id is still the operator's only handle: {unconfirmed}"
+            );
+        }
     }
 }

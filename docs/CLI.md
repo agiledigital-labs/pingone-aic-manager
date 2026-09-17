@@ -1210,8 +1210,11 @@ so.** AM records membership in two places: the CoT document's
 `trustedProviders`, which REST returns, and each entity's `cotlist` extended
 metadata, which REST never exposes — and the runtime trust check reads
 `cotlist`. A provider listed here can still have its assertions rejected, and
-one missing here can still authenticate (`docs/api/06-saml.md`). The caveat
-goes to **stderr** in both modes, so `--json` stays a clean stream.
+one missing here can still authenticate (`docs/api/06-saml.md`). The caveat is
+part of the human rendering and goes to stdout with it — including when the
+realm has no circles of trust at all, where "none" is the reading most likely
+to be taken as proof that nothing trusts anything. `--json` puts it on stderr
+instead, so the JSON stream stays clean.
 
 An entry with no `|protocol` suffix is shown and flagged rather than hidden: AM
 stores and removes those with a 200 precisely because nothing can be resolved
@@ -1236,9 +1239,14 @@ one AM does not:
   refusal.
 
 One role per invocation. `roles` is derived from which role blocks are present,
-so a dual-role entity is built by adding the second block later, not here. The
-201 body is a stub (`_id`, `_rev`, `entityId`), not the created document, so
-the command reports the id AM assigned rather than summarising the response.
+so a dual-role entity is built by adding the second block later, not here.
+
+The 201 body is a stub (`_id`, `_rev`, `entityId`), not the created document,
+so the report says which half of it AM confirmed: the id is AM's, and the role
+and the alias are what was sent and were **not** read back. An id that comes
+back different from the one requested — the UUID-minting behaviour this command
+exists to prevent — is a warning, not a silent substitution, and so is a 201
+that carries no `entityId` at all.
 
 ### `delete`
 
@@ -1247,6 +1255,13 @@ entity** — a member CoT was observed going to `[]` with no CoT write in betwee
 (`docs/api/06-saml.md`). The operator cannot see that coming, so `delete` reads
 the CoT collection first and prints, by name, each circle and each entry that
 will go. A count would not do: the operator has to recognise them.
+
+Afterwards it reads that collection **again** and reports the difference, so
+the cascade it prints is something it observed rather than something it
+predicted. AM performs the cascade, not `aic`, and the delete response says
+nothing about it — a circle that still lists the entity is reported as a
+warning. If the re-read itself fails, the command says the cascade is
+unconfirmed; it never prints the pre-state as the outcome.
 
 `--force` is required. The refusal path *is* the preview — without `--force`
 the command performs both reads, prints the cascade, and writes nothing — which
