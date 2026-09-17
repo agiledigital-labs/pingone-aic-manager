@@ -141,7 +141,10 @@ impl fmt::Display for Role {
 /// role we have never seen still reports its endpoints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Endpoint {
-    /// The role descriptor it sits under, for example `IDPSSODescriptor`.
+    /// The entity role it sits under, for example `IDPSSODescriptor` — the
+    /// *direct child* of `EntityDescriptor`, so an endpoint an extension
+    /// declares is attributed to no role rather than to whichever ancestor
+    /// happened to be named `…Descriptor`. Absent means no role owns it.
     pub descriptor: Option<String>,
     /// The endpoint element's local name, for example `SingleSignOnService`.
     pub kind: String,
