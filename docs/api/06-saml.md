@@ -330,6 +330,12 @@ Each step below was run against a throwaway hosted SP in the sandbox `bravo`
 and checked by re-exporting `exportmetadata.jsp` and fingerprinting the
 `<ds:X509Certificate>` it returned.
 
+`aic saml rotate` performs these steps — `init` does 1-3, `stage` adds the
+version, `complete` disables the old one — and adds the check nothing here
+could: **which** published certificate a given ESV secret version holds, which
+is not readable at all and so is recorded locally at stage time
+(`docs/CLI.md`).
+
 1. **`PUT` the entity with a `secretIdIdentifier`** (any string; it namespaces
    the labels). This creates three labels —
    `am.applications.federation.entity.providers.saml2.<id>.{signing,encryption,mtls}`
