@@ -1196,8 +1196,8 @@ pub fn plan_lines(
         {
             lines.push(
                 "              (removing a role changes bytes the enveloped signature \
-                 covers, so the signature goes with it; --keep-signature keeps a \
-                 signature that will not verify)"
+                 covers, so the signature goes with it; --no-sanitise sends the file \
+                 untouched, signature and WS-Federation roles alike)"
                     .to_string(),
             );
         }
