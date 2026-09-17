@@ -324,9 +324,11 @@ const ERROR_PREFIX: &str = "ERROR";
 ///
 /// 1. the body begins with `ERROR` — AM's plain-text failure, which arrives
 ///    with a 200 and no `Content-Type`;
-/// 2. otherwise the root element must be a SAML `<EntityDescriptor>`, which is
-///    what a successful export always is (singular — never an
-///    `EntitiesDescriptor`).
+/// 2. otherwise the body must be one well-formed SAML `<EntityDescriptor>`
+///    document, which is what a successful export always is (singular — never
+///    an `EntitiesDescriptor`). Well-formed to the end of the file, not just
+///    at the root: a start tag with the document truncated after it used to
+///    classify as metadata and be written to `--out`.
 ///
 /// Anything else is [`ExportOutcome::Unrecognised`]. Failing closed matters
 /// more than being clever here: writing an AM login page or a proxy error to
@@ -340,7 +342,7 @@ pub fn classify_export(body: &[u8]) -> ExportOutcome {
             rest.trim_start().trim_start_matches(':').trim(),
         ));
     }
-    if metadata::is_entity_descriptor(body) {
+    if metadata::validate_export_document(body).is_ok() {
         return ExportOutcome::Metadata;
     }
     ExportOutcome::Unrecognised(excerpt(trimmed))
@@ -1185,7 +1187,7 @@ mod tests {
             r#"entityID="https://sp-a.example.com"/>"#
         );
 
-        let cases: [(&str, String, ExportOutcome); 8] = [
+        let cases: [(&str, String, ExportOutcome); 10] = [
             (
                 "a real export",
                 DESCRIPTOR.to_string(),
@@ -1240,6 +1242,24 @@ mod tests {
                 "an empty body",
                 String::new(),
                 ExportOutcome::Unrecognised("<empty body>".to_string()),
+            ),
+            (
+                // The row this table was green without. A correctly
+                // namespaced start tag and then nothing — a truncated
+                // response, a proxy that cut the body — used to classify as
+                // metadata, and the CLI wrote it to --out under an .xml name.
+                "a descriptor the response was truncated after",
+                r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata">"#.to_string(),
+                ExportOutcome::Unrecognised(
+                    r#"<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata">"#.to_string(),
+                ),
+            ),
+            (
+                // Same shape, one document further on: two descriptors
+                // concatenated are not one entity's metadata either.
+                "a second descriptor appended to the first",
+                format!("{DESCRIPTOR}{DESCRIPTOR}"),
+                ExportOutcome::Unrecognised(format!("{DESCRIPTOR}{DESCRIPTOR}")),
             ),
         ];
 
