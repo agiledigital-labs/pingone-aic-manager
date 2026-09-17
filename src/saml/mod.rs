@@ -7,7 +7,9 @@
 //! [`metadata`] is deliberately the offline half: it parses, inspects and
 //! rewrites metadata XML without a tenant, a bearer or a network call, so the
 //! transforms an import depends on can be tested against committed fixtures
-//! rather than against a federation that breaks silently.
+//! rather than against a federation that breaks silently. [`metadata::MetadataBundle`]
+//! is the import-shaped view of a file — **n** entities, because one
+//! `EntitiesDescriptor` aggregate is one call and n creations.
 //!
 //! The read half ([`api`], [`spec`]) lists and shows entities and circles of
 //! trust over the `realm-config` JSON API and exports an entity's standard
@@ -19,8 +21,22 @@
 //! - **A failed export is HTTP 200.** [`spec::classify_export`] is the only
 //!   thing separating an error message from a file on disk.
 //!
-//! The write half is deliberately narrow: `create-hosted` and `delete`, and
-//! nothing else. Both exist to cover for something AM will not do —
+//! `import` is the verb that can break a live federation, and the shape of it
+//! follows from one fact: **`cotlist` damage cannot be detected, before or
+//! after.** So the command refuses rather than recovers — every entity id is
+//! preflighted against both collections and any collision refuses the whole
+//! operation, with no `--force` that deletes and re-imports (the delete
+//! cascades through every circle of trust and the `cotlist` cannot be read
+//! back) and no `--cot` (AM discards it with a 200). `--dry-run` stops by
+//! holding no [`spec::ImportPermit`] rather than by returning in front of the
+//! write. And the report claims only what AM said: `importedEntities`
+//! compared as a **set** against the parsed ids, a fresh list of the realm
+//! after a failure because a failed aggregate import is not a rollback, and
+//! [`spec::IMPORT_COTLIST_CAVEAT`] in place of the post-import tick nothing
+//! could stand behind.
+//!
+//! The other writes are deliberately narrow: `create-hosted` and `delete`.
+//! Both exist to cover for something AM will not do —
 //! `create-hosted` imposes the `entityId` and `metaAlias` AM does not require
 //! (`{}` is a **201** with a UUID name, and a role block without
 //! `services.metaAlias` is a 500 naming no field), and `delete` reads the
@@ -39,7 +55,7 @@
 //! check actually reads. [`spec::COT_MEMBERSHIP_CAVEAT`] is the sentence every
 //! CoT rendering carries for that reason; it is load-bearing, not decoration.
 //!
-//! `import` and certificate rotation are later slices.
+//! Certificate rotation is a later slice.
 
 pub mod api;
 pub mod cli;

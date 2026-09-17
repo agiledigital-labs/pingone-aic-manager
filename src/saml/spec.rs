@@ -841,6 +841,389 @@ pub fn created_lines(
     lines
 }
 
+// ---------------------------------------------------------------------------
+// Importing remote entities
+// ---------------------------------------------------------------------------
+
+/// The document, encoded for the `standardMetadata` field.
+///
+/// base64url, unpadded, over the **exact** bytes read from the file.
+///
+/// Deliberately *not* [`entity_id64`], even though the two produce the same
+/// alphabet today. They encode different things — an identifier for a URL
+/// path, and a whole document for a JSON body — and only one of them trims:
+/// `entity_id64` trims the id because AM stores it trimmed, and trimming a
+/// document would change the bytes AM is asked to store. One shared helper
+/// would make that difference a one-character edit away from being lost.
+///
+/// The alphabet is the measured part, and it is unforgiving: the identical
+/// document in **standard** base64 is `400 Invalid standard metadata value in
+/// request` — the same message as sending `{}`, so nothing in the response
+/// tells the two apart (`docs/api/06-saml.md`). Padding is optional either
+/// way.
+pub fn standard_metadata(xml: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(xml)
+}
+
+/// The whole `?_action=importEntity` request body.
+///
+/// One field. **No `cot`:** `{"standardMetadata": …, "cot": "<name>"}`
+/// returns 200 and changes no circle of trust, and a `cot` naming one that
+/// does not exist is *also* accepted with 200 — unknown fields are discarded
+/// (`docs/api/06-saml.md`). A `--cot` flag would therefore report a
+/// membership change that never happened, which is the one failure this
+/// vertical exists to stop.
+pub fn import_body(xml: &[u8]) -> serde_json::Value {
+    serde_json::json!({ "standardMetadata": standard_metadata(xml) })
+}
+
+/// An entity the file declares that the realm already holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collision {
+    pub entity_id: String,
+    /// Where it already is. More than one means the id exists in both
+    /// collections, which [`locate`] refuses to resolve by precedence.
+    pub locations: Vec<Location>,
+}
+
+impl Collision {
+    fn where_it_is(&self) -> String {
+        self.locations
+            .iter()
+            .map(|location| location.as_str())
+            .collect::<Vec<_>>()
+            .join(" and ")
+    }
+}
+
+/// Which of a file's entity ids the realm already holds.
+///
+/// Both collections, because the id space is shared: an entity id that exists
+/// as `hosted` is still an id `importEntity` cannot create.
+pub fn collisions(entity_ids: &[String], stubs: &[EntityStub]) -> Vec<Collision> {
+    entity_ids
+        .iter()
+        .filter_map(|entity_id| {
+            let locations = match locate(entity_id, stubs) {
+                Located::NotFound => return None,
+                Located::In(location) => vec![location],
+                Located::Ambiguous(locations) => locations,
+            };
+            Some(Collision {
+                entity_id: entity_id.clone(),
+                locations,
+            })
+        })
+        .collect()
+}
+
+/// The preflight, rendered.
+pub fn preflight_lines(entity_ids: &[String], found: &[Collision], realm: &str) -> Vec<String> {
+    if found.is_empty() {
+        return vec![format!(
+            "preflight   none of the {} entity id(s) exists in realm {realm}",
+            entity_ids.len()
+        )];
+    }
+    let mut lines = vec![format!(
+        "preflight   {} of {} entity id(s) already exist in realm {realm}:",
+        found.len(),
+        entity_ids.len()
+    )];
+    for collision in found {
+        lines.push(format!(
+            "              {} ({})",
+            collision.entity_id,
+            collision.where_it_is()
+        ));
+    }
+    lines
+}
+
+/// Permission to send one import.
+///
+/// The field is private to this module and [`authorize_import`] is the only
+/// thing that fills it in, so `api::import_entity` — which takes a reference
+/// to one — is **unreachable** from any path that did not go through the
+/// preflight. That is the same shape as `scripts::gate`'s `WritePermit`, and
+/// it is why `--dry-run` is not an `if` in front of the write: the preview
+/// arm of [`ImportDecision`] holds no permit, so a preview that fell through
+/// to the call would not compile.
+#[derive(Debug)]
+pub struct ImportPermit {
+    _minted_by_authorize_import: (),
+}
+
+/// What the preflight and `--dry-run` decided between them.
+#[derive(Debug)]
+pub enum ImportDecision {
+    /// Print the plan and stop. Carries no [`ImportPermit`].
+    Preview,
+    /// Send it.
+    Send(ImportPermit),
+}
+
+/// Decide whether this import may be sent, and mint the permit if it may.
+///
+/// **Any collision refuses the whole operation**, including the entities that
+/// would have been created — an aggregate is one call, so there is no partial
+/// send to offer. There is deliberately no `--force` that deletes and
+/// re-imports: `importEntity` rewrites extended metadata and a `DELETE`
+/// cascades through every circle of trust that listed the entity, while the
+/// `cotlist` that governs runtime trust is invisible over REST both before
+/// and after (`docs/api/06-saml.md`). A "recovery" nobody can verify is worse
+/// than a refusal.
+///
+/// A dry run is refused by the same rule, and for the same reason it exists:
+/// a preview whose answer is "this would fail" has to say so, not print a
+/// plan that reads like a green light.
+pub fn authorize_import(
+    dry_run: bool,
+    found: &[Collision],
+    tenant: &str,
+    realm: &str,
+) -> crate::Result<ImportDecision> {
+    if let Some(first) = found.first() {
+        return Err(crate::Error::Config(format!(
+            "refusing the whole import: {} of the file's entity id(s) already exist in \
+             {tenant}/{realm} — {} is there as {}. `?_action=importEntity` is create-only \
+             (a repeat is a 500), and there is no safe delete-and-reimport: the delete \
+             cascades through every circle of trust that listed the entity, and the \
+             `cotlist` that actually governs trust is not readable over REST, so nothing \
+             could tell you what was lost. Remove the entity deliberately with \
+             `aic saml delete` if that is what you mean.",
+            found.len(),
+            first.entity_id,
+            first.where_it_is(),
+        )));
+    }
+    if dry_run {
+        return Ok(ImportDecision::Preview);
+    }
+    Ok(ImportDecision::Send(ImportPermit {
+        _minted_by_authorize_import: (),
+    }))
+}
+
+/// `importedEntities` from the 200 body.
+///
+/// **200, not 201**, even though it creates (`docs/api/06-saml.md`). A body
+/// without the array is not a success we can report on, so it is an error
+/// rather than an empty list.
+pub fn imported_entities(response: &serde_json::Value) -> crate::Result<Vec<String>> {
+    response
+        .get("importedEntities")
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .map(|id| match id.as_str() {
+                    Some(text) => text.to_string(),
+                    None => id.to_string(),
+                })
+                .collect()
+        })
+        .ok_or_else(|| crate::Error::Api {
+            status: 0,
+            body: format!("unexpected SAML import response shape: {response}"),
+        })
+}
+
+/// The exact set comparison between what the file declared and what AM says
+/// it imported.
+///
+/// A **set**, not a count. An aggregate of three entities that comes back
+/// with three ids, one of which is not one of ours, is not the import we
+/// asked for — and the count matches. This repo has the same rule written
+/// down elsewhere as "a count is not an identity".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportOutcome {
+    /// Exactly what AM echoed, in its order.
+    pub imported: Vec<String>,
+    /// Declared in the file, absent from `importedEntities`.
+    pub missing: Vec<String>,
+    /// In `importedEntities`, not declared in the file.
+    pub unexpected: Vec<String>,
+}
+
+pub fn compare_imported(declared: &[String], imported: &[String]) -> ImportOutcome {
+    ImportOutcome {
+        imported: imported.to_vec(),
+        missing: declared
+            .iter()
+            .filter(|id| !imported.contains(id))
+            .cloned()
+            .collect(),
+        unexpected: imported
+            .iter()
+            .filter(|id| !declared.contains(id))
+            .cloned()
+            .collect(),
+    }
+}
+
+impl ImportOutcome {
+    /// Whether AM imported exactly the entities the file declared.
+    pub fn matches(&self) -> bool {
+        self.missing.is_empty() && self.unexpected.is_empty()
+    }
+
+    /// What the import did, and — separately — what it could not check.
+    pub fn lines(&self, tenant: &str, realm: &str) -> Vec<String> {
+        let mut lines = vec![format!(
+            "AM reported {} imported entit{} in {tenant}/{realm} (remote):",
+            self.imported.len(),
+            if self.imported.len() == 1 { "y" } else { "ies" }
+        )];
+        for id in &self.imported {
+            lines.push(format!("  {id}"));
+        }
+        for id in &self.missing {
+            lines.push(format!(
+                "warning: {id} is in the file but not in importedEntities — AM did not say \
+                 it created it, so do not assume it exists"
+            ));
+        }
+        for id in &self.unexpected {
+            lines.push(format!(
+                "warning: {id} is in importedEntities but not in the file — something was \
+                 created that this document did not declare"
+            ));
+        }
+        lines
+    }
+}
+
+/// The sentence every import report ends on.
+///
+/// The counterpart to [`COT_MEMBERSHIP_CAVEAT`], and load-bearing for the
+/// same reason: `importEntity` **rewrites extended metadata**, which is where
+/// the `cotlist` that governs runtime trust lives, and REST exposes neither
+/// before nor after. There is therefore no post-import verification to run —
+/// so this command must not print one. A green tick here would be exactly the
+/// state `docs/api/06-saml.md` warns about: a federation that no longer
+/// authenticates, with REST showing a perfectly healthy configuration.
+pub const IMPORT_COTLIST_CAVEAT: &str = "\
+not verified: circle-of-trust membership. AM records it twice — the CoT
+      document's `trustedProviders`, which REST returns, and each entity's
+      `cotlist` in extended metadata, which REST never exposes and which the
+      runtime trust check actually reads. `importEntity` rewrites extended
+      metadata, so a `cotlist` may have been set, changed or dropped by this
+      call and nothing here — before or after — can show it. `aic saml cot
+      list` shows only the readable half.";
+
+/// After a failed import, what the realm holds now.
+///
+/// An aggregate is one call, but a failure is not a rollback: AM says nothing
+/// about how far it got, and assuming "nothing happened" is the same mistake
+/// as reporting the bytes you submitted as a snapshot. So this is a fresh
+/// read, listed per declared id rather than summarised.
+pub fn after_failure_lines(declared: &[String], stubs: &[EntityStub], realm: &str) -> Vec<String> {
+    let mut lines = vec![format!(
+        "the import failed; re-read realm {realm} to see what exists now \
+         (a failure is not a rollback):"
+    )];
+    for entity_id in declared {
+        lines.push(match locate(entity_id, stubs) {
+            Located::NotFound => format!("  absent   {entity_id}"),
+            Located::In(location) => format!("  present  {entity_id} ({location})"),
+            Located::Ambiguous(locations) => format!(
+                "  present  {entity_id} ({})",
+                locations
+                    .iter()
+                    .map(|location| location.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ),
+        });
+    }
+    lines
+}
+
+/// The plan `--dry-run` prints, and the preamble every real import prints
+/// before it sends anything.
+///
+/// It names the exact bytes by length and digest rather than dumping them:
+/// the digest is what makes "these are the bytes that went" checkable against
+/// `sha256sum` on the file, and a 3.7KB base64 blob in a terminal is not.
+pub fn plan_lines(
+    bundle: &metadata::MetadataBundle,
+    removed: &[metadata::Removal],
+    sanitising: bool,
+    body: &[u8],
+    source: &str,
+    tenant: &str,
+    realm: &str,
+) -> Vec<String> {
+    let entities = bundle.entities();
+    let mut lines = vec![
+        format!("import      {source} -> {tenant}/{realm}, collection remote"),
+        format!(
+            "root        <{}> — one importEntity call, {} entit{}",
+            bundle.root(),
+            entities.len(),
+            if entities.len() == 1 { "y" } else { "ies" }
+        ),
+    ];
+    for entity in entities {
+        let roles = if entity.roles.is_empty() {
+            "no role blocks".to_string()
+        } else {
+            entity
+                .roles
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        lines.push(format!(
+            "  line {:<4} {}  [{roles}]",
+            entity.line, entity.entity_id
+        ));
+    }
+    if sanitising {
+        lines.push(format!("sanitise    on — {} removal(s)", removed.len()));
+        for removal in removed {
+            lines.push(format!("              {removal}"));
+        }
+        // Say the causality out loud. The removal's own reason explains the
+        // signature; it does not explain that *we* are what invalidated it.
+        if removed
+            .iter()
+            .any(|removal| removal.reason == metadata::RemovalReason::EnvelopedSignature)
+            && removed
+                .iter()
+                .any(|removal| removal.reason != metadata::RemovalReason::EnvelopedSignature)
+        {
+            lines.push(
+                "              (removing a role changes bytes the enveloped signature \
+                 covers, so the signature goes with it; --no-sanitise sends the file \
+                 untouched, signature and WS-Federation roles alike)"
+                    .to_string(),
+            );
+        }
+    } else {
+        lines.push(
+            "sanitise    off — the file is sent verbatim, WS-Federation roles and all".to_string(),
+        );
+    }
+    lines.push(format!(
+        "body        {} bytes of XML, base64url as {} characters",
+        body.len(),
+        standard_metadata(body).len()
+    ));
+    lines.push(format!("            sha256(xml) {}", digest(body)));
+    lines
+}
+
+/// Lowercase hex SHA-256, the digest `sha256sum` prints.
+fn digest(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1765,5 +2148,398 @@ mod tests {
                 "the requested id is still the operator's only handle: {unconfirmed}"
             );
         }
+    }
+
+    // ── importing ───────────────────────────────────────────────────────────
+
+    const ENTRA: &[u8] = include_bytes!("fixtures/entra-federationmetadata.xml");
+    const ENTRA_SANITISED: &[u8] =
+        include_bytes!("fixtures/entra-federationmetadata.sanitised.xml");
+
+    fn ids(entity_ids: &[&str]) -> Vec<String> {
+        entity_ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    /// The one measured fact the whole command hangs off: the identical bytes
+    /// in standard base64 are a **400**, in base64url a **200**, and the 400
+    /// is the same message as sending `{}` — so nothing in a response would
+    /// ever tell us we had this wrong.
+    ///
+    /// Turns red on swapping `URL_SAFE_NO_PAD` for either `STANDARD` engine
+    /// in `standard_metadata`; the Entra document encodes to five `+`
+    /// characters under the standard alphabet, so the two really do differ.
+    #[test]
+    fn standard_metadata_uses_the_url_safe_alphabet_and_nothing_else() {
+        use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
+
+        let sent = standard_metadata(ENTRA_SANITISED);
+        assert_ne!(
+            sent,
+            STANDARD.encode(ENTRA_SANITISED),
+            "standard base64 is a 400"
+        );
+        assert_ne!(
+            sent,
+            STANDARD_NO_PAD.encode(ENTRA_SANITISED),
+            "stripping the padding does not fix the alphabet"
+        );
+        assert!(
+            sent.contains('-'),
+            "this document has `+` in standard base64, so base64url must show `-`"
+        );
+        assert!(
+            !sent.contains(['+', '/', '=']),
+            "no character outside the URL-safe alphabet may reach the body"
+        );
+        assert_eq!(
+            URL_SAFE_NO_PAD.decode(&sent).expect("decodes"),
+            ENTRA_SANITISED,
+            "the document must survive the round trip byte for byte"
+        );
+
+        // The document is not an id, and the id encoder trims. Sending the
+        // same helper down both paths is the drift this pins.
+        let padded = b"  <EntityDescriptor/>  ";
+        assert_ne!(
+            standard_metadata(padded),
+            entity_id64("  <EntityDescriptor/>  "),
+            "a document must not be trimmed the way an entity id is"
+        );
+    }
+
+    /// The whole file, end to end: parse, sanitise, encode, and the exact
+    /// body that would be sent.
+    ///
+    /// The digest is the identity assertion. A test that only checked the
+    /// body decodes to *something* would pass on a sanitiser that removed the
+    /// wrong element, and this is the fixture the vertical exists for — real
+    /// Entra metadata that AM rejects until its WS-Federation roles go.
+    ///
+    /// Turns red on any change to what `sanitise` removes, to the base64
+    /// alphabet, or to the field name in `import_body`.
+    #[test]
+    fn the_entra_fixture_becomes_the_exact_import_body() {
+        let bundle = metadata::MetadataBundle::parse(ENTRA).expect("the fixture parses");
+        assert_eq!(
+            bundle.entity_ids(),
+            vec!["https://sts.windows.net/00000000-0000-0000-0000-000000000000/"],
+            "the trailing slash is part of the id"
+        );
+
+        let sanitised = bundle.sanitise(metadata::SanitiseOpts::default());
+        assert_eq!(sanitised.bytes, ENTRA_SANITISED);
+
+        let body = import_body(&sanitised.bytes);
+        let value = body
+            .get("standardMetadata")
+            .and_then(serde_json::Value::as_str)
+            .expect("one field, named standardMetadata");
+        assert_eq!(
+            body.as_object().map(serde_json::Map::len),
+            Some(1),
+            "a `cot` key would be silently ignored, so it must never be sent"
+        );
+        assert_eq!(
+            digest(value.as_bytes()),
+            "93d16a6844b9a2df10c6ee449307473c1fa0a035f14c7dc3431bacf3777ea625",
+            "the exact bytes that go on the wire"
+        );
+    }
+
+    /// The plan is the whole of `--dry-run`'s value, so it has to name the
+    /// entity, the removals and the exact bytes — and say out loud that *we*
+    /// invalidated the signature by removing a role.
+    ///
+    /// Turns red on dropping the causality line, on reporting a count instead
+    /// of the removals, or on the digest ceasing to be over the bytes sent.
+    #[test]
+    fn the_plan_names_the_entities_the_removals_and_the_bytes() {
+        let bundle = metadata::MetadataBundle::parse(ENTRA).expect("the fixture parses");
+        let sanitised = bundle.sanitise(metadata::SanitiseOpts::default());
+        let lines = plan_lines(
+            &bundle,
+            &sanitised.removed,
+            true,
+            &sanitised.bytes,
+            "federationmetadata.xml",
+            "sandbox",
+            "bravo",
+        );
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.starts_with(
+                "import      federationmetadata.xml -> sandbox/bravo, collection remote\n\
+             root        <EntityDescriptor> — one importEntity call, 1 entity\n"
+            ),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("https://sts.windows.net/00000000-0000-0000-0000-000000000000/"),
+            "{joined}"
+        );
+        assert!(joined.contains("sanitise    on — 3 removal(s)"), "{joined}");
+        assert!(
+            joined.contains("removing a role changes bytes the enveloped signature covers"),
+            "the report must say why the signature went:\n{joined}"
+        );
+        assert!(
+            joined.contains(&format!("sha256(xml) {}", digest(&sanitised.bytes))),
+            "{joined}"
+        );
+
+        // `--no-sanitise` must say so rather than printing an empty removal
+        // list that reads like "there was nothing to remove".
+        let verbatim = plan_lines(
+            &bundle,
+            &[],
+            false,
+            bundle.bytes(),
+            "federationmetadata.xml",
+            "sandbox",
+            "bravo",
+        )
+        .join("\n");
+        assert!(
+            verbatim.contains("sanitise    off — the file is sent verbatim"),
+            "{verbatim}"
+        );
+        assert!(!verbatim.contains("removal(s)"), "{verbatim}");
+    }
+
+    /// A count is not an identity. Every row here has AM returning the right
+    /// *number* of ids, so a comparison on `len()` passes all of them.
+    ///
+    /// Turns red on replacing the set difference in `compare_imported` — or
+    /// `ImportOutcome::matches` — with a length comparison.
+    #[test]
+    fn the_import_comparison_is_on_the_set_not_the_count() {
+        /// `(what it is, what AM returned, missing, unexpected)`.
+        type Case = (
+            &'static str,
+            Vec<String>,
+            Vec<&'static str>,
+            Vec<&'static str>,
+        );
+
+        let declared = ids(&["https://idp-a.example.com", "https://sp-b.example.com"]);
+        let cases: [Case; 4] = [
+            (
+                "exactly what the file declared, in another order",
+                ids(&["https://sp-b.example.com", "https://idp-a.example.com"]),
+                vec![],
+                vec![],
+            ),
+            (
+                // Same count, different set: AM named an entity this file
+                // does not contain, and did not name one it does.
+                "one of ours swapped for one of somebody else's",
+                ids(&["https://idp-a.example.com", "https://sp-c.example.com"]),
+                vec!["https://sp-b.example.com"],
+                vec!["https://sp-c.example.com"],
+            ),
+            (
+                "a strict subset",
+                ids(&["https://idp-a.example.com"]),
+                vec!["https://sp-b.example.com"],
+                vec![],
+            ),
+            (
+                "nothing at all, with a cheerful 200",
+                Vec::new(),
+                vec!["https://idp-a.example.com", "https://sp-b.example.com"],
+                vec![],
+            ),
+        ];
+        for (name, imported, missing, unexpected) in cases {
+            let outcome = compare_imported(&declared, &imported);
+            assert_eq!(outcome.missing, ids(&missing), "{name}: missing");
+            assert_eq!(outcome.unexpected, ids(&unexpected), "{name}: unexpected");
+            assert_eq!(
+                outcome.matches(),
+                missing.is_empty() && unexpected.is_empty(),
+                "{name}"
+            );
+            // Every warning names the id it is about, not a tally.
+            let rendered = outcome.lines("sandbox", "bravo").join("\n");
+            for id in missing.iter().chain(unexpected.iter()) {
+                assert!(rendered.contains(id), "{name}: {rendered}");
+            }
+        }
+    }
+
+    /// The report attributes the claim to AM and stops there. It must not
+    /// read as confirmation, because the thing an operator cares about —
+    /// `cotlist` — was not and cannot be checked.
+    ///
+    /// Turns red on rewording the first line into an unattributed claim, or
+    /// on dropping the caveat's statement that REST never exposes `cotlist`.
+    #[test]
+    fn the_import_report_claims_only_what_am_said_and_names_what_it_could_not_check() {
+        let declared = ids(&["https://idp-a.example.com"]);
+        let rendered = compare_imported(&declared, &declared)
+            .lines("sandbox", "bravo")
+            .join("\n");
+        assert!(rendered.starts_with("AM reported 1 imported entity in sandbox/bravo (remote):"));
+        assert!(rendered.contains("https://idp-a.example.com"));
+        assert!(
+            !rendered.to_lowercase().contains("verif"),
+            "the report must not claim a verification: {rendered}"
+        );
+
+        assert!(IMPORT_COTLIST_CAVEAT.starts_with("not verified:"));
+        // Wrapped for a terminal, so the phrases are matched against the
+        // caveat as one line rather than as it happens to be laid out.
+        let caveat = IMPORT_COTLIST_CAVEAT
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for fragment in [
+            "`cotlist` in extended metadata",
+            "REST never exposes",
+            "rewrites extended metadata",
+            "nothing here — before or after — can show it",
+        ] {
+            assert!(
+                caveat.contains(fragment),
+                "the caveat must say {fragment:?}"
+            );
+        }
+    }
+
+    /// Any pre-existing id refuses the **whole** operation, and the refusal
+    /// is by construction: `authorize_import` is the only place an
+    /// `ImportPermit` is minted, and `api::import_entity` cannot be called
+    /// without one.
+    ///
+    /// The discriminating row is the second: only the *last* id of the
+    /// aggregate collides, which a preflight that stopped at the first match
+    /// — or only checked the root entity — would wave through.
+    ///
+    /// Turns red on letting a collision through, on checking only one
+    /// collection, or on `--dry-run` being read before the collision.
+    #[test]
+    fn any_existing_entity_id_refuses_the_whole_import() {
+        let stubs = vec![
+            stub("https://idp-a.example.com", Location::Remote, &[]),
+            stub("https://hosted-sp.example.com", Location::Hosted, &[]),
+        ];
+        let cases: [(&str, Vec<String>, Vec<&str>); 5] = [
+            (
+                "nothing in the file exists yet",
+                ids(&["https://sp-b.example.com", "https://sp-c.example.com"]),
+                vec![],
+            ),
+            (
+                "only the last entity of the aggregate collides",
+                ids(&["https://sp-b.example.com", "https://idp-a.example.com"]),
+                vec!["https://idp-a.example.com"],
+            ),
+            (
+                // `importEntity` creates remote entities, but the id space is
+                // shared: a hosted entity with that id is still in the way.
+                "the collision is in the hosted collection",
+                ids(&["https://hosted-sp.example.com"]),
+                vec!["https://hosted-sp.example.com"],
+            ),
+            (
+                "every entity collides",
+                ids(&["https://idp-a.example.com", "https://hosted-sp.example.com"]),
+                vec!["https://idp-a.example.com", "https://hosted-sp.example.com"],
+            ),
+            (
+                // The id is stored verbatim, so this is a different entity.
+                "a trailing slash makes it a different entity",
+                ids(&["https://idp-a.example.com/"]),
+                vec![],
+            ),
+        ];
+        for (name, declared, colliding) in cases {
+            let found = collisions(&declared, &stubs);
+            assert_eq!(
+                found
+                    .iter()
+                    .map(|collision| collision.entity_id.as_str())
+                    .collect::<Vec<_>>(),
+                colliding,
+                "{name}"
+            );
+            let rendered = preflight_lines(&declared, &found, "bravo").join("\n");
+            for id in &colliding {
+                assert!(rendered.contains(id), "{name}: {rendered}");
+            }
+
+            // Both a real run and a dry run refuse; a dry run whose answer is
+            // "this would fail" must not print a plan that reads green.
+            for dry_run in [false, true] {
+                let decision = authorize_import(dry_run, &found, "sandbox", "bravo");
+                match (colliding.is_empty(), dry_run) {
+                    (false, _) => {
+                        let message = decision.expect_err("{name}").to_string();
+                        assert!(message.contains("refusing the whole import"), "{name}");
+                        assert!(message.contains("create-only"), "{name}");
+                        assert!(
+                            !message.contains("--force"),
+                            "{name}: delete-and-reimport must not be offered"
+                        );
+                    }
+                    (true, true) => assert!(matches!(
+                        decision.expect("no collision"),
+                        ImportDecision::Preview
+                    )),
+                    (true, false) => assert!(matches!(
+                        decision.expect("no collision"),
+                        ImportDecision::Send(_)
+                    )),
+                }
+            }
+        }
+    }
+
+    /// A failed aggregate import is not a rollback, so the command re-reads
+    /// and says, per declared id, what is there now.
+    ///
+    /// Turns red on reporting the plan's ids instead of the fresh list, or on
+    /// summarising to a count.
+    #[test]
+    fn after_a_failure_every_declared_id_is_reported_from_a_fresh_read() {
+        let declared = ids(&[
+            "https://idp-a.example.com",
+            "https://sp-b.example.com",
+            "https://sp-c.example.com",
+        ]);
+        let after = vec![
+            stub("https://idp-a.example.com", Location::Remote, &[]),
+            stub("https://sp-c.example.com", Location::Hosted, &[]),
+        ];
+        assert_eq!(
+            after_failure_lines(&declared, &after, "bravo"),
+            vec![
+                "the import failed; re-read realm bravo to see what exists now \
+                 (a failure is not a rollback):"
+                    .to_string(),
+                "  present  https://idp-a.example.com (remote)".to_string(),
+                "  absent   https://sp-b.example.com".to_string(),
+                "  present  https://sp-c.example.com (hosted)".to_string(),
+            ]
+        );
+    }
+
+    /// A 200 whose body is not the shape we read is not a success we can
+    /// report on.
+    #[test]
+    fn imported_entities_refuses_a_body_it_cannot_read() {
+        assert_eq!(
+            imported_entities(&serde_json::json!({
+                "importedEntities": ["https://idp-a.example.com"]
+            }))
+            .expect("the measured shape"),
+            ids(&["https://idp-a.example.com"])
+        );
+        assert!(imported_entities(&serde_json::json!({})).is_err());
+        assert!(
+            imported_entities(&serde_json::json!({ "importedEntities": "one" })).is_err(),
+            "a bare string is not the array the endpoint returns"
+        );
     }
 }
