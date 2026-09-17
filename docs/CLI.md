@@ -1145,8 +1145,10 @@ intermediate state retains a working key.
 
 ## `aic saml` — SAML 2.0 entity providers and metadata
 
-Realm-scoped, CLI-only (no TUI tab). Three verbs write: `create-hosted`,
-`import` and `delete`. There is no circle-of-trust write verb — a later slice.
+Realm-scoped, CLI-only (no TUI tab). Six verbs write: `create-hosted`,
+`import`, `delete`, and the three halves of a certificate rollover —
+`rotate init`, `rotate stage` and `rotate complete`. There is no
+circle-of-trust write verb — a later slice.
 
 ```bash
 aic saml list [--location hosted|remote] [--role idp|sp] [--realm alpha] [--json]
@@ -1161,16 +1163,28 @@ aic saml delete <ENTITY-ID> [--location hosted|remote] \
 aic saml metadata export <ENTITY-ID> [--realm alpha] [--out PATH]
 aic saml metadata inspect <FILE>
 aic saml metadata sanitise <FILE> [--out PATH] [--keep-signature]
+aic saml rotate status <ENTITY-ID> [--role idp|sp] [--realm alpha] [--json]
+aic saml rotate init <ENTITY-ID> --identifier <NAME> --secret-id esv-<NAME> \
+  (--key-file PATH | --key-stdin) [--description TEXT] \
+  [--role idp|sp] [--realm alpha] [--dry-run] [--yes]
+aic saml rotate stage <ENTITY-ID> (--key-file PATH | --key-stdin) \
+  [--role idp|sp] [--realm alpha] [--dry-run] [--yes]
+aic saml rotate complete <ENTITY-ID> [--retain <SHA256>] \
+  [--role idp|sp] [--realm alpha] --force [--dry-run] [--yes]
 ```
 
 ### Which verbs need an unlocked agent
 
-Everything but `metadata`. `metadata inspect` and `metadata sanitise` are local
-file rewrites, and **`metadata export` reaches the tenant over an endpoint that
-takes no authentication at all** — verified by fetching it with and without a
-bearer and comparing the bodies byte for byte
-(`docs/api/06-saml.md`). It therefore sends no credential, never starts or
-unlocks the agent, and works against a locked daemon.
+Everything but `metadata`, `rotate` included — even `rotate status`, which
+writes nothing: it correlates the entity, the secret mapping and the ESV
+secret, and only the metadata export inside it is unauthenticated.
+
+`metadata inspect` and `metadata sanitise` are local file rewrites, and
+**`metadata export` reaches the tenant over an endpoint that takes no
+authentication at all** — verified by fetching it with and without a bearer and
+comparing the bodies byte for byte (`docs/api/06-saml.md`). It therefore sends
+no credential, never starts or unlocks the agent, and works against a locked
+daemon.
 
 ### `list`
 
@@ -1384,7 +1398,7 @@ the signature on a document that needs no other stripping. `--keep-signature`
 keeps the signature and, if anything else was removed, prints a warning that it
 is now stale.
 
-### `metadata inspect` / `metadata sanitise`
+### What `metadata inspect` / `metadata sanitise` refuse
 
 Both refuse a document they cannot fully read rather than passing it through —
 the same boundary `metadata export` classifies against, so the two cannot
@@ -1411,6 +1425,127 @@ There is no circle-of-trust **write** verb: a CoT `PUT` drives the
 entity-side membership too and can return 500 having already written the
 document, so the command that does it has to re-read and re-check
 (`docs/api/06-saml.md`).
+
+### `rotate` — roll the certificate a role signs with
+
+**An AIC SAML signing certificate is not stored in the SAML entity.** The
+entity holds a `secretIdIdentifier`, which is a label into AM's secret store
+(`am.applications.federation.entity.providers.saml2.<identifier>.signing`), and
+on AIC that label is backed by an **ESV secret**. So there is nothing to upload
+and no metadata to push: a rollover adds an ESV secret **version**, and the
+verb spans `src/saml/`, `src/esv/` and `src/secretmap/`.
+
+Measured end to end: map a `pem` ESV secret onto the label and the export
+carries that certificate; add a second version and the export publishes **two**
+`<KeyDescriptor use="signing">`; disable the old version and it drops back to
+one, in single-digit seconds. No restart — provided the secret was created with
+placeholders **off**.
+
+| Verb       | What it does                                            | Reversible?              |
+| ---------- | ------------------------------------------------------- | ------------------------ |
+| `status`   | reads five documents and says what they mean together   | writes nothing           |
+| `init`     | sets the identifier, creates the secret, maps the label | one-time setup           |
+| `stage`    | adds an ESV secret version — two certificates published | `esv secret disable`     |
+| `complete` | disables the **old** version — one certificate again    | `esv secret enable`      |
+
+`stage` and `complete` are **separate operations, and that is not a style
+choice**: `aic esv secret disable` cannot disable the latest version
+(`400 Cannot disable latest secret version`), so completion disables the old
+one — and the interval between them is the peer loading the two-certificate
+metadata, which is a human interval, not a timeout.
+
+**Nothing here destroys anything.** `complete` disables, which
+`aic esv secret enable` undoes. Destroying a version and deleting a mapping are
+irreversible and stay explicit and elsewhere (`aic esv secret destroy`,
+`aic secretmap remove`).
+
+**A rollover preserves the identifier and its mapping.** Repointing the entity
+at a new identifier would rotate nothing until a new secret was made, and would
+leave the old label mapped with nothing naming it — a mapping outlives the
+label that minted it, and the labels vanish from the schema enum the moment the
+entity stops naming them. `rotate init` refuses an entity that already points
+somewhere else for exactly that reason.
+
+`--role` is **required on a dual-role entity**: each role has its own
+identifier, its own labels and its own `KeyDescriptor`s, and both can publish
+`use="signing"` with no `KeyName` — AM emits none — so `use` plus fingerprint
+names two different keys identically.
+
+`--key-file` (or `--key-stdin`) takes `cat key.pem cert.pem`, and it is checked
+offline before anything is sent: exactly one private key and one certificate,
+and the certificate's public modulus and exponent must be the ones the key
+carries. The tenant takes a mismatched pair with a **200** and the failure then
+surfaces on the peer as a rejected assertion, hours later.
+
+`--dry-run` prints the plan and sends nothing. It stops by holding no
+permission token rather than by returning in front of the write: the preview
+arm of `spec::authorize_*` carries no permit, every tenant write in
+`rotate::ops` requires one, and a preview that fell through would not compile —
+the same shape as `import`'s `ImportPermit` and `scripts::gate`'s
+`WritePermit`.
+
+#### What `status` cannot tell you
+
+**Nothing readable says which published certificate came from which ESV secret
+version.** Secret values are write-only and AM emits no `<ds:KeyName>`, so
+during a two-certificate window the export is two anonymous fingerprints. The
+metadata lists the newest ENABLED version first, but that is an ordering
+convention, not an identity — and a `complete` that trusted it would be one
+convention-change away from retiring the new certificate and keeping the old.
+
+So `stage` records the pairing locally, in `.aic/saml-rotations.json`, and only
+**after the tenant's own export confirms** the new certificate is published —
+never from the bytes it sent. `status` attributes a certificate to a version
+only from that record, never by elimination: knowing that A is version 2 does
+not make B version 1, because a third ENABLED version or a certificate arriving
+from a label mapped elsewhere produces the same picture.
+
+The journal is per install and is not a transaction log — everything else a
+rotation needs is read from the tenant, and nothing refuses to proceed because
+it is missing. A rollover staged on another machine leaves no entry, and
+`complete` then requires `--retain <sha256>` naming the certificate to keep
+rather than guessing. `status` lists both.
+
+Nothing here can read which certificate AM actually **signs with**, either. The
+export says what is published; it does not say which of two published keys the
+runtime picks.
+
+#### Resuming an interrupted run
+
+By re-running. `init`'s three steps are skipped individually when the tenant
+already shows them done, so a run cut off between the entity `PUT` and the
+mapping finishes the mapping and nothing else. `stage` and `complete` read the
+phase first and refuse from a state they cannot act on, naming it. Nothing
+performs compensating destructive cleanup on its own.
+
+The one thing that cannot be re-derived is the version/certificate pairing, and
+that is what the journal holds.
+
+#### `rotate init` and production
+
+`init` maps a secret label, which `aic secretmap` restricts to
+sandbox/development tenants — mappings are static content promoted up from
+lower environments. `stage` and `complete` touch no mapping and work anywhere:
+a production signing key still has to be rotatable.
+
+#### A worked rollover
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+  -keyout new-key.pem -out new-cert.pem -subj "/CN=sp-a"
+cat new-key.pem new-cert.pem > new-pair.pem
+
+aic saml rotate status https://sp-a.example.com --realm alpha
+aic saml rotate stage  https://sp-a.example.com --realm alpha \
+  --key-file new-pair.pem --dry-run
+aic saml rotate stage  https://sp-a.example.com --realm alpha \
+  --key-file new-pair.pem
+
+# Hand the two-certificate metadata to the peer and wait for them to load it.
+aic saml metadata export https://sp-a.example.com --realm alpha --out sp-a.xml
+
+aic saml rotate complete https://sp-a.example.com --realm alpha --force
+```
 
 ---
 
