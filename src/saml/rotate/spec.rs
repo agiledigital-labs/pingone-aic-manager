@@ -1270,9 +1270,15 @@ mod tests {
         }
     }
 
+    /// Nothing in this module reads `value` or `certificate_der` — the
+    /// validation that gives them meaning is `pem`'s, and is tested there —
+    /// so they are inert stand-ins here. Deliberately **not** PEM-shaped
+    /// armour: a literal BEGIN/END pair in a committed file is what the
+    /// secret scanners are looking for, and a fixture nothing parses has no
+    /// business tripping one.
     fn pair(sha: &str) -> KeyPair {
         KeyPair {
-            value: "-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----\n".into(),
+            value: format!("key-pair-for-{sha}"),
             certificate_der: vec![0x30, 0x00],
             sha256: sha.to_string(),
         }
