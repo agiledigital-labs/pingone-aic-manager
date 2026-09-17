@@ -1145,12 +1145,19 @@ intermediate state retains a working key.
 
 ## `aic saml` — SAML 2.0 entity providers and metadata
 
-Read-only. Realm-scoped, CLI-only (no TUI tab). Nothing here writes to a
-tenant: create, import, delete and circle-of-trust membership are later slices.
+Realm-scoped, CLI-only (no TUI tab). Two verbs write: `create-hosted` and
+`delete`. There is no `import` and no circle-of-trust write verb — both are
+later slices.
 
 ```bash
 aic saml list [--location hosted|remote] [--role idp|sp] [--realm alpha] [--json]
 aic saml show <ENTITY-ID> [--location hosted|remote] [--realm alpha] [--json]
+aic saml cot list [--realm alpha] [--json]
+aic saml cot show <NAME> [--realm alpha] [--json]
+aic saml create-hosted <ENTITY-ID> --role idp|sp \
+  --meta-alias /<realm>/<name> [--realm alpha] [--yes]
+aic saml delete <ENTITY-ID> [--location hosted|remote] \
+  [--realm alpha] --force [--yes]
 aic saml metadata export <ENTITY-ID> [--realm alpha] [--out PATH]
 aic saml metadata inspect <FILE>
 aic saml metadata sanitise <FILE> [--out PATH] [--keep-signature]
@@ -1158,7 +1165,7 @@ aic saml metadata sanitise <FILE> [--out PATH] [--keep-signature]
 
 ### Which verbs need an unlocked agent
 
-Only `list` and `show`. `metadata inspect` and `metadata sanitise` are local
+Everything but `metadata`. `metadata inspect` and `metadata sanitise` are local
 file rewrites, and **`metadata export` reaches the tenant over an endpoint that
 takes no authentication at all** — verified by fetching it with and without a
 bearer and comparing the bodies byte for byte
@@ -1190,6 +1197,80 @@ and the signing secret identifier. `--json` prints the raw document. The
 summary reads leaves, not keys: a full entity carries every group key with `{}`
 inside when nothing in it is set, so key presence says nothing.
 
+### `cot list` / `cot show`
+
+Circle-of-trust ids are **plain names**, not base64url — only entity providers
+are encoded. The list endpoint returns full documents, so `cot list --json`
+prints what the tenant said; the table shows name, status, a *count* of
+`trustedProviders`, and the description (`-` when absent, which is its real
+state — AM cannot store an empty one).
+
+**Neither verb shows the membership that governs authentication, and both say
+so.** AM records membership in two places: the CoT document's
+`trustedProviders`, which REST returns, and each entity's `cotlist` extended
+metadata, which REST never exposes — and the runtime trust check reads
+`cotlist`. A provider listed here can still have its assertions rejected, and
+one missing here can still authenticate (`docs/api/06-saml.md`). The caveat is
+part of the human rendering and goes to stdout with it — including when the
+realm has no circles of trust at all, where "none" is the reading most likely
+to be taken as proof that nothing trusts anything. `--json` puts it on stderr
+instead, so the JSON stream stays clean.
+
+An entry with no `|protocol` suffix is shown and flagged rather than hidden: AM
+stores and removes those with a 200 precisely because nothing can be resolved
+from them, so they are inert, not invalid.
+
+### `create-hosted`
+
+`POST …/realm-config/saml2/hosted/?_action=create`, and every check it makes is
+one AM does not:
+
+- **The entity ID is required.** `_action=create` with `{}` answers **201** and
+  AM mints a UUID-named entity that nothing will ever reference.
+- **`--meta-alias` is required and must be `/<realm>/<name>`.** A role block
+  without `services.metaAlias` fails with `500 Exception from invocation
+  expected to be handled by promise`, which names no field, so there is nothing
+  in the response to translate. Every endpoint AM publishes for the entity
+  embeds the realm (`/am/AuthConsumer/metaAlias/<realm>/<name>`), so an alias
+  in another realm's namespace is wrong in a way nothing reports.
+- **An entity ID already in the realm is refused.** What AM does with a create
+  against an existing id was never measured, and both outcomes it could have —
+  an opaque 500, or replacing a configured entity — are worse than a named
+  refusal.
+
+One role per invocation. `roles` is derived from which role blocks are present,
+so a dual-role entity is built by adding the second block later, not here.
+
+The 201 body is a stub (`_id`, `_rev`, `entityId`), not the created document,
+so the report says which half of it AM confirmed: the id is AM's, and the role
+and the alias are what was sent and were **not** read back. An id that comes
+back different from the one requested — the UUID-minting behaviour this command
+exists to prevent — is a warning, not a silent substitution, and so is a 201
+that carries no `entityId` at all.
+
+### `delete`
+
+**An entity `DELETE` silently rewrites every circle of trust that listed the
+entity** — a member CoT was observed going to `[]` with no CoT write in between
+(`docs/api/06-saml.md`). The operator cannot see that coming, so `delete` reads
+the CoT collection first and prints, by name, each circle and each entry that
+will go. A count would not do: the operator has to recognise them.
+
+Afterwards it reads that collection **again** and reports the difference, so
+the cascade it prints is something it observed rather than something it
+predicted. AM performs the cascade, not `aic`, and the delete response says
+nothing about it — a circle that still lists the entity is reported as a
+warning. If the re-read itself fails, the command says the cascade is
+unconfirmed; it never prints the pre-state as the outcome.
+
+`--force` is required. The refusal path *is* the preview — without `--force`
+the command performs both reads, prints the cascade, and writes nothing — which
+is why there is no `--dry-run`: there is no permission token for a preview to
+carry by accident.
+
+`--location` is inferred when omitted, exactly as for `show`. `--yes` is the
+separate production-tenant confirmation and does not authorize the delete.
+
 ### `metadata export`
 
 `GET /am/saml2/jsp/exportmetadata.jsp?entityid=…&realm=/<realm>`. Writes the
@@ -1205,6 +1286,7 @@ unless the body is metadata.
 `--realm` is always sent: omitting it on the wire selects the **root** realm,
 not the current one.
 
+### `metadata inspect` / `metadata sanitise`
 
 `inspect` prints JSON describing the document: entity id, SAML 2.0 roles,
 whether it carries a signature over itself, endpoints, certificate fingerprints,
@@ -1222,17 +1304,15 @@ the signature on a document that needs no other stripping. `--keep-signature`
 keeps the signature and, if anything else was removed, prints a warning that it
 is now stale.
 
-### `metadata inspect` / `metadata sanitise`
-
 Both refuse a document they cannot fully read rather than passing it through:
 one root `EntityDescriptor` and no more, a namespace binding for every prefix on
 every element _and attribute_, nothing but comments, processing instructions and
 whitespace outside the root, and no entity reference whose replacement text we
 would have to guess.
 
-There is no `import`, `create`, or `delete` yet, and no circle-of-trust verb:
-CoT membership is stored in two places and REST exposes only one, so a CLI that
-showed `trustedProviders` as "the" membership would be confidently wrong
+There is no `import` yet, and no circle-of-trust **write** verb: a CoT `PUT`
+drives the entity-side membership too and can return 500 having already written
+the document, so the command that does it has to re-read and re-check
 (`docs/api/06-saml.md`).
 
 ---

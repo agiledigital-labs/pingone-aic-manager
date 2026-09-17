@@ -12,9 +12,16 @@
 //!   cache, no prod gate and no unlock, and routing it through the daemon
 //!   would mean teaching the wire protocol to carry a non-JSON body for a call
 //!   that has nothing to gain from it. See [`export_metadata`].
+//!
+//! Every daemon-routed call in this module is assembled by a [`SamlRequest`]
+//! builder and sent by [`SamlRequest::send`]. The split is what makes the
+//! envelope testable: a test that rebuilt an expected path out of the same
+//! helpers the production function uses would stay green with the production
+//! function broken, which is exactly what the tests here used to do.
 
 use serde_json::Value;
 
+use crate::aic::api::ApiCall;
 use crate::config::tenant::Tenant;
 use crate::saml::spec::{self, EntityStub, Location};
 use crate::{Error, Result};
@@ -24,6 +31,46 @@ use crate::{Error, Result};
 /// rather than left to the default.
 const API_VERSION: &str = "protocol=2.1,resource=1.0";
 
+/// One assembled SAML request, path and all.
+///
+/// Owning the path is the point: a builder that took one would push the
+/// interesting half — which collection, which id encoding — back out to the
+/// call site, where only a test that restates it can reach it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SamlRequest {
+    method: &'static str,
+    path: String,
+    body: Option<Value>,
+    /// Only ever true for the two write verbs, and only when the operator
+    /// passed `--yes` for a production-themed tenant.
+    confirmed_prod: bool,
+}
+
+impl SamlRequest {
+    fn get(path: String) -> Self {
+        Self {
+            method: "GET",
+            path,
+            body: None,
+            confirmed_prod: false,
+        }
+    }
+
+    fn call<'a>(&'a self, tenant: &'a str) -> ApiCall<'a> {
+        let mut call = ApiCall::new(tenant, self.method, &self.path)
+            .api_version(API_VERSION)
+            .confirmed_prod(self.confirmed_prod);
+        if let Some(body) = &self.body {
+            call = call.body(body.clone());
+        }
+        call
+    }
+
+    async fn send(&self, tenant: &str) -> Result<Value> {
+        self.call(tenant).send().await
+    }
+}
+
 fn realm_path(realm: &str) -> String {
     format!("/am/json/realms/root/realms/{realm}")
 }
@@ -32,18 +79,85 @@ fn entities_path(realm: &str) -> String {
     format!("{}/realm-config/saml2", realm_path(realm))
 }
 
-/// List every entity provider in the realm.
+/// The circle-of-trust collection.
 ///
-/// `?_queryFilter=true` works **only** on this parent collection: the same
+/// A sibling of the entity collection under `realm-config`, and the two do not
+/// behave alike — the CoT id is the **plain name**, the list returns full
+/// documents rather than stubs, and a CoT `PUT` merges and creates where an
+/// entity `PUT` replaces and 404s. One helper cannot serve both
+/// (`docs/api/06-saml.md`).
+fn cots_path(realm: &str) -> String {
+    format!(
+        "{}/realm-config/federation/circlesoftrust",
+        realm_path(realm)
+    )
+}
+
+/// `?_queryFilter=true` works **only** on the parent collection: the same
 /// query against `/hosted` or `/remote` is a `400 Query not supported`, so
 /// filtering by location happens client-side ([`spec::select`]).
-pub async fn list(tenant: &str, realm: &str) -> Result<Vec<EntityStub>> {
-    let body = crate::aic::api::get_versioned(
-        tenant,
-        &format!("{}?_queryFilter=true", entities_path(realm)),
-        API_VERSION,
+fn list_request(realm: &str) -> SamlRequest {
+    SamlRequest::get(format!("{}?_queryFilter=true", entities_path(realm)))
+}
+
+/// `location` must be right: the id is the same in both collections and the
+/// wrong one answers 404.
+fn read_request(realm: &str, location: Location, entity_id: &str) -> SamlRequest {
+    SamlRequest::get(entity_path(realm, location, entity_id))
+}
+
+fn entity_path(realm: &str, location: Location, entity_id: &str) -> String {
+    format!(
+        "{}/{}/{}",
+        entities_path(realm),
+        location.as_str(),
+        spec::entity_id64(entity_id)
     )
-    .await?;
+}
+
+fn list_cots_request(realm: &str) -> SamlRequest {
+    SamlRequest::get(format!("{}?_queryFilter=true", cots_path(realm)))
+}
+
+fn read_cot_request(realm: &str, name: &str) -> Result<SamlRequest> {
+    Ok(SamlRequest::get(format!(
+        "{}/{}",
+        cots_path(realm),
+        spec::validate_cot_name(name)?
+    )))
+}
+
+/// `_action=create` exists only on `/hosted`; on `/remote` it is a 400, so the
+/// path is not parameterised by location.
+///
+/// The trailing slash before `?_action=create` is what AM's own console sends
+/// and what every measurement in `docs/api/06-saml.md` used.
+fn create_hosted_request(realm: &str, body: Value, confirmed_prod: bool) -> SamlRequest {
+    SamlRequest {
+        method: "POST",
+        path: format!("{}/hosted/?_action=create", entities_path(realm)),
+        body: Some(body),
+        confirmed_prod,
+    }
+}
+
+fn delete_entity_request(
+    realm: &str,
+    location: Location,
+    entity_id: &str,
+    confirmed_prod: bool,
+) -> SamlRequest {
+    SamlRequest {
+        method: "DELETE",
+        path: entity_path(realm, location, entity_id),
+        body: None,
+        confirmed_prod,
+    }
+}
+
+/// List every entity provider in the realm.
+pub async fn list(tenant: &str, realm: &str) -> Result<Vec<EntityStub>> {
+    let body = list_request(realm).send(tenant).await?;
     let results = body
         .get("result")
         .and_then(Value::as_array)
@@ -64,17 +178,67 @@ pub async fn list(tenant: &str, realm: &str) -> Result<Vec<EntityStub>> {
 
 /// Read one entity in full.
 ///
-/// `location` must be right: the id is the same in both collections and the
-/// wrong one answers 404, which reads as "no such entity". Callers that did
-/// not get a location from the operator infer it with [`spec::locate`].
+/// Callers that did not get a location from the operator infer it with
+/// [`spec::locate`], because the wrong collection answers 404 and that reads
+/// as "no such entity".
 pub async fn read(tenant: &str, realm: &str, location: Location, entity_id: &str) -> Result<Value> {
-    let path = format!(
-        "{}/{}/{}",
-        entities_path(realm),
-        location.as_str(),
-        spec::entity_id64(entity_id)
-    );
-    crate::aic::api::get_versioned(tenant, &path, API_VERSION).await
+    read_request(realm, location, entity_id).send(tenant).await
+}
+
+/// List the realm's circles of trust, as raw documents.
+///
+/// Raw on purpose: the list endpoint returns the whole document, and the CLI's
+/// `--json` output should be what the tenant said rather than what our struct
+/// can hold. [`spec::cots`] parses them for the table.
+pub async fn list_cots(tenant: &str, realm: &str) -> Result<Vec<Value>> {
+    let body = list_cots_request(realm).send(tenant).await?;
+    body.get("result")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| Error::Api {
+            status: 0,
+            body: format!("unexpected circle-of-trust list shape: {body}"),
+        })
+}
+
+/// Read one circle of trust. `name` is the plain id, **not** base64url.
+pub async fn read_cot(tenant: &str, realm: &str, name: &str) -> Result<Value> {
+    read_cot_request(realm, name)?.send(tenant).await
+}
+
+/// Create a hosted entity provider.
+///
+/// **201**, and the body that comes back is a stub (`_id`, `_rev`,
+/// `entityId`) rather than the created document — so it must not be snapshotted
+/// or summarised. Callers that want the entity read it afterwards.
+pub async fn create_hosted(
+    tenant: &str,
+    realm: &str,
+    body: Value,
+    confirmed_prod: bool,
+) -> Result<Value> {
+    create_hosted_request(realm, body, confirmed_prod)
+        .send(tenant)
+        .await
+}
+
+/// Delete an entity provider.
+///
+/// **This silently rewrites every circle of trust that listed the entity.**
+/// Verified 2026-09-16: a CoT holding the deleted entity came back with
+/// `trustedProviders: []` with no CoT write of ours in between. The cascade is
+/// invisible from here, which is why `cli::delete` reads the CoT collection
+/// first, prints what will change, and reads it back afterwards.
+pub async fn delete_entity(
+    tenant: &str,
+    realm: &str,
+    location: Location,
+    entity_id: &str,
+    confirmed_prod: bool,
+) -> Result<Value> {
+    delete_entity_request(realm, location, entity_id, confirmed_prod)
+        .send(tenant)
+        .await
 }
 
 /// Export an entity's standard metadata XML.
@@ -97,33 +261,173 @@ pub async fn export_metadata(tenant: &Tenant, realm: &str, entity_id: &str) -> R
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+    use crate::agent::{ApiCallRequest, Request};
+
+    /// The envelope a request actually sends, so every assertion below is on
+    /// the wire shape rather than on a path a test reassembled.
+    fn envelope(request: &SamlRequest) -> ApiCallRequest {
+        let Request::ApiCall(call) = request.call("sandbox").envelope() else {
+            panic!("expected an API call");
+        };
+        call
+    }
 
     #[test]
     fn the_list_query_targets_the_parent_collection_only() {
         // `?_queryFilter=true` on `/hosted` or `/remote` is a 400, so the path
-        // this builds must carry no location segment.
-        let path = format!("{}?_queryFilter=true", entities_path("bravo"));
+        // the production builder produces must carry no location segment.
+        let call = envelope(&list_request("bravo"));
+        assert_eq!(call.method, "GET");
         assert_eq!(
-            path,
+            call.path,
             "/am/json/realms/root/realms/bravo/realm-config/saml2?_queryFilter=true"
         );
-        assert!(!path.contains("/hosted"), "{path}");
-        assert!(!path.contains("/remote"), "{path}");
+        assert!(!call.path.contains("/hosted"), "{}", call.path);
+        assert!(!call.path.contains("/remote"), "{}", call.path);
+        assert_eq!(call.api_version.as_deref(), Some(API_VERSION));
+        assert!(call.body.is_none());
     }
 
     #[test]
     fn the_read_path_uses_the_realm_convention_and_the_base64url_id() {
-        let path = format!(
-            "{}/{}/{}",
-            entities_path("alpha"),
-            Location::Remote.as_str(),
-            spec::entity_id64("https://sp-a.example.com")
-        );
+        let call = envelope(&read_request(
+            "alpha",
+            Location::Remote,
+            "https://sp-a.example.com",
+        ));
+        assert_eq!(call.method, "GET");
         assert_eq!(
-            path,
+            call.path,
             "/am/json/realms/root/realms/alpha/realm-config/saml2/remote/\
              aHR0cHM6Ly9zcC1hLmV4YW1wbGUuY29t"
         );
+    }
+
+    /// The two families sit side by side under `realm-config` and encode their
+    /// ids differently. Asserting them together is the point: a shared "encode
+    /// the id" helper would make one of these wrong.
+    #[test]
+    fn the_cot_path_uses_the_plain_name_and_the_entity_path_does_not() {
+        let cot = envelope(&read_cot_request("bravo", "client-b").expect("a plain name"));
+        assert_eq!(
+            cot.path,
+            "/am/json/realms/root/realms/bravo/realm-config/federation/circlesoftrust/client-b"
+        );
+
+        let entity = envelope(&read_request("bravo", Location::Hosted, "client-b"));
+        assert_eq!(
+            entity.path,
+            "/am/json/realms/root/realms/bravo/realm-config/saml2/hosted/Y2xpZW50LWI"
+        );
+
+        assert_eq!(
+            envelope(&list_cots_request("bravo")).path,
+            "/am/json/realms/root/realms/bravo/realm-config/federation/circlesoftrust\
+             ?_queryFilter=true"
+        );
+    }
+
+    /// A CoT name reaches the path unencoded, so the read builder — not only
+    /// `spec::validate_cot_name` — has to refuse one that would address
+    /// something else.
+    #[test]
+    fn a_cot_read_refuses_a_name_that_would_escape_the_collection() {
+        assert!(read_cot_request("bravo", "../../saml2/hosted").is_err());
+        assert!(read_cot_request("bravo", "  ").is_err());
+    }
+
+    /// `_action=create` on `/remote` is a 400 `Create not supported`, so the
+    /// create path must never be parameterised by location — and the body the
+    /// caller built has to arrive unaltered.
+    #[test]
+    fn the_create_request_targets_hosted_only_and_carries_the_body() {
+        let body = json!({
+            "entityId": "https://sp-b.example.com",
+            "serviceProvider": { "services": { "metaAlias": "/bravo/client-b-sp" } }
+        });
+        let call = envelope(&create_hosted_request("bravo", body.clone(), false));
+        assert_eq!(call.method, "POST");
+        assert_eq!(
+            call.path,
+            "/am/json/realms/root/realms/bravo/realm-config/saml2/hosted/?_action=create"
+        );
+        assert!(!call.path.contains("/remote"), "{}", call.path);
+        assert_eq!(call.body.as_ref(), Some(&body));
+    }
+
+    /// Both writes carry the operator's production consent, and neither
+    /// invents it. `confirmed_prod` defaulting to `true` would silently lift
+    /// the daemon's prod gate for every SAML write.
+    #[test]
+    fn both_writes_forward_the_callers_production_consent_and_nothing_else_does() {
+        for confirmed in [false, true] {
+            assert_eq!(
+                envelope(&create_hosted_request("bravo", json!({}), confirmed)).confirmed_prod,
+                confirmed
+            );
+            assert_eq!(
+                envelope(&delete_entity_request(
+                    "bravo",
+                    Location::Hosted,
+                    "https://sp-b.example.com",
+                    confirmed,
+                ))
+                .confirmed_prod,
+                confirmed
+            );
+        }
+
+        for read in [
+            list_request("bravo"),
+            read_request("bravo", Location::Hosted, "https://sp-b.example.com"),
+            list_cots_request("bravo"),
+            read_cot_request("bravo", "client-b").expect("a plain name"),
+        ] {
+            assert!(
+                !envelope(&read).confirmed_prod,
+                "a read must not claim production consent: {}",
+                read.path
+            );
+        }
+    }
+
+    /// The delete targets the same document `read` would have shown, in the
+    /// collection the caller resolved — the wrong one is a 404 that reads as
+    /// "already gone".
+    #[test]
+    fn the_delete_request_addresses_the_resolved_collection() {
+        let hosted = envelope(&delete_entity_request(
+            "bravo",
+            Location::Hosted,
+            "https://sp-b.example.com",
+            true,
+        ));
+        assert_eq!(hosted.method, "DELETE");
+        assert_eq!(
+            hosted.path,
+            envelope(&read_request(
+                "bravo",
+                Location::Hosted,
+                "https://sp-b.example.com"
+            ))
+            .path,
+            "delete and show must address the same resource"
+        );
+        assert!(hosted.body.is_none(), "a DELETE sends no body");
+
+        let remote = envelope(&delete_entity_request(
+            "bravo",
+            Location::Remote,
+            "https://sp-b.example.com",
+            true,
+        ));
+        assert_ne!(
+            hosted.path, remote.path,
+            "--location chooses the collection, so it must reach the path"
+        );
+        assert!(remote.path.contains("/remote/"), "{}", remote.path);
     }
 }
