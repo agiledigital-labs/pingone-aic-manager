@@ -1,10 +1,10 @@
 //! `aic saml` parser and command implementation.
 //!
 //! `metadata inspect|sanitise` are offline file transforms; `list`, `show` and
-//! `cot list|show` read the `realm-config` JSON collections; `create-hosted`
-//! and `delete` write; and `metadata export` fetches standard metadata from a
-//! JSP that takes **no authentication**, so it works against a locked daemon.
-//! Import and cert rotation are later slices.
+//! `cot list|show` read the `realm-config` JSON collections; `create-hosted`,
+//! `import` and `delete` write; and `metadata export` fetches standard
+//! metadata from a JSP that takes **no authentication**, so it works against a
+//! locked daemon. Cert rotation is a later slice.
 //!
 //! [`needs_tenant_auth`] is where that three-way split is recorded, and it is
 //! the one thing a new verb must classify itself in.
@@ -19,6 +19,12 @@
 //!   afterwards.** An entity `DELETE` silently rewrites every CoT that listed
 //!   the entity, and nothing in the delete response says so — so the cascade
 //!   this command reports is a diff of two reads, never a replay of the first.
+//! - **`import` preflights every entity id and refuses the whole operation on
+//!   any collision.** `?_action=importEntity` is create-only (a repeat is a
+//!   500), and the only "update" AM offers is delete-then-import — which
+//!   rewrites extended metadata and cascades through every circle of trust,
+//!   while the `cotlist` that governs runtime trust is invisible over REST
+//!   both before and after. A refusal is the only honest answer.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
