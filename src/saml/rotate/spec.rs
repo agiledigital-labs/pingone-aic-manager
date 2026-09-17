@@ -68,12 +68,22 @@ pub fn signing_label(identifier: &str) -> String {
 }
 
 /// Refuse an identifier that would address a label other than the one it
-/// looks like it addresses.
+/// looks like it addresses, or that AM will refuse anyway.
 ///
 /// The identifier is spliced into a dotted label **and** into a URL path, so a
 /// dot in it silently renames the label family and a slash escapes the
 /// collection. Neither fails loudly: a mapping `PUT` at the wrong label is a
 /// perfectly good 201 that nothing will ever read.
+///
+/// AM is narrower still, and says so only at the entity `PUT`: **ASCII
+/// alphanumerics only**. `-` and `_` come back as
+/// `400 Invalid character present in Secret ID Identifier` — measured
+/// 2026-09-18 against a live tenant, where `sp-rotate-test` and
+/// `sp_rotate_test` were both refused while `sprotatetest` and `SpRotate1`
+/// were accepted. Rejecting them here matters because the `PUT` is `init`\'s
+/// first step: a caller who gets past this check spends a round trip to be
+/// told the same thing in AM\'s words, with no mention of which flag is at
+/// fault.
 pub fn validate_identifier(identifier: &str) -> Result<&str> {
     let trimmed = identifier.trim();
     if trimmed.is_empty() {
@@ -91,12 +101,14 @@ pub fn validate_identifier(identifier: &str) -> Result<&str> {
     }
     if let Some(bad) = trimmed
         .chars()
-        .find(|character| !character.is_ascii_alphanumeric() && !matches!(character, '-' | '_'))
+        .find(|character| !character.is_ascii_alphanumeric())
     {
         return Err(Error::Config(format!(
-            "--identifier {identifier:?} contains {bad:?}: the identifier is spliced into the \
-             dotted label `{}` and into a URL path, so anything but letters, digits, `-` and \
-             `_` addresses a different label than it reads as",
+            "--identifier {identifier:?} contains {bad:?}: AM accepts only letters and digits \
+             here and answers the entity PUT with `400 Invalid character present in Secret ID \
+             Identifier` for anything else, naming no flag. The identifier is also spliced \
+             into the dotted label `{}` and into a URL path, so a `.` or `/` would address a \
+             different label than it reads as",
             signing_label("<identifier>")
         )));
     }
@@ -1232,7 +1244,7 @@ mod tests {
             realm: "alpha".into(),
             entity_id: "https://sp-a.example.com".into(),
             role: Role::Sp.wire().into(),
-            identifier: "sp-a".into(),
+            identifier: "spa".into(),
             secret_id: "esv-sp-a-signing".into(),
             version: version.into(),
             sha256: sha.into(),
@@ -1247,7 +1259,7 @@ mod tests {
             entity_id: "https://sp-a.example.com".into(),
             location: Location::Remote,
             role: Role::Sp,
-            identifier: Some("sp-a".into()),
+            identifier: Some("spa".into()),
             mapped_alias: Some("esv-sp-a-signing".into()),
             secret: Some(facts()),
             versions: vec![version("1", "ENABLED")],
@@ -1691,10 +1703,10 @@ mod tests {
             "identityProvider": { "assertionContent": { "secrets": {} } },
         });
 
-        let remote = set_secret_identifier(&before, Location::Remote, Role::Sp, "sp-a").unwrap();
+        let remote = set_secret_identifier(&before, Location::Remote, Role::Sp, "spa").unwrap();
         assert_eq!(
             remote.pointer("/serviceProvider/assertionContent/secrets/secretIdIdentifier"),
-            Some(&json!("sp-a"))
+            Some(&json!("spa"))
         );
         assert_eq!(
             entity_write_differences(&before, &remote),
@@ -1705,7 +1717,7 @@ mod tests {
 
         // Hosted keeps the same string in a different group, and a writer
         // has to pick — a reader may take either.
-        let hosted = set_secret_identifier(&before, Location::Hosted, Role::Sp, "sp-a").unwrap();
+        let hosted = set_secret_identifier(&before, Location::Hosted, Role::Sp, "spa").unwrap();
         assert_eq!(
             entity_write_differences(&before, &hosted),
             vec![
@@ -1714,11 +1726,11 @@ mod tests {
         );
         assert_eq!(
             current_identifier(&hosted, Role::Sp).as_deref(),
-            Some("sp-a")
+            Some("spa")
         );
         assert_eq!(
             current_identifier(&remote, Role::Sp).as_deref(),
-            Some("sp-a")
+            Some("spa")
         );
         assert_eq!(current_identifier(&before, Role::Sp), None);
         assert_eq!(current_identifier(&remote, Role::Idp), None);
@@ -1726,10 +1738,10 @@ mod tests {
         // Missing groups are created; a non-group in the way is refused
         // rather than overwritten.
         let bare = json!({ "serviceProvider": {} });
-        let filled = set_secret_identifier(&bare, Location::Remote, Role::Sp, "sp-a").unwrap();
+        let filled = set_secret_identifier(&bare, Location::Remote, Role::Sp, "spa").unwrap();
         assert_eq!(
             current_identifier(&filled, Role::Sp).as_deref(),
-            Some("sp-a")
+            Some("spa")
         );
         // A group that had to be created is reported at the group, because
         // that is the highest path where the two documents stop agreeing.
@@ -1759,7 +1771,7 @@ mod tests {
             "entityId": "https://sp-a.example.com",
             "_rev": "17",
             "serviceProvider": {
-                "assertionContent": { "secrets": { "secretIdIdentifier": "sp-a" } },
+                "assertionContent": { "secrets": { "secretIdIdentifier": "spa" } },
                 "services": { "metaAlias": "/alpha/sp-a" },
             },
         });
@@ -1809,23 +1821,34 @@ mod tests {
     // Identifiers and secret ids.
     // -----------------------------------------------------------------
 
-    /// Red when `validate_identifier` accepts `.` or `/`.
+    /// Red when `validate_identifier` accepts `.`, `/`, `-` or `_`.
     #[test]
     fn an_identifier_that_would_address_a_different_label_is_refused() {
         // The identifier is spliced into a dotted label *and* into a URL
         // path. A dot renames the label family and a slash escapes the
         // collection, and neither fails loudly: the mapping `PUT` at the
         // wrong label is a perfectly good 201 nothing will ever read.
-        assert_eq!(validate_identifier("sp-a_1").unwrap(), "sp-a_1");
-        for bad in ["sp.a", "sp/a", "sp a", "sp:a", "", "  ", " sp-a", "sp-a "] {
+        //
+        // `-` and `_` read as harmless and are the discriminating cases:
+        // they cannot address a different label, so the local rationale
+        // above does not reach them, and a check written from that
+        // rationale alone accepts both. AM refuses them at the entity
+        // `PUT` with `400 Invalid character present in Secret ID
+        // Identifier` (measured 2026-09-18), so accepting them here just
+        // relocates the failure to a message that names no flag.
+        assert_eq!(validate_identifier("spa1").unwrap(), "spa1");
+        assert_eq!(validate_identifier("SpRotate1").unwrap(), "SpRotate1");
+        for bad in [
+            "sp.a", "sp/a", "sp a", "sp:a", "", "  ", " spa", "spa ", "sp-a", "sp_a",
+        ] {
             assert!(
                 validate_identifier(bad).is_err(),
                 "identifier {bad:?} should be refused"
             );
         }
         assert_eq!(
-            signing_label("sp-a"),
-            "am.applications.federation.entity.providers.saml2.sp-a.signing"
+            signing_label("spa"),
+            "am.applications.federation.entity.providers.saml2.spa.signing"
         );
     }
 
@@ -1834,7 +1857,7 @@ mod tests {
     #[test]
     fn a_secret_id_aic_would_reject_is_refused_by_name_rather_than_by_relayed_regex() {
         assert_eq!(validate_secret_id("esv-sp-a_1").unwrap(), "esv-sp-a_1");
-        for bad in ["sp-a", "esv-", "esv-SP", "esv-sp.a", "ESV-sp"] {
+        for bad in ["spa", "sp-a", "esv-", "esv-SP", "esv-sp.a", "ESV-sp"] {
             assert!(
                 validate_secret_id(bad).is_err(),
                 "secret id {bad:?} should be refused"
@@ -1863,7 +1886,7 @@ mod tests {
         // Nothing there: all three steps.
         let plan = plan_init(
             &fresh,
-            "sp-a",
+            "spa",
             "esv-sp-a-signing",
             None,
             None,
@@ -1880,7 +1903,7 @@ mod tests {
         let orphan = message(
             plan_init(
                 &fresh,
-                "sp-a",
+                "spa",
                 "esv-sp-a-signing",
                 Some("esv-someone-elses"),
                 None,
@@ -1895,7 +1918,7 @@ mod tests {
         // and that step is simply already done.
         let resumed = plan_init(
             &fresh,
-            "sp-a",
+            "spa",
             "esv-sp-a-signing",
             Some("esv-sp-a-signing"),
             Some(&facts()),
@@ -1917,7 +1940,7 @@ mod tests {
         let repoint = message(
             plan_init(
                 &state(),
-                "sp-b",
+                "spb",
                 "esv-sp-b-signing",
                 None,
                 None,
@@ -1927,13 +1950,13 @@ mod tests {
         );
         assert!(repoint.contains("rotate stage"), "{repoint}");
         assert!(repoint.contains("secretmap remove"), "{repoint}");
-        assert!(repoint.contains(".sp-a.signing"), "{repoint}");
+        assert!(repoint.contains(".spa.signing"), "{repoint}");
 
         // Same identifier is a resumed run, not a repoint.
         assert!(
             plan_init(
                 &state(),
-                "sp-a",
+                "spa",
                 "esv-sp-a-signing",
                 Some("esv-sp-a-signing"),
                 Some(&facts()),
@@ -1961,7 +1984,7 @@ mod tests {
             message(
                 plan_init(
                     &fresh,
-                    "sp-a",
+                    "spa",
                     "esv-sp-a-signing",
                     None,
                     Some(&placeholders),
@@ -1974,7 +1997,7 @@ mod tests {
 
         // Creating a secret needs the key pair that goes in it.
         let keyless =
-            message(plan_init(&fresh, "sp-a", "esv-sp-a-signing", None, None, None).unwrap_err());
+            message(plan_init(&fresh, "spa", "esv-sp-a-signing", None, None, None).unwrap_err());
         assert!(keyless.contains("--key-file"), "{keyless}");
     }
 
