@@ -706,12 +706,18 @@ fn default_description(state: &RotationState) -> String {
     )
 }
 
-/// Read and validate the key pair, before anything else happens.
+/// Read and validate the key pair, before any tenant is resolved.
 ///
-/// A key pair that is not one is not a rotation, and finding that out must not
-/// need a tenant, a context or a daemon — so this runs before the tenant is
-/// even resolved. There is no interactive prompt: the value is a multi-line
-/// PEM document, and `--key-stdin` is the pipeline form.
+/// A key pair that is not one is not a rotation, so this refuses before
+/// `tenant_config_for`, before the realm is worked out and before a single
+/// request is sent. It does **not** run before the unlock: the root pre-flight
+/// classifies `rotate` through [`needs_tenant_auth`] and starts the agent
+/// first, so on a locked daemon a malformed `--key-file` is reported after the
+/// lock is, not instead of it. Measured, not assumed — an earlier draft of this
+/// comment claimed a daemon was not needed and it is.
+///
+/// There is no interactive prompt: the value is a multi-line PEM document, and
+/// `--key-stdin` is the pipeline form.
 fn read_key_pair(key_file: Option<&std::path::Path>, key_stdin: bool) -> Result<Option<KeyPair>> {
     let bytes = match (key_file, key_stdin) {
         (Some(_), true) => {
