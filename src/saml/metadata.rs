@@ -24,13 +24,22 @@
 //! an element is a refusal, because we cannot know what name it was meant to
 //! be.
 //!
-//! **One admission boundary, two depths.** Every entry point here walks the
-//! same [`scan`], so a document `sanitise` refuses cannot be waved through by
-//! an export classification. [`Depth`] is the only thing that varies:
-//! [`validate_export_document`] stops at the document's own grammar, because
-//! a *successful* export of a roleless entity carries no `entityID` and a
-//! certificate body we dislike is a complaint about content rather than
-//! evidence that the export failed.
+//! **One admission boundary; two knobs on it.** Every entry point here walks
+//! the same [`scan`], so a document `sanitise` refuses cannot be waved
+//! through by an export classification. Only two things vary, and each is a
+//! measured fact rather than a convenience:
+//!
+//! - [`Depth`] — how much content is reported. [`validate_export_document`]
+//!   stops at the document's own grammar, because a *successful* export of a
+//!   roleless entity carries no `entityID` and a certificate body we dislike
+//!   is a complaint about content rather than evidence that the export
+//!   failed.
+//! - [`Roots`] — which root elements are documents at all. A metadata export
+//!   is always a single `<EntityDescriptor>`, while one `?_action=importEntity`
+//!   call imports **every** entity of an `<EntitiesDescriptor>` aggregate
+//!   (`docs/api/06-saml.md`). So [`MetadataBundle`] admits both and every
+//!   other entry point admits one — widening the import path must not widen
+//!   the classifier that decides whether an HTTP-200 body is metadata.
 
 use std::fmt;
 use std::ops::Range;
@@ -81,10 +90,16 @@ const PREDEFINED_ENTITIES: [(&str, char); 5] = [
     ("apos", '\''),
 ];
 
-/// The one root element this module accepts. `EntitiesDescriptor` — an
-/// aggregate of several entities — is legal SAML metadata and is refused
-/// rather than half-handled.
+/// One entity. The root of an export, and of everything [`inspect`] and
+/// [`sanitise`] accept.
 const ROOT_LOCAL_NAME: &str = "EntityDescriptor";
+
+/// An aggregate of entities. Legal SAML metadata, and **one `importEntity`
+/// call imports every entity it contains** (`docs/api/06-saml.md`), so
+/// [`MetadataBundle`] admits it where the singular entry points do not. A
+/// metadata *export* is never one, which is why [`validate_export_document`]
+/// still refuses it.
+const AGGREGATE_LOCAL_NAME: &str = "EntitiesDescriptor";
 
 #[derive(Debug, thiserror::Error)]
 pub enum MetadataError {
@@ -92,10 +107,24 @@ pub enum MetadataError {
     Malformed { offset: usize, detail: String },
     #[error("the document has no elements")]
     Empty,
-    #[error("expected a <{ROOT_LOCAL_NAME}> root element, found <{root}>")]
-    NotEntityMetadata { root: String },
-    #[error("<{ROOT_LOCAL_NAME}> carries no entityID attribute")]
-    NoEntityId,
+    #[error("expected {expected} root element, found <{root}>")]
+    NotEntityMetadata {
+        root: String,
+        expected: &'static str,
+    },
+    #[error("<{ROOT_LOCAL_NAME}> on line {line} carries no entityID attribute")]
+    NoEntityId { line: usize },
+    #[error("<{AGGREGATE_LOCAL_NAME}> contains no <{ROOT_LOCAL_NAME}> to import")]
+    NoEntities,
+    #[error(
+        "<{ROOT_LOCAL_NAME}> on line {line} repeats the entity ID {entity_id:?}, \
+         first declared on line {first}"
+    )]
+    DuplicateEntityId {
+        entity_id: String,
+        first: usize,
+        line: usize,
+    },
     #[error("<X509Certificate> on line {line} is not valid base64: {detail}")]
     BadCertificate { line: usize, detail: String },
 }
@@ -268,15 +297,21 @@ pub struct Sanitised {
 }
 
 /// Describe a metadata document.
+///
+/// Singular-root only, like [`sanitise`] and [`cert_refs`]: a
+/// [`MetadataDoc`] names *one* entity, and an aggregate is described by
+/// [`MetadataBundle`] instead.
 pub fn inspect(xml: &[u8]) -> Result<MetadataDoc> {
-    let scan = scan(xml, Depth::Content)?;
+    let mut scan = scan(xml, Depth::Content, Roots::Single)?;
+    let would_remove = std::mem::take(&mut scan.cuts);
+    let entity = scan.only_entity();
     Ok(MetadataDoc {
-        entity_id: scan.entity_id,
-        roles: scan.roles,
+        entity_id: entity.entity_id.unwrap_or_default(),
+        roles: entity.roles,
         signed: scan.signed,
         endpoints: scan.endpoints,
         certs: scan.certs,
-        would_remove: cuts_for_opts(scan.cuts, SanitiseOpts::default())
+        would_remove: cuts_for_opts(would_remove, SanitiseOpts::default())
             .into_iter()
             .map(|cut| cut.removal)
             .collect::<Vec<_>>(),
@@ -289,19 +324,27 @@ pub fn inspect(xml: &[u8]) -> Result<MetadataDoc> {
 /// and the import still failed" and an unexplained rejection, so it is
 /// produced even when nothing is printed.
 pub fn sanitise(xml: &[u8], opts: SanitiseOpts) -> Result<Sanitised> {
-    let scan = scan(xml, Depth::Content)?;
-    let kept_signature = opts.keep_signature && scan.signed;
-    let cuts = cuts_for_opts(scan.cuts, opts);
+    let scan = scan(xml, Depth::Content, Roots::Single)?;
+    Ok(splice_for_opts(xml, opts, scan.cuts, scan.signed))
+}
+
+/// The half of [`sanitise`] that turns cuts into spliced bytes, so
+/// [`MetadataBundle`] can reuse the scan it already validated rather than
+/// walking — and re-admitting — the document a second time. Infallible by
+/// construction: everything that can refuse a document has already happened.
+fn splice_for_opts(xml: &[u8], opts: SanitiseOpts, cuts: Vec<Cut>, signed: bool) -> Sanitised {
+    let kept_signature = opts.keep_signature && signed;
+    let cuts = cuts_for_opts(cuts, opts);
     let changed = cuts
         .iter()
         .any(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature);
     let (ranges, removed): (Vec<_>, Vec<_>) =
         cuts.into_iter().map(|cut| (cut.range, cut.removal)).unzip();
-    Ok(Sanitised {
+    Sanitised {
         bytes: splice(xml, &ranges),
         stale_signature: kept_signature && changed,
         removed,
-    })
+    }
 }
 
 /// Default sanitise drops the document's enveloped signature only when some
@@ -320,15 +363,30 @@ fn cuts_for_opts(cuts: Vec<Cut>, opts: SanitiseOpts) -> Vec<Cut> {
             .filter(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature)
             .collect();
     }
-    if cuts
+    let content = cuts
         .iter()
-        .any(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature)
-    {
-        cuts
-    } else {
-        cuts.into_iter()
-            .filter(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature)
-            .collect()
+        .filter(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature)
+        .map(|cut| cut.scope)
+        .collect::<Vec<_>>();
+    cuts.into_iter()
+        .filter(|cut| {
+            cut.removal.reason != RemovalReason::EnvelopedSignature
+                || content.iter().any(|changed| covers(cut.scope, *changed))
+        })
+        .collect()
+}
+
+/// Whether a signature in `signature` scope signs the bytes a cut in
+/// `changed` scope removes.
+///
+/// An aggregate's own signature covers every entity under it, so any content
+/// cut anywhere invalidates it. An entity's signature covers only that
+/// entity — which is why cutting a WS-Federation role out of entity 2 leaves
+/// entity 1's signature verifying, and must leave it in place.
+fn covers(signature: Scope, changed: Scope) -> bool {
+    match signature {
+        Scope::Aggregate => true,
+        Scope::Entity(index) => changed == Scope::Entity(index),
     }
 }
 
@@ -337,7 +395,7 @@ fn cuts_for_opts(cuts: Vec<Cut>, opts: SanitiseOpts) -> Vec<Cut> {
 /// Returns a `Result` rather than the bare `Vec` the slice brief named: an
 /// unreadable document must not answer "no certificates".
 pub fn cert_refs(xml: &[u8]) -> Result<Vec<CertRef>> {
-    Ok(scan(xml, Depth::Content)?.certs)
+    Ok(scan(xml, Depth::Content, Roots::Single)?.certs)
 }
 
 /// Whether a body is a SAML 2.0 metadata document at all.
@@ -367,23 +425,225 @@ pub fn cert_refs(xml: &[u8]) -> Result<Vec<CertRef>> {
 /// SAML `EntityDescriptor` root, so a body that survives here is a body the
 /// rest of this module will also read.
 pub fn validate_export_document(xml: &[u8]) -> Result<()> {
-    scan(xml, Depth::Document).map(drop)
+    scan(xml, Depth::Document, Roots::Single).map(drop)
+}
+
+// ── the import bundle ───────────────────────────────────────────────────────
+
+/// One entity a metadata file would create.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BundleEntity {
+    /// The `entityID` **exactly** as the file spells it.
+    ///
+    /// Exactness is the whole job: this is the string the realm is
+    /// preflighted against, and the string AM echoes back in
+    /// `importedEntities` for the set comparison afterwards. Trimming a
+    /// trailing `/` or folding case here would compare one entity against
+    /// another (`spec::entity_id64` says the same about the id encoding).
+    pub entity_id: String,
+    pub roles: Vec<Role>,
+    /// 1-based line of the `<EntityDescriptor>` start tag, so a refusal can
+    /// point at which entry of an aggregate it is about.
+    pub line: usize,
+}
+
+/// Every entity one metadata file would import, validated once.
+///
+/// This exists because **one file is not one entity**: an
+/// `<EntitiesDescriptor>` aggregate imports every entity it contains in a
+/// single `?_action=importEntity` call and returns all their ids
+/// (`docs/api/06-saml.md`). A command that assumed a singular root would
+/// preflight one id, send a document that creates three, and report on one.
+///
+/// Three rules beyond well-formedness, each of which makes the entity ids
+/// usable as a **set**:
+///
+/// - every `<EntityDescriptor>` must carry an `entityID`, because an entity
+///   that cannot be named cannot be preflighted;
+/// - the same `entityID` may not appear twice, because a set comparison
+///   against `importedEntities` cannot then say what happened;
+/// - there must be at least one entity, because an empty aggregate is a file
+///   that would silently import nothing.
+pub struct MetadataBundle {
+    bytes: Vec<u8>,
+    root: BundleRoot,
+    entities: Vec<BundleEntity>,
+    signed: bool,
+    cuts: Vec<Cut>,
+}
+
+impl MetadataBundle {
+    /// Validate a metadata file and name every entity in it.
+    pub fn parse(xml: &[u8]) -> Result<Self> {
+        let scan = scan(xml, Depth::Content, Roots::Aggregate)?;
+        let mut entities: Vec<BundleEntity> = Vec::new();
+        for seen in scan.entities {
+            // `Depth::Content` has already refused a missing `entityID`; this
+            // is the type, not a second check.
+            let entity_id = seen.entity_id.unwrap_or_default();
+            if let Some(first) = entities.iter().find(|held| held.entity_id == entity_id) {
+                return Err(MetadataError::DuplicateEntityId {
+                    entity_id,
+                    first: first.line,
+                    line: seen.line,
+                });
+            }
+            entities.push(BundleEntity {
+                entity_id,
+                roles: seen.roles,
+                line: seen.line,
+            });
+        }
+        if entities.is_empty() {
+            return Err(MetadataError::NoEntities);
+        }
+        Ok(Self {
+            bytes: xml.to_vec(),
+            root: scan.root,
+            entities,
+            signed: scan.signed,
+            cuts: scan.cuts,
+        })
+    }
+
+    /// Which of the two roots the file has.
+    pub fn root(&self) -> BundleRoot {
+        self.root
+    }
+
+    /// Whether the file carries an enveloped signature over a descriptor.
+    pub fn signed(&self) -> bool {
+        self.signed
+    }
+
+    pub fn entities(&self) -> &[BundleEntity] {
+        &self.entities
+    }
+
+    /// Every entity id, in document order, exactly as written.
+    pub fn entity_ids(&self) -> Vec<String> {
+        self.entities
+            .iter()
+            .map(|entity| entity.entity_id.clone())
+            .collect()
+    }
+
+    /// The bytes as they were read.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Strip what an AM import cannot take, reusing this bundle's one scan.
+    pub fn sanitise(&self, opts: SanitiseOpts) -> Sanitised {
+        splice_for_opts(&self.bytes, opts, self.cuts.clone(), self.signed)
+    }
 }
 
 // ── the scanner ─────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 struct Cut {
     range: Range<usize>,
     removal: Removal,
+    /// Which signature's coverage this cut falls inside. An enveloped
+    /// signature is only invalidated by a change to the bytes *it* signs, and
+    /// in an aggregate those are two different scopes — see [`covers`].
+    scope: Scope,
+}
+
+/// The signed region a cut belongs to.
+///
+/// In a singular document there is only ever one, so this is inert; in an
+/// aggregate it is the difference between "entity 2 changed, so entity 2's
+/// signature must go" and dropping the signature of an entity nothing
+/// touched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// Outside every `<EntityDescriptor>` — an `<EntitiesDescriptor>`'s own
+    /// content, which its signature covers along with every entity under it.
+    Aggregate,
+    /// Inside the entity at this index in [`Scan::entities`].
+    Entity(usize),
+}
+
+/// One `<EntityDescriptor>` the scan walked, in document order.
+struct EntitySeen {
+    /// The `entityID` attribute exactly as written. Absent is legal for an
+    /// export of a roleless entity and refused at [`Depth::Content`].
+    entity_id: Option<String>,
+    roles: Vec<Role>,
+    /// 1-based line of the start tag, so a refusal can point at the entity.
+    line: usize,
 }
 
 struct Scan {
-    entity_id: String,
-    roles: Vec<Role>,
+    root: BundleRoot,
+    entities: Vec<EntitySeen>,
     signed: bool,
     endpoints: Vec<Endpoint>,
     certs: Vec<CertRef>,
     cuts: Vec<Cut>,
+}
+
+impl Scan {
+    /// The one entity a [`Roots::Single`] scan found.
+    ///
+    /// Total by construction, not by luck: a single-root scan admits exactly
+    /// one `<EntityDescriptor>` — the root — because a nested one is refused
+    /// as misplaced and an element after the root is refused as epilog
+    /// content.
+    fn only_entity(&mut self) -> EntitySeen {
+        debug_assert_eq!(self.entities.len(), 1, "a single-root scan has one entity");
+        self.entities.pop().unwrap_or(EntitySeen {
+            entity_id: None,
+            roles: Vec::new(),
+            line: 1,
+        })
+    }
+}
+
+/// Which root elements a scan admits.
+///
+/// Orthogonal to [`Depth`]: depth says how much of the content is reported,
+/// this says which documents are documents at all. The two are separate
+/// because a metadata *export* is always singular (`docs/api/06-saml.md`) —
+/// so widening the import path must not widen the export classifier, which is
+/// the only thing standing between an HTTP-200 failure body and a file on
+/// disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Roots {
+    /// `<EntityDescriptor>` only.
+    Single,
+    /// `<EntityDescriptor>` or an `<EntitiesDescriptor>` aggregate.
+    Aggregate,
+}
+
+impl Roots {
+    fn expected(self) -> &'static str {
+        match self {
+            Self::Single => "an <EntityDescriptor>",
+            Self::Aggregate => "an <EntityDescriptor> or <EntitiesDescriptor>",
+        }
+    }
+}
+
+/// Which of the two SAML descriptor roots a document has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BundleRoot {
+    /// One entity.
+    Entity,
+    /// An aggregate. One import call, n entities.
+    Entities,
+}
+
+impl fmt::Display for BundleRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Entity => ROOT_LOCAL_NAME,
+            Self::Entities => AGGREGATE_LOCAL_NAME,
+        })
+    }
 }
 
 /// How much of a document one scan has to understand.
@@ -408,6 +668,20 @@ enum Depth {
 struct Open {
     ns: Option<Vec<u8>>,
     local: String,
+}
+
+impl Open {
+    fn is(&self, local: &str) -> bool {
+        self.ns.as_deref() == Some(SAML_NS) && self.local == local
+    }
+
+    fn is_entity(&self) -> bool {
+        self.is(ROOT_LOCAL_NAME)
+    }
+
+    fn is_aggregate(&self) -> bool {
+        self.is(AGGREGATE_LOCAL_NAME)
+    }
 }
 
 /// A `<KeyDescriptor>` being read. Certificates are flushed at its end tag so
@@ -496,7 +770,7 @@ impl Section {
     }
 }
 
-fn scan(xml: &[u8], depth: Depth) -> Result<Scan> {
+fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
     std::str::from_utf8(xml).map_err(|error| MetadataError::Malformed {
         offset: error.valid_up_to(),
         detail: "input is not valid UTF-8".into(),
@@ -508,17 +782,16 @@ fn scan(xml: &[u8], depth: Depth) -> Result<Scan> {
     reader.config_mut().expand_empty_elements = false;
 
     let mut path: Vec<Open> = Vec::new();
-    let mut open_cut: Option<(usize, usize, Removal)> = None;
+    let mut open_cut: Option<(usize, usize, Removal, Scope)> = None;
     let mut keys: Vec<PendingKey> = Vec::new();
     let mut leaf: Option<PendingLeaf> = None;
-    let mut entity_id: Option<String> = None;
     let mut root_seen = false;
     let mut any_event_seen = false;
     let mut doctype_seen = false;
 
     let mut scan = Scan {
-        entity_id: String::new(),
-        roles: Vec::new(),
+        root: BundleRoot::Entity,
+        entities: Vec::new(),
         signed: false,
         endpoints: Vec::new(),
         certs: Vec::new(),
@@ -670,35 +943,69 @@ fn scan(xml: &[u8], depth: Depth) -> Result<Scan> {
                     });
                 }
 
+                let saml = ns == Some(SAML_NS);
+                let entity_start = saml && name == ROOT_LOCAL_NAME;
+                let aggregate_start = saml && name == AGGREGATE_LOCAL_NAME;
+
                 match section {
                     Section::Epilog => {
                         return Err(misplaced(start, &format!("<{name}>"), section));
                     }
                     Section::Prolog => {
                         root_seen = true;
-                        if name != ROOT_LOCAL_NAME || ns != Some(SAML_NS) {
-                            return Err(MetadataError::NotEntityMetadata { root: name });
-                        }
-                        entity_id = attrs.unqualified("entityID").map(str::to_owned);
+                        scan.root = match (entity_start, aggregate_start, roots) {
+                            (true, _, _) => BundleRoot::Entity,
+                            (_, true, Roots::Aggregate) => BundleRoot::Entities,
+                            _ => {
+                                return Err(MetadataError::NotEntityMetadata {
+                                    root: name,
+                                    expected: roots.expected(),
+                                });
+                            }
+                        };
                     }
-                    Section::Root => {}
+                    // A descriptor is legal below the root only under a chain
+                    // of aggregates. Refusing it anywhere else is what makes
+                    // "which entity am I in" answerable at all: an
+                    // `<EntityDescriptor>` smuggled inside an `<Extensions>`
+                    // container would otherwise take ownership of the roles
+                    // and keys around it.
+                    Section::Root => {
+                        if (entity_start || aggregate_start) && !path.iter().all(Open::is_aggregate)
+                        {
+                            return Err(misplaced_inside(start, &name, &path));
+                        }
+                    }
                 }
 
-                // A role is a *direct child* of the root. An `<Extensions>`
+                if entity_start {
+                    scan.entities.push(EntitySeen {
+                        entity_id: attrs.unqualified("entityID").map(str::to_owned),
+                        roles: Vec::new(),
+                        line: line_at(xml, start),
+                    });
+                }
+
+                // A role is a *direct child* of an entity. An `<Extensions>`
                 // container may hold anything at all, including an element
                 // shaped exactly like a role, and none of it is a role this
                 // entity publishes.
-                let entity_role = path.len() == 1;
+                let entity_role = path.last().is_some_and(Open::is_entity);
                 if entity_role
                     && let Some(role) = Role::from_expanded_name(&name, ns)
-                    && !scan.roles.contains(&role)
+                    && let Some(entity) = scan.entities.last_mut()
+                    && !entity.roles.contains(&role)
                 {
-                    scan.roles.push(role);
+                    entity.roles.push(role);
                 }
-                // Only a direct child of the root signs the whole document;
-                // `path` holds just the root at that point.
-                let enveloped_signature =
-                    name == SIGNATURE_LOCAL_NAME && ns == Some(DSIG_NS) && path.len() == 1;
+                // A signature that is a direct child of a descriptor is
+                // enveloped over that descriptor: one entity, or — on an
+                // aggregate root — every entity in the file.
+                let enveloped_signature = name == SIGNATURE_LOCAL_NAME
+                    && ns == Some(DSIG_NS)
+                    && path
+                        .last()
+                        .is_some_and(|open| open.is_entity() || open.is_aggregate());
                 if enveloped_signature {
                     scan.signed = true;
                 }
@@ -718,7 +1025,7 @@ fn scan(xml: &[u8], depth: Depth) -> Result<Scan> {
                     // needs. One somewhere else is refused rather than
                     // attributed to a role it does not belong to, or reported
                     // with no role at all.
-                    let Some(descriptor) = enclosing_role(&path).filter(|_| path.len() == 2) else {
+                    let Some(descriptor) = key_descriptor_role(&path) else {
                         return Err(MetadataError::Malformed {
                             offset: start,
                             detail: "<KeyDescriptor> outside a role descriptor".into(),
@@ -766,14 +1073,22 @@ fn scan(xml: &[u8], depth: Depth) -> Result<Scan> {
                         line: line_at(xml, start),
                         reason,
                     };
+                    // The signed region this cut sits in, resolved from the
+                    // *open* path — the entity it is inside, not the last one
+                    // the scan finished reading.
+                    let scope = match entity_depth(&path) {
+                        Some(_) => Scope::Entity(scan.entities.len().saturating_sub(1)),
+                        None => Scope::Aggregate,
+                    };
                     let from = trim_back(xml, start);
                     if empty {
                         scan.cuts.push(Cut {
                             range: from..end,
                             removal,
+                            scope,
                         });
                     } else {
-                        open_cut = Some((from, path.len(), removal));
+                        open_cut = Some((from, path.len(), removal, scope));
                     }
                 }
 
@@ -812,12 +1127,13 @@ fn scan(xml: &[u8], depth: Depth) -> Result<Scan> {
                         }
                     }
                 }
-                if let Some((from, _, removal)) =
-                    open_cut.take_if(|(_, depth, _)| *depth == path.len())
+                if let Some((from, _, removal, scope)) =
+                    open_cut.take_if(|(_, depth, _, _)| *depth == path.len())
                 {
                     scan.cuts.push(Cut {
                         range: from..end,
                         removal,
+                        scope,
                     });
                 }
             }
@@ -906,10 +1222,33 @@ fn scan(xml: &[u8], depth: Depth) -> Result<Scan> {
             detail: format!("unclosed <{}>", open.local),
         });
     }
+    // Every entity has to be nameable before anything reports on it: an
+    // aggregate entry with no `entityID` cannot be preflighted against the
+    // realm, and an import that cannot be preflighted is the one this command
+    // exists to refuse.
     if depth == Depth::Content {
-        scan.entity_id = entity_id.ok_or(MetadataError::NoEntityId)?;
+        for entity in &scan.entities {
+            if entity.entity_id.is_none() {
+                return Err(MetadataError::NoEntityId { line: entity.line });
+            }
+        }
     }
     Ok(scan)
+}
+
+/// A descriptor that tokenised where no descriptor may appear.
+fn misplaced_inside(offset: usize, name: &str, path: &[Open]) -> MetadataError {
+    MetadataError::Malformed {
+        offset,
+        detail: match path.last() {
+            Some(open) => format!(
+                "<{name}> inside <{}>; a descriptor may only be the root or sit \
+                 under <{AGGREGATE_LOCAL_NAME}>",
+                open.local
+            ),
+            None => format!("<{name}> below the root"),
+        },
+    }
 }
 
 /// An event that tokenised cleanly but is not legal where it appeared.
@@ -1196,11 +1535,30 @@ fn unknown_prefix(offset: usize, prefix: &[u8]) -> MetadataError {
 /// declared them. `EntityDescriptor` is the document itself and
 /// `KeyDescriptor` is a key, so neither is a role.
 fn enclosing_role(path: &[Open]) -> Option<&str> {
-    let role = path.get(1)?;
+    let role = path.get(entity_depth(path)? + 1)?;
     (role.ns.as_deref() == Some(SAML_NS)
         && role.local.ends_with("Descriptor")
         && role.local != "KeyDescriptor")
         .then_some(role.local.as_str())
+}
+
+/// Where the innermost open `<EntityDescriptor>` sits on the path.
+///
+/// `Some(0)` for a singular document, deeper inside an aggregate, and `None`
+/// outside every entity — an `<EntitiesDescriptor>`'s own children. The
+/// scanner refuses an `<EntityDescriptor>` anywhere but the root or under a
+/// chain of aggregates, so "innermost" is also "the one we are in".
+fn entity_depth(path: &[Open]) -> Option<usize> {
+    path.iter().rposition(Open::is_entity)
+}
+
+/// The role that owns a `<KeyDescriptor>`: the role must be the element the
+/// key descriptor sits directly inside, and that role must be a direct child
+/// of an entity. A key descriptor anywhere else has no role identity, which
+/// is what a rotation needs.
+fn key_descriptor_role(path: &[Open]) -> Option<&str> {
+    let entity = entity_depth(path)?;
+    (entity + 2 == path.len()).then(|| enclosing_role(path))?
 }
 
 fn position(reader: &NsReader<&[u8]>) -> usize {
@@ -2446,5 +2804,201 @@ mod tests {
                  — not a SAML 2.0 role; on the strip list"
             ]
         );
+    }
+
+    // ── the import bundle ───────────────────────────────────────────────────
+
+    /// A two-entity aggregate, each entity signed, and the aggregate signed
+    /// over both. `extra` goes inside the *second* entity, which is what
+    /// makes the per-entity signature scope observable: entity one is never
+    /// touched, so anything that happens to its signature is over-reach.
+    fn aggregate(extra: &str) -> String {
+        format!(
+            "<EntitiesDescriptor xmlns=\"{SAML_URI}\" xmlns:ds=\"{DSIG_URI}\" \
+             xmlns:xsi=\"{XSI_URI}\" xmlns:fed=\"{WSFED_URI}\">\n\
+             \x20 <ds:Signature>AGGREGATE</ds:Signature>\n\
+             \x20 <EntityDescriptor entityID=\"https://idp-a.example.com\">\n\
+             \x20   <ds:Signature>ENTITY-ONE</ds:Signature>\n\
+             \x20   <IDPSSODescriptor protocolSupportEnumeration=\"{PROTOCOL_URI}\" />\n\
+             \x20 </EntityDescriptor>\n\
+             \x20 <EntityDescriptor entityID=\"https://sp-b.example.com\">\n\
+             \x20   <ds:Signature>ENTITY-TWO</ds:Signature>\n\
+             \x20   <SPSSODescriptor protocolSupportEnumeration=\"{PROTOCOL_URI}\" />\n\
+             {extra}\
+             \x20 </EntityDescriptor>\n\
+             </EntitiesDescriptor>\n"
+        )
+    }
+
+    fn bundle(xml: &str) -> MetadataBundle {
+        MetadataBundle::parse(xml.as_bytes()).expect("the fixture parses")
+    }
+
+    /// An aggregate is n entities, and the ids are what the preflight and the
+    /// `importedEntities` comparison are both built on — so this asserts the
+    /// exact ids, in order, with the role each entity publishes.
+    ///
+    /// Turns red if entity collection goes back to reading only the root, or
+    /// if role attribution goes back to `path.len() == 1`: entity two's role
+    /// sits at depth two in an aggregate and would vanish.
+    #[test]
+    fn a_bundle_names_every_entity_of_an_aggregate_in_document_order() {
+        let parsed = bundle(&aggregate(""));
+        assert_eq!(parsed.root(), BundleRoot::Entities);
+        assert_eq!(
+            parsed
+                .entities()
+                .iter()
+                .map(|entity| (entity.entity_id.as_str(), entity.roles.clone(), entity.line))
+                .collect::<Vec<_>>(),
+            vec![
+                ("https://idp-a.example.com", vec![Role::IdentityProvider], 3),
+                ("https://sp-b.example.com", vec![Role::ServiceProvider], 7),
+            ]
+        );
+
+        // The singular root is the same abstraction with one entry, not a
+        // different path.
+        let single = bundle(&format!("{HEAD}{TAIL}"));
+        assert_eq!(single.root(), BundleRoot::Entity);
+        assert_eq!(single.entity_ids(), vec!["https://sp-a.example.com"]);
+    }
+
+    /// Every refusal that makes the entity ids usable as a set, plus the two
+    /// structural ones that make "which entity am I in" answerable at all.
+    ///
+    /// Turns red on removing any one of: the duplicate-id check, the
+    /// empty-aggregate check, the `Depth::Content` entityID requirement, or
+    /// the descriptor-placement rule in the `Section::Root` arm.
+    #[test]
+    fn a_bundle_refuses_a_file_whose_entities_cannot_be_named_as_a_set() {
+        let entity = |id: &str| {
+            format!(
+                "<EntityDescriptor entityID=\"{id}\"><IDPSSODescriptor \
+                     protocolSupportEnumeration=\"{PROTOCOL_URI}\" /></EntityDescriptor>"
+            )
+        };
+        let wrap = |body: String| {
+            format!("<EntitiesDescriptor xmlns=\"{SAML_URI}\">{body}</EntitiesDescriptor>")
+        };
+        let cases: [(&str, String); 5] = [
+            ("an aggregate with nothing in it", wrap(String::new())),
+            (
+                "the same entity id twice",
+                wrap(format!(
+                    "{}{}",
+                    entity("https://idp-a.example.com"),
+                    entity("https://idp-a.example.com")
+                )),
+            ),
+            (
+                // Legal for an export of a roleless entity; not importable,
+                // because nothing can preflight it.
+                "an aggregate entry with no entityID",
+                wrap(format!(
+                    "{}<EntityDescriptor />",
+                    entity("https://idp-a.example.com")
+                )),
+            ),
+            (
+                // An `<Extensions>` container may hold anything, and an
+                // entity smuggled into one would take ownership of the roles
+                // and keys around it.
+                "an EntityDescriptor inside an Extensions container",
+                format!(
+                    "<EntityDescriptor xmlns=\"{SAML_URI}\" entityID=\"https://sp-a.example.com\">\
+                     <Extensions>{}</Extensions></EntityDescriptor>",
+                    entity("https://idp-a.example.com")
+                ),
+            ),
+            (
+                "an aggregate nested inside a role",
+                format!(
+                    "<EntityDescriptor xmlns=\"{SAML_URI}\" entityID=\"https://sp-a.example.com\">\
+                     <SPSSODescriptor protocolSupportEnumeration=\"{PROTOCOL_URI}\">{}\
+                     </SPSSODescriptor></EntityDescriptor>",
+                    wrap(entity("https://idp-a.example.com"))
+                ),
+            ),
+        ];
+        for (name, xml) in cases {
+            assert!(
+                MetadataBundle::parse(xml.as_bytes()).is_err(),
+                "{name} should be refused"
+            );
+        }
+
+        // The control: two *different* ids in one aggregate is exactly what
+        // an aggregate is for, and must still be accepted.
+        assert_eq!(
+            bundle(&wrap(format!(
+                "{}{}",
+                entity("https://idp-a.example.com"),
+                entity("https://idp-b.example.com")
+            )))
+            .entity_ids(),
+            vec!["https://idp-a.example.com", "https://idp-b.example.com"]
+        );
+    }
+
+    /// An enveloped signature covers the descriptor it sits under and nothing
+    /// else, so cutting a WS-Federation role out of entity two must leave
+    /// entity one's signature exactly where it was — while the aggregate's
+    /// own signature, which covers both, has to go.
+    ///
+    /// Turns red on reverting `covers` to the global "is there any other cut"
+    /// test: entity one's signature would then be removed as well, and the
+    /// output would lose a signature that still verifies.
+    #[test]
+    fn an_aggregate_signature_is_cut_only_where_the_bytes_it_signs_changed() {
+        let role = "\x20   <RoleDescriptor xsi:type=\"fed:SecurityTokenServiceType\" />\n";
+        let sanitised = bundle(&aggregate(role)).sanitise(SanitiseOpts::default());
+        let out = String::from_utf8(sanitised.bytes.clone()).expect("output is utf-8");
+
+        assert!(
+            out.contains("<ds:Signature>ENTITY-ONE</ds:Signature>"),
+            "entity one was not touched, so its signature still verifies:\n{out}"
+        );
+        assert!(!out.contains("ENTITY-TWO"), "{out}");
+        assert!(!out.contains("AGGREGATE"), "{out}");
+        assert!(!out.contains("RoleDescriptor"), "{out}");
+        assert_eq!(
+            report(&sanitised)
+                .iter()
+                .map(|line| line.split(" — ").next().unwrap_or_default().to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "line 2: removed <ds:Signature>",
+                "line 8: removed <ds:Signature>",
+                "line 10: removed <RoleDescriptor xsi:type=\"fed:SecurityTokenServiceType\">",
+            ]
+        );
+
+        // The control: with nothing to cut, every signature survives and the
+        // bytes are the input.
+        let untouched = aggregate("");
+        let clean = bundle(&untouched).sanitise(SanitiseOpts::default());
+        assert_eq!(
+            String::from_utf8(clean.bytes).expect("output is utf-8"),
+            untouched
+        );
+        assert!(clean.removed.is_empty(), "{:?}", clean.removed);
+    }
+
+    /// The singular entry points are deliberately narrower than the bundle:
+    /// a metadata *export* is never an aggregate, so widening the import path
+    /// must not widen the classifier that decides whether an HTTP-200 body is
+    /// metadata at all.
+    ///
+    /// Turns red if `inspect`, `sanitise`, `cert_refs` or
+    /// `validate_export_document` is switched to `Roots::Aggregate`.
+    #[test]
+    fn the_singular_entry_points_still_refuse_an_aggregate_the_bundle_accepts() {
+        let xml = aggregate("");
+        assert!(MetadataBundle::parse(xml.as_bytes()).is_ok());
+        assert!(inspect(xml.as_bytes()).is_err());
+        assert!(sanitise(xml.as_bytes(), SanitiseOpts::default()).is_err());
+        assert!(cert_refs(xml.as_bytes()).is_err());
+        assert!(validate_export_document(xml.as_bytes()).is_err());
     }
 }
