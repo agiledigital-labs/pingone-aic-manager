@@ -141,6 +141,19 @@ fn create_hosted_request(realm: &str, body: Value, confirmed_prod: bool) -> Saml
     }
 }
 
+/// `?_action=importEntity` exists only on `/remote`; on `/hosted` it is a
+/// **501 `importEntity not supported`**, so the path is not parameterised by
+/// location either. Same trailing slash as the create path, for the same
+/// reason: it is what every measurement in `docs/api/06-saml.md` used.
+fn import_request(realm: &str, body: Value, confirmed_prod: bool) -> SamlRequest {
+    SamlRequest {
+        method: "POST",
+        path: format!("{}/remote/?_action=importEntity", entities_path(realm)),
+        body: Some(body),
+        confirmed_prod,
+    }
+}
+
 fn delete_entity_request(
     realm: &str,
     location: Location,
@@ -237,6 +250,30 @@ pub async fn delete_entity(
     confirmed_prod: bool,
 ) -> Result<Value> {
     delete_entity_request(realm, location, entity_id, confirmed_prod)
+        .send(tenant)
+        .await
+}
+
+/// Import remote entity metadata.
+///
+/// **200, not 201**, and the body is `{"importedEntities": [...]}` — which
+/// may name more than one entity, because an `EntitiesDescriptor` aggregate
+/// imports every entity it contains in this one call. The caller must compare
+/// that list against the ids it parsed; see [`spec::compare_imported`].
+///
+/// The `permit` is not decoration. [`spec::ImportPermit`] can only be minted
+/// by [`spec::authorize_import`], so this function is unreachable from a
+/// `--dry-run` or from a path that skipped the preflight — the same
+/// compile-time routing proof `scripts::gate`'s `WritePermit` gives script
+/// writes.
+pub async fn import_entity(
+    tenant: &str,
+    realm: &str,
+    body: Value,
+    confirmed_prod: bool,
+    _permit: &spec::ImportPermit,
+) -> Result<Value> {
+    import_request(realm, body, confirmed_prod)
         .send(tenant)
         .await
 }
@@ -358,6 +395,24 @@ mod tests {
         assert_eq!(call.body.as_ref(), Some(&body));
     }
 
+    /// `?_action=importEntity` is a 501 on `/hosted`, and the one field in
+    /// the body is `standardMetadata` — `{}` and a wrong base64 alphabet both
+    /// answer with the same 400, so nothing in a response would tell us this
+    /// path was wrong.
+    #[test]
+    fn the_import_request_targets_remote_only_and_carries_the_body() {
+        let body = json!({ "standardMetadata": "PD94bWw" });
+        let call = envelope(&import_request("bravo", body.clone(), false));
+        assert_eq!(call.method, "POST");
+        assert_eq!(
+            call.path,
+            "/am/json/realms/root/realms/bravo/realm-config/saml2/remote/?_action=importEntity"
+        );
+        assert!(!call.path.contains("/hosted"), "{}", call.path);
+        assert_eq!(call.body.as_ref(), Some(&body));
+        assert_eq!(call.api_version.as_deref(), Some(API_VERSION));
+    }
+
     /// Both writes carry the operator's production consent, and neither
     /// invents it. `confirmed_prod` defaulting to `true` would silently lift
     /// the daemon's prod gate for every SAML write.
@@ -366,6 +421,10 @@ mod tests {
         for confirmed in [false, true] {
             assert_eq!(
                 envelope(&create_hosted_request("bravo", json!({}), confirmed)).confirmed_prod,
+                confirmed
+            );
+            assert_eq!(
+                envelope(&import_request("bravo", json!({}), confirmed)).confirmed_prod,
                 confirmed
             );
             assert_eq!(

@@ -1,10 +1,10 @@
 //! `aic saml` parser and command implementation.
 //!
 //! `metadata inspect|sanitise` are offline file transforms; `list`, `show` and
-//! `cot list|show` read the `realm-config` JSON collections; `create-hosted`
-//! and `delete` write; and `metadata export` fetches standard metadata from a
-//! JSP that takes **no authentication**, so it works against a locked daemon.
-//! Import and cert rotation are later slices.
+//! `cot list|show` read the `realm-config` JSON collections; `create-hosted`,
+//! `import` and `delete` write; and `metadata export` fetches standard
+//! metadata from a JSP that takes **no authentication**, so it works against a
+//! locked daemon. Cert rotation is a later slice.
 //!
 //! [`needs_tenant_auth`] is where that three-way split is recorded, and it is
 //! the one thing a new verb must classify itself in.
@@ -19,6 +19,12 @@
 //!   afterwards.** An entity `DELETE` silently rewrites every CoT that listed
 //!   the entity, and nothing in the delete response says so — so the cascade
 //!   this command reports is a diff of two reads, never a replay of the first.
+//! - **`import` preflights every entity id and refuses the whole operation on
+//!   any collision.** `?_action=importEntity` is create-only (a repeat is a
+//!   500), and the only "update" AM offers is delete-then-import — which
+//!   rewrites extended metadata and cascades through every circle of trust,
+//!   while the `cotlist` that governs runtime trust is invisible over REST
+//!   both before and after. A refusal is the only honest answer.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -92,6 +98,28 @@ pub enum SamlCommand {
         realm: Option<String>,
         #[arg(long)]
         tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Import remote entity metadata from a file.
+    ///
+    /// One call, n entities: an `EntitiesDescriptor` aggregate creates every
+    /// entity it contains. Create-only — a re-import is a 500, and there is
+    /// no `--force` that deletes first.
+    Import {
+        /// Path to a SAML 2.0 `EntityDescriptor` or `EntitiesDescriptor` file.
+        file: PathBuf,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Print the plan and the preflight, and send nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Send the file's bytes verbatim, WS-Federation roles and all.
+        #[arg(long)]
+        no_sanitise: bool,
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
@@ -194,6 +222,7 @@ pub fn needs_tenant_auth(command: &SamlCommand) -> bool {
         | SamlCommand::Show { .. }
         | SamlCommand::Cot { .. }
         | SamlCommand::CreateHosted { .. }
+        | SamlCommand::Import { .. }
         | SamlCommand::Delete { .. } => true,
         SamlCommand::Metadata { command } => match command {
             MetadataCommand::Inspect { .. }
@@ -241,6 +270,14 @@ pub async fn run(command: SamlCommand) -> Result<()> {
             )
             .await
         }
+        SamlCommand::Import {
+            file,
+            realm,
+            tenant,
+            dry_run,
+            no_sanitise,
+            yes,
+        } => import(tenant, realm, &file, dry_run, no_sanitise, yes).await,
         SamlCommand::Delete {
             entity_id,
             location,
@@ -368,6 +405,134 @@ async fn create_hosted(
         println!("{line}");
     }
     Ok(())
+}
+
+/// Import remote entity metadata.
+///
+/// The order is the design. Everything that can refuse happens before
+/// anything is sent, and everything the command claims afterwards is read
+/// back rather than assumed:
+///
+/// 1. parse the file into a [`metadata::MetadataBundle`] — **n** entities,
+///    because one aggregate is one call and n creations. This happens before
+///    the tenant is resolved: an unreadable document is not an import, and
+///    saying so must not need a context or a daemon;
+/// 2. sanitise unless told not to, and print what went and why;
+/// 3. preflight every id against the realm's *whole* entity list, both
+///    collections, and refuse the whole operation if any exists;
+/// 4. `--dry-run` stops here — and stops by holding no
+///    [`spec::ImportPermit`], not by returning early in front of the write;
+/// 5. send, then compare the exact set of `importedEntities` against the ids
+///    parsed in step 1;
+/// 6. on failure, re-list the realm, because a failed aggregate import is not
+///    a rollback and AM says nothing about how far it got.
+///
+/// What it does **not** do is verify the import. `importEntity` rewrites
+/// extended metadata, the `cotlist` inside it governs runtime trust, and REST
+/// exposes it neither before nor after — so [`spec::IMPORT_COTLIST_CAVEAT`]
+/// is the last thing printed, every time, in place of a green tick nothing
+/// could stand behind.
+async fn import(
+    tenant_arg: Option<String>,
+    realm_arg_value: Option<String>,
+    file: &Path,
+    dry_run: bool,
+    no_sanitise: bool,
+    yes: bool,
+) -> Result<()> {
+    // The file first, and before the tenant is even resolved: a document we
+    // cannot read is not an import, and finding that out should not depend on
+    // a context, a daemon or a network call.
+    let xml = read_xml(file)?;
+    let bundle = metadata::MetadataBundle::parse(&xml)?;
+    let declared = bundle.entity_ids();
+    let (body, removed) = if no_sanitise {
+        (bundle.bytes().to_vec(), Vec::new())
+    } else {
+        let sanitised = bundle.sanitise(SanitiseOpts::default());
+        (sanitised.bytes, sanitised.removed)
+    };
+
+    let tenant = tenant_for(tenant_arg)?;
+    let realm = realm_arg("saml", realm_arg_value)?;
+
+    // The plan goes to stderr the way the delete cascade does: it is the
+    // operator's preview, not the command's output.
+    for line in spec::plan_lines(
+        &bundle,
+        &removed,
+        !no_sanitise,
+        &body,
+        &file.display().to_string(),
+        &tenant,
+        &realm,
+    ) {
+        eprintln!("{line}");
+    }
+
+    let stubs = api::list(&tenant, &realm).await?;
+    let found = spec::collisions(&declared, &stubs);
+    for line in spec::preflight_lines(&declared, &found, &realm) {
+        eprintln!("{line}");
+    }
+
+    // The permit is minted here or not at all, so the `Preview` arm below
+    // cannot reach `api::import_entity` even if someone deletes the `return`.
+    let permit = match spec::authorize_import(dry_run, &found, &tenant, &realm)? {
+        spec::ImportDecision::Preview => {
+            eprintln!("dry run: nothing was sent");
+            return Ok(());
+        }
+        spec::ImportDecision::Send(permit) => permit,
+    };
+
+    // After the decision, so `--dry-run` can preview a production tenant
+    // without the confirmation a write needs.
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
+    let response = match api::import_entity(
+        &tenant,
+        &realm,
+        spec::import_body(&body),
+        ok.confirmed_prod,
+        &permit,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            match api::list(&tenant, &realm).await {
+                Ok(after) => {
+                    for line in spec::after_failure_lines(&declared, &after, &realm) {
+                        eprintln!("{line}");
+                    }
+                }
+                Err(reread) => eprintln!(
+                    "warning: the import failed and re-reading realm {realm} failed too,                      so what exists now is unknown: {reread}"
+                ),
+            }
+            return Err(error);
+        }
+    };
+
+    let outcome = spec::compare_imported(&declared, &spec::imported_entities(&response)?);
+    for line in outcome.lines(&tenant, &realm) {
+        println!("{line}");
+    }
+    println!();
+    println!("{}", spec::IMPORT_COTLIST_CAVEAT);
+
+    if outcome.matches() {
+        Ok(())
+    } else {
+        // The entities AM did name are created; this is not "the import did
+        // not happen", it is "the import is not what was asked for", and the
+        // exit code has to say so.
+        Err(Error::Config(format!(
+            "AM's importedEntities is not the set this file declares —              {} missing, {} unexpected; `aic saml list --realm {realm}` shows what exists",
+            outcome.missing.len(),
+            outcome.unexpected.len()
+        )))
+    }
 }
 
 /// Delete an entity provider, naming the circle-of-trust cascade first.
@@ -866,7 +1031,7 @@ mod tests {
     /// daemon. Every verb is listed, so a new one is a visibly missing row.
     #[test]
     fn needs_tenant_auth_follows_what_each_verb_actually_sends() {
-        let cases: [(bool, &[&str]); 9] = [
+        let cases: [(bool, &[&str]); 10] = [
             (true, &["aic", "saml", "list"]),
             (true, &["aic", "saml", "show", "https://sp-a.example.com"]),
             (true, &["aic", "saml", "cot", "list"]),
@@ -894,6 +1059,7 @@ mod tests {
                     "--force",
                 ],
             ),
+            (true, &["aic", "saml", "import", "in.xml"]),
             // The odd one out, and the reason this function is not a constant:
             // the export JSP takes no authentication at all.
             (
@@ -1088,5 +1254,123 @@ mod tests {
             panic!("expected saml delete");
         };
         assert_eq!(location, Some(Location::Remote));
+    }
+
+    /// The flags, and — just as much — the flags that are **not** there.
+    ///
+    /// `--cot` would report a membership change AM silently discards, and a
+    /// `--force` that deleted first would destroy a `cotlist` nothing can read
+    /// back (`docs/api/06-saml.md`). Both are absent on purpose, so a parse
+    /// failure is the assertion.
+    #[test]
+    fn import_parses_its_flags_and_offers_neither_cot_nor_force() {
+        use crate::cli::{Cli, Command};
+
+        let Some(Command::Saml {
+            command:
+                SamlCommand::Import {
+                    file,
+                    realm,
+                    dry_run,
+                    no_sanitise,
+                    yes,
+                    ..
+                },
+        }) = Cli::try_parse_from([
+            "aic",
+            "saml",
+            "import",
+            "peer.xml",
+            "--realm",
+            "bravo",
+            "--dry-run",
+            "--no-sanitise",
+            "--yes",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected saml import");
+        };
+        assert_eq!(file, PathBuf::from("peer.xml"));
+        assert_eq!(realm.as_deref(), Some("bravo"));
+        assert!(dry_run && no_sanitise && yes);
+
+        // Defaults: sanitise on, nothing sent without the operator asking.
+        let Some(Command::Saml {
+            command:
+                SamlCommand::Import {
+                    dry_run,
+                    no_sanitise,
+                    yes,
+                    ..
+                },
+        }) = Cli::try_parse_from(["aic", "saml", "import", "peer.xml"])
+            .unwrap()
+            .command
+        else {
+            panic!("expected saml import");
+        };
+        assert!(!dry_run, "a bare import is a real import");
+        assert!(!no_sanitise, "sanitise is the default");
+        assert!(!yes);
+
+        for refused in [
+            vec!["aic", "saml", "import", "peer.xml", "--cot", "client-b"],
+            vec!["aic", "saml", "import", "peer.xml", "--force"],
+            vec!["aic", "saml", "import", "peer.xml", "--force=operation"],
+        ] {
+            assert!(
+                Cli::try_parse_from(&refused).is_err(),
+                "{refused:?} must not parse"
+            );
+        }
+    }
+
+    /// An import of a file that is not importable never reaches the tenant,
+    /// and the refusal happens before any network call — which is what makes
+    /// this runnable with no daemon at all.
+    ///
+    /// Turns red if the bundle parse moves after `api::list`, or if a
+    /// malformed document stops being a refusal.
+    #[tokio::test]
+    async fn import_refuses_an_unreadable_file_before_it_reaches_the_tenant() {
+        let dir = temp_dir();
+        let truncated = dir.join("truncated.xml");
+        std::fs::write(
+            &truncated,
+            b"<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\"",
+        )
+        .expect("write input");
+
+        let error = run(SamlCommand::Import {
+            file: truncated,
+            realm: Some("bravo".into()),
+            tenant: Some("no-such-tenant".into()),
+            dry_run: true,
+            no_sanitise: false,
+            yes: false,
+        })
+        .await
+        .expect_err("a truncated document is not importable");
+        assert!(
+            error.to_string().contains("SAML metadata error"),
+            "the refusal must name the document, not the tenant: {error}"
+        );
+
+        let missing = dir.join("nothing-here.xml");
+        assert!(
+            run(SamlCommand::Import {
+                file: missing,
+                realm: Some("bravo".into()),
+                tenant: Some("no-such-tenant".into()),
+                dry_run: true,
+                no_sanitise: false,
+                yes: false,
+            })
+            .await
+            .is_err()
+        );
+        std::fs::remove_dir_all(dir).expect("cleanup");
     }
 }
