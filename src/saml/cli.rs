@@ -1,24 +1,38 @@
 //! `aic saml` parser and command implementation.
 //!
-//! Read-only. `metadata inspect|sanitise` are offline file transforms;
-//! `list`/`show` read the `realm-config/saml2` JSON collection; and
-//! `metadata export` fetches standard metadata from a JSP that takes **no
-//! authentication**, so it too works against a locked daemon. Import, create,
-//! delete and cert rotation are later slices.
+//! `metadata inspect|sanitise` are offline file transforms; `list`, `show` and
+//! `cot list|show` read the `realm-config` JSON collections; `create-hosted`
+//! and `delete` write; and `metadata export` fetches standard metadata from a
+//! JSP that takes **no authentication**, so it works against a locked daemon.
+//! Import and cert rotation are later slices.
 //!
 //! [`needs_tenant_auth`] is where that three-way split is recorded, and it is
 //! the one thing a new verb must classify itself in.
+//!
+//! Two behaviours here exist only because AM will not provide them:
+//!
+//! - **`create-hosted` imposes `entityId` and `metaAlias`.** AM requires
+//!   neither — `{}` is a 201 with a UUID name, and a role block without
+//!   `services.metaAlias` is a 500 that names no field. Both checks are in
+//!   [`spec::build_hosted_create`], before any tenant contact.
+//! - **`delete` reads the circle-of-trust collection first, and again
+//!   afterwards.** An entity `DELETE` silently rewrites every CoT that listed
+//!   the entity, and nothing in the delete response says so — so the cascade
+//!   this command reports is a diff of two reads, never a replay of the first.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 
-use crate::Result;
-use crate::cli::{print_json, print_table, realm_arg, tenant_config_for, tenant_for};
+use crate::cli::force::OperationForce;
+use crate::cli::{
+    ensure_prod_confirmed, print_json, print_table, realm_arg, tenant_config_for, tenant_for,
+};
 use crate::saml::api;
 use crate::saml::metadata::{self, SanitiseOpts};
-use crate::saml::spec::{self, ExportOutcome, Located, Location, Role};
+use crate::saml::spec::{self, ExportOutcome, HostedCreate, Located, Location, Role};
+use crate::{Error, Result};
 
 #[derive(Subcommand, Debug)]
 pub enum SamlCommand {
@@ -55,6 +69,73 @@ pub enum SamlCommand {
     Metadata {
         #[command(subcommand)]
         command: MetadataCommand,
+    },
+    /// Circles of trust, as the CoT documents record them.
+    Cot {
+        #[command(subcommand)]
+        command: CotCommand,
+    },
+    /// Create a hosted entity provider with one role.
+    ///
+    /// AM requires neither an entity id nor a metaAlias and fails opaquely
+    /// without the second; both are mandatory here.
+    CreateHosted {
+        /// The entity ID to create. Required: AM would mint a UUID instead.
+        entity_id: String,
+        /// Which role block to create. An entity may later hold both.
+        #[arg(long, value_enum)]
+        role: Role,
+        /// The role's routing key, `/<realm>/<name>`.
+        #[arg(long, value_name = "ALIAS")]
+        meta_alias: String,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete an entity provider — and, with it, its circle-of-trust entries.
+    Delete {
+        /// The entity ID, exactly as the tenant stores it.
+        entity_id: String,
+        /// Skip the lookup and delete from this collection directly.
+        #[arg(long, value_enum)]
+        location: Option<Location>,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Confirm a write to a production-themed tenant.
+        #[arg(long)]
+        yes: bool,
+        #[command(flatten)]
+        force: OperationForce,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CotCommand {
+    /// List the realm's circles of trust.
+    List {
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one circle of trust.
+    Show {
+        /// The CoT name. Plain, not base64url — unlike an entity id.
+        name: String,
+        #[arg(long)]
+        realm: Option<String>,
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -109,7 +190,11 @@ pub enum MetadataCommand {
 /// direction or the other. A new verb must add its own arm here.
 pub fn needs_tenant_auth(command: &SamlCommand) -> bool {
     match command {
-        SamlCommand::List { .. } | SamlCommand::Show { .. } => true,
+        SamlCommand::List { .. }
+        | SamlCommand::Show { .. }
+        | SamlCommand::Cot { .. }
+        | SamlCommand::CreateHosted { .. }
+        | SamlCommand::Delete { .. } => true,
         SamlCommand::Metadata { command } => match command {
             MetadataCommand::Inspect { .. }
             | MetadataCommand::Sanitise { .. }
@@ -135,7 +220,215 @@ pub async fn run(command: SamlCommand) -> Result<()> {
             json,
         } => show(tenant, realm, &entity_id, location, json).await,
         SamlCommand::Metadata { command } => run_metadata(command).await,
+        SamlCommand::Cot { command } => run_cot(command).await,
+        SamlCommand::CreateHosted {
+            entity_id,
+            role,
+            meta_alias,
+            realm,
+            tenant,
+            yes,
+        } => {
+            create_hosted(
+                tenant,
+                realm,
+                HostedCreate {
+                    entity_id,
+                    role,
+                    meta_alias,
+                },
+                yes,
+            )
+            .await
+        }
+        SamlCommand::Delete {
+            entity_id,
+            location,
+            realm,
+            tenant,
+            yes,
+            force,
+        } => delete(tenant, realm, &entity_id, location, yes, force).await,
     }
+}
+
+async fn run_cot(command: CotCommand) -> Result<()> {
+    match command {
+        CotCommand::List {
+            realm,
+            tenant,
+            json,
+        } => cot_list(tenant, realm, json).await,
+        CotCommand::Show {
+            name,
+            realm,
+            tenant,
+            json,
+        } => cot_show(tenant, realm, &name, json).await,
+    }
+}
+
+/// List the realm's circles of trust.
+///
+/// The caveat is part of the **human** rendering and goes to stdout with it,
+/// the way [`spec::cot_show_lines`] ends its block — including when the realm
+/// has none, which is the reading most likely to be taken as proof that
+/// nothing trusts anything. `--json` puts it on stderr instead, so the JSON
+/// stream stays clean for a caller that is parsing it.
+async fn cot_list(
+    tenant_arg: Option<String>,
+    realm_arg_value: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let tenant = tenant_for(tenant_arg)?;
+    let realm = realm_arg("saml", realm_arg_value)?;
+    let documents = api::list_cots(&tenant, &realm).await?;
+
+    if json {
+        eprintln!("{}", spec::COT_MEMBERSHIP_CAVEAT);
+        return print_json(&documents);
+    }
+    let cots = spec::sort_cots(spec::cots(&documents)?);
+    if cots.is_empty() {
+        println!("no circles of trust in realm {realm}");
+    } else {
+        print_table(&spec::COT_LIST_HEADERS, &spec::cot_rows(&cots));
+    }
+    println!();
+    println!("{}", spec::COT_MEMBERSHIP_CAVEAT);
+    Ok(())
+}
+
+async fn cot_show(
+    tenant_arg: Option<String>,
+    realm_arg_value: Option<String>,
+    name: &str,
+    json: bool,
+) -> Result<()> {
+    let tenant = tenant_for(tenant_arg)?;
+    let realm = realm_arg("saml", realm_arg_value)?;
+    let document = api::read_cot(&tenant, &realm, name).await?;
+    if json {
+        eprintln!("{}", spec::COT_MEMBERSHIP_CAVEAT);
+        return print_json(&document);
+    }
+    for line in spec::cot_show_lines(&spec::cot(&document)?) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// Create a hosted entity provider.
+///
+/// The entity-id collision check is a guard, not a measurement: what AM does
+/// with `_action=create` against an id that already exists was never probed,
+/// and the two outcomes it could have — a 500, or a silent replacement of a
+/// configured entity — are both worse than a named refusal here.
+async fn create_hosted(
+    tenant_arg: Option<String>,
+    realm_arg_value: Option<String>,
+    request: HostedCreate,
+    yes: bool,
+) -> Result<()> {
+    let tenant = tenant_for(tenant_arg)?;
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
+    let realm = realm_arg("saml", realm_arg_value)?;
+    let body = spec::build_hosted_create(&realm, &request)?;
+
+    let stubs = api::list(&tenant, &realm).await?;
+    let existing = match spec::locate(&request.entity_id, &stubs) {
+        Located::NotFound => None,
+        Located::In(location) => Some(location.to_string()),
+        Located::Ambiguous(locations) => Some(
+            locations
+                .iter()
+                .map(|location| location.as_str())
+                .collect::<Vec<_>>()
+                .join(" and "),
+        ),
+    };
+    if let Some(where_it_is) = existing {
+        let id = request.entity_id.trim();
+        return Err(Error::Config(format!(
+            "SAML entity provider {id:?} already exists in realm {realm} as \
+             {where_it_is}; `aic saml show {id} --realm {realm}` shows it"
+        )));
+    }
+
+    let created = api::create_hosted(&tenant, &realm, body, ok.confirmed_prod).await?;
+    // The 201 body is a stub, not the created document. `spec::created_lines`
+    // is what keeps the report honest about that: the id is AM's, the role and
+    // the alias are ours, and nothing here was read back.
+    for line in spec::created_lines(
+        created.get("entityId").and_then(serde_json::Value::as_str),
+        &request,
+        &tenant,
+        &realm,
+    ) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// Delete an entity provider, naming the circle-of-trust cascade first.
+///
+/// Without `--force` this performs the two reads and prints nothing but the
+/// cascade, which makes the refusal path the preview — no separate `--dry-run`
+/// flag, and no permission token that a preview could carry by accident.
+async fn delete(
+    tenant_arg: Option<String>,
+    realm_arg_value: Option<String>,
+    entity_id: &str,
+    location: Option<Location>,
+    yes: bool,
+    force: OperationForce,
+) -> Result<()> {
+    let tenant = tenant_for(tenant_arg)?;
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
+    let realm = realm_arg("saml", realm_arg_value)?;
+    let location = match location {
+        Some(location) => location,
+        None => resolve_location(&tenant, &realm, entity_id).await?,
+    };
+
+    let cots = spec::cots(&api::list_cots(&tenant, &realm).await?)?;
+    let affected = spec::cots_naming(entity_id, &cots);
+    for line in spec::cascade_lines(entity_id, &realm, &affected) {
+        eprintln!("{line}");
+    }
+
+    spec::delete_ok(force.operation(), entity_id, location, &tenant, &realm)?;
+
+    api::delete_entity(&tenant, &realm, location, entity_id, ok.confirmed_prod).await?;
+    println!("deleted SAML entity provider {entity_id} ({location}) from {tenant}/{realm}");
+
+    if affected.is_empty() {
+        return Ok(());
+    }
+    // Read the cascade back. AM performs it, we do not, and the delete
+    // response says nothing about it — so printing `affected` here would be
+    // reporting what we expected instead of what happened. A failed re-read
+    // costs the report, never the delete, which has already landed.
+    //
+    // A `?` here would be wrong in the same way: the delete has landed, so a
+    // re-read that fails to fetch *or* to parse costs the report and must not
+    // turn a completed delete into a non-zero exit.
+    match api::list_cots(&tenant, &realm)
+        .await
+        .and_then(|documents| spec::cots(&documents))
+    {
+        Ok(cots) => {
+            let after = spec::cots_naming(entity_id, &cots);
+            for line in spec::cascade_outcome_lines(entity_id, &affected, &after) {
+                println!("{line}");
+            }
+        }
+        Err(error) => eprintln!(
+            "warning: the entity was deleted, but re-reading the circles of trust failed, \
+             so the cascade is unconfirmed: {error}"
+        ),
+    }
+    Ok(())
 }
 
 async fn list(
@@ -554,5 +847,246 @@ mod tests {
         };
         assert_eq!(out.as_deref(), Some(Path::new("out.xml")));
         assert!(keep_signature);
+    }
+    fn saml_command(argv: &[&str]) -> SamlCommand {
+        use crate::cli::{Cli, Command};
+
+        match Cli::try_parse_from(argv)
+            .unwrap_or_else(|error| panic!("{argv:?}: {error}"))
+            .command
+        {
+            Some(Command::Saml { command }) => command,
+            other => panic!("{argv:?} did not parse as a saml command: {other:?}"),
+        }
+    }
+
+    /// The classification that decides whether the root pre-flight unlocks the
+    /// agent. Getting it wrong in one direction demands a credential the
+    /// request never sends; in the other, it sends a tenant write at a locked
+    /// daemon. Every verb is listed, so a new one is a visibly missing row.
+    #[test]
+    fn needs_tenant_auth_follows_what_each_verb_actually_sends() {
+        let cases: [(bool, &[&str]); 9] = [
+            (true, &["aic", "saml", "list"]),
+            (true, &["aic", "saml", "show", "https://sp-a.example.com"]),
+            (true, &["aic", "saml", "cot", "list"]),
+            (true, &["aic", "saml", "cot", "show", "client-b"]),
+            (
+                true,
+                &[
+                    "aic",
+                    "saml",
+                    "create-hosted",
+                    "https://sp-b.example.com",
+                    "--role",
+                    "sp",
+                    "--meta-alias",
+                    "/bravo/client-b-sp",
+                ],
+            ),
+            (
+                true,
+                &[
+                    "aic",
+                    "saml",
+                    "delete",
+                    "https://sp-b.example.com",
+                    "--force",
+                ],
+            ),
+            // The odd one out, and the reason this function is not a constant:
+            // the export JSP takes no authentication at all.
+            (
+                false,
+                &[
+                    "aic",
+                    "saml",
+                    "metadata",
+                    "export",
+                    "https://sp-a.example.com",
+                ],
+            ),
+            (false, &["aic", "saml", "metadata", "inspect", "in.xml"]),
+            (false, &["aic", "saml", "metadata", "sanitise", "in.xml"]),
+        ];
+
+        for (expected, argv) in cases {
+            assert_eq!(needs_tenant_auth(&saml_command(argv)), expected, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn cot_verbs_parse_with_the_plain_name() {
+        let SamlCommand::Cot {
+            command: CotCommand::Show {
+                name, realm, json, ..
+            },
+        } = saml_command(&["aic", "saml", "cot", "show", "client-b", "--realm", "bravo"])
+        else {
+            panic!("expected saml cot show");
+        };
+        assert_eq!(name, "client-b");
+        assert_eq!(realm.as_deref(), Some("bravo"));
+        assert!(!json);
+
+        let SamlCommand::Cot {
+            command: CotCommand::List { json, .. },
+        } = saml_command(&["aic", "saml", "cot", "list", "--json"])
+        else {
+            panic!("expected saml cot list");
+        };
+        assert!(json);
+    }
+
+    /// The two fields AM does not require. `--meta-alias` absent is a parse
+    /// error rather than a 500 from the tenant; `--meta-alias ""` reaches
+    /// `spec::build_hosted_create`, which is the half a parser cannot cover.
+    #[test]
+    fn create_hosted_requires_the_role_and_the_meta_alias() {
+        use crate::cli::Cli;
+
+        let SamlCommand::CreateHosted {
+            entity_id,
+            role,
+            meta_alias,
+            yes,
+            ..
+        } = saml_command(&[
+            "aic",
+            "saml",
+            "create-hosted",
+            "https://sp-b.example.com",
+            "--role",
+            "idp",
+            "--meta-alias",
+            "/bravo/b-idp",
+            "--yes",
+        ])
+        else {
+            panic!("expected saml create-hosted");
+        };
+        assert_eq!(entity_id, "https://sp-b.example.com");
+        assert_eq!(role, Role::Idp);
+        assert_eq!(meta_alias, "/bravo/b-idp");
+        assert!(yes);
+
+        for argv in [
+            // no --meta-alias
+            vec![
+                "aic",
+                "saml",
+                "create-hosted",
+                "https://sp-b.example.com",
+                "--role",
+                "sp",
+            ],
+            // no --role
+            vec![
+                "aic",
+                "saml",
+                "create-hosted",
+                "https://sp-b.example.com",
+                "--meta-alias",
+                "/bravo/x",
+            ],
+            // no entity id
+            vec![
+                "aic",
+                "saml",
+                "create-hosted",
+                "--role",
+                "sp",
+                "--meta-alias",
+                "/bravo/x",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "{argv:?} must not parse"
+            );
+        }
+    }
+
+    /// `delete` declares exactly one guard, so an undeclared one is a parse
+    /// error rather than a flag that is silently ignored.
+    #[test]
+    fn delete_declares_only_the_operation_guard() {
+        use crate::cli::Cli;
+
+        for (argv, forced) in [
+            (
+                vec!["aic", "saml", "delete", "https://sp-b.example.com"],
+                false,
+            ),
+            (
+                vec![
+                    "aic",
+                    "saml",
+                    "delete",
+                    "https://sp-b.example.com",
+                    "--force",
+                ],
+                true,
+            ),
+            (
+                vec![
+                    "aic",
+                    "saml",
+                    "delete",
+                    "https://sp-b.example.com",
+                    "--force=operation",
+                ],
+                true,
+            ),
+        ] {
+            let SamlCommand::Delete { force, .. } = saml_command(&argv) else {
+                panic!("expected saml delete");
+            };
+            assert_eq!(force.operation(), forced, "{argv:?}");
+        }
+
+        for guard in ["backup", "syntax-check", "nonsense"] {
+            assert!(
+                Cli::try_parse_from([
+                    "aic",
+                    "saml",
+                    "delete",
+                    "https://sp-b.example.com",
+                    &format!("--force={guard}"),
+                ])
+                .is_err(),
+                "--force={guard} is not a guard this command supports"
+            );
+        }
+    }
+
+    #[test]
+    fn delete_takes_an_explicit_location_and_infers_it_otherwise() {
+        let SamlCommand::Delete { location, .. } = saml_command(&[
+            "aic",
+            "saml",
+            "delete",
+            "https://sp-b.example.com",
+            "--force",
+        ]) else {
+            panic!("expected saml delete");
+        };
+        assert_eq!(
+            location, None,
+            "omitting --location is what asks for a lookup"
+        );
+
+        let SamlCommand::Delete { location, .. } = saml_command(&[
+            "aic",
+            "saml",
+            "delete",
+            "https://sp-b.example.com",
+            "--location",
+            "remote",
+            "--force",
+        ]) else {
+            panic!("expected saml delete");
+        };
+        assert_eq!(location, Some(Location::Remote));
     }
 }
