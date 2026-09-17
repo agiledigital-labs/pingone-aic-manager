@@ -15,9 +15,10 @@
 //!   neither — `{}` is a 201 with a UUID name, and a role block without
 //!   `services.metaAlias` is a 500 that names no field. Both checks are in
 //!   [`spec::build_hosted_create`], before any tenant contact.
-//! - **`delete` reads the circle-of-trust collection first.** An entity
-//!   `DELETE` silently rewrites every CoT that listed the entity, and nothing
-//!   in the delete response says so.
+//! - **`delete` reads the circle-of-trust collection first, and again
+//!   afterwards.** An entity `DELETE` silently rewrites every CoT that listed
+//!   the entity, and nothing in the delete response says so — so the cascade
+//!   this command reports is a diff of two reads, never a replay of the first.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -408,9 +409,16 @@ async fn delete(
     // response says nothing about it — so printing `affected` here would be
     // reporting what we expected instead of what happened. A failed re-read
     // costs the report, never the delete, which has already landed.
-    match api::list_cots(&tenant, &realm).await {
-        Ok(documents) => {
-            let after = spec::cots_naming(entity_id, &spec::cots(&documents)?);
+    //
+    // A `?` here would be wrong in the same way: the delete has landed, so a
+    // re-read that fails to fetch *or* to parse costs the report and must not
+    // turn a completed delete into a non-zero exit.
+    match api::list_cots(&tenant, &realm)
+        .await
+        .and_then(|documents| spec::cots(&documents))
+    {
+        Ok(cots) => {
+            let after = spec::cots_naming(entity_id, &cots);
             for line in spec::cascade_outcome_lines(entity_id, &affected, &after) {
                 println!("{line}");
             }
