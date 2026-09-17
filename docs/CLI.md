@@ -1145,9 +1145,8 @@ intermediate state retains a working key.
 
 ## `aic saml` — SAML 2.0 entity providers and metadata
 
-Realm-scoped, CLI-only (no TUI tab). Two verbs write: `create-hosted` and
-`delete`. There is no `import` and no circle-of-trust write verb — both are
-later slices.
+Realm-scoped, CLI-only (no TUI tab). Three verbs write: `create-hosted`,
+`import` and `delete`. There is no circle-of-trust write verb — a later slice.
 
 ```bash
 aic saml list [--location hosted|remote] [--role idp|sp] [--realm alpha] [--json]
@@ -1156,6 +1155,7 @@ aic saml cot list [--realm alpha] [--json]
 aic saml cot show <NAME> [--realm alpha] [--json]
 aic saml create-hosted <ENTITY-ID> --role idp|sp \
   --meta-alias /<realm>/<name> [--realm alpha] [--yes]
+aic saml import <FILE> [--realm alpha] [--dry-run] [--no-sanitise] [--yes]
 aic saml delete <ENTITY-ID> [--location hosted|remote] \
   [--realm alpha] --force [--yes]
 aic saml metadata export <ENTITY-ID> [--realm alpha] [--out PATH]
@@ -1248,6 +1248,77 @@ back different from the one requested — the UUID-minting behaviour this comman
 exists to prevent — is a warning, not a silent substitution, and so is a 201
 that carries no `entityId` at all.
 
+### `import`
+
+`POST …/realm-config/saml2/remote/?_action=importEntity` with the file
+base64url-encoded into `standardMetadata`. Remote entities only: the same
+action on `/hosted` is a **501**, and `?_action=create` on `/remote` is a 400
+— import is the only way a remote entity arrives (`docs/api/06-saml.md`).
+
+**The URL-safe alphabet is mandatory.** The identical bytes in standard
+base64 answer `400 Invalid standard metadata value in request` — the same
+message as sending `{}` or raw XML — so nothing in the response distinguishes
+a wrong alphabet from an empty body from unparseable metadata. Padding is
+irrelevant. The encoding therefore happens locally and is asserted locally.
+
+**One file is not one entity.** An `EntitiesDescriptor` aggregate imports
+every entity it contains in this one call and returns all their ids, so the
+command parses the file into a bundle of *n* entities and preflights, sends
+and reports on all of them. That is also the one place the offline metadata
+tools are narrower: `metadata inspect` and `metadata sanitise` take a single
+`EntityDescriptor`, because a metadata **export** is never an aggregate and
+widening the import path must not widen the classifier that decides whether
+an HTTP-200 body is metadata at all. `import --dry-run` is how an aggregate
+gets inspected.
+
+**Any pre-existing entity id refuses the whole operation**, including the
+entities that would have been created — an aggregate is one call, so there is
+no partial send to offer. `?_action=importEntity` is **create-only**: a
+re-import of an existing entity is a `500`, there is no upsert, and there is
+deliberately **no `--force`** that deletes and re-imports. The delete would
+cascade through every circle of trust that listed the entity, and the
+`cotlist` in extended metadata — the half of CoT membership the runtime
+actually reads — is not exposed by REST, so nothing could tell an operator
+what the "recovery" destroyed. Remove an entity deliberately with
+`aic saml delete` if that is what is meant.
+
+There is **no `--cot`**. `{"standardMetadata": …, "cot": "<name>"}` returns
+200 and leaves the named circle of trust unchanged, and a `cot` naming one
+that does not exist is *also* a 200 that creates nothing — unknown body
+fields are discarded. A flag here would report a membership change that never
+happened.
+
+The file is **sanitised by default**: SAML `RoleDescriptor`s whose `xsi:type`
+resolves to a WS-Federation type are stripped, which is what Entra's
+`federationmetadata.xml` needs before AM will take it. Removing a role
+changes bytes the document's enveloped signature covers, so the signature
+goes with it — the plan says that in as many words rather than dropping it
+quietly. `--no-sanitise` sends the file verbatim.
+
+`--dry-run` prints the plan — every parsed entity id with the roles it
+publishes, the removal report, the preflight result, and the exact bytes that
+would be sent by length and SHA-256 — and sends nothing. It stops by holding
+no permission token rather than by returning in front of the write: the token
+is minted only by the preflight, and the call requires one, so the preview
+path cannot reach it.
+
+Afterwards the command reports **only what AM said**. `importedEntities` is
+compared as an exact **set** against the ids parsed from the file — a
+matching count is not a match — and any id missing from one side or the other
+is a warning naming that id. A failed import is followed by a fresh list of
+the realm, reported per declared id, because a failed aggregate import is not
+a rollback and AM says nothing about how far it got.
+
+Every run ends on the same sentence: **circle-of-trust membership was not
+verified, and could not have been.** `importEntity` rewrites extended
+metadata, which is where `cotlist` lives, and REST exposes it neither before
+nor after. A post-import tick here would be exactly the state
+`docs/api/06-saml.md` warns about — a federation that no longer
+authenticates, with REST showing a perfectly healthy configuration.
+
+`--yes` is the separate production-tenant confirmation, and it is read after
+the preflight so that `--dry-run` can preview a production tenant without it.
+
 ### `delete`
 
 **An entity `DELETE` silently rewrites every circle of trust that listed the
@@ -1317,8 +1388,9 @@ is now stale.
 
 Both refuse a document they cannot fully read rather than passing it through —
 the same boundary `metadata export` classifies against, so the two cannot
-disagree. One root `EntityDescriptor` and no more; a namespace binding for
-every prefix on every element _and attribute_; nothing but comments,
+disagree. One root `EntityDescriptor` and no more (`import` is the one entry
+point that also takes an `EntitiesDescriptor` aggregate); a namespace binding
+for every prefix on every element _and attribute_; nothing but comments,
 processing instructions and whitespace outside the root; no entity reference
 whose replacement text we would have to guess; and the XML 1.0 productions a
 tokeniser walks past — legal element and attribute names, one `DOCTYPE`, an
@@ -1335,9 +1407,9 @@ only a *direct child* of `EntityDescriptor` is a role this entity publishes, so
 an `<Extensions>` container holding something shaped like a WS-Federation role
 is neither stripped nor counted.
 
-There is no `import` yet, and no circle-of-trust **write** verb: a CoT `PUT`
-drives the entity-side membership too and can return 500 having already written
-the document, so the command that does it has to re-read and re-check
+There is no circle-of-trust **write** verb: a CoT `PUT` drives the
+entity-side membership too and can return 500 having already written the
+document, so the command that does it has to re-read and re-check
 (`docs/api/06-saml.md`).
 
 ---
