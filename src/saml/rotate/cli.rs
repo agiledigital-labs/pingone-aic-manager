@@ -24,7 +24,8 @@ use clap::Subcommand;
 
 use crate::cli::force::OperationForce;
 use crate::cli::{
-    confirm_destructive, ensure_prod_confirmed, print_json, realm_arg, tenant_config_for,
+    confirm_destructive, ensure_prod_confirmed, print_json, prompt_available, realm_arg,
+    tenant_config_for,
 };
 use crate::saml::rotate::journal::{self, Key, StagedRecord};
 use crate::saml::rotate::ops::{self, Settlement};
@@ -246,8 +247,19 @@ pub async fn run(command: RotateCommand) -> Result<()> {
 /// Every verb here reads the tenant, so every verb needs an unlocked agent —
 /// even `status`, which writes nothing. The metadata export inside it is
 /// unauthenticated, but the entity, mapping and ESV secret reads are not.
-pub fn needs_tenant_auth(_command: &RotateCommand) -> bool {
-    true
+///
+/// **Exhaustive, not a wildcard**, matching [`crate::saml::cli::needs_tenant_auth`]:
+/// the answer is uniform today because all four verbs correlate authenticated
+/// reads, and a verb that stopped doing so — a purely offline plan printer,
+/// say — should have to say so here rather than inherit an unlock it does not
+/// need.
+pub fn needs_tenant_auth(command: &RotateCommand) -> bool {
+    match command {
+        RotateCommand::Status { .. }
+        | RotateCommand::Init { .. }
+        | RotateCommand::Stage { .. }
+        | RotateCommand::Complete { .. } => true,
+    }
 }
 
 async fn status(
@@ -516,15 +528,23 @@ async fn complete(
         }
         Decision::Send(permit) => permit,
     };
+    // The prompt is attempted only where there is a terminal to attempt it
+    // on, so the refusal on a headless run comes from `spec::complete_ok` —
+    // which names the version, the secret and the consequence — rather than
+    // from `confirm_destructive`'s generic "pass --force". `prompt_available`
+    // is the right test and `prompting_disabled` is not: `--no-prompt` is one
+    // of four reasons a prompt cannot be answered, and a pipe is the common
+    // one.
     let confirmed = force.operation()
-        || confirm_destructive(
-            "closing a SAML certificate rollover",
-            &format!(
-                "Disable version {} of {} and stop publishing the other certificate?",
-                plan.disable_version, plan.secret_id
-            ),
-            "--force",
-        )?;
+        || (prompt_available()
+            && confirm_destructive(
+                "closing a SAML certificate rollover",
+                &format!(
+                    "Disable version {} of {} and stop publishing the other certificate?",
+                    plan.disable_version, plan.secret_id
+                ),
+                "--force",
+            )?);
     spec::complete_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 

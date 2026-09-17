@@ -623,6 +623,25 @@ mod tests {
         );
     }
 
+    /// Red when `validate_key_pair` builds `value` by re-armouring its two
+    /// decoded blocks instead of keeping the text it was handed.
+    #[test]
+    fn the_validated_value_is_the_bytes_that_were_handed_in_verbatim() {
+        // `value` is what gets base64'd into the ESV secret version, so it
+        // has to be the document that was checked — not a reconstruction of
+        // it, which would be a value nothing validated. Anything outside the
+        // two blocks (a `openssl`-style plaintext header, a trailing comment)
+        // rides along, which is correct: the tenant stores the value as bytes
+        // and AM parses the blocks out of it.
+        let decorated = format!(
+            "# rotation key for sp-a, 2026-09-17\n{}\n{}trailing\n",
+            armour(PKCS8_LABEL, &pkcs8(MODULUS, EXPONENT)),
+            armour(CERTIFICATE_LABEL, &certificate(MODULUS, EXPONENT))
+        );
+        let pair = validate_key_pair(decorated.as_bytes()).expect("a matching pair");
+        assert_eq!(pair.value, decorated);
+    }
+
     #[test]
     fn a_matching_pkcs1_pair_validates() {
         let value = format!(

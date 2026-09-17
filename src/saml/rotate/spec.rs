@@ -252,6 +252,14 @@ fn kind_of(value: &Value) -> &'static str {
 /// Returns the paths that differ, so a write AM quietly reshaped is reported
 /// as *what* it lost rather than as "mismatch". `_rev` is excluded because it
 /// is content-derived and our content changed on purpose.
+///
+/// A difference is reported at the **highest path where the two documents
+/// stop both being objects**, not at every leaf below it. That is what makes
+/// the report readable in the case it exists for: `{"entityId": "<same>"}`
+/// answers 200 and deletes the whole role block, and the useful sentence is
+/// `/serviceProvider` rather than the forty leaves inside it. A leaf dropped
+/// from a block that survived is still named as that leaf, because both sides
+/// are objects the whole way down to it.
 pub fn entity_write_differences(intended: &Value, after: &Value) -> Vec<String> {
     let mut differences = Vec::new();
     diff_into(
@@ -1171,4 +1179,881 @@ pub fn plan_init(
         map_label: label_mapping.is_none(),
         certificate: key.map(|key| key.sha256.clone()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------
+    // Fixtures. Every state here is built from the shape the tenant
+    // actually returns, because the defects this module exists to catch
+    // are all *agreement between documents* — a count that is right for
+    // the wrong set, a role attribution that is right for the wrong role.
+    // A fixture that flattened them into one struct would test nothing.
+    // -----------------------------------------------------------------
+
+    const OLD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const NEW: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const STRANGER: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+    fn cert(descriptor: &str, key_use: Option<&str>, sha: &str) -> CertRef {
+        CertRef {
+            descriptor: descriptor.to_string(),
+            key_use: key_use.map(str::to_string),
+            key_name: None,
+            sha256: sha.to_string(),
+        }
+    }
+
+    fn version(number: &str, status: &str) -> SecretVersion {
+        SecretVersion {
+            version: number.to_string(),
+            status: status.to_string(),
+            create_date: "2026-09-17T00:00:00Z".to_string(),
+        }
+    }
+
+    fn facts() -> SecretFacts {
+        SecretFacts {
+            id: "esv-sp-a-signing".to_string(),
+            encoding: "pem".to_string(),
+            use_in_placeholders: false,
+            loaded: true,
+            active_version: "1".to_string(),
+            loaded_version: "1".to_string(),
+        }
+    }
+
+    fn record(version: &str, sha: &str) -> StagedRecord {
+        StagedRecord {
+            tenant: "sandbox".into(),
+            realm: "alpha".into(),
+            entity_id: "https://sp-a.example.com".into(),
+            role: Role::Sp.wire().into(),
+            identifier: "sp-a".into(),
+            secret_id: "esv-sp-a-signing".into(),
+            version: version.into(),
+            sha256: sha.into(),
+            staged_at: "2026-09-17T00:00:00Z".into(),
+        }
+    }
+
+    fn state() -> RotationState {
+        RotationState {
+            tenant: "sandbox".into(),
+            realm: "alpha".into(),
+            entity_id: "https://sp-a.example.com".into(),
+            location: Location::Remote,
+            role: Role::Sp,
+            identifier: Some("sp-a".into()),
+            mapped_alias: Some("esv-sp-a-signing".into()),
+            secret: Some(facts()),
+            versions: vec![version("1", "ENABLED")],
+            certs: vec![cert("SPSSODescriptor", Some("signing"), OLD)],
+            record: None,
+        }
+    }
+
+    /// The steady state, one step further on: two ENABLED versions and the
+    /// two certificates they publish.
+    fn staged() -> RotationState {
+        RotationState {
+            versions: vec![version("1", "ENABLED"), version("2", "ENABLED")],
+            certs: vec![
+                cert("SPSSODescriptor", Some("signing"), OLD),
+                cert("SPSSODescriptor", Some("signing"), NEW),
+            ],
+            record: Some(record("2", NEW)),
+            ..state()
+        }
+    }
+
+    fn pair(sha: &str) -> KeyPair {
+        KeyPair {
+            value: "-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----\n".into(),
+            certificate_der: vec![0x30, 0x00],
+            sha256: sha.to_string(),
+        }
+    }
+
+    fn shas<'a>(values: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
+        values.into_iter().map(str::to_string).collect()
+    }
+
+    fn message(error: Error) -> String {
+        match error {
+            Error::Config(text) => text,
+            other => panic!("expected a Config error, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Role scoping. The case the whole `descriptor` field exists for.
+    // -----------------------------------------------------------------
+
+    /// Red when `published()` drops `cert.descriptor == descriptor` and
+    /// filters on `use` alone.
+    #[test]
+    fn a_dual_role_entity_publishes_signing_from_both_roles_and_they_are_not_interchangeable() {
+        // Both roles sign, neither carries a <ds:KeyName> — AM emits none —
+        // so `use` plus fingerprint names two different keys identically.
+        // Whole-document counting reports two certificates for a role that
+        // has one, which reads as a staged rollover that was never staged.
+        let both = RotationState {
+            certs: vec![
+                cert("IDPSSODescriptor", Some("signing"), OLD),
+                cert("SPSSODescriptor", Some("signing"), NEW),
+                cert("SPSSODescriptor", Some("encryption"), STRANGER),
+            ],
+            ..state()
+        };
+        assert!(both.certs.iter().all(|cert| cert.key_name.is_none()));
+
+        let sp = RotationState {
+            role: Role::Sp,
+            ..both.clone()
+        };
+        assert_eq!(sp.published_fingerprints(), shas([NEW]));
+        assert_eq!(phase(&sp), Phase::Settled);
+
+        let idp = RotationState {
+            role: Role::Idp,
+            ..both
+        };
+        assert_eq!(idp.published_fingerprints(), shas([OLD]));
+        assert_eq!(phase(&idp), Phase::Settled);
+    }
+
+    /// Red when `choose_role`'s `(_, None)` arm defaults instead of refusing.
+    #[test]
+    fn choosing_a_role_is_refused_on_a_dual_role_entity_and_settled_on_a_single_role_one() {
+        let dual = json!({
+            "identityProvider": { "assertionContent": {} },
+            "serviceProvider": { "assertionContent": {} },
+        });
+        let sp_only = json!({ "serviceProvider": { "assertionContent": {} } });
+        let roleless = json!({ "entityId": "https://sp-a.example.com" });
+
+        assert!(message(choose_role(&dual, None).unwrap_err()).contains("--role idp or --role sp"));
+        assert_eq!(choose_role(&dual, Some(Role::Idp)).unwrap(), Role::Idp);
+        assert_eq!(choose_role(&dual, Some(Role::Sp)).unwrap(), Role::Sp);
+
+        assert_eq!(choose_role(&sp_only, None).unwrap(), Role::Sp);
+        assert_eq!(choose_role(&sp_only, Some(Role::Sp)).unwrap(), Role::Sp);
+        assert!(
+            message(choose_role(&sp_only, Some(Role::Idp)).unwrap_err())
+                .contains("holds no identityProvider block")
+        );
+
+        assert!(message(choose_role(&roleless, None).unwrap_err()).contains("no role blocks"));
+    }
+
+    // -----------------------------------------------------------------
+    // Sets, not counts.
+    // -----------------------------------------------------------------
+
+    /// Red when `settled_on` compares `published.len() == expected.len()`.
+    #[test]
+    fn a_wrong_fingerprint_set_of_the_right_size_is_not_settled() {
+        // This is the shape a `complete` that disabled the *new* version
+        // leaves behind: exactly one certificate published, and it is the
+        // one the rollover existed to replace. A count check calls it done.
+        assert!(!settled_on(&shas([OLD]), &shas([NEW])));
+        assert_eq!(
+            settlement_gap(&shas([OLD]), &shas([NEW])),
+            (vec![NEW.to_string()], vec![OLD.to_string()])
+        );
+
+        // And the same at two: the peer's certificate arrived, ours did not.
+        assert!(!settled_on(&shas([OLD, STRANGER]), &shas([OLD, NEW])));
+        assert_eq!(
+            settlement_gap(&shas([OLD, STRANGER]), &shas([OLD, NEW])),
+            (vec![NEW.to_string()], vec![STRANGER.to_string()])
+        );
+
+        assert!(settled_on(&shas([OLD, NEW]), &shas([NEW, OLD])));
+        assert_eq!(
+            settlement_gap(&shas([OLD, NEW]), &shas([OLD, NEW])),
+            (Vec::new(), Vec::new())
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Phases.
+    // -----------------------------------------------------------------
+
+    /// Red when `unusable_reason` stops checking `use_in_placeholders`, or
+    /// stops checking `encoding`.
+    #[test]
+    fn a_secret_that_cannot_back_a_restart_free_rotation_is_unusable_not_settled() {
+        // `useInPlaceholders: true` reads `loaded: false` on every new
+        // version until a tenant restart, so the rollover this command
+        // reports — add a version, see two certificates — does not happen.
+        // Both properties are fixed at create, so the remedy is a new
+        // secret, and saying "unusable" beats staging into a silence.
+        let placeholders = RotationState {
+            secret: Some(SecretFacts {
+                use_in_placeholders: true,
+                loaded: false,
+                loaded_version: String::new(),
+                ..facts()
+            }),
+            ..state()
+        };
+        let Phase::Unusable { reason } = phase(&placeholders) else {
+            panic!(
+                "placeholders-on must be unusable, got {:?}",
+                phase(&placeholders)
+            );
+        };
+        assert!(reason.contains("useInPlaceholders"), "{reason}");
+        assert!(reason.contains("--no-placeholders"), "{reason}");
+        assert!(
+            message(plan_stage(&placeholders, &pair(NEW)).unwrap_err()).contains("cannot stage"),
+        );
+
+        let generic = RotationState {
+            secret: Some(SecretFacts {
+                encoding: "generic".into(),
+                ..facts()
+            }),
+            ..state()
+        };
+        let Phase::Unusable { reason } = phase(&generic) else {
+            panic!("a non-pem secret must be unusable");
+        };
+        assert!(reason.contains("not `pem`"), "{reason}");
+    }
+
+    /// Red when any arm of `phase` is reordered past another — the four
+    /// setup phases are a chain, and each has a different remedy.
+    #[test]
+    fn the_phase_of_a_state_is_the_first_thing_missing_from_it() {
+        let cases: Vec<(&str, RotationState, Phase)> = vec![
+            (
+                "no identifier at all",
+                RotationState {
+                    identifier: None,
+                    mapped_alias: None,
+                    secret: None,
+                    versions: Vec::new(),
+                    ..state()
+                },
+                Phase::Unconfigured,
+            ),
+            (
+                "an identifier whose label nothing maps",
+                RotationState {
+                    mapped_alias: None,
+                    secret: None,
+                    versions: Vec::new(),
+                    ..state()
+                },
+                Phase::Unmapped,
+            ),
+            (
+                "a mapping pointing at a secret that is not there",
+                RotationState {
+                    secret: None,
+                    versions: Vec::new(),
+                    ..state()
+                },
+                Phase::Dangling {
+                    alias: "esv-sp-a-signing".into(),
+                },
+            ),
+            ("one version, one certificate", state(), Phase::Settled),
+            ("two versions, two certificates", staged(), Phase::Staged),
+        ];
+        for (what, state, expected) in cases {
+            assert_eq!(phase(&state), expected, "{what}");
+        }
+    }
+
+    /// Red when `phase`'s `(enabled, published)` match gains a `_ => Settled`
+    /// arm, or when `enabled_versions` counts DISABLED ones.
+    #[test]
+    fn versions_and_certificates_that_disagree_are_inconsistent_rather_than_guessed_at() {
+        // A DISABLED version publishes nothing, so two versions and one
+        // certificate is the *normal* post-complete state, not a fault.
+        let completed = RotationState {
+            versions: vec![version("1", "DISABLED"), version("2", "ENABLED")],
+            ..state()
+        };
+        assert_eq!(phase(&completed), Phase::Settled);
+
+        // Two ENABLED versions but one published certificate: the export has
+        // not caught up, or something else resolves this label. Either way
+        // `stage` and `complete` both refuse.
+        let lagging = RotationState {
+            versions: vec![version("1", "ENABLED"), version("2", "ENABLED")],
+            ..state()
+        };
+        let Phase::Inconsistent { detail } = phase(&lagging) else {
+            panic!("2 enabled / 1 published must be inconsistent");
+        };
+        assert!(detail.contains("propagated"), "{detail}");
+        assert!(message(plan_stage(&lagging, &pair(NEW)).unwrap_err()).contains("cannot stage"));
+        assert!(
+            message(plan_complete(&lagging, Some(OLD)).unwrap_err()).contains("cannot complete")
+        );
+
+        // Equal but wrong: three of each is not a rollover.
+        let three = RotationState {
+            versions: vec![
+                version("1", "ENABLED"),
+                version("2", "ENABLED"),
+                version("3", "ENABLED"),
+            ],
+            certs: vec![
+                cert("SPSSODescriptor", Some("signing"), OLD),
+                cert("SPSSODescriptor", Some("signing"), NEW),
+                cert("SPSSODescriptor", Some("signing"), STRANGER),
+            ],
+            ..state()
+        };
+        let Phase::Inconsistent { detail } = phase(&three) else {
+            panic!("3 and 3 is not a rollover");
+        };
+        assert!(detail.contains("a rollover is two"), "{detail}");
+    }
+
+    // -----------------------------------------------------------------
+    // stage
+    // -----------------------------------------------------------------
+
+    /// Red when `plan_stage` stops checking `published.contains(&incoming)`,
+    /// or when `expected` is built from the incoming certificate alone.
+    #[test]
+    fn staging_adds_a_certificate_and_refuses_to_add_the_one_already_there() {
+        let plan = plan_stage(&state(), &pair(NEW)).unwrap();
+        assert_eq!(plan.secret_id, "esv-sp-a-signing");
+        assert_eq!(plan.retained, OLD);
+        assert_eq!(plan.incoming, NEW);
+        // Both, not just the new one: the whole point of the window is that
+        // the certificate already in service keeps working.
+        assert_eq!(plan.expected, shas([OLD, NEW]));
+
+        let same = message(plan_stage(&state(), &pair(OLD)).unwrap_err());
+        assert!(same.contains("rotates nothing"), "{same}");
+
+        let again = message(plan_stage(&staged(), &pair(STRANGER)).unwrap_err());
+        assert!(again.contains("already staged"), "{again}");
+        assert!(again.contains("rotate complete"), "{again}");
+    }
+
+    // -----------------------------------------------------------------
+    // complete
+    // -----------------------------------------------------------------
+
+    /// Red when `plan_complete` takes `enabled.last()` instead of `.first()`,
+    /// and red when `SecretVersion::number` parses nothing and the sort falls
+    /// back to string order.
+    #[test]
+    fn completing_disables_the_oldest_enabled_version_not_the_latest() {
+        // AIC answers `400 Cannot disable latest secret version`, so the
+        // version to disable is the oldest ENABLED one — and "oldest" is
+        // numeric: version 9 is older than version 10, which a string
+        // comparison reverses.
+        let wide = RotationState {
+            versions: vec![version("9", "ENABLED"), version("10", "ENABLED")],
+            record: Some(record("10", NEW)),
+            ..staged()
+        };
+        let plan = plan_complete(&wide, None).unwrap();
+        assert_eq!(plan.disable_version, "9");
+        assert_eq!(plan.retain, NEW);
+        assert_eq!(plan.expected_drop.as_deref(), Some(OLD));
+    }
+
+    /// Red when `plan_complete`'s `None` arm falls back to "the newest
+    /// published certificate" instead of refusing.
+    #[test]
+    fn completing_without_a_local_record_demands_the_fingerprint_rather_than_inferring_it() {
+        let stranger = RotationState {
+            record: None,
+            ..staged()
+        };
+        let refusal = message(plan_complete(&stranger, None).unwrap_err());
+        assert!(refusal.contains("--retain <sha256>"), "{refusal}");
+        assert!(refusal.contains("write-only"), "{refusal}");
+
+        // Supplied explicitly, it plans — and says nothing about which
+        // certificate will drop, because by elimination is not knowledge.
+        let plan = plan_complete(&stranger, Some(NEW)).unwrap();
+        assert_eq!(plan.retain, NEW);
+        assert_eq!(plan.expected_drop, None);
+
+        // Case-insensitively, since a fingerprint gets pasted from openssl.
+        assert_eq!(
+            plan_complete(&stranger, Some(&NEW.to_uppercase()))
+                .unwrap()
+                .retain,
+            NEW
+        );
+
+        // A fingerprint this role does not publish is refused, not disabled
+        // hopefully: the two certificates are the only ones in play.
+        let wrong = message(plan_complete(&stranger, Some(STRANGER)).unwrap_err());
+        assert!(wrong.contains("is not one of the 2"), "{wrong}");
+    }
+
+    /// Red when the "retaining the version we are about to disable" guard is
+    /// dropped from `plan_complete`.
+    #[test]
+    fn completing_refuses_to_keep_the_certificate_it_is_about_to_stop_publishing() {
+        // The inverted rollover: this install staged the NEW certificate as
+        // version 1 — because version 2 was already there — so the oldest
+        // ENABLED version holds the certificate the operator wants to keep.
+        // Disabling it retires the new key and leaves the old one in
+        // service, which is the one failure the whole verb exists to avoid.
+        let inverted = RotationState {
+            record: Some(record("1", NEW)),
+            ..staged()
+        };
+        let refusal = message(plan_complete(&inverted, None).unwrap_err());
+        assert!(refusal.contains("retire the new certificate"), "{refusal}");
+
+        // Same refusal when --retain says it explicitly.
+        assert!(
+            message(plan_complete(&inverted, Some(NEW)).unwrap_err())
+                .contains("retire the new certificate")
+        );
+    }
+
+    /// Red when `complete_ok` returns `Ok(())` regardless of `forced`.
+    #[test]
+    fn closing_the_window_is_refused_until_it_is_confirmed() {
+        let state = staged();
+        let plan = plan_complete(&state, None).unwrap();
+        assert!(complete_ok(true, &plan, &state).is_ok());
+        let refusal = message(complete_ok(false, &plan, &state).unwrap_err());
+        assert!(refusal.contains("would disable version 1"), "{refusal}");
+        assert!(refusal.contains("start rejecting signatures"), "{refusal}");
+        assert!(refusal.contains("--force"), "{refusal}");
+    }
+
+    // -----------------------------------------------------------------
+    // dry run
+    // -----------------------------------------------------------------
+
+    /// Red when any `authorize_*` mints its permit for `dry_run == true`.
+    ///
+    /// The compile-time half of this rule cannot be asserted from a test —
+    /// that a preview holds no permit is what the type checker enforces, and
+    /// `ops`' writers take a `&Permit` they cannot be called without. What a
+    /// test can pin is the other half: that the authorizing function is the
+    /// one thing deciding, and that it says no.
+    #[test]
+    fn a_dry_run_is_handed_no_permit_by_any_of_the_three_authorizers() {
+        assert!(matches!(authorize_init(true), Decision::Preview));
+        assert!(matches!(authorize_stage(true), Decision::Preview));
+        assert!(matches!(authorize_complete(true), Decision::Preview));
+        assert!(matches!(authorize_init(false), Decision::Send(_)));
+        assert!(matches!(authorize_stage(false), Decision::Send(_)));
+        assert!(matches!(authorize_complete(false), Decision::Send(_)));
+    }
+
+    // -----------------------------------------------------------------
+    // The entity write.
+    // -----------------------------------------------------------------
+
+    /// Red when `set_secret_identifier` builds a document instead of cloning
+    /// the one it was given, and red when it writes the hosted path into a
+    /// remote entity.
+    #[test]
+    fn setting_the_identifier_changes_one_leaf_of_the_document_it_was_given() {
+        // An entity `PUT` is a full replace with no `If-Match`, so every
+        // byte not being changed has to survive verbatim — including the
+        // keys this code has never heard of.
+        let before = json!({
+            "entityId": "https://sp-a.example.com",
+            "_rev": "17",
+            "serviceProvider": {
+                "assertionContent": {
+                    "secrets": {},
+                    // A live entity carries the groups as `{}` rather than as
+                    // values, which is why the writer creates only what is
+                    // missing.
+                    "signingAndEncryption": { "secretIdAndAlgorithms": {}, "other": 1 },
+                },
+                "services": { "metaAlias": "/alpha/sp-a" },
+                "somethingNobodyHereKnowsAbout": [1, 2, 3],
+            },
+            "identityProvider": { "assertionContent": { "secrets": {} } },
+        });
+
+        let remote = set_secret_identifier(&before, Location::Remote, Role::Sp, "sp-a").unwrap();
+        assert_eq!(
+            remote.pointer("/serviceProvider/assertionContent/secrets/secretIdIdentifier"),
+            Some(&json!("sp-a"))
+        );
+        assert_eq!(
+            entity_write_differences(&before, &remote),
+            vec!["/serviceProvider/assertionContent/secrets/secretIdIdentifier"]
+        );
+        // The other role is untouched: a dual-role entity rotates one at a time.
+        assert_eq!(remote["identityProvider"], before["identityProvider"]);
+
+        // Hosted keeps the same string in a different group, and a writer
+        // has to pick — a reader may take either.
+        let hosted = set_secret_identifier(&before, Location::Hosted, Role::Sp, "sp-a").unwrap();
+        assert_eq!(
+            entity_write_differences(&before, &hosted),
+            vec![
+                "/serviceProvider/assertionContent/signingAndEncryption/secretIdAndAlgorithms/secretIdIdentifier"
+            ]
+        );
+        assert_eq!(
+            current_identifier(&hosted, Role::Sp).as_deref(),
+            Some("sp-a")
+        );
+        assert_eq!(
+            current_identifier(&remote, Role::Sp).as_deref(),
+            Some("sp-a")
+        );
+        assert_eq!(current_identifier(&before, Role::Sp), None);
+        assert_eq!(current_identifier(&remote, Role::Idp), None);
+
+        // Missing groups are created; a non-group in the way is refused
+        // rather than overwritten.
+        let bare = json!({ "serviceProvider": {} });
+        let filled = set_secret_identifier(&bare, Location::Remote, Role::Sp, "sp-a").unwrap();
+        assert_eq!(
+            current_identifier(&filled, Role::Sp).as_deref(),
+            Some("sp-a")
+        );
+        // A group that had to be created is reported at the group, because
+        // that is the highest path where the two documents stop agreeing.
+        assert_eq!(
+            entity_write_differences(&bare, &filled),
+            vec!["/serviceProvider/assertionContent"]
+        );
+        let hostile = json!({ "serviceProvider": { "assertionContent": "not a group" } });
+        assert!(
+            message(set_secret_identifier(&hostile, Location::Remote, Role::Sp, "x").unwrap_err())
+                .contains("refusing to rewrite it")
+        );
+        assert!(
+            message(set_secret_identifier(&bare, Location::Remote, Role::Idp, "x").unwrap_err())
+                .contains("no identityProvider block")
+        );
+    }
+
+    /// Red when `entity_write_differences` compares with `==` and reports a
+    /// verdict, and red when it stops stripping `_rev`.
+    #[test]
+    fn a_put_that_lost_a_role_block_is_reported_as_the_paths_it_lost() {
+        // `{"entityId": "<same>"}` answers 200 and deletes the whole role
+        // block. A 200 therefore proves nothing, and the post-read has to
+        // name what went missing — "mismatch" sends nobody anywhere.
+        let intended = json!({
+            "entityId": "https://sp-a.example.com",
+            "_rev": "17",
+            "serviceProvider": {
+                "assertionContent": { "secrets": { "secretIdIdentifier": "sp-a" } },
+                "services": { "metaAlias": "/alpha/sp-a" },
+            },
+        });
+        let collapsed = json!({ "entityId": "https://sp-a.example.com", "_rev": "18" });
+        // Named at the block, not at every leaf inside it: the operator has
+        // to read this and act on it, and "the role block is gone" is the
+        // sentence, not forty paths.
+        assert_eq!(
+            entity_write_differences(&intended, &collapsed),
+            vec!["/serviceProvider"]
+        );
+
+        // But a leaf dropped from a block that survived is named as that
+        // leaf — both sides stay objects the whole way down to it, so the
+        // recursion reaches it. This is the discriminating pair: a diff that
+        // only ever reported the top-level key would pass the case above and
+        // fail this one.
+        let mut lost_one = intended.clone();
+        lost_one["serviceProvider"]["services"]
+            .as_object_mut()
+            .unwrap()
+            .remove("metaAlias");
+        assert_eq!(
+            entity_write_differences(&intended, &lost_one),
+            vec!["/serviceProvider/services/metaAlias"]
+        );
+
+        // `_rev` changes on every write, by design, and is not a difference.
+        let mut same = intended.clone();
+        same["_rev"] = json!("99");
+        assert!(entity_write_differences(&intended, &same).is_empty());
+
+        // A scalar replaced by a group is one difference at the group, not
+        // a silent equality.
+        let reshaped = json!({ "entityId": { "nested": true } });
+        assert_eq!(
+            entity_write_differences(&json!({ "entityId": "x" }), &reshaped),
+            vec!["/entityId"]
+        );
+        assert_eq!(
+            entity_write_differences(&json!("a"), &json!("b")),
+            vec!["/"]
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Identifiers and secret ids.
+    // -----------------------------------------------------------------
+
+    /// Red when `validate_identifier` accepts `.` or `/`.
+    #[test]
+    fn an_identifier_that_would_address_a_different_label_is_refused() {
+        // The identifier is spliced into a dotted label *and* into a URL
+        // path. A dot renames the label family and a slash escapes the
+        // collection, and neither fails loudly: the mapping `PUT` at the
+        // wrong label is a perfectly good 201 nothing will ever read.
+        assert_eq!(validate_identifier("sp-a_1").unwrap(), "sp-a_1");
+        for bad in ["sp.a", "sp/a", "sp a", "sp:a", "", "  ", " sp-a", "sp-a "] {
+            assert!(
+                validate_identifier(bad).is_err(),
+                "identifier {bad:?} should be refused"
+            );
+        }
+        assert_eq!(
+            signing_label("sp-a"),
+            "am.applications.federation.entity.providers.saml2.sp-a.signing"
+        );
+    }
+
+    /// Red when `validate_secret_id` drops the `esv-` requirement or the
+    /// lowercase rule.
+    #[test]
+    fn a_secret_id_aic_would_reject_is_refused_by_name_rather_than_by_relayed_regex() {
+        assert_eq!(validate_secret_id("esv-sp-a_1").unwrap(), "esv-sp-a_1");
+        for bad in ["sp-a", "esv-", "esv-SP", "esv-sp.a", "ESV-sp"] {
+            assert!(
+                validate_secret_id(bad).is_err(),
+                "secret id {bad:?} should be refused"
+            );
+        }
+        assert!(validate_secret_id(&format!("esv-{}", "a".repeat(124))).is_ok());
+        assert!(validate_secret_id(&format!("esv-{}", "a".repeat(125))).is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // init
+    // -----------------------------------------------------------------
+
+    /// Red when `plan_init` stops comparing `label_mapping` against the
+    /// requested `secret_id`.
+    #[test]
+    fn init_refuses_a_label_someone_else_already_mapped_and_adopts_its_own() {
+        let fresh = RotationState {
+            identifier: None,
+            mapped_alias: None,
+            secret: None,
+            versions: Vec::new(),
+            ..state()
+        };
+
+        // Nothing there: all three steps.
+        let plan = plan_init(
+            &fresh,
+            "sp-a",
+            "esv-sp-a-signing",
+            None,
+            None,
+            Some(&pair(NEW)),
+        )
+        .unwrap();
+        assert!(plan.set_identifier && plan.create_secret && plan.map_label);
+        assert!(!plan.is_noop());
+        assert_eq!(plan.certificate.as_deref(), Some(NEW));
+
+        // A mapping at this label pointing somewhere else is an orphan or
+        // another entity's rotation — a mapping outlives the label that
+        // named it, so overwriting it silently is how one gets stolen.
+        let orphan = message(
+            plan_init(
+                &fresh,
+                "sp-a",
+                "esv-sp-a-signing",
+                Some("esv-someone-elses"),
+                None,
+                Some(&pair(NEW)),
+            )
+            .unwrap_err(),
+        );
+        assert!(orphan.contains("esv-someone-elses"), "{orphan}");
+        assert!(orphan.contains("secretmap list"), "{orphan}");
+
+        // Pointing at the secret we were going to create is a resumed run,
+        // and that step is simply already done.
+        let resumed = plan_init(
+            &fresh,
+            "sp-a",
+            "esv-sp-a-signing",
+            Some("esv-sp-a-signing"),
+            Some(&facts()),
+            None,
+        )
+        .unwrap();
+        assert!(resumed.set_identifier);
+        assert!(!resumed.create_secret && !resumed.map_label);
+    }
+
+    /// Red when `plan_init` stops refusing a different existing identifier,
+    /// stops calling `unusable_reason`, or stops requiring a key to create.
+    #[test]
+    fn init_refuses_to_repoint_an_entity_and_to_adopt_a_secret_that_cannot_work() {
+        // Repointing is not rotation. It leaves the old label mapped to the
+        // old secret with nothing naming it, and the labels vanish from the
+        // schema enum the moment the entity stops naming them — which is the
+        // orphaned-mapping defect this sprint just fixed.
+        let repoint = message(
+            plan_init(
+                &state(),
+                "sp-b",
+                "esv-sp-b-signing",
+                None,
+                None,
+                Some(&pair(NEW)),
+            )
+            .unwrap_err(),
+        );
+        assert!(repoint.contains("rotate stage"), "{repoint}");
+        assert!(repoint.contains("secretmap remove"), "{repoint}");
+        assert!(repoint.contains(".sp-a.signing"), "{repoint}");
+
+        // Same identifier is a resumed run, not a repoint.
+        assert!(
+            plan_init(
+                &state(),
+                "sp-a",
+                "esv-sp-a-signing",
+                Some("esv-sp-a-signing"),
+                Some(&facts()),
+                None
+            )
+            .unwrap()
+            .is_noop()
+        );
+
+        let fresh = RotationState {
+            identifier: None,
+            mapped_alias: None,
+            secret: None,
+            versions: Vec::new(),
+            ..state()
+        };
+
+        // An existing secret that cannot back a restart-free rotation is
+        // refused here, not discovered after the entity has been written.
+        let placeholders = SecretFacts {
+            use_in_placeholders: true,
+            ..facts()
+        };
+        assert!(
+            message(
+                plan_init(
+                    &fresh,
+                    "sp-a",
+                    "esv-sp-a-signing",
+                    None,
+                    Some(&placeholders),
+                    None
+                )
+                .unwrap_err()
+            )
+            .contains("useInPlaceholders")
+        );
+
+        // Creating a secret needs the key pair that goes in it.
+        let keyless =
+            message(plan_init(&fresh, "sp-a", "esv-sp-a-signing", None, None, None).unwrap_err());
+        assert!(keyless.contains("--key-file"), "{keyless}");
+    }
+
+    // -----------------------------------------------------------------
+    // What status admits it cannot know.
+    // -----------------------------------------------------------------
+
+    /// Red when `status_lines` drops the `published.len() > 1` caveat, or
+    /// when `attribution` names a version for a certificate no record
+    /// covers.
+    #[test]
+    fn status_says_which_pairing_it_cannot_know_and_never_infers_one_by_elimination() {
+        let lines = status_lines(&staged(), &phase(&staged())).join("\n");
+        assert!(lines.contains(PAIRING_CAVEAT), "{lines}");
+        // The staged certificate is attributed because *this install* wrote
+        // the record...
+        assert!(
+            lines.contains(&format!("{NEW}  ESV secret version 2")),
+            "{lines}"
+        );
+        // ...and the other one is not, because knowing A is version 2 does
+        // not make B version 1: a third ENABLED version, or a certificate
+        // arriving from a label mapped elsewhere, produces this same picture.
+        assert!(
+            lines.contains(&format!(
+                "{OLD}  (no local record of which version holds it)"
+            )),
+            "{lines}"
+        );
+
+        // A settled single-certificate report carries no caveat, because
+        // there is no pairing question to answer.
+        assert!(
+            !status_lines(&state(), &phase(&state()))
+                .join("\n")
+                .contains(PAIRING_CAVEAT)
+        );
+
+        // Someone else's rollover: two certificates, no record, nothing
+        // attributed to anything.
+        let stranger = RotationState {
+            record: None,
+            ..staged()
+        };
+        let lines = status_lines(&stranger, &phase(&stranger)).join("\n");
+        assert_eq!(lines.matches("no local record").count(), 2, "{lines}");
+        assert!(lines.contains(PAIRING_CAVEAT));
+    }
+
+    /// Red when `status_json` reports a `stagedVersion` for an unrecorded
+    /// certificate, or drops the caveat.
+    #[test]
+    fn the_json_report_carries_the_same_admission_as_the_text_one() {
+        let staged = staged();
+        let json = status_json(&staged, &phase(&staged));
+        assert_eq!(json["phase"], "staged");
+        assert_eq!(json["caveat"], PAIRING_CAVEAT);
+        assert_eq!(json["descriptor"], "SPSSODescriptor");
+        let published = json["published"].as_array().unwrap();
+        assert_eq!(published.len(), 2);
+        let staged_versions: Vec<&Value> = published
+            .iter()
+            .map(|entry| &entry["stagedVersion"])
+            .collect();
+        assert!(staged_versions.contains(&&json!("2")));
+        assert!(staged_versions.contains(&&Value::Null));
+    }
+
+    /// Red when `next_step` names a verb the phase cannot run.
+    #[test]
+    fn every_phase_names_the_command_that_moves_it_on_or_says_there_is_none() {
+        let state = state();
+        assert!(next_step(&state, &Phase::Unconfigured).contains("rotate init"));
+        assert!(next_step(&state, &Phase::Unmapped).contains("rotate init"));
+        assert!(next_step(&state, &Phase::Settled).contains("rotate stage"));
+        assert!(next_step(&state, &Phase::Staged).contains("rotate complete"));
+        for stuck in [
+            Phase::Dangling {
+                alias: "esv-x".into(),
+            },
+            Phase::Unusable { reason: "x".into() },
+            Phase::Inconsistent { detail: "x".into() },
+        ] {
+            assert!(next_step(&state, &stuck).contains("nothing automatic"));
+            assert!(phase_summary(&stuck).contains("x"));
+        }
+    }
 }
