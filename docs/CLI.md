@@ -1425,10 +1425,17 @@ point that also takes an `EntitiesDescriptor` aggregate); a namespace binding
 for every prefix on every element _and attribute_; nothing but comments,
 processing instructions and whitespace outside the root; no entity reference
 whose replacement text we would have to guess; and the XML 1.0 productions a
-tokeniser walks past — legal element and attribute names, one `DOCTYPE`, an
-XML declaration with a version, a legal character everywhere a character
-appears, no literal `]]>`, no character reference to something Unicode has no
-character for, and no two attributes resolving to one expanded name.
+tokeniser walks past — legal element and attribute names, an XML declaration
+with a version, a legal character everywhere a character appears, no literal
+`]]>`, no character reference to something Unicode has no character for, and
+no two attributes resolving to one expanded name.
+
+**A `DOCTYPE` is refused**, wherever it appears and whatever it declares —
+external subset, internal subset, or nothing at all. These tools read no DTD,
+so forwarding one means passing along a document whose expansion they cannot
+describe to whatever parses it next; "we do not resolve it" is a promise about
+this parser and not about AM's. SAML 2.0 metadata has no use for one, so the
+refusal costs no real document anything.
 
 `inspect` reports a certificate by the role that publishes it. A dual-role
 entity can publish `use="signing"` from both its IdP and its SP role with no

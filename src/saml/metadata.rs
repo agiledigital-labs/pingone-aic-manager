@@ -24,6 +24,12 @@
 //! an element is a refusal, because we cannot know what name it was meant to
 //! be.
 //!
+//! The same rule pointed outwards is why a `DOCTYPE` is refused rather than
+//! carried through. "We do not expand it" is a promise about this scanner;
+//! the importer on the far side is a different parser, and a DTD we never
+//! read is one we cannot make any promise about at all. SAML 2.0 metadata has
+//! no use for one, so refusing costs nothing a real document needed.
+//!
 //! **One admission boundary; two knobs on it.** Every entry point here walks
 //! the same [`scan`], so a document `sanitise` refuses cannot be waved
 //! through by an export classification. Only two things vary, and each is a
@@ -127,6 +133,12 @@ pub enum MetadataError {
     },
     #[error("<X509Certificate> on line {line} is not valid base64: {detail}")]
     BadCertificate { line: usize, detail: String },
+    #[error(
+        "line {line} declares a DOCTYPE, which this tool will not forward: it reads no DTD, \
+         so it cannot say what the document expands to, and whatever reads it next might. \
+         SAML 2.0 metadata has no use for one — delete the <!DOCTYPE …> declaration"
+    )]
+    Doctype { line: usize },
 }
 
 impl From<MetadataError> for crate::Error {
@@ -745,10 +757,12 @@ impl Leaf {
 /// Which of XML's three document sections an event arrived in.
 ///
 /// The grammar is `prolog element Misc*`, and it is the *only* thing that
-/// makes a second XML declaration, a `DOCTYPE` after the root, or a stray
-/// CDATA section ill-formed — each of them tokenises perfectly. `quick_xml`
-/// is a tokeniser, so this is ours to enforce, and the scanner matches every
-/// event kind against it rather than ignoring the kinds it does not read.
+/// makes a second XML declaration, a stray CDATA section or text outside the
+/// root ill-formed — each of them tokenises perfectly. `quick_xml` is a
+/// tokeniser, so this is ours to enforce, and the scanner matches every event
+/// kind against it rather than ignoring the kinds it does not read. A
+/// `DOCTYPE` is the one event that never reaches this question: it is refused
+/// wherever it appears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
     /// Everything before the root element's start tag.
@@ -787,7 +801,6 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
     let mut leaf: Option<PendingLeaf> = None;
     let mut root_seen = false;
     let mut any_event_seen = false;
-    let mut doctype_seen = false;
 
     let mut scan = Scan {
         root: BundleRoot::Entity,
@@ -884,22 +897,29 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                     }
                 }
             }
-            Event::DocType(doctype) => {
-                // Legal in the prolog only, and at most once. We read no DTD,
-                // so any entity it declares is refused where it is *used* —
-                // see `Event::GeneralRef` below.
-                if section != Section::Prolog {
-                    return Err(misplaced(start, "a DOCTYPE declaration", section));
-                }
-                if doctype_seen {
-                    return Err(MetadataError::Malformed {
-                        offset: start,
-                        detail: "a second DOCTYPE declaration".into(),
-                    });
-                }
-                doctype_seen = true;
-                let text = decoded(doctype.decode(), start)?;
-                check_chars(&text, start, "the DOCTYPE declaration")?;
+            // Refused outright, wherever it appears and whatever it says.
+            //
+            // This used to be admitted in the prolog — external subset and
+            // all — and the sanitiser then carried the original bytes
+            // through, which made this module a courier for a DTD it never
+            // looked inside. That fails **open** at a trust boundary: this
+            // scanner expands nothing, but the AIC importer downstream is a
+            // different parser with different defaults, and "we do not
+            // resolve it" is not the same promise as "nothing will".
+            // Everything a DTD can do here is something we would refuse if we
+            // could see it — an external subset the tool would have to fetch
+            // to understand, entity declarations that expand to anything at
+            // all, the recursive ones that expand to rather more than that.
+            //
+            // The `Event::GeneralRef` arm below stays as the second line of
+            // the same rule: a reference whose replacement text is not one of
+            // the five XML predefines is a refusal there, so a document that
+            // *uses* a declaration is caught even if a DOCTYPE ever reaches
+            // this scanner by another route.
+            Event::DocType(_) => {
+                return Err(MetadataError::Doctype {
+                    line: line_at(xml, start),
+                });
             }
             // Legal in all three sections, and neither is content we read.
             // Splicing carries their bytes through untouched — which is
@@ -2445,11 +2465,6 @@ mod tests {
                 Document,
             ),
             (
-                "a DOCTYPE after the root",
-                format!("{entity}/><!DOCTYPE EntityDescriptor>"),
-                Document,
-            ),
-            (
                 "a CDATA section after the root",
                 format!("{entity}/><![CDATA[trailing]]>"),
                 Document,
@@ -2464,9 +2479,45 @@ mod tests {
             // with no selected removals, `sanitise` emitted the malformed
             // bytes verbatim, which is the principal way this module could
             // produce output that is not well-formed XML.
+            // ── DOCTYPEs, all of them ───────────────────────────────────────
+            // The bare one is the discriminating case: it declares nothing,
+            // expands to nothing and is well-formed in the position it sits
+            // in, so a rule that refused only an *external* subset — or only
+            // a DTD this scanner could see was dangerous — accepts it and
+            // the sanitiser hands it on. What makes it a refusal is that a
+            // DTD we did not read is one we cannot describe to whatever
+            // parses the document next.
             (
-                "a second DOCTYPE declaration",
-                format!("<!DOCTYPE EntityDescriptor><!DOCTYPE EntityDescriptor>{entity}/>"),
+                "a bare DOCTYPE in the prolog",
+                format!("<!DOCTYPE EntityDescriptor>{entity}/>"),
+                Document,
+            ),
+            (
+                "a DOCTYPE with an external SYSTEM subset",
+                format!(
+                    "<!DOCTYPE EntityDescriptor SYSTEM \"https://sp-a.example.com/md.dtd\">\
+                     {entity}/>"
+                ),
+                Document,
+            ),
+            (
+                "a DOCTYPE with an external PUBLIC subset",
+                format!(
+                    "<!DOCTYPE EntityDescriptor PUBLIC \"-//example//DTD md//EN\" \
+                     \"https://sp-a.example.com/md.dtd\">{entity}/>"
+                ),
+                Document,
+            ),
+            (
+                // The internal subset needs no fetch to do damage, which is
+                // why "we never resolve anything external" is not the rule.
+                "a DOCTYPE with an internal entity subset",
+                format!("<!DOCTYPE EntityDescriptor [<!ENTITY x \"expanded\">]>{entity}/>"),
+                Document,
+            ),
+            (
+                "a DOCTYPE after the root",
+                format!("{entity}/><!DOCTYPE EntityDescriptor>"),
                 Document,
             ),
             (
@@ -2583,9 +2634,12 @@ mod tests {
         );
         let cases: &[(&str, String)] = &[
             (
-                "a declaration, a DOCTYPE, a comment and a PI in the prolog",
+                // No DOCTYPE here, deliberately: it is refused, and the
+                // refusal table above is where that is asserted. The rest of
+                // the prolog a real export can carry still has to survive.
+                "a declaration, a comment and a PI in the prolog",
                 format!(
-                    "<?xml version=\"1.0\"?>\n<!DOCTYPE EntityDescriptor>\n\
+                    "<?xml version=\"1.0\"?>\n\
                      <!-- hand-authored -->\n<?target data?>\n{body}"
                 ),
             ),
