@@ -640,6 +640,20 @@ async fn delete(
     .await?;
     println!("deleted SAML entity provider {entity_id} ({location}) from {tenant}/{realm}");
 
+    // Forget any rotation record for it, now, before the cascade re-read —
+    // that read can return early, and the entity is already gone either way.
+    // A failure here is a warning and not the command's verdict: the delete
+    // landed, and `rotate::spec::usable_pairing` is what actually protects a
+    // recreated entity from inheriting a stale pairing. This only stops
+    // `status` describing a rollover of something that no longer exists, and
+    // it cannot be the only guard regardless — an entity deleted in the AM
+    // console never comes through here.
+    if let Err(error) = crate::saml::rotate::journal::clear_entity(&tenant, &realm, entity_id) {
+        eprintln!(
+            "warning: {entity_id} was deleted but its local rotation record could not be              cleared: {error}. `aic saml rotate status` may describe a rollover that no              longer exists."
+        );
+    }
+
     // Read the cascade back — unconditionally, even when the first read found
     // no circle of trust naming the entity. AM performs the cascade, we do
     // not, and the delete response says nothing about it, so printing
