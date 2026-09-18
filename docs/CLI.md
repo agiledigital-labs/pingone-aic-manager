@@ -1325,13 +1325,23 @@ byte for byte on purpose: AM echoes an Entra id ending in `/` back unchanged
 (`docs/api/06-saml.md`), so there is nothing for a normalisation to repair
 and two entities for it to conflate.
 
-**Two endings get the fresh list of the realm, not one.** A failed call, and
-a `200` whose body names no `importedEntities` array, are the same situation
+**Three endings get the fresh list of the realm, not one.** A failed call, a
+`200` whose body names no `importedEntities` array, and a `200` whose
+`importedEntities` is not the set the file declares are the same situation
 from the operator's side: AM may have created every entity in the file and
-said so in a shape this command does not read. Both are followed by a list of
-the realm reported per declared id, because a failed aggregate import is not
-a rollback and AM says nothing about how far it got. The heading says which
-of the two happened; the inventory below it is the same either way.
+said so in a shape this command does not read, or named entities that were
+never sent. All three are followed by a list of the realm reported per
+declared id, because a failed aggregate import is not a rollback and AM says
+nothing about how far it got. The heading says which of the three happened;
+the inventory below it is the same every time.
+
+The third is the one that looks least like a problem, because the response
+parsed. Having just declared that body untrustworthy, the command must not
+then leave its contents as the account of what landed — that is precisely
+what the relist replaces. An `importedEntities` **member** that is not a
+string is the second case rather than the third: a number or an object means
+the body was not understood at all, and rendering it as JSON text would feed
+the set comparison an id AM never wrote.
 
 Every run ends on the same sentence: **circle-of-trust membership was not
 verified, and could not have been.** `importEntity` rewrites extended metadata,
@@ -1413,8 +1423,7 @@ Entra emits — and then any XML signature that cut leaves unable to verify.
 
 **What a signature covers is read from its `<ds:Reference URI>` values, not
 from where it sits.** `URI=""` is the whole document and `URI="#id"` is the
-element declaring that XML ID (`ID`, as SAML's schema declares it on every
-descriptor, or `xml:id`); a signature is kept only when every one of its
+element declaring that XML ID; a signature is kept only when every one of its
 references lands on bytes this rewrite does not touch. So a signature over one
 role the rewrite keeps survives a sibling being stripped, and so does the
 signature on a document that needs no other stripping — while a signature
@@ -1422,8 +1431,30 @@ nested under a retained role that references the whole entity is removed,
 because stripping a sibling really does break it. Placement says nothing about
 either case.
 
+Three details decide what "its references" and "that XML ID" mean, and each
+one is the difference between reading what XMLDSig establishes and reading
+more certainty than it gives:
+
+- **Only the signature's own `<ds:SignedInfo>` is coverage.** Core validation
+  is defined over those references; a `<ds:Reference>` in a `<ds:Manifest>`
+  is checked by the application, or by nothing, and the signature validates
+  either way. So a manifest reference is not counted — counting one would
+  manufacture coverage rather than over-count it, and keep a signature over
+  bytes that had moved.
+- **A reference's transforms decide its bytes.** The digest is over what the
+  `URI` dereferences to _and then_ what the transform chain makes of that.
+  Canonicalisation and the enveloped-signature transform leave the answer
+  alone and are read as exact; anything else — XPath, XSLT, base64, an
+  algorithm nothing names — resolves to nothing.
+- **An unqualified `ID` is an XML ID only where a schema declares it**, which
+  here means SAML's own: the two container elements, every role element, and
+  `<AffiliationDescriptor>`. An extension element spelling `ID` does not lend
+  a reference a resolution, because this tool reads no schema that would say
+  it should. `xml:id` is an ID everywhere by specification and always counts.
+
 Anything that cannot be resolved to bytes of this document — an XPointer, a
-detached reference, an id nothing declares or two elements claim, a signature
+detached reference, an id nothing declares or two elements claim, a transform
+we cannot evaluate, a signature whose only reference is in a manifest, one
 with no reference at all, or one nested inside another — is treated as
 covering everything and is removed as soon as anything changes. Only verifying
 the signature could settle it, and handing a peer a document whose signature
@@ -1456,6 +1487,14 @@ so forwarding one means passing along a document whose expansion they cannot
 describe to whatever parses it next; "we do not resolve it" is a promise about
 this parser and not about AM's. SAML 2.0 metadata has no use for one, so the
 refusal costs no real document anything.
+
+**Every entity has to be nameable.** `inspect` and `sanitise` refuse an
+`entityID` that is absent, empty or whitespace-only, and say which of the
+three it is: the id is what `import` preflights against the realm and matches
+in `importedEntities`, so an entity that cannot be named cannot be reported
+on. `metadata export`'s classifier is blind to all three by design — it reads
+the document's grammar and no attributes — because a roleless entity's legal
+export really does carry no `entityID`.
 
 `inspect` reports a certificate by the role that publishes it. A dual-role
 entity can publish `use="signing"` from both its IdP and its SP role with no

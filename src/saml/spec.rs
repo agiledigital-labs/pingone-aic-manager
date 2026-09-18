@@ -1069,22 +1069,26 @@ pub fn authorize_import(
 /// **200, not 201**, even though it creates (`docs/api/06-saml.md`). A body
 /// without the array is not a success we can report on, so it is an error
 /// rather than an empty list.
+///
+/// A member that is not a string is the same situation one element down. It
+/// used to be rendered with `Value::to_string`, which turns `42` into `"42"`
+/// and an object into its JSON text — strings that then went into
+/// [`compare_imported`]'s exact set comparison as though AM had named an
+/// entity by them. An id we had to invent a spelling for is an id we did not
+/// read, and the honest answer is that this body is not the documented shape:
+/// the caller then relists the realm instead of reporting on a set it made up.
 pub fn imported_entities(response: &serde_json::Value) -> crate::Result<Vec<String>> {
+    let unreadable = || crate::Error::Api {
+        status: 0,
+        body: format!("unexpected SAML import response shape: {response}"),
+    };
     response
         .get("importedEntities")
         .and_then(serde_json::Value::as_array)
-        .map(|ids| {
-            ids.iter()
-                .map(|id| match id.as_str() {
-                    Some(text) => text.to_string(),
-                    None => id.to_string(),
-                })
-                .collect()
-        })
-        .ok_or_else(|| crate::Error::Api {
-            status: 0,
-            body: format!("unexpected SAML import response shape: {response}"),
-        })
+        .ok_or_else(unreadable)?
+        .iter()
+        .map(|id| id.as_str().map(str::to_owned).ok_or_else(unreadable))
+        .collect()
 }
 
 /// The exact set comparison between what the file declared and what AM says
@@ -1203,19 +1207,29 @@ not verified: circle-of-trust membership. AM records it twice — the CoT
 
 /// Why an import cannot say what it created.
 ///
-/// Two different-looking endings to the same situation, and the operator has
-/// to be told which: the call failed outright, or it answered **200** with a
-/// body that is not the `importedEntities` array the endpoint documents. The
-/// second is the dangerous one, because it looks like success from the
+/// Three different-looking endings to the same situation, and the operator
+/// has to be told which: the call failed outright, it answered **200** with a
+/// body that is not the `importedEntities` array the endpoint documents, or
+/// it answered with an array that is not the set this file declares. The last
+/// two are the dangerous ones, because they look like success from the
 /// outside — AM may well have created every entity and merely described it in
-/// a shape we do not read. Neither is a rollback, so both owe the operator
-/// the same fresh read of the realm.
+/// a shape we do not read, or named entities we never sent. None of the three
+/// is a rollback, so all three owe the operator the same fresh read of the
+/// realm.
+///
+/// The third is the one most easily missed, because the response *parsed*:
+/// having just declared that body untrustworthy, reporting on it and stopping
+/// makes its contents the final account of what landed — which is exactly
+/// what the relist exists to replace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportUnknown {
     /// `?_action=importEntity` returned an error.
     Failed,
     /// A 200 whose body [`imported_entities`] could not read.
     Unreadable,
+    /// A 200 whose `importedEntities` [`compare_imported`] read, and which is
+    /// not the set the file declares.
+    Mismatched,
 }
 
 impl ImportUnknown {
@@ -1226,6 +1240,10 @@ impl ImportUnknown {
             Self::Unreadable => {
                 "the import answered 200 with a body that names no importedEntities"
             }
+            Self::Mismatched => {
+                "the import answered 200 with an importedEntities that is not the set \
+                 this file declares"
+            }
         }
     }
 
@@ -1234,6 +1252,7 @@ impl ImportUnknown {
         match self {
             Self::Failed => "a failure is not a rollback",
             Self::Unreadable => "an answer we cannot read is not a rollback",
+            Self::Mismatched => "an answer we do not believe is not a rollback",
         }
     }
 }
@@ -1245,10 +1264,13 @@ impl ImportUnknown {
 /// as reporting the bytes you submitted as a snapshot. So this is a fresh
 /// read, listed per declared id rather than summarised.
 ///
-/// Both of [`ImportUnknown`]'s cases route here deliberately. The relist used
-/// to hang off the API-error arm alone, so a 200 with a body we could not read
-/// — the case where entities are most likely to exist and least likely to be
-/// expected — returned immediately with no inventory at all.
+/// Every one of [`ImportUnknown`]'s cases routes here deliberately. The
+/// relist used to hang off the API-error arm alone, so a 200 with a body we
+/// could not read — the case where entities are most likely to exist and
+/// least likely to be expected — returned immediately with no inventory at
+/// all. [`ImportUnknown::Mismatched`] was the same omission one step further
+/// in: the body parsed, was declared untrustworthy, and was then left as the
+/// only account of what landed.
 pub fn after_failure_lines(
     declared: &[String],
     stubs: &[EntityStub],
@@ -2757,6 +2779,25 @@ mod tests {
             "{}",
             unreadable[0]
         );
+
+        // The third ending, and the one that used to skip the relist
+        // entirely: the body parsed, and `compare_imported` then declared it
+        // untrustworthy. It owes the same inventory, from the same fresh read
+        // — the response cannot be both the thing we disbelieve and the
+        // account of what landed.
+        let mismatched = after_failure_lines(&declared, &after, "bravo", ImportUnknown::Mismatched);
+        assert_eq!(mismatched[1..], inventory[..], "{mismatched:?}");
+        assert!(
+            mismatched[0].contains("importedEntities")
+                && mismatched[0].contains("not a rollback")
+                && !mismatched[0].contains("the import failed"),
+            "{}",
+            mismatched[0]
+        );
+        assert_ne!(
+            mismatched[0], unreadable[0],
+            "an answer we could read and disbelieve is not an answer we could not read"
+        );
     }
 
     /// A 200 whose body is not the shape we read is not a success we can
@@ -2775,5 +2816,24 @@ mod tests {
             imported_entities(&serde_json::json!({ "importedEntities": "one" })).is_err(),
             "a bare string is not the array the endpoint returns"
         );
+
+        // The discriminating members: each one used to be rendered with
+        // `Value::to_string` and fed to the exact set comparison as an entity
+        // id AM never wrote. A number is the case that looks most harmless
+        // and is worst — `"42"` is a perfectly plausible id.
+        for member in [
+            serde_json::json!(42),
+            serde_json::json!(null),
+            serde_json::json!({ "entityId": "https://idp-a.example.com" }),
+            serde_json::json!(["https://idp-a.example.com"]),
+        ] {
+            assert!(
+                imported_entities(&serde_json::json!({
+                    "importedEntities": ["https://idp-a.example.com", member]
+                }))
+                .is_err(),
+                "a non-string member was given a spelling instead of being refused: {member}"
+            );
+        }
     }
 }
