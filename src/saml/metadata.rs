@@ -91,6 +91,33 @@ const XML_NS: &[u8] = b"http://www.w3.org/XML/1998/namespace";
 /// bytes it covers.
 const SIGNATURE_LOCAL_NAME: &str = "Signature";
 
+/// The transform algorithms that leave *which bytes a reference covers*
+/// alone, so the reference's `URI` is still the whole answer.
+///
+/// A reference's digest is taken over the result of dereferencing its `URI`
+/// **and then running its transform chain** — the URI alone names an input,
+/// not the octets. Canonicalisation re-spells the node-set it is handed and
+/// drops nothing from it, and the enveloped-signature transform removes the
+/// signature carrying the reference, which is already exactly how
+/// [`Cuts::invalidated_signatures`] treats every signature against its own
+/// removal. Those are the two a real metadata document carries.
+///
+/// Anything else — XPath, XPath Filter 2.0, XSLT, base64, an algorithm we
+/// have never seen — picks the digested octets by a rule this module does not
+/// evaluate, and it can pick in either direction: a filter that subtracts most
+/// of the document would have us report a document as signing itself on the
+/// strength of a `URI=""`. So an unrecognised algorithm makes the coverage
+/// [`Coverage::Unknown`], which is removed rather than trusted.
+const BENIGN_TRANSFORMS: &[&str] = &[
+    "http://www.w3.org/2000/09/xmldsig#enveloped-signature",
+    "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+    "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+    "http://www.w3.org/2001/10/xml-exc-c14n#",
+    "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+    "http://www.w3.org/2006/12/xml-c14n11",
+    "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+];
+
 /// The five entities XML predefines, with the replacement text each stands
 /// for. Any other name needs a DTD declaration to have a replacement text at
 /// all, and we do not read DTDs.
@@ -832,6 +859,10 @@ struct PendingSignature {
     /// [`Self::references`] to the references core validation is defined
     /// over — see [`SignedReference`].
     signed_info: Option<usize>,
+    /// Depth of the `<ds:Reference>` open inside that `<ds:SignedInfo>` right
+    /// now, so a `<ds:Transform>` is attributed to the reference it qualifies
+    /// rather than to the signature.
+    open_reference: Option<usize>,
     /// Every `<ds:Reference>` of this signature's `<ds:SignedInfo>`, in
     /// document order.
     references: Vec<SignedReference>,
@@ -855,6 +886,10 @@ struct SignedReference {
     /// all, which names an object only the application can identify — so,
     /// not us.
     uri: Option<String>,
+    /// False once this reference carries a transform outside
+    /// [`BENIGN_TRANSFORMS`], which makes the `URI` stop being an answer
+    /// about bytes.
+    transforms_understood: bool,
 }
 
 /// An element carrying an XML ID, so a `URI="#id"` reference can be resolved
@@ -1208,6 +1243,7 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                                 inside_cut: open_cut.is_some(),
                                 nested: false,
                                 signed_info: None,
+                                open_reference: None,
                                 references: Vec::new(),
                             };
                             // An empty `<ds:Signature/>` has no references and
@@ -1237,7 +1273,21 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                     {
                         open.references.push(SignedReference {
                             uri: attrs.unqualified("URI").map(str::to_owned),
+                            transforms_understood: true,
                         });
+                        if !empty {
+                            open.open_reference = Some(path.len());
+                        }
+                    } else if name == "Transform"
+                        && open.open_reference.is_some_and(|depth| path.len() > depth)
+                        && let Some(reference) = open.references.last_mut()
+                    {
+                        // A missing `Algorithm` is as unreadable as an
+                        // unrecognised one: the attribute is what names the
+                        // rule, and we are refusing to guess at the rule.
+                        reference.transforms_understood &= attrs
+                            .unqualified("Algorithm")
+                            .is_some_and(|algorithm| BENIGN_TRANSFORMS.contains(&algorithm));
                     }
                 }
                 let element_id = attrs
@@ -1377,13 +1427,16 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                 {
                     root_range = open.start..end;
                 }
-                // `<ds:SignedInfo>` is closed, so any `<ds:Reference>` still to
-                // come in this signature is a `<ds:Manifest>`'s and not
-                // coverage.
-                if let Some(open) = signature.as_mut()
-                    && open.signed_info == Some(path.len())
-                {
-                    open.signed_info = None;
+                // A `<ds:Transform>` after this belongs to no reference, and a
+                // `<ds:Reference>` after the `<ds:SignedInfo>` closes is a
+                // `<ds:Manifest>`'s and not coverage.
+                if let Some(open) = signature.as_mut() {
+                    if open.open_reference == Some(path.len()) {
+                        open.open_reference = None;
+                    }
+                    if open.signed_info == Some(path.len()) {
+                        open.signed_info = None;
+                    }
                 }
                 if let Some(mut done) = signature.take_if(|open| open.depth == path.len()) {
                     done.to = end;
@@ -1546,15 +1599,20 @@ fn note_id(ids: &mut Vec<ElementId>, value: String, range: Range<usize>) {
 ///   resolves to nothing.
 /// - nothing else: an XPointer (`#xpointer(…)`) needs an expression evaluator,
 ///   and a detached reference names bytes outside this file that we could not
-///   fetch, let alone re-check. Transforms are not interpreted either — an
-///   XPath transform could exclude the very subtree being cut, and assuming it
-///   does not is the conservative reading.
+///   fetch, let alone re-check.
+///
+/// And the `URI` is only half of a reference: its transform chain decides the
+/// octets that are digested, so a reference carrying anything outside
+/// [`BENIGN_TRANSFORMS`] resolves to nothing however well its `URI` reads.
 fn resolve_coverage(signature: &PendingSignature, ids: &[ElementId], len: usize) -> Coverage {
     if signature.nested || signature.references.is_empty() {
         return Coverage::Unknown;
     }
     let mut spans = Vec::new();
     for reference in &signature.references {
+        if !reference.transforms_understood {
+            return Coverage::Unknown;
+        }
         let Some(uri) = &reference.uri else {
             return Coverage::Unknown;
         };
@@ -2337,6 +2395,19 @@ mod tests {
         )
     }
 
+    /// A `<ds:Signature>` referencing `target`, with one `<ds:Transform>` in
+    /// that reference's chain. `None` writes the element with no `Algorithm`
+    /// attribute at all.
+    fn dsig_transformed(target: &str, algorithm: Option<&str>) -> String {
+        let attribute = algorithm.map_or(String::new(), |named| format!(" Algorithm=\"{named}\""));
+        format!(
+            "<ds:Signature xmlns:ds=\"{DSIG_URI}\"><ds:SignedInfo>\
+             <ds:Reference URI=\"{target}\"><ds:Transforms>\
+             <ds:Transform{attribute}/></ds:Transforms></ds:Reference>\
+             </ds:SignedInfo></ds:Signature>"
+        )
+    }
+
     /// The WS-Federation role every case below has cut out from under it.
     fn wsfed_role() -> String {
         format!(
@@ -2550,6 +2621,75 @@ mod tests {
             !inspect(signed.as_bytes()).expect("parses").signed,
             "a manifest reference reported the document as signing itself"
         );
+    }
+
+    /// A transform chooses the digested octets, so one we cannot evaluate
+    /// makes the reference's `URI` stop being an answer.
+    ///
+    /// The bug: a reference was resolved by `URI` alone. A digest is taken
+    /// over the URI's dereference *after* its transform chain, and an XPath
+    /// or XSLT transform selects by a rule nothing here evaluates — in either
+    /// direction. So the two failing rows are the two directions:
+    ///
+    /// - `URI="#_idp"` with an XPath transform resolved to a span the WS-Fed
+    ///   cut does not touch, and the signature was **kept** over rewritten
+    ///   bytes;
+    /// - `URI=""` with one made [`MetadataDoc::signed`] report a document as
+    ///   signing itself, when the transform may subtract nearly all of it.
+    ///
+    /// The last two rows are the control that keeps this from being a blanket
+    /// refusal of transforms: the enveloped-signature and exclusive-c14n pair
+    /// every real signed metadata document carries still resolves, and the
+    /// signature survives a cut it does not cover.
+    #[test]
+    fn a_transform_we_cannot_evaluate_makes_the_coverage_unknown() {
+        const XPATH: &str = "http://www.w3.org/TR/1999/REC-xpath-19991116";
+        const ENVELOPED: &str = "http://www.w3.org/2000/09/xmldsig#enveloped-signature";
+        const EXC_C14N: &str = "http://www.w3.org/2001/10/xml-exc-c14n#";
+        let role = wsfed_role();
+        let idp = "<IDPSSODescriptor ID=\"_idp\" \
+                   protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">";
+
+        // case, the reference's one transform, does the signature survive a
+        // cut it does not cover, does `URI=""` still read as signing the
+        // document
+        let cases: &[(&str, Option<&str>, bool)] = &[
+            ("an XPath transform", Some(XPATH), false),
+            ("an algorithm nothing names", None, false),
+            ("the enveloped-signature transform", Some(ENVELOPED), true),
+            ("exclusive canonicalisation", Some(EXC_C14N), true),
+        ];
+
+        for (case, algorithm, resolves) in cases {
+            let on_idp = dsig_transformed("#_idp", *algorithm);
+            let input =
+                format!("{SIGNED_HEAD}\n  {on_idp}\n  {role} />\n  {idp}</IDPSSODescriptor>{TAIL}");
+            let result = clean(&input);
+            assert_eq!(
+                result
+                    .removed
+                    .iter()
+                    .map(|removal| removal.reason)
+                    .collect::<Vec<_>>(),
+                if *resolves {
+                    vec![RemovalReason::UnsupportedRole]
+                } else {
+                    vec![
+                        RemovalReason::EnvelopedSignature,
+                        RemovalReason::UnsupportedRole,
+                    ]
+                },
+                "{case}"
+            );
+
+            let whole = dsig_transformed("", *algorithm);
+            let signed = format!("{SIGNED_HEAD}\n  {whole}\n  {idp}</IDPSSODescriptor>{TAIL}");
+            assert_eq!(
+                inspect(signed.as_bytes()).expect("parses").signed,
+                *resolves,
+                "{case}: `signed` reports a signature over the document itself"
+            );
+        }
     }
 
     /// Removing a stale signature is itself a change, so a signature that
