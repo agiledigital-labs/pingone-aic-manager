@@ -46,7 +46,15 @@
 //! retiring the new certificate and keeping the old. So [`journal`] records the
 //! pairing at stage time — confirmed against the tenant's own export, never
 //! from the bytes that were sent — and `complete` without such a record
-//! requires `--retain <sha256>` rather than guessing.
+//! requires **both** halves rather than guessing: `--retain <sha256>` for the
+//! certificate to keep and `--disable-version <n>` for the version to disable.
+//! A fingerprint alone names no version, so one without the other leaves the
+//! choice to ordering, which is the thing being refused.
+//!
+//! With a record, the derivation is the command's and `--disable-version` may
+//! only corroborate it — a named version that disagrees is refused, because
+//! the record is the only evidence there is and the plan the flag would
+//! produce disables the certificate `--retain` just named.
 //!
 //! ## Layout
 //!
