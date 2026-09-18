@@ -119,6 +119,43 @@ pub fn clear(key: &Key) -> Result<()> {
     })
 }
 
+/// Forget every record for an entity, both roles, because it no longer exists.
+///
+/// [`Key`] names a role, and a deleted entity takes all of its roles with it —
+/// a dual-role entity mid-rollover on its IdP side leaves a record that
+/// `clear` would need to be called twice to reach, with the caller guessing
+/// which roles existed.
+///
+/// This is **hygiene, not the guard.** `spec::usable_pairing` is what protects
+/// a recreated entity, by requiring the identifier, the secret id, the version
+/// and the published fingerprint all to match the tenant before a record counts
+/// as a pairing — so a survivor of a delete-and-recreate already fails to
+/// match. That has to stay true independently, because an entity deleted in the
+/// AM console, or from another install, never reaches this function at all.
+/// Clearing here just stops `status` showing a rollover for something that is
+/// gone.
+pub fn clear_entity(tenant: &str, realm: &str, entity_id: &str) -> Result<()> {
+    clear_entity_at(&path(), tenant, realm, entity_id)
+}
+
+/// [`clear_entity`] against a named file, so a test drives the real writer —
+/// the lock, the in-place rewrite and the trim included — rather than a copy
+/// of its predicate.
+pub(crate) fn clear_entity_at(
+    file: &Path,
+    tenant: &str,
+    realm: &str,
+    entity_id: &str,
+) -> Result<()> {
+    update_at(file, |entries| {
+        entries.retain(|existing| {
+            !(existing.tenant == tenant
+                && existing.realm == realm
+                && existing.entity_id == entity_id)
+        });
+    })
+}
+
 fn key_of(record: &StagedRecord) -> Key {
     Key {
         tenant: record.tenant.clone(),
@@ -302,6 +339,46 @@ mod tests {
             entity_id: entity.into(),
             role: role.into(),
         }
+    }
+
+    /// Red when `clear_entity` keys on the role, or forgets more than the
+    /// entity it was given.
+    #[test]
+    fn deleting_an_entity_forgets_both_its_roles_and_nothing_else() {
+        // Three records that make the two wrong implementations visible. Two
+        // belong to the deleted entity and differ only in role, so a clear
+        // that reuses `Key` — which names a role — leaves whichever role the
+        // caller did not guess. The third is a different entity in the same
+        // tenant and realm, so a clear that truncated the file, or matched on
+        // tenant and realm alone, takes a live rollover with it.
+        let dir = std::env::temp_dir().join(format!("aic-journal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let file = dir.join("saml-rotations.json");
+        save_at(
+            &file,
+            &[
+                record_for("https://sp-a.example.com", "identityProvider", "2", "aaa"),
+                record_for("https://sp-a.example.com", "serviceProvider", "5", "bbb"),
+                record_for("https://sp-b.example.com", "serviceProvider", "3", "ccc"),
+            ],
+        )
+        .expect("seed the journal");
+
+        clear_entity_at(&file, "sandbox", "bravo", "https://sp-a.example.com")
+            .expect("clear the deleted entity");
+
+        let left = load_at(&file).expect("reload");
+        assert_eq!(left.len(), 1, "only the other entity should survive");
+        assert_eq!(left[0].entity_id, "https://sp-b.example.com");
+        assert_eq!(left[0].sha256, "ccc");
+
+        // A different tenant or realm with the same entity id is a different
+        // entity, and must be left alone.
+        clear_entity_at(&file, "sandbox", "alpha", "https://sp-b.example.com")
+            .expect("clear a realm that holds nothing");
+        assert_eq!(load_at(&file).expect("reload").len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
