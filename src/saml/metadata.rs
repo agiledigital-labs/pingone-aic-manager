@@ -118,6 +118,35 @@ const BENIGN_TRANSFORMS: &[&str] = &[
     "http://www.w3.org/2006/12/xml-c14n11#WithComments",
 ];
 
+/// The SAML metadata elements whose unqualified `ID` attribute the schema
+/// declares as `xs:ID`, and which therefore carry an XML ID a `URI="#…"`
+/// resolves against.
+///
+/// `ID` is an XML ID **only where the applicable schema says so** — the
+/// spelling confers nothing. SAML declares it on the two container elements
+/// and on `RoleDescriptorType`, which is the base of every role element
+/// (including the abstract `<RoleDescriptor>` an `xsi:type` specialises), plus
+/// `<AffiliationDescriptor>`. An `<Extensions>` child spelling `ID` is
+/// governed by whatever schema owns it, which this module does not read.
+///
+/// Taking the spelling for the type is fail-open, which is why the list
+/// exists: an extension element acquiring ID semantics makes a reference
+/// *resolve* that should not have, so a signature is kept on the strength of
+/// a span nothing established. Leaving a real ID unrecognised only removes a
+/// signature we could have kept. [`XML_NS`]'s `xml:id` needs no list — it is
+/// an ID everywhere by specification.
+const ID_BEARING_ELEMENTS: &[&str] = &[
+    AGGREGATE_LOCAL_NAME,
+    ROOT_LOCAL_NAME,
+    "RoleDescriptor",
+    "IDPSSODescriptor",
+    "SPSSODescriptor",
+    "AuthnAuthorityDescriptor",
+    "AttributeAuthorityDescriptor",
+    "PDPDescriptor",
+    "AffiliationDescriptor",
+];
+
 /// The five entities XML predefines, with the replacement text each stands
 /// for. Any other name needs a DTD declaration to have a replacement text at
 /// all, and we do not read DTDs.
@@ -895,12 +924,13 @@ struct SignedReference {
 /// An element carrying an XML ID, so a `URI="#id"` reference can be resolved
 /// to the bytes it names.
 ///
-/// **Only attributes that are IDs by specification count**: unqualified `ID`,
-/// which the SAML metadata schema declares as `xs:ID` on every descriptor,
-/// and `xml:id`. An `Id` or `id` attribute is an ID only because some other
-/// schema says so, and this module reads no schema — leaving those
-/// unresolved is the fail-closed direction, because an unresolved reference
-/// removes the signature rather than keeping it.
+/// **Only attributes that are IDs by specification count**: `xml:id`, and an
+/// unqualified `ID` on one of [`ID_BEARING_ELEMENTS`] — the elements SAML's
+/// own schema declares it on. An `Id` or `id` attribute, or an `ID` on an
+/// element some other schema governs, is an ID only because that schema says
+/// so, and this module reads no schema. Leaving those unresolved is the
+/// fail-closed direction, because an unresolved reference removes the
+/// signature rather than keeping it.
 struct ElementId {
     value: String,
     range: Range<usize>,
@@ -1290,8 +1320,10 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                             .is_some_and(|algorithm| BENIGN_TRANSFORMS.contains(&algorithm));
                     }
                 }
+                // [`ID_BEARING_ELEMENTS`] says why the spelling is not enough.
                 let element_id = attrs
                     .unqualified("ID")
+                    .filter(|_| saml && ID_BEARING_ELEMENTS.contains(&name.as_str()))
                     .or_else(|| attrs.get(Some(XML_NS), "id"))
                     .map(str::to_owned);
                 if empty && let Some(value) = element_id.clone() {
@@ -2688,6 +2720,61 @@ mod tests {
                 inspect(signed.as_bytes()).expect("parses").signed,
                 *resolves,
                 "{case}: `signed` reports a signature over the document itself"
+            );
+        }
+    }
+
+    /// An unqualified `ID` is an XML ID only where the applicable schema says
+    /// so.
+    ///
+    /// The bug: every element spelling `ID` was recorded as carrying one, so
+    /// an extension element the SAML schema does not govern lent
+    /// `URI="#_ext"` a resolution it has not got — and a reference that
+    /// resolves is a reference that keeps a signature, over a span nothing
+    /// established. Recognising too many ids is the fail-open half of this;
+    /// recognising too few only costs a signature we could have kept.
+    ///
+    /// Discriminating input: one extension element, one reference, and the
+    /// only difference between the rows is which attribute spells the id.
+    /// `xml:id` is an ID everywhere by specification, so the control is not
+    /// "extensions carry no ids" — it is "the spelling is not what makes
+    /// one".
+    #[test]
+    fn an_unqualified_id_is_an_id_only_where_saml_declares_it() {
+        let role = wsfed_role();
+        let on_ext = dsig("#_ext");
+
+        // case, how the extension element spells its id, does it resolve
+        let cases: &[(&str, &str, bool)] = &[
+            ("an extension element spelling ID", "ID=\"_ext\"", false),
+            (
+                "xml:id, an ID everywhere by specification",
+                "xml:id=\"_ext\"",
+                true,
+            ),
+        ];
+
+        for (case, attribute, resolves) in cases {
+            let input = format!(
+                "{SIGNED_HEAD}\n  {on_ext}\n  <Extensions><ext:Thing xmlns:ext=\"urn:x\" \
+                 {attribute}/></Extensions>\n  {role} />{TAIL}"
+            );
+            let result = clean(&input);
+            assert_eq!(
+                result
+                    .removed
+                    .iter()
+                    .map(|removal| removal.reason)
+                    .collect::<Vec<_>>(),
+                if *resolves {
+                    vec![RemovalReason::UnsupportedRole]
+                } else {
+                    vec![
+                        RemovalReason::EnvelopedSignature,
+                        RemovalReason::UnsupportedRole,
+                    ]
+                },
+                "{case}"
             );
         }
     }
