@@ -555,7 +555,9 @@ async fn import(
 ///
 /// Without `--force` this performs the two reads and prints nothing but the
 /// cascade, which makes the refusal path the preview — no separate `--dry-run`
-/// flag, and no permission token that a preview could carry by accident.
+/// flag, and a preview that holds no [`spec::DeletePermit`], so it cannot
+/// reach the write. Everything that costs the operator something — the
+/// production confirmation most of all — sits *after* that refusal.
 async fn delete(
     tenant_arg: Option<String>,
     realm_arg_value: Option<String>,
@@ -565,7 +567,6 @@ async fn delete(
     force: OperationForce,
 ) -> Result<()> {
     let tenant = tenant_for(tenant_arg)?;
-    let ok = ensure_prod_confirmed(&tenant, yes)?;
     let realm = realm_arg("saml", realm_arg_value)?;
     let location = match location {
         Some(location) => location,
@@ -578,38 +579,70 @@ async fn delete(
         eprintln!("{line}");
     }
 
-    spec::delete_ok(force.operation(), entity_id, location, &tenant, &realm)?;
+    let permit = spec::delete_ok(force.operation(), entity_id, location, &tenant, &realm)?;
 
-    api::delete_entity(&tenant, &realm, location, entity_id, ok.confirmed_prod).await?;
+    // After the decision, the way `import` orders it: the unforced run is this
+    // command's preview, and a path about to refuse to write must not first
+    // demand authorization to write. Asking on a production-themed tenant
+    // before the refusal is how operators learn to keep `--yes` on the line
+    // (`REVIEW.md`, 2026-08-11).
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
+    api::delete_entity(
+        &tenant,
+        &realm,
+        location,
+        entity_id,
+        ok.confirmed_prod,
+        &permit,
+    )
+    .await?;
     println!("deleted SAML entity provider {entity_id} ({location}) from {tenant}/{realm}");
 
-    if affected.is_empty() {
-        return Ok(());
-    }
-    // Read the cascade back. AM performs it, we do not, and the delete
-    // response says nothing about it — so printing `affected` here would be
-    // reporting what we expected instead of what happened. A failed re-read
-    // costs the report, never the delete, which has already landed.
+    // Read the cascade back — unconditionally, even when the first read found
+    // no circle of trust naming the entity. AM performs the cascade, we do
+    // not, and the delete response says nothing about it, so printing
+    // `affected` here would be reporting what we expected instead of what
+    // happened. Skipping the read when `affected` was empty would make the
+    // check conditional on the very read whose completeness is in question.
     //
-    // A `?` here would be wrong in the same way: the delete has landed, so a
-    // re-read that fails to fetch *or* to parse costs the report and must not
-    // turn a completed delete into a non-zero exit.
-    match api::list_cots(&tenant, &realm)
+    // The delete has landed by now and nothing below un-lands it. What the
+    // exit code claims is the *cascade*: a promised rewrite that did not
+    // demonstrably happen — or that we could not go back and look at — must
+    // not come back as zero, because the caller reading that zero is a script
+    // that will never look at the warning.
+    let cots = match api::list_cots(&tenant, &realm)
         .await
         .and_then(|documents| spec::cots(&documents))
     {
-        Ok(cots) => {
-            let after = spec::cots_naming(entity_id, &cots);
-            for line in spec::cascade_outcome_lines(entity_id, &affected, &after) {
-                println!("{line}");
-            }
+        Ok(cots) => cots,
+        Err(error) => {
+            return Err(Error::Config(format!(
+                "the entity was deleted, but re-reading the circles of trust in \
+                 {tenant}/{realm} failed, so the cascade AM performs is unconfirmed: \
+                 {error}. Do not re-run the delete — it has already landed; run \
+                 `aic saml cot list --realm {realm}` when the tenant answers again."
+            )));
         }
-        Err(error) => eprintln!(
-            "warning: the entity was deleted, but re-reading the circles of trust failed, \
-             so the cascade is unconfirmed: {error}"
-        ),
+    };
+    let outcome = spec::cascade_outcome(&affected, &spec::cots_naming(entity_id, &cots));
+    for line in outcome.lines(entity_id) {
+        println!("{line}");
     }
-    Ok(())
+    if outcome.settled() {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "{} circle(s) of trust in {tenant}/{realm} still list {entity_id} after the \
+         delete — {}. The entity is gone, so the federation now names a provider that \
+         does not exist; edit those circles of trust in the AM console.",
+        outcome.still_listing.len(),
+        outcome
+            .still_listing
+            .iter()
+            .map(|still| still.cot.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
 }
 
 async fn list(
