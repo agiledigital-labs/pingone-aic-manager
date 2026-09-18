@@ -537,8 +537,33 @@ fn rsa_public_key(der: &[u8]) -> Result<RsaPublicKey, String> {
     integers(&fields, 0, "RSAPublicKey")
 }
 
+/// The nine INTEGERs a two-prime `RSAPrivateKey` **is** (RFC 8017 A.1.2), in
+/// order. `otherPrimeInfos` follows them when `version` is 1; it is neither
+/// read nor refused, because a multi-prime key is still a key.
+const RSA_PRIVATE_KEY_INTEGERS: [&str; 9] = [
+    "version",
+    "modulus",
+    "publicExponent",
+    "privateExponent",
+    "prime1",
+    "prime2",
+    "exponent1",
+    "exponent2",
+    "coefficient",
+];
+
 /// `RSAPrivateKey ::= SEQUENCE { version, modulus, publicExponent, … }` —
 /// the two public components are in clear, third and second field in.
+///
+/// The whole sequence is required, not only the two fields that are read. This
+/// walk proves the certificate belongs to *this* key by comparing public
+/// components, and a SEQUENCE carrying nothing but those components matches
+/// just as well while being unable to sign anything — the pair would validate
+/// here, go into the ESV secret, and fail on the peer, which is the failure
+/// this module exists to move forward in time. That is a claim about
+/// **structure**, and distinct from the validity dates, chain and key strength
+/// this module deliberately does not judge: those are policy, and nothing
+/// offline could settle them.
 fn rsa_key_from_pkcs1(der: &[u8]) -> Result<RsaPublicKey, String> {
     let sequence = expect(
         &read_whole(der, "RSAPrivateKey")?,
@@ -546,6 +571,17 @@ fn rsa_key_from_pkcs1(der: &[u8]) -> Result<RsaPublicKey, String> {
         "RSAPrivateKey",
     )?;
     let fields = elements(sequence)?;
+    for (index, name) in RSA_PRIVATE_KEY_INTEGERS.iter().enumerate() {
+        let field = fields.get(index).ok_or_else(|| {
+            format!(
+                "RSAPrivateKey has {} element(s) and stops before `{name}`; a private key is \
+                 the nine INTEGERs of RFC 8017 A.1.2, and a document carrying only the public \
+                 ones is not a key that can sign",
+                fields.len()
+            )
+        })?;
+        expect(field, TAG_INTEGER, name)?;
+    }
     integers(&fields, 1, "RSAPrivateKey")
 }
 
@@ -709,13 +745,39 @@ mod tests {
         certificate_with(RSA_ENCRYPTION_OID, modulus, exponent, true)
     }
 
+    /// A structurally complete two-prime `RSAPrivateKey`: all nine INTEGERs
+    /// RFC 8017 A.1.2 requires. Only `modulus` and `publicExponent` are read;
+    /// the other seven are here because a document without them is not a key,
+    /// and the fixture that omitted them was proving the walk accepted one.
     fn pkcs1(modulus: &[u8], exponent: &[u8]) -> Vec<u8> {
         seq(&[
-            &int(&[0x00]),
+            &int(&[0x00]), // version: two-prime
             &int(modulus),
             &int(exponent),
             &int(&[0x07, 0x07]), // privateExponent; never read
+            &int(&[0x03]),       // prime1
+            &int(&[0x05]),       // prime2
+            &int(&[0x01]),       // exponent1
+            &int(&[0x01]),       // exponent2
+            &int(&[0x02]),       // coefficient
         ])
+    }
+
+    /// The same document with its private half cut off after `n` INTEGERs —
+    /// the shape a public-components-only check cannot tell from a key.
+    fn pkcs1_truncated_to(modulus: &[u8], exponent: &[u8], keep: usize) -> Vec<u8> {
+        let all = [
+            int(&[0x00]),
+            int(modulus),
+            int(exponent),
+            int(&[0x07, 0x07]),
+            int(&[0x03]),
+            int(&[0x05]),
+            int(&[0x01]),
+            int(&[0x01]),
+            int(&[0x02]),
+        ];
+        seq(&all[..keep].iter().map(Vec::as_slice).collect::<Vec<_>>())
     }
 
     fn pkcs8(modulus: &[u8], exponent: &[u8]) -> Vec<u8> {
@@ -793,6 +855,70 @@ mod tests {
             armour(CERTIFICATE_LABEL, &certificate(MODULUS, EXPONENT))
         );
         assert!(validate_key_pair(value.as_bytes()).is_ok());
+    }
+
+    /// Red when `rsa_key_from_pkcs1` reads `modulus` and `publicExponent` out
+    /// of whatever SEQUENCE it is handed without requiring the rest of the
+    /// key.
+    #[test]
+    fn a_private_key_without_its_private_half_is_refused_as_a_key() {
+        // The discriminating input, and the shape this module's own fixture
+        // used to have: version, modulus, publicExponent, privateExponent and
+        // nothing else. Its public components are exactly the certificate's,
+        // so every comparison the walk makes agrees — the only thing wrong
+        // with it is that it cannot sign, which is what the ESV secret is for.
+        for keep in [3, 4, 8] {
+            let truncated = format!(
+                "{}{}",
+                armour(PKCS1_LABEL, &pkcs1_truncated_to(MODULUS, EXPONENT, keep)),
+                armour(CERTIFICATE_LABEL, &certificate(MODULUS, EXPONENT))
+            );
+            let error = validate_key_pair(truncated.as_bytes()).expect_err("no private half");
+            let detail = error.to_string();
+            assert!(detail.contains("RSAPrivateKey has"), "{keep}: {detail}");
+            assert!(detail.contains("RFC 8017"), "{keep}: {detail}");
+        }
+
+        // Nine elements, but one of them is not an INTEGER: a key whose
+        // `prime1` is a SEQUENCE is as unusable as one with no `prime1`, and
+        // a length-only check would pass it.
+        let mis_tagged = seq(&[
+            &int(&[0x00]),
+            &int(MODULUS),
+            &int(EXPONENT),
+            &int(&[0x07, 0x07]),
+            &seq(&[]), // prime1, as the wrong type
+            &int(&[0x05]),
+            &int(&[0x01]),
+            &int(&[0x01]),
+            &int(&[0x02]),
+        ]);
+        let value = format!(
+            "{}{}",
+            armour(PKCS1_LABEL, &mis_tagged),
+            armour(CERTIFICATE_LABEL, &certificate(MODULUS, EXPONENT))
+        );
+        let detail = validate_key_pair(value.as_bytes())
+            .expect_err("prime1 is not an integer")
+            .to_string();
+        assert!(detail.contains("prime1"), "{detail}");
+
+        // The positive control: the same document with all nine INTEGERs is
+        // the one `a_matching_pkcs1_pair_validates` accepts, so the refusals
+        // above are about the missing half and not about the fixture.
+        assert_eq!(
+            elements(
+                expect(
+                    &read_whole(&pkcs1(MODULUS, EXPONENT), "RSAPrivateKey").expect("a sequence"),
+                    TAG_SEQUENCE,
+                    "RSAPrivateKey"
+                )
+                .expect("a sequence")
+            )
+            .expect("elements")
+            .len(),
+            RSA_PRIVATE_KEY_INTEGERS.len()
+        );
     }
 
     #[test]
