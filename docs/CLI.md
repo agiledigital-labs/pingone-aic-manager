@@ -1318,10 +1318,19 @@ path cannot reach it.
 
 Afterwards the command reports **only what AM said**. `importedEntities` is
 compared as an exact **set** against the ids parsed from the file — a
-matching count is not a match — and any id missing from one side or the other
-is a warning naming that id. A failed import is followed by a fresh list of
-the realm, reported per declared id, because a failed aggregate import is not
-a rollback and AM says nothing about how far it got.
+matching count is not a match — and any id missing from one side or the
+other, or named twice by AM, is a warning naming that id. The comparison is
+byte for byte on purpose: AM echoes an Entra id ending in `/` back unchanged
+(`docs/api/06-saml.md`), so there is nothing for a normalisation to repair
+and two entities for it to conflate.
+
+**Two endings get the fresh list of the realm, not one.** A failed call, and
+a `200` whose body names no `importedEntities` array, are the same situation
+from the operator's side: AM may have created every entity in the file and
+said so in a shape this command does not read. Both are followed by a list of
+the realm reported per declared id, because a failed aggregate import is not
+a rollback and AM says nothing about how far it got. The heading says which
+of the two happened; the inventory below it is the same either way.
 
 Every run ends on the same sentence: **circle-of-trust membership was not
 verified, and could not have been.** `importEntity` rewrites extended

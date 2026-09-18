@@ -516,21 +516,25 @@ async fn import(
     {
         Ok(response) => response,
         Err(error) => {
-            match api::list(&tenant, &realm).await {
-                Ok(after) => {
-                    for line in spec::after_failure_lines(&declared, &after, &realm) {
-                        eprintln!("{line}");
-                    }
-                }
-                Err(reread) => eprintln!(
-                    "warning: the import failed and re-reading realm {realm} failed too,                      so what exists now is unknown: {reread}"
-                ),
-            }
+            report_what_landed(&tenant, &realm, &declared, spec::ImportUnknown::Failed).await;
             return Err(error);
         }
     };
 
-    let outcome = spec::compare_imported(&declared, &spec::imported_entities(&response)?);
+    // A 200 we cannot read is the other half of the same situation, and it
+    // used to return here with no inventory at all. AM may have created every
+    // entity in the file and merely said so in a shape this command does not
+    // parse; a failed aggregate import is not a rollback either way, so the
+    // relist the failure path promises has to cover this path too.
+    let imported = match spec::imported_entities(&response) {
+        Ok(imported) => imported,
+        Err(error) => {
+            report_what_landed(&tenant, &realm, &declared, spec::ImportUnknown::Unreadable).await;
+            return Err(error);
+        }
+    };
+
+    let outcome = spec::compare_imported(&declared, &imported);
     for line in outcome.lines(&tenant, &realm) {
         println!("{line}");
     }
@@ -544,10 +548,38 @@ async fn import(
         // not happen", it is "the import is not what was asked for", and the
         // exit code has to say so.
         Err(Error::Config(format!(
-            "AM's importedEntities is not the set this file declares —              {} missing, {} unexpected; `aic saml list --realm {realm}` shows what exists",
+            "AM's importedEntities is not the set this file declares — {} missing, \
+             {} unexpected, {} duplicated; `aic saml list --realm {realm}` shows what exists",
             outcome.missing.len(),
-            outcome.unexpected.len()
+            outcome.unexpected.len(),
+            outcome.duplicated.len()
         )))
+    }
+}
+
+/// List the realm after an import that cannot report on itself.
+///
+/// Shared by both of [`spec::ImportUnknown`]'s cases on purpose: an inventory
+/// reachable from one of the two is the defect this exists to close. It never
+/// returns an error — the caller already has the one that matters, and a
+/// failed re-read must not replace "the import failed" with "listing failed".
+async fn report_what_landed(
+    tenant: &str,
+    realm: &str,
+    declared: &[String],
+    why: spec::ImportUnknown,
+) {
+    match api::list(tenant, realm).await {
+        Ok(after) => {
+            for line in spec::after_failure_lines(declared, &after, realm, why) {
+                eprintln!("{line}");
+            }
+        }
+        Err(reread) => eprintln!(
+            "warning: {} and re-reading realm {realm} failed too, so what exists now \
+             is unknown: {reread}",
+            why.what_happened()
+        ),
     }
 }
 
