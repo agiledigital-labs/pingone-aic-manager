@@ -15,6 +15,27 @@
 //! certificate alone, or a key and a stranger's certificate are all refused by
 //! name.
 //!
+//! ## What "exactly one of each" does and does not mean
+//!
+//! It is a statement about the armour, not about every byte of the file.
+//!
+//! - **Armour is refused, never dropped.** A block that never closes, closes
+//!   under a different label, or nests inside another is an error by name.
+//!   Skipping it is not the harmless reading it looks like, because the
+//!   hazard is a *third* document: `cat key.pem half-written-cert.pem cert.pem`
+//!   leaves exactly one key and one certificate once the broken block
+//!   vanishes, so the value validates — and the certificate the operator
+//!   thought went into the secret did not.
+//! - **Text outside the armour rides along.** An `openssl x509 -text` dump or
+//!   a dated comment above the key changes nothing about what AM parses out of
+//!   the value, and [`KeyPair::value`] is stored verbatim either way.
+//! - **Each block's DER must be one whole document.** Trailing bytes after the
+//!   value are refused rather than ignored; see [`read_whole`].
+//!
+//! And what is **not** checked, because nothing here could: no signature is
+//! verified, no validity date is read, no chain is built, no key strength is
+//! judged. A self-signed certificate from 1999 with a 512-bit key passes.
+//!
 //! This deliberately does **not** tighten [`crate::esv::api::encode_secret_value`],
 //! whose `pem` arm only looks for `-----BEGIN`. A `pem` ESV secret is not
 //! required to be a key pair — a bare certificate is a legal one, and
@@ -71,6 +92,12 @@ pub enum KeyPairError {
          Decrypt it first: `openssl pkcs8 -topk8 -nocrypt -in key.pem -out plain.pem`"
     )]
     EncryptedKey,
+    #[error(
+        "the PEM armour is not well formed: {0}. A block that does not open and close with the \
+         same label is a truncated or spliced document, and dropping it quietly is how a \
+         certificate nobody noticed was missing becomes a live secret."
+    )]
+    BrokenArmour(String),
     #[error("the `{label}` block on line {line} is not valid base64: {detail}")]
     NotBase64 {
         label: String,
@@ -156,7 +183,7 @@ impl std::fmt::Debug for KeyPair {
 pub fn validate_key_pair(bytes: &[u8]) -> Result<KeyPair, KeyPairError> {
     let text =
         std::str::from_utf8(bytes).map_err(|error| KeyPairError::NotText(error.to_string()))?;
-    let blocks = pem_blocks(text);
+    let blocks = pem_blocks(text)?;
 
     if blocks.len() != 2 {
         return Err(KeyPairError::NotAKeyPair(describe(&blocks)));
@@ -220,38 +247,69 @@ struct PemBlock {
     line: usize,
 }
 
-/// Every complete `-----BEGIN X-----` … `-----END X-----` block, in order.
+/// Every `-----BEGIN X-----` … `-----END X-----` block, in order.
 ///
-/// A block whose end marker names a different label, or that never ends, is
-/// not a block: PEM armour that does not close is corruption, and treating a
-/// truncated key as a key is how a half-written file becomes a live secret.
-fn pem_blocks(text: &str) -> Vec<PemBlock> {
+/// **Armour that does not open and close with the same label is refused, not
+/// dropped.** The hazard is a third document rather than a second:
+/// `cat key.pem half-written-cert.pem cert.pem` leaves exactly one key and one
+/// certificate once the broken block vanishes, so the value validates — and
+/// the operator believes a certificate went into the secret that did not.
+/// Refusing is also the only reading under which "exactly one private key and
+/// one certificate" is a claim about the whole document rather than about
+/// whatever survived the parse.
+///
+/// Text **outside** the armour still rides along, and that is deliberate: a
+/// `openssl x509 -text` dump or a dated comment above the key is common, it
+/// changes nothing about what AM parses out of the value, and
+/// [`KeyPair::value`] is stored verbatim either way.
+fn pem_blocks(text: &str) -> Result<Vec<PemBlock>, KeyPairError> {
+    let broken = |detail: String| KeyPairError::BrokenArmour(detail);
     let mut blocks = Vec::new();
     let mut open: Option<(String, usize, String)> = None;
     for (index, raw) in text.lines().enumerate() {
         let line = raw.trim();
         if let Some(label) = marker(line, "-----BEGIN ") {
-            // A second BEGIN inside an unclosed block abandons the first.
+            if let Some((open_label, open_line, _)) = open {
+                return Err(broken(format!(
+                    "the `{open_label}` block opened on line {open_line} never closes — line {} \
+                     opens a `{label}` block instead",
+                    index + 1
+                )));
+            }
             open = Some((label, index + 1, String::new()));
             continue;
         }
         if let Some(label) = marker(line, "-----END ") {
-            if let Some((open_label, open_line, body)) = open.take() {
-                if open_label == label {
-                    blocks.push(PemBlock {
-                        label,
-                        body,
-                        line: open_line,
-                    });
-                }
+            let Some((open_label, open_line, body)) = open.take() else {
+                return Err(broken(format!(
+                    "line {} closes a `{label}` block that was never opened",
+                    index + 1
+                )));
+            };
+            if open_label != label {
+                return Err(broken(format!(
+                    "the `{open_label}` block opened on line {open_line} closes as `{label}` on \
+                     line {}",
+                    index + 1
+                )));
             }
+            blocks.push(PemBlock {
+                label,
+                body,
+                line: open_line,
+            });
             continue;
         }
         if let Some((_, _, body)) = open.as_mut() {
             body.push_str(line);
         }
     }
-    blocks
+    if let Some((label, line, _)) = open {
+        return Err(broken(format!(
+            "the `{label}` block opened on line {line} never closes"
+        )));
+    }
+    Ok(blocks)
 }
 
 fn marker(line: &str, prefix: &str) -> Option<String> {
@@ -349,6 +407,26 @@ fn read_tlv(input: &[u8]) -> Result<Tlv<'_>, String> {
     })
 }
 
+/// Read the one TLV an input is supposed to **be**, refusing leftovers.
+///
+/// A DER document is exactly one value. Bytes after it are not extra context;
+/// they are a second document this reader has not looked at, and stopping at
+/// the first value it recognises is how a walk that verifies nothing comes to
+/// look like a walk that verifies something. It matters for the certificate in
+/// particular: [`KeyPair::sha256`] is a digest of these bytes and has to be
+/// the same identity [`crate::saml::metadata::CertRef`] reports for the
+/// published certificate, which it is only if the bytes are one certificate.
+fn read_whole<'a>(input: &'a [u8], what: &str) -> Result<Tlv<'a>, String> {
+    let tlv = read_tlv(input)?;
+    if tlv.consumed != input.len() {
+        return Err(format!(
+            "{what}: {} byte(s) follow the document, so this is not one {what}",
+            input.len() - tlv.consumed
+        ));
+    }
+    Ok(tlv)
+}
+
 /// Every element of a constructed value, in order.
 fn elements(mut input: &[u8]) -> Result<Vec<Tlv<'_>>, String> {
     let mut out = Vec::new();
@@ -387,10 +465,27 @@ struct Spki {
 /// `version` is `[0] EXPLICIT` and **optional**, which is the one place a
 /// fixed index would be wrong: a v1 certificate omits it and every later field
 /// shifts by one.
+///
+/// The three outer elements are all required, and are checked even though only
+/// the first is read. What this walk proves is **structure, never
+/// cryptography** — it verifies no signature and checks no validity date — and
+/// the least it owes that claim is that the document it walked is a whole
+/// certificate rather than the first SEQUENCE of one.
 fn certificate_spki(der: &[u8]) -> Result<Spki, String> {
-    let certificate = expect(&read_tlv(der)?, TAG_SEQUENCE, "Certificate")?;
-    let tbs_tlv = read_tlv(certificate)?;
-    let tbs = expect(&tbs_tlv, TAG_SEQUENCE, "TBSCertificate")?;
+    let certificate = expect(
+        &read_whole(der, "Certificate")?,
+        TAG_SEQUENCE,
+        "Certificate",
+    )?;
+    let outer = elements(certificate)?;
+    let [tbs_tlv, _signature_algorithm, _signature_value] = outer.as_slice() else {
+        return Err(format!(
+            "Certificate has {} element(s), not the three an X.509 certificate is \
+             (tbsCertificate, signatureAlgorithm, signatureValue)",
+            outer.len()
+        ));
+    };
+    let tbs = expect(tbs_tlv, TAG_SEQUENCE, "TBSCertificate")?;
     let fields = elements(tbs)?;
 
     let first_after_version = usize::from(fields.first().map(|tlv| tlv.tag) == Some(TAG_CONTEXT_0));
@@ -433,7 +528,11 @@ fn algorithm_oid(algorithm: &[u8]) -> Result<Vec<u8>, String> {
 /// `RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }` —
 /// the content of an RSA `subjectPublicKey` BIT STRING.
 fn rsa_public_key(der: &[u8]) -> Result<RsaPublicKey, String> {
-    let sequence = expect(&read_tlv(der)?, TAG_SEQUENCE, "RSAPublicKey")?;
+    let sequence = expect(
+        &read_whole(der, "RSAPublicKey")?,
+        TAG_SEQUENCE,
+        "RSAPublicKey",
+    )?;
     let fields = elements(sequence)?;
     integers(&fields, 0, "RSAPublicKey")
 }
@@ -441,7 +540,11 @@ fn rsa_public_key(der: &[u8]) -> Result<RsaPublicKey, String> {
 /// `RSAPrivateKey ::= SEQUENCE { version, modulus, publicExponent, … }` —
 /// the two public components are in clear, third and second field in.
 fn rsa_key_from_pkcs1(der: &[u8]) -> Result<RsaPublicKey, String> {
-    let sequence = expect(&read_tlv(der)?, TAG_SEQUENCE, "RSAPrivateKey")?;
+    let sequence = expect(
+        &read_whole(der, "RSAPrivateKey")?,
+        TAG_SEQUENCE,
+        "RSAPrivateKey",
+    )?;
     let fields = elements(sequence)?;
     integers(&fields, 1, "RSAPrivateKey")
 }
@@ -449,7 +552,11 @@ fn rsa_key_from_pkcs1(der: &[u8]) -> Result<RsaPublicKey, String> {
 /// `PrivateKeyInfo ::= SEQUENCE { version, privateKeyAlgorithm, privateKey OCTET STRING }`,
 /// whose octet string is a PKCS#1 `RSAPrivateKey` when the algorithm is RSA.
 fn rsa_key_from_pkcs8(der: &[u8]) -> Result<RsaPublicKey, String> {
-    let sequence = expect(&read_tlv(der)?, TAG_SEQUENCE, "PrivateKeyInfo")?;
+    let sequence = expect(
+        &read_whole(der, "PrivateKeyInfo")?,
+        TAG_SEQUENCE,
+        "PrivateKeyInfo",
+    )?;
     let fields = elements(sequence)?;
     let algorithm = fields.get(1).ok_or("PrivateKeyInfo has no algorithm")?;
     let oid = algorithm_oid(expect(algorithm, TAG_SEQUENCE, "privateKeyAlgorithm")?)?;
@@ -569,6 +676,21 @@ mod tests {
         exponent: &[u8],
         versioned: bool,
     ) -> Vec<u8> {
+        seq(&[
+            &tbs_certificate(algorithm, modulus, exponent, versioned),
+            &seq(&[&oid(&[0x2a]), &null()]),
+            &bit_string(&[0xde, 0xad]),
+        ])
+    }
+
+    /// The `tbsCertificate` alone — separate so a test can build the outer
+    /// SEQUENCE without the two elements that follow it.
+    fn tbs_certificate(
+        algorithm: &[u8],
+        modulus: &[u8],
+        exponent: &[u8],
+        versioned: bool,
+    ) -> Vec<u8> {
         let version = tlv(TAG_CONTEXT_0, &int(&[0x02]));
         let mut tbs_parts: Vec<Vec<u8>> = Vec::new();
         if versioned {
@@ -580,12 +702,7 @@ mod tests {
         tbs_parts.push(seq(&[])); // validity
         tbs_parts.push(seq(&[])); // subject
         tbs_parts.push(spki(algorithm, modulus, exponent));
-        let tbs = seq(&tbs_parts.iter().map(Vec::as_slice).collect::<Vec<_>>());
-        seq(&[
-            &tbs,
-            &seq(&[&oid(&[0x2a]), &null()]),
-            &bit_string(&[0xde, 0xad]),
-        ])
+        seq(&tbs_parts.iter().map(Vec::as_slice).collect::<Vec<_>>())
     }
 
     fn certificate(modulus: &[u8], exponent: &[u8]) -> Vec<u8> {
@@ -750,20 +867,6 @@ mod tests {
                 format!("{key}{cert}{cert}"),
             ),
             ("no PEM at all", "just some text\n".to_string()),
-            (
-                "an unterminated key",
-                key.replace(&format!("-----END {PKCS8_LABEL}-----"), ""),
-            ),
-            (
-                "an END naming a different label",
-                format!(
-                    "{}{cert}",
-                    key.replace(
-                        &format!("-----END {PKCS8_LABEL}-----"),
-                        "-----END CERTIFICATE-----"
-                    )
-                ),
-            ),
         ];
         for (what, value) in cases {
             assert!(
@@ -775,6 +878,50 @@ mod tests {
                 validate_key_pair(value.as_bytes())
             );
         }
+    }
+
+    /// Red when `pem_blocks` drops armour that does not open and close the
+    /// same way instead of refusing it.
+    #[test]
+    fn armour_that_does_not_close_the_way_it_opened_is_refused_by_name() {
+        let key = armour(PKCS8_LABEL, &pkcs8(MODULUS, EXPONENT));
+        let cert = armour(CERTIFICATE_LABEL, &certificate(MODULUS, EXPONENT));
+        let broken = |value: String| match validate_key_pair(value.as_bytes()) {
+            Err(KeyPairError::BrokenArmour(detail)) => detail,
+            other => panic!("expected broken armour, got {other:?}"),
+        };
+
+        // The discriminating input: a *third* document whose armour is
+        // truncated, between two good blocks. Dropping it leaves exactly one
+        // key and one certificate, so the old reader validated the value —
+        // and the certificate the operator meant to include is not in it.
+        let half_written = cert.replace(&format!("-----END {CERTIFICATE_LABEL}-----"), "");
+        let detail = broken(format!("{key}{half_written}{cert}"));
+        assert!(detail.contains("never closes"), "{detail}");
+        assert!(detail.contains(CERTIFICATE_LABEL), "{detail}");
+
+        // A block that never closes at all, at the end of the value.
+        assert!(
+            broken(key.replace(&format!("-----END {PKCS8_LABEL}-----"), ""))
+                .contains("never closes")
+        );
+
+        // An END naming a different label: the armour says one thing and the
+        // body may be either, so neither half is trustworthy.
+        let mislabelled = broken(format!(
+            "{}{cert}",
+            key.replace(
+                &format!("-----END {PKCS8_LABEL}-----"),
+                &format!("-----END {CERTIFICATE_LABEL}-----")
+            )
+        ));
+        assert!(mislabelled.contains("closes as"), "{mislabelled}");
+
+        // And an END with nothing open.
+        assert!(
+            broken(format!("{key}{cert}-----END {CERTIFICATE_LABEL}-----\n"))
+                .contains("never opened")
+        );
     }
 
     #[test]
@@ -852,6 +999,54 @@ mod tests {
             }
             other => panic!("expected a base64 complaint, got {other:?}"),
         }
+    }
+
+    /// Red when the DER walk stops at the first value it recognises, and red
+    /// when it reads a `tbsCertificate` out of something that is not a whole
+    /// X.509 certificate.
+    #[test]
+    fn der_that_is_not_exactly_one_whole_document_is_refused() {
+        let key = armour(PKCS8_LABEL, &pkcs8(MODULUS, EXPONENT));
+        let cert = armour(CERTIFICATE_LABEL, &certificate(MODULUS, EXPONENT));
+
+        // The discriminating input for `read_whole`: a perfectly good
+        // certificate with a second document glued to the end of it. A walk
+        // that reads one TLV and returns is happy — and `sha256` then names a
+        // blob no metadata export will ever produce, so the certificate could
+        // never be recognised in the tenant's own export.
+        let mut two = certificate(MODULUS, EXPONENT);
+        two.extend_from_slice(&certificate(MODULUS, EXPONENT));
+        assert!(matches!(
+            validate_key_pair(format!("{key}{}", armour(CERTIFICATE_LABEL, &two)).as_bytes()),
+            Err(KeyPairError::BadCertificate(_))
+        ));
+
+        // The discriminating input for the three-element check: a SEQUENCE
+        // holding a valid tbsCertificate and nothing else. Every field the
+        // walk reads is present and correct, so only looking at what is
+        // *around* them tells this from a certificate.
+        let headless = seq(&[&tbs_certificate(
+            RSA_ENCRYPTION_OID,
+            MODULUS,
+            EXPONENT,
+            true,
+        )]);
+        match validate_key_pair(format!("{key}{}", armour(CERTIFICATE_LABEL, &headless)).as_bytes())
+        {
+            Err(KeyPairError::BadCertificate(detail)) => {
+                assert!(detail.contains("not the three"), "{detail}");
+            }
+            other => panic!("expected a certificate complaint, got {other:?}"),
+        }
+
+        // Same rule on the key half: a PKCS#8 document with a stray integer
+        // after it is two documents, not a key.
+        let mut padded = pkcs8(MODULUS, EXPONENT);
+        padded.extend_from_slice(&int(&[0x09]));
+        assert!(matches!(
+            validate_key_pair(format!("{}{cert}", armour(PKCS8_LABEL, &padded)).as_bytes()),
+            Err(KeyPairError::BadPrivateKey(_))
+        ));
     }
 
     #[test]
