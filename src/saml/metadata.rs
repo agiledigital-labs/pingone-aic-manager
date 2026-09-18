@@ -84,10 +84,11 @@ const XSI_NS: &[u8] = b"http://www.w3.org/2001/XMLSchema-instance";
 /// rather than by a schema this module does not read — see [`ElementId`].
 const XML_NS: &[u8] = b"http://www.w3.org/XML/1998/namespace";
 
-/// The XML-Signature element. Only a *direct child* of `EntityDescriptor`
-/// signs the whole document; one further down signs the role it sits in.
-/// Conditional on `--keep-signature`, and only removed when some *other* cut
-/// would change the bytes it covers.
+/// The XML-Signature element. Matched wherever it appears, because placement
+/// does not say what a signature covers — its `<ds:Reference>` elements do,
+/// and [`Coverage`] is where that is resolved. Conditional on
+/// `--keep-signature`, and only removed when some *other* cut would change
+/// bytes it covers.
 const SIGNATURE_LOCAL_NAME: &str = "Signature";
 
 /// The five entities XML predefines, with the replacement text each stands
@@ -283,11 +284,16 @@ impl fmt::Display for Removal {
 pub struct MetadataDoc {
     pub entity_id: String,
     pub roles: Vec<Role>,
-    /// Whether the document carries an enveloped signature over *itself* — a
-    /// `Signature` that is a direct child of `EntityDescriptor`. A signature
-    /// further down covers one role; removing a *sibling* role leaves it
-    /// verifying, so it is neither counted here nor removed. A fact about the
-    /// document, separate from whether we would remove it.
+    /// Whether the document carries a signature over *itself*: one whose
+    /// references resolve to the whole document (`URI=""`) or to the root
+    /// element's own XML ID. A signature covering one role is not this, and
+    /// neither is one whose coverage could not be established — an
+    /// unresolvable reference is a reason to remove a signature, never a
+    /// reason to tell an operator the document is signed.
+    ///
+    /// A fact about the document as read, separate from whether we would
+    /// remove it: a signature inside a subtree about to be cut still claims
+    /// what it claims.
     pub signed: bool,
     pub endpoints: Vec<Endpoint>,
     pub certs: Vec<CertRef>,
