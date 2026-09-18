@@ -259,6 +259,46 @@ fn kind_of(value: &Value) -> &'static str {
     }
 }
 
+/// Whether the entity is still the one the plan was authorized against.
+///
+/// `.ai/core.md` §5 with the sides swapped. The rule there is that a local
+/// file is re-read immediately before it is overwritten; here it is the
+/// *remote* document that moves, and the re-read that makes the write safe is
+/// also what hides the move. [`set_secret_identifier`] builds its full-replace
+/// body from a fresh read, so every other byte of a concurrent change survives
+/// — and the one leaf the plan was about is silently replaced. An operator who
+/// set the identifier in that gap gets no conflict, no diff and no message.
+///
+/// `planned_from` is the identifier this role had when [`plan_init`] decided
+/// to set one. Identical is the **only** case that may write, and that
+/// includes "someone else already set it to exactly what we wanted": the plan
+/// said this was an unconfigured role, it is not one now, and re-running is
+/// what should decide from the state that exists. `plan_init` then skips the
+/// step and nothing is sent.
+///
+/// Role-scoped, because the other role's identifier is not this one's: a
+/// dual-role entity has two, set independently.
+pub fn identifier_write_ok(planned_from: Option<&str>, fresh: &Value, role: Role) -> Result<()> {
+    let now = current_identifier(fresh, role);
+    if now.as_deref() == planned_from {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "the {} block's secretIdIdentifier changed while this run was planning — it was {} when \
+         the plan was made and it is {} now, so something else is writing this entity. The \
+         entity `PUT` is a full replace with no `If-Match`, so going ahead would overwrite that \
+         change with nothing reported. **Nothing has been sent.** Find out what the other change \
+         was, then re-run: `aic saml rotate status` reads the state that exists now.",
+        role.wire(),
+        quoted(planned_from),
+        quoted(now.as_deref()),
+    )))
+}
+
+fn quoted(identifier: Option<&str>) -> String {
+    identifier.map_or_else(|| "unset".to_string(), |value| format!("{value:?}"))
+}
+
 /// Whether the entity that came back is the entity that was sent.
 ///
 /// Returns the paths that differ, so a write AM quietly reshaped is reported
@@ -1758,6 +1798,59 @@ mod tests {
             message(set_secret_identifier(&bare, Location::Remote, Role::Idp, "x").unwrap_err())
                 .contains("no identityProvider block")
         );
+    }
+
+    /// Red when `set_identifier` writes whatever its fresh read returned
+    /// instead of checking the leaf the plan was authorized against.
+    #[test]
+    fn a_concurrent_identifier_change_is_reported_rather_than_overwritten() {
+        let unconfigured = json!({
+            "entityId": "https://sp-a.example.com",
+            "serviceProvider": { "assertionContent": { "secrets": {} } },
+        });
+        // Planned from an unconfigured role and still unconfigured: the only
+        // case that may write.
+        assert!(identifier_write_ok(None, &unconfigured, Role::Sp).is_ok());
+
+        // The discriminating input. `plan_init` decided to set the identifier
+        // *because* the role had none; by the time the write re-reads the
+        // entity, someone else has set one. The wrong implementation — re-read,
+        // change the leaf, `PUT` — cannot tell this document from the one
+        // above, and replaces "theirs" with no diff and no message.
+        let taken = json!({
+            "entityId": "https://sp-a.example.com",
+            "serviceProvider": {
+                "assertionContent": { "secrets": { "secretIdIdentifier": "theirs" } },
+            },
+        });
+        let refusal = message(identifier_write_ok(None, &taken, Role::Sp).unwrap_err());
+        assert!(refusal.contains("\"theirs\""), "{refusal}");
+        assert!(refusal.contains("unset"), "{refusal}");
+        assert!(refusal.contains("Nothing has been sent"), "{refusal}");
+
+        // Including when the concurrent change is the value this run wanted:
+        // the plan said unconfigured, and it is not unconfigured now. Nothing
+        // is lost by refusing — a re-run skips the step.
+        assert!(
+            message(identifier_write_ok(None, &taken, Role::Sp).unwrap_err()).contains("theirs")
+        );
+        let same = json!({
+            "serviceProvider": { "assertionContent": { "secrets": { "secretIdIdentifier": "spa" } } },
+        });
+        assert!(identifier_write_ok(None, &same, Role::Sp).is_err());
+        assert!(identifier_write_ok(Some("spa"), &same, Role::Sp).is_ok());
+
+        // Role-scoped: the other role's identifier is not this one's, and a
+        // check that read either would refuse a legitimate write on every
+        // dual-role entity that had already configured its IdP.
+        let other_role = json!({
+            "identityProvider": {
+                "assertionContent": { "secrets": { "secretIdIdentifier": "theirs" } },
+            },
+            "serviceProvider": { "assertionContent": { "secrets": {} } },
+        });
+        assert!(identifier_write_ok(None, &other_role, Role::Sp).is_ok());
+        assert!(identifier_write_ok(None, &other_role, Role::Idp).is_err());
     }
 
     /// Red when `entity_write_differences` compares with `==` and reports a
