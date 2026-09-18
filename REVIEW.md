@@ -24,8 +24,13 @@ findings). Each should name the guard that will eventually retire it.
   (2026-08-11, where the code did call `write_gitignore()` and the content it
   writes still covered nothing). _Guard: `gitignore_covers_every_artifact_stem`
   iterates `VaultArtifact::ALL`, so each non-artifact path needs its own
-  assertion — `settings.toml` and `backups/` both have one now. Any future
-  writer under `ProjectConfig::dir()` must add a third._
+  assertion — `settings.toml`, `backups/` and `saml-rotations.json` all have one
+  now._ **Seen a third time on 2026-09-18** (`.aic/saml-rotations.json`), which
+  retires the "any future writer must add another assertion" instruction: an
+  instruction to remember something is not a guard against forgetting it, and
+  this one has now failed three times for three different authors. The check
+  stays, but it is owed the structural fix in the 2026-09-18 findings entry —
+  until a writer cannot exist without a gitignore line, expect a fourth.
 - **A `## Verified against` entry must record calls that support its
   conclusion.** Not merely calls that were made — check that the experiment
   described could actually distinguish the outcomes it claims to distinguish. An
@@ -311,6 +316,22 @@ findings). Each should name the guard that will eventually retire it.
   instances. _Guard: `repo_hygiene::no_process_cwd_mutation_under_cfg_test`
   rejects `set_current_dir` below any `#[cfg(test)]` boundary._
 
+- **A constraint only a third party can violate will not be found by a run that
+  chooses its own inputs.** When a verification pass probes an API by hand, the
+  prober picks every value, and picks them sensibly — so a rule about the
+  *shape* of an input is silently never under test. `docs/api/06-saml.md` said
+  `secretIdIdentifier` was "any string" and survived three verification passes
+  saying so; all three chose alphanumeric identifiers (`aicrot1`, `aicrot2`,
+  `probe3key`) because that is what a person types. AM in fact rejects `-` and
+  `_` with a 400. It surfaced only when a CLI let someone else choose, on
+  2026-09-18. So when a doc records that a field accepts a class of value, ask
+  which member of that class the run actually sent — and if the answer is "the
+  obvious one, every time", the claim covers one example, not the class.
+  _Guard: a `## Verified against` row asserting permissiveness ("any string",
+  "any length", "any encoding") must cite a deliberately awkward value, or say
+  it was not tested. Nothing automated can catch this; it is a question to ask
+  of the evidence table._
+
 - **A count is not an identity.** When a check measures how many of something
   exist before and after an operation, ask which *distinct* outcomes produce the
   same count. Add/remove pairs, rotations and swaps are the usual offenders: the
@@ -322,6 +343,33 @@ findings). Each should name the guard that will eventually retire it.
   judgement._
 
 ## Findings log
+
+### 2026-09-18 — the standing check that asked the author to remember
+
+- **What:** `aic saml rotate` writes `.aic/saml-rotations.json` — tenant name,
+  realms, entity ids and certificate fingerprints — and it was absent from
+  `ProjectConfig::gitignore_content()`, while `journal.rs`'s own module header
+  claimed it was covered. This repo's top-level `.gitignore` has `.aic/`, so the
+  gap is invisible here; it opens in a scaffolded user project, which is exactly
+  the case the existing standing check describes.
+- **Why missed:** it was not missed for lack of a rule — the standing check has
+  existed since 2026-08-11, names the hazard precisely, and closes by instructing
+  the next author to add an assertion. That instruction is the defect. The guard
+  (`gitignore_covers_every_artifact_stem`) iterates `VaultArtifact::ALL` and
+  then hand-asserts each non-artifact path, so it is structurally incapable of
+  failing for a path nobody thought to add — it tests the assertions someone
+  remembered to write, not the files the program writes. Three authors have now
+  walked past it. An external reviewer found this one; the repo's own review did
+  not, because a reviewer checking "does the diff violate a standing check?"
+  reads the diff, and the absence of a line in a distant function is not in it.
+- **Guard:** make the writer and the ignore list share one source of truth, the
+  way `VaultArtifact::ALL` already does for the vault. A `RuntimeFile` enum
+  naming every non-artifact path written under `ProjectConfig::dir()`, with
+  `journal::path()` and its siblings deriving their filename from it and both
+  `gitignore_content()` and the test iterating it, makes a writer without a
+  gitignore line fail to compile rather than fail to be noticed. **Not yet
+  applied** — it reaches outside the SAML vertical and is queued as its own
+  slice.
 
 ### 2026-09-16 — a harness that counts instead of identifying
 
@@ -1037,6 +1085,7 @@ findings). Each should name the guard that will eventually retire it.
   another cut would change the bytes; `tests/saml_metadata_cli.rs` drives the
   binary. Discriminating cases: two roots, bad comment, invalid UTF-8,
   `urn:not-wsfed` RoleDescriptor kept, signed-clean keeps `ds:Signature`.
+
 ### 2026-09-15 — type-test leaves: a discovered runner, a hand-maintained validator
 
 - **What:** `scripts/type-tests/run.sh` discovers leaf directories with a
