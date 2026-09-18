@@ -1141,6 +1141,32 @@ pub fn next_step(state: &RotationState, phase: &Phase) -> String {
     }
 }
 
+/// What the `init` making an adoption claim actually did.
+///
+/// One sentence apart, and it is the sentence an operator acts on. After a run
+/// that wrote the entity, "nothing has been undone" is what stops them
+/// re-running to be safe; after a run that sent nothing at all, the same
+/// sentence is a claim about a `PUT` that never happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Adoption {
+    /// At least one of the three steps was performed this run.
+    Applied,
+    /// The tenant already showed every step done, so nothing was sent.
+    AlreadyDone,
+}
+
+impl Adoption {
+    fn aftermath(self) -> &'static str {
+        match self {
+            Self::Applied => "The entity has been written; nothing has been undone.",
+            Self::AlreadyDone => {
+                "Nothing was sent: the tenant already showed every step of the setup done, which \
+                 is exactly why this is a problem rather than a half-finished run."
+            }
+        }
+    }
+}
+
 /// The sentence every two-certificate report carries.
 pub const PAIRING_CAVEAT: &str = "\
 Which published certificate came from which ESV secret version is not readable: secret values are
@@ -1173,11 +1199,19 @@ say it is the certificate you meant. Check the fingerprint against the key pair 
 /// rule lives here, out of `cli`, so a test drives the real function: a test
 /// restating "empty is bad" would have passed against exactly the code that
 /// never looked.
+///
+/// The **idempotent** `init` reports through here too, for the same reason it
+/// exists: "the tenant already shows every step done" is a statement about
+/// three documents, and a label backed by a secret with no ENABLED version
+/// satisfies all three while publishing nothing. That path used to return
+/// success in front of the read, so the one configuration that needs telling
+/// got "already set up" and exit zero.
 pub fn adoption_outcome(
     state: &RotationState,
     secret_id: &str,
     published: &BTreeSet<String>,
     supplied: Option<&str>,
+    did: Adoption,
 ) -> Result<Vec<String>> {
     if published.is_empty() {
         return Err(Error::Config(format!(
@@ -1185,12 +1219,12 @@ pub fn adoption_outcome(
              so `init` adopted it rather than writing a key pair, and nothing checked it holds \
              one — a secret with no ENABLED version resolves to nothing. \
              `aic esv secret versions {secret_id}` lists what is in it, and \
-             `aic saml rotate status {} --realm {}` reads the whole picture back. The entity has \
-             been written; nothing has been undone.",
+             `aic saml rotate status {} --realm {}` reads the whole picture back. {}",
             state.entity_id,
             role_descriptor(state.role),
             state.entity_id,
-            state.realm
+            state.realm,
+            did.aftermath()
         )));
     }
 
@@ -2502,8 +2536,16 @@ mod tests {
         // code never reached an export at all — `expected` was `None` whenever
         // no key pair was written and `finish` returned success — so this state
         // and the one below were reported identically.
-        let nothing =
-            message(adoption_outcome(&state(), "esv-sp-a-signing", &shas([]), None).unwrap_err());
+        let nothing = message(
+            adoption_outcome(
+                &state(),
+                "esv-sp-a-signing",
+                &shas([]),
+                None,
+                Adoption::Applied,
+            )
+            .unwrap_err(),
+        );
         assert!(
             nothing.contains("publishes no signing certificate"),
             "{nothing}"
@@ -2519,9 +2561,15 @@ mod tests {
 
         // Publishing something is reported as the fingerprint that was read,
         // with the limit named rather than implied past.
-        let found = adoption_outcome(&state(), "esv-sp-a-signing", &shas([OLD]), None)
-            .unwrap()
-            .join("\n");
+        let found = adoption_outcome(
+            &state(),
+            "esv-sp-a-signing",
+            &shas([OLD]),
+            None,
+            Adoption::Applied,
+        )
+        .unwrap()
+        .join("\n");
         assert!(found.contains(OLD), "{found}");
         assert!(found.contains(ADOPTION_CAVEAT), "{found}");
         assert!(ADOPTION_CAVEAT.contains("write-only"));
@@ -2529,16 +2577,50 @@ mod tests {
         // A key pair handed to an `init` that adopted is not written
         // anywhere, and the report says which of the two it is rather than
         // leaving the operator to assume the new key is in service.
-        let ignored = adoption_outcome(&state(), "esv-sp-a-signing", &shas([OLD]), Some(NEW))
-            .unwrap()
-            .join("\n");
+        let ignored = adoption_outcome(
+            &state(),
+            "esv-sp-a-signing",
+            &shas([OLD]),
+            Some(NEW),
+            Adoption::Applied,
+        )
+        .unwrap()
+        .join("\n");
         assert!(ignored.contains("is NOT among them"), "{ignored}");
         assert!(ignored.contains("rotate stage"), "{ignored}");
-        let present = adoption_outcome(&state(), "esv-sp-a-signing", &shas([OLD]), Some(OLD))
-            .unwrap()
-            .join("\n");
+        let present = adoption_outcome(
+            &state(),
+            "esv-sp-a-signing",
+            &shas([OLD]),
+            Some(OLD),
+            Adoption::Applied,
+        )
+        .unwrap()
+        .join("\n");
         assert!(present.contains("is among them"), "{present}");
         assert!(!present.contains("NOT among them"), "{present}");
+
+        // The idempotent `init` reaches the same rule, and must not inherit
+        // the sentence about a write it never made. This is the arm that used
+        // to be skipped entirely: `plan.is_noop()` returned success in front
+        // of the export read, so a fully configured role publishing nothing
+        // printed "already set up" and exited zero.
+        let already = message(
+            adoption_outcome(
+                &state(),
+                "esv-sp-a-signing",
+                &shas([]),
+                None,
+                Adoption::AlreadyDone,
+            )
+            .unwrap_err(),
+        );
+        assert!(
+            already.contains("publishes no signing certificate"),
+            "{already}"
+        );
+        assert!(already.contains("Nothing was sent"), "{already}");
+        assert!(!already.contains("nothing has been undone"), "{already}");
     }
 
     /// Red when `InitPlan::lines` credits an adopted secret with the

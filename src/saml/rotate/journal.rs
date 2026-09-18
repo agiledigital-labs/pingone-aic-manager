@@ -42,6 +42,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ProjectConfig;
+use crate::saml::rotate::spec::StagePermit;
 use crate::{Error, Result};
 
 /// The file, beside `undo.log` and the vault, under `.aic/`.
@@ -94,7 +95,17 @@ pub fn find(key: &Key) -> Result<Option<StagedRecord>> {
 }
 
 /// Record a staged rollover, replacing any earlier entry for the same key.
-pub fn record(entry: StagedRecord) -> Result<()> {
+///
+/// The [`StagePermit`] is the point: this file answers "which ESV secret
+/// version holds which certificate" **during a two-certificate window**, and
+/// only `stage` opens one. `init` used to reach the same writer through a
+/// callback shared with `stage` and record its single certificate as version
+/// "1", which a later `complete` then read as the rollover this install
+/// staged. Requiring the permit the stage authorizer mints makes that
+/// uncompilable rather than merely wrong — the same routing proof as
+/// `scripts::gate`'s `WritePermit`, pointed at a local file instead of a
+/// tenant.
+pub fn record(entry: StagedRecord, _permit: &StagePermit) -> Result<()> {
     update_at(&path(), |entries| {
         entries.retain(|existing| !key_of(&entry).matches(existing));
         entries.push(entry);
