@@ -827,10 +827,12 @@ pub fn authorize_stage(dry_run: bool) -> Decision<StagePermit> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VersionChoice {
     /// Derived from [`StagedRecord`], the one place a fingerprint is tied to a
-    /// version number.
+    /// version number. Also what a `--disable-version` that **agrees** with
+    /// the record is: the derivation is still the command's, and reporting it
+    /// as the operator's claim would understate what is known.
     Recorded,
-    /// Named with `--disable-version`. Nothing readable corroborates it, so
-    /// the report says whose claim it is.
+    /// Named with `--disable-version`, where no record could decide. Nothing
+    /// readable corroborates it, so the report says whose claim it is.
     Named,
 }
 
@@ -856,7 +858,9 @@ pub struct CompletePlan {
 ///
 /// `retain` is the fingerprint the operator wants to keep; `disable_version`
 /// is `--disable-version`, the escape hatch for when nothing here can work the
-/// version out.
+/// version out — and **only** for then. Where a usable record exists it
+/// decides, and the flag may agree with it or be refused; see
+/// [`contradicted_pairing`].
 ///
 /// **Retaining a fingerprint does not select a version, and this used to
 /// assume it did.** `--retain` only proved the certificate was currently
@@ -870,9 +874,9 @@ pub struct CompletePlan {
 ///
 /// So the version is **derived from the pairing** or not derived at all:
 ///
-/// - with a record naming one of the two published certificates, the version
-///   follows in both directions — keep what was staged and the other ENABLED
-///   version goes; keep what was there before and the staged version goes;
+/// - with a [`usable_pairing`], the version follows in both directions — keep
+///   what was staged and the other ENABLED version goes; keep what was there
+///   before and the staged version goes;
 /// - with no usable record there is no pairing, and `--disable-version` is
 ///   required. That refuses the case that used to work by luck as well as the
 ///   case that used to fail: "it happened to agree" is not knowledge, and the
