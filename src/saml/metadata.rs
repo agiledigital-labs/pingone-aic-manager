@@ -182,6 +182,12 @@ pub enum MetadataError {
     },
     #[error("<{ROOT_LOCAL_NAME}> on line {line} carries no entityID attribute")]
     NoEntityId { line: usize },
+    #[error(
+        "<{ROOT_LOCAL_NAME}> on line {line} carries an entityID that is empty or \
+         whitespace only; an entity has to be nameable before anything can preflight \
+         it against the realm or find it in importedEntities"
+    )]
+    BlankEntityId { line: usize },
     #[error("<{AGGREGATE_LOCAL_NAME}> contains no <{ROOT_LOCAL_NAME}> to import")]
     NoEntities,
     #[error(
@@ -498,8 +504,9 @@ pub struct BundleEntity {
 /// Three rules beyond well-formedness, each of which makes the entity ids
 /// usable as a **set**:
 ///
-/// - every `<EntityDescriptor>` must carry an `entityID`, because an entity
-///   that cannot be named cannot be preflighted;
+/// - every `<EntityDescriptor>` must carry a non-blank `entityID`, because an
+///   entity that cannot be named cannot be preflighted, and `entityID=""`
+///   names nothing just as thoroughly as no attribute at all;
 /// - the same `entityID` may not appear twice, because a set comparison
 ///   against `importedEntities` cannot then say what happened;
 /// - there must be at least one entity, because an empty aggregate is a file
@@ -518,8 +525,8 @@ impl MetadataBundle {
         let scan = scan(xml, Depth::Content, Roots::Aggregate)?;
         let mut entities: Vec<BundleEntity> = Vec::new();
         for seen in scan.entities {
-            // `Depth::Content` has already refused a missing `entityID`; this
-            // is the type, not a second check.
+            // `Depth::Content` has already refused a missing or blank
+            // `entityID`; this is the type, not a second check.
             let entity_id = seen.entity_id.unwrap_or_default();
             if let Some(first) = entities.iter().find(|held| held.entity_id == entity_id) {
                 return Err(MetadataError::DuplicateEntityId {
@@ -1564,10 +1571,20 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
     // aggregate entry with no `entityID` cannot be preflighted against the
     // realm, and an import that cannot be preflighted is the one this command
     // exists to refuse.
+    // A present-but-blank `entityID` is its own refusal rather than an absent
+    // one: `entityID=""` is a different file from a roleless export that
+    // carries no attribute at all, and the operator has to be told which they
+    // have. Only whitespace is trimmed to decide it — an id that survives is
+    // used byte for byte, because AM echoes it back that way
+    // (`spec::compare_imported`).
     if depth == Depth::Content {
         for entity in &scan.entities {
-            if entity.entity_id.is_none() {
-                return Err(MetadataError::NoEntityId { line: entity.line });
+            match entity.entity_id.as_deref() {
+                None => return Err(MetadataError::NoEntityId { line: entity.line }),
+                Some(id) if id.trim().is_empty() => {
+                    return Err(MetadataError::BlankEntityId { line: entity.line });
+                }
+                Some(_) => {}
             }
         }
     }
@@ -3116,6 +3133,15 @@ mod tests {
             // The one refusal an export is allowed to produce: a roleless
             // entity really does export a bare descriptor with no entityID.
             ("no entityID", format!("{root} />"), ContentOnly),
+            // Present but naming nothing. `Depth::Document` reads no
+            // attributes at all, so the export classifier is as blind to this
+            // as to the row above — which is why the guard has to be here.
+            ("an empty entityID", format!("{root} entityID=\"\" />"), ContentOnly),
+            (
+                "a whitespace-only entityID",
+                format!("{root} entityID=\" \n \" />"),
+                ContentOnly,
+            ),
             ("empty input", String::new(), Document),
             (
                 "two top-level EntityDescriptors",
@@ -3683,8 +3709,19 @@ mod tests {
         let wrap = |body: String| {
             format!("<EntitiesDescriptor xmlns=\"{SAML_URI}\">{body}</EntitiesDescriptor>")
         };
-        let cases: [(&str, String); 5] = [
+        let cases: [(&str, String); 7] = [
             ("an aggregate with nothing in it", wrap(String::new())),
+            (
+                // The local safety boundary this bundle exists to be: an
+                // `entityID=""` used to be *present*, so it was preflighted
+                // against the realm and sent.
+                "an aggregate entry whose entityID is empty",
+                wrap(entity("")),
+            ),
+            (
+                "an aggregate entry whose entityID is whitespace",
+                wrap(entity("  ")),
+            ),
             (
                 "the same entity id twice",
                 wrap(format!(
@@ -3729,6 +3766,13 @@ mod tests {
                 "{name} should be refused"
             );
         }
+
+        // A blank id is refused for *being blank*, not reported as absent.
+        // The two are different files and the remedy differs with them.
+        assert!(matches!(
+            MetadataBundle::parse(wrap(entity("")).as_bytes()),
+            Err(MetadataError::BlankEntityId { .. })
+        ));
 
         // The control: two *different* ids in one aggregate is exactly what
         // an aggregate is for, and must still be accepted.
