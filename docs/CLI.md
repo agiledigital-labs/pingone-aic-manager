@@ -1472,10 +1472,34 @@ identifier, its own labels and its own `KeyDescriptor`s, and both can publish
 names two different keys identically.
 
 `--key-file` (or `--key-stdin`) takes `cat key.pem cert.pem`, and it is checked
-offline before anything is sent: exactly one private key and one certificate,
-and the certificate's public modulus and exponent must be the ones the key
-carries. The tenant takes a mismatched pair with a **200** and the failure then
-surfaces on the peer as a rejected assertion, hours later.
+offline before anything is sent: exactly one private key PEM block followed by
+one certificate PEM block, and the certificate's public modulus and exponent
+must be the ones the key carries. The tenant takes a mismatched pair with a
+**200** and the failure then surfaces on the peer as a rejected assertion, hours
+later.
+
+"Exactly one of each" is a claim about the armour, so it is worth being precise
+about what passes:
+
+- Armour that never closes, closes under a different label, or nests inside
+  another block is **refused by name**, not skipped. That matters for a third
+  document rather than a second: `cat key.pem half-written.pem cert.pem` leaves
+  one key and one certificate once a broken block is dropped, so it would
+  validate while missing the certificate you meant to include.
+- Text **outside** the armour is ignored and kept. An `openssl x509 -text` dump
+  or a dated comment above the key is fine — the value is stored verbatim, and
+  AM parses the blocks out of it.
+- Each block's DER must be one whole document. Trailing bytes after the
+  certificate are refused, because the SHA-256 this command reports is a digest
+  of exactly those bytes and has to be the same identity the metadata export
+  publishes.
+
+What is **not** checked, because nothing offline could: no signature is
+verified, no validity date is read, no chain is built and no key strength is
+judged. The walk reads structure in order to prove the two halves belong
+together; it is not certificate validation and does not stand in for it. A
+non-RSA certificate is refused outright rather than passed unchecked, for the
+same reason.
 
 `--dry-run` prints the plan and sends nothing. It stops by holding no permission
 token rather than by returning in front of the write: the preview arm of
