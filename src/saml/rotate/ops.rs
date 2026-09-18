@@ -118,6 +118,45 @@ pub async fn secret_facts(tenant: &str, secret_id: &str) -> Result<Option<spec::
     }
 }
 
+/// Who else in this realm resolves a key through the ESV secret a rotation is
+/// about ([`spec::survey_consumers`]).
+///
+/// **One read per entity provider in the realm**, on top of the mapping table
+/// and the entity list — and that cost is the finding, not an oversight. The
+/// entity list is **stubs only** (`docs/api/06-saml.md`) and carries no
+/// `secretIdIdentifier`, and there is no query filter for one, so the only way
+/// to learn which providers name a label family is to read them. Every verb
+/// pays it once, because the question it answers is whether the write is about
+/// one entity or about the whole federation.
+///
+/// A 404 mid-survey is skipped rather than fatal: an entity deleted between
+/// the list and its read resolves nothing and consumes nothing. Any other
+/// error propagates — a consumer that could not be read is not a consumer that
+/// is absent.
+pub async fn read_consumers(
+    tenant: &str,
+    realm: &str,
+    mine: &spec::Consumer,
+    secret_id: Option<&str>,
+) -> Result<spec::Consumers> {
+    let mappings = crate::secretmap::api::list_mappings(tenant, realm).await?;
+    let mut entities = Vec::new();
+    for stub in api::list(tenant, realm).await? {
+        match api::read(tenant, realm, stub.location, &stub.entity_id).await {
+            Ok(document) => entities.push(spec::entity_identifiers(
+                &stub.entity_id,
+                stub.location,
+                &document,
+            )),
+            Err(error) if is_not_found(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(spec::survey_consumers(
+        realm, mine, secret_id, &mappings, &entities,
+    ))
+}
+
 /// Fetch and fingerprint the entity's published certificates.
 ///
 /// **The export endpoint answers 200 for failure too**, so the body is
@@ -451,17 +490,38 @@ pub async fn disable_version(
     .await
 }
 
-/// Read the rollover's two inputs again and compare them with the plan's.
+/// Read the rollover's inputs again and compare them with the plan's.
 ///
-/// Two calls, not the five [`read_state`] makes: the entity, its mapping and
-/// the secret's metadata are not what a stage or a completion is decided from,
-/// and comparing them would refuse writes that are safe.
+/// Four calls, not the five [`read_state`] makes, and they answer two
+/// different questions.
+///
+/// [`spec::rollover_target_ok`] asks whether this role still resolves the
+/// secret about to be mutated, which is the question certificate equality
+/// cannot answer: published metadata names no secret and no version, so an
+/// identifier or a mapping that moved in the gap leaves the versions and the
+/// fingerprints looking exactly as planned while the secret behind them is
+/// somebody else's. [`spec::rollover_write_ok`] then asks whether the rollover
+/// itself is still the one that was planned.
+///
+/// The secret's own metadata is still not re-read: `encoding` and
+/// `useInPlaceholders` are immutable after create (`docs/api/03-esvs.md`), so
+/// there is nothing about it that can move.
 async fn recheck(
     tenant: &Tenant,
     state: &RotationState,
     verb: &str,
     secret_id: &str,
 ) -> Result<()> {
+    let entity = api::read(&tenant.name, &state.realm, state.location, &state.entity_id).await?;
+    let identifier = spec::current_identifier(&entity, state.role);
+    let alias = match identifier.as_deref() {
+        Some(identifier) => {
+            mapping_alias(&tenant.name, &state.realm, &signing_label(identifier)).await?
+        }
+        None => None,
+    };
+    spec::rollover_target_ok(verb, secret_id, identifier.as_deref(), alias.as_deref())?;
+
     let versions = spec::parse_versions(
         &crate::esv::api::list_secret_versions(&tenant.name, secret_id).await?,
     );
