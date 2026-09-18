@@ -221,19 +221,25 @@ pub async fn wait_for_export(
 
 /// `PUT` the entity with a `secretIdIdentifier`, and prove it survived.
 ///
-/// Four steps, and the shape is `.ai/core.md` §5 applied to a family with no
+/// Five steps, and the shape is `.ai/core.md` §5 applied to a family with no
 /// `If-Match` and a `PUT` that replaces the whole document:
 ///
 /// 1. read the entity **fresh** — the snapshot is taken here, not from a read
 ///    the caller did minutes ago;
-/// 2. change exactly one leaf of it;
-/// 3. `PUT` the result;
-/// 4. read it back and compare the **whole document**, and report the paths
+/// 2. check the fresh read against the state the plan was authorized from, and
+///    refuse if the decision's own input moved ([`spec::identifier_write_ok`]);
+/// 3. change exactly one leaf of it;
+/// 4. `PUT` the result;
+/// 5. read it back and compare the **whole document**, and report the paths
 ///    that differ rather than a verdict.
 ///
-/// Step 4 is the one that matters. `{"entityId": "<same>"}` answers 200 and
-/// leaves a roleless shell, so a write that succeeded by status code proves
-/// nothing at all about what is now on the tenant.
+/// Steps 2 and 5 are the ones that matter, and they guard opposite ends. Step 5
+/// is about AM: `{"entityId": "<same>"}` answers 200 and leaves a roleless
+/// shell, so a write that succeeded by status code proves nothing about what is
+/// now on the tenant. Step 2 is about the other operator: the fresh read in
+/// step 1 carries a concurrent change through into the body verbatim, which is
+/// right for every leaf except the one this write is about — that one gets
+/// replaced, and without step 2 nothing says so.
 pub async fn set_identifier(
     state: &RotationState,
     identifier: &str,
@@ -251,6 +257,7 @@ pub async fn set_identifier(
     );
     let (location, role) = (state.location, state.role);
     let before = api::read(tenant, realm, location, entity_id).await?;
+    spec::identifier_write_ok(state.identifier.as_deref(), &before, role)?;
     let intended = spec::set_secret_identifier(&before, location, role, identifier)?;
     api::update_entity(
         tenant,
@@ -262,7 +269,23 @@ pub async fn set_identifier(
         _permit,
     )
     .await?;
-    let after = api::read(tenant, realm, location, entity_id).await?;
+    // The write is already gone. An error from here on is an error about the
+    // *proof*, and it has to say which: an operator who reads "failed" and
+    // re-runs to be sure is acting on the belief that nothing changed, and on
+    // a full-replace `PUT` that belief is the expensive one.
+    let after = api::read(tenant, realm, location, entity_id)
+        .await
+        .map_err(|error| {
+            Error::Config(format!(
+                "the entity `PUT` was accepted — {tenant}/{realm}/{entity_id} has been written \
+                 with secretIdIdentifier {identifier:?} — but reading it back to prove that \
+                 failed: {error}. **The write landed; this is not a no-op.** Nothing here has \
+                 seen what is on the tenant now, so read it with `aic saml show {entity_id} \
+                 --realm {realm} --json` before doing anything else, and do not create the ESV \
+                 secret until the identifier is right. Re-running `aic saml rotate init` is \
+                 safe — it skips a step the tenant already shows done."
+            ))
+        })?;
 
     let differences = spec::entity_write_differences(&intended, &after);
     if differences.is_empty() {
