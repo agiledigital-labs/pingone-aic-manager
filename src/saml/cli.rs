@@ -538,10 +538,19 @@ async fn import(
     for line in outcome.lines(&tenant, &realm) {
         println!("{line}");
     }
+    // A response that names the wrong set has said itself that it is not
+    // describing the import we asked for, so it does not get to be the final
+    // account of what landed either — the same reason the two arms above
+    // relist, one step further in. Nothing here is a rollback, and the realm
+    // is the only source that is not this body.
+    let matched = outcome.matches();
+    if !matched {
+        report_what_landed(&tenant, &realm, &declared, spec::ImportUnknown::Mismatched).await;
+    }
     println!();
     println!("{}", spec::IMPORT_COTLIST_CAVEAT);
 
-    if outcome.matches() {
+    if matched {
         Ok(())
     } else {
         // The entities AM did name are created; this is not "the import did
@@ -559,9 +568,10 @@ async fn import(
 
 /// List the realm after an import that cannot report on itself.
 ///
-/// Shared by both of [`spec::ImportUnknown`]'s cases on purpose: an inventory
-/// reachable from one of the two is the defect this exists to close. It never
-/// returns an error — the caller already has the one that matters, and a
+/// Shared by every one of [`spec::ImportUnknown`]'s cases on purpose: an
+/// inventory reachable from only some of them is the defect this exists to
+/// close, and it has been that defect twice — first for a 200 we could not
+/// read, then for one we read and disbelieved. It never returns an error — the caller already has the one that matters, and a
 /// failed re-read must not replace "the import failed" with "listing failed".
 async fn report_what_landed(
     tenant: &str,
