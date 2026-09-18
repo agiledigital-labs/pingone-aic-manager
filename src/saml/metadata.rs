@@ -85,11 +85,67 @@ const XSI_NS: &[u8] = b"http://www.w3.org/2001/XMLSchema-instance";
 const XML_NS: &[u8] = b"http://www.w3.org/XML/1998/namespace";
 
 /// The XML-Signature element. Matched wherever it appears, because placement
-/// does not say what a signature covers — its `<ds:Reference>` elements do,
-/// and [`Coverage`] is where that is resolved. Conditional on
+/// does not say what a signature covers — the `<ds:Reference>` elements of
+/// its `<ds:SignedInfo>` do, and [`Coverage`] is where that is resolved. Conditional on
 /// `--keep-signature`, and only removed when some *other* cut would change
 /// bytes it covers.
 const SIGNATURE_LOCAL_NAME: &str = "Signature";
+
+/// The transform algorithms that leave *which bytes a reference covers*
+/// alone, so the reference's `URI` is still the whole answer.
+///
+/// A reference's digest is taken over the result of dereferencing its `URI`
+/// **and then running its transform chain** — the URI alone names an input,
+/// not the octets. Canonicalisation re-spells the node-set it is handed and
+/// drops nothing from it, and the enveloped-signature transform removes the
+/// signature carrying the reference, which is already exactly how
+/// [`Cuts::invalidated_signatures`] treats every signature against its own
+/// removal. Those are the two a real metadata document carries.
+///
+/// Anything else — XPath, XPath Filter 2.0, XSLT, base64, an algorithm we
+/// have never seen — picks the digested octets by a rule this module does not
+/// evaluate, and it can pick in either direction: a filter that subtracts most
+/// of the document would have us report a document as signing itself on the
+/// strength of a `URI=""`. So an unrecognised algorithm makes the coverage
+/// [`Coverage::Unknown`], which is removed rather than trusted.
+const BENIGN_TRANSFORMS: &[&str] = &[
+    "http://www.w3.org/2000/09/xmldsig#enveloped-signature",
+    "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+    "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments",
+    "http://www.w3.org/2001/10/xml-exc-c14n#",
+    "http://www.w3.org/2001/10/xml-exc-c14n#WithComments",
+    "http://www.w3.org/2006/12/xml-c14n11",
+    "http://www.w3.org/2006/12/xml-c14n11#WithComments",
+];
+
+/// The SAML metadata elements whose unqualified `ID` attribute the schema
+/// declares as `xs:ID`, and which therefore carry an XML ID a `URI="#…"`
+/// resolves against.
+///
+/// `ID` is an XML ID **only where the applicable schema says so** — the
+/// spelling confers nothing. SAML declares it on the two container elements
+/// and on `RoleDescriptorType`, which is the base of every role element
+/// (including the abstract `<RoleDescriptor>` an `xsi:type` specialises), plus
+/// `<AffiliationDescriptor>`. An `<Extensions>` child spelling `ID` is
+/// governed by whatever schema owns it, which this module does not read.
+///
+/// Taking the spelling for the type is fail-open, which is why the list
+/// exists: an extension element acquiring ID semantics makes a reference
+/// *resolve* that should not have, so a signature is kept on the strength of
+/// a span nothing established. Leaving a real ID unrecognised only removes a
+/// signature we could have kept. [`XML_NS`]'s `xml:id` needs no list — it is
+/// an ID everywhere by specification.
+const ID_BEARING_ELEMENTS: &[&str] = &[
+    AGGREGATE_LOCAL_NAME,
+    ROOT_LOCAL_NAME,
+    "RoleDescriptor",
+    "IDPSSODescriptor",
+    "SPSSODescriptor",
+    "AuthnAuthorityDescriptor",
+    "AttributeAuthorityDescriptor",
+    "PDPDescriptor",
+    "AffiliationDescriptor",
+];
 
 /// The five entities XML predefines, with the replacement text each stands
 /// for. Any other name needs a DTD declaration to have a replacement text at
@@ -126,6 +182,12 @@ pub enum MetadataError {
     },
     #[error("<{ROOT_LOCAL_NAME}> on line {line} carries no entityID attribute")]
     NoEntityId { line: usize },
+    #[error(
+        "<{ROOT_LOCAL_NAME}> on line {line} carries an entityID that is empty or \
+         whitespace only; an entity has to be nameable before anything can preflight \
+         it against the realm or find it in importedEntities"
+    )]
+    BlankEntityId { line: usize },
     #[error("<{AGGREGATE_LOCAL_NAME}> contains no <{ROOT_LOCAL_NAME}> to import")]
     NoEntities,
     #[error(
@@ -442,8 +504,9 @@ pub struct BundleEntity {
 /// Three rules beyond well-formedness, each of which makes the entity ids
 /// usable as a **set**:
 ///
-/// - every `<EntityDescriptor>` must carry an `entityID`, because an entity
-///   that cannot be named cannot be preflighted;
+/// - every `<EntityDescriptor>` must carry a non-blank `entityID`, because an
+///   entity that cannot be named cannot be preflighted, and `entityID=""`
+///   names nothing just as thoroughly as no attribute at all;
 /// - the same `entityID` may not appear twice, because a set comparison
 ///   against `importedEntities` cannot then say what happened;
 /// - there must be at least one entity, because an empty aggregate is a file
@@ -462,8 +525,8 @@ impl MetadataBundle {
         let scan = scan(xml, Depth::Content, Roots::Aggregate)?;
         let mut entities: Vec<BundleEntity> = Vec::new();
         for seen in scan.entities {
-            // `Depth::Content` has already refused a missing `entityID`; this
-            // is the type, not a second check.
+            // `Depth::Content` has already refused a missing or blank
+            // `entityID`; this is the type, not a second check.
             let entity_id = seen.entity_id.unwrap_or_default();
             if let Some(first) = entities.iter().find(|held| held.entity_id == entity_id) {
                 return Err(MetadataError::DuplicateEntityId {
@@ -549,6 +612,12 @@ struct SignatureCut {
 /// is stripped (the placement rule kept it, and handed a peer a document that
 /// will not verify), while a direct child can reference something narrower
 /// and was dropped for nothing.
+///
+/// Two things narrow "what the references say", and both were once read as
+/// more certainty than XMLDSig offers: only the references of the signature's
+/// own `<ds:SignedInfo>` are coverage at all ([`SignedReference`]), and a
+/// reference's `URI` is its coverage only while its transform chain leaves
+/// the digested octets where the `URI` put them ([`BENIGN_TRANSFORMS`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Coverage {
     /// Every reference resolved to a span of this document.
@@ -827,21 +896,54 @@ struct PendingSignature {
     /// in which case it goes with that cut and is not reported separately.
     inside_cut: bool,
     nested: bool,
-    /// Every `<ds:Reference URI="…">` seen inside it, in document order.
-    /// `None` is a `<ds:Reference>` with no `URI` at all, which names an
-    /// object only the application can identify — so, not us.
-    references: Vec<Option<String>>,
+    /// Depth of the `<ds:SignedInfo>` open inside this signature right now,
+    /// and `None` whenever no such element is open. It is what restricts
+    /// [`Self::references`] to the references core validation is defined
+    /// over — see [`SignedReference`].
+    signed_info: Option<usize>,
+    /// Depth of the `<ds:Reference>` open inside that `<ds:SignedInfo>` right
+    /// now, so a `<ds:Transform>` is attributed to the reference it qualifies
+    /// rather than to the signature.
+    open_reference: Option<usize>,
+    /// Every `<ds:Reference>` of this signature's `<ds:SignedInfo>`, in
+    /// document order.
+    references: Vec<SignedReference>,
+}
+
+/// One `<ds:Reference>` from a signature's `<ds:SignedInfo>`, and nowhere
+/// else.
+///
+/// **Only `SignedInfo` references are coverage.** XMLDSig core validation is
+/// defined over the references inside `SignedInfo`; a `<ds:Reference>` in a
+/// `<ds:Manifest>` — or in any other `<ds:Object>` — is checked by the
+/// application, or by nothing at all, and the signature still validates
+/// either way. Counting one does not merely over-count: a signature whose
+/// only reference sits in a `Manifest` would be promoted from "nothing here
+/// can say what this covers" to [`Coverage::Spans`] of whatever the manifest
+/// happens to name, which manufactures coverage core validation never
+/// establishes and keeps a signature a rewrite has invalidated. That is
+/// fail-open, and this module fails closed.
+struct SignedReference {
+    /// The `URI` attribute. `None` is a `<ds:Reference>` with no `URI` at
+    /// all, which names an object only the application can identify — so,
+    /// not us.
+    uri: Option<String>,
+    /// False once this reference carries a transform outside
+    /// [`BENIGN_TRANSFORMS`], which makes the `URI` stop being an answer
+    /// about bytes.
+    transforms_understood: bool,
 }
 
 /// An element carrying an XML ID, so a `URI="#id"` reference can be resolved
 /// to the bytes it names.
 ///
-/// **Only attributes that are IDs by specification count**: unqualified `ID`,
-/// which the SAML metadata schema declares as `xs:ID` on every descriptor,
-/// and `xml:id`. An `Id` or `id` attribute is an ID only because some other
-/// schema says so, and this module reads no schema — leaving those
-/// unresolved is the fail-closed direction, because an unresolved reference
-/// removes the signature rather than keeping it.
+/// **Only attributes that are IDs by specification count**: `xml:id`, and an
+/// unqualified `ID` on one of [`ID_BEARING_ELEMENTS`] — the elements SAML's
+/// own schema declares it on. An `Id` or `id` attribute, or an `ID` on an
+/// element some other schema governs, is an ID only because that schema says
+/// so, and this module reads no schema. Leaving those unresolved is the
+/// fail-closed direction, because an unresolved reference removes the
+/// signature rather than keeping it.
 struct ElementId {
     value: String,
     range: Range<usize>,
@@ -1183,6 +1285,8 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                                 depth: path.len(),
                                 inside_cut: open_cut.is_some(),
                                 nested: false,
+                                signed_info: None,
+                                open_reference: None,
                                 references: Vec::new(),
                             };
                             // An empty `<ds:Signature/>` has no references and
@@ -1199,19 +1303,40 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                         }
                     }
                 }
-                // Read only inside a signature: `<ds:Reference>` also appears
-                // in a `<ds:Manifest>`, and taking that as coverage too can
-                // only make us remove a signature we might have kept, which
-                // is the safe direction.
-                if name == "Reference"
-                    && ns == Some(DSIG_NS)
+                // Coverage is read from the signature's own
+                // `<ds:SignedInfo>` and nowhere else; [`SignedReference`] says
+                // why a `<ds:Manifest>`'s references are not coverage.
+                if ns == Some(DSIG_NS)
                     && let Some(open) = signature.as_mut()
                 {
-                    open.references
-                        .push(attrs.unqualified("URI").map(str::to_owned));
+                    if name == "SignedInfo" && !empty && path.len() == open.depth + 1 {
+                        open.signed_info = Some(path.len());
+                    } else if name == "Reference"
+                        && open.signed_info.is_some_and(|depth| path.len() > depth)
+                    {
+                        open.references.push(SignedReference {
+                            uri: attrs.unqualified("URI").map(str::to_owned),
+                            transforms_understood: true,
+                        });
+                        if !empty {
+                            open.open_reference = Some(path.len());
+                        }
+                    } else if name == "Transform"
+                        && open.open_reference.is_some_and(|depth| path.len() > depth)
+                        && let Some(reference) = open.references.last_mut()
+                    {
+                        // A missing `Algorithm` is as unreadable as an
+                        // unrecognised one: the attribute is what names the
+                        // rule, and we are refusing to guess at the rule.
+                        reference.transforms_understood &= attrs
+                            .unqualified("Algorithm")
+                            .is_some_and(|algorithm| BENIGN_TRANSFORMS.contains(&algorithm));
+                    }
                 }
+                // [`ID_BEARING_ELEMENTS`] says why the spelling is not enough.
                 let element_id = attrs
                     .unqualified("ID")
+                    .filter(|_| saml && ID_BEARING_ELEMENTS.contains(&name.as_str()))
                     .or_else(|| attrs.get(Some(XML_NS), "id"))
                     .map(str::to_owned);
                 if empty && let Some(value) = element_id.clone() {
@@ -1347,6 +1472,17 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                 {
                     root_range = open.start..end;
                 }
+                // A `<ds:Transform>` after this belongs to no reference, and a
+                // `<ds:Reference>` after the `<ds:SignedInfo>` closes is a
+                // `<ds:Manifest>`'s and not coverage.
+                if let Some(open) = signature.as_mut() {
+                    if open.open_reference == Some(path.len()) {
+                        open.open_reference = None;
+                    }
+                    if open.signed_info == Some(path.len()) {
+                        open.signed_info = None;
+                    }
+                }
                 if let Some(mut done) = signature.take_if(|open| open.depth == path.len()) {
                     done.to = end;
                     signatures.push(done);
@@ -1441,10 +1577,20 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
     // aggregate entry with no `entityID` cannot be preflighted against the
     // realm, and an import that cannot be preflighted is the one this command
     // exists to refuse.
+    // A present-but-blank `entityID` is its own refusal rather than an absent
+    // one: `entityID=""` is a different file from a roleless export that
+    // carries no attribute at all, and the operator has to be told which they
+    // have. Only whitespace is trimmed to decide it — an id that survives is
+    // used byte for byte, because AM echoes it back that way
+    // (`spec::compare_imported`).
     if depth == Depth::Content {
         for entity in &scan.entities {
-            if entity.entity_id.is_none() {
-                return Err(MetadataError::NoEntityId { line: entity.line });
+            match entity.entity_id.as_deref() {
+                None => return Err(MetadataError::NoEntityId { line: entity.line }),
+                Some(id) if id.trim().is_empty() => {
+                    return Err(MetadataError::BlankEntityId { line: entity.line });
+                }
+                Some(_) => {}
             }
         }
     }
@@ -1497,7 +1643,9 @@ fn note_id(ids: &mut Vec<ElementId>, value: String, range: Range<usize>) {
 /// [`Coverage::Unknown`], because a signature is invalid if *any* of its
 /// references stopped matching and we would be guessing about that one.
 ///
-/// Three forms resolve, and everything else does not:
+/// Only the references of the signature's `<ds:SignedInfo>` are read at all
+/// ([`SignedReference`]). Of those, three forms resolve and everything else
+/// does not:
 ///
 /// - `URI=""` — the whole document, which is what a plain enveloped signature
 ///   uses.
@@ -1506,16 +1654,21 @@ fn note_id(ids: &mut Vec<ElementId>, value: String, range: Range<usize>) {
 ///   resolves to nothing.
 /// - nothing else: an XPointer (`#xpointer(…)`) needs an expression evaluator,
 ///   and a detached reference names bytes outside this file that we could not
-///   fetch, let alone re-check. Transforms are not interpreted either — an
-///   XPath transform could exclude the very subtree being cut, and assuming it
-///   does not is the conservative reading.
+///   fetch, let alone re-check.
+///
+/// And the `URI` is only half of a reference: its transform chain decides the
+/// octets that are digested, so a reference carrying anything outside
+/// [`BENIGN_TRANSFORMS`] resolves to nothing however well its `URI` reads.
 fn resolve_coverage(signature: &PendingSignature, ids: &[ElementId], len: usize) -> Coverage {
     if signature.nested || signature.references.is_empty() {
         return Coverage::Unknown;
     }
     let mut spans = Vec::new();
     for reference in &signature.references {
-        let Some(uri) = reference else {
+        if !reference.transforms_understood {
+            return Coverage::Unknown;
+        }
+        let Some(uri) = &reference.uri else {
             return Coverage::Unknown;
         };
         if uri.is_empty() {
@@ -2287,6 +2440,29 @@ mod tests {
         format!("<ds:Signature xmlns:ds=\"{DSIG_URI}\"><ds:SignedInfo/></ds:Signature>")
     }
 
+    /// A `<ds:Signature>` whose `<ds:SignedInfo>` holds no reference at all
+    /// and whose only `<ds:Reference URI="…">` sits in a `<ds:Manifest>`.
+    fn dsig_manifest_only(target: &str) -> String {
+        format!(
+            "<ds:Signature xmlns:ds=\"{DSIG_URI}\"><ds:SignedInfo/>\
+             <ds:Object><ds:Manifest><ds:Reference URI=\"{target}\"/>\
+             </ds:Manifest></ds:Object></ds:Signature>"
+        )
+    }
+
+    /// A `<ds:Signature>` referencing `target`, with one `<ds:Transform>` in
+    /// that reference's chain. `None` writes the element with no `Algorithm`
+    /// attribute at all.
+    fn dsig_transformed(target: &str, algorithm: Option<&str>) -> String {
+        let attribute = algorithm.map_or(String::new(), |named| format!(" Algorithm=\"{named}\""));
+        format!(
+            "<ds:Signature xmlns:ds=\"{DSIG_URI}\"><ds:SignedInfo>\
+             <ds:Reference URI=\"{target}\"><ds:Transforms>\
+             <ds:Transform{attribute}/></ds:Transforms></ds:Reference>\
+             </ds:SignedInfo></ds:Signature>"
+        )
+    }
+
     /// The WS-Federation role every case below has cut out from under it.
     fn wsfed_role() -> String {
         format!(
@@ -2443,6 +2619,185 @@ mod tests {
                 inspect(input.as_bytes()).expect("parses").signed,
                 *signed,
                 "{case}: `signed` reports a signature over the document itself"
+            );
+        }
+    }
+
+    /// A `<ds:Manifest>` reference is not coverage.
+    ///
+    /// The bug: every descendant `<ds:Reference>` was recorded, so a
+    /// signature with an empty `<ds:SignedInfo>` and one manifest reference
+    /// was promoted from "nothing here can say what this covers" to
+    /// [`Coverage::Spans`] of whatever the manifest named. XMLDSig core
+    /// validation is defined over `SignedInfo` alone — manifest references
+    /// are the application's business, and the signature validates whether or
+    /// not they still match — so that promotion invented coverage rather than
+    /// over-counting it.
+    ///
+    /// Both rows are discriminating, in the two directions the invention
+    /// leaks:
+    ///
+    /// - naming the retained role, the manufactured span excluded the WS-Fed
+    ///   cut, so the signature was **kept** over bytes that had moved;
+    /// - naming the whole document, it made [`MetadataDoc::signed`] report a
+    ///   document as signing itself on the strength of a reference core
+    ///   validation never checks.
+    #[test]
+    fn a_manifest_reference_is_not_coverage() {
+        let role = wsfed_role();
+        let idp = "<IDPSSODescriptor ID=\"_idp\" \
+                   protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">";
+
+        let on_idp = dsig_manifest_only("#_idp");
+        let input =
+            format!("{SIGNED_HEAD}\n  {on_idp}\n  {role} />\n  {idp}</IDPSSODescriptor>{TAIL}");
+        let result = clean(&input);
+        assert_eq!(
+            result
+                .removed
+                .iter()
+                .map(|removal| removal.reason)
+                .collect::<Vec<_>>(),
+            vec![
+                RemovalReason::EnvelopedSignature,
+                RemovalReason::UnsupportedRole,
+            ],
+            "a manifest reference kept a signature over rewritten bytes"
+        );
+        assert!(
+            !String::from_utf8(result.bytes)
+                .expect("utf-8")
+                .contains("<ds:Signature")
+        );
+
+        let whole = dsig_manifest_only("");
+        let signed = format!("{SIGNED_HEAD}\n  {whole}\n  {idp}</IDPSSODescriptor>{TAIL}");
+        assert!(
+            !inspect(signed.as_bytes()).expect("parses").signed,
+            "a manifest reference reported the document as signing itself"
+        );
+    }
+
+    /// A transform chooses the digested octets, so one we cannot evaluate
+    /// makes the reference's `URI` stop being an answer.
+    ///
+    /// The bug: a reference was resolved by `URI` alone. A digest is taken
+    /// over the URI's dereference *after* its transform chain, and an XPath
+    /// or XSLT transform selects by a rule nothing here evaluates — in either
+    /// direction. So the two failing rows are the two directions:
+    ///
+    /// - `URI="#_idp"` with an XPath transform resolved to a span the WS-Fed
+    ///   cut does not touch, and the signature was **kept** over rewritten
+    ///   bytes;
+    /// - `URI=""` with one made [`MetadataDoc::signed`] report a document as
+    ///   signing itself, when the transform may subtract nearly all of it.
+    ///
+    /// The last two rows are the control that keeps this from being a blanket
+    /// refusal of transforms: the enveloped-signature and exclusive-c14n pair
+    /// every real signed metadata document carries still resolves, and the
+    /// signature survives a cut it does not cover.
+    #[test]
+    fn a_transform_we_cannot_evaluate_makes_the_coverage_unknown() {
+        const XPATH: &str = "http://www.w3.org/TR/1999/REC-xpath-19991116";
+        const ENVELOPED: &str = "http://www.w3.org/2000/09/xmldsig#enveloped-signature";
+        const EXC_C14N: &str = "http://www.w3.org/2001/10/xml-exc-c14n#";
+        let role = wsfed_role();
+        let idp = "<IDPSSODescriptor ID=\"_idp\" \
+                   protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">";
+
+        // case, the reference's one transform, does the signature survive a
+        // cut it does not cover, does `URI=""` still read as signing the
+        // document
+        let cases: &[(&str, Option<&str>, bool)] = &[
+            ("an XPath transform", Some(XPATH), false),
+            ("an algorithm nothing names", None, false),
+            ("the enveloped-signature transform", Some(ENVELOPED), true),
+            ("exclusive canonicalisation", Some(EXC_C14N), true),
+        ];
+
+        for (case, algorithm, resolves) in cases {
+            let on_idp = dsig_transformed("#_idp", *algorithm);
+            let input =
+                format!("{SIGNED_HEAD}\n  {on_idp}\n  {role} />\n  {idp}</IDPSSODescriptor>{TAIL}");
+            let result = clean(&input);
+            assert_eq!(
+                result
+                    .removed
+                    .iter()
+                    .map(|removal| removal.reason)
+                    .collect::<Vec<_>>(),
+                if *resolves {
+                    vec![RemovalReason::UnsupportedRole]
+                } else {
+                    vec![
+                        RemovalReason::EnvelopedSignature,
+                        RemovalReason::UnsupportedRole,
+                    ]
+                },
+                "{case}"
+            );
+
+            let whole = dsig_transformed("", *algorithm);
+            let signed = format!("{SIGNED_HEAD}\n  {whole}\n  {idp}</IDPSSODescriptor>{TAIL}");
+            assert_eq!(
+                inspect(signed.as_bytes()).expect("parses").signed,
+                *resolves,
+                "{case}: `signed` reports a signature over the document itself"
+            );
+        }
+    }
+
+    /// An unqualified `ID` is an XML ID only where the applicable schema says
+    /// so.
+    ///
+    /// The bug: every element spelling `ID` was recorded as carrying one, so
+    /// an extension element the SAML schema does not govern lent
+    /// `URI="#_ext"` a resolution it has not got — and a reference that
+    /// resolves is a reference that keeps a signature, over a span nothing
+    /// established. Recognising too many ids is the fail-open half of this;
+    /// recognising too few only costs a signature we could have kept.
+    ///
+    /// Discriminating input: one extension element, one reference, and the
+    /// only difference between the rows is which attribute spells the id.
+    /// `xml:id` is an ID everywhere by specification, so the control is not
+    /// "extensions carry no ids" — it is "the spelling is not what makes
+    /// one".
+    #[test]
+    fn an_unqualified_id_is_an_id_only_where_saml_declares_it() {
+        let role = wsfed_role();
+        let on_ext = dsig("#_ext");
+
+        // case, how the extension element spells its id, does it resolve
+        let cases: &[(&str, &str, bool)] = &[
+            ("an extension element spelling ID", "ID=\"_ext\"", false),
+            (
+                "xml:id, an ID everywhere by specification",
+                "xml:id=\"_ext\"",
+                true,
+            ),
+        ];
+
+        for (case, attribute, resolves) in cases {
+            let input = format!(
+                "{SIGNED_HEAD}\n  {on_ext}\n  <Extensions><ext:Thing xmlns:ext=\"urn:x\" \
+                 {attribute}/></Extensions>\n  {role} />{TAIL}"
+            );
+            let result = clean(&input);
+            assert_eq!(
+                result
+                    .removed
+                    .iter()
+                    .map(|removal| removal.reason)
+                    .collect::<Vec<_>>(),
+                if *resolves {
+                    vec![RemovalReason::UnsupportedRole]
+                } else {
+                    vec![
+                        RemovalReason::EnvelopedSignature,
+                        RemovalReason::UnsupportedRole,
+                    ]
+                },
+                "{case}"
             );
         }
     }
@@ -2784,6 +3139,15 @@ mod tests {
             // The one refusal an export is allowed to produce: a roleless
             // entity really does export a bare descriptor with no entityID.
             ("no entityID", format!("{root} />"), ContentOnly),
+            // Present but naming nothing. `Depth::Document` reads no
+            // attributes at all, so the export classifier is as blind to this
+            // as to the row above — which is why the guard has to be here.
+            ("an empty entityID", format!("{root} entityID=\"\" />"), ContentOnly),
+            (
+                "a whitespace-only entityID",
+                format!("{root} entityID=\" \n \" />"),
+                ContentOnly,
+            ),
             ("empty input", String::new(), Document),
             (
                 "two top-level EntityDescriptors",
@@ -3351,8 +3715,19 @@ mod tests {
         let wrap = |body: String| {
             format!("<EntitiesDescriptor xmlns=\"{SAML_URI}\">{body}</EntitiesDescriptor>")
         };
-        let cases: [(&str, String); 5] = [
+        let cases: [(&str, String); 7] = [
             ("an aggregate with nothing in it", wrap(String::new())),
+            (
+                // The local safety boundary this bundle exists to be: an
+                // `entityID=""` used to be *present*, so it was preflighted
+                // against the realm and sent.
+                "an aggregate entry whose entityID is empty",
+                wrap(entity("")),
+            ),
+            (
+                "an aggregate entry whose entityID is whitespace",
+                wrap(entity("  ")),
+            ),
             (
                 "the same entity id twice",
                 wrap(format!(
@@ -3397,6 +3772,13 @@ mod tests {
                 "{name} should be refused"
             );
         }
+
+        // A blank id is refused for *being blank*, not reported as absent.
+        // The two are different files and the remedy differs with them.
+        assert!(matches!(
+            MetadataBundle::parse(wrap(entity("")).as_bytes()),
+            Err(MetadataError::BlankEntityId { .. })
+        ));
 
         // The control: two *different* ids in one aggregate is exactly what
         // an aggregate is for, and must still be accepted.
