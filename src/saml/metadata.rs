@@ -923,6 +923,18 @@ struct PendingSignature {
 /// happens to name, which manufactures coverage core validation never
 /// establishes and keeps a signature a rewrite has invalidated. That is
 /// fail-open, and this module fails closed.
+///
+/// **And a direct child of it.** `SignedInfoType` is a sequence of
+/// `CanonicalizationMethod`, `SignatureMethod` and one or more `Reference`
+/// (W3C XML Signature Syntax and Processing 1.1, the `SignedInfo` element),
+/// so a `<ds:Reference>` nested any deeper is not a reference the signature
+/// is validated over — it is not schema-valid at all. Accepting one because
+/// it is *somewhere* inside `SignedInfo` leaks the same way the manifest case
+/// did, and with no `<ds:Object>` needed: any wrapper element will do. The
+/// direction is what makes it worth a depth check rather than a shrug —
+/// counting it turns [`Coverage::Unknown`], which removes the signature, into
+/// resolved [`Coverage::Spans`], which keeps it, and a signature that
+/// survives is the thing that grants trust.
 struct SignedReference {
     /// The `URI` attribute. `None` is a `<ds:Reference>` with no `URI` at
     /// all, which names an object only the application can identify — so,
@@ -1304,15 +1316,18 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                     }
                 }
                 // Coverage is read from the signature's own
-                // `<ds:SignedInfo>` and nowhere else; [`SignedReference`] says
-                // why a `<ds:Manifest>`'s references are not coverage.
+                // `<ds:SignedInfo>`, and from its direct children alone;
+                // [`SignedReference`] says why a `<ds:Manifest>`'s references
+                // are not coverage and why a deeper one is not either.
                 if ns == Some(DSIG_NS)
                     && let Some(open) = signature.as_mut()
                 {
                     if name == "SignedInfo" && !empty && path.len() == open.depth + 1 {
                         open.signed_info = Some(path.len());
                     } else if name == "Reference"
-                        && open.signed_info.is_some_and(|depth| path.len() > depth)
+                        && open
+                            .signed_info
+                            .is_some_and(|depth| path.len() == depth + 1)
                     {
                         open.references.push(SignedReference {
                             uri: attrs.unqualified("URI").map(str::to_owned),
@@ -2450,6 +2465,17 @@ mod tests {
         )
     }
 
+    /// A `<ds:Signature>` whose only `<ds:Reference URI="…">` sits one level
+    /// too deep inside its own `<ds:SignedInfo>` — here in a `<ds:Manifest>`,
+    /// but the wrapper is arbitrary and that is the point.
+    fn dsig_reference_below_signed_info(target: &str) -> String {
+        format!(
+            "<ds:Signature xmlns:ds=\"{DSIG_URI}\"><ds:SignedInfo>\
+             <ds:Manifest><ds:Reference URI=\"{target}\"/></ds:Manifest>\
+             </ds:SignedInfo></ds:Signature>"
+        )
+    }
+
     /// A `<ds:Signature>` referencing `target`, with one `<ds:Transform>` in
     /// that reference's chain. `None` writes the element with no `Algorithm`
     /// attribute at all.
@@ -2675,6 +2701,64 @@ mod tests {
         assert!(
             !inspect(signed.as_bytes()).expect("parses").signed,
             "a manifest reference reported the document as signing itself"
+        );
+    }
+
+    /// A `<ds:Reference>` is coverage only as a **direct child** of
+    /// `<ds:SignedInfo>`.
+    ///
+    /// The bug the manifest fix left behind: coverage was narrowed to the
+    /// references of `SignedInfo`, but by ancestry, so one at any depth below
+    /// it still counted — and an "oddly nested reference is still a
+    /// reference" reading is exactly backwards. `SignedInfoType` is a
+    /// sequence of `CanonicalizationMethod`, `SignatureMethod` and
+    /// `Reference`, so a deeper one is not schema-valid and not something
+    /// core validation reads; counting it promotes a signature from
+    /// [`Coverage::Unknown`], which removes it, to [`Coverage::Spans`], which
+    /// keeps it. The fail-open direction, reached with an arbitrary wrapper
+    /// rather than the `<ds:Object>` the manifest case needed.
+    ///
+    /// The nesting is the discriminating input, and both rows are one of the
+    /// two ways the invention leaks — the same pair as
+    /// [`a_manifest_reference_is_not_coverage`], which these documents pass
+    /// because the reference *is* inside `SignedInfo`.
+    #[test]
+    fn a_reference_below_signed_info_is_not_coverage() {
+        let role = wsfed_role();
+        let idp = "<IDPSSODescriptor ID=\"_idp\" \
+                   protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">";
+
+        // Naming the retained role, the manufactured span excludes the WS-Fed
+        // cut, so the signature is kept over bytes that have moved.
+        let on_idp = dsig_reference_below_signed_info("#_idp");
+        let input =
+            format!("{SIGNED_HEAD}\n  {on_idp}\n  {role} />\n  {idp}</IDPSSODescriptor>{TAIL}");
+        let result = clean(&input);
+        assert_eq!(
+            result
+                .removed
+                .iter()
+                .map(|removal| removal.reason)
+                .collect::<Vec<_>>(),
+            vec![
+                RemovalReason::EnvelopedSignature,
+                RemovalReason::UnsupportedRole,
+            ],
+            "a reference below <ds:SignedInfo> kept a signature over rewritten bytes"
+        );
+        assert!(
+            !String::from_utf8(result.bytes)
+                .expect("utf-8")
+                .contains("<ds:Signature")
+        );
+
+        // Naming the whole document, it makes `signed` report a document as
+        // signing itself on a reference core validation never reads.
+        let whole = dsig_reference_below_signed_info("");
+        let signed = format!("{SIGNED_HEAD}\n  {whole}\n  {idp}</IDPSSODescriptor>{TAIL}");
+        assert!(
+            !inspect(signed.as_bytes()).expect("parses").signed,
+            "a reference below <ds:SignedInfo> reported the document as signing itself"
         );
     }
 
