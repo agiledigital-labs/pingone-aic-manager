@@ -1318,11 +1318,20 @@ minted only by the preflight, and the call requires one, so the preview path
 cannot reach it.
 
 Afterwards the command reports **only what AM said**. `importedEntities` is
-compared as an exact **set** against the ids parsed from the file — a matching
-count is not a match — and any id missing from one side or the other is a
-warning naming that id. A failed import is followed by a fresh list of the
-realm, reported per declared id, because a failed aggregate import is not a
-rollback and AM says nothing about how far it got.
+compared as an exact **set** against the ids parsed from the file — a
+matching count is not a match — and any id missing from one side or the
+other, or named twice by AM, is a warning naming that id. The comparison is
+byte for byte on purpose: AM echoes an Entra id ending in `/` back unchanged
+(`docs/api/06-saml.md`), so there is nothing for a normalisation to repair
+and two entities for it to conflate.
+
+**Two endings get the fresh list of the realm, not one.** A failed call, and
+a `200` whose body names no `importedEntities` array, are the same situation
+from the operator's side: AM may have created every entity in the file and
+said so in a shape this command does not read. Both are followed by a list of
+the realm reported per declared id, because a failed aggregate import is not
+a rollback and AM says nothing about how far it got. The heading says which
+of the two happened; the inventory below it is the same either way.
 
 Every run ends on the same sentence: **circle-of-trust membership was not
 verified, and could not have been.** `importEntity` rewrites extended metadata,
@@ -1342,20 +1351,29 @@ entity** — a member CoT was observed going to `[]` with no CoT write in betwee
 the CoT collection first and prints, by name, each circle and each entry that
 will go. A count would not do: the operator has to recognise them.
 
-Afterwards it reads that collection **again** and reports the difference, so the
+Afterwards it reads that collection **again** — always, even when the first
+read found no circle naming the entity — and reports the difference, so the
 cascade it prints is something it observed rather than something it predicted.
 AM performs the cascade, not `aic`, and the delete response says nothing about
-it — a circle that still lists the entity is reported as a warning. If the
-re-read itself fails, the command says the cascade is unconfirmed; it never
-prints the pre-state as the outcome.
+it. The circles reported as still listing the entity come from that second
+read, not from the first, so one the pre-delete read never saw is still found.
 
-`--force` is required. The refusal path _is_ the preview — without `--force` the
-command performs both reads, prints the cascade, and writes nothing — which is
-why there is no `--dry-run`: there is no permission token for a preview to carry
-by accident.
+**The exit code is about the cascade, not the delete.** The entity is gone
+either way; a circle of trust that still lists it, or a re-read that failed and
+so could not tell, exits **non-zero** with the report printed. Automation
+reading a zero here is reading "the federation is consistent again", and that
+is the claim being protected. A non-zero exit is never a reason to re-run the
+delete — the message says so.
+
+`--force` is required. The refusal path *is* the preview — without `--force`
+the command performs both reads, prints the cascade, and writes nothing — which
+is why there is no `--dry-run`: the preview holds no permission token, so it
+cannot reach the write.
 
 `--location` is inferred when omitted, exactly as for `show`. `--yes` is the
-separate production-tenant confirmation and does not authorize the delete.
+separate production-tenant confirmation and does not authorize the delete; it is
+asked for **after** the `--force` refusal, so previewing a delete on a
+production-themed tenant never demands it.
 
 ### `metadata export`
 
@@ -1363,7 +1381,7 @@ separate production-tenant confirmation and does not authorize the delete.
 to `--out`, or to stdout.
 
 **Failures come back as HTTP 200**, with no `Content-Type` and a plain-text body
-beginning `ERROR :`, so the status code is useless and the body is what is
+beginning `ERROR : `, so the status code is useless and the body is what is
 classified. A response that is neither a SAML `<EntityDescriptor>` nor an
 `ERROR :` message is refused too, and quoted back — writing a login page or a
 proxy error to `entity.xml` is exactly what the 200 invites. Nothing is written
@@ -1391,13 +1409,32 @@ and what `sanitise` would remove at default options.
 writes the result to `--out`, or to stdout if that flag is omitted. The removal
 report goes to stderr, one line per element. Default options strip SAML
 `RoleDescriptor`s whose `xsi:type` resolves to a WS-Federation type — the shape
-Entra emits — and, only when that (or another) cut changes bytes it covers, the
-document's enveloped XML signature. Scope decides that second part: only a
-`Signature` that is a direct child of `EntityDescriptor` signs the whole
-document, so a signature on a role the rewrite keeps is left alone, and so is
-the signature on a document that needs no other stripping. `--keep-signature`
-keeps the signature and, if anything else was removed, prints a warning that it
-is now stale.
+Entra emits — and then any XML signature that cut leaves unable to verify.
+
+**What a signature covers is read from its `<ds:Reference URI>` values, not
+from where it sits.** `URI=""` is the whole document and `URI="#id"` is the
+element declaring that XML ID (`ID`, as SAML's schema declares it on every
+descriptor, or `xml:id`); a signature is kept only when every one of its
+references lands on bytes this rewrite does not touch. So a signature over one
+role the rewrite keeps survives a sibling being stripped, and so does the
+signature on a document that needs no other stripping — while a signature
+nested under a retained role that references the whole entity is removed,
+because stripping a sibling really does break it. Placement says nothing about
+either case.
+
+Anything that cannot be resolved to bytes of this document — an XPointer, a
+detached reference, an id nothing declares or two elements claim, a signature
+with no reference at all, or one nested inside another — is treated as
+covering everything and is removed as soon as anything changes. Only verifying
+the signature could settle it, and handing a peer a document whose signature
+has silently stopped verifying is the failure this whole command exists to
+avoid. Removing a stale signature is itself a change, so a signature covering
+another one goes when that one does.
+
+`--keep-signature` keeps every signature and, if a cut invalidated one, prints
+a warning that it is now stale. It is not "leave the file alone": the
+WS-Federation roles are still stripped, which is the whole reason the
+signature has gone stale.
 
 ### What `metadata inspect` / `metadata sanitise` refuse
 
@@ -1408,10 +1445,17 @@ point that also takes an `EntitiesDescriptor` aggregate); a namespace binding
 for every prefix on every element _and attribute_; nothing but comments,
 processing instructions and whitespace outside the root; no entity reference
 whose replacement text we would have to guess; and the XML 1.0 productions a
-tokeniser walks past — legal element and attribute names, one `DOCTYPE`, an XML
-declaration with a version, a legal character everywhere a character appears, no
-literal `]]>`, no character reference to something Unicode has no character for,
-and no two attributes resolving to one expanded name.
+tokeniser walks past — legal element and attribute names, an XML declaration
+with a version, a legal character everywhere a character appears, no literal
+`]]>`, no character reference to something Unicode has no character for, and
+no two attributes resolving to one expanded name.
+
+**A `DOCTYPE` is refused**, wherever it appears and whatever it declares —
+external subset, internal subset, or nothing at all. These tools read no DTD,
+so forwarding one means passing along a document whose expansion they cannot
+describe to whatever parses it next; "we do not resolve it" is a promise about
+this parser and not about AM's. SAML 2.0 metadata has no use for one, so the
+refusal costs no real document anything.
 
 `inspect` reports a certificate by the role that publishes it. A dual-role
 entity can publish `use="signing"` from both its IdP and its SP role with no

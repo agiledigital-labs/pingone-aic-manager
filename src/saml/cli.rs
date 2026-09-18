@@ -516,21 +516,25 @@ async fn import(
     {
         Ok(response) => response,
         Err(error) => {
-            match api::list(&tenant, &realm).await {
-                Ok(after) => {
-                    for line in spec::after_failure_lines(&declared, &after, &realm) {
-                        eprintln!("{line}");
-                    }
-                }
-                Err(reread) => eprintln!(
-                    "warning: the import failed and re-reading realm {realm} failed too,                      so what exists now is unknown: {reread}"
-                ),
-            }
+            report_what_landed(&tenant, &realm, &declared, spec::ImportUnknown::Failed).await;
             return Err(error);
         }
     };
 
-    let outcome = spec::compare_imported(&declared, &spec::imported_entities(&response)?);
+    // A 200 we cannot read is the other half of the same situation, and it
+    // used to return here with no inventory at all. AM may have created every
+    // entity in the file and merely said so in a shape this command does not
+    // parse; a failed aggregate import is not a rollback either way, so the
+    // relist the failure path promises has to cover this path too.
+    let imported = match spec::imported_entities(&response) {
+        Ok(imported) => imported,
+        Err(error) => {
+            report_what_landed(&tenant, &realm, &declared, spec::ImportUnknown::Unreadable).await;
+            return Err(error);
+        }
+    };
+
+    let outcome = spec::compare_imported(&declared, &imported);
     for line in outcome.lines(&tenant, &realm) {
         println!("{line}");
     }
@@ -544,10 +548,38 @@ async fn import(
         // not happen", it is "the import is not what was asked for", and the
         // exit code has to say so.
         Err(Error::Config(format!(
-            "AM's importedEntities is not the set this file declares —              {} missing, {} unexpected; `aic saml list --realm {realm}` shows what exists",
+            "AM's importedEntities is not the set this file declares — {} missing, \
+             {} unexpected, {} duplicated; `aic saml list --realm {realm}` shows what exists",
             outcome.missing.len(),
-            outcome.unexpected.len()
+            outcome.unexpected.len(),
+            outcome.duplicated.len()
         )))
+    }
+}
+
+/// List the realm after an import that cannot report on itself.
+///
+/// Shared by both of [`spec::ImportUnknown`]'s cases on purpose: an inventory
+/// reachable from one of the two is the defect this exists to close. It never
+/// returns an error — the caller already has the one that matters, and a
+/// failed re-read must not replace "the import failed" with "listing failed".
+async fn report_what_landed(
+    tenant: &str,
+    realm: &str,
+    declared: &[String],
+    why: spec::ImportUnknown,
+) {
+    match api::list(tenant, realm).await {
+        Ok(after) => {
+            for line in spec::after_failure_lines(declared, &after, realm, why) {
+                eprintln!("{line}");
+            }
+        }
+        Err(reread) => eprintln!(
+            "warning: {} and re-reading realm {realm} failed too, so what exists now \
+             is unknown: {reread}",
+            why.what_happened()
+        ),
     }
 }
 
@@ -555,7 +587,9 @@ async fn import(
 ///
 /// Without `--force` this performs the two reads and prints nothing but the
 /// cascade, which makes the refusal path the preview — no separate `--dry-run`
-/// flag, and no permission token that a preview could carry by accident.
+/// flag, and a preview that holds no [`spec::DeletePermit`], so it cannot
+/// reach the write. Everything that costs the operator something — the
+/// production confirmation most of all — sits *after* that refusal.
 async fn delete(
     tenant_arg: Option<String>,
     realm_arg_value: Option<String>,
@@ -565,7 +599,6 @@ async fn delete(
     force: OperationForce,
 ) -> Result<()> {
     let tenant = tenant_for(tenant_arg)?;
-    let ok = ensure_prod_confirmed(&tenant, yes)?;
     let realm = realm_arg("saml", realm_arg_value)?;
     let location = match location {
         Some(location) => location,
@@ -578,38 +611,70 @@ async fn delete(
         eprintln!("{line}");
     }
 
-    spec::delete_ok(force.operation(), entity_id, location, &tenant, &realm)?;
+    let permit = spec::delete_ok(force.operation(), entity_id, location, &tenant, &realm)?;
 
-    api::delete_entity(&tenant, &realm, location, entity_id, ok.confirmed_prod).await?;
+    // After the decision, the way `import` orders it: the unforced run is this
+    // command's preview, and a path about to refuse to write must not first
+    // demand authorization to write. Asking on a production-themed tenant
+    // before the refusal is how operators learn to keep `--yes` on the line
+    // (`REVIEW.md`, 2026-08-11).
+    let ok = ensure_prod_confirmed(&tenant, yes)?;
+    api::delete_entity(
+        &tenant,
+        &realm,
+        location,
+        entity_id,
+        ok.confirmed_prod,
+        &permit,
+    )
+    .await?;
     println!("deleted SAML entity provider {entity_id} ({location}) from {tenant}/{realm}");
 
-    if affected.is_empty() {
-        return Ok(());
-    }
-    // Read the cascade back. AM performs it, we do not, and the delete
-    // response says nothing about it — so printing `affected` here would be
-    // reporting what we expected instead of what happened. A failed re-read
-    // costs the report, never the delete, which has already landed.
+    // Read the cascade back — unconditionally, even when the first read found
+    // no circle of trust naming the entity. AM performs the cascade, we do
+    // not, and the delete response says nothing about it, so printing
+    // `affected` here would be reporting what we expected instead of what
+    // happened. Skipping the read when `affected` was empty would make the
+    // check conditional on the very read whose completeness is in question.
     //
-    // A `?` here would be wrong in the same way: the delete has landed, so a
-    // re-read that fails to fetch *or* to parse costs the report and must not
-    // turn a completed delete into a non-zero exit.
-    match api::list_cots(&tenant, &realm)
+    // The delete has landed by now and nothing below un-lands it. What the
+    // exit code claims is the *cascade*: a promised rewrite that did not
+    // demonstrably happen — or that we could not go back and look at — must
+    // not come back as zero, because the caller reading that zero is a script
+    // that will never look at the warning.
+    let cots = match api::list_cots(&tenant, &realm)
         .await
         .and_then(|documents| spec::cots(&documents))
     {
-        Ok(cots) => {
-            let after = spec::cots_naming(entity_id, &cots);
-            for line in spec::cascade_outcome_lines(entity_id, &affected, &after) {
-                println!("{line}");
-            }
+        Ok(cots) => cots,
+        Err(error) => {
+            return Err(Error::Config(format!(
+                "the entity was deleted, but re-reading the circles of trust in \
+                 {tenant}/{realm} failed, so the cascade AM performs is unconfirmed: \
+                 {error}. Do not re-run the delete — it has already landed; run \
+                 `aic saml cot list --realm {realm}` when the tenant answers again."
+            )));
         }
-        Err(error) => eprintln!(
-            "warning: the entity was deleted, but re-reading the circles of trust failed, \
-             so the cascade is unconfirmed: {error}"
-        ),
+    };
+    let outcome = spec::cascade_outcome(&affected, &spec::cots_naming(entity_id, &cots));
+    for line in outcome.lines(entity_id) {
+        println!("{line}");
     }
-    Ok(())
+    if outcome.settled() {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "{} circle(s) of trust in {tenant}/{realm} still list {entity_id} after the \
+         delete — {}. The entity is gone, so the federation now names a provider that \
+         does not exist; edit those circles of trust in the AM console.",
+        outcome.still_listing.len(),
+        outcome
+            .still_listing
+            .iter()
+            .map(|still| still.cot.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
 }
 
 async fn list(
@@ -850,8 +915,16 @@ mod tests {
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
+    /// `--keep-signature` keeps the signature **and still strips the roles**.
+    ///
+    /// The discriminating input is a verbatim copy of `ENTRA`: it differs from
+    /// the default output and it contains a signature, which is all this test
+    /// used to ask for — so a `--keep-signature` wired to "write the file back
+    /// out" passed it. What the flag means is one of the two cuts, not
+    /// neither, so the WS-Federation roles have to be gone from the same
+    /// bytes the signature survives in.
     #[tokio::test]
-    async fn keep_signature_reaches_the_library_opt() {
+    async fn keep_signature_keeps_the_signature_and_strips_the_roles_anyway() {
         let dir = temp_dir();
         let input = dir.join("in.xml");
         let output = dir.join("out.xml");
@@ -868,12 +941,24 @@ mod tests {
         .expect("sanitise");
 
         let written = std::fs::read(&output).expect("read output");
-        assert_ne!(written, ENTRA_SANITISED);
-        assert!(
+        let contains = |needle: &str| {
             written
-                .windows(b"<ds:Signature>".len())
-                .any(|window| window == b"<ds:Signature>"),
-            "keep_signature did not reach SanitiseOpts"
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+        };
+        assert!(contains("<ds:Signature>"), "the signature was removed");
+        assert!(
+            !contains("<RoleDescriptor"),
+            "--keep-signature kept the WS-Federation roles too, which is a copy \
+             of the input rather than a sanitise"
+        );
+        // Both Entra `xsi:type`s, so a cut that reached only the first role
+        // cannot pass on `<RoleDescriptor` alone having gone.
+        assert!(!contains("SecurityTokenServiceType"));
+        assert!(!contains("ApplicationServiceType"));
+        assert_ne!(
+            written, ENTRA_SANITISED,
+            "the default output has no signature, so keeping one must differ from it"
         );
         std::fs::remove_dir_all(dir).expect("cleanup");
     }

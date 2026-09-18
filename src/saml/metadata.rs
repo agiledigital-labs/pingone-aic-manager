@@ -24,6 +24,12 @@
 //! an element is a refusal, because we cannot know what name it was meant to
 //! be.
 //!
+//! The same rule pointed outwards is why a `DOCTYPE` is refused rather than
+//! carried through. "We do not expand it" is a promise about this scanner;
+//! the importer on the far side is a different parser, and a DTD we never
+//! read is one we cannot make any promise about at all. SAML 2.0 metadata has
+//! no use for one, so refusing costs nothing a real document needed.
+//!
 //! **One admission boundary; two knobs on it.** Every entry point here walks
 //! the same [`scan`], so a document `sanitise` refuses cannot be waved
 //! through by an export classification. Only two things vary, and each is a
@@ -73,10 +79,16 @@ const WSFED_NS: &[u8] = b"http://docs.oasis-open.org/wsfed/federation/200706";
 /// `xsi:type` lives here. A bare `type` attribute is a different name.
 const XSI_NS: &[u8] = b"http://www.w3.org/2001/XMLSchema-instance";
 
-/// The XML-Signature element. Only a *direct child* of `EntityDescriptor`
-/// signs the whole document; one further down signs the role it sits in.
-/// Conditional on `--keep-signature`, and only removed when some *other* cut
-/// would change the bytes it covers.
+/// The namespace the `xml` prefix is always bound to. `xml:id` is the only
+/// attribute besides SAML's own `ID` that is an XML ID *by specification*
+/// rather than by a schema this module does not read — see [`ElementId`].
+const XML_NS: &[u8] = b"http://www.w3.org/XML/1998/namespace";
+
+/// The XML-Signature element. Matched wherever it appears, because placement
+/// does not say what a signature covers — its `<ds:Reference>` elements do,
+/// and [`Coverage`] is where that is resolved. Conditional on
+/// `--keep-signature`, and only removed when some *other* cut would change
+/// bytes it covers.
 const SIGNATURE_LOCAL_NAME: &str = "Signature";
 
 /// The five entities XML predefines, with the replacement text each stands
@@ -127,6 +139,12 @@ pub enum MetadataError {
     },
     #[error("<X509Certificate> on line {line} is not valid base64: {detail}")]
     BadCertificate { line: usize, detail: String },
+    #[error(
+        "line {line} declares a DOCTYPE, which this tool will not forward: it reads no DTD, \
+         so it cannot say what the document expands to, and whatever reads it next might. \
+         SAML 2.0 metadata has no use for one — delete the <!DOCTYPE …> declaration"
+    )]
+    Doctype { line: usize },
 }
 
 impl From<MetadataError> for crate::Error {
@@ -266,11 +284,16 @@ impl fmt::Display for Removal {
 pub struct MetadataDoc {
     pub entity_id: String,
     pub roles: Vec<Role>,
-    /// Whether the document carries an enveloped signature over *itself* — a
-    /// `Signature` that is a direct child of `EntityDescriptor`. A signature
-    /// further down covers one role; removing a *sibling* role leaves it
-    /// verifying, so it is neither counted here nor removed. A fact about the
-    /// document, separate from whether we would remove it.
+    /// Whether the document carries a signature over *itself*: one whose
+    /// references resolve to the whole document (`URI=""`) or to the root
+    /// element's own XML ID. A signature covering one role is not this, and
+    /// neither is one whose coverage could not be established — an
+    /// unresolvable reference is a reason to remove a signature, never a
+    /// reason to tell an operator the document is signed.
+    ///
+    /// A fact about the document as read, separate from whether we would
+    /// remove it: a signature inside a subtree about to be cut still claims
+    /// what it claims.
     pub signed: bool,
     pub endpoints: Vec<Endpoint>,
     pub certs: Vec<CertRef>,
@@ -303,15 +326,17 @@ pub struct Sanitised {
 /// [`MetadataBundle`] instead.
 pub fn inspect(xml: &[u8]) -> Result<MetadataDoc> {
     let mut scan = scan(xml, Depth::Content, Roots::Single)?;
-    let would_remove = std::mem::take(&mut scan.cuts);
+    let cuts = std::mem::take(&mut scan.cuts);
+    let signed = scan.signed;
     let entity = scan.only_entity();
     Ok(MetadataDoc {
         entity_id: entity.entity_id.unwrap_or_default(),
         roles: entity.roles,
-        signed: scan.signed,
+        signed,
         endpoints: scan.endpoints,
         certs: scan.certs,
-        would_remove: cuts_for_opts(would_remove, SanitiseOpts::default())
+        would_remove: cuts
+            .selected(SanitiseOpts::default())
             .into_iter()
             .map(|cut| cut.removal)
             .collect::<Vec<_>>(),
@@ -325,68 +350,27 @@ pub fn inspect(xml: &[u8]) -> Result<MetadataDoc> {
 /// produced even when nothing is printed.
 pub fn sanitise(xml: &[u8], opts: SanitiseOpts) -> Result<Sanitised> {
     let scan = scan(xml, Depth::Content, Roots::Single)?;
-    Ok(splice_for_opts(xml, opts, scan.cuts, scan.signed))
+    Ok(splice_for_opts(xml, opts, &scan.cuts))
 }
 
 /// The half of [`sanitise`] that turns cuts into spliced bytes, so
 /// [`MetadataBundle`] can reuse the scan it already validated rather than
 /// walking — and re-admitting — the document a second time. Infallible by
 /// construction: everything that can refuse a document has already happened.
-fn splice_for_opts(xml: &[u8], opts: SanitiseOpts, cuts: Vec<Cut>, signed: bool) -> Sanitised {
-    let kept_signature = opts.keep_signature && signed;
-    let cuts = cuts_for_opts(cuts, opts);
-    let changed = cuts
-        .iter()
-        .any(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature);
-    let (ranges, removed): (Vec<_>, Vec<_>) =
-        cuts.into_iter().map(|cut| (cut.range, cut.removal)).unzip();
+fn splice_for_opts(xml: &[u8], opts: SanitiseOpts, cuts: &Cuts) -> Sanitised {
+    // `stale_signature` is the *default* decision reported from under
+    // `--keep-signature`, not a second rule: a signature is stale exactly
+    // when the default would have had to cut it.
+    let stale_signature = opts.keep_signature && !cuts.invalidated_signatures().is_empty();
+    let (ranges, removed): (Vec<_>, Vec<_>) = cuts
+        .selected(opts)
+        .into_iter()
+        .map(|cut| (cut.range, cut.removal))
+        .unzip();
     Sanitised {
         bytes: splice(xml, &ranges),
-        stale_signature: kept_signature && changed,
+        stale_signature,
         removed,
-    }
-}
-
-/// Default sanitise drops the document's enveloped signature only when some
-/// other cut would change the bytes it covers. `--keep-signature` drops
-/// signature cuts always, and sets [`Sanitised::stale_signature`] when content
-/// still changes.
-///
-/// Scope matters and the scanner has already applied it: the only
-/// [`RemovalReason::EnvelopedSignature`] cut that reaches here is a direct
-/// child of `EntityDescriptor`, so "any other cut" really does mean "inside
-/// the bytes this signature signs".
-fn cuts_for_opts(cuts: Vec<Cut>, opts: SanitiseOpts) -> Vec<Cut> {
-    if opts.keep_signature {
-        return cuts
-            .into_iter()
-            .filter(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature)
-            .collect();
-    }
-    let content = cuts
-        .iter()
-        .filter(|cut| cut.removal.reason != RemovalReason::EnvelopedSignature)
-        .map(|cut| cut.scope)
-        .collect::<Vec<_>>();
-    cuts.into_iter()
-        .filter(|cut| {
-            cut.removal.reason != RemovalReason::EnvelopedSignature
-                || content.iter().any(|changed| covers(cut.scope, *changed))
-        })
-        .collect()
-}
-
-/// Whether a signature in `signature` scope signs the bytes a cut in
-/// `changed` scope removes.
-///
-/// An aggregate's own signature covers every entity under it, so any content
-/// cut anywhere invalidates it. An entity's signature covers only that
-/// entity — which is why cutting a WS-Federation role out of entity 2 leaves
-/// entity 1's signature verifying, and must leave it in place.
-fn covers(signature: Scope, changed: Scope) -> bool {
-    match signature {
-        Scope::Aggregate => true,
-        Scope::Entity(index) => changed == Scope::Entity(index),
     }
 }
 
@@ -469,7 +453,7 @@ pub struct MetadataBundle {
     root: BundleRoot,
     entities: Vec<BundleEntity>,
     signed: bool,
-    cuts: Vec<Cut>,
+    cuts: Cuts,
 }
 
 impl MetadataBundle {
@@ -535,7 +519,7 @@ impl MetadataBundle {
 
     /// Strip what an AM import cannot take, reusing this bundle's one scan.
     pub fn sanitise(&self, opts: SanitiseOpts) -> Sanitised {
-        splice_for_opts(&self.bytes, opts, self.cuts.clone(), self.signed)
+        splice_for_opts(&self.bytes, opts, &self.cuts)
     }
 }
 
@@ -545,25 +529,136 @@ impl MetadataBundle {
 struct Cut {
     range: Range<usize>,
     removal: Removal,
-    /// Which signature's coverage this cut falls inside. An enveloped
-    /// signature is only invalidated by a change to the bytes *it* signs, and
-    /// in an aggregate those are two different scopes — see [`covers`].
-    scope: Scope,
 }
 
-/// The signed region a cut belongs to.
+/// A `<ds:Signature>` the document carries, and the bytes it claims to sign.
+#[derive(Clone)]
+struct SignatureCut {
+    cut: Cut,
+    covers: Coverage,
+}
+
+/// What a signature's `<ds:Reference URI="…">` elements say it covers.
 ///
-/// In a singular document there is only ever one, so this is inert; in an
-/// aggregate it is the difference between "entity 2 changed, so entity 2's
-/// signature must go" and dropping the signature of an entity nothing
-/// touched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Scope {
-    /// Outside every `<EntityDescriptor>` — an `<EntitiesDescriptor>`'s own
-    /// content, which its signature covers along with every entity under it.
-    Aggregate,
-    /// Inside the entity at this index in [`Scan::entities`].
-    Entity(usize),
+/// **Coverage is what the references say, never where the signature sits.**
+/// The rule this replaced read placement: a `Signature` that was a direct
+/// child of a descriptor was taken to sign that descriptor, and one below a
+/// role to sign only the role. XMLDSig says nothing of the kind — each
+/// `<ds:Reference>` names its own object, so a signature nested under a role
+/// can reference the document root and go stale when a *sibling* WS-Fed role
+/// is stripped (the placement rule kept it, and handed a peer a document that
+/// will not verify), while a direct child can reference something narrower
+/// and was dropped for nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Coverage {
+    /// Every reference resolved to a span of this document.
+    Spans(Vec<Range<usize>>),
+    /// At least one reference could not be resolved to bytes in this
+    /// document, so only verifying the signature could say what it covers.
+    ///
+    /// Treated as covering everything, which is the fail-closed half of the
+    /// rule and the whole reason this is an enum rather than a list of spans.
+    /// A signature with no references at all lands here too: zero spans would
+    /// otherwise read as "covers nothing" and survive every rewrite.
+    Unknown,
+}
+
+impl Coverage {
+    /// Whether a change over `changed` falls inside what this signature
+    /// signs.
+    fn touches(&self, changed: &Range<usize>) -> bool {
+        match self {
+            Self::Unknown => true,
+            Self::Spans(spans) => spans
+                .iter()
+                .any(|span| span.start < changed.end && changed.start < span.end),
+        }
+    }
+
+    /// Whether this signature covers the whole of `root` — the document
+    /// signing itself, which is what [`MetadataDoc::signed`] reports.
+    fn covers_all_of(&self, root: &Range<usize>) -> bool {
+        match self {
+            // Deliberately *not* true. "We could not establish what this
+            // covers" is a reason to remove it, never a reason to tell an
+            // operator the document is signed.
+            Self::Unknown => false,
+            Self::Spans(spans) => spans
+                .iter()
+                .any(|span| span.start <= root.start && root.end <= span.end),
+        }
+    }
+}
+
+/// Everything one scan decided to cut, split by what forces it.
+#[derive(Clone, Default)]
+struct Cuts {
+    /// Always cut: the WS-Federation roles AM will not take.
+    content: Vec<Cut>,
+    /// Cut only when this rewrite changes bytes they cover.
+    signatures: Vec<SignatureCut>,
+}
+
+impl Cuts {
+    /// Which signatures this rewrite invalidates, by index.
+    ///
+    /// A **fixed point**, and it has to be: removing a stale signature is
+    /// itself a change to the bytes, so an outer signature covering an inner
+    /// one that had to go is invalidated in turn. The set only grows and is
+    /// bounded by the number of signatures, so this terminates.
+    ///
+    /// A signature is never tested against its own removal — it is out of the
+    /// running by the time its range joins `changed` — which is exactly the
+    /// enveloped-signature transform: a `URI=""` reference covers the whole
+    /// document *except* the signature carrying it.
+    fn invalidated_signatures(&self) -> Vec<usize> {
+        let mut changed = self
+            .content
+            .iter()
+            .map(|cut| cut.range.clone())
+            .collect::<Vec<_>>();
+        let mut cut = vec![false; self.signatures.len()];
+        loop {
+            let mut grew = false;
+            for (index, signature) in self.signatures.iter().enumerate() {
+                if cut[index] || !changed.iter().any(|range| signature.covers.touches(range)) {
+                    continue;
+                }
+                cut[index] = true;
+                changed.push(signature.cut.range.clone());
+                grew = true;
+            }
+            if !grew {
+                return cut
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, hit)| **hit)
+                    .map(|(index, _)| index)
+                    .collect();
+            }
+        }
+    }
+
+    /// The cuts to splice and report, in document order.
+    ///
+    /// Default sanitise emits the content cuts plus every signature this
+    /// rewrite invalidated. `--keep-signature` emits the content cuts alone,
+    /// which is what leaves a document carrying a signature that cannot
+    /// verify — [`Sanitised::stale_signature`] is how that is said out loud.
+    fn selected(&self, opts: SanitiseOpts) -> Vec<Cut> {
+        let mut selected = self.content.clone();
+        if !opts.keep_signature {
+            selected.extend(
+                self.invalidated_signatures()
+                    .into_iter()
+                    .filter_map(|index| self.signatures.get(index))
+                    .map(|signature| signature.cut.clone()),
+            );
+        }
+        // `splice` requires document order and the two lists interleave.
+        selected.sort_by_key(|cut| cut.range.start);
+        selected
+    }
 }
 
 /// One `<EntityDescriptor>` the scan walked, in document order.
@@ -582,7 +677,7 @@ struct Scan {
     signed: bool,
     endpoints: Vec<Endpoint>,
     certs: Vec<CertRef>,
-    cuts: Vec<Cut>,
+    cuts: Cuts,
 }
 
 impl Scan {
@@ -668,6 +763,12 @@ enum Depth {
 struct Open {
     ns: Option<Vec<u8>>,
     local: String,
+    /// Start offset of the start tag, so the element's whole byte range is
+    /// known once its end tag arrives — which is what a `URI="#id"` reference
+    /// has to resolve to.
+    start: usize,
+    /// Its XML ID, if it carries one. See [`ElementId`].
+    id: Option<String>,
 }
 
 impl Open {
@@ -696,6 +797,59 @@ struct PendingKey {
     key_name: Option<String>,
     depth: usize,
     certs: Vec<(usize, String)>,
+}
+
+/// A `<ds:Signature>` being read.
+///
+/// Its coverage cannot be settled at the start tag: the `<ds:Reference>`
+/// elements that say what it signs are *inside* it, and the elements those
+/// references name may sit anywhere in the document. So the signature is
+/// collected here and resolved once the whole scan is done.
+///
+/// One slot rather than a stack, on purpose. A `<ds:Signature>` nested inside
+/// another — legal XMLDSig inside a `<ds:Object>`, and not a thing SAML
+/// metadata does — sets `nested`, and a nested signature makes the outer
+/// one's coverage [`Coverage::Unknown`]. Reasoning about which of two
+/// overlapping signatures a reference belongs to, in a shape no real document
+/// has, is exactly the guessing this module refuses to do; the fail-closed
+/// answer costs a document nobody has sent us.
+struct PendingSignature {
+    element: String,
+    local_name: String,
+    line: usize,
+    /// Start of the cut, already extended back over its indentation.
+    from: usize,
+    /// End of the cut: one past the signature's end tag. Known only when
+    /// that tag arrives.
+    to: usize,
+    depth: usize,
+    /// True when this signature sits inside a subtree already being removed,
+    /// in which case it goes with that cut and is not reported separately.
+    inside_cut: bool,
+    nested: bool,
+    /// Every `<ds:Reference URI="…">` seen inside it, in document order.
+    /// `None` is a `<ds:Reference>` with no `URI` at all, which names an
+    /// object only the application can identify — so, not us.
+    references: Vec<Option<String>>,
+}
+
+/// An element carrying an XML ID, so a `URI="#id"` reference can be resolved
+/// to the bytes it names.
+///
+/// **Only attributes that are IDs by specification count**: unqualified `ID`,
+/// which the SAML metadata schema declares as `xs:ID` on every descriptor,
+/// and `xml:id`. An `Id` or `id` attribute is an ID only because some other
+/// schema says so, and this module reads no schema — leaving those
+/// unresolved is the fail-closed direction, because an unresolved reference
+/// removes the signature rather than keeping it.
+struct ElementId {
+    value: String,
+    range: Range<usize>,
+    /// Two elements sharing an ID violate `xs:ID` uniqueness, which is a
+    /// *validity* constraint rather than a well-formedness one — so it is not
+    /// a refusal here. It does mean nothing can say which element a reference
+    /// names, so both are dropped and the reference goes unresolved.
+    duplicated: bool,
 }
 
 /// The `{DSIG}X509Certificate` or `{DSIG}KeyName` whose character data is
@@ -745,10 +899,12 @@ impl Leaf {
 /// Which of XML's three document sections an event arrived in.
 ///
 /// The grammar is `prolog element Misc*`, and it is the *only* thing that
-/// makes a second XML declaration, a `DOCTYPE` after the root, or a stray
-/// CDATA section ill-formed — each of them tokenises perfectly. `quick_xml`
-/// is a tokeniser, so this is ours to enforce, and the scanner matches every
-/// event kind against it rather than ignoring the kinds it does not read.
+/// makes a second XML declaration, a stray CDATA section or text outside the
+/// root ill-formed — each of them tokenises perfectly. `quick_xml` is a
+/// tokeniser, so this is ours to enforce, and the scanner matches every event
+/// kind against it rather than ignoring the kinds it does not read. A
+/// `DOCTYPE` is the one event that never reaches this question: it is refused
+/// wherever it appears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
     /// Everything before the root element's start tag.
@@ -782,12 +938,18 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
     reader.config_mut().expand_empty_elements = false;
 
     let mut path: Vec<Open> = Vec::new();
-    let mut open_cut: Option<(usize, usize, Removal, Scope)> = None;
+    let mut open_cut: Option<(usize, usize, Removal)> = None;
     let mut keys: Vec<PendingKey> = Vec::new();
     let mut leaf: Option<PendingLeaf> = None;
     let mut root_seen = false;
     let mut any_event_seen = false;
-    let mut doctype_seen = false;
+    // Signatures and ids are collected here and resolved against each other
+    // after the walk, because a `URI="#id"` may name an element the scan has
+    // not reached yet.
+    let mut signature: Option<PendingSignature> = None;
+    let mut signatures: Vec<PendingSignature> = Vec::new();
+    let mut ids: Vec<ElementId> = Vec::new();
+    let mut root_range: Range<usize> = 0..0;
 
     let mut scan = Scan {
         root: BundleRoot::Entity,
@@ -795,7 +957,7 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
         signed: false,
         endpoints: Vec::new(),
         certs: Vec::new(),
-        cuts: Vec::new(),
+        cuts: Cuts::default(),
     };
 
     loop {
@@ -884,22 +1046,29 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                     }
                 }
             }
-            Event::DocType(doctype) => {
-                // Legal in the prolog only, and at most once. We read no DTD,
-                // so any entity it declares is refused where it is *used* —
-                // see `Event::GeneralRef` below.
-                if section != Section::Prolog {
-                    return Err(misplaced(start, "a DOCTYPE declaration", section));
-                }
-                if doctype_seen {
-                    return Err(MetadataError::Malformed {
-                        offset: start,
-                        detail: "a second DOCTYPE declaration".into(),
-                    });
-                }
-                doctype_seen = true;
-                let text = decoded(doctype.decode(), start)?;
-                check_chars(&text, start, "the DOCTYPE declaration")?;
+            // Refused outright, wherever it appears and whatever it says.
+            //
+            // This used to be admitted in the prolog — external subset and
+            // all — and the sanitiser then carried the original bytes
+            // through, which made this module a courier for a DTD it never
+            // looked inside. That fails **open** at a trust boundary: this
+            // scanner expands nothing, but the AIC importer downstream is a
+            // different parser with different defaults, and "we do not
+            // resolve it" is not the same promise as "nothing will".
+            // Everything a DTD can do here is something we would refuse if we
+            // could see it — an external subset the tool would have to fetch
+            // to understand, entity declarations that expand to anything at
+            // all, the recursive ones that expand to rather more than that.
+            //
+            // The `Event::GeneralRef` arm below stays as the second line of
+            // the same rule: a reference whose replacement text is not one of
+            // the five XML predefines is a refusal there, so a document that
+            // *uses* a declaration is caught even if a DOCTYPE ever reaches
+            // this scanner by another route.
+            Event::DocType(_) => {
+                return Err(MetadataError::Doctype {
+                    line: line_at(xml, start),
+                });
             }
             // Legal in all three sections, and neither is content we read.
             // Splicing carries their bytes through untouched — which is
@@ -998,16 +1167,55 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                 {
                     entity.roles.push(role);
                 }
-                // A signature that is a direct child of a descriptor is
-                // enveloped over that descriptor: one entity, or — on an
-                // aggregate root — every entity in the file.
-                let enveloped_signature = name == SIGNATURE_LOCAL_NAME
+                // A signature is collected wherever it sits. Which bytes it
+                // covers is decided after the walk, from its references —
+                // `Coverage` says why placement cannot answer that.
+                if name == SIGNATURE_LOCAL_NAME && ns == Some(DSIG_NS) {
+                    match signature.as_mut() {
+                        Some(open) => open.nested = true,
+                        None => {
+                            let pending = PendingSignature {
+                                element: qualified_name(&element),
+                                local_name: name.clone(),
+                                line: line_at(xml, start),
+                                from: trim_back(xml, start),
+                                to: end,
+                                depth: path.len(),
+                                inside_cut: open_cut.is_some(),
+                                nested: false,
+                                references: Vec::new(),
+                            };
+                            // An empty `<ds:Signature/>` has no references and
+                            // no end tag to finish it at, so it is complete
+                            // here — and complete means unresolvable.
+                            if empty {
+                                signatures.push(PendingSignature {
+                                    depth: usize::MAX,
+                                    ..pending
+                                });
+                            } else {
+                                signature = Some(pending);
+                            }
+                        }
+                    }
+                }
+                // Read only inside a signature: `<ds:Reference>` also appears
+                // in a `<ds:Manifest>`, and taking that as coverage too can
+                // only make us remove a signature we might have kept, which
+                // is the safe direction.
+                if name == "Reference"
                     && ns == Some(DSIG_NS)
-                    && path
-                        .last()
-                        .is_some_and(|open| open.is_entity() || open.is_aggregate());
-                if enveloped_signature {
-                    scan.signed = true;
+                    && let Some(open) = signature.as_mut()
+                {
+                    open.references
+                        .push(attrs.unqualified("URI").map(str::to_owned));
+                }
+                let element_id = attrs
+                    .unqualified("ID")
+                    .or_else(|| attrs.get(Some(XML_NS), "id"))
+                    .map(str::to_owned);
+                if empty && let Some(value) = element_id.clone() {
+                    note_id(&mut ids, value, start..end);
                 }
                 if let (Some(binding), Some(location)) =
                     (attrs.unqualified("Binding"), attrs.unqualified("Location"))
@@ -1055,9 +1263,7 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                 // nested inside one already being removed goes with it, and
                 // reporting it separately would tell an operator about bytes
                 // that were never theirs to keep.
-                let strip = if enveloped_signature {
-                    Some((RemovalReason::EnvelopedSignature, None))
-                } else if entity_role {
+                let strip = if entity_role {
                     wsfed_role_type(&name, ns, &attrs, reader.resolver(), start)?
                         .map(|xsi_type| (RemovalReason::UnsupportedRole, Some(xsi_type)))
                 } else {
@@ -1073,22 +1279,14 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                         line: line_at(xml, start),
                         reason,
                     };
-                    // The signed region this cut sits in, resolved from the
-                    // *open* path — the entity it is inside, not the last one
-                    // the scan finished reading.
-                    let scope = match entity_depth(&path) {
-                        Some(_) => Scope::Entity(scan.entities.len().saturating_sub(1)),
-                        None => Scope::Aggregate,
-                    };
                     let from = trim_back(xml, start);
                     if empty {
-                        scan.cuts.push(Cut {
+                        scan.cuts.content.push(Cut {
                             range: from..end,
                             removal,
-                            scope,
                         });
                     } else {
-                        open_cut = Some((from, path.len(), removal, scope));
+                        open_cut = Some((from, path.len(), removal));
                     }
                 }
 
@@ -1096,6 +1294,8 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                     path.push(Open {
                         ns: ns.map(<[u8]>::to_vec),
                         local: name,
+                        start,
+                        id: element_id,
                     });
                 }
             }
@@ -1127,14 +1327,29 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                         }
                     }
                 }
-                if let Some((from, _, removal, scope)) =
-                    open_cut.take_if(|(_, depth, _, _)| *depth == path.len())
+                if let Some((from, _, removal)) =
+                    open_cut.take_if(|(_, depth, _)| *depth == path.len())
                 {
-                    scan.cuts.push(Cut {
+                    scan.cuts.content.push(Cut {
                         range: from..end,
                         removal,
-                        scope,
                     });
+                }
+                // An element's byte range is whole only at its end tag, which
+                // is the earliest a `URI="#id"` can be resolved to it.
+                if let Some(open) = &closed
+                    && let Some(value) = open.id.clone()
+                {
+                    note_id(&mut ids, value, open.start..end);
+                }
+                if path.is_empty()
+                    && let Some(open) = &closed
+                {
+                    root_range = open.start..end;
+                }
+                if let Some(mut done) = signature.take_if(|open| open.depth == path.len()) {
+                    done.to = end;
+                    signatures.push(done);
                 }
             }
             Event::Text(text) => {
@@ -1233,7 +1448,92 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
             }
         }
     }
+
+    // Resolve each signature's references now that every id in the document
+    // is known — a reference may name an element that appears after it.
+    for pending in signatures {
+        let covers = resolve_coverage(&pending, &ids, xml.len());
+        if covers.covers_all_of(&root_range) {
+            scan.signed = true;
+        }
+        if pending.inside_cut {
+            continue;
+        }
+        scan.cuts.signatures.push(SignatureCut {
+            cut: Cut {
+                range: pending.from..pending.to,
+                removal: Removal {
+                    element: pending.element,
+                    local_name: pending.local_name,
+                    xsi_type: None,
+                    line: pending.line,
+                    reason: RemovalReason::EnvelopedSignature,
+                },
+            },
+            covers,
+        });
+    }
     Ok(scan)
+}
+
+/// Record an element's XML ID, marking it duplicated if the value is already
+/// spoken for. See [`ElementId`] for why a clash is not a refusal.
+fn note_id(ids: &mut Vec<ElementId>, value: String, range: Range<usize>) {
+    if let Some(held) = ids.iter_mut().find(|held| held.value == value) {
+        held.duplicated = true;
+        return;
+    }
+    ids.push(ElementId {
+        value,
+        range,
+        duplicated: false,
+    });
+}
+
+/// What one signature's references resolve to.
+///
+/// Every reference has to land on bytes of this document for the answer to be
+/// [`Coverage::Spans`]; one that does not makes the whole signature
+/// [`Coverage::Unknown`], because a signature is invalid if *any* of its
+/// references stopped matching and we would be guessing about that one.
+///
+/// Three forms resolve, and everything else does not:
+///
+/// - `URI=""` — the whole document, which is what a plain enveloped signature
+///   uses.
+/// - `URI="#id"` — the element carrying that XML ID, which is what SAML
+///   metadata uses. An id nothing declares, or one two elements declare,
+///   resolves to nothing.
+/// - nothing else: an XPointer (`#xpointer(…)`) needs an expression evaluator,
+///   and a detached reference names bytes outside this file that we could not
+///   fetch, let alone re-check. Transforms are not interpreted either — an
+///   XPath transform could exclude the very subtree being cut, and assuming it
+///   does not is the conservative reading.
+fn resolve_coverage(signature: &PendingSignature, ids: &[ElementId], len: usize) -> Coverage {
+    if signature.nested || signature.references.is_empty() {
+        return Coverage::Unknown;
+    }
+    let mut spans = Vec::new();
+    for reference in &signature.references {
+        let Some(uri) = reference else {
+            return Coverage::Unknown;
+        };
+        if uri.is_empty() {
+            spans.push(0..len);
+            continue;
+        }
+        let Some(fragment) = uri.strip_prefix('#') else {
+            return Coverage::Unknown;
+        };
+        match ids
+            .iter()
+            .find(|held| held.value == fragment && !held.duplicated)
+        {
+            Some(held) => spans.push(held.range.clone()),
+            None => return Coverage::Unknown,
+        }
+    }
+    Coverage::Spans(spans)
 }
 
 /// A descriptor that tokenised where no descriptor may appear.
@@ -1947,9 +2247,10 @@ mod tests {
 
     const SIGNED_CLEAN: &str = "<?xml version=\"1.0\"?>\n\
         <EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\"\n\
+        \x20                 ID=\"_entity\"\n\
         \x20                 entityID=\"https://idp.example.com\">\n\
         \x20 <ds:Signature xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\">\
-        <ds:SignedInfo/></ds:Signature>\n\
+        <ds:SignedInfo><ds:Reference URI=\"#_entity\"/></ds:SignedInfo></ds:Signature>\n\
         \x20 <IDPSSODescriptor protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\"/>\n\
         </EntityDescriptor>\n";
 
@@ -1970,8 +2271,19 @@ mod tests {
         assert!(doc.would_remove.is_empty(), "{:?}", doc.would_remove);
     }
 
-    /// One `<ds:Signature>`, small enough to read inside a fixture literal.
-    fn dsig() -> String {
+    /// One `<ds:Signature>` that references `target`, small enough to read
+    /// inside a fixture literal. `""` is the whole document; `#id` is the
+    /// element carrying that XML ID.
+    fn dsig(target: &str) -> String {
+        format!(
+            "<ds:Signature xmlns:ds=\"{DSIG_URI}\"><ds:SignedInfo>\
+             <ds:Reference URI=\"{target}\"/></ds:SignedInfo></ds:Signature>"
+        )
+    }
+
+    /// A `<ds:Signature>` whose coverage nothing here can establish: a
+    /// `<ds:SignedInfo>` with no `<ds:Reference>` in it at all.
+    fn dsig_unresolvable() -> String {
         format!("<ds:Signature xmlns:ds=\"{DSIG_URI}\"><ds:SignedInfo/></ds:Signature>")
     }
 
@@ -1983,29 +2295,74 @@ mod tests {
         )
     }
 
+    /// [`HEAD`] with the XML ID a `URI="#…"` resolves against. SAML's schema
+    /// declares `ID` on every descriptor as `xs:ID`, which is what makes it
+    /// resolvable without reading a schema.
+    const SIGNED_HEAD: &str = "<?xml version=\"1.0\"?>\n\
+        <EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\"\n\
+        \x20                 ID=\"_entity\"\n\
+        \x20                 entityID=\"https://sp-a.example.com\">";
+
+    /// What a signature covers comes from its `<ds:Reference URI>`, never
+    /// from where it sits.
+    ///
+    /// The first two rows are the discriminating pair, and they are the two
+    /// halves of the defect this replaced. A placement rule — direct child of
+    /// a descriptor signs the descriptor, anything lower signs its role —
+    /// agrees with this one on every other row here and gets both of these
+    /// backwards:
+    ///
+    /// - a signature nested under a *retained* role that references the whole
+    ///   entity really does go stale when a sibling is stripped, and the
+    ///   placement rule kept it, handing a peer a document that cannot
+    ///   verify. That is the expensive direction.
+    /// - a signature that is a direct child but references only one retained
+    ///   role covers nothing this rewrite touches, and the placement rule
+    ///   deleted a valid signature for no reason.
+    ///
+    /// The last three rows are the fail-closed half: coverage we could not
+    /// establish is treated as covering everything, so it goes when anything
+    /// changes — and, the control, stays when nothing does.
     #[test]
-    fn only_a_signature_over_the_whole_document_is_invalidated() {
-        // A signature signs the subtree it hangs off. Removing a WS-Fed role
-        // changes the document, so a signature on `EntityDescriptor` can no
-        // longer verify — but one on a *retained sibling* role covers bytes
-        // this rewrite never touches, and deleting it destroys a valid
-        // signature to no purpose.
-        let sig = dsig();
+    fn signature_coverage_is_read_from_its_references_not_its_placement() {
         let role = wsfed_role();
-        let idp = "<IDPSSODescriptor protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">";
+        let idp = "<IDPSSODescriptor ID=\"_idp\" \
+                   protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">";
+        let whole = dsig("");
+        let on_entity = dsig("#_entity");
+        let on_idp = dsig("#_idp");
+        let dangling = dsig("#_nothing-declares-this");
+        let bare = dsig_unresolvable();
 
         // case, document, expected reasons, does a signature survive, `signed`
         let cases: &[(&str, String, Vec<RemovalReason>, bool, bool)] = &[
             (
-                "a signature on a retained role survives a sibling being cut",
-                format!("{HEAD}\n  {role} />\n  {idp}{sig}</IDPSSODescriptor>{TAIL}"),
+                "a signature under a retained role that references the whole entity",
+                format!("{SIGNED_HEAD}\n  {role} />\n  {idp}{on_entity}</IDPSSODescriptor>{TAIL}"),
+                vec![
+                    RemovalReason::UnsupportedRole,
+                    RemovalReason::EnvelopedSignature,
+                ],
+                false,
+                true,
+            ),
+            (
+                "a direct-child signature that references only a retained role",
+                format!("{SIGNED_HEAD}\n  {on_idp}\n  {role} />\n  {idp}</IDPSSODescriptor>{TAIL}"),
+                vec![RemovalReason::UnsupportedRole],
+                true,
+                false,
+            ),
+            (
+                "a signature on a retained role, referencing that role",
+                format!("{SIGNED_HEAD}\n  {role} />\n  {idp}{on_idp}</IDPSSODescriptor>{TAIL}"),
                 vec![RemovalReason::UnsupportedRole],
                 true,
                 false,
             ),
             (
                 "the document's own signature goes when a role is cut",
-                format!("{HEAD}\n  {sig}\n  {role} />{TAIL}"),
+                format!("{SIGNED_HEAD}\n  {whole}\n  {role} />{TAIL}"),
                 vec![
                     RemovalReason::EnvelopedSignature,
                     RemovalReason::UnsupportedRole,
@@ -2015,14 +2372,49 @@ mod tests {
             ),
             (
                 "a signature inside the cut role goes with it, unreported",
-                format!("{HEAD}\n  {role}>{sig}</RoleDescriptor>{TAIL}"),
+                format!("{SIGNED_HEAD}\n  {role}>{on_entity}</RoleDescriptor>{TAIL}"),
                 vec![RemovalReason::UnsupportedRole],
+                false,
+                // The signature is about to be deleted along with the role
+                // that holds it, but while it is in the file it does claim to
+                // sign the whole entity, and `signed` describes the document
+                // as read rather than as rewritten.
+                true,
+            ),
+            (
+                "a role signature with nothing else to strip is left alone",
+                format!("{SIGNED_HEAD}\n  {idp}{on_idp}</IDPSSODescriptor>{TAIL}"),
+                vec![],
+                true,
+                false,
+            ),
+            (
+                "a reference to an id the document does not declare",
+                format!("{SIGNED_HEAD}\n  {dangling}\n  {role} />{TAIL}"),
+                vec![
+                    RemovalReason::EnvelopedSignature,
+                    RemovalReason::UnsupportedRole,
+                ],
+                false,
+                // Unresolvable is a reason to remove it, never a reason to
+                // tell an operator the document is signed.
+                false,
+            ),
+            (
+                "a signature with no reference at all",
+                format!("{SIGNED_HEAD}\n  {bare}\n  {role} />{TAIL}"),
+                vec![
+                    RemovalReason::EnvelopedSignature,
+                    RemovalReason::UnsupportedRole,
+                ],
                 false,
                 false,
             ),
             (
-                "a role signature with nothing else to strip is left alone",
-                format!("{HEAD}\n  {idp}{sig}</IDPSSODescriptor>{TAIL}"),
+                // The control for the two rows above: fail-closed means
+                // "invalidated by any change", not "always removed".
+                "a signature with no reference, and nothing to change",
+                format!("{SIGNED_HEAD}\n  {bare}\n  {idp}</IDPSSODescriptor>{TAIL}"),
                 vec![],
                 true,
                 false,
@@ -2050,9 +2442,50 @@ mod tests {
             assert_eq!(
                 inspect(input.as_bytes()).expect("parses").signed,
                 *signed,
-                "{case}: `signed` reports the document's own signature"
+                "{case}: `signed` reports a signature over the document itself"
             );
         }
+    }
+
+    /// Removing a stale signature is itself a change, so a signature that
+    /// covers another one is invalidated by its removal. Nothing but a fixed
+    /// point gets this right in one pass.
+    ///
+    /// The discriminating detail is that the outer signature references only
+    /// `#_idp` — it does **not** cover the WS-Fed role being stripped, so a
+    /// single pass over "which signatures does the content change break"
+    /// keeps it, and the document goes out carrying a signature over bytes
+    /// that lost their inner signature.
+    #[test]
+    fn a_signature_covering_another_signature_goes_when_that_one_does() {
+        let role = wsfed_role();
+        let outer = dsig("#_idp");
+        let inner = dsig("#_entity");
+        let input = format!(
+            "{SIGNED_HEAD}\n  {role} />\n  <IDPSSODescriptor ID=\"_idp\" \
+             protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">\
+             {outer}{inner}</IDPSSODescriptor>{TAIL}"
+        );
+        let result = clean(&input);
+        assert_eq!(
+            result
+                .removed
+                .iter()
+                .map(|removal| removal.reason)
+                .collect::<Vec<_>>(),
+            vec![
+                RemovalReason::UnsupportedRole,
+                RemovalReason::EnvelopedSignature,
+                RemovalReason::EnvelopedSignature,
+            ],
+            "both signatures go: the inner one covers the cut, the outer one covers the inner"
+        );
+        assert!(
+            !String::from_utf8(result.bytes)
+                .expect("utf-8")
+                .contains("<ds:Signature"),
+            "a signature over a subtree that lost a signature cannot verify either"
+        );
     }
 
     #[test]
@@ -2445,11 +2878,6 @@ mod tests {
                 Document,
             ),
             (
-                "a DOCTYPE after the root",
-                format!("{entity}/><!DOCTYPE EntityDescriptor>"),
-                Document,
-            ),
-            (
                 "a CDATA section after the root",
                 format!("{entity}/><![CDATA[trailing]]>"),
                 Document,
@@ -2464,9 +2892,45 @@ mod tests {
             // with no selected removals, `sanitise` emitted the malformed
             // bytes verbatim, which is the principal way this module could
             // produce output that is not well-formed XML.
+            // ── DOCTYPEs, all of them ───────────────────────────────────────
+            // The bare one is the discriminating case: it declares nothing,
+            // expands to nothing and is well-formed in the position it sits
+            // in, so a rule that refused only an *external* subset — or only
+            // a DTD this scanner could see was dangerous — accepts it and
+            // the sanitiser hands it on. What makes it a refusal is that a
+            // DTD we did not read is one we cannot describe to whatever
+            // parses the document next.
             (
-                "a second DOCTYPE declaration",
-                format!("<!DOCTYPE EntityDescriptor><!DOCTYPE EntityDescriptor>{entity}/>"),
+                "a bare DOCTYPE in the prolog",
+                format!("<!DOCTYPE EntityDescriptor>{entity}/>"),
+                Document,
+            ),
+            (
+                "a DOCTYPE with an external SYSTEM subset",
+                format!(
+                    "<!DOCTYPE EntityDescriptor SYSTEM \"https://sp-a.example.com/md.dtd\">\
+                     {entity}/>"
+                ),
+                Document,
+            ),
+            (
+                "a DOCTYPE with an external PUBLIC subset",
+                format!(
+                    "<!DOCTYPE EntityDescriptor PUBLIC \"-//example//DTD md//EN\" \
+                     \"https://sp-a.example.com/md.dtd\">{entity}/>"
+                ),
+                Document,
+            ),
+            (
+                // The internal subset needs no fetch to do damage, which is
+                // why "we never resolve anything external" is not the rule.
+                "a DOCTYPE with an internal entity subset",
+                format!("<!DOCTYPE EntityDescriptor [<!ENTITY x \"expanded\">]>{entity}/>"),
+                Document,
+            ),
+            (
+                "a DOCTYPE after the root",
+                format!("{entity}/><!DOCTYPE EntityDescriptor>"),
                 Document,
             ),
             (
@@ -2583,9 +3047,12 @@ mod tests {
         );
         let cases: &[(&str, String)] = &[
             (
-                "a declaration, a DOCTYPE, a comment and a PI in the prolog",
+                // No DOCTYPE here, deliberately: it is refused, and the
+                // refusal table above is where that is asserted. The rest of
+                // the prolog a real export can carry still has to survive.
+                "a declaration, a comment and a PI in the prolog",
                 format!(
-                    "<?xml version=\"1.0\"?>\n<!DOCTYPE EntityDescriptor>\n\
+                    "<?xml version=\"1.0\"?>\n\
                      <!-- hand-authored -->\n<?target data?>\n{body}"
                 ),
             ),
@@ -2813,16 +3280,19 @@ mod tests {
     /// makes the per-entity signature scope observable: entity one is never
     /// touched, so anything that happens to its signature is over-reach.
     fn aggregate(extra: &str) -> String {
+        let agg = dsig("#agg");
+        let one = dsig("#entity-one");
+        let two = dsig("#entity-two");
         format!(
             "<EntitiesDescriptor xmlns=\"{SAML_URI}\" xmlns:ds=\"{DSIG_URI}\" \
-             xmlns:xsi=\"{XSI_URI}\" xmlns:fed=\"{WSFED_URI}\">\n\
-             \x20 <ds:Signature>AGGREGATE</ds:Signature>\n\
-             \x20 <EntityDescriptor entityID=\"https://idp-a.example.com\">\n\
-             \x20   <ds:Signature>ENTITY-ONE</ds:Signature>\n\
+             xmlns:xsi=\"{XSI_URI}\" xmlns:fed=\"{WSFED_URI}\" ID=\"agg\">\n\
+             \x20 {agg}\n\
+             \x20 <EntityDescriptor ID=\"entity-one\" entityID=\"https://idp-a.example.com\">\n\
+             \x20   {one}\n\
              \x20   <IDPSSODescriptor protocolSupportEnumeration=\"{PROTOCOL_URI}\" />\n\
              \x20 </EntityDescriptor>\n\
-             \x20 <EntityDescriptor entityID=\"https://sp-b.example.com\">\n\
-             \x20   <ds:Signature>ENTITY-TWO</ds:Signature>\n\
+             \x20 <EntityDescriptor ID=\"entity-two\" entityID=\"https://sp-b.example.com\">\n\
+             \x20   {two}\n\
              \x20   <SPSSODescriptor protocolSupportEnumeration=\"{PROTOCOL_URI}\" />\n\
              {extra}\
              \x20 </EntityDescriptor>\n\
@@ -2941,14 +3411,17 @@ mod tests {
         );
     }
 
-    /// An enveloped signature covers the descriptor it sits under and nothing
-    /// else, so cutting a WS-Federation role out of entity two must leave
+    /// Each signature is cut only where the bytes *its references name*
+    /// changed, so cutting a WS-Federation role out of entity two must leave
     /// entity one's signature exactly where it was — while the aggregate's
-    /// own signature, which covers both, has to go.
+    /// own signature, which references the aggregate and so spans both
+    /// entities, has to go.
     ///
-    /// Turns red on reverting `covers` to the global "is there any other cut"
-    /// test: entity one's signature would then be removed as well, and the
-    /// output would lose a signature that still verifies.
+    /// Turns red on collapsing the coverage test to a global "is there any
+    /// other cut": entity one's signature would then be removed as well, and
+    /// the output would lose a signature that still verifies. Each signature
+    /// is identified by the id it references, which is the thing that decides
+    /// its fate.
     #[test]
     fn an_aggregate_signature_is_cut_only_where_the_bytes_it_signs_changed() {
         let role = "\x20   <RoleDescriptor xsi:type=\"fed:SecurityTokenServiceType\" />\n";
@@ -2956,11 +3429,11 @@ mod tests {
         let out = String::from_utf8(sanitised.bytes.clone()).expect("output is utf-8");
 
         assert!(
-            out.contains("<ds:Signature>ENTITY-ONE</ds:Signature>"),
+            out.contains("URI=\"#entity-one\""),
             "entity one was not touched, so its signature still verifies:\n{out}"
         );
-        assert!(!out.contains("ENTITY-TWO"), "{out}");
-        assert!(!out.contains("AGGREGATE"), "{out}");
+        assert!(!out.contains("URI=\"#entity-two\""), "{out}");
+        assert!(!out.contains("URI=\"#agg\""), "{out}");
         assert!(!out.contains("RoleDescriptor"), "{out}");
         assert_eq!(
             report(&sanitised)

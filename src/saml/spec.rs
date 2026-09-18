@@ -559,36 +559,84 @@ pub fn cascade_lines(entity_id: &str, realm: &str, affected: &[CotMembership]) -
 /// The delete response echoes the deleted entity and says nothing about the
 /// circles of trust AM rewrote, so a command that printed `before` as the
 /// outcome would be reporting a claim, not an observation — the same mistake
-/// as snapshotting the bytes you submitted (`.ai/core.md` §5). Every line here
+/// as snapshotting the bytes you submitted (`.ai/core.md` §5). Everything here
 /// comes from a second read.
 ///
-/// A circle that **still** lists the entity is the interesting case: the
-/// cascade is documented but it is AM's, not ours, and a federation left
-/// naming a provider that no longer exists is worth a warning rather than
-/// silence.
-pub fn cascade_outcome_lines(
-    entity_id: &str,
-    before: &[CotMembership],
-    after: &[CotMembership],
-) -> Vec<String> {
-    before
-        .iter()
-        .map(
-            |was| match after.iter().find(|still| still.cot == was.cot) {
-                None => format!(
+/// **The survivors are counted from `after`, not from `before`.** Walking
+/// `before` and asking "is it still there" can only find circles the
+/// pre-delete read happened to see, which makes it a replay with a lookup in
+/// it rather than a postcondition: a circle that named the entity but was
+/// created, renamed or simply missed between the two reads is invisible to
+/// it. The question the operator needs answered is "does *any* circle of
+/// trust in this realm still name an entity that no longer exists", and only
+/// `after` can answer that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CascadeOutcome {
+    /// Circles the pre-delete read named that no longer list the entity —
+    /// AM's cascade, observed.
+    pub removed: Vec<CotMembership>,
+    /// Every circle that **still** lists the entity, whether or not the
+    /// pre-delete read saw it. A federation left naming a provider that no
+    /// longer exists is the state this whole second read exists to find.
+    pub still_listing: Vec<CotMembership>,
+}
+
+impl CascadeOutcome {
+    /// Whether the cascade the command promised demonstrably happened.
+    ///
+    /// This is what the exit code says, so it is deliberately not "the delete
+    /// succeeded": the entity is gone either way, and automation that reads a
+    /// zero as "the federation is consistent again" is the reader being
+    /// protected here.
+    pub fn settled(&self) -> bool {
+        self.still_listing.is_empty()
+    }
+
+    pub fn lines(&self, entity_id: &str) -> Vec<String> {
+        let mut lines = self
+            .removed
+            .iter()
+            .map(|was| {
+                format!(
                     "  removed from circle of trust {}: {}",
                     was.cot,
                     was.entries.join(", ")
-                ),
-                Some(still) => format!(
-                    "  warning: circle of trust {} still lists {entity_id} as {} \
-                     after the delete",
-                    was.cot,
-                    still.entries.join(", ")
-                ),
-            },
-        )
-        .collect()
+                )
+            })
+            .collect::<Vec<_>>();
+        for still in &self.still_listing {
+            lines.push(format!(
+                "  warning: circle of trust {} still lists {entity_id} as {} \
+                 after the delete",
+                still.cot,
+                still.entries.join(", ")
+            ));
+        }
+        lines
+    }
+}
+
+pub fn cascade_outcome(before: &[CotMembership], after: &[CotMembership]) -> CascadeOutcome {
+    CascadeOutcome {
+        removed: before
+            .iter()
+            .filter(|was| !after.iter().any(|still| still.cot == was.cot))
+            .cloned()
+            .collect(),
+        still_listing: after.to_vec(),
+    }
+}
+
+/// Permission to send one delete.
+///
+/// The same shape as [`ImportPermit`], and for the same reason: the field is
+/// private to this module, [`delete_ok`] is the only thing that fills it in,
+/// and `api::delete_entity` takes a reference to one — so the unforced
+/// preview path cannot reach the write even if the `?` in front of it is
+/// deleted.
+#[derive(Debug)]
+pub struct DeletePermit {
+    _minted_by_delete_ok: (),
 }
 
 /// Permission to delete one entity provider: `--force` was supplied.
@@ -602,15 +650,26 @@ pub fn cascade_outcome_lines(
 /// without `--force` is how an operator finds out what a delete would take
 /// with it. That is why there is no `--dry-run` — there is no permission token
 /// for a preview to carry by accident.
+///
+/// **This is the command's last refusal, so nothing that costs the operator
+/// anything may run in front of it** — the production `--yes` gate above all.
+/// `cli::delete` used to call `ensure_prod_confirmed` first, which made the
+/// documented preview demand write authorization on a production-themed
+/// tenant and taught operators to keep `--yes` on the line (`REVIEW.md`,
+/// 2026-08-11: the same defect in `access::cli::write`). The permit is what
+/// puts the ordering where a reader can see it: the confirmation belongs
+/// between minting one and spending it.
 pub fn delete_ok(
     forced: bool,
     entity_id: &str,
     location: Location,
     tenant: &str,
     realm: &str,
-) -> crate::Result<()> {
+) -> crate::Result<DeletePermit> {
     if forced {
-        return Ok(());
+        return Ok(DeletePermit {
+            _minted_by_delete_ok: (),
+        });
     }
     Err(crate::Error::Config(format!(
         "would delete SAML entity provider {entity_id} ({location}) from {tenant}/{realm}; \
@@ -1035,6 +1094,12 @@ pub fn imported_entities(response: &serde_json::Value) -> crate::Result<Vec<Stri
 /// with three ids, one of which is not one of ours, is not the import we
 /// asked for — and the count matches. This repo has the same rule written
 /// down elsewhere as "a count is not an identity".
+///
+/// The ids are compared **byte for byte**, and that is measured rather than
+/// assumed: AM echoes an entity id ending in `/` back unchanged, trailing
+/// slash and all (`docs/api/06-saml.md`). So there is nothing for a
+/// normalisation to repair here and two entities for it to conflate —
+/// [`entity_id64`] says the same about the id encoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportOutcome {
     /// Exactly what AM echoed, in its order.
@@ -1043,9 +1108,26 @@ pub struct ImportOutcome {
     pub missing: Vec<String>,
     /// In `importedEntities`, not declared in the file.
     pub unexpected: Vec<String>,
+    /// Named more than once by `importedEntities`, each id listed once.
+    ///
+    /// The half of "a set comparison" that membership alone does not cover.
+    /// `[a, b, b]` against a file declaring `[a, b]` has nothing missing and
+    /// nothing unexpected, so a comparison built only from those two lists
+    /// calls it a match — and the file is refused for declaring a duplicate
+    /// ([`metadata::MetadataError::DuplicateEntityId`]) while AM answering
+    /// with one is waved through. Whatever AM meant by it, the response is
+    /// not the set we sent, and the report that exists to say so has to say
+    /// so.
+    pub duplicated: Vec<String>,
 }
 
 pub fn compare_imported(declared: &[String], imported: &[String]) -> ImportOutcome {
+    let mut duplicated: Vec<String> = Vec::new();
+    for (index, id) in imported.iter().enumerate() {
+        if imported[..index].contains(id) && !duplicated.contains(id) {
+            duplicated.push(id.clone());
+        }
+    }
     ImportOutcome {
         imported: imported.to_vec(),
         missing: declared
@@ -1058,13 +1140,14 @@ pub fn compare_imported(declared: &[String], imported: &[String]) -> ImportOutco
             .filter(|id| !declared.contains(id))
             .cloned()
             .collect(),
+        duplicated,
     }
 }
 
 impl ImportOutcome {
     /// Whether AM imported exactly the entities the file declared.
     pub fn matches(&self) -> bool {
-        self.missing.is_empty() && self.unexpected.is_empty()
+        self.missing.is_empty() && self.unexpected.is_empty() && self.duplicated.is_empty()
     }
 
     /// What the import did, and — separately — what it could not check.
@@ -1089,6 +1172,13 @@ impl ImportOutcome {
                  created that this document did not declare"
             ));
         }
+        for id in &self.duplicated {
+            lines.push(format!(
+                "warning: {id} appears more than once in importedEntities — the file \
+                 declares it once, so this answer is not the set that was sent and \
+                 nothing here can say which entity each entry is about"
+            ));
+        }
         lines
     }
 }
@@ -1111,16 +1201,64 @@ not verified: circle-of-trust membership. AM records it twice — the CoT
       call and nothing here — before or after — can show it. `aic saml cot
       list` shows only the readable half.";
 
-/// After a failed import, what the realm holds now.
+/// Why an import cannot say what it created.
 ///
-/// An aggregate is one call, but a failure is not a rollback: AM says nothing
+/// Two different-looking endings to the same situation, and the operator has
+/// to be told which: the call failed outright, or it answered **200** with a
+/// body that is not the `importedEntities` array the endpoint documents. The
+/// second is the dangerous one, because it looks like success from the
+/// outside — AM may well have created every entity and merely described it in
+/// a shape we do not read. Neither is a rollback, so both owe the operator
+/// the same fresh read of the realm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportUnknown {
+    /// `?_action=importEntity` returned an error.
+    Failed,
+    /// A 200 whose body [`imported_entities`] could not read.
+    Unreadable,
+}
+
+impl ImportUnknown {
+    /// The clause every line about this outcome opens on.
+    pub fn what_happened(self) -> &'static str {
+        match self {
+            Self::Failed => "the import failed",
+            Self::Unreadable => {
+                "the import answered 200 with a body that names no importedEntities"
+            }
+        }
+    }
+
+    /// Why the realm has to be looked at rather than assumed untouched.
+    fn not_a_rollback(self) -> &'static str {
+        match self {
+            Self::Failed => "a failure is not a rollback",
+            Self::Unreadable => "an answer we cannot read is not a rollback",
+        }
+    }
+}
+
+/// After an import that cannot report on itself, what the realm holds now.
+///
+/// An aggregate is one call, but neither ending is a rollback: AM says nothing
 /// about how far it got, and assuming "nothing happened" is the same mistake
 /// as reporting the bytes you submitted as a snapshot. So this is a fresh
 /// read, listed per declared id rather than summarised.
-pub fn after_failure_lines(declared: &[String], stubs: &[EntityStub], realm: &str) -> Vec<String> {
+///
+/// Both of [`ImportUnknown`]'s cases route here deliberately. The relist used
+/// to hang off the API-error arm alone, so a 200 with a body we could not read
+/// — the case where entities are most likely to exist and least likely to be
+/// expected — returned immediately with no inventory at all.
+pub fn after_failure_lines(
+    declared: &[String],
+    stubs: &[EntityStub],
+    realm: &str,
+    why: ImportUnknown,
+) -> Vec<String> {
     let mut lines = vec![format!(
-        "the import failed; re-read realm {realm} to see what exists now \
-         (a failure is not a rollback):"
+        "{}; re-read realm {realm} to see what exists now ({}):",
+        why.what_happened(),
+        why.not_a_rollback()
     )];
     for entity_id in declared {
         lines.push(match locate(entity_id, stubs) {
@@ -2024,6 +2162,11 @@ mod tests {
 
     /// `--force` is the whole permission, so both directions are asserted —
     /// and the refusal has to name the flag that lifts it.
+    ///
+    /// The discriminating half is the refusal returning **no** permit rather
+    /// than a permit plus a message: `api::delete_entity` takes a
+    /// `&DeletePermit`, so an unforced run that reached the write would not
+    /// compile.
     #[test]
     fn delete_is_refused_without_force_and_allowed_with_it() {
         let refusal = delete_ok(
@@ -2050,27 +2193,31 @@ mod tests {
         .expect("--force authorizes the delete");
     }
     /// The cascade report is a diff of two reads, not a replay of the first.
-    /// A circle that still lists the entity must not be reported as cleaned.
+    /// A circle that still lists the entity must not be reported as cleaned,
+    /// and must not be reported as success either.
+    ///
+    /// The discriminating case is `late`: a circle the **second** read found
+    /// still naming the entity that the first read never saw. An outcome
+    /// walked out of `before` cannot see it, agrees with this one on every
+    /// other row here, and calls the delete settled.
     #[test]
     fn the_cascade_outcome_distinguishes_a_removal_from_a_survivor() {
-        let before = vec![
-            CotMembership {
-                cot: "client-a".to_string(),
-                entries: vec!["https://sp-a.example.com|saml2".to_string()],
-            },
-            CotMembership {
-                cot: "shared".to_string(),
-                entries: vec!["https://sp-a.example.com|saml2".to_string()],
-            },
-        ];
-        // `shared` did not change; `client-a` did.
-        let after = vec![CotMembership {
-            cot: "shared".to_string(),
+        let membership = |name: &str| CotMembership {
+            cot: name.to_string(),
             entries: vec!["https://sp-a.example.com|saml2".to_string()],
-        }];
+        };
+        let before = vec![membership("client-a"), membership("shared")];
+        // `shared` did not change; `client-a` did; `late` was never in the
+        // pre-delete read and still names the entity.
+        let after = vec![membership("shared"), membership("late")];
 
-        let lines = cascade_outcome_lines("https://sp-a.example.com", &before, &after);
-        assert_eq!(lines.len(), 2, "one line per circle that named the entity");
+        let outcome = cascade_outcome(&before, &after);
+        assert!(
+            !outcome.settled(),
+            "a circle that still lists the entity is not a settled cascade"
+        );
+        let lines = outcome.lines("https://sp-a.example.com");
+        assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(
             lines[0].contains("removed from circle of trust client-a"),
             "{:?}",
@@ -2082,6 +2229,20 @@ mod tests {
             lines[1]
         );
         assert!(!lines[1].contains("removed from"), "{:?}", lines[1]);
+        assert!(
+            lines[2].contains("warning") && lines[2].contains("late"),
+            "a survivor the pre-delete read never saw still has to be reported: {:?}",
+            lines[2]
+        );
+
+        // The control: a cascade that reached every circle is settled, and a
+        // realm that never listed the entity is settled without a word.
+        let done = cascade_outcome(&before, &[]);
+        assert!(done.settled());
+        assert_eq!(done.lines("https://sp-a.example.com").len(), 2);
+        let untouched = cascade_outcome(&[], &[]);
+        assert!(untouched.settled());
+        assert!(untouched.lines("https://sp-a.example.com").is_empty());
     }
 
     /// The create report must separate what AM confirmed (the id in the 201)
@@ -2307,26 +2468,32 @@ mod tests {
         assert!(!verbatim.contains("removal(s)"), "{verbatim}");
     }
 
-    /// A count is not an identity. Every row here has AM returning the right
-    /// *number* of ids, so a comparison on `len()` passes all of them.
+    /// A count is not an identity, and membership is not a set. Every row
+    /// here has AM returning the right *number* of ids, so a comparison on
+    /// `len()` passes all of them.
     ///
     /// Turns red on replacing the set difference in `compare_imported` — or
-    /// `ImportOutcome::matches` — with a length comparison.
+    /// `ImportOutcome::matches` — with a length comparison. The
+    /// `duplicated` rows are the ones a comparison built from `missing` and
+    /// `unexpected` alone gets wrong: `[a, b, b]` against a file declaring
+    /// `[a, b]` has neither, and is not the set that was sent.
     #[test]
     fn the_import_comparison_is_on_the_set_not_the_count() {
-        /// `(what it is, what AM returned, missing, unexpected)`.
+        /// `(what it is, what AM returned, missing, unexpected, duplicated)`.
         type Case = (
             &'static str,
             Vec<String>,
             Vec<&'static str>,
             Vec<&'static str>,
+            Vec<&'static str>,
         );
 
         let declared = ids(&["https://idp-a.example.com", "https://sp-b.example.com"]);
-        let cases: [Case; 4] = [
+        let cases: [Case; 7] = [
             (
                 "exactly what the file declared, in another order",
                 ids(&["https://sp-b.example.com", "https://idp-a.example.com"]),
+                vec![],
                 vec![],
                 vec![],
             ),
@@ -2337,11 +2504,13 @@ mod tests {
                 ids(&["https://idp-a.example.com", "https://sp-c.example.com"]),
                 vec!["https://sp-b.example.com"],
                 vec!["https://sp-c.example.com"],
+                vec![],
             ),
             (
                 "a strict subset",
                 ids(&["https://idp-a.example.com"]),
                 vec!["https://sp-b.example.com"],
+                vec![],
                 vec![],
             ),
             (
@@ -2349,20 +2518,60 @@ mod tests {
                 Vec::new(),
                 vec!["https://idp-a.example.com", "https://sp-b.example.com"],
                 vec![],
+                vec![],
+            ),
+            (
+                // The discriminating row. Both difference lists are empty,
+                // every declared id is present, every present id is declared
+                // — and this is not the set the file declares.
+                "one of ours echoed twice",
+                ids(&[
+                    "https://idp-a.example.com",
+                    "https://sp-b.example.com",
+                    "https://sp-b.example.com",
+                ]),
+                vec![],
+                vec![],
+                vec!["https://sp-b.example.com"],
+            ),
+            (
+                // Each duplicated id is named once however many times it
+                // came back, so the report stays a list of ids.
+                "the same id three times, with one of ours missing",
+                ids(&[
+                    "https://idp-a.example.com",
+                    "https://idp-a.example.com",
+                    "https://idp-a.example.com",
+                ]),
+                vec!["https://sp-b.example.com"],
+                vec![],
+                vec!["https://idp-a.example.com"],
+            ),
+            (
+                // The comparison is byte for byte, and this is the trailing
+                // slash that makes it matter: AM echoes an Entra id ending in
+                // `/` unchanged (`docs/api/06-saml.md`), so an implementation
+                // that trimmed or folded would call this row a match.
+                "an id that differs only by a trailing slash",
+                ids(&["https://idp-a.example.com/", "https://sp-b.example.com"]),
+                vec!["https://idp-a.example.com"],
+                vec!["https://idp-a.example.com/"],
+                vec![],
             ),
         ];
-        for (name, imported, missing, unexpected) in cases {
+        for (name, imported, missing, unexpected, duplicated) in cases {
             let outcome = compare_imported(&declared, &imported);
             assert_eq!(outcome.missing, ids(&missing), "{name}: missing");
             assert_eq!(outcome.unexpected, ids(&unexpected), "{name}: unexpected");
+            assert_eq!(outcome.duplicated, ids(&duplicated), "{name}: duplicated");
             assert_eq!(
                 outcome.matches(),
-                missing.is_empty() && unexpected.is_empty(),
+                missing.is_empty() && unexpected.is_empty() && duplicated.is_empty(),
                 "{name}"
             );
             // Every warning names the id it is about, not a tally.
             let rendered = outcome.lines("sandbox", "bravo").join("\n");
-            for id in missing.iter().chain(unexpected.iter()) {
+            for id in missing.iter().chain(unexpected.iter()).chain(&duplicated) {
                 assert!(rendered.contains(id), "{name}: {rendered}");
             }
         }
@@ -2500,7 +2709,11 @@ mod tests {
     /// and says, per declared id, what is there now.
     ///
     /// Turns red on reporting the plan's ids instead of the fresh list, or on
-    /// summarising to a count.
+    /// summarising to a count. The `Unreadable` half is the discriminating
+    /// one: the inventory below the heading has to be identical, because the
+    /// two endings differ only in what AM did — not in what the operator now
+    /// needs to know — and the heading has to differ, because "the import
+    /// failed" is not what a 200 did.
     #[test]
     fn after_a_failure_every_declared_id_is_reported_from_a_fresh_read() {
         let declared = ids(&[
@@ -2512,16 +2725,37 @@ mod tests {
             stub("https://idp-a.example.com", Location::Remote, &[]),
             stub("https://sp-c.example.com", Location::Hosted, &[]),
         ];
+        let inventory = vec![
+            "  present  https://idp-a.example.com (remote)".to_string(),
+            "  absent   https://sp-b.example.com".to_string(),
+            "  present  https://sp-c.example.com (hosted)".to_string(),
+        ];
+
+        let failed = after_failure_lines(&declared, &after, "bravo", ImportUnknown::Failed);
         assert_eq!(
-            after_failure_lines(&declared, &after, "bravo"),
-            vec![
-                "the import failed; re-read realm bravo to see what exists now \
-                 (a failure is not a rollback):"
-                    .to_string(),
-                "  present  https://idp-a.example.com (remote)".to_string(),
-                "  absent   https://sp-b.example.com".to_string(),
-                "  present  https://sp-c.example.com (hosted)".to_string(),
+            failed,
+            [
+                vec![
+                    "the import failed; re-read realm bravo to see what exists now \
+                     (a failure is not a rollback):"
+                        .to_string()
+                ],
+                inventory.clone(),
             ]
+            .concat()
+        );
+
+        let unreadable = after_failure_lines(&declared, &after, "bravo", ImportUnknown::Unreadable);
+        assert_eq!(unreadable[1..], inventory[..], "{unreadable:?}");
+        assert!(
+            unreadable[0].contains("200") && !unreadable[0].contains("the import failed"),
+            "a 200 with a body we cannot read is not a failed call: {}",
+            unreadable[0]
+        );
+        assert!(
+            unreadable[0].contains("not a rollback"),
+            "{}",
+            unreadable[0]
         );
     }
 
