@@ -407,6 +407,7 @@ async fn init(
             &realm,
             &plan.label,
             &plan.secret_id,
+            label_mapping.as_deref(),
             ok.confirmed_prod,
             &permit,
         )
@@ -488,8 +489,9 @@ async fn stage(
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
     let created = ops::add_version(
-        &tenant.name,
-        &plan.secret_id,
+        &tenant,
+        &state,
+        &plan,
         &key.value,
         ok.confirmed_prod,
         &permit,
@@ -600,14 +602,7 @@ async fn complete(
     spec::complete_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
-    ops::disable_version(
-        &tenant.name,
-        &plan.secret_id,
-        &plan.disable_version,
-        ok.confirmed_prod,
-        &permit,
-    )
-    .await?;
+    ops::disable_version(&tenant, &state, &plan, ok.confirmed_prod, &permit).await?;
     println!(
         "ESV secret {} version {} disabled",
         plan.secret_id, plan.disable_version
