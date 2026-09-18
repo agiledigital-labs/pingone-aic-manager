@@ -177,12 +177,12 @@ token on stdout.
 `--token` also guarantees the token's remaining life. The agent's own floor is
 60s, which is right for a request it is about to make itself and far too short
 for a token handed to another process that will hold it — so `--token` asks for
-at least **840s** and the agent mints a fresh one when the cached token is
-below that. AIC issues 898s tokens, so in practice a scripted caller always
-gets more than fourteen minutes, and the cached token is reused only within the
-first minute of its life. Plain `whoami` deliberately sends no floor: its job is
-to report the cache, and refreshing would make `expires:` say the same thing
-every time.
+at least **840s** and the agent mints a fresh one when the cached token is below
+that. AIC issues 898s tokens, so in practice a scripted caller always gets more
+than fourteen minutes, and the cached token is reused only within the first
+minute of its life. Plain `whoami` deliberately sends no floor: its job is to
+report the cache, and refreshing would make `expires:` say the same thing every
+time.
 
 Unlike the other `ctx` verbs, `rm` needs an unlocked agent: it reads the vault
 to find out what the tenant owns, and withdraws a signing key from the tenant
@@ -392,13 +392,13 @@ rather than accumulating the whole window in memory.
 before the moment the follow started — because the log pipeline lags ingestion
 behind event time by tens of seconds, so contiguous windows silently drop any
 event that arrives after its own window was already queried. Events already
-printed are suppressed by the same identity the local store dedupes on, and
-that set is forgotten once it falls behind the window, so a long follow stays
-bounded. Each matched event is one compact JSON value on stdout
-(JSON Lines). Startup, empty-poll/filter status, and the Ctrl-C acknowledgement
-go to stderr, so redirecting stdout produces a clean event stream. There is no
-separate polling-interval flag: all log requests already pass through the
-client's 1.05-second API throttle.
+printed are suppressed by the same identity the local store dedupes on, and that
+set is forgotten once it falls behind the window, so a long follow stays
+bounded. Each matched event is one compact JSON value on stdout (JSON Lines).
+Startup, empty-poll/filter status, and the Ctrl-C acknowledgement go to stderr,
+so redirecting stdout produces a clean event stream. There is no separate
+polling-interval flag: all log requests already pass through the client's
+1.05-second API throttle.
 
 Both commands inspect `payload`, which the live API returns as either a raw
 string (especially `idm-core`) or a JSON object. Objects are serialized to JSON
@@ -1145,10 +1145,10 @@ intermediate state retains a working key.
 
 ## `aic saml` — SAML 2.0 entity providers and metadata
 
-Realm-scoped, CLI-only (no TUI tab). Six verbs write: `create-hosted`,
-`import`, `delete`, and the three halves of a certificate rollover —
-`rotate init`, `rotate stage` and `rotate complete`. There is no
-circle-of-trust write verb — a later slice.
+Realm-scoped, CLI-only (no TUI tab). Six verbs write: `create-hosted`, `import`,
+`delete`, and the three halves of a certificate rollover — `rotate init`,
+`rotate stage` and `rotate complete`. There is no circle-of-trust write verb — a
+later slice.
 
 ```bash
 aic saml list [--location hosted|remote] [--role idp|sp] [--realm alpha] [--json]
@@ -1170,14 +1170,15 @@ aic saml rotate init <ENTITY-ID> --identifier <NAME> --secret-id esv-<NAME> \
 aic saml rotate stage <ENTITY-ID> (--key-file PATH | --key-stdin) \
   [--role idp|sp] [--realm alpha] [--dry-run] [--yes]
 aic saml rotate complete <ENTITY-ID> [--retain <SHA256>] \
+  [--disable-version <N>] \
   [--role idp|sp] [--realm alpha] --force [--dry-run] [--yes]
 ```
 
 ### Which verbs need an unlocked agent
 
 Everything but `metadata`, `rotate` included — even `rotate status`, which
-writes nothing: it correlates the entity, the secret mapping and the ESV
-secret, and only the metadata export inside it is unauthenticated.
+writes nothing: it correlates the entity, the secret mapping and the ESV secret,
+and only the metadata export inside it is unauthenticated.
 
 `metadata inspect` and `metadata sanitise` are local file rewrites, and
 **`metadata export` reaches the tenant over an endpoint that takes no
@@ -1195,27 +1196,27 @@ entity may hold **both** roles, and `--role` tests membership, so a dual-role
 entity appears under `--role idp` and `--role sp` alike. An entity with no role
 blocks is legal and lists with `-` for its roles.
 
-The empty-list line names the realm it searched. The project default is
-`alpha`, and a tenant's SAML entities commonly live in `bravo`, so "nothing
-here" must not read as "this tenant has no SAML".
+The empty-list line names the realm it searched. The project default is `alpha`,
+and a tenant's SAML entities commonly live in `bravo`, so "nothing here" must
+not read as "this tenant has no SAML".
 
 ### `show`
 
 `--location` is **inferred** when omitted, from one list call. The full read is
-`…/saml2/{location}/{entityId64}`, and the *right* id in the *wrong* collection
+`…/saml2/{location}/{entityId64}`, and the _right_ id in the _wrong_ collection
 answers 404 — which reads as "that entity does not exist". If the id is not in
 the realm at all, the error says so and points at `list`.
 
 Default output is a summary: entity id, location, and per role the `metaAlias`
-and the signing secret identifier. `--json` prints the raw document. The
-summary reads leaves, not keys: a full entity carries every group key with `{}`
-inside when nothing in it is set, so key presence says nothing.
+and the signing secret identifier. `--json` prints the raw document. The summary
+reads leaves, not keys: a full entity carries every group key with `{}` inside
+when nothing in it is set, so key presence says nothing.
 
 ### `cot list` / `cot show`
 
 Circle-of-trust ids are **plain names**, not base64url — only entity providers
 are encoded. The list endpoint returns full documents, so `cot list --json`
-prints what the tenant said; the table shows name, status, a *count* of
+prints what the tenant said; the table shows name, status, a _count_ of
 `trustedProviders`, and the description (`-` when absent, which is its real
 state — AM cannot store an empty one).
 
@@ -1226,8 +1227,8 @@ metadata, which REST never exposes — and the runtime trust check reads
 `cotlist`. A provider listed here can still have its assertions rejected, and
 one missing here can still authenticate (`docs/api/06-saml.md`). The caveat is
 part of the human rendering and goes to stdout with it — including when the
-realm has no circles of trust at all, where "none" is the reading most likely
-to be taken as proof that nothing trusts anything. `--json` puts it on stderr
+realm has no circles of trust at all, where "none" is the reading most likely to
+be taken as proof that nothing trusts anything. `--json` puts it on stderr
 instead, so the JSON stream stays clean.
 
 An entry with no `|protocol` suffix is shown and flagged rather than hidden: AM
@@ -1242,11 +1243,12 @@ one AM does not:
 - **The entity ID is required.** `_action=create` with `{}` answers **201** and
   AM mints a UUID-named entity that nothing will ever reference.
 - **`--meta-alias` is required and must be `/<realm>/<name>`.** A role block
-  without `services.metaAlias` fails with `500 Exception from invocation
-  expected to be handled by promise`, which names no field, so there is nothing
-  in the response to translate. Every endpoint AM publishes for the entity
-  embeds the realm (`/am/AuthConsumer/metaAlias/<realm>/<name>`), so an alias
-  in another realm's namespace is wrong in a way nothing reports.
+  without `services.metaAlias` fails with
+  `500 Exception from invocation expected to be handled by promise`, which names
+  no field, so there is nothing in the response to translate. Every endpoint AM
+  publishes for the entity embeds the realm
+  (`/am/AuthConsumer/metaAlias/<realm>/<name>`), so an alias in another realm's
+  namespace is wrong in a way nothing reports.
 - **An entity ID already in the realm is refused.** What AM does with a create
   against an existing id was never measured, and both outcomes it could have —
   an opaque 500, or replacing a configured entity — are worse than a named
@@ -1255,83 +1257,82 @@ one AM does not:
 One role per invocation. `roles` is derived from which role blocks are present,
 so a dual-role entity is built by adding the second block later, not here.
 
-The 201 body is a stub (`_id`, `_rev`, `entityId`), not the created document,
-so the report says which half of it AM confirmed: the id is AM's, and the role
-and the alias are what was sent and were **not** read back. An id that comes
-back different from the one requested — the UUID-minting behaviour this command
+The 201 body is a stub (`_id`, `_rev`, `entityId`), not the created document, so
+the report says which half of it AM confirmed: the id is AM's, and the role and
+the alias are what was sent and were **not** read back. An id that comes back
+different from the one requested — the UUID-minting behaviour this command
 exists to prevent — is a warning, not a silent substitution, and so is a 201
 that carries no `entityId` at all.
 
 ### `import`
 
 `POST …/realm-config/saml2/remote/?_action=importEntity` with the file
-base64url-encoded into `standardMetadata`. Remote entities only: the same
-action on `/hosted` is a **501**, and `?_action=create` on `/remote` is a 400
-— import is the only way a remote entity arrives (`docs/api/06-saml.md`).
+base64url-encoded into `standardMetadata`. Remote entities only: the same action
+on `/hosted` is a **501**, and `?_action=create` on `/remote` is a 400 — import
+is the only way a remote entity arrives (`docs/api/06-saml.md`).
 
-**The URL-safe alphabet is mandatory.** The identical bytes in standard
-base64 answer `400 Invalid standard metadata value in request` — the same
-message as sending `{}` or raw XML — so nothing in the response distinguishes
-a wrong alphabet from an empty body from unparseable metadata. Padding is
-irrelevant. The encoding therefore happens locally and is asserted locally.
+**The URL-safe alphabet is mandatory.** The identical bytes in standard base64
+answer `400 Invalid standard metadata value in request` — the same message as
+sending `{}` or raw XML — so nothing in the response distinguishes a wrong
+alphabet from an empty body from unparseable metadata. Padding is irrelevant.
+The encoding therefore happens locally and is asserted locally.
 
-**One file is not one entity.** An `EntitiesDescriptor` aggregate imports
-every entity it contains in this one call and returns all their ids, so the
-command parses the file into a bundle of *n* entities and preflights, sends
-and reports on all of them. That is also the one place the offline metadata
-tools are narrower: `metadata inspect` and `metadata sanitise` take a single
+**One file is not one entity.** An `EntitiesDescriptor` aggregate imports every
+entity it contains in this one call and returns all their ids, so the command
+parses the file into a bundle of _n_ entities and preflights, sends and reports
+on all of them. That is also the one place the offline metadata tools are
+narrower: `metadata inspect` and `metadata sanitise` take a single
 `EntityDescriptor`, because a metadata **export** is never an aggregate and
-widening the import path must not widen the classifier that decides whether
-an HTTP-200 body is metadata at all. `import --dry-run` is how an aggregate
-gets inspected.
+widening the import path must not widen the classifier that decides whether an
+HTTP-200 body is metadata at all. `import --dry-run` is how an aggregate gets
+inspected.
 
 **Any pre-existing entity id refuses the whole operation**, including the
-entities that would have been created — an aggregate is one call, so there is
-no partial send to offer. `?_action=importEntity` is **create-only**: a
-re-import of an existing entity is a `500`, there is no upsert, and there is
-deliberately **no `--force`** that deletes and re-imports. The delete would
-cascade through every circle of trust that listed the entity, and the
-`cotlist` in extended metadata — the half of CoT membership the runtime
-actually reads — is not exposed by REST, so nothing could tell an operator
-what the "recovery" destroyed. Remove an entity deliberately with
-`aic saml delete` if that is what is meant.
+entities that would have been created — an aggregate is one call, so there is no
+partial send to offer. `?_action=importEntity` is **create-only**: a re-import
+of an existing entity is a `500`, there is no upsert, and there is deliberately
+**no `--force`** that deletes and re-imports. The delete would cascade through
+every circle of trust that listed the entity, and the `cotlist` in extended
+metadata — the half of CoT membership the runtime actually reads — is not
+exposed by REST, so nothing could tell an operator what the "recovery"
+destroyed. Remove an entity deliberately with `aic saml delete` if that is what
+is meant.
 
-There is **no `--cot`**. `{"standardMetadata": …, "cot": "<name>"}` returns
-200 and leaves the named circle of trust unchanged, and a `cot` naming one
-that does not exist is *also* a 200 that creates nothing — unknown body
-fields are discarded. A flag here would report a membership change that never
-happened.
+There is **no `--cot`**. `{"standardMetadata": …, "cot": "<name>"}` returns 200
+and leaves the named circle of trust unchanged, and a `cot` naming one that does
+not exist is _also_ a 200 that creates nothing — unknown body fields are
+discarded. A flag here would report a membership change that never happened.
 
 The file is **sanitised by default**: SAML `RoleDescriptor`s whose `xsi:type`
 resolves to a WS-Federation type are stripped, which is what Entra's
-`federationmetadata.xml` needs before AM will take it. Removing a role
-changes bytes the document's enveloped signature covers, so the signature
-goes with it — the plan says that in as many words rather than dropping it
-quietly. `--no-sanitise` sends the file verbatim.
+`federationmetadata.xml` needs before AM will take it. Removing a role changes
+bytes the document's enveloped signature covers, so the signature goes with it —
+the plan says that in as many words rather than dropping it quietly.
+`--no-sanitise` sends the file verbatim.
 
 `--dry-run` prints the plan — every parsed entity id with the roles it
 publishes, the removal report, the preflight result, and the exact bytes that
-would be sent by length and SHA-256 — and sends nothing. It stops by holding
-no permission token rather than by returning in front of the write: the token
-is minted only by the preflight, and the call requires one, so the preview
-path cannot reach it.
+would be sent by length and SHA-256 — and sends nothing. It stops by holding no
+permission token rather than by returning in front of the write: the token is
+minted only by the preflight, and the call requires one, so the preview path
+cannot reach it.
 
 Afterwards the command reports **only what AM said**. `importedEntities` is
-compared as an exact **set** against the ids parsed from the file — a
-matching count is not a match — and any id missing from one side or the other
-is a warning naming that id. A failed import is followed by a fresh list of
-the realm, reported per declared id, because a failed aggregate import is not
-a rollback and AM says nothing about how far it got.
+compared as an exact **set** against the ids parsed from the file — a matching
+count is not a match — and any id missing from one side or the other is a
+warning naming that id. A failed import is followed by a fresh list of the
+realm, reported per declared id, because a failed aggregate import is not a
+rollback and AM says nothing about how far it got.
 
 Every run ends on the same sentence: **circle-of-trust membership was not
-verified, and could not have been.** `importEntity` rewrites extended
-metadata, which is where `cotlist` lives, and REST exposes it neither before
-nor after. A post-import tick here would be exactly the state
-`docs/api/06-saml.md` warns about — a federation that no longer
-authenticates, with REST showing a perfectly healthy configuration.
+verified, and could not have been.** `importEntity` rewrites extended metadata,
+which is where `cotlist` lives, and REST exposes it neither before nor after. A
+post-import tick here would be exactly the state `docs/api/06-saml.md` warns
+about — a federation that no longer authenticates, with REST showing a perfectly
+healthy configuration.
 
-`--yes` is the separate production-tenant confirmation, and it is read after
-the preflight so that `--dry-run` can preview a production tenant without it.
+`--yes` is the separate production-tenant confirmation, and it is read after the
+preflight so that `--dry-run` can preview a production tenant without it.
 
 ### `delete`
 
@@ -1341,37 +1342,37 @@ entity** — a member CoT was observed going to `[]` with no CoT write in betwee
 the CoT collection first and prints, by name, each circle and each entry that
 will go. A count would not do: the operator has to recognise them.
 
-Afterwards it reads that collection **again** and reports the difference, so
-the cascade it prints is something it observed rather than something it
-predicted. AM performs the cascade, not `aic`, and the delete response says
-nothing about it — a circle that still lists the entity is reported as a
-warning. If the re-read itself fails, the command says the cascade is
-unconfirmed; it never prints the pre-state as the outcome.
+Afterwards it reads that collection **again** and reports the difference, so the
+cascade it prints is something it observed rather than something it predicted.
+AM performs the cascade, not `aic`, and the delete response says nothing about
+it — a circle that still lists the entity is reported as a warning. If the
+re-read itself fails, the command says the cascade is unconfirmed; it never
+prints the pre-state as the outcome.
 
-`--force` is required. The refusal path *is* the preview — without `--force`
-the command performs both reads, prints the cascade, and writes nothing — which
-is why there is no `--dry-run`: there is no permission token for a preview to
-carry by accident.
+`--force` is required. The refusal path _is_ the preview — without `--force` the
+command performs both reads, prints the cascade, and writes nothing — which is
+why there is no `--dry-run`: there is no permission token for a preview to carry
+by accident.
 
 `--location` is inferred when omitted, exactly as for `show`. `--yes` is the
 separate production-tenant confirmation and does not authorize the delete.
 
 ### `metadata export`
 
-`GET /am/saml2/jsp/exportmetadata.jsp?entityid=…&realm=/<realm>`. Writes the
-XML to `--out`, or to stdout.
+`GET /am/saml2/jsp/exportmetadata.jsp?entityid=…&realm=/<realm>`. Writes the XML
+to `--out`, or to stdout.
 
-**Failures come back as HTTP 200**, with no `Content-Type` and a plain-text
-body beginning `ERROR : `, so the status code is useless and the body is what
-is classified. A response that is neither a SAML `<EntityDescriptor>` nor an
+**Failures come back as HTTP 200**, with no `Content-Type` and a plain-text body
+beginning `ERROR :`, so the status code is useless and the body is what is
+classified. A response that is neither a SAML `<EntityDescriptor>` nor an
 `ERROR :` message is refused too, and quoted back — writing a login page or a
 proxy error to `entity.xml` is exactly what the 200 invites. Nothing is written
 unless the body is metadata, and "is metadata" means the whole body parses as
 one well-formed `EntityDescriptor` document: a correctly namespaced start tag
-with the response truncated after it is a failure, not an export. The two
-things a *successful* export may still carry are a missing `entityID` (a
-roleless entity really does export a bare descriptor) and a certificate body
-this tool cannot decode.
+with the response truncated after it is a failure, not an export. The two things
+a _successful_ export may still carry are a missing `entityID` (a roleless
+entity really does export a bare descriptor) and a certificate body this tool
+cannot decode.
 
 The request follows **no redirects**. `--out` is written from the body that
 comes back, so a 302 would be enough to save another host's descriptor under
@@ -1407,33 +1408,32 @@ point that also takes an `EntitiesDescriptor` aggregate); a namespace binding
 for every prefix on every element _and attribute_; nothing but comments,
 processing instructions and whitespace outside the root; no entity reference
 whose replacement text we would have to guess; and the XML 1.0 productions a
-tokeniser walks past — legal element and attribute names, one `DOCTYPE`, an
-XML declaration with a version, a legal character everywhere a character
-appears, no literal `]]>`, no character reference to something Unicode has no
-character for, and no two attributes resolving to one expanded name.
+tokeniser walks past — legal element and attribute names, one `DOCTYPE`, an XML
+declaration with a version, a legal character everywhere a character appears, no
+literal `]]>`, no character reference to something Unicode has no character for,
+and no two attributes resolving to one expanded name.
 
 `inspect` reports a certificate by the role that publishes it. A dual-role
 entity can publish `use="signing"` from both its IdP and its SP role with no
 `KeyName` on either, so `use` and fingerprint alone name two different keys
 identically. A `<KeyDescriptor>` outside a role descriptor is refused rather
 than reported with a role it does not have. Extension content is left alone:
-only a *direct child* of `EntityDescriptor` is a role this entity publishes, so
+only a _direct child_ of `EntityDescriptor` is a role this entity publishes, so
 an `<Extensions>` container holding something shaped like a WS-Federation role
 is neither stripped nor counted.
 
-There is no circle-of-trust **write** verb: a CoT `PUT` drives the
-entity-side membership too and can return 500 having already written the
-document, so the command that does it has to re-read and re-check
-(`docs/api/06-saml.md`).
+There is no circle-of-trust **write** verb: a CoT `PUT` drives the entity-side
+membership too and can return 500 having already written the document, so the
+command that does it has to re-read and re-check (`docs/api/06-saml.md`).
 
 ### `rotate` — roll the certificate a role signs with
 
-**An AIC SAML signing certificate is not stored in the SAML entity.** The
-entity holds a `secretIdIdentifier`, which is a label into AM's secret store
+**An AIC SAML signing certificate is not stored in the SAML entity.** The entity
+holds a `secretIdIdentifier`, which is a label into AM's secret store
 (`am.applications.federation.entity.providers.saml2.<identifier>.signing`), and
 on AIC that label is backed by an **ESV secret**. So there is nothing to upload
-and no metadata to push: a rollover adds an ESV secret **version**, and the
-verb spans `src/saml/`, `src/esv/` and `src/secretmap/`.
+and no metadata to push: a rollover adds an ESV secret **version**, and the verb
+spans `src/saml/`, `src/esv/` and `src/secretmap/`.
 
 Measured end to end: map a `pem` ESV secret onto the label and the export
 carries that certificate; add a second version and the export publishes **two**
@@ -1441,17 +1441,17 @@ carries that certificate; add a second version and the export publishes **two**
 one, in single-digit seconds. No restart — provided the secret was created with
 placeholders **off**.
 
-| Verb       | What it does                                            | Reversible?              |
-| ---------- | ------------------------------------------------------- | ------------------------ |
-| `status`   | reads five documents and says what they mean together   | writes nothing           |
-| `init`     | sets the identifier, creates the secret, maps the label | one-time setup           |
-| `stage`    | adds an ESV secret version — two certificates published | `esv secret disable`     |
-| `complete` | disables the **old** version — one certificate again    | `esv secret enable`      |
+| Verb       | What it does                                            | Reversible?          |
+| ---------- | ------------------------------------------------------- | -------------------- |
+| `status`   | reads five documents and says what they mean together   | writes nothing       |
+| `init`     | sets the identifier, creates the secret, maps the label | one-time setup       |
+| `stage`    | adds an ESV secret version — two certificates published | `esv secret disable` |
+| `complete` | disables the **old** version — one certificate again    | `esv secret enable`  |
 
 `stage` and `complete` are **separate operations, and that is not a style
 choice**: `aic esv secret disable` cannot disable the latest version
-(`400 Cannot disable latest secret version`), so completion disables the old
-one — and the interval between them is the peer loading the two-certificate
+(`400 Cannot disable latest secret version`), so completion disables the old one
+— and the interval between them is the peer loading the two-certificate
 metadata, which is a human interval, not a timeout.
 
 **Nothing here destroys anything.** `complete` disables, which
@@ -1461,10 +1461,10 @@ irreversible and stay explicit and elsewhere (`aic esv secret destroy`,
 
 **A rollover preserves the identifier and its mapping.** Repointing the entity
 at a new identifier would rotate nothing until a new secret was made, and would
-leave the old label mapped with nothing naming it — a mapping outlives the
-label that minted it, and the labels vanish from the schema enum the moment the
-entity stops naming them. `rotate init` refuses an entity that already points
-somewhere else for exactly that reason.
+leave the old label mapped with nothing naming it — a mapping outlives the label
+that minted it, and the labels vanish from the schema enum the moment the entity
+stops naming them. `rotate init` refuses an entity that already points somewhere
+else for exactly that reason.
 
 `--role` is **required on a dual-role entity**: each role has its own
 identifier, its own labels and its own `KeyDescriptor`s, and both can publish
@@ -1472,17 +1472,40 @@ identifier, its own labels and its own `KeyDescriptor`s, and both can publish
 names two different keys identically.
 
 `--key-file` (or `--key-stdin`) takes `cat key.pem cert.pem`, and it is checked
-offline before anything is sent: exactly one private key and one certificate,
-and the certificate's public modulus and exponent must be the ones the key
-carries. The tenant takes a mismatched pair with a **200** and the failure then
-surfaces on the peer as a rejected assertion, hours later.
+offline before anything is sent: exactly one private key PEM block followed by
+one certificate PEM block, and the certificate's public modulus and exponent
+must be the ones the key carries. The tenant takes a mismatched pair with a
+**200** and the failure then surfaces on the peer as a rejected assertion, hours
+later.
 
-`--dry-run` prints the plan and sends nothing. It stops by holding no
-permission token rather than by returning in front of the write: the preview
-arm of `spec::authorize_*` carries no permit, every tenant write in
-`rotate::ops` requires one, and a preview that fell through would not compile —
-the same shape as `import`'s `ImportPermit` and `scripts::gate`'s
-`WritePermit`.
+"Exactly one of each" is a claim about the armour, so it is worth being precise
+about what passes:
+
+- Armour that never closes, closes under a different label, or nests inside
+  another block is **refused by name**, not skipped. That matters for a third
+  document rather than a second: `cat key.pem half-written.pem cert.pem` leaves
+  one key and one certificate once a broken block is dropped, so it would
+  validate while missing the certificate you meant to include.
+- Text **outside** the armour is ignored and kept. An `openssl x509 -text` dump
+  or a dated comment above the key is fine — the value is stored verbatim, and
+  AM parses the blocks out of it.
+- Each block's DER must be one whole document. Trailing bytes after the
+  certificate are refused, because the SHA-256 this command reports is a digest
+  of exactly those bytes and has to be the same identity the metadata export
+  publishes.
+
+What is **not** checked, because nothing offline could: no signature is
+verified, no validity date is read, no chain is built and no key strength is
+judged. The walk reads structure in order to prove the two halves belong
+together; it is not certificate validation and does not stand in for it. A
+non-RSA certificate is refused outright rather than passed unchecked, for the
+same reason.
+
+`--dry-run` prints the plan and sends nothing. It stops by holding no permission
+token rather than by returning in front of the write: the preview arm of
+`spec::authorize_*` carries no permit, every tenant write in `rotate::ops`
+requires one, and a preview that fell through would not compile — the same shape
+as `import`'s `ImportPermit` and `scripts::gate`'s `WritePermit`.
 
 #### What `status` cannot tell you
 
@@ -1503,8 +1526,39 @@ from a label mapped elsewhere produces the same picture.
 The journal is per install and is not a transaction log — everything else a
 rotation needs is read from the tenant, and nothing refuses to proceed because
 it is missing. A rollover staged on another machine leaves no entry, and
-`complete` then requires `--retain <sha256>` naming the certificate to keep
-rather than guessing. `status` lists both.
+`complete` then needs to be told both halves.
+
+#### `--retain` names a certificate; `--disable-version` names a version
+
+They are **not** two ways of saying the same thing, and treating them as one is
+how a rollover retires the certificate it was told to keep.
+
+`complete` disables an ESV secret version, which retires whichever certificate
+that version holds. `--retain <sha256>` says which certificate must still be
+published afterwards — it is checked against the export before the write and
+verified against it after — but it cannot select a version, because nothing
+readable pairs a fingerprint with a version number. So the version comes from
+one of exactly two places:
+
+- **this install's record of the stage**, which is the one thing that holds the
+  pairing. It works in both directions: keep what was staged and the other
+  ENABLED version is disabled; keep what was in service before and the staged
+  version is disabled. A record naming a certificate the entity no longer
+  publishes is stale and is not used.
+- **`--disable-version <n>`**, which is your claim rather than the command's.
+  The plan says so in as many words before it asks you to confirm.
+
+With no usable record, `complete` refuses until it has both. That includes the
+case where picking by age would have been right — from inside the command that
+case is indistinguishable from the one where it is wrong, and "it happened to
+agree" is not knowledge. `aic saml rotate status` lists the versions and the
+fingerprints side by side.
+
+Keeping the older certificate usually means retiring the newer one, whose
+version is the latest — and AIC will not disable the latest version
+(`400 Cannot disable latest secret version`). There is no flag for that: stage
+the key pair you want to keep as a new version and complete that rollover
+instead.
 
 Nothing here can read which certificate AM actually **signs with**, either. The
 export says what is published; it does not say which of two published keys the
@@ -1521,12 +1575,33 @@ performs compensating destructive cleanup on its own.
 The one thing that cannot be re-derived is the version/certificate pairing, and
 that is what the journal holds.
 
+#### When `init` adopts an ESV secret instead of creating one
+
+If the secret named by `--secret-id` already exists, `init` adopts it: it does
+not write a key pair into it, and `--key-file` is then not used at all. That is
+what makes an interrupted run resumable, and it is also the step whose success
+`init` can say the least about — secret values are write-only, so nothing here
+has seen the certificate behind the label.
+
+So the claim is narrowed to what a read supports. After adopting, `init`
+re-exports the metadata and requires the role to publish **at least one**
+signing certificate; a label backed by a secret with no ENABLED version
+publishes nothing, and that used to be reported as done. What it prints is the
+fingerprint the tenant published, followed by a plain statement that nothing
+here can confirm it is the certificate you meant. If a `--key-file` was
+supplied, it also says whether that certificate is among the published ones —
+because it was not written, and an operator who assumes otherwise finds out from
+a peer.
+
+Adding a key pair to a secret that already exists is `rotate stage`, not
+`rotate init`.
+
 #### `rotate init` and production
 
 `init` maps a secret label, which `aic secretmap` restricts to
-sandbox/development tenants — mappings are static content promoted up from
-lower environments. `stage` and `complete` touch no mapping and work anywhere:
-a production signing key still has to be rotatable.
+sandbox/development tenants — mappings are static content promoted up from lower
+environments. `stage` and `complete` touch no mapping and work anywhere: a
+production signing key still has to be rotatable.
 
 #### A worked rollover
 

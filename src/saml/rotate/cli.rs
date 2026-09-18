@@ -30,7 +30,7 @@ use crate::cli::{
 use crate::saml::rotate::journal::{self, Key, StagedRecord};
 use crate::saml::rotate::ops::{self, Settlement};
 use crate::saml::rotate::pem::{self, KeyPair};
-use crate::saml::rotate::spec::{self, CompletePlan, Decision, RotationState};
+use crate::saml::rotate::spec::{self, CompletePlan, Decision, RotationState, VersionChoice};
 use crate::saml::spec::{Location, Role};
 use crate::{Error, Result};
 
@@ -138,6 +138,11 @@ pub enum RotateCommand {
         /// has no record of staging the rollover.
         #[arg(long, value_name = "SHA256")]
         retain: Option<String>,
+        /// The ESV secret version to disable. Required alongside `--retain`
+        /// when this install has no record of the stage: a fingerprint does
+        /// not name a version, and nothing readable pairs the two.
+        #[arg(long, value_name = "N")]
+        disable_version: Option<String>,
         #[arg(long, value_enum)]
         role: Option<Role>,
         #[arg(long, value_enum)]
@@ -220,6 +225,7 @@ pub async fn run(command: RotateCommand) -> Result<()> {
         RotateCommand::Complete {
             entity_id,
             retain,
+            disable_version,
             role,
             location,
             realm,
@@ -235,6 +241,7 @@ pub async fn run(command: RotateCommand) -> Result<()> {
                 location,
                 role,
                 retain.as_deref(),
+                disable_version.as_deref(),
                 dry_run,
                 yes,
                 force,
@@ -391,18 +398,17 @@ async fn init(
         println!("label {} now maps to {}", plan.label, plan.secret_id);
     }
 
-    // What the tenant publishes now, not what we expect it to.
-    let expected = key
-        .as_ref()
-        .map(|key| std::iter::once(key.sha256.clone()).collect());
-    finish(
-        &tenant,
-        &realm,
-        entity_id,
-        &state,
-        expected.as_ref(),
-        |sha| {
-            key.as_ref().filter(|key| key.sha256 == *sha).map(|key| {
+    // What the tenant publishes now, not what we expect it to — and the two
+    // branches differ in what "expect" can even mean. A key pair this run
+    // wrote gives a fingerprint to wait for; a secret this run only adopted
+    // does not, because its value was never seen from here.
+    if plan.create_secret {
+        let key = key
+            .as_ref()
+            .expect("plan_init requires a key to create the secret");
+        let expected = std::iter::once(key.sha256.clone()).collect();
+        return finish(&tenant, &realm, entity_id, &state, &expected, |sha| {
+            (*sha == key.sha256).then(|| {
                 (
                     "1".to_string(),
                     key.sha256.clone(),
@@ -410,9 +416,20 @@ async fn init(
                     plan.identifier.clone(),
                 )
             })
-        },
-    )
-    .await
+        })
+        .await;
+    }
+
+    let published = ops::wait_for_any_cert(&tenant, &realm, entity_id, state.role).await?;
+    for line in spec::adoption_outcome(
+        &state,
+        &plan.secret_id,
+        &published,
+        key.as_ref().map(|key| key.sha256.as_str()),
+    )? {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -480,23 +497,16 @@ async fn stage(
 
     let secret_id = plan.secret_id.clone();
     let identifier = state.identifier.clone().unwrap_or_default();
-    finish(
-        &tenant,
-        &realm,
-        entity_id,
-        &state,
-        Some(&plan.expected),
-        |sha| {
-            (*sha == key.sha256).then(|| {
-                (
-                    version.clone(),
-                    key.sha256.clone(),
-                    secret_id.clone(),
-                    identifier.clone(),
-                )
-            })
-        },
-    )
+    finish(&tenant, &realm, entity_id, &state, &plan.expected, |sha| {
+        (*sha == key.sha256).then(|| {
+            (
+                version.clone(),
+                key.sha256.clone(),
+                secret_id.clone(),
+                identifier.clone(),
+            )
+        })
+    })
     .await
 }
 
@@ -508,6 +518,7 @@ async fn complete(
     location: Option<Location>,
     role: Option<Role>,
     retain: Option<&str>,
+    disable_version: Option<&str>,
     dry_run: bool,
     yes: bool,
     force: OperationForce,
@@ -515,7 +526,7 @@ async fn complete(
     let tenant = tenant_config_for(tenant_arg)?;
     let realm = realm_arg("saml", realm_arg_value)?;
     let state = ops::read_state(&tenant, &realm, entity_id, location, role).await?;
-    let plan = spec::plan_complete(&state, retain)?;
+    let plan = spec::plan_complete(&state, retain, disable_version)?;
 
     for line in complete_plan_lines(&plan, &state) {
         eprintln!("{line}");
@@ -599,6 +610,21 @@ fn complete_plan_lines(plan: &CompletePlan, state: &RotationState) -> Vec<String
             plan.retain
         ),
     ];
+    // Whose claim the version is. Disabling a version retires whatever
+    // certificate it holds, so where that pairing came from is the line an
+    // operator has to read before confirming.
+    lines.push(match plan.chosen_by {
+        VersionChoice::Recorded => format!(
+            "  version {} follows from this install's record of the stage, which is what ties a \
+             certificate to a version",
+            plan.disable_version
+        ),
+        VersionChoice::Named => format!(
+            "  version {} was named with --disable-version; nothing readable pairs a version \
+             with a certificate, so which one it holds is your claim, not this command's",
+            plan.disable_version
+        ),
+    });
     lines.push(match plan.expected_drop.as_deref() {
         Some(drop) => format!("  the certificate expected to stop being published is {drop}"),
         None => format!(
@@ -618,17 +644,19 @@ fn complete_plan_lines(plan: &CompletePlan, state: &RotationState) -> Vec<String
 /// `.ai/core.md` §5, applied to a store that will not read a value back: a
 /// record taken from what was sent is a claim the tenant accepted it verbatim,
 /// and this is the one place that claim can be checked.
+///
+/// `expected` is not optional, and used not to be enforced: an `init` with no
+/// fingerprint to wait for fell through here and returned success having read
+/// nothing. A caller that cannot name a fingerprint has a different, weaker
+/// claim to make and makes it through [`spec::adoption_outcome`].
 async fn finish(
     tenant: &crate::config::Tenant,
     realm: &str,
     entity_id: &str,
     state: &RotationState,
-    expected: Option<&std::collections::BTreeSet<String>>,
+    expected: &std::collections::BTreeSet<String>,
     attribute: impl Fn(&String) -> Option<(String, String, String, String)>,
 ) -> Result<()> {
-    let Some(expected) = expected else {
-        return Ok(());
-    };
     let settled = ops::wait_for_export(tenant, realm, entity_id, state.role, expected).await?;
     report_settlement(&settled, state);
     if !matches!(settled, Settlement::Settled) {

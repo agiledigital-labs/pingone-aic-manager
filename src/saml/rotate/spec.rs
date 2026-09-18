@@ -259,6 +259,46 @@ fn kind_of(value: &Value) -> &'static str {
     }
 }
 
+/// Whether the entity is still the one the plan was authorized against.
+///
+/// `.ai/core.md` §5 with the sides swapped. The rule there is that a local
+/// file is re-read immediately before it is overwritten; here it is the
+/// *remote* document that moves, and the re-read that makes the write safe is
+/// also what hides the move. [`set_secret_identifier`] builds its full-replace
+/// body from a fresh read, so every other byte of a concurrent change survives
+/// — and the one leaf the plan was about is silently replaced. An operator who
+/// set the identifier in that gap gets no conflict, no diff and no message.
+///
+/// `planned_from` is the identifier this role had when [`plan_init`] decided
+/// to set one. Identical is the **only** case that may write, and that
+/// includes "someone else already set it to exactly what we wanted": the plan
+/// said this was an unconfigured role, it is not one now, and re-running is
+/// what should decide from the state that exists. `plan_init` then skips the
+/// step and nothing is sent.
+///
+/// Role-scoped, because the other role's identifier is not this one's: a
+/// dual-role entity has two, set independently.
+pub fn identifier_write_ok(planned_from: Option<&str>, fresh: &Value, role: Role) -> Result<()> {
+    let now = current_identifier(fresh, role);
+    if now.as_deref() == planned_from {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "the {} block's secretIdIdentifier changed while this run was planning — it was {} when \
+         the plan was made and it is {} now, so something else is writing this entity. The \
+         entity `PUT` is a full replace with no `If-Match`, so going ahead would overwrite that \
+         change with nothing reported. **Nothing has been sent.** Find out what the other change \
+         was, then re-run: `aic saml rotate status` reads the state that exists now.",
+        role.wire(),
+        quoted(planned_from),
+        quoted(now.as_deref()),
+    )))
+}
+
+fn quoted(identifier: Option<&str>) -> String {
+    identifier.map_or_else(|| "unset".to_string(), |value| format!("{value:?}"))
+}
+
 /// Whether the entity that came back is the entity that was sent.
 ///
 /// Returns the paths that differ, so a write AM quietly reshaped is reported
@@ -642,12 +682,30 @@ pub fn authorize_stage(dry_run: bool) -> Decision<StagePermit> {
     }
 }
 
+/// Where the version to disable came from.
+///
+/// Carried on the plan because it is the whole safety argument. Disabling a
+/// version retires whichever certificate that version holds, and the only two
+/// honest sources for that pairing are this install's own record and the
+/// operator's own knowledge. Ordering is not a third.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionChoice {
+    /// Derived from [`StagedRecord`], the one place a fingerprint is tied to a
+    /// version number.
+    Recorded,
+    /// Named with `--disable-version`. Nothing readable corroborates it, so
+    /// the report says whose claim it is.
+    Named,
+}
+
 /// What `complete` would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletePlan {
     pub secret_id: String,
-    /// The ESV secret version to disable — the oldest ENABLED one.
+    /// The ESV secret version to disable.
     pub disable_version: String,
+    /// How that version was chosen.
+    pub chosen_by: VersionChoice,
     /// The certificate that must still be published afterwards.
     pub retain: String,
     /// The certificate expected to stop being published, when this install
@@ -660,12 +718,34 @@ pub struct CompletePlan {
 
 /// Decide which version to disable, and what must remain afterwards.
 ///
-/// `retain` is the fingerprint the operator wants to keep. It comes from this
-/// install's own record of the stage when there is one, and otherwise has to
-/// be supplied: **ESV secret values are write-only**, so nothing readable ties
-/// a published certificate to a version number, and "the newest version is
-/// listed first" is an ordering convention rather than an identity.
-pub fn plan_complete(state: &RotationState, retain: Option<&str>) -> Result<CompletePlan> {
+/// `retain` is the fingerprint the operator wants to keep; `disable_version`
+/// is `--disable-version`, the escape hatch for when nothing here can work the
+/// version out.
+///
+/// **Retaining a fingerprint does not select a version, and this used to
+/// assume it did.** `--retain` only proved the certificate was currently
+/// published; the version disabled was then always the oldest ENABLED one, so
+/// asking to keep the *older* certificate disabled the very version holding
+/// it. ESV secret values are write-only and AM publishes no `<ds:KeyName>`, so
+/// the export cannot supply the missing half — "the newest ENABLED version is
+/// listed first" is an ordering convention, not an identity. The mistake
+/// surfaced only in the post-write export check, after a live certificate had
+/// already stopped being published.
+///
+/// So the version is **derived from the pairing** or not derived at all:
+///
+/// - with a record naming one of the two published certificates, the version
+///   follows in both directions — keep what was staged and the other ENABLED
+///   version goes; keep what was there before and the staged version goes;
+/// - with no usable record there is no pairing, and `--disable-version` is
+///   required. That refuses the case that used to work by luck as well as the
+///   case that used to fail: "it happened to agree" is not knowledge, and the
+///   two are indistinguishable from in here.
+pub fn plan_complete(
+    state: &RotationState,
+    retain: Option<&str>,
+    disable_version: Option<&str>,
+) -> Result<CompletePlan> {
     let current = phase(state);
     let secret = match (&current, state.secret.as_ref()) {
         (Phase::Staged, Some(secret)) => secret,
@@ -681,20 +761,19 @@ pub fn plan_complete(state: &RotationState, retain: Option<&str>) -> Result<Comp
     };
 
     let published = state.published_fingerprints();
+    // A record only pairs a version with a certificate if that certificate is
+    // still published. One left over from an earlier rollover describes a
+    // state that no longer exists, and reading a version out of it would be
+    // ordering-by-another-name.
+    let pairing = state
+        .record
+        .as_ref()
+        .filter(|record| published.contains(&record.sha256));
+
     let retain = match retain.map(str::trim).filter(|value| !value.is_empty()) {
         Some(retain) => retain.to_lowercase(),
         None => {
-            let record = state.record.as_ref().ok_or_else(|| {
-                Error::Config(format!(
-                    "this install has no record of staging a rollover for {} ({}), so it cannot \
-                     tell which of the two published certificates is the new one — ESV secret \
-                     values are write-only and AM publishes no <ds:KeyName>. Pass \
-                     --retain <sha256> naming the certificate to keep; \
-                     `aic saml rotate status` lists both.",
-                    state.entity_id,
-                    role_descriptor(state.role)
-                ))
-            })?;
+            let record = pairing.ok_or_else(|| no_pairing(state))?;
             record.sha256.clone()
         }
     };
@@ -709,43 +788,147 @@ pub fn plan_complete(state: &RotationState, retain: Option<&str>) -> Result<Comp
     }
 
     let enabled = state.enabled_versions();
-    let oldest = enabled
-        .first()
-        .copied()
-        .expect("Staged means two ENABLED versions");
-    if let Some(latest) = state.latest_version() {
-        if latest.version == oldest.version {
-            return Err(Error::Config(format!(
-                "the oldest ENABLED version of {} is also its newest version ({}), and AIC \
-                 refuses to disable the latest version. Add the new key pair first.",
-                secret.id, oldest.version
-            )));
-        }
+    let (disable_version, chosen_by) =
+        match disable_version.map(str::trim).filter(|v| !v.is_empty()) {
+            Some(named) => {
+                if !enabled.iter().any(|version| version.version == named) {
+                    return Err(Error::Config(format!(
+                        "--disable-version {named} is not an ENABLED version of {}: the ENABLED \
+                         versions are {}. Only an ENABLED version publishes a certificate, so \
+                         disabling anything else would change nothing.",
+                        secret.id,
+                        enabled
+                            .iter()
+                            .map(|version| version.version.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
+                }
+                (named.to_string(), VersionChoice::Named)
+            }
+            None => (
+                version_from_record(pairing.ok_or_else(|| no_pairing(state))?, &enabled, &retain)?,
+                VersionChoice::Recorded,
+            ),
+        };
+
+    // AIC's own rule, and now reachable rather than defensive: keeping the
+    // older certificate means retiring the newer one, whose version is
+    // normally the latest. There is no way to disable it, so the remedy is a
+    // fresh rollover rather than a flag.
+    if state
+        .latest_version()
+        .is_some_and(|latest| latest.version == disable_version)
+    {
+        return Err(Error::Config(format!(
+            "version {disable_version} is the newest version of {}, and AIC refuses to disable \
+             the latest version (`400 Cannot disable latest secret version`). Keeping {retain} \
+             means retiring the certificate that version publishes, which this command cannot \
+             do. Stage the key pair you want to keep as a new version instead \
+             (`aic saml rotate stage --key-file …`) and complete that rollover.",
+            secret.id
+        )));
     }
-    if let Some(record) = state.record.as_ref() {
-        if record.sha256 == retain && record.version == oldest.version {
+
+    // The guard on the escape hatch. A derived version is never the one the
+    // record ties to the certificate being kept — `version_from_record` picks
+    // the other — so this can only fire for a hand-named `--disable-version`,
+    // which is exactly where a mistaken claim about the pairing lands.
+    if let Some(record) = pairing {
+        if record.sha256 == retain && record.version == disable_version {
             return Err(Error::Config(format!(
                 "the certificate to keep ({retain}) is the one this install staged as version \
-                 {} of {}, and that is also the oldest ENABLED version — disabling it would \
-                 retire the new certificate and leave the old one. Check \
+                 {} of {}, so --disable-version {disable_version} would retire the new \
+                 certificate and leave the old one in service. Check \
                  `aic saml rotate status` before forcing this by hand.",
                 record.version, secret.id
             )));
         }
     }
 
-    let expected_drop = state
-        .record
-        .as_ref()
-        .filter(|record| record.sha256 == retain)
-        .and_then(|_| published.iter().find(|cert| **cert != retain).cloned());
+    let expected_drop = pairing.and_then(|record| {
+        if record.version == disable_version {
+            // Direct: the record names the certificate this very version holds.
+            Some(record.sha256.clone())
+        } else if record.sha256 == retain {
+            // The record ties `retain` to the version that survives, and
+            // `Staged` means exactly two published — so the other one is what
+            // goes. Still an expectation, and the post-write export check is
+            // what settles it.
+            published.iter().find(|cert| **cert != retain).cloned()
+        } else {
+            None
+        }
+    });
 
     Ok(CompletePlan {
         secret_id: secret.id.clone(),
-        disable_version: oldest.version.clone(),
+        disable_version,
+        chosen_by,
         retain,
         expected_drop,
     })
+}
+
+/// The version to disable, derived from the one pairing this install knows.
+///
+/// Never from ordering. "The oldest ENABLED version" is right only when the
+/// rollover is being finished in the obvious direction, and it is exactly
+/// wrong when the operator is keeping the older certificate — which is what a
+/// stage that went in with the wrong key pair leaves you wanting.
+fn version_from_record(
+    record: &StagedRecord,
+    enabled: &[&SecretVersion],
+    retain: &str,
+) -> Result<String> {
+    let stale = || {
+        Error::Config(format!(
+            "this install's record of the rollover names ESV secret version {}, which is not one \
+             of the ENABLED versions ({}) — so it does not describe the state on the tenant and \
+             nothing here ties a certificate to a version. Pass --disable-version <n> naming the \
+             version to disable; `aic saml rotate status` lists the versions and the certificates.",
+            record.version,
+            enabled
+                .iter()
+                .map(|version| version.version.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    };
+
+    if record.sha256 == retain {
+        // Keeping what was staged: the version that goes is the other one.
+        let mut others = enabled
+            .iter()
+            .filter(|version| version.version != record.version);
+        match (others.next(), others.next()) {
+            (Some(only), None) => Ok(only.version.clone()),
+            _ => Err(stale()),
+        }
+    } else if enabled
+        .iter()
+        .any(|version| version.version == record.version)
+    {
+        // Keeping what was published before the stage: the certificate to
+        // stop publishing is the staged one, and the record names its version.
+        Ok(record.version.clone())
+    } else {
+        Err(stale())
+    }
+}
+
+/// No fingerprint here is tied to a version, so no version may be chosen.
+fn no_pairing(state: &RotationState) -> Error {
+    Error::Config(format!(
+        "this install has no usable record of staging a rollover for {} ({}), so nothing ties \
+         either published certificate to an ESV secret version — values are write-only and AM \
+         publishes no <ds:KeyName>. Disabling a version retires whichever certificate it holds, \
+         and picking by age would be a guess, so say both: --retain <sha256> for the \
+         certificate to keep and --disable-version <n> for the version to disable. \
+         `aic saml rotate status` lists the versions and the fingerprints.",
+        state.entity_id,
+        role_descriptor(state.role)
+    ))
 }
 
 pub fn authorize_complete(dry_run: bool) -> Decision<CompletePermit> {
@@ -890,7 +1073,82 @@ pub fn next_step(state: &RotationState, phase: &Phase) -> String {
 pub const PAIRING_CAVEAT: &str = "\
 Which published certificate came from which ESV secret version is not readable: secret values are
 write-only and AM emits no <ds:KeyName>. A certificate is tied to a version here only when this
-install staged it; otherwise `complete` needs --retain <sha256> naming the one to keep.";
+install staged it; otherwise `complete` needs --retain <sha256> naming the one to keep, and
+--disable-version <n> naming the version to disable.";
+
+/// The sentence an adopted-secret report carries.
+///
+/// Sibling of [`PAIRING_CAVEAT`] — the same write-only-values limit, one step
+/// earlier in the story. An `init` that reused an existing ESV secret can
+/// confirm the role publishes a certificate; it cannot confirm it is the
+/// intended one, because it has never seen the value behind the label.
+pub const ADOPTION_CAVEAT: &str = "\
+The ESV secret already existed, so `init` adopted it rather than writing a key pair — and secret
+values are write-only. What is published above was read back from the tenant, but nothing here can
+say it is the certificate you meant. Check the fingerprint against the key pair you expect.";
+
+/// What an `init` that adopted an existing ESV secret may claim, given what
+/// the export showed afterwards.
+///
+/// Reporting success here without reading anything was the defect: `expected`
+/// was `None` whenever no key pair was written, and the run returned `Ok`
+/// having repointed the entity at a label it never checked resolved. A label
+/// backed by a secret with no ENABLED version publishes nothing, and that read
+/// as done.
+///
+/// So the claim is narrowed to what a read supports — this role publishes
+/// *something* now — and the rest is named as unknown rather than implied. The
+/// rule lives here, out of `cli`, so a test drives the real function: a test
+/// restating "empty is bad" would have passed against exactly the code that
+/// never looked.
+pub fn adoption_outcome(
+    state: &RotationState,
+    secret_id: &str,
+    published: &BTreeSet<String>,
+    supplied: Option<&str>,
+) -> Result<Vec<String>> {
+    if published.is_empty() {
+        return Err(Error::Config(format!(
+            "{} ({}) publishes no signing certificate. ESV secret {secret_id} already existed, \
+             so `init` adopted it rather than writing a key pair, and nothing checked it holds \
+             one — a secret with no ENABLED version resolves to nothing. \
+             `aic esv secret versions {secret_id}` lists what is in it, and \
+             `aic saml rotate status {} --realm {}` reads the whole picture back. The entity has \
+             been written; nothing has been undone.",
+            state.entity_id,
+            role_descriptor(state.role),
+            state.entity_id,
+            state.realm
+        )));
+    }
+
+    let mut lines = vec![format!(
+        "{} ({}) publishes {}",
+        state.entity_id,
+        role_descriptor(state.role),
+        published.iter().cloned().collect::<Vec<_>>().join(", ")
+    )];
+    // A key pair handed to an `init` that adopted is not written anywhere.
+    // Saying so is the difference between an operator who knows their new key
+    // is not in service and one who finds out from a peer.
+    if let Some(sha) = supplied {
+        lines.push(if published.contains(sha) {
+            format!(
+                "the certificate in the supplied key pair ({sha}) is among them — but it was not \
+                 written here: ESV secret {secret_id} already existed"
+            )
+        } else {
+            format!(
+                "the certificate in the supplied key pair ({sha}) is NOT among them: ESV secret \
+                 {secret_id} already existed, so that pair was not written. \
+                 `aic saml rotate stage --key-file …` is what adds a key pair to a secret that \
+                 exists."
+            )
+        });
+    }
+    lines.push(ADOPTION_CAVEAT.to_string());
+    Ok(lines)
+}
 
 /// What `aic saml rotate status` prints.
 pub fn status_lines(state: &RotationState, phase: &Phase) -> Vec<String> {
@@ -1086,17 +1344,27 @@ impl InitPlan {
                 self.identifier
             ),
         ));
+        // The certificate is named only on a step that writes it. Naming it on
+        // an adopted secret reads as "that secret holds this certificate",
+        // which is the one thing nothing here has checked.
         lines.push(step(
             self.create_secret,
             &format!(
                 "create ESV secret {} — encoding pem, useInPlaceholders false{}",
                 self.secret_id,
-                self.certificate
-                    .as_deref()
-                    .map(|sha| format!(", certificate {sha}"))
-                    .unwrap_or_default()
+                match (self.create_secret, self.certificate.as_deref()) {
+                    (true, Some(sha)) => format!(", certificate {sha}"),
+                    _ => String::new(),
+                }
             ),
         ));
+        if !self.create_secret && self.certificate.is_some() {
+            lines.push(
+                "         the supplied key pair is not written: that secret already exists, and \
+                 a version is added by `aic saml rotate stage`"
+                    .to_string(),
+            );
+        }
         lines.push(step(
             self.map_label,
             &format!("map {} at {}", self.label, self.secret_id),
@@ -1515,7 +1783,8 @@ mod tests {
         assert!(detail.contains("propagated"), "{detail}");
         assert!(message(plan_stage(&lagging, &pair(NEW)).unwrap_err()).contains("cannot stage"));
         assert!(
-            message(plan_complete(&lagging, Some(OLD)).unwrap_err()).contains("cannot complete")
+            message(plan_complete(&lagging, Some(OLD), None).unwrap_err())
+                .contains("cannot complete")
         );
 
         // Equal but wrong: three of each is not a rollover.
@@ -1566,47 +1835,75 @@ mod tests {
     // complete
     // -----------------------------------------------------------------
 
-    /// Red when `plan_complete` takes `enabled.last()` instead of `.first()`,
-    /// and red when `SecretVersion::number` parses nothing and the sort falls
-    /// back to string order.
+    /// Red when `plan_complete` picks the version by ordering rather than
+    /// from the record, and red when `VersionChoice` stops being reported.
     #[test]
-    fn completing_disables_the_oldest_enabled_version_not_the_latest() {
-        // AIC answers `400 Cannot disable latest secret version`, so the
-        // version to disable is the oldest ENABLED one — and "oldest" is
-        // numeric: version 9 is older than version 10, which a string
-        // comparison reverses.
+    fn completing_takes_the_version_from_the_record_and_not_from_the_numbering() {
+        // Keeping what was staged: the version that goes is the *other*
+        // ENABLED one, found by version identity. Numbers here are wide
+        // enough that a string comparison would order them backwards, which
+        // is what an ordering-derived implementation would trip on.
         let wide = RotationState {
             versions: vec![version("9", "ENABLED"), version("10", "ENABLED")],
             record: Some(record("10", NEW)),
             ..staged()
         };
-        let plan = plan_complete(&wide, None).unwrap();
+        let plan = plan_complete(&wide, None, None).unwrap();
         assert_eq!(plan.disable_version, "9");
+        assert_eq!(plan.chosen_by, VersionChoice::Recorded);
         assert_eq!(plan.retain, NEW);
         assert_eq!(plan.expected_drop.as_deref(), Some(OLD));
     }
 
-    /// Red when `plan_complete`'s `None` arm falls back to "the newest
-    /// published certificate" instead of refusing.
+    /// Red when `--retain` selects a version again — the P1 this was written
+    /// for.
+    ///
+    /// `--retain` proves only that a fingerprint is currently published. It
+    /// says nothing about which ESV secret version holds it, and "disable the
+    /// oldest ENABLED version" supplies that half by guessing.
     #[test]
-    fn completing_without_a_local_record_demands_the_fingerprint_rather_than_inferring_it() {
-        let stranger = RotationState {
+    fn retaining_a_fingerprint_does_not_choose_a_version_and_will_not_pretend_to() {
+        let no_record = RotationState {
             record: None,
             ..staged()
         };
-        let refusal = message(plan_complete(&stranger, None).unwrap_err());
-        assert!(refusal.contains("--retain <sha256>"), "{refusal}");
+
+        // The discriminating input: keep the OLDER certificate, with nothing
+        // tying a fingerprint to a version. "Disable the oldest ENABLED
+        // version" disables version 1 — the one holding the very certificate
+        // it was told to keep — and the operator finds out from the
+        // post-write export check, after it has stopped being published.
+        let refusal = message(plan_complete(&no_record, Some(OLD), None).unwrap_err());
+        assert!(refusal.contains("--disable-version"), "{refusal}");
         assert!(refusal.contains("write-only"), "{refusal}");
 
-        // Supplied explicitly, it plans — and says nothing about which
-        // certificate will drop, because by elimination is not knowledge.
-        let plan = plan_complete(&stranger, Some(NEW)).unwrap();
+        // And the agreeing case is refused for exactly the same reason. This
+        // one used to plan, which is the trap: from in here it is
+        // indistinguishable from the case above.
+        let agreeing = message(plan_complete(&no_record, Some(NEW), None).unwrap_err());
+        assert!(agreeing.contains("--disable-version"), "{agreeing}");
+
+        // Named, it plans — and reports the pairing as the operator's claim,
+        // with no certificate named by elimination.
+        let plan = plan_complete(&no_record, Some(NEW), Some("1")).unwrap();
+        assert_eq!(plan.disable_version, "1");
+        assert_eq!(plan.chosen_by, VersionChoice::Named);
         assert_eq!(plan.retain, NEW);
         assert_eq!(plan.expected_drop, None);
 
+        // Keeping OLD means retiring what version 2 publishes, and version 2
+        // is the latest — which AIC will not disable. Named honestly, the
+        // refusal is AIC's rule rather than a silent substitution.
+        let latest = message(plan_complete(&no_record, Some(OLD), Some("2")).unwrap_err());
+        assert!(latest.contains("newest version"), "{latest}");
+
+        // A version that publishes nothing is not a version to disable.
+        let absent = message(plan_complete(&no_record, Some(NEW), Some("7")).unwrap_err());
+        assert!(absent.contains("not an ENABLED version"), "{absent}");
+
         // Case-insensitively, since a fingerprint gets pasted from openssl.
         assert_eq!(
-            plan_complete(&stranger, Some(&NEW.to_uppercase()))
+            plan_complete(&no_record, Some(&NEW.to_uppercase()), Some("1"))
                 .unwrap()
                 .retain,
             NEW
@@ -1614,8 +1911,49 @@ mod tests {
 
         // A fingerprint this role does not publish is refused, not disabled
         // hopefully: the two certificates are the only ones in play.
-        let wrong = message(plan_complete(&stranger, Some(STRANGER)).unwrap_err());
+        let wrong = message(plan_complete(&no_record, Some(STRANGER), Some("1")).unwrap_err());
         assert!(wrong.contains("is not one of the 2"), "{wrong}");
+    }
+
+    /// Red when the version is derived from the ordering even though the
+    /// record says which version holds which certificate.
+    #[test]
+    fn keeping_the_older_certificate_disables_the_version_holding_the_newer_one() {
+        // A stage that went in with the wrong key pair: the operator wants
+        // the certificate that was already in service, not the one just
+        // staged as version 2. "Disable the oldest ENABLED version" would
+        // disable version 1 — the one holding what is being kept — and the
+        // record was sitting right there saying so.
+        let with_spare = RotationState {
+            versions: vec![
+                version("1", "ENABLED"),
+                version("2", "ENABLED"),
+                version("3", "DISABLED"),
+            ],
+            ..staged() // records version 2 as NEW
+        };
+        let plan = plan_complete(&with_spare, Some(OLD), None).unwrap();
+        assert_eq!(plan.disable_version, "2");
+        assert_eq!(plan.chosen_by, VersionChoice::Recorded);
+        assert_eq!(plan.retain, OLD);
+        // Direct from the record, not by elimination: version 2 is the one
+        // being disabled and the record names the certificate it holds.
+        assert_eq!(plan.expected_drop.as_deref(), Some(NEW));
+    }
+
+    /// Red when a stale record is read as a pairing.
+    #[test]
+    fn a_record_naming_a_certificate_nobody_publishes_is_not_a_pairing() {
+        // Left over from an earlier rollover: it names a version and a
+        // fingerprint, and neither describes what is on the tenant now.
+        // Deriving a version from it is ordering wearing a record's clothes.
+        let stale = RotationState {
+            record: Some(record("1", STRANGER)),
+            ..staged()
+        };
+        let refusal = message(plan_complete(&stale, Some(NEW), None).unwrap_err());
+        assert!(refusal.contains("--disable-version"), "{refusal}");
+        assert!(message(plan_complete(&stale, None, None).unwrap_err()).contains("--retain"));
     }
 
     /// Red when the "retaining the version we are about to disable" guard is
@@ -1623,29 +1961,29 @@ mod tests {
     #[test]
     fn completing_refuses_to_keep_the_certificate_it_is_about_to_stop_publishing() {
         // The inverted rollover: this install staged the NEW certificate as
-        // version 1 — because version 2 was already there — so the oldest
-        // ENABLED version holds the certificate the operator wants to keep.
-        // Disabling it retires the new key and leaves the old one in
-        // service, which is the one failure the whole verb exists to avoid.
+        // version 1, because version 2 was already there.
         let inverted = RotationState {
             record: Some(record("1", NEW)),
             ..staged()
         };
-        let refusal = message(plan_complete(&inverted, None).unwrap_err());
-        assert!(refusal.contains("retire the new certificate"), "{refusal}");
+        // Derived, the version is never the one the record ties to the
+        // certificate being kept — so what stops this is AIC's own rule: the
+        // other ENABLED version is 2, which is also the newest.
+        let refusal = message(plan_complete(&inverted, None, None).unwrap_err());
+        assert!(refusal.contains("newest version"), "{refusal}");
 
-        // Same refusal when --retain says it explicitly.
-        assert!(
-            message(plan_complete(&inverted, Some(NEW)).unwrap_err())
-                .contains("retire the new certificate")
-        );
+        // Named by hand, the guard is what stops it: the operator's claim
+        // that version 1 holds the certificate to drop contradicts this
+        // install's own record that it holds the one to keep.
+        let forced = message(plan_complete(&inverted, Some(NEW), Some("1")).unwrap_err());
+        assert!(forced.contains("retire the new certificate"), "{forced}");
     }
 
     /// Red when `complete_ok` returns `Ok(())` regardless of `forced`.
     #[test]
     fn closing_the_window_is_refused_until_it_is_confirmed() {
         let state = staged();
-        let plan = plan_complete(&state, None).unwrap();
+        let plan = plan_complete(&state, None, None).unwrap();
         assert!(complete_ok(true, &plan, &state).is_ok());
         let refusal = message(complete_ok(false, &plan, &state).unwrap_err());
         assert!(refusal.contains("would disable version 1"), "{refusal}");
@@ -1758,6 +2096,59 @@ mod tests {
             message(set_secret_identifier(&bare, Location::Remote, Role::Idp, "x").unwrap_err())
                 .contains("no identityProvider block")
         );
+    }
+
+    /// Red when `set_identifier` writes whatever its fresh read returned
+    /// instead of checking the leaf the plan was authorized against.
+    #[test]
+    fn a_concurrent_identifier_change_is_reported_rather_than_overwritten() {
+        let unconfigured = json!({
+            "entityId": "https://sp-a.example.com",
+            "serviceProvider": { "assertionContent": { "secrets": {} } },
+        });
+        // Planned from an unconfigured role and still unconfigured: the only
+        // case that may write.
+        assert!(identifier_write_ok(None, &unconfigured, Role::Sp).is_ok());
+
+        // The discriminating input. `plan_init` decided to set the identifier
+        // *because* the role had none; by the time the write re-reads the
+        // entity, someone else has set one. The wrong implementation — re-read,
+        // change the leaf, `PUT` — cannot tell this document from the one
+        // above, and replaces "theirs" with no diff and no message.
+        let taken = json!({
+            "entityId": "https://sp-a.example.com",
+            "serviceProvider": {
+                "assertionContent": { "secrets": { "secretIdIdentifier": "theirs" } },
+            },
+        });
+        let refusal = message(identifier_write_ok(None, &taken, Role::Sp).unwrap_err());
+        assert!(refusal.contains("\"theirs\""), "{refusal}");
+        assert!(refusal.contains("unset"), "{refusal}");
+        assert!(refusal.contains("Nothing has been sent"), "{refusal}");
+
+        // Including when the concurrent change is the value this run wanted:
+        // the plan said unconfigured, and it is not unconfigured now. Nothing
+        // is lost by refusing — a re-run skips the step.
+        assert!(
+            message(identifier_write_ok(None, &taken, Role::Sp).unwrap_err()).contains("theirs")
+        );
+        let same = json!({
+            "serviceProvider": { "assertionContent": { "secrets": { "secretIdIdentifier": "spa" } } },
+        });
+        assert!(identifier_write_ok(None, &same, Role::Sp).is_err());
+        assert!(identifier_write_ok(Some("spa"), &same, Role::Sp).is_ok());
+
+        // Role-scoped: the other role's identifier is not this one's, and a
+        // check that read either would refuse a legitimate write on every
+        // dual-role entity that had already configured its IdP.
+        let other_role = json!({
+            "identityProvider": {
+                "assertionContent": { "secrets": { "secretIdIdentifier": "theirs" } },
+            },
+            "serviceProvider": { "assertionContent": { "secrets": {} } },
+        });
+        assert!(identifier_write_ok(None, &other_role, Role::Sp).is_ok());
+        assert!(identifier_write_ok(None, &other_role, Role::Idp).is_err());
     }
 
     /// Red when `entity_write_differences` compares with `==` and reports a
@@ -1927,6 +2318,102 @@ mod tests {
         .unwrap();
         assert!(resumed.set_identifier);
         assert!(!resumed.create_secret && !resumed.map_label);
+    }
+
+    /// Red when an adopted secret is reported as set up without reading what
+    /// the entity publishes — the P1 this was written for.
+    #[test]
+    fn adopting_an_existing_secret_claims_only_what_the_export_showed() {
+        // The discriminating input: the adopted secret publishes nothing,
+        // which is exactly what a secret with no ENABLED version does. The old
+        // code never reached an export at all — `expected` was `None` whenever
+        // no key pair was written and `finish` returned success — so this state
+        // and the one below were reported identically.
+        let nothing =
+            message(adoption_outcome(&state(), "esv-sp-a-signing", &shas([]), None).unwrap_err());
+        assert!(
+            nothing.contains("publishes no signing certificate"),
+            "{nothing}"
+        );
+        assert!(nothing.contains("no ENABLED version"), "{nothing}");
+        assert!(
+            nothing.contains("esv secret versions esv-sp-a-signing"),
+            "{nothing}"
+        );
+        // The entity was already written; saying so is the difference between
+        // an operator who reads their tenant and one who re-runs blind.
+        assert!(nothing.contains("nothing has been undone"), "{nothing}");
+
+        // Publishing something is reported as the fingerprint that was read,
+        // with the limit named rather than implied past.
+        let found = adoption_outcome(&state(), "esv-sp-a-signing", &shas([OLD]), None)
+            .unwrap()
+            .join("\n");
+        assert!(found.contains(OLD), "{found}");
+        assert!(found.contains(ADOPTION_CAVEAT), "{found}");
+        assert!(ADOPTION_CAVEAT.contains("write-only"));
+
+        // A key pair handed to an `init` that adopted is not written
+        // anywhere, and the report says which of the two it is rather than
+        // leaving the operator to assume the new key is in service.
+        let ignored = adoption_outcome(&state(), "esv-sp-a-signing", &shas([OLD]), Some(NEW))
+            .unwrap()
+            .join("\n");
+        assert!(ignored.contains("is NOT among them"), "{ignored}");
+        assert!(ignored.contains("rotate stage"), "{ignored}");
+        let present = adoption_outcome(&state(), "esv-sp-a-signing", &shas([OLD]), Some(OLD))
+            .unwrap()
+            .join("\n");
+        assert!(present.contains("is among them"), "{present}");
+        assert!(!present.contains("NOT among them"), "{present}");
+    }
+
+    /// Red when `InitPlan::lines` credits an adopted secret with the
+    /// certificate in the supplied key pair.
+    #[test]
+    fn a_plan_that_adopts_a_secret_does_not_name_a_certificate_it_never_wrote() {
+        let fresh = RotationState {
+            identifier: None,
+            mapped_alias: None,
+            secret: None,
+            versions: Vec::new(),
+            ..state()
+        };
+        let creating = plan_init(
+            &fresh,
+            "spa",
+            "esv-sp-a-signing",
+            None,
+            None,
+            Some(&pair(NEW)),
+        )
+        .unwrap()
+        .lines(&fresh)
+        .join("\n");
+        assert!(
+            creating.contains(&format!("certificate {NEW}")),
+            "{creating}"
+        );
+
+        // Same key pair, but the secret already exists. Naming the
+        // certificate on the "done" step reads as "that secret holds this
+        // certificate", which is the one thing nothing here has checked.
+        let adopting = plan_init(
+            &fresh,
+            "spa",
+            "esv-sp-a-signing",
+            None,
+            Some(&facts()),
+            Some(&pair(NEW)),
+        )
+        .unwrap()
+        .lines(&fresh)
+        .join("\n");
+        assert!(
+            !adopting.contains(&format!("certificate {NEW}")),
+            "{adopting}"
+        );
+        assert!(adopting.contains("is not written"), "{adopting}");
     }
 
     /// Red when `plan_init` stops refusing a different existing identifier,
