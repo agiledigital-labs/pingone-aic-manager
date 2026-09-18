@@ -140,7 +140,8 @@ pub enum RotateCommand {
         retain: Option<String>,
         /// The ESV secret version to disable. Required alongside `--retain`
         /// when this install has no record of the stage: a fingerprint does
-        /// not name a version, and nothing readable pairs the two.
+        /// not name a version, and nothing readable pairs the two. When there
+        /// **is** a record, it decides and this may only agree with it.
         #[arg(long, value_name = "N")]
         disable_version: Option<String>,
         #[arg(long, value_enum)]
@@ -339,6 +340,19 @@ async fn init(
         eprintln!("{line}");
     }
     if plan.is_noop() {
+        // The same evidence as the adoption path below, and for the same
+        // reason: "every step is already done" is a statement about three
+        // documents, and a label backed by a secret with no ENABLED version
+        // satisfies all three while publishing nothing at all. Read first and
+        // claim afterwards, so the claim never precedes what supports it.
+        let published = ops::wait_for_any_cert(&tenant, &realm, entity_id, state.role).await?;
+        let lines = spec::adoption_outcome(
+            &state,
+            &plan.secret_id,
+            &published,
+            key.as_ref().map(|key| key.sha256.as_str()),
+            spec::Adoption::AlreadyDone,
+        )?;
         println!(
             "{} ({}) is already set up: {} maps to {}",
             state.entity_id,
@@ -346,6 +360,9 @@ async fn init(
             plan.label,
             plan.secret_id
         );
+        for line in lines {
+            println!("{line}");
+        }
         println!("`aic saml rotate status {entity_id} --realm {realm}` reads it back");
         return Ok(());
     }
@@ -391,6 +408,7 @@ async fn init(
             &realm,
             &plan.label,
             &plan.secret_id,
+            label_mapping.as_deref(),
             ok.confirmed_prod,
             &permit,
         )
@@ -407,17 +425,14 @@ async fn init(
             .as_ref()
             .expect("plan_init requires a key to create the secret");
         let expected = std::iter::once(key.sha256.clone()).collect();
-        return finish(&tenant, &realm, entity_id, &state, &expected, |sha| {
-            (*sha == key.sha256).then(|| {
-                (
-                    "1".to_string(),
-                    key.sha256.clone(),
-                    plan.secret_id.clone(),
-                    plan.identifier.clone(),
-                )
-            })
-        })
-        .await;
+        // No journal entry, and that is the point: `init` stages nothing. The
+        // record answers "which ESV secret version holds which certificate"
+        // during a **two-certificate window**, and there is one certificate
+        // here. Writing one anyway — version "1", from a run that never
+        // staged — handed a later `complete` a pairing describing the setup
+        // rather than a rollover, and with a higher DISABLED spare version
+        // AIC's latest-version refusal no longer catches the result.
+        return confirm_publication(&tenant, &realm, entity_id, &state, &expected).await;
     }
 
     let published = ops::wait_for_any_cert(&tenant, &realm, entity_id, state.role).await?;
@@ -426,6 +441,7 @@ async fn init(
         &plan.secret_id,
         &published,
         key.as_ref().map(|key| key.sha256.as_str()),
+        spec::Adoption::Applied,
     )? {
         println!("{line}");
     }
@@ -474,8 +490,9 @@ async fn stage(
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
     let created = ops::add_version(
-        &tenant.name,
-        &plan.secret_id,
+        &tenant,
+        &state,
+        &plan,
         &key.value,
         ok.confirmed_prod,
         &permit,
@@ -487,27 +504,54 @@ async fn stage(
         .ok_or_else(|| {
             Error::Config(format!(
                 "ESV secret {} accepted the new version but its response named no version \
-                 number, so this rollover cannot be recorded. `aic esv secret versions {}` \
-                 lists what exists; finish with `aic saml rotate complete --retain {}`.",
-                plan.secret_id, plan.secret_id, plan.incoming
+                 number, so this rollover cannot be recorded, and the record is the only \
+                 thing that ties a certificate to a version. \
+                 `aic esv secret versions {}` lists what exists, including the one that was \
+                 just added; finish with `aic saml rotate complete --retain {} \
+                 --disable-version <n>`, naming the version holding the certificate being \
+                 retired. Both halves are needed: {} names a certificate, not a version.",
+                plan.secret_id, plan.secret_id, plan.incoming, plan.incoming
             ))
         })?
         .to_string();
     println!("ESV secret {} version {version} added", plan.secret_id);
 
-    let secret_id = plan.secret_id.clone();
-    let identifier = state.identifier.clone().unwrap_or_default();
-    finish(&tenant, &realm, entity_id, &state, &plan.expected, |sha| {
-        (*sha == key.sha256).then(|| {
-            (
-                version.clone(),
-                key.sha256.clone(),
-                secret_id.clone(),
-                identifier.clone(),
-            )
-        })
+    // The one ENABLED version before this one, which `plan_stage` proved
+    // there was exactly one of. Named here because it is what the recovery
+    // instruction below needs and what nothing will be able to work out once
+    // this process is gone.
+    let previous = state
+        .enabled_versions()
+        .first()
+        .map(|version| version.version.clone())
+        .unwrap_or_default();
+
+    confirm_publication(&tenant, &realm, entity_id, &state, &plan.expected).await?;
+    journal::record(
+        StagedRecord {
+            tenant: tenant.name.clone(),
+            realm: realm.clone(),
+            entity_id: entity_id.to_string(),
+            role: state.role.wire().to_string(),
+            identifier: state.identifier.clone().unwrap_or_default(),
+            secret_id: plan.secret_id.clone(),
+            version: version.clone(),
+            sha256: key.sha256.clone(),
+            staged_at: chrono::Utc::now().to_rfc3339(),
+        },
+        &permit,
+    )
+    .map_err(|error| {
+        Error::Config(format!(
+            "the rollover is staged and the tenant confirmed it — ESV secret {} version \
+             {version} holds certificate {}, and {} now publishes both — but this install \
+             could not write that down: {error}. **Nothing needs re-sending.** The record is \
+             the only thing that ties a certificate to a version, so close the window by \
+             naming both halves yourself: `aic saml rotate complete {} --realm {realm} \
+             --retain {} --disable-version {previous}`.",
+            plan.secret_id, key.sha256, state.entity_id, entity_id, key.sha256,
+        ))
     })
-    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -559,14 +603,7 @@ async fn complete(
     spec::complete_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
-    ops::disable_version(
-        &tenant.name,
-        &plan.secret_id,
-        &plan.disable_version,
-        ok.confirmed_prod,
-        &permit,
-    )
-    .await?;
+    ops::disable_version(&tenant, &state, &plan, ok.confirmed_prod, &permit).await?;
     println!(
         "ESV secret {} version {} disabled",
         plan.secret_id, plan.disable_version
@@ -638,44 +675,33 @@ fn complete_plan_lines(plan: &CompletePlan, state: &RotationState) -> Vec<String
     lines
 }
 
-/// Re-read the export, report what the tenant now publishes, and record the
-/// version/fingerprint pairing only when that read confirms it.
+/// Re-read the export and report what the tenant now publishes, refusing to
+/// claim a post-state it has not shown.
 ///
-/// `.ai/core.md` §5, applied to a store that will not read a value back: a
-/// record taken from what was sent is a claim the tenant accepted it verbatim,
-/// and this is the one place that claim can be checked.
+/// `.ai/core.md` §5, applied to a store that will not read a value back.
 ///
 /// `expected` is not optional, and used not to be enforced: an `init` with no
 /// fingerprint to wait for fell through here and returned success having read
 /// nothing. A caller that cannot name a fingerprint has a different, weaker
 /// claim to make and makes it through [`spec::adoption_outcome`].
-async fn finish(
+///
+/// It does **not** write the journal, and that is a boundary rather than a
+/// tidy-up. `stage` records the version/fingerprint pairing here because this
+/// is where the tenant's own export confirms it; `init` has no pairing to
+/// record, because it opens no two-certificate window. A shared callback that
+/// wrote "the same record, conditionally" is how the one that stages nothing
+/// came to write one.
+async fn confirm_publication(
     tenant: &crate::config::Tenant,
     realm: &str,
     entity_id: &str,
     state: &RotationState,
     expected: &std::collections::BTreeSet<String>,
-    attribute: impl Fn(&String) -> Option<(String, String, String, String)>,
 ) -> Result<()> {
     let settled = ops::wait_for_export(tenant, realm, entity_id, state.role, expected).await?;
     report_settlement(&settled, state);
     if !matches!(settled, Settlement::Settled) {
         return Err(settlement_error(state, "confirm"));
-    }
-    for sha in expected {
-        if let Some((version, sha256, secret_id, identifier)) = attribute(sha) {
-            journal::record(StagedRecord {
-                tenant: tenant.name.clone(),
-                realm: realm.to_string(),
-                entity_id: entity_id.to_string(),
-                role: state.role.wire().to_string(),
-                identifier,
-                secret_id,
-                version,
-                sha256,
-                staged_at: chrono::Utc::now().to_rfc3339(),
-            })?;
-        }
     }
     println!(
         "{} ({}) now publishes {}",
