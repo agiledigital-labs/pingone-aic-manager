@@ -1479,7 +1479,12 @@ pub fn status_lines(state: &RotationState, phase: &Phase) -> Vec<String> {
 /// version, or a certificate arriving from a label mapped elsewhere, would
 /// both produce exactly this picture.
 fn attribution(state: &RotationState, cert: &CertRef) -> String {
-    match state.record.as_ref() {
+    // Through [`usable_pairing`], not through `state.record` directly: a
+    // version number this report prints is the number an operator then types
+    // into `--disable-version`, so it must clear the same bar `complete` sets
+    // for acting on one. A record left by a setup this tenant no longer has
+    // names a version whose meaning has moved.
+    match usable_pairing(state) {
         Some(record) if record.sha256 == cert.sha256 => format!(
             "ESV secret version {}, staged here {}",
             record.version, record.staged_at
@@ -1501,9 +1506,7 @@ pub fn status_json(state: &RotationState, phase: &Phase) -> Value {
             serde_json::json!({
                 "sha256": cert.sha256,
                 "keyName": cert.key_name,
-                "stagedVersion": state
-                    .record
-                    .as_ref()
+                "stagedVersion": usable_pairing(state)
                     .filter(|record| record.sha256 == cert.sha256)
                     .map(|record| record.version.clone()),
             })
@@ -3028,6 +3031,45 @@ mod tests {
         let lines = status_lines(&stranger, &phase(&stranger)).join("\n");
         assert_eq!(lines.matches("no local record").count(), 2, "{lines}");
         assert!(lines.contains(PAIRING_CAVEAT));
+
+        // A record about a setup this tenant no longer has attributes
+        // nothing either, and that is not cosmetic: the version number this
+        // report prints is the number an operator types into
+        // `--disable-version`, so it has to clear the same bar `complete`
+        // sets before acting on one. Reading `state.record` directly would
+        // print "version 2" for a secret that has never held what the record
+        // says it holds.
+        let recreated = RotationState {
+            identifier: Some("spa2".into()),
+            ..staged()
+        };
+        let lines = status_lines(&recreated, &phase(&recreated)).join("\n");
+        assert_eq!(lines.matches("no local record").count(), 2, "{lines}");
+        assert_eq!(
+            status_json(&recreated, &phase(&recreated))["published"]
+                .as_array()
+                .expect("published")
+                .iter()
+                .filter(|entry| !entry["stagedVersion"].is_null())
+                .count(),
+            0
+        );
+        // The positive control: the same state with the identifier the record
+        // names does attribute, in both reports.
+        assert!(
+            status_lines(&staged(), &phase(&staged()))
+                .join("\n")
+                .contains("ESV secret version 2")
+        );
+        assert_eq!(
+            status_json(&staged(), &phase(&staged()))["published"]
+                .as_array()
+                .expect("published")
+                .iter()
+                .filter(|entry| entry["stagedVersion"] == "2")
+                .count(),
+            1
+        );
     }
 
     /// Red when `status_json` reports a `stagedVersion` for an unrecorded
