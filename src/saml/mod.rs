@@ -45,8 +45,12 @@
 //! afterwards, because AM performs that cascade and the delete response says
 //! nothing about it. Neither write reports a post-state it did not measure:
 //! [`spec::created_lines`] separates the id AM echoed from the role and alias
-//! that were only sent, and [`spec::cascade_outcome_lines`] is a diff of two
-//! reads.
+//! that were only sent, and [`spec::cascade_outcome`] is a diff of two reads
+//! whose survivors come from the **second** one, so a circle the pre-delete
+//! read missed is still found. That verdict is the delete's exit code: a
+//! cascade nothing could confirm exits non-zero, because the entity is gone
+//! either way and the only thing a zero could still be claiming is the state
+//! of the federation it left behind.
 //!
 //! **There is no circle-of-trust *write* verb, and `cot list` / `cot show` are
 //! not membership.** AM stores membership twice — the CoT document's

@@ -559,36 +559,84 @@ pub fn cascade_lines(entity_id: &str, realm: &str, affected: &[CotMembership]) -
 /// The delete response echoes the deleted entity and says nothing about the
 /// circles of trust AM rewrote, so a command that printed `before` as the
 /// outcome would be reporting a claim, not an observation — the same mistake
-/// as snapshotting the bytes you submitted (`.ai/core.md` §5). Every line here
+/// as snapshotting the bytes you submitted (`.ai/core.md` §5). Everything here
 /// comes from a second read.
 ///
-/// A circle that **still** lists the entity is the interesting case: the
-/// cascade is documented but it is AM's, not ours, and a federation left
-/// naming a provider that no longer exists is worth a warning rather than
-/// silence.
-pub fn cascade_outcome_lines(
-    entity_id: &str,
-    before: &[CotMembership],
-    after: &[CotMembership],
-) -> Vec<String> {
-    before
-        .iter()
-        .map(
-            |was| match after.iter().find(|still| still.cot == was.cot) {
-                None => format!(
+/// **The survivors are counted from `after`, not from `before`.** Walking
+/// `before` and asking "is it still there" can only find circles the
+/// pre-delete read happened to see, which makes it a replay with a lookup in
+/// it rather than a postcondition: a circle that named the entity but was
+/// created, renamed or simply missed between the two reads is invisible to
+/// it. The question the operator needs answered is "does *any* circle of
+/// trust in this realm still name an entity that no longer exists", and only
+/// `after` can answer that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CascadeOutcome {
+    /// Circles the pre-delete read named that no longer list the entity —
+    /// AM's cascade, observed.
+    pub removed: Vec<CotMembership>,
+    /// Every circle that **still** lists the entity, whether or not the
+    /// pre-delete read saw it. A federation left naming a provider that no
+    /// longer exists is the state this whole second read exists to find.
+    pub still_listing: Vec<CotMembership>,
+}
+
+impl CascadeOutcome {
+    /// Whether the cascade the command promised demonstrably happened.
+    ///
+    /// This is what the exit code says, so it is deliberately not "the delete
+    /// succeeded": the entity is gone either way, and automation that reads a
+    /// zero as "the federation is consistent again" is the reader being
+    /// protected here.
+    pub fn settled(&self) -> bool {
+        self.still_listing.is_empty()
+    }
+
+    pub fn lines(&self, entity_id: &str) -> Vec<String> {
+        let mut lines = self
+            .removed
+            .iter()
+            .map(|was| {
+                format!(
                     "  removed from circle of trust {}: {}",
                     was.cot,
                     was.entries.join(", ")
-                ),
-                Some(still) => format!(
-                    "  warning: circle of trust {} still lists {entity_id} as {} \
-                     after the delete",
-                    was.cot,
-                    still.entries.join(", ")
-                ),
-            },
-        )
-        .collect()
+                )
+            })
+            .collect::<Vec<_>>();
+        for still in &self.still_listing {
+            lines.push(format!(
+                "  warning: circle of trust {} still lists {entity_id} as {} \
+                 after the delete",
+                still.cot,
+                still.entries.join(", ")
+            ));
+        }
+        lines
+    }
+}
+
+pub fn cascade_outcome(before: &[CotMembership], after: &[CotMembership]) -> CascadeOutcome {
+    CascadeOutcome {
+        removed: before
+            .iter()
+            .filter(|was| !after.iter().any(|still| still.cot == was.cot))
+            .cloned()
+            .collect(),
+        still_listing: after.to_vec(),
+    }
+}
+
+/// Permission to send one delete.
+///
+/// The same shape as [`ImportPermit`], and for the same reason: the field is
+/// private to this module, [`delete_ok`] is the only thing that fills it in,
+/// and `api::delete_entity` takes a reference to one — so the unforced
+/// preview path cannot reach the write even if the `?` in front of it is
+/// deleted.
+#[derive(Debug)]
+pub struct DeletePermit {
+    _minted_by_delete_ok: (),
 }
 
 /// Permission to delete one entity provider: `--force` was supplied.
@@ -602,15 +650,26 @@ pub fn cascade_outcome_lines(
 /// without `--force` is how an operator finds out what a delete would take
 /// with it. That is why there is no `--dry-run` — there is no permission token
 /// for a preview to carry by accident.
+///
+/// **This is the command's last refusal, so nothing that costs the operator
+/// anything may run in front of it** — the production `--yes` gate above all.
+/// `cli::delete` used to call `ensure_prod_confirmed` first, which made the
+/// documented preview demand write authorization on a production-themed
+/// tenant and taught operators to keep `--yes` on the line (`REVIEW.md`,
+/// 2026-08-11: the same defect in `access::cli::write`). The permit is what
+/// puts the ordering where a reader can see it: the confirmation belongs
+/// between minting one and spending it.
 pub fn delete_ok(
     forced: bool,
     entity_id: &str,
     location: Location,
     tenant: &str,
     realm: &str,
-) -> crate::Result<()> {
+) -> crate::Result<DeletePermit> {
     if forced {
-        return Ok(());
+        return Ok(DeletePermit {
+            _minted_by_delete_ok: (),
+        });
     }
     Err(crate::Error::Config(format!(
         "would delete SAML entity provider {entity_id} ({location}) from {tenant}/{realm}; \
@@ -2024,6 +2083,11 @@ mod tests {
 
     /// `--force` is the whole permission, so both directions are asserted —
     /// and the refusal has to name the flag that lifts it.
+    ///
+    /// The discriminating half is the refusal returning **no** permit rather
+    /// than a permit plus a message: `api::delete_entity` takes a
+    /// `&DeletePermit`, so an unforced run that reached the write would not
+    /// compile.
     #[test]
     fn delete_is_refused_without_force_and_allowed_with_it() {
         let refusal = delete_ok(
@@ -2050,27 +2114,31 @@ mod tests {
         .expect("--force authorizes the delete");
     }
     /// The cascade report is a diff of two reads, not a replay of the first.
-    /// A circle that still lists the entity must not be reported as cleaned.
+    /// A circle that still lists the entity must not be reported as cleaned,
+    /// and must not be reported as success either.
+    ///
+    /// The discriminating case is `late`: a circle the **second** read found
+    /// still naming the entity that the first read never saw. An outcome
+    /// walked out of `before` cannot see it, agrees with this one on every
+    /// other row here, and calls the delete settled.
     #[test]
     fn the_cascade_outcome_distinguishes_a_removal_from_a_survivor() {
-        let before = vec![
-            CotMembership {
-                cot: "client-a".to_string(),
-                entries: vec!["https://sp-a.example.com|saml2".to_string()],
-            },
-            CotMembership {
-                cot: "shared".to_string(),
-                entries: vec!["https://sp-a.example.com|saml2".to_string()],
-            },
-        ];
-        // `shared` did not change; `client-a` did.
-        let after = vec![CotMembership {
-            cot: "shared".to_string(),
+        let membership = |name: &str| CotMembership {
+            cot: name.to_string(),
             entries: vec!["https://sp-a.example.com|saml2".to_string()],
-        }];
+        };
+        let before = vec![membership("client-a"), membership("shared")];
+        // `shared` did not change; `client-a` did; `late` was never in the
+        // pre-delete read and still names the entity.
+        let after = vec![membership("shared"), membership("late")];
 
-        let lines = cascade_outcome_lines("https://sp-a.example.com", &before, &after);
-        assert_eq!(lines.len(), 2, "one line per circle that named the entity");
+        let outcome = cascade_outcome(&before, &after);
+        assert!(
+            !outcome.settled(),
+            "a circle that still lists the entity is not a settled cascade"
+        );
+        let lines = outcome.lines("https://sp-a.example.com");
+        assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(
             lines[0].contains("removed from circle of trust client-a"),
             "{:?}",
@@ -2082,6 +2150,20 @@ mod tests {
             lines[1]
         );
         assert!(!lines[1].contains("removed from"), "{:?}", lines[1]);
+        assert!(
+            lines[2].contains("warning") && lines[2].contains("late"),
+            "a survivor the pre-delete read never saw still has to be reported: {:?}",
+            lines[2]
+        );
+
+        // The control: a cascade that reached every circle is settled, and a
+        // realm that never listed the entity is settled without a word.
+        let done = cascade_outcome(&before, &[]);
+        assert!(done.settled());
+        assert_eq!(done.lines("https://sp-a.example.com").len(), 2);
+        let untouched = cascade_outcome(&[], &[]);
+        assert!(untouched.settled());
+        assert!(untouched.lines("https://sp-a.example.com").is_empty());
     }
 
     /// The create report must separate what AM confirmed (the id in the 201)

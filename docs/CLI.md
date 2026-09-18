@@ -1341,20 +1341,29 @@ entity** — a member CoT was observed going to `[]` with no CoT write in betwee
 the CoT collection first and prints, by name, each circle and each entry that
 will go. A count would not do: the operator has to recognise them.
 
-Afterwards it reads that collection **again** and reports the difference, so
-the cascade it prints is something it observed rather than something it
-predicted. AM performs the cascade, not `aic`, and the delete response says
-nothing about it — a circle that still lists the entity is reported as a
-warning. If the re-read itself fails, the command says the cascade is
-unconfirmed; it never prints the pre-state as the outcome.
+Afterwards it reads that collection **again** — always, even when the first
+read found no circle naming the entity — and reports the difference, so the
+cascade it prints is something it observed rather than something it predicted.
+AM performs the cascade, not `aic`, and the delete response says nothing about
+it. The circles reported as still listing the entity come from that second
+read, not from the first, so one the pre-delete read never saw is still found.
+
+**The exit code is about the cascade, not the delete.** The entity is gone
+either way; a circle of trust that still lists it, or a re-read that failed and
+so could not tell, exits **non-zero** with the report printed. Automation
+reading a zero here is reading "the federation is consistent again", and that
+is the claim being protected. A non-zero exit is never a reason to re-run the
+delete — the message says so.
 
 `--force` is required. The refusal path *is* the preview — without `--force`
 the command performs both reads, prints the cascade, and writes nothing — which
-is why there is no `--dry-run`: there is no permission token for a preview to
-carry by accident.
+is why there is no `--dry-run`: the preview holds no permission token, so it
+cannot reach the write.
 
 `--location` is inferred when omitted, exactly as for `show`. `--yes` is the
-separate production-tenant confirmation and does not authorize the delete.
+separate production-tenant confirmation and does not authorize the delete; it is
+asked for **after** the `--force` refusal, so previewing a delete on a
+production-themed tenant never demands it.
 
 ### `metadata export`
 
