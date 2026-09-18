@@ -1551,6 +1551,27 @@ performs compensating destructive cleanup on its own.
 The one thing that cannot be re-derived is the version/certificate pairing, and
 that is what the journal holds.
 
+#### When `init` adopts an ESV secret instead of creating one
+
+If the secret named by `--secret-id` already exists, `init` adopts it: it does
+not write a key pair into it, and `--key-file` is then not used at all. That is
+what makes an interrupted run resumable, and it is also the step whose success
+`init` can say the least about — secret values are write-only, so nothing here
+has seen the certificate behind the label.
+
+So the claim is narrowed to what a read supports. After adopting, `init`
+re-exports the metadata and requires the role to publish **at least one**
+signing certificate; a label backed by a secret with no ENABLED version
+publishes nothing, and that used to be reported as done. What it prints is the
+fingerprint the tenant published, followed by a plain statement that nothing
+here can confirm it is the certificate you meant. If a `--key-file` was
+supplied, it also says whether that certificate is among the published ones —
+because it was not written, and an operator who assumes otherwise finds out from
+a peer.
+
+Adding a key pair to a secret that already exists is `rotate stage`, not
+`rotate init`.
+
 #### `rotate init` and production
 
 `init` maps a secret label, which `aic secretmap` restricts to

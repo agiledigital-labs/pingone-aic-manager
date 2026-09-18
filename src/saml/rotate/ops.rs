@@ -191,8 +191,51 @@ pub async fn wait_for_export(
     role: Role,
     expected: &BTreeSet<String>,
 ) -> Result<Settlement> {
+    let published = poll_signing_certs(tenant, realm, entity_id, role, |seen| {
+        spec::settled_on(seen, expected)
+    })
+    .await?;
+    if spec::settled_on(&published, expected) {
+        return Ok(Settlement::Settled);
+    }
+    let (missing, unexpected) = spec::settlement_gap(&published, expected);
+    Ok(Settlement::TimedOut {
+        missing,
+        unexpected,
+    })
+}
+
+/// Poll the export until this role publishes **anything**, and report what.
+///
+/// The adoption case. An `init` that reused an ESV secret it did not create has
+/// never seen that secret's value — values are write-only — so it has no
+/// fingerprint to wait for and must not invent one. What it can still check is
+/// the thing that actually goes wrong: the entity has just been repointed at a
+/// label, and a label backed by a secret with no ENABLED version resolves to
+/// nothing at all.
+///
+/// Returns the set as last read, empty or not; [`spec::adoption_outcome`]
+/// decides what that entitles the caller to claim.
+pub async fn wait_for_any_cert(
+    tenant: &Tenant,
+    realm: &str,
+    entity_id: &str,
+    role: Role,
+) -> Result<BTreeSet<String>> {
+    poll_signing_certs(tenant, realm, entity_id, role, |seen| !seen.is_empty()).await
+}
+
+/// Re-export until `settled` accepts this role's signing fingerprints, and
+/// return the last set seen — which on a timeout is what the caller has to
+/// report, not a failure of the write that preceded it.
+async fn poll_signing_certs(
+    tenant: &Tenant,
+    realm: &str,
+    entity_id: &str,
+    role: Role,
+    settled: impl Fn(&BTreeSet<String>) -> bool,
+) -> Result<BTreeSet<String>> {
     let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
-    let published;
     loop {
         let certs = export_certs(tenant, realm, entity_id).await?;
         let seen: BTreeSet<String> = certs
@@ -203,20 +246,11 @@ pub async fn wait_for_export(
             })
             .map(|cert| cert.sha256.clone())
             .collect();
-        if spec::settled_on(&seen, expected) {
-            return Ok(Settlement::Settled);
-        }
-        if std::time::Instant::now() >= deadline {
-            published = seen;
-            break;
+        if settled(&seen) || std::time::Instant::now() >= deadline {
+            return Ok(seen);
         }
         tokio::time::sleep(SETTLE_INTERVAL).await;
     }
-    let (missing, unexpected) = spec::settlement_gap(&published, expected);
-    Ok(Settlement::TimedOut {
-        missing,
-        unexpected,
-    })
 }
 
 /// `PUT` the entity with a `secretIdIdentifier`, and prove it survived.
