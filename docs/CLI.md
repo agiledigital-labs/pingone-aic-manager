@@ -1538,12 +1538,18 @@ about what passes:
   of exactly those bytes and has to be the same identity the metadata export
   publishes.
 
+The private key has to be a whole key, not just the public half of one. An
+`RSAPrivateKey` carrying only `version`, `modulus` and `publicExponent` matches
+the certificate exactly as well as a real key does and cannot sign anything, so
+all nine INTEGERs of RFC 8017 A.1.2 are required. That is a claim about
+structure, and it is the last one this check makes.
+
 What is **not** checked, because nothing offline could: no signature is
 verified, no validity date is read, no chain is built and no key strength is
-judged. The walk reads structure in order to prove the two halves belong
-together; it is not certificate validation and does not stand in for it. A
-non-RSA certificate is refused outright rather than passed unchecked, for the
-same reason.
+judged. Those are policy. The walk reads structure in order to prove the two
+halves belong together; it is not certificate validation and does not stand in
+for it. A non-RSA certificate is refused outright rather than passed unchecked,
+for the same reason.
 
 `--dry-run` prints the plan and sends nothing. It stops by holding no permission
 token rather than by returning in front of the write: the preview arm of
@@ -1587,10 +1593,27 @@ one of exactly two places:
 - **this install's record of the stage**, which is the one thing that holds the
   pairing. It works in both directions: keep what was staged and the other
   ENABLED version is disabled; keep what was in service before and the staged
-  version is disabled. A record naming a certificate the entity no longer
-  publishes is stale and is not used.
+  version is disabled.
 - **`--disable-version <n>`**, which is your claim rather than the command's.
   The plan says so in as many words before it asks you to confirm.
+
+They are not alternatives you choose between. **When there is a usable record
+it decides, and `--disable-version` may only agree with it.** A named version
+that disagrees is refused, because with two ENABLED versions publishing two
+certificates the one the record does not name is the one holding the
+certificate `--retain` just asked to keep — so the flag would retire it, and
+nothing before the write would have said so. If you believe the record is
+wrong, move `.aic/saml-rotations.json` aside and name both halves, rather than
+overruling half of it.
+
+A record counts as usable only while it still describes the tenant in front of
+it: the role must still point at the identifier that was staged, that
+identifier's signing label must still resolve to the same ESV secret, that
+secret must still have the version the record names, and the certificate it
+names must still be published. An entity deleted and recreated under the same
+id, from the same key pair, keeps the fingerprint matching while "version 2"
+comes to mean something the record has never seen — so a fingerprint alone is
+not the test.
 
 With no usable record, `complete` refuses until it has both. That includes the
 case where picking by age would have been right — from inside the command that
@@ -1617,7 +1640,20 @@ phase first and refuse from a state they cannot act on, naming it. Nothing
 performs compensating destructive cleanup on its own.
 
 The one thing that cannot be re-derived is the version/certificate pairing, and
-that is what the journal holds.
+that is what the journal holds. Only `stage` writes to it: `init` opens no
+two-certificate window, so it has no pairing to record, and an entry claiming
+otherwise would be read by a later `complete` as the rollover this install
+staged.
+
+**Every write re-reads what it was decided from, immediately before sending.**
+A plan can be minutes old by the time it is acted on — `complete`'s waits
+through a confirmation prompt, which is a human interval by design — and a
+version number outlives a change to the versions while the certificate it holds
+does not. So `stage` and `complete` re-read the secret's ENABLED versions and
+this role's published certificates and refuse if either moved; `init` re-reads
+the role's `secretIdIdentifier` and the label's mapping before overwriting
+either. Every one of those refusals sends nothing, and the remedy is
+`aic saml rotate status` followed by a re-run.
 
 #### When `init` adopts an ESV secret instead of creating one
 
@@ -1636,6 +1672,12 @@ here can confirm it is the certificate you meant. If a `--key-file` was
 supplied, it also says whether that certificate is among the published ones —
 because it was not written, and an operator who assumes otherwise finds out from
 a peer.
+
+An `init` that finds **all three** steps already done goes through the same
+check rather than around it. "Already set up" is a statement about three
+documents, and a label backed by a secret with no ENABLED version satisfies all
+three while publishing nothing — which used to print "already set up" and exit
+zero. The export is read first and the claim made afterwards.
 
 Adding a key pair to a secret that already exists is `rotate stage`, not
 `rotate init`.
