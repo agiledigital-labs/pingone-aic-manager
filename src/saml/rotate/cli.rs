@@ -398,18 +398,17 @@ async fn init(
         println!("label {} now maps to {}", plan.label, plan.secret_id);
     }
 
-    // What the tenant publishes now, not what we expect it to.
-    let expected = key
-        .as_ref()
-        .map(|key| std::iter::once(key.sha256.clone()).collect());
-    finish(
-        &tenant,
-        &realm,
-        entity_id,
-        &state,
-        expected.as_ref(),
-        |sha| {
-            key.as_ref().filter(|key| key.sha256 == *sha).map(|key| {
+    // What the tenant publishes now, not what we expect it to — and the two
+    // branches differ in what "expect" can even mean. A key pair this run
+    // wrote gives a fingerprint to wait for; a secret this run only adopted
+    // does not, because its value was never seen from here.
+    if plan.create_secret {
+        let key = key
+            .as_ref()
+            .expect("plan_init requires a key to create the secret");
+        let expected = std::iter::once(key.sha256.clone()).collect();
+        return finish(&tenant, &realm, entity_id, &state, &expected, |sha| {
+            (*sha == key.sha256).then(|| {
                 (
                     "1".to_string(),
                     key.sha256.clone(),
@@ -417,9 +416,20 @@ async fn init(
                     plan.identifier.clone(),
                 )
             })
-        },
-    )
-    .await
+        })
+        .await;
+    }
+
+    let published = ops::wait_for_any_cert(&tenant, &realm, entity_id, state.role).await?;
+    for line in spec::adoption_outcome(
+        &state,
+        &plan.secret_id,
+        &published,
+        key.as_ref().map(|key| key.sha256.as_str()),
+    )? {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -487,23 +497,16 @@ async fn stage(
 
     let secret_id = plan.secret_id.clone();
     let identifier = state.identifier.clone().unwrap_or_default();
-    finish(
-        &tenant,
-        &realm,
-        entity_id,
-        &state,
-        Some(&plan.expected),
-        |sha| {
-            (*sha == key.sha256).then(|| {
-                (
-                    version.clone(),
-                    key.sha256.clone(),
-                    secret_id.clone(),
-                    identifier.clone(),
-                )
-            })
-        },
-    )
+    finish(&tenant, &realm, entity_id, &state, &plan.expected, |sha| {
+        (*sha == key.sha256).then(|| {
+            (
+                version.clone(),
+                key.sha256.clone(),
+                secret_id.clone(),
+                identifier.clone(),
+            )
+        })
+    })
     .await
 }
 
@@ -641,17 +644,19 @@ fn complete_plan_lines(plan: &CompletePlan, state: &RotationState) -> Vec<String
 /// `.ai/core.md` §5, applied to a store that will not read a value back: a
 /// record taken from what was sent is a claim the tenant accepted it verbatim,
 /// and this is the one place that claim can be checked.
+///
+/// `expected` is not optional, and used not to be enforced: an `init` with no
+/// fingerprint to wait for fell through here and returned success having read
+/// nothing. A caller that cannot name a fingerprint has a different, weaker
+/// claim to make and makes it through [`spec::adoption_outcome`].
 async fn finish(
     tenant: &crate::config::Tenant,
     realm: &str,
     entity_id: &str,
     state: &RotationState,
-    expected: Option<&std::collections::BTreeSet<String>>,
+    expected: &std::collections::BTreeSet<String>,
     attribute: impl Fn(&String) -> Option<(String, String, String, String)>,
 ) -> Result<()> {
-    let Some(expected) = expected else {
-        return Ok(());
-    };
     let settled = ops::wait_for_export(tenant, realm, entity_id, state.role, expected).await?;
     report_settlement(&settled, state);
     if !matches!(settled, Settlement::Settled) {

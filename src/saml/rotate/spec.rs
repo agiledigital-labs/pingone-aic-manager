@@ -1073,7 +1073,82 @@ pub fn next_step(state: &RotationState, phase: &Phase) -> String {
 pub const PAIRING_CAVEAT: &str = "\
 Which published certificate came from which ESV secret version is not readable: secret values are
 write-only and AM emits no <ds:KeyName>. A certificate is tied to a version here only when this
-install staged it; otherwise `complete` needs --retain <sha256> naming the one to keep.";
+install staged it; otherwise `complete` needs --retain <sha256> naming the one to keep, and
+--disable-version <n> naming the version to disable.";
+
+/// The sentence an adopted-secret report carries.
+///
+/// Sibling of [`PAIRING_CAVEAT`] — the same write-only-values limit, one step
+/// earlier in the story. An `init` that reused an existing ESV secret can
+/// confirm the role publishes a certificate; it cannot confirm it is the
+/// intended one, because it has never seen the value behind the label.
+pub const ADOPTION_CAVEAT: &str = "\
+The ESV secret already existed, so `init` adopted it rather than writing a key pair — and secret
+values are write-only. What is published above was read back from the tenant, but nothing here can
+say it is the certificate you meant. Check the fingerprint against the key pair you expect.";
+
+/// What an `init` that adopted an existing ESV secret may claim, given what
+/// the export showed afterwards.
+///
+/// Reporting success here without reading anything was the defect: `expected`
+/// was `None` whenever no key pair was written, and the run returned `Ok`
+/// having repointed the entity at a label it never checked resolved. A label
+/// backed by a secret with no ENABLED version publishes nothing, and that read
+/// as done.
+///
+/// So the claim is narrowed to what a read supports — this role publishes
+/// *something* now — and the rest is named as unknown rather than implied. The
+/// rule lives here, out of `cli`, so a test drives the real function: a test
+/// restating "empty is bad" would have passed against exactly the code that
+/// never looked.
+pub fn adoption_outcome(
+    state: &RotationState,
+    secret_id: &str,
+    published: &BTreeSet<String>,
+    supplied: Option<&str>,
+) -> Result<Vec<String>> {
+    if published.is_empty() {
+        return Err(Error::Config(format!(
+            "{} ({}) publishes no signing certificate. ESV secret {secret_id} already existed, \
+             so `init` adopted it rather than writing a key pair, and nothing checked it holds \
+             one — a secret with no ENABLED version resolves to nothing. \
+             `aic esv secret versions {secret_id}` lists what is in it, and \
+             `aic saml rotate status {} --realm {}` reads the whole picture back. The entity has \
+             been written; nothing has been undone.",
+            state.entity_id,
+            role_descriptor(state.role),
+            state.entity_id,
+            state.realm
+        )));
+    }
+
+    let mut lines = vec![format!(
+        "{} ({}) publishes {}",
+        state.entity_id,
+        role_descriptor(state.role),
+        published.iter().cloned().collect::<Vec<_>>().join(", ")
+    )];
+    // A key pair handed to an `init` that adopted is not written anywhere.
+    // Saying so is the difference between an operator who knows their new key
+    // is not in service and one who finds out from a peer.
+    if let Some(sha) = supplied {
+        lines.push(if published.contains(sha) {
+            format!(
+                "the certificate in the supplied key pair ({sha}) is among them — but it was not \
+                 written here: ESV secret {secret_id} already existed"
+            )
+        } else {
+            format!(
+                "the certificate in the supplied key pair ({sha}) is NOT among them: ESV secret \
+                 {secret_id} already existed, so that pair was not written. \
+                 `aic saml rotate stage --key-file …` is what adds a key pair to a secret that \
+                 exists."
+            )
+        });
+    }
+    lines.push(ADOPTION_CAVEAT.to_string());
+    Ok(lines)
+}
 
 /// What `aic saml rotate status` prints.
 pub fn status_lines(state: &RotationState, phase: &Phase) -> Vec<String> {
@@ -1269,17 +1344,27 @@ impl InitPlan {
                 self.identifier
             ),
         ));
+        // The certificate is named only on a step that writes it. Naming it on
+        // an adopted secret reads as "that secret holds this certificate",
+        // which is the one thing nothing here has checked.
         lines.push(step(
             self.create_secret,
             &format!(
                 "create ESV secret {} — encoding pem, useInPlaceholders false{}",
                 self.secret_id,
-                self.certificate
-                    .as_deref()
-                    .map(|sha| format!(", certificate {sha}"))
-                    .unwrap_or_default()
+                match (self.create_secret, self.certificate.as_deref()) {
+                    (true, Some(sha)) => format!(", certificate {sha}"),
+                    _ => String::new(),
+                }
             ),
         ));
+        if !self.create_secret && self.certificate.is_some() {
+            lines.push(
+                "         the supplied key pair is not written: that secret already exists, and \
+                 a version is added by `aic saml rotate stage`"
+                    .to_string(),
+            );
+        }
         lines.push(step(
             self.map_label,
             &format!("map {} at {}", self.label, self.secret_id),
@@ -2233,6 +2318,102 @@ mod tests {
         .unwrap();
         assert!(resumed.set_identifier);
         assert!(!resumed.create_secret && !resumed.map_label);
+    }
+
+    /// Red when an adopted secret is reported as set up without reading what
+    /// the entity publishes — the P1 this was written for.
+    #[test]
+    fn adopting_an_existing_secret_claims_only_what_the_export_showed() {
+        // The discriminating input: the adopted secret publishes nothing,
+        // which is exactly what a secret with no ENABLED version does. The old
+        // code never reached an export at all — `expected` was `None` whenever
+        // no key pair was written and `finish` returned success — so this state
+        // and the one below were reported identically.
+        let nothing =
+            message(adoption_outcome(&state(), "esv-sp-a-signing", &shas([]), None).unwrap_err());
+        assert!(
+            nothing.contains("publishes no signing certificate"),
+            "{nothing}"
+        );
+        assert!(nothing.contains("no ENABLED version"), "{nothing}");
+        assert!(
+            nothing.contains("esv secret versions esv-sp-a-signing"),
+            "{nothing}"
+        );
+        // The entity was already written; saying so is the difference between
+        // an operator who reads their tenant and one who re-runs blind.
+        assert!(nothing.contains("nothing has been undone"), "{nothing}");
+
+        // Publishing something is reported as the fingerprint that was read,
+        // with the limit named rather than implied past.
+        let found = adoption_outcome(&state(), "esv-sp-a-signing", &shas([OLD]), None)
+            .unwrap()
+            .join("\n");
+        assert!(found.contains(OLD), "{found}");
+        assert!(found.contains(ADOPTION_CAVEAT), "{found}");
+        assert!(ADOPTION_CAVEAT.contains("write-only"));
+
+        // A key pair handed to an `init` that adopted is not written
+        // anywhere, and the report says which of the two it is rather than
+        // leaving the operator to assume the new key is in service.
+        let ignored = adoption_outcome(&state(), "esv-sp-a-signing", &shas([OLD]), Some(NEW))
+            .unwrap()
+            .join("\n");
+        assert!(ignored.contains("is NOT among them"), "{ignored}");
+        assert!(ignored.contains("rotate stage"), "{ignored}");
+        let present = adoption_outcome(&state(), "esv-sp-a-signing", &shas([OLD]), Some(OLD))
+            .unwrap()
+            .join("\n");
+        assert!(present.contains("is among them"), "{present}");
+        assert!(!present.contains("NOT among them"), "{present}");
+    }
+
+    /// Red when `InitPlan::lines` credits an adopted secret with the
+    /// certificate in the supplied key pair.
+    #[test]
+    fn a_plan_that_adopts_a_secret_does_not_name_a_certificate_it_never_wrote() {
+        let fresh = RotationState {
+            identifier: None,
+            mapped_alias: None,
+            secret: None,
+            versions: Vec::new(),
+            ..state()
+        };
+        let creating = plan_init(
+            &fresh,
+            "spa",
+            "esv-sp-a-signing",
+            None,
+            None,
+            Some(&pair(NEW)),
+        )
+        .unwrap()
+        .lines(&fresh)
+        .join("\n");
+        assert!(
+            creating.contains(&format!("certificate {NEW}")),
+            "{creating}"
+        );
+
+        // Same key pair, but the secret already exists. Naming the
+        // certificate on the "done" step reads as "that secret holds this
+        // certificate", which is the one thing nothing here has checked.
+        let adopting = plan_init(
+            &fresh,
+            "spa",
+            "esv-sp-a-signing",
+            None,
+            Some(&facts()),
+            Some(&pair(NEW)),
+        )
+        .unwrap()
+        .lines(&fresh)
+        .join("\n");
+        assert!(
+            !adopting.contains(&format!("certificate {NEW}")),
+            "{adopting}"
+        );
+        assert!(adopting.contains("is not written"), "{adopting}");
     }
 
     /// Red when `plan_init` stops refusing a different existing identifier,
