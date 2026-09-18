@@ -487,9 +487,13 @@ async fn stage(
         .ok_or_else(|| {
             Error::Config(format!(
                 "ESV secret {} accepted the new version but its response named no version \
-                 number, so this rollover cannot be recorded. `aic esv secret versions {}` \
-                 lists what exists; finish with `aic saml rotate complete --retain {}`.",
-                plan.secret_id, plan.secret_id, plan.incoming
+                 number, so this rollover cannot be recorded, and the record is the only \
+                 thing that ties a certificate to a version. \
+                 `aic esv secret versions {}` lists what exists, including the one that was \
+                 just added; finish with `aic saml rotate complete --retain {} \
+                 --disable-version <n>`, naming the version holding the certificate being \
+                 retired. Both halves are needed: {} names a certificate, not a version.",
+                plan.secret_id, plan.secret_id, plan.incoming, plan.incoming
             ))
         })?
         .to_string();
