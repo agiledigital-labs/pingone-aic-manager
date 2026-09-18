@@ -85,8 +85,8 @@ const XSI_NS: &[u8] = b"http://www.w3.org/2001/XMLSchema-instance";
 const XML_NS: &[u8] = b"http://www.w3.org/XML/1998/namespace";
 
 /// The XML-Signature element. Matched wherever it appears, because placement
-/// does not say what a signature covers — its `<ds:Reference>` elements do,
-/// and [`Coverage`] is where that is resolved. Conditional on
+/// does not say what a signature covers — the `<ds:Reference>` elements of
+/// its `<ds:SignedInfo>` do, and [`Coverage`] is where that is resolved. Conditional on
 /// `--keep-signature`, and only removed when some *other* cut would change
 /// bytes it covers.
 const SIGNATURE_LOCAL_NAME: &str = "Signature";
@@ -612,6 +612,12 @@ struct SignatureCut {
 /// is stripped (the placement rule kept it, and handed a peer a document that
 /// will not verify), while a direct child can reference something narrower
 /// and was dropped for nothing.
+///
+/// Two things narrow "what the references say", and both were once read as
+/// more certainty than XMLDSig offers: only the references of the signature's
+/// own `<ds:SignedInfo>` are coverage at all ([`SignedReference`]), and a
+/// reference's `URI` is its coverage only while its transform chain leaves
+/// the digested octets where the `URI` put them ([`BENIGN_TRANSFORMS`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Coverage {
     /// Every reference resolved to a span of this document.
