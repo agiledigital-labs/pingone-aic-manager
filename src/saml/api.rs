@@ -263,12 +263,18 @@ pub async fn create_hosted(
 /// `trustedProviders: []` with no CoT write of ours in between. The cascade is
 /// invisible from here, which is why `cli::delete` reads the CoT collection
 /// first, prints what will change, and reads it back afterwards.
+///
+/// The `permit` carries the same compile-time routing proof as
+/// [`import_entity`]'s: [`crate::saml::spec::DeletePermit`] can only be minted
+/// by `spec::delete_ok`, so the unforced preview — which is this command's
+/// whole dry-run story — cannot reach the write.
 pub async fn delete_entity(
     tenant: &str,
     realm: &str,
     location: Location,
     entity_id: &str,
     confirmed_prod: bool,
+    _permit: &crate::saml::spec::DeletePermit,
 ) -> Result<Value> {
     delete_entity_request(realm, location, entity_id, confirmed_prod)
         .send(tenant)
