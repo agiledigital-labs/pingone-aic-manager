@@ -140,7 +140,8 @@ pub enum RotateCommand {
         retain: Option<String>,
         /// The ESV secret version to disable. Required alongside `--retain`
         /// when this install has no record of the stage: a fingerprint does
-        /// not name a version, and nothing readable pairs the two.
+        /// not name a version, and nothing readable pairs the two. When there
+        /// **is** a record, it decides and this may only agree with it.
         #[arg(long, value_name = "N")]
         disable_version: Option<String>,
         #[arg(long, value_enum)]
