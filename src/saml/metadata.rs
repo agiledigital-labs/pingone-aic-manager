@@ -827,10 +827,34 @@ struct PendingSignature {
     /// in which case it goes with that cut and is not reported separately.
     inside_cut: bool,
     nested: bool,
-    /// Every `<ds:Reference URI="…">` seen inside it, in document order.
-    /// `None` is a `<ds:Reference>` with no `URI` at all, which names an
-    /// object only the application can identify — so, not us.
-    references: Vec<Option<String>>,
+    /// Depth of the `<ds:SignedInfo>` open inside this signature right now,
+    /// and `None` whenever no such element is open. It is what restricts
+    /// [`Self::references`] to the references core validation is defined
+    /// over — see [`SignedReference`].
+    signed_info: Option<usize>,
+    /// Every `<ds:Reference>` of this signature's `<ds:SignedInfo>`, in
+    /// document order.
+    references: Vec<SignedReference>,
+}
+
+/// One `<ds:Reference>` from a signature's `<ds:SignedInfo>`, and nowhere
+/// else.
+///
+/// **Only `SignedInfo` references are coverage.** XMLDSig core validation is
+/// defined over the references inside `SignedInfo`; a `<ds:Reference>` in a
+/// `<ds:Manifest>` — or in any other `<ds:Object>` — is checked by the
+/// application, or by nothing at all, and the signature still validates
+/// either way. Counting one does not merely over-count: a signature whose
+/// only reference sits in a `Manifest` would be promoted from "nothing here
+/// can say what this covers" to [`Coverage::Spans`] of whatever the manifest
+/// happens to name, which manufactures coverage core validation never
+/// establishes and keeps a signature a rewrite has invalidated. That is
+/// fail-open, and this module fails closed.
+struct SignedReference {
+    /// The `URI` attribute. `None` is a `<ds:Reference>` with no `URI` at
+    /// all, which names an object only the application can identify — so,
+    /// not us.
+    uri: Option<String>,
 }
 
 /// An element carrying an XML ID, so a `URI="#id"` reference can be resolved
@@ -1183,6 +1207,7 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                                 depth: path.len(),
                                 inside_cut: open_cut.is_some(),
                                 nested: false,
+                                signed_info: None,
                                 references: Vec::new(),
                             };
                             // An empty `<ds:Signature/>` has no references and
@@ -1199,16 +1224,21 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                         }
                     }
                 }
-                // Read only inside a signature: `<ds:Reference>` also appears
-                // in a `<ds:Manifest>`, and taking that as coverage too can
-                // only make us remove a signature we might have kept, which
-                // is the safe direction.
-                if name == "Reference"
-                    && ns == Some(DSIG_NS)
+                // Coverage is read from the signature's own
+                // `<ds:SignedInfo>` and nowhere else; [`SignedReference`] says
+                // why a `<ds:Manifest>`'s references are not coverage.
+                if ns == Some(DSIG_NS)
                     && let Some(open) = signature.as_mut()
                 {
-                    open.references
-                        .push(attrs.unqualified("URI").map(str::to_owned));
+                    if name == "SignedInfo" && !empty && path.len() == open.depth + 1 {
+                        open.signed_info = Some(path.len());
+                    } else if name == "Reference"
+                        && open.signed_info.is_some_and(|depth| path.len() > depth)
+                    {
+                        open.references.push(SignedReference {
+                            uri: attrs.unqualified("URI").map(str::to_owned),
+                        });
+                    }
                 }
                 let element_id = attrs
                     .unqualified("ID")
@@ -1346,6 +1376,14 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                     && let Some(open) = &closed
                 {
                     root_range = open.start..end;
+                }
+                // `<ds:SignedInfo>` is closed, so any `<ds:Reference>` still to
+                // come in this signature is a `<ds:Manifest>`'s and not
+                // coverage.
+                if let Some(open) = signature.as_mut()
+                    && open.signed_info == Some(path.len())
+                {
+                    open.signed_info = None;
                 }
                 if let Some(mut done) = signature.take_if(|open| open.depth == path.len()) {
                     done.to = end;
@@ -1497,7 +1535,9 @@ fn note_id(ids: &mut Vec<ElementId>, value: String, range: Range<usize>) {
 /// [`Coverage::Unknown`], because a signature is invalid if *any* of its
 /// references stopped matching and we would be guessing about that one.
 ///
-/// Three forms resolve, and everything else does not:
+/// Only the references of the signature's `<ds:SignedInfo>` are read at all
+/// ([`SignedReference`]). Of those, three forms resolve and everything else
+/// does not:
 ///
 /// - `URI=""` — the whole document, which is what a plain enveloped signature
 ///   uses.
@@ -1515,7 +1555,7 @@ fn resolve_coverage(signature: &PendingSignature, ids: &[ElementId], len: usize)
     }
     let mut spans = Vec::new();
     for reference in &signature.references {
-        let Some(uri) = reference else {
+        let Some(uri) = &reference.uri else {
             return Coverage::Unknown;
         };
         if uri.is_empty() {
@@ -2287,6 +2327,16 @@ mod tests {
         format!("<ds:Signature xmlns:ds=\"{DSIG_URI}\"><ds:SignedInfo/></ds:Signature>")
     }
 
+    /// A `<ds:Signature>` whose `<ds:SignedInfo>` holds no reference at all
+    /// and whose only `<ds:Reference URI="…">` sits in a `<ds:Manifest>`.
+    fn dsig_manifest_only(target: &str) -> String {
+        format!(
+            "<ds:Signature xmlns:ds=\"{DSIG_URI}\"><ds:SignedInfo/>\
+             <ds:Object><ds:Manifest><ds:Reference URI=\"{target}\"/>\
+             </ds:Manifest></ds:Object></ds:Signature>"
+        )
+    }
+
     /// The WS-Federation role every case below has cut out from under it.
     fn wsfed_role() -> String {
         format!(
@@ -2445,6 +2495,61 @@ mod tests {
                 "{case}: `signed` reports a signature over the document itself"
             );
         }
+    }
+
+    /// A `<ds:Manifest>` reference is not coverage.
+    ///
+    /// The bug: every descendant `<ds:Reference>` was recorded, so a
+    /// signature with an empty `<ds:SignedInfo>` and one manifest reference
+    /// was promoted from "nothing here can say what this covers" to
+    /// [`Coverage::Spans`] of whatever the manifest named. XMLDSig core
+    /// validation is defined over `SignedInfo` alone — manifest references
+    /// are the application's business, and the signature validates whether or
+    /// not they still match — so that promotion invented coverage rather than
+    /// over-counting it.
+    ///
+    /// Both rows are discriminating, in the two directions the invention
+    /// leaks:
+    ///
+    /// - naming the retained role, the manufactured span excluded the WS-Fed
+    ///   cut, so the signature was **kept** over bytes that had moved;
+    /// - naming the whole document, it made [`MetadataDoc::signed`] report a
+    ///   document as signing itself on the strength of a reference core
+    ///   validation never checks.
+    #[test]
+    fn a_manifest_reference_is_not_coverage() {
+        let role = wsfed_role();
+        let idp = "<IDPSSODescriptor ID=\"_idp\" \
+                   protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">";
+
+        let on_idp = dsig_manifest_only("#_idp");
+        let input =
+            format!("{SIGNED_HEAD}\n  {on_idp}\n  {role} />\n  {idp}</IDPSSODescriptor>{TAIL}");
+        let result = clean(&input);
+        assert_eq!(
+            result
+                .removed
+                .iter()
+                .map(|removal| removal.reason)
+                .collect::<Vec<_>>(),
+            vec![
+                RemovalReason::EnvelopedSignature,
+                RemovalReason::UnsupportedRole,
+            ],
+            "a manifest reference kept a signature over rewritten bytes"
+        );
+        assert!(
+            !String::from_utf8(result.bytes)
+                .expect("utf-8")
+                .contains("<ds:Signature")
+        );
+
+        let whole = dsig_manifest_only("");
+        let signed = format!("{SIGNED_HEAD}\n  {whole}\n  {idp}</IDPSSODescriptor>{TAIL}");
+        assert!(
+            !inspect(signed.as_bytes()).expect("parses").signed,
+            "a manifest reference reported the document as signing itself"
+        );
     }
 
     /// Removing a stale signature is itself a change, so a signature that
