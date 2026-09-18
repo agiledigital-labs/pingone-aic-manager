@@ -338,6 +338,13 @@ pub async fn set_identifier(
 
 /// Create the `pem` ESV secret that will hold the key pairs.
 ///
+/// The one writer on this path with **no** freshness recheck in front of it,
+/// because the tenant already fails closed: a secret `PUT` is create-only and
+/// answers `400 "Failed to create secret, the secret already exists"`
+/// (`docs/api/03-esvs.md`), naming the id. A secret created in the gap is
+/// therefore refused by AIC rather than overwritten, and a local pre-read
+/// would buy a nicer sentence for one more round trip on every `init`.
+///
 /// `useInPlaceholders: false` is not a preference. A signing key is resolved
 /// through the secret store rather than substituted into config, so it needs
 /// none of the placeholder machinery — and a `false` secret reads
@@ -366,15 +373,24 @@ pub async fn create_key_secret(
     .await
 }
 
-/// Point the signing label at the ESV secret.
+/// Point the signing label at the ESV secret, having checked it is still free.
+///
+/// `planned_from` is the alias sitting at this label when [`spec::plan_init`]
+/// decided to map it, which was none. The recheck is here rather than at the
+/// call site for the reason [`set_identifier`]'s is: `set_mapping` is a `PUT`
+/// that updates as happily as it creates, so the dangerous write and the
+/// evidence that it is safe have to be in the same function.
 pub async fn map_label(
     tenant: &str,
     realm: &str,
     label: &str,
     secret_id: &str,
+    planned_from: Option<&str>,
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
 ) -> Result<Value> {
+    let fresh = mapping_alias(tenant, realm, label).await?;
+    spec::mapping_write_ok(label, secret_id, planned_from, fresh.as_deref())?;
     crate::secretmap::api::set_mapping(tenant, realm, label, secret_id, confirmed_prod).await
 }
 
@@ -383,15 +399,28 @@ pub async fn map_label(
 /// The new version is auto-ENABLED and becomes `activeVersion`, and **every
 /// ENABLED version is published at once** — which is the whole mechanism: two
 /// ENABLED versions, two `<KeyDescriptor use="signing">`.
+///
+/// Re-reads the two documents the plan was decided from first
+/// ([`spec::rollover_write_ok`]); a second version added in the gap makes this
+/// the third certificate rather than the second, which is the `Inconsistent`
+/// phase every later verb refuses from.
 pub async fn add_version(
-    tenant: &str,
-    secret_id: &str,
+    tenant: &Tenant,
+    state: &RotationState,
+    plan: &spec::StagePlan,
     value: &str,
     confirmed_prod: bool,
     _permit: &spec::StagePermit,
 ) -> Result<Value> {
+    recheck(tenant, state, "stage", &plan.secret_id).await?;
     let value_base64 = encode_pem(value);
-    crate::esv::api::create_secret_version(tenant, secret_id, &value_base64, confirmed_prod).await
+    crate::esv::api::create_secret_version(
+        &tenant.name,
+        &plan.secret_id,
+        &value_base64,
+        confirmed_prod,
+    )
+    .await
 }
 
 /// Disable the old version, closing the window.
@@ -399,15 +428,58 @@ pub async fn add_version(
 /// Disabling is **reversible** — `aic esv secret enable` puts the certificate
 /// back — which is why this is where the rotation stops. Destroying the
 /// version is not reversible and is not done here.
+///
+/// The recheck matters most here, and it is the longest gap on this path: the
+/// plan is made, the operator is asked to confirm at a terminal — a human
+/// interval by design — and only then is a version disabled **by number**.
+/// Whatever moved in between, the number still resolves.
 pub async fn disable_version(
-    tenant: &str,
-    secret_id: &str,
-    version: &str,
+    tenant: &Tenant,
+    state: &RotationState,
+    plan: &spec::CompletePlan,
     confirmed_prod: bool,
     _permit: &spec::CompletePermit,
 ) -> Result<Value> {
-    crate::esv::api::change_version_status(tenant, secret_id, version, "DISABLED", confirmed_prod)
-        .await
+    recheck(tenant, state, "complete", &plan.secret_id).await?;
+    crate::esv::api::change_version_status(
+        &tenant.name,
+        &plan.secret_id,
+        &plan.disable_version,
+        "DISABLED",
+        confirmed_prod,
+    )
+    .await
+}
+
+/// Read the rollover's two inputs again and compare them with the plan's.
+///
+/// Two calls, not the five [`read_state`] makes: the entity, its mapping and
+/// the secret's metadata are not what a stage or a completion is decided from,
+/// and comparing them would refuse writes that are safe.
+async fn recheck(
+    tenant: &Tenant,
+    state: &RotationState,
+    verb: &str,
+    secret_id: &str,
+) -> Result<()> {
+    let versions = spec::parse_versions(
+        &crate::esv::api::list_secret_versions(&tenant.name, secret_id).await?,
+    );
+    let certs = export_certs(tenant, &state.realm, &state.entity_id).await?;
+    let published = certs
+        .iter()
+        .filter(|cert| {
+            cert.descriptor == role_descriptor(state.role)
+                && cert.key_use.as_deref() == Some(spec::SIGNING_USE)
+        })
+        .map(|cert| cert.sha256.clone())
+        .collect();
+    spec::rollover_write_ok(
+        verb,
+        secret_id,
+        &spec::rollover_inputs(state),
+        &spec::rollover_inputs_from(&versions, published),
+    )
 }
 
 /// The wire encoding of a `pem` secret value: base64 of the PEM text itself.

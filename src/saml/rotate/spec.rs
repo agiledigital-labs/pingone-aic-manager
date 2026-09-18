@@ -299,6 +299,135 @@ fn quoted(identifier: Option<&str>) -> String {
     identifier.map_or_else(|| "unset".to_string(), |value| format!("{value:?}"))
 }
 
+/// The two tenant documents a `stage` or a `complete` decides from.
+///
+/// Not the whole picture on purpose — see [`rollover_write_ok`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolloverInputs {
+    /// Which versions of the ESV secret are ENABLED, in numeric order.
+    pub enabled: Vec<String>,
+    /// Which signing certificates this role publishes.
+    pub published: BTreeSet<String>,
+}
+
+pub fn rollover_inputs(state: &RotationState) -> RolloverInputs {
+    rollover_inputs_from(&state.versions, state.published_fingerprints())
+}
+
+pub fn rollover_inputs_from(
+    versions: &[SecretVersion],
+    published: BTreeSet<String>,
+) -> RolloverInputs {
+    RolloverInputs {
+        enabled: enabled_in(versions)
+            .into_iter()
+            .map(|version| version.version.clone())
+            .collect(),
+        published,
+    }
+}
+
+/// Whether the rollover is still the rollover the plan was made from.
+///
+/// [`identifier_write_ok`]'s rule, owed to the other two writes. Round one
+/// gave the entity `PUT` a freshness guard and left its siblings, and the gap
+/// they carry is longer, not shorter: `complete` plans, then **waits through
+/// an interactive confirmation**, then disables a version by number. A version
+/// added, enabled or disabled in that interval changes which certificate that
+/// number holds, and nothing downstream says so — the number survives the
+/// change and the pairing does not, so the tenant disables whatever version N
+/// now is and the post-write export check reports it once the certificate has
+/// stopped being published.
+///
+/// Compared as a **set** and a list of identities, never as counts: an ESV
+/// secret version disabled and another enabled in the gap leaves both totals
+/// where they were, and that is the case where the planned version now holds
+/// the certificate being kept.
+///
+/// Deliberately **not** a whole-document comparison, and that reasoning was
+/// reviewed and upheld. The entity, its mapping and the secret's metadata can
+/// all move without touching what this decision rests on, and refusing a safe
+/// write is its own failure here: the remedy is to re-run, and a rollover that
+/// will not complete is one that leaves two certificates published.
+pub fn rollover_write_ok(
+    verb: &str,
+    secret_id: &str,
+    planned_from: &RolloverInputs,
+    fresh: &RolloverInputs,
+) -> Result<()> {
+    if planned_from == fresh {
+        return Ok(());
+    }
+    let mut moved = Vec::new();
+    if planned_from.enabled != fresh.enabled {
+        moved.push(format!(
+            "the ENABLED versions of {secret_id} were {} when the plan was made and are {} now",
+            named(planned_from.enabled.iter()),
+            named(fresh.enabled.iter())
+        ));
+    }
+    if planned_from.published != fresh.published {
+        moved.push(format!(
+            "this role published {} and publishes {} now",
+            named(planned_from.published.iter()),
+            named(fresh.published.iter())
+        ));
+    }
+    Err(Error::Config(format!(
+        "the rollover changed while this run was planning, so the {verb} was decided from a \
+         state that no longer exists: {}. Something else is writing this ESV secret or this \
+         entity. A version number outlives the change and the certificate it holds does not, \
+         so going ahead would act on the number and not on the certificate the plan named. \
+         **Nothing has been sent.** `aic saml rotate status` reads the state that exists now.",
+        moved.join("; ")
+    )))
+}
+
+/// Whether the signing label is still unmapped, as `plan_init` found it.
+///
+/// The orphan case from the other side. `plan_init` refuses when the label
+/// already maps somewhere, and `map_label` writes when it does not — but
+/// `set_mapping` is a `PUT` that updates as happily as it creates, so a
+/// mapping made in the gap is overwritten with nothing reported. That is
+/// another entity's rotation, or an orphan someone is in the middle of
+/// unpicking.
+///
+/// Identical is the only case that may write, and that includes "someone else
+/// already mapped it to exactly what we wanted": the plan said this label was
+/// free, it is not now, and re-running is what should decide from the state
+/// that exists — `plan_init` then skips the step and nothing is sent. Same
+/// rule as [`identifier_write_ok`], for the same reason.
+pub fn mapping_write_ok(
+    label: &str,
+    secret_id: &str,
+    planned_from: Option<&str>,
+    fresh: Option<&str>,
+) -> Result<()> {
+    if planned_from == fresh {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "the secret label {label} changed while this run was planning — it mapped to {} when \
+         the plan was made and maps to {} now, so something else is writing this realm's \
+         mappings. Pointing it at {secret_id} would overwrite that with nothing reported, and \
+         a mapping outlives the label that named it, so the overwritten one may be the only \
+         thing naming an ESV secret. **Nothing has been sent.** Check it with \
+         `aic secretmap list` and re-run.",
+        quoted(planned_from),
+        quoted(fresh),
+    )))
+}
+
+/// A list of identities for a message, or the word for having none.
+fn named<'a>(values: impl Iterator<Item = &'a String>) -> String {
+    let joined = values.cloned().collect::<Vec<_>>().join(", ");
+    if joined.is_empty() {
+        "none".to_string()
+    } else {
+        joined
+    }
+}
+
 /// Whether the entity that came back is the entity that was sent.
 ///
 /// Returns the paths that differ, so a write AM quietly reshaped is reported
@@ -483,10 +612,7 @@ impl RotationState {
     }
 
     pub fn enabled_versions(&self) -> Vec<&SecretVersion> {
-        let mut enabled: Vec<&SecretVersion> =
-            self.versions.iter().filter(|v| v.enabled()).collect();
-        enabled.sort_by_key(|version| version.number());
-        enabled
+        enabled_in(&self.versions)
     }
 
     /// The numerically highest version, whatever its status — the one AIC
@@ -498,6 +624,16 @@ impl RotationState {
     pub fn label(&self) -> Option<String> {
         self.identifier.as_deref().map(signing_label)
     }
+}
+
+/// The ENABLED versions of one ESV secret, in numeric order.
+///
+/// Free rather than a method because the freshness recheck reads versions
+/// without building a whole [`RotationState`] around them.
+pub fn enabled_in(versions: &[SecretVersion]) -> Vec<&SecretVersion> {
+    let mut enabled: Vec<&SecretVersion> = versions.iter().filter(|v| v.enabled()).collect();
+    enabled.sort_by_key(|version| version.number());
+    enabled
 }
 
 /// Where a rotation currently stands.
@@ -2356,6 +2492,107 @@ mod tests {
         });
         assert!(identifier_write_ok(None, &other_role, Role::Sp).is_ok());
         assert!(identifier_write_ok(None, &other_role, Role::Idp).is_err());
+    }
+
+    /// Red when the sibling writers act on a plan whose inputs have moved.
+    ///
+    /// Round one gave the entity `PUT` a freshness guard and left the other
+    /// three writes, whose gaps are longer: `complete` plans, waits through an
+    /// interactive confirmation, and then disables a version **by number**.
+    #[test]
+    fn a_rollover_that_moved_while_the_plan_waited_is_refused_rather_than_acted_on() {
+        let planned = rollover_inputs(&staged());
+        assert_eq!(planned.enabled, ["1", "2"]);
+        assert!(rollover_write_ok("complete", "esv-sp-a-signing", &planned, &planned).is_ok());
+
+        // The discriminating input, and the reason this is a set-and-identity
+        // comparison rather than a count: one version disabled and another
+        // enabled in the gap, and one certificate replaced by another. Every
+        // total is where it was. The planned version number still resolves,
+        // and it no longer holds the certificate the plan named.
+        let swapped = rollover_inputs(&RotationState {
+            versions: vec![
+                version("1", "ENABLED"),
+                version("2", "DISABLED"),
+                version("3", "ENABLED"),
+            ],
+            certs: vec![
+                cert("SPSSODescriptor", Some("signing"), OLD),
+                cert("SPSSODescriptor", Some("signing"), STRANGER),
+            ],
+            ..staged()
+        });
+        assert_eq!(swapped.enabled.len(), planned.enabled.len());
+        assert_eq!(swapped.published.len(), planned.published.len());
+        let refusal = message(
+            rollover_write_ok("complete", "esv-sp-a-signing", &planned, &swapped).unwrap_err(),
+        );
+        assert!(refusal.contains("Nothing has been sent"), "{refusal}");
+        assert!(
+            refusal.contains("ENABLED versions of esv-sp-a-signing"),
+            "{refusal}"
+        );
+        assert!(refusal.contains("1, 2"), "{refusal}");
+        assert!(refusal.contains("1, 3"), "{refusal}");
+        assert!(refusal.contains(STRANGER), "{refusal}");
+
+        // Each half fires on its own, so a change to either input is enough.
+        let another_version = rollover_inputs(&RotationState {
+            versions: vec![
+                version("1", "ENABLED"),
+                version("2", "ENABLED"),
+                version("3", "ENABLED"),
+            ],
+            ..staged()
+        });
+        assert!(
+            rollover_write_ok("stage", "esv-sp-a-signing", &planned, &another_version).is_err()
+        );
+        let another_cert = rollover_inputs(&RotationState {
+            certs: vec![
+                cert("SPSSODescriptor", Some("signing"), OLD),
+                cert("SPSSODescriptor", Some("signing"), NEW),
+                cert("SPSSODescriptor", Some("signing"), STRANGER),
+            ],
+            ..staged()
+        });
+        assert!(rollover_write_ok("stage", "esv-sp-a-signing", &planned, &another_cert).is_err());
+
+        // And the inputs are the rollover's, not the whole picture: an
+        // unrelated document moving must not refuse a safe write, because the
+        // remedy is to re-run and a completion that will not run leaves two
+        // certificates published.
+        let elsewhere = rollover_inputs(&RotationState {
+            mapped_alias: Some("esv-something-else".into()),
+            identifier: Some("spa2".into()),
+            record: None,
+            ..staged()
+        });
+        assert!(rollover_write_ok("complete", "esv-sp-a-signing", &planned, &elsewhere).is_ok());
+    }
+
+    /// Red when `map_label` writes over a mapping made while it was planning.
+    #[test]
+    fn a_label_mapped_while_init_was_planning_is_not_overwritten() {
+        let label = signing_label("spa");
+        // `plan_init` only sets `map_label` when the label is free, so free is
+        // the only state a write may proceed from.
+        assert!(mapping_write_ok(&label, "esv-sp-a-signing", None, None).is_ok());
+
+        // Another entity's rotation, or an orphan somebody is unpicking. A
+        // `PUT` updates as happily as it creates, so this is silent.
+        let taken = message(
+            mapping_write_ok(&label, "esv-sp-a-signing", None, Some("esv-theirs")).unwrap_err(),
+        );
+        assert!(taken.contains("esv-theirs"), "{taken}");
+        assert!(taken.contains("Nothing has been sent"), "{taken}");
+
+        // Including the agreeing case, as for the identifier: the plan said
+        // this label was free, it is not now, and re-running is what should
+        // decide from the state that exists — `plan_init` then skips the step.
+        assert!(
+            mapping_write_ok(&label, "esv-sp-a-signing", None, Some("esv-sp-a-signing")).is_err()
+        );
     }
 
     /// Red when `entity_write_differences` compares with `==` and reports a
