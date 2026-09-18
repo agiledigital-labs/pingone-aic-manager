@@ -761,14 +761,7 @@ pub fn plan_complete(
     };
 
     let published = state.published_fingerprints();
-    // A record only pairs a version with a certificate if that certificate is
-    // still published. One left over from an earlier rollover describes a
-    // state that no longer exists, and reading a version out of it would be
-    // ordering-by-another-name.
-    let pairing = state
-        .record
-        .as_ref()
-        .filter(|record| published.contains(&record.sha256));
+    let pairing = usable_pairing(state);
 
     let retain = match retain.map(str::trim).filter(|value| !value.is_empty()) {
         Some(retain) => retain.to_lowercase(),
@@ -788,29 +781,56 @@ pub fn plan_complete(
     }
 
     let enabled = state.enabled_versions();
-    let (disable_version, chosen_by) =
-        match disable_version.map(str::trim).filter(|v| !v.is_empty()) {
-            Some(named) => {
-                if !enabled.iter().any(|version| version.version == named) {
-                    return Err(Error::Config(format!(
-                        "--disable-version {named} is not an ENABLED version of {}: the ENABLED \
-                         versions are {}. Only an ENABLED version publishes a certificate, so \
-                         disabling anything else would change nothing.",
-                        secret.id,
-                        enabled
-                            .iter()
-                            .map(|version| version.version.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )));
-                }
-                (named.to_string(), VersionChoice::Named)
+    let named = disable_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let derived = pairing.map(|record| version_from_record(record, &enabled, &retain));
+
+    let (disable_version, chosen_by) = match derived {
+        // The record is the only thing that holds the pairing, so it decides.
+        // `--disable-version` may **corroborate** it and may not overrule it:
+        // a named version that disagrees is a claim about the same two
+        // certificates made from nothing, and the plan it would produce
+        // disables the certificate `--retain` just named. The choice also
+        // stays `Recorded`, because it still is — reporting a corroborated
+        // derivation as the operator's claim would understate what is known.
+        Some(Ok(derived)) => {
+            if let Some(named) = named.filter(|named| *named != derived) {
+                return Err(contradicted_pairing(
+                    pairing.expect("a derived version comes from a pairing"),
+                    &derived,
+                    named,
+                    &retain,
+                    &secret.id,
+                ));
             }
-            None => (
-                version_from_record(pairing.ok_or_else(|| no_pairing(state))?, &enabled, &retain)?,
-                VersionChoice::Recorded,
-            ),
-        };
+            (derived, VersionChoice::Recorded)
+        }
+        // No usable pairing, so `--disable-version` is the only remaining
+        // source and it is the operator's own knowledge. Without it there is
+        // nothing left but ordering, which is the guess this verb exists to
+        // refuse.
+        other => {
+            let named = named.ok_or_else(|| match other {
+                Some(Err(error)) => error,
+                _ => no_pairing(state),
+            })?;
+            if !enabled.iter().any(|version| version.version == named) {
+                return Err(Error::Config(format!(
+                    "--disable-version {named} is not an ENABLED version of {}: the ENABLED \
+                     versions are {}. Only an ENABLED version publishes a certificate, so \
+                     disabling anything else would change nothing.",
+                    secret.id,
+                    enabled
+                        .iter()
+                        .map(|version| version.version.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            (named.to_string(), VersionChoice::Named)
+        }
+    };
 
     // AIC's own rule, and now reachable rather than defensive: keeping the
     // older certificate means retiring the newer one, whose version is
@@ -828,22 +848,6 @@ pub fn plan_complete(
              (`aic saml rotate stage --key-file …`) and complete that rollover.",
             secret.id
         )));
-    }
-
-    // The guard on the escape hatch. A derived version is never the one the
-    // record ties to the certificate being kept — `version_from_record` picks
-    // the other — so this can only fire for a hand-named `--disable-version`,
-    // which is exactly where a mistaken claim about the pairing lands.
-    if let Some(record) = pairing {
-        if record.sha256 == retain && record.version == disable_version {
-            return Err(Error::Config(format!(
-                "the certificate to keep ({retain}) is the one this install staged as version \
-                 {} of {}, so --disable-version {disable_version} would retire the new \
-                 certificate and leave the old one in service. Check \
-                 `aic saml rotate status` before forcing this by hand.",
-                record.version, secret.id
-            )));
-        }
     }
 
     let expected_drop = pairing.and_then(|record| {
@@ -868,6 +872,74 @@ pub fn plan_complete(
         retain,
         expected_drop,
     })
+}
+
+/// This install's record of the stage, but only while it still describes the
+/// tenant in front of it.
+///
+/// A record is a claim about **four** things at once, and all four have to
+/// still hold before a version may be read out of it: the role still points at
+/// the identifier that was staged, its signing label still resolves to that
+/// ESV secret, that secret still has the version the record names, and the
+/// certificate the record names is still published.
+///
+/// A published fingerprint alone used to be the whole test, and the case it
+/// misses is a realistic one: an entity deleted and recreated under the same
+/// id, from the same key pair, with a different identifier or a different
+/// secret — or simply with version numbering that restarted at 1. The
+/// fingerprint matches throughout, and “version 2” now names something the
+/// record has never seen. Disabling on that basis retires whichever
+/// certificate the new version 2 happens to hold, which is the guess the
+/// journal exists to replace.
+///
+/// Deliberately **not** a check that the entity is the same entity — nothing
+/// readable answers that. Each of the four is a fact the rest of
+/// [`plan_complete`] depends on, so a record disagreeing with any of them is
+/// not a pairing rather than a suspicious one.
+pub fn usable_pairing(state: &RotationState) -> Option<&StagedRecord> {
+    let record = state.record.as_ref()?;
+    let secret = state.secret.as_ref()?;
+    (state.published_fingerprints().contains(&record.sha256)
+        && state.identifier.as_deref() == Some(record.identifier.as_str())
+        && secret.id == record.secret_id
+        && state
+            .versions
+            .iter()
+            .any(|version| version.version == record.version))
+    .then_some(record)
+}
+
+/// A hand-named `--disable-version` the record contradicts.
+///
+/// The pairing is the only evidence tying a certificate to a version, so a
+/// named version that disagrees with it is a claim about the same two
+/// certificates made from nothing. Refusing is what catches the symmetric
+/// mistake: the record names the version to disable, `--disable-version` names
+/// the **other** one, and that other one is — by elimination across exactly
+/// two ENABLED versions and two published certificates — the one holding the
+/// certificate `--retain` just asked to keep. Nothing before the write said
+/// so; the post-write export check reported it after the certificate had
+/// stopped being published.
+fn contradicted_pairing(
+    record: &StagedRecord,
+    derived: &str,
+    named: &str,
+    retain: &str,
+    secret_id: &str,
+) -> Error {
+    Error::Config(format!(
+        "--disable-version {named} contradicts this install's own record of the stage, which \
+         says version {} of {secret_id} holds certificate {}. Two ENABLED versions publish the \
+         two certificates this role has, so keeping {retain} means disabling version {derived} \
+         — and version {named} is the one holding the certificate you asked to keep, so \
+         disabling it would retire {retain} and leave the other in service. The record is the \
+         only thing that pairs a version with a certificate, so if it is the record that is \
+         wrong, move `{}` aside and re-run with both flags rather than overruling it here. \
+         `aic saml rotate status` lists the versions and the fingerprints.",
+        record.version,
+        record.sha256,
+        crate::saml::rotate::journal::JOURNAL_FILE,
+    ))
 }
 
 /// The version to disable, derived from the one pairing this install knows.
@@ -1956,27 +2028,128 @@ mod tests {
         assert!(message(plan_complete(&stale, None, None).unwrap_err()).contains("--retain"));
     }
 
-    /// Red when the "retaining the version we are about to disable" guard is
-    /// dropped from `plan_complete`.
+    /// Red when `--disable-version` is allowed to name a version the record
+    /// contradicts — in **either** direction.
     #[test]
-    fn completing_refuses_to_keep_the_certificate_it_is_about_to_stop_publishing() {
-        // The inverted rollover: this install staged the NEW certificate as
-        // version 1, because version 2 was already there.
+    fn a_named_version_may_corroborate_the_record_and_may_not_overrule_it() {
+        // A spare DISABLED version, so that AIC's latest-version rule is not
+        // what does the refusing here: both ENABLED versions are disable-able
+        // as far as the tenant is concerned, and the record is the only thing
+        // left saying which one may go.
+        let with_spare = RotationState {
+            versions: vec![
+                version("1", "ENABLED"),
+                version("2", "ENABLED"),
+                version("3", "DISABLED"),
+            ],
+            ..staged() // records version 2 as NEW
+        };
+
+        // The discriminating input, and the half the earlier test missed:
+        // keep the certificate the record does NOT name. The record proves
+        // version 2 holds NEW, so keeping OLD means disabling 2 — and
+        // `--disable-version 1` names the version holding OLD itself. The
+        // "contradiction" guard this replaced only fired when the record
+        // named the certificate being kept, so it let this through, the plan
+        // reported the pairing as the operator's claim, and the post-write
+        // export check found out afterwards.
+        let overruled = message(plan_complete(&with_spare, Some(OLD), Some("1")).unwrap_err());
+        assert!(overruled.contains("contradicts"), "{overruled}");
+        assert!(
+            overruled.contains("holding the certificate you asked to keep"),
+            "{overruled}"
+        );
+
+        // Corroborating it plans, and stays `Recorded`: the version is still
+        // derived from the record, and calling it the operator's claim would
+        // understate what is known.
+        let agreed = plan_complete(&with_spare, Some(OLD), Some("2")).unwrap();
+        assert_eq!(agreed.disable_version, "2");
+        assert_eq!(agreed.chosen_by, VersionChoice::Recorded);
+        assert_eq!(agreed.expected_drop.as_deref(), Some(NEW));
+
+        // The other direction, which the old guard did catch: the inverted
+        // rollover, where this install staged NEW as version 1 because
+        // version 2 was already there. Keeping NEW and naming version 1
+        // retires the certificate being kept.
         let inverted = RotationState {
+            record: Some(record("1", NEW)),
+            ..with_spare.clone()
+        };
+        let forced = message(plan_complete(&inverted, Some(NEW), Some("1")).unwrap_err());
+        assert!(forced.contains("contradicts"), "{forced}");
+        assert!(forced.contains("would retire"), "{forced}");
+
+        // And derived, the same inverted state picks the other ENABLED
+        // version rather than the one the record ties to what is kept.
+        let derived = plan_complete(&inverted, Some(NEW), None).unwrap();
+        assert_eq!(derived.disable_version, "2");
+        assert_eq!(derived.chosen_by, VersionChoice::Recorded);
+
+        // With no spare, AIC's own rule is what stops the inverted rollover:
+        // the other ENABLED version is 2, which is also the newest.
+        let newest = RotationState {
             record: Some(record("1", NEW)),
             ..staged()
         };
-        // Derived, the version is never the one the record ties to the
-        // certificate being kept — so what stops this is AIC's own rule: the
-        // other ENABLED version is 2, which is also the newest.
-        let refusal = message(plan_complete(&inverted, None, None).unwrap_err());
+        let refusal = message(plan_complete(&newest, None, None).unwrap_err());
         assert!(refusal.contains("newest version"), "{refusal}");
+    }
 
-        // Named by hand, the guard is what stops it: the operator's claim
-        // that version 1 holds the certificate to drop contradicts this
-        // install's own record that it holds the one to keep.
-        let forced = message(plan_complete(&inverted, Some(NEW), Some("1")).unwrap_err());
-        assert!(forced.contains("retire the new certificate"), "{forced}");
+    /// Red when a still-published fingerprint is the whole test for a record.
+    #[test]
+    fn a_record_that_describes_a_different_setup_is_not_a_pairing_however_familiar() {
+        // The recreation case: same entity id, same certificate, re-created
+        // setup. Each of these three states publishes the fingerprint the
+        // record names, so the fingerprint-only test called every one of them
+        // a pairing and read "version 2" out of a secret that has never held
+        // what the record says it holds.
+        let recreated_under_another_identifier = RotationState {
+            identifier: Some("spa2".into()),
+            ..staged()
+        };
+        let backed_by_another_secret = RotationState {
+            secret: Some(SecretFacts {
+                id: "esv-sp-a-signing-v2".into(),
+                ..facts()
+            }),
+            mapped_alias: Some("esv-sp-a-signing-v2".into()),
+            ..staged()
+        };
+        let numbering_restarted = RotationState {
+            // The record names version 2; this secret only goes up to 1 and 4.
+            versions: vec![version("1", "ENABLED"), version("4", "ENABLED")],
+            ..staged()
+        };
+
+        for state in [
+            &recreated_under_another_identifier,
+            &backed_by_another_secret,
+            &numbering_restarted,
+        ] {
+            assert!(usable_pairing(state).is_none());
+            // With no pairing, `complete` needs both halves — and says so
+            // rather than deriving a version from a record about something
+            // else.
+            let refusal = message(plan_complete(state, Some(NEW), None).unwrap_err());
+            assert!(refusal.contains("--disable-version"), "{refusal}");
+            assert!(message(plan_complete(state, None, None).unwrap_err()).contains("--retain"));
+        }
+
+        // The positive control: the untouched state differs from all three in
+        // exactly the field under test, and is a pairing.
+        assert_eq!(
+            usable_pairing(&staged())
+                .expect("the record still describes this")
+                .version,
+            "2"
+        );
+        assert_eq!(
+            plan_complete(&staged(), Some(NEW), None)
+                .unwrap()
+                .disable_version,
+            "1"
+        );
     }
 
     /// Red when `complete_ok` returns `Ok(())` regardless of `forced`.
