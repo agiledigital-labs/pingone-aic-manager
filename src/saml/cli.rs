@@ -915,8 +915,16 @@ mod tests {
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
+    /// `--keep-signature` keeps the signature **and still strips the roles**.
+    ///
+    /// The discriminating input is a verbatim copy of `ENTRA`: it differs from
+    /// the default output and it contains a signature, which is all this test
+    /// used to ask for — so a `--keep-signature` wired to "write the file back
+    /// out" passed it. What the flag means is one of the two cuts, not
+    /// neither, so the WS-Federation roles have to be gone from the same
+    /// bytes the signature survives in.
     #[tokio::test]
-    async fn keep_signature_reaches_the_library_opt() {
+    async fn keep_signature_keeps_the_signature_and_strips_the_roles_anyway() {
         let dir = temp_dir();
         let input = dir.join("in.xml");
         let output = dir.join("out.xml");
@@ -933,12 +941,24 @@ mod tests {
         .expect("sanitise");
 
         let written = std::fs::read(&output).expect("read output");
-        assert_ne!(written, ENTRA_SANITISED);
-        assert!(
+        let contains = |needle: &str| {
             written
-                .windows(b"<ds:Signature>".len())
-                .any(|window| window == b"<ds:Signature>"),
-            "keep_signature did not reach SanitiseOpts"
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+        };
+        assert!(contains("<ds:Signature>"), "the signature was removed");
+        assert!(
+            !contains("<RoleDescriptor"),
+            "--keep-signature kept the WS-Federation roles too, which is a copy \
+             of the input rather than a sanitise"
+        );
+        // Both Entra `xsi:type`s, so a cut that reached only the first role
+        // cannot pass on `<RoleDescriptor` alone having gone.
+        assert!(!contains("SecurityTokenServiceType"));
+        assert!(!contains("ApplicationServiceType"));
+        assert_ne!(
+            written, ENTRA_SANITISED,
+            "the default output has no signature, so keeping one must differ from it"
         );
         std::fs::remove_dir_all(dir).expect("cleanup");
     }

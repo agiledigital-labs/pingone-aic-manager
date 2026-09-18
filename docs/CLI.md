@@ -1408,13 +1408,32 @@ and what `sanitise` would remove at default options.
 writes the result to `--out`, or to stdout if that flag is omitted. The removal
 report goes to stderr, one line per element. Default options strip SAML
 `RoleDescriptor`s whose `xsi:type` resolves to a WS-Federation type — the shape
-Entra emits — and, only when that (or another) cut changes bytes it covers, the
-document's enveloped XML signature. Scope decides that second part: only a
-`Signature` that is a direct child of `EntityDescriptor` signs the whole
-document, so a signature on a role the rewrite keeps is left alone, and so is
-the signature on a document that needs no other stripping. `--keep-signature`
-keeps the signature and, if anything else was removed, prints a warning that it
-is now stale.
+Entra emits — and then any XML signature that cut leaves unable to verify.
+
+**What a signature covers is read from its `<ds:Reference URI>` values, not
+from where it sits.** `URI=""` is the whole document and `URI="#id"` is the
+element declaring that XML ID (`ID`, as SAML's schema declares it on every
+descriptor, or `xml:id`); a signature is kept only when every one of its
+references lands on bytes this rewrite does not touch. So a signature over one
+role the rewrite keeps survives a sibling being stripped, and so does the
+signature on a document that needs no other stripping — while a signature
+nested under a retained role that references the whole entity is removed,
+because stripping a sibling really does break it. Placement says nothing about
+either case.
+
+Anything that cannot be resolved to bytes of this document — an XPointer, a
+detached reference, an id nothing declares or two elements claim, a signature
+with no reference at all, or one nested inside another — is treated as
+covering everything and is removed as soon as anything changes. Only verifying
+the signature could settle it, and handing a peer a document whose signature
+has silently stopped verifying is the failure this whole command exists to
+avoid. Removing a stale signature is itself a change, so a signature covering
+another one goes when that one does.
+
+`--keep-signature` keeps every signature and, if a cut invalidated one, prints
+a warning that it is now stale. It is not "leave the file alone": the
+WS-Federation roles are still stripped, which is the whole reason the
+signature has gone stale.
 
 ### What `metadata inspect` / `metadata sanitise` refuse
 
