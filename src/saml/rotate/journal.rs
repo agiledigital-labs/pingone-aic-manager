@@ -287,10 +287,17 @@ fn parse(bytes: &[u8], file: &Path) -> Result<Vec<StagedRecord>> {
 /// Take a whole-file advisory lock, blocking until it is granted.
 ///
 /// `std::fs::File::lock` is the obvious answer and is the wrong one here: it
-/// is stable since 1.89, this crate declares 1.85, and
-/// `clippy::incompatible_msrv` enforces that — so reaching for it would smuggle
-/// a project-wide policy change in behind a journal fix. `flock` is the same
-/// primitive one layer down, and the property that matters is the kernel's:
+/// is stable since 1.89 and this crate declares 1.85, so reaching for it would
+/// smuggle a project-wide policy change in behind a journal fix.
+///
+/// `clippy::incompatible_msrv` does **not** cover you here, and the test module
+/// below is where that was learned: the lint is silent inside `#[cfg(test)]`
+/// code, so a `try_lock_shared` call in a test compiled green under every gate
+/// this repo ran (measured 2026-09-21 — the same call in library code warns).
+/// The MSRV job in `ci.yml` is `cargo check --all-targets` for that reason.
+///
+/// `flock` is the same primitive one layer down, and the property that
+/// matters is the kernel's:
 /// the lock is released when the process dies, so a killed `aic` cannot leave
 /// the journal permanently unwritable the way a lock *file* would.
 ///
@@ -484,7 +491,7 @@ mod tests {
         // same conflict another `aic` would meet.
         let mut locked_out = None;
         update_at(&file, |entries| {
-            locked_out = Some(File::open(&file).expect("open").try_lock_shared().is_err());
+            locked_out = Some(!shared_lock_available(&file));
             entries.push(record_for(
                 "https://sp-b.example.com",
                 "serviceProvider",
