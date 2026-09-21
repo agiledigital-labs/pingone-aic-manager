@@ -32,10 +32,13 @@
 //!   other still leaves the choice to ordering.
 //! - it holds fingerprints, ids and version numbers — **no key material** —
 //!   and lives beside the other per-machine runtime state under `.aic/`,
-//!   which `ProjectConfig::gitignore_content` covers.
+//!   which `ProjectConfig::gitignore_content` covers. A change installs
+//!   itself by rename, so there are **three** names to cover, not one: the
+//!   document, the lock the writers take ([`lock_path`]) and the copy a
+//!   change is assembled in ([`temp_path`]).
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
@@ -47,6 +50,31 @@ use crate::{Error, Result};
 
 /// The file, beside `undo.log` and the vault, under `.aic/`.
 pub const JOURNAL_FILE: &str = "saml-rotations.json";
+
+/// The lock a writer holds, beside the journal it protects.
+///
+/// Its own inode is what the lock is on, and nothing ever replaces it — which
+/// is the point, because [`update_at`] replaces the journal's inode on every
+/// change. The file's *contents* are never read or written.
+pub fn lock_path(file: &Path) -> PathBuf {
+    sidecar(file, ".lock")
+}
+
+/// Where a change is assembled before it is renamed over the journal.
+///
+/// A fixed name rather than a random one: the exclusive lock means only one
+/// writer is ever assembling a change, and a predictable name is one a
+/// `.gitignore` can carry and an operator can recognise. A copy left by a
+/// crash is overwritten by the next change, never read.
+pub fn temp_path(file: &Path) -> PathBuf {
+    sidecar(file, ".new")
+}
+
+fn sidecar(file: &Path, suffix: &str) -> PathBuf {
+    let mut name = file.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
 
 /// One staged rollover, waiting to be completed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,8 +167,8 @@ pub fn clear_entity(tenant: &str, realm: &str, entity_id: &str) -> Result<()> {
 }
 
 /// [`clear_entity`] against a named file, so a test drives the real writer —
-/// the lock, the in-place rewrite and the trim included — rather than a copy
-/// of its predicate.
+/// the sidecar lock, the temporary and the rename included — rather than a
+/// copy of its predicate.
 pub(crate) fn clear_entity_at(
     file: &Path,
     tenant: &str,
@@ -175,17 +203,19 @@ pub(crate) fn find_in(entries: &[StagedRecord], key: &Key) -> Option<StagedRecor
 /// staged" would silently downgrade `complete` to the two-flag path, which is
 /// the point at which an operator supplies a fingerprint from memory.
 ///
-/// The read takes a **shared** lock, so it waits out a rewrite rather than
-/// seeing the middle of one. That is the half of the atomicity story a reader
-/// owns; [`update_at`] owns the other half.
+/// **A reader takes no lock, and does not need one.** [`update_at`] installs a
+/// change by renaming a finished document over this path, so an `open` lands
+/// either on the document before the change or on the one after it, never on
+/// a file mid-write — and a descriptor already held keeps reading the version
+/// it opened, because the rename gave the new content a different inode. A
+/// lock here would buy a reader nothing it could use: it would still be racing
+/// the writer, only with its answer taken a moment earlier.
 pub(crate) fn load_at(file: &Path) -> Result<Vec<StagedRecord>> {
     let mut handle = match File::open(file) {
         Ok(handle) => handle,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(io_failure("read", file, &error)),
     };
-    // Released when `handle` drops, on the error paths too.
-    lock(&handle, libc::LOCK_SH, file)?;
     let mut bytes = Vec::new();
     handle
         .read_to_end(&mut bytes)
@@ -193,10 +223,10 @@ pub(crate) fn load_at(file: &Path) -> Result<Vec<StagedRecord>> {
     parse(&bytes, file)
 }
 
-/// Read, change and rewrite the journal, with nothing able to interleave.
+/// Read, change and install the journal, with nothing able to interleave and
+/// no instant at which the path names a half-applied change.
 ///
-/// Two things were wrong with the read-then-write this replaced, and they are
-/// separate faults with one fix each.
+/// Two separate faults, one fix each.
 ///
 /// **Exclusion.** Two `aic` commands finishing rollovers for different roles
 /// each read the whole array, dropped one entry and wrote the whole array
@@ -205,49 +235,90 @@ pub(crate) fn load_at(file: &Path) -> Result<Vec<StagedRecord>> {
 /// this install knows about, so every change is a read-modify-write of all of
 /// them, and an exclusive lock held across the pair is what makes it one.
 ///
-/// **Atomicity.** The lock lives on the journal itself rather than on a lock
-/// file beside it, which is what decides the shape of the write. A rewrite
-/// cannot then be `write a temporary and rename`: the rename swaps in a new
-/// inode, the lock stays on the old one, and the next process to open the
-/// path locks something nobody else is holding — a lock that protects
-/// nothing is worse than none, because it reads as protection. So the bytes
-/// go back into the file that is locked: seek to the start, write, then trim
-/// to length. Writing *before* trimming is deliberate — a crash in between
-/// leaves a good prefix followed by a stale tail, which is invalid JSON and
-/// therefore refused by [`load_at`], where truncating first would leave a
-/// zero-length file that reads as "nothing was staged".
+/// **Atomicity.** The new document is written to [`temp_path`], `sync_all`ed
+/// and **renamed** over the journal, so the path resolves to a whole document
+/// at every instant and a crash loses the change rather than corrupting it.
 ///
-/// The remaining exposure is a process killed mid-write, which loses the
-/// pairing and says so loudly; `complete` then needs `--retain` and
-/// `--disable-version`. That is the same position as an install that never
-/// staged, and it is the failure this file is allowed to have.
+/// This used to be an in-place rewrite — seek, write, then trim — defended on
+/// the grounds that a crash between the write and the trim leaves invalid
+/// JSON, which [`load_at`] refuses loudly. **That defence is false, and it is
+/// the reason for the rename.** A partial overwrite of a same-shaped document
+/// need not be invalid: bumping `"version": "1"` to `"version": "2"` and dying
+/// before the tail is rewritten leaves a document that parses, pairing the
+/// **new** version number with the **old** certificate fingerprint. During a
+/// two-certificate window each half is independently true of the tenant, so
+/// `spec::usable_pairing` accepts the record and `complete` derives from it —
+/// disabling the version that holds the certificate the operator asked to
+/// keep, which is the single failure this verb exists to prevent. A journal
+/// that is missing costs its operator two flags; a journal that is
+/// confidently wrong costs a live federation, so the one exposure worth
+/// keeping is the one that loses the change.
+///
+/// **Why the lock is a sidecar.** A rename installs a new inode, so a lock
+/// taken on the journal itself would be stranded on the old one and the next
+/// writer would lock a file nobody holds — protection that reads as
+/// protection. The lock therefore lives on [`lock_path`], whose inode nothing
+/// replaces; that file is only ever locked, never read or written. Its cost is
+/// one more name for `ProjectConfig::gitignore_content` to carry, and nothing
+/// else: an `flock` is released by the kernel when the descriptor closes, so a
+/// killed `aic` leaves a stale *file* and never a stale lock.
 pub(crate) fn update_at(file: &Path, change: impl FnOnce(&mut Vec<StagedRecord>)) -> Result<()> {
-    if let Some(parent) = file.parent() {
+    if let Some(parent) = parent_of(file) {
         std::fs::create_dir_all(parent)?;
     }
-    let mut handle = OpenOptions::new()
+    let lock_file = lock_path(file);
+    // Held across the read and the write both, and released when `guard`
+    // drops — on the error paths, and on a kill, because the kernel closes
+    // the descriptor either way.
+    let guard = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(file)
-        .map_err(|error| io_failure("open", file, &error))?;
-    lock(&handle, libc::LOCK_EX, file)?;
+        .open(&lock_file)
+        .map_err(|error| io_failure("lock", &lock_file, &error))?;
+    lock(&guard, libc::LOCK_EX, &lock_file)?;
 
-    let mut bytes = Vec::new();
-    handle
-        .read_to_end(&mut bytes)
-        .map_err(|error| io_failure("read", file, &error))?;
-    let mut entries = parse(&bytes, file)?;
+    let mut entries = load_at(file)?;
     change(&mut entries);
+    install(file, &serde_json::to_vec_pretty(&entries)?)
+}
 
-    let body = serde_json::to_vec_pretty(&entries)?;
+/// Make `body` the whole journal, by rename.
+///
+/// The temporary is `sync_all`ed before the rename, so the name never points
+/// at content the filesystem has not committed; the containing directory is
+/// synced after it, so the rename itself survives a power loss and not only a
+/// process death. The directory sync is best effort — a filesystem that
+/// refuses it has still taken the data, and failing a completed rollover over
+/// a durability nicety would be the worse trade.
+fn install(file: &Path, body: &[u8]) -> Result<()> {
+    let temp = temp_path(file);
+    let mut handle = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temp)
+        .map_err(|error| io_failure("write", &temp, &error))?;
     handle
-        .rewind()
-        .and_then(|()| handle.write_all(&body))
-        .and_then(|()| handle.set_len(body.len() as u64))
+        .write_all(body)
         .and_then(|()| handle.sync_all())
-        .map_err(|error| io_failure("write", file, &error))
+        .map_err(|error| io_failure("write", &temp, &error))?;
+    drop(handle);
+
+    std::fs::rename(&temp, file).map_err(|error| io_failure("install", file, &error))?;
+
+    if let Some(dir) = parent_of(file).and_then(|parent| File::open(parent).ok()) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+/// The directory `file` lives in, or `None` when the path is a bare name and
+/// that directory is therefore the process's own.
+fn parent_of(file: &Path) -> Option<&Path> {
+    file.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
 }
 
 /// Replace the journal wholesale, under the same lock as any other change.
@@ -265,9 +336,13 @@ pub(crate) fn save_at(file: &Path, entries: &[StagedRecord]) -> Result<()> {
 
 /// An empty file is an empty journal; anything else has to parse.
 ///
-/// Zero bytes is reachable only where the file was created and never written
-/// — [`update_at`] creates before it reads — and there "nothing was staged"
-/// is the truth rather than a guess.
+/// Nothing here produces zero bytes any more: [`update_at`] installs a
+/// complete document by rename and never creates the journal in order to read
+/// it, which is what the in-place writer did. A zero-length file can still be
+/// left over from that writer, or from something outside `aic`, and it is
+/// still read as "nothing was staged" — which is safe in the direction that
+/// matters, because `complete` without a record refuses to derive anything and
+/// demands both `--retain` and `--disable-version`.
 fn parse(bytes: &[u8], file: &Path) -> Result<Vec<StagedRecord>> {
     if bytes.is_empty() {
         return Ok(Vec::new());
@@ -287,12 +362,21 @@ fn parse(bytes: &[u8], file: &Path) -> Result<Vec<StagedRecord>> {
 /// Take a whole-file advisory lock, blocking until it is granted.
 ///
 /// `std::fs::File::lock` is the obvious answer and is the wrong one here: it
-/// is stable since 1.89, this crate declares 1.85, and
-/// `clippy::incompatible_msrv` enforces that — so reaching for it would smuggle
-/// a project-wide policy change in behind a journal fix. `flock` is the same
-/// primitive one layer down, and the property that matters is the kernel's:
-/// the lock is released when the process dies, so a killed `aic` cannot leave
-/// the journal permanently unwritable the way a lock *file* would.
+/// is stable since 1.89 and this crate declares 1.85, so reaching for it would
+/// smuggle a project-wide policy change in behind a journal fix.
+///
+/// `clippy::incompatible_msrv` does **not** cover you here, and the test module
+/// below is where that was learned: the lint is silent inside `#[cfg(test)]`
+/// code, so a `try_lock_shared` call in a test compiled green under every gate
+/// this repo ran (measured 2026-09-21 — the same call in library code warns).
+/// The MSRV job in `ci.yml` is `cargo check --all-targets` for that reason.
+///
+/// `flock` is the same primitive one layer down, and the property that matters
+/// is the kernel's: the lock is released when the descriptor closes, which a
+/// dying process does for free. That is true wherever the lock lives, so it is
+/// **not** an argument against the sidecar in [`update_at`] — a crash there
+/// leaves a stale file, which is inert, and never a stale lock. This comment
+/// used to claim otherwise, and that claim is what kept the write in place.
 ///
 /// A raw syscall is the established shape for this in this binary
 /// (`src/cli/mod.rs`'s `kill`, `src/agent/client.rs`'s `setsid`), which is
@@ -481,10 +565,13 @@ mod tests {
         // matters: the entries have been read and not yet written back, and
         // that is exactly when a second writer must not get in. A separate
         // open is a separate lock holder even in this process, so this is the
-        // same conflict another `aic` would meet.
+        // same conflict another `aic` would meet. It is taken on the sidecar,
+        // because that is where the lock lives once a change installs itself
+        // by rename — a lock on the journal would be stranded on the inode
+        // the rename replaced.
         let mut locked_out = None;
         update_at(&file, |entries| {
-            locked_out = Some(File::open(&file).expect("open").try_lock_shared().is_err());
+            locked_out = Some(!shared_lock_available(&lock_path(&file)));
             entries.push(record_for(
                 "https://sp-b.example.com",
                 "serviceProvider",
@@ -496,7 +583,7 @@ mod tests {
         assert_eq!(
             locked_out,
             Some(true),
-            "the journal was readable part-way through its own rewrite"
+            "a second writer could have started part-way through this change"
         );
 
         // And the change itself is a read-modify-write: the entry that was
@@ -508,9 +595,138 @@ mod tests {
         assert!(find_in(&after, &key("https://sp-b.example.com", "serviceProvider")).is_some());
 
         // Released afterwards, so the next command is not locked out forever.
-        assert!(shared_lock_available(&file));
+        assert!(shared_lock_available(&lock_path(&file)));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The counterexample to "a torn journal is caught by being invalid JSON",
+    /// which is the argument the in-place rewrite rested on.
+    ///
+    /// Not a regression guard — `load_at` is *right* to accept these bytes,
+    /// and would be wrong to guess which half of them is stale. It is the
+    /// statement of the hazard, kept next to the code that no longer produces
+    /// it, because the next person to weigh a rename against a third path
+    /// under `.aic/` needs to see what the other side of that trade costs.
+    #[test]
+    fn a_half_applied_in_place_rewrite_parses_and_pairs_a_new_version_with_an_old_certificate() {
+        // One record, one stage apart. A stage bumps the version AND the
+        // fingerprint, and both strings keep their length, so the two
+        // documents are byte-for-byte the same size — which is what makes the
+        // old writer's trailing `set_len` a no-op and the tear invisible.
+        let before = vec![record_for(
+            "https://sp-a.example.com",
+            "serviceProvider",
+            "1",
+            "aaaaaaaa",
+        )];
+        let after = vec![record_for(
+            "https://sp-a.example.com",
+            "serviceProvider",
+            "2",
+            "bbbbbbbb",
+        )];
+        let old_bytes = serde_json::to_vec_pretty(&before).expect("serialise");
+        let new_bytes = serde_json::to_vec_pretty(&after).expect("serialise");
+        assert_eq!(
+            old_bytes.len(),
+            new_bytes.len(),
+            "the fixture only reproduces the hazard if the two documents are the same size"
+        );
+
+        // Die after the version field and before the fingerprint: seek, write
+        // a prefix, never reach the rest. The tail is whatever was on disk.
+        let cut = offset_of(&new_bytes, b"\"sha256\"");
+        let torn = [&new_bytes[..cut], &old_bytes[cut..]].concat();
+
+        let dir = std::env::temp_dir().join(format!("aic-rottorn-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = dir.join(JOURNAL_FILE);
+        std::fs::write(&file, &torn).expect("write the torn document");
+
+        let believed = load_at(&file).expect("a torn document that parses is not refused");
+        assert_eq!(believed.len(), 1);
+        assert_eq!(believed[0].version, "2", "the prefix is the new document");
+        assert_eq!(
+            believed[0].sha256, "aaaaaaaa",
+            "the tail is the old one — and during a two-certificate window both halves are \
+             independently true of the tenant, so nothing downstream can tell this record \
+             from a real one"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Red the moment a change goes back into the journal's own inode.
+    ///
+    /// The two assertions are the same property from both ends: the path gets
+    /// a new inode (so the change arrived by rename, whole), and a descriptor
+    /// opened before the change still reads the document it opened (so no
+    /// reader can be shown a half-applied one). An in-place rewrite of a
+    /// same-sized document fails both — the inode is unchanged and the held
+    /// descriptor sees the new bytes appear underneath it.
+    #[test]
+    fn a_change_arrives_by_rename_so_nothing_can_read_a_half_applied_journal() {
+        let dir = std::env::temp_dir().join(format!("aic-rotrename-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = dir.join(JOURNAL_FILE);
+        save_at(
+            &file,
+            &[record_for(
+                "https://sp-a.example.com",
+                "serviceProvider",
+                "1",
+                "aaaaaaaa",
+            )],
+        )
+        .expect("seed");
+
+        let was = std::fs::read_to_string(&file).expect("read the seeded document");
+        let was_inode = inode(&file);
+        let mut held = File::open(&file).expect("a reader that opened before the change");
+
+        update_at(&file, |entries| {
+            entries[0].version = "2".into();
+            entries[0].sha256 = "bbbbbbbb".into();
+        })
+        .expect("update");
+
+        assert_ne!(
+            inode(&file),
+            was_inode,
+            "the change was written into the journal's own inode, so a crash part-way \
+             through could leave a document that parses and lies"
+        );
+        let mut seen = String::new();
+        held.read_to_string(&mut seen).expect("read");
+        assert_eq!(
+            seen, was,
+            "a descriptor opened before the change watched it happen"
+        );
+        assert!(
+            !temp_path(&file).exists(),
+            "the copy the change was assembled in outlived the rename"
+        );
+
+        // And the change landed whole, not just atomically.
+        let after = load_at(&file).expect("reload");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].version, "2");
+        assert_eq!(after[0].sha256, "bbbbbbbb");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn inode(file: &Path) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(file).expect("stat").ino()
+    }
+
+    fn offset_of(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .expect("the field the tear falls after")
     }
 
     /// Whether another process could read the journal right now — a separate

@@ -848,7 +848,12 @@ impl ProjectConfig {
              *.log\n\
              # Which ESV secret version holds which SAML certificate. No key\n\
              # material, but it names the tenant, its realms and its entities.\n\
-             saml-rotations.json\n",
+             # Three names, not one: a change takes the lock on the first\n\
+             # sidecar and is assembled in the second before being renamed\n\
+             # into place (`saml::rotate::journal`).\n\
+             saml-rotations.json\n\
+             saml-rotations.json.lock\n\
+             saml-rotations.json.new\n",
         );
         content
     }
@@ -1171,10 +1176,22 @@ mod tests {
         // gap is invisible here — it opens in a scaffolded project whose
         // .gitignore does not, where this file is the only cover. Any new
         // runtime file written under ProjectConfig::dir() needs a line here.
-        assert!(
-            content.lines().any(|line| line == "saml-rotations.json"),
-            "a new .aic/ runtime file must be added to gitignore_content"
-        );
+        // Derived from the journal module's own path helpers rather than
+        // spelled again here, so renaming a sidecar cannot leave this test
+        // asserting the old name while production writes the new one.
+        use crate::saml::rotate::journal::{JOURNAL_FILE, lock_path, temp_path};
+        let journal = Path::new(JOURNAL_FILE);
+        for runtime_file in [
+            journal.to_path_buf(),
+            lock_path(journal),
+            temp_path(journal),
+        ] {
+            let name = runtime_file.to_string_lossy().into_owned();
+            assert!(
+                content.lines().any(|line| line == name),
+                "a new .aic/ runtime file must be added to gitignore_content: {name}"
+            );
+        }
         // Both known stems must resolve back from their wire `kind`.
         assert_eq!(VaultArtifact::from_kind("keys"), Some(VaultArtifact::Jwks));
         assert_eq!(
