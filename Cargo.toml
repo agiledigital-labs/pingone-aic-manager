@@ -2,7 +2,17 @@
 name = "pingone-aic-manager"
 version = "0.11.0"
 edition = "2024"
-rust-version = "1.85"
+# Measured 2026-09-21 on 1.85, 1.88, 1.91, 1.92, 1.93 and 1.94 — all red.
+# 1.95 is the first toolchain on which `cargo check --all-targets` succeeds.
+# Three independent floors, any one of which would raise it past the old 1.85:
+#   1.88  24 let-chains in 8 production files (a LANGUAGE feature, which is why
+#         clippy::incompatible_msrv never fired — it reads std API stability)
+#   1.88  jsonwebtoken 10.4, time 0.3.47, darling 0.23, instability 0.3.12
+#   1.95  libsqlite3-sys 0.38.1 (non-optional, via rusqlite) uses cfg_select!
+#         in its build script, still unstable at 1.94 — this is the binding one
+# The MSRV job in ci.yml pins to this value; lowering it is a dependency-pinning
+# project, not an edit here.
+rust-version = "1.95"
 description = "Ratatui TUI for managing PingOne Advanced Identity Cloud configuration"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/agiledigital-labs/pingone-aic-manager"
