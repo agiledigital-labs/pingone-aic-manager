@@ -104,9 +104,12 @@ scripts/saml-harness/harness.sh reset               # wipe volume, start clean
 `up` is idempotent: a running container is left running and bootstrap skips
 resources that already exist. **Measured.**
 
-Every command but `help` checks its prerequisites before doing anything —
-`docker`, `curl`, `jq`, `python3` — so a machine missing one gets this script's
-own message rather than a parse error from somewhere inside a pipeline. Scratch
+Every command that touches the container checks its prerequisites before doing
+anything — `docker`, `curl`, `jq`, `python3` — so a machine missing one gets
+this script's own message rather than a parse error from somewhere inside a
+pipeline. `signature-report` and `signature-selftest` are gated separately, on
+`python3` alone: they read a file, and requiring a container for them would make
+the selftest unrunnable exactly where it is most useful. Scratch
 files all live in one `mktemp -d` removed by a single `EXIT` trap, which is the
 only reason a `die` half way through a command does not leak them; the script's
 own comment records 37 survivors from before that trap existed.
@@ -1015,6 +1018,91 @@ retire the first → confirm the peer holds only the new one. `verify-rotate`
 automates exactly that on the Keycloak side, for the descriptor rather than for
 a peer.
 
+### Capturing the signature: what signed, not what is published
+
+`key_report` reads metadata, and metadata says what an entity **publishes**. It
+cannot say what a signer **used**, and the two differ exactly during a rollover
+window. Four commands close that gap, and they all speak the same identity — the
+SHA-256 of the DER inside `<ds:X509Certificate>` — so a capture and a descriptor
+compare as strings:
+
+```bash
+harness.sh capture-signing [file]                  # log in, see what signed
+harness.sh signature-report <file> [metadata.xml]  # read a captured message
+harness.sh verify-signing <sha256> [file]          # assert it; non-zero if not
+harness.sh signature-selftest                      # no container, no tenant
+```
+
+`capture-signing` drives a real SP-initiated login with `curl` and a cookie
+jar, not a browser. Every step of a POST-binding web SSO is a redirect, a
+self-posting form, or an HTML login form, and none of the three needs
+JavaScript. **Measured** on the loopback: three steps — the `AuthnRequest`
+form, the login form, the `SAMLResponse` form. The loop stops at the **first**
+form carrying a `SAMLResponse`, so the message is captured and never delivered;
+a capture leaves no session on the SP and can be repeated.
+
+It reports each signature position separately, because they are separate facts:
+
+```
+doc Response 2 1 0
+sig Response  <sha256> <KeyName> rsa-sha256 #ID_28ea6c4c-…
+sig Assertion <sha256> <KeyName> rsa-sha256 #ID_6d1989c8-…
+assertion Assertion signed
+```
+
+`verify-signing` is the machine-checkable half, in the spirit of
+`verify-rotate`: non-zero on a mismatch, on a message carrying no
+`<ds:Signature>` at all, and on a certificate it cannot read. It compares the
+**set** of signing identities rather than looking for any match — a Response and
+its Assertion signed by different certificates is a different fact from either
+one alone, and a first-match check would hide it.
+
+Two things it deliberately does not do.
+
+- **It does not verify the signature.** It reports the certificate the signer
+  advertised in `<ds:KeyInfo>`. Verifying would need exclusive c14n, which
+  nothing in this script's dependency set does. For "which key was used" that is
+  the same answer; for "is this message authentic" it is not.
+- **It cannot drive an IdP whose credential page is not an HTML form.** An AIC
+  journey is JavaScript and `curl` cannot submit it; `capture-signing` stops and
+  says so rather than pretending. Two ways past it, both **measured** on the
+  loopback: point `SAML_CAPTURE_COOKIE_JAR` at a cookie jar already holding the
+  IdP's session cookie — the IdP then answers the `AuthnRequest` with a signed
+  `SAMLResponse` and no login form appears at all — or capture the
+  `SAMLResponse` from the browser's devtools and hand the base64 to
+  `signature-report`.
+
+`signature-report` reads the base64 of a form field or raw XML, and inflates
+HTTP-Redirect-binding DEFLATE. It reads an `AuthnRequest` as readily as a
+`Response`, so an SP's signing certificate is measurable the same way —
+**measured**: the loopback's `AuthnRequest` is signed, carries no `KeyName`, and
+fingerprints to the `aic-sp` realm's published signing key. Given a metadata
+file as its second argument it says whether what signed is among what is
+published, which is the whole question in one line.
+
+#### Why the extraction is not a `grep`
+
+Base64 inside `<ds:X509Certificate>` is wrapped across lines. A line-oriented
+match captures a fragment, or nothing at all, and the SHA-256 that comes back is
+confident and wrong. `e3b0c442…98b855` is the SHA-256 of the empty string, and
+a first-line-only match yields a perfectly plausible fingerprint of the wrong
+bytes. `signature-selftest` is the guard, and
+it needs neither a container nor a tenant:
+
+- the positive control's expected fingerprint comes from **openssl**, over a
+  throwaway certificate generated for the run, so the check is not the extractor
+  agreeing with itself;
+- the certificate is presented **wrapped**, as openssl emits it;
+- an empty `<ds:X509Certificate>` must be an error, and explicitly not that
+  hash;
+- a message with no signature must fail `verify-signing`, because "a signature
+  is present" is exactly the check that still passes during the outage this
+  whole measurement is looking for.
+
+Both failure modes were confirmed reachable by mutating the extractor: a
+first-line-only read fails the positive control, and removing the empty-string
+guard fails the empty case. **Measured** 2026-09-18.
+
 ### Which certificate actually signs is unproven
 
 During a two-certificate window, **which of the two does the signer use?**
@@ -1026,22 +1114,26 @@ the highest-priority provider is `active.RS256` on `GET /keys`, which is not the
 same statement as "this is the key that signed that assertion".
 
 Settling it needs a live federation and a real `<ds:Signature>`, which is
-exactly what a wired direction gives you. The harness can do it — vary one thing
-at a time, and run the controls:
+exactly what a wired direction gives you, and reading the answer out of one is
+what [`capture-signing`](#capturing-the-signature-what-signed-not-what-is-published)
+is for. Vary one thing at a time, and run the controls:
 
 1. **Positive control.** Wire **direction B** (AIC is the IdP) with a single
    ENABLED ESV secret version carrying certificate **A**, and get one successful
-   login. Read `<ds:Signature>/<ds:KeyInfo>/<ds:X509Certificate>` off the
-   assertion Keycloak received and fingerprint it: it must be A. That proves the
-   setup can see which certificate signed at all — without it, every later
-   answer is a coin flip.
+   login: `harness.sh capture-signing capture-A.b64`. Cross-reference it against
+   the export — `harness.sh signature-report capture-A.b64 aic-idp.xml` — and it
+   must say A. That proves the setup can see which certificate signed at all;
+   without it, every later answer is a coin flip.
 2. `aic esv secret add-version` with certificate **B**. The export now carries
    two signing `KeyDescriptor`s, B first. Note both fingerprints with
-   `aic saml metadata inspect`.
+   `aic saml metadata inspect`, or with `signature-report`'s cross-reference.
 3. `harness.sh register-idp aic-idp.xml` so Keycloak holds the two-certificate
    metadata.
 4. **The measurement.** Log in again, fresh, and fingerprint the signing
-   certificate. A or B is the answer.
+   certificate: `harness.sh verify-signing <A> capture-B.b64`. A **zero** exit
+   says the old certificate still signs and the rollover window means what the
+   feature claims; a **non-zero** exit naming B says `stage` starts signing with
+   the new certificate immediately, and the window protects nobody.
 5. **The staleness control.** `aic esv secret disable <id> 1` — the _old_
    version; the latest cannot be disabled (`docs/api/03-esvs.md`) — so the
    export drops back to B alone. Re-register and log in once more. If step 4
@@ -1057,6 +1149,28 @@ the answer worth knowing, because it is the one that breaks a rollover.
 
 Whether Keycloak _accepts_ two-certificate metadata at all is a separate
 unexercised question — it has no `KeyName` to pick by, so it has to try both.
+
+#### What the Keycloak side answers — measured
+
+The same experiment runs on the Keycloak loopback, where both ends are Keycloak
+and nothing needs a tenant:
+
+| step                       | published signing keys | signed with |
+| -------------------------- | ---------------------- | ----------- |
+| before                     | A                      | A           |
+| after `rotate-add aic-idp` | B (first), A           | **B**       |
+
+So **Keycloak signs with the newly added key immediately**. Its two-certificate
+window is a window for the peer to catch up, not a grace period in which the old
+key keeps signing. **Measured** 2026-09-18 with `capture-signing` either side of
+a `rotate-add`, each capture cross-referenced against the descriptor.
+
+This says nothing about AM — it is the same question on a different product.
+It is recorded here because it is the answer the AIC side would be **assumed**
+to have, and because it makes the negative control real: during the window the
+old certificate A was still published, so a check of "did a published key sign
+this" passes while the discriminating check fails. Run step 4 against a tenant;
+this does not substitute for it.
 
 ## Things that will trip AIC's importer
 
@@ -1166,8 +1280,10 @@ confidently wrong — and the harness can settle both.
   the **ACS** transaction. Until that run happens, no surface may present
   `trustedProviders` as "the" membership.
 - **Which of the two published certificates does AM sign with during a
-  rollover?** Metadata order is suggestive, not proof, on either side. The
-  procedure — including the discriminating case — is in
+  rollover?** Metadata order is suggestive, not proof. The instrument now
+  exists — `capture-signing` / `verify-signing` — and the Keycloak side answers
+  "the new one, immediately"; the AIC side has not been run. The procedure,
+  including the discriminating case, is in
   [which certificate actually signs](#which-certificate-actually-signs-is-unproven).
 - **Does AIC's `importEntity` accept a Keycloak descriptor as-is?** Our own
   `sanitise` finds nothing to strip in it (**measured**), which is not the same
@@ -1178,10 +1294,14 @@ confidently wrong — and the harness can settle both.
   `saml.client.signature=false` already is), or AIC must be told to sign.
 - **Does Keycloak accept two-certificate metadata from AIC?** It has no
   `KeyName` to pick by, so it has to try both. Not exercised.
-- **Has anyone completed a browser SAML login in either direction?** No. Step 7
-  of each procedure above is assembled from the two halves and the cited docs,
-  not from a login that happened. Treat it as the least-tested part of this
-  file.
+- **Has anyone completed a SAML login in either direction?** On the
+  **Keycloak-to-Keycloak loopback, yes** — `capture-signing` drives one with
+  `curl` and reads the signature off the `SAMLResponse` (**measured**
+  2026-09-18). It stops one step short of delivery, so the SP's own validation
+  of that response is still unexercised, and **no login involving a tenant has
+  happened at all**: step 7 of each procedure above is still assembled from the
+  two halves and the cited docs. Treat the AIC half as the least-tested part of
+  this file.
 
 Hosted-IdP and hosted-SP shapes on AIC are no longer open: `docs/api/06-saml.md`
 now carries full reads of both and the create procedure. That bullet used to say

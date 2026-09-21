@@ -440,8 +440,10 @@ async fn create_hosted(
 ///    [`spec::ImportPermit`], not by returning early in front of the write;
 /// 5. send, then compare the exact set of `importedEntities` against the ids
 ///    parsed in step 1;
-/// 6. on failure, re-list the realm, because a failed aggregate import is not
-///    a rollback and AM says nothing about how far it got.
+/// 6. on any ending that cannot say what landed — the call failed, or the
+///    200 is unreadable or not the set that was sent ([`finish_import`]) —
+///    re-list the realm, because a failed aggregate import is not a rollback
+///    and AM says nothing about how far it got.
 ///
 /// What it does **not** do is verify the import. `importEntity` rewrites
 /// extended metadata, the `cotlist` inside it governs runtime trust, and REST
@@ -521,31 +523,60 @@ async fn import(
         }
     };
 
-    // A 200 we cannot read is the other half of the same situation, and it
-    // used to return here with no inventory at all. AM may have created every
-    // entity in the file and merely said so in a shape this command does not
-    // parse; a failed aggregate import is not a rollback either way, so the
-    // relist the failure path promises has to cover this path too.
-    let imported = match spec::imported_entities(&response) {
+    finish_import(&response, &declared, &tenant, &realm, async |why| {
+        report_what_landed(&tenant, &realm, &declared, why).await;
+    })
+    .await
+}
+
+/// What the command makes of the 200 `?_action=importEntity` answered with.
+///
+/// Split out of [`import`] with the re-list **injected**, which is the only
+/// reason the branches below can be driven at all: everything around them
+/// needs a context, a daemon and two network calls, and the decision they
+/// encode needs none of it. `relist` is [`report_what_landed`] in production
+/// and a recorder in the test, so "this ending owes the operator a fresh read
+/// of the realm" is asserted rather than read.
+///
+/// A test seam and nothing more. The permit types elsewhere in this module
+/// make a write unreachable by construction; there is no write here, and
+/// there is nothing to authorize — the hazard is an ending that quietly
+/// stops reporting, which a test catches and a type cannot.
+///
+/// Both endings it covers are the same situation: the response has been
+/// declared untrustworthy — unreadable, or read and disbelieved — and a
+/// failed aggregate import is not a rollback, so the body must not be left as
+/// the account of what landed. The realm is the only source that is not this
+/// body.
+async fn finish_import(
+    response: &serde_json::Value,
+    declared: &[String],
+    tenant: &str,
+    realm: &str,
+    relist: impl AsyncFnOnce(spec::ImportUnknown),
+) -> Result<()> {
+    // A 200 we cannot read used to return here with no inventory at all. AM
+    // may have created every entity in the file and merely said so in a shape
+    // this command does not parse.
+    let imported = match spec::imported_entities(response) {
         Ok(imported) => imported,
         Err(error) => {
-            report_what_landed(&tenant, &realm, &declared, spec::ImportUnknown::Unreadable).await;
+            relist(spec::ImportUnknown::Unreadable).await;
             return Err(error);
         }
     };
 
-    let outcome = spec::compare_imported(&declared, &imported);
-    for line in outcome.lines(&tenant, &realm) {
+    let outcome = spec::compare_imported(declared, &imported);
+    for line in outcome.lines(tenant, realm) {
         println!("{line}");
     }
     // A response that names the wrong set has said itself that it is not
     // describing the import we asked for, so it does not get to be the final
-    // account of what landed either — the same reason the two arms above
-    // relist, one step further in. Nothing here is a rollback, and the realm
-    // is the only source that is not this body.
+    // account of what landed either — the reason the unreadable body above
+    // re-lists, one step further in.
     let matched = outcome.matches();
     if !matched {
-        report_what_landed(&tenant, &realm, &declared, spec::ImportUnknown::Mismatched).await;
+        relist(spec::ImportUnknown::Mismatched).await;
     }
     println!();
     println!("{}", spec::IMPORT_COTLIST_CAVEAT);
@@ -889,6 +920,73 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aic-saml-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create test dir");
         dir
+    }
+
+    /// Every ending that disbelieves the response re-lists the realm, and the
+    /// one that believes it does not.
+    ///
+    /// The branch this pins had no test at all: deleting the
+    /// [`report_what_landed`] call left the suite green, because
+    /// `after_failure_lines` is tested on its own and nothing asserted that
+    /// anything reaches it. So the assertion is on the stub — was it called,
+    /// and with which [`spec::ImportUnknown`] — while the function under test
+    /// is the real one.
+    ///
+    /// The three mismatch shapes are separate rows because a comparison built
+    /// from set difference alone calls the duplicate a match, and one built
+    /// from membership one way calls the unexpected id a match. The clean row
+    /// is the control: without it a `relist` called unconditionally would
+    /// pass every other row.
+    #[tokio::test]
+    async fn a_response_we_cannot_believe_is_not_the_account_of_what_landed() {
+        let a = "https://idp-a.example.com";
+        let b = "https://sp-b.example.com";
+        let declared = vec![a.to_string(), b.to_string()];
+
+        let cases: &[(&str, serde_json::Value, Option<spec::ImportUnknown>)] = &[
+            (
+                "a body naming no importedEntities",
+                serde_json::json!({ "status": "ok" }),
+                Some(spec::ImportUnknown::Unreadable),
+            ),
+            (
+                "an id the file declared is missing",
+                serde_json::json!({ "importedEntities": [a] }),
+                Some(spec::ImportUnknown::Mismatched),
+            ),
+            (
+                "an id the file never declared",
+                serde_json::json!({ "importedEntities": [a, b, "https://sp-c.example.com"] }),
+                Some(spec::ImportUnknown::Mismatched),
+            ),
+            (
+                "an id named twice",
+                serde_json::json!({ "importedEntities": [a, b, b] }),
+                Some(spec::ImportUnknown::Mismatched),
+            ),
+            (
+                "exactly the set the file declares",
+                serde_json::json!({ "importedEntities": [b, a] }),
+                None,
+            ),
+        ];
+
+        for (case, response, expected) in cases {
+            let relisted = std::cell::Cell::new(None);
+            let result = finish_import(response, &declared, "sandbox", "bravo", async |why| {
+                assert!(
+                    relisted.replace(Some(why)).is_none(),
+                    "{case}: relisted twice"
+                );
+            })
+            .await;
+            assert_eq!(relisted.get(), *expected, "{case}");
+            assert_eq!(
+                result.is_ok(),
+                expected.is_none(),
+                "{case}: the exit code and the re-list disagree"
+            );
+        }
     }
 
     #[tokio::test]
