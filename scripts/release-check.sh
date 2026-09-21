@@ -100,6 +100,14 @@ ok
 # REPRODUCED means this script runs the same command below; SETUP means the step
 # provisions the GitHub runner and has no local equivalent (this machine already
 # has a toolchain). Adding a CI step without deciding which it is fails here.
+#
+# CI_ONLY is the honest third answer, and it is deliberately awkward to use: a
+# real gate that this script will not run, because running it would mean
+# installing a whole second toolchain on the developer's machine. Today that is
+# only the MSRV check, which needs the exact `rust-version` from Cargo.toml.
+# Every entry here weakens the guarantee at the top of this file, so it is
+# reported in the ready banner rather than passing silently — a release cut from
+# here can still go red in CI on these, and the operator should know which.
 
 CI_STEPS_REPRODUCED=(
   "Scanner selftest"
@@ -122,6 +130,16 @@ CI_STEPS_SETUP=(
   "Cache cargo build"
   "Install Node"
   "Install TypeScript"
+  "Read the declared MSRV"
+  "Install the declared MSRV toolchain"
+)
+
+# Asserts that the crate still builds on the `rust-version` Cargo.toml declares.
+# Not run here: this machine has one toolchain, and the gate is only meaningful
+# on the pinned one.
+CI_STEPS_CI_ONLY=(
+  "Check (default)"
+  "Check (logs-store)"
 )
 
 step "ci.yml parity"
@@ -129,7 +147,7 @@ step "ci.yml parity"
 mapfile -t ci_steps < <(grep -oP '^      - name: \K.*' "$CI_YML")
 [ "${#ci_steps[@]}" -gt 0 ] || fail "found no steps in $CI_YML — the parser needs updating"
 
-known=("${CI_STEPS_REPRODUCED[@]}" "${CI_STEPS_SETUP[@]}")
+known=("${CI_STEPS_REPRODUCED[@]}" "${CI_STEPS_SETUP[@]}" "${CI_STEPS_CI_ONLY[@]}")
 in_list() {
   local needle="$1" item
   shift
@@ -141,7 +159,9 @@ for s in "${ci_steps[@]}"; do
   in_list "$s" "${known[@]}" || fail "$CI_YML has a step this script does not account for:
   \"$s\"
   Either run it below and add it to CI_STEPS_REPRODUCED, or add it to
-  CI_STEPS_SETUP if it only provisions the runner."
+  CI_STEPS_SETUP if it only provisions the runner. CI_STEPS_CI_ONLY is the last
+  resort, for a gate that cannot run without a second toolchain — read its
+  comment before reaching for it."
 done
 for s in "${known[@]}"; do
   in_list "$s" "${ci_steps[@]}" || fail "this script expects a CI step that no longer exists:
@@ -322,6 +342,8 @@ ready to release.
   last tag          $last_tag
   commits since     $count
   tests passing     $passed (across $tests binaries, both feature sets)
+  not run here      ${#CI_STEPS_CI_ONLY[@]} CI-only gate(s): ${CI_STEPS_CI_ONLY[*]}
+                    (MSRV = $(grep -m1 '^rust-version = ' Cargo.toml | cut -d'"' -f2); CI checks it, this script does not)
 
 commits in $range:
 
