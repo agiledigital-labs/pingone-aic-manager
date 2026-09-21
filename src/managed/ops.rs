@@ -182,11 +182,11 @@ fn rewrite_relationship_paths(
         return;
     };
     for entry in entries {
-        if entry.get("path").and_then(Value::as_str) == Some(old_path) {
-            if let Some(path) = entry.get_mut("path") {
-                *path = Value::String(new_path.into());
-                *count += 1;
-            }
+        if entry.get("path").and_then(Value::as_str) == Some(old_path)
+            && let Some(path) = entry.get_mut("path")
+        {
+            *path = Value::String(new_path.into());
+            *count += 1;
         }
     }
 }
@@ -1384,15 +1384,13 @@ pub fn apply_relationship_result(
             if app
                 .active_tenant()
                 .is_some_and(|active| active.name == tenant)
-            {
-                if let Some(index) = app
+                && let Some(index) = app
                     .managed
                     .matches(Some(&tenant))
                     .iter()
                     .position(|item| item.name == source_object)
-                {
-                    app.managed.selected = index;
-                }
+            {
+                app.managed.selected = index;
             }
             app.push_toast(
                 ToastKind::Success,
@@ -1454,16 +1452,14 @@ pub fn apply_create_result(
             if app
                 .active_tenant()
                 .is_some_and(|active| active.name == tenant)
-            {
-                if let Some(index) = app
+                && let Some(index) = app
                     .managed
                     .matches(Some(&tenant))
                     .iter()
                     .position(|item| item.name == name)
-                {
-                    app.managed.selected = index;
-                    app.managed.property_selected = 0;
-                }
+            {
+                app.managed.selected = index;
+                app.managed.property_selected = 0;
             }
             app.push_toast(
                 ToastKind::Success,

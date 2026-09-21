@@ -344,15 +344,15 @@ impl App {
     }
 
     fn load_plain_keys(&mut self) {
-        if let Ok(Some(bytes)) = ProjectConfig::load_keys_plain() {
-            if let Ok(map) = serde_json::from_slice::<HashMap<String, serde_json::Value>>(&bytes) {
-                self.jwks = map;
-            }
+        if let Ok(Some(bytes)) = ProjectConfig::load_keys_plain()
+            && let Ok(map) = serde_json::from_slice::<HashMap<String, serde_json::Value>>(&bytes)
+        {
+            self.jwks = map;
         }
-        if let Ok(Some(bytes)) = config::load_artifact_bytes(VaultArtifact::LogKeys, None) {
-            if let Ok(map) = serde_json::from_slice::<LogKeyMap>(&bytes) {
-                self.log_keys = map;
-            }
+        if let Ok(Some(bytes)) = config::load_artifact_bytes(VaultArtifact::LogKeys, None)
+            && let Ok(map) = serde_json::from_slice::<LogKeyMap>(&bytes)
+        {
+            self.log_keys = map;
         }
     }
 
@@ -442,10 +442,10 @@ impl App {
             .get(idx)
             .is_some_and(|tenant| tenant.allows_secret_mappings());
         self.esv.view = self.esv.view.clamp(_mappings_allowed);
-        if let Some(t) = self.tenants.get(idx) {
-            if let Err(e) = config::write_current_context(&t.name) {
-                tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
-            }
+        if let Some(t) = self.tenants.get(idx)
+            && let Err(e) = config::write_current_context(&t.name)
+        {
+            tracing::warn!(error = %e, tenant = %t.name, "failed to persist current-context");
         }
         refresh_view(self, self.active_view, false);
     }
@@ -731,17 +731,16 @@ fn pick_initial_tenant_idx(tenants: &[Tenant], config: Option<&ProjectConfig>) -
     if tenants.is_empty() {
         return 0;
     }
-    if let Ok(Some(name)) = config::read_current_context() {
-        if let Some(i) = tenants.iter().position(|t| t.name == name) {
-            return i;
-        }
+    if let Ok(Some(name)) = config::read_current_context()
+        && let Some(i) = tenants.iter().position(|t| t.name == name)
+    {
+        return i;
     }
-    if let Some(cfg) = config {
-        if !cfg.default_tenant.is_empty() {
-            if let Some(i) = tenants.iter().position(|t| t.name == cfg.default_tenant) {
-                return i;
-            }
-        }
+    if let Some(cfg) = config
+        && !cfg.default_tenant.is_empty()
+        && let Some(i) = tenants.iter().position(|t| t.name == cfg.default_tenant)
+    {
+        return i;
     }
     0
 }

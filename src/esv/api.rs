@@ -392,12 +392,12 @@ pub async fn save_variable(
     let mut type_changed = false;
     match get_variable(tenant, id).await {
         Ok(current) => {
-            if let Some(original) = conflict_original {
-                if !content_equal(&current, original) {
-                    return Err(Error::Config(
-                        "remote value changed since you opened it; refresh and retry".into(),
-                    ));
-                }
+            if let Some(original) = conflict_original
+                && !content_equal(&current, original)
+            {
+                return Err(Error::Config(
+                    "remote value changed since you opened it; refresh and retry".into(),
+                ));
             }
             let current_type = current
                 .get("expressionType")

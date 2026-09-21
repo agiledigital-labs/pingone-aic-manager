@@ -1564,10 +1564,11 @@ fn handle_relationship_target_key(app: &mut App, key: KeyEvent) {
         .as_ref()
         .map(|draft| draft.target_query.value().to_string())
         .unwrap_or_default();
-    if let Some(draft) = app.managed.relationship_form.as_mut() {
-        if draft.target_query.handle_key(&key) && draft.target_query.value() != before {
-            draft.target_selected = 0;
-        }
+    if let Some(draft) = app.managed.relationship_form.as_mut()
+        && draft.target_query.handle_key(&key)
+        && draft.target_query.value() != before
+    {
+        draft.target_selected = 0;
     }
 }
 

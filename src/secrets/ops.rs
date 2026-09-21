@@ -343,13 +343,13 @@ fn set_local_version_status(app: &mut App, tenant: &str, id: &str, version: &str
         .get_mut(&(tenant.to_string(), id.to_string()))
     {
         for v in vs.iter_mut() {
-            if version_num(v).as_deref() == Some(version) {
-                if let Some(obj) = v.as_object_mut() {
-                    obj.insert(
-                        "status".into(),
-                        serde_json::Value::String(status.to_string()),
-                    );
-                }
+            if version_num(v).as_deref() == Some(version)
+                && let Some(obj) = v.as_object_mut()
+            {
+                obj.insert(
+                    "status".into(),
+                    serde_json::Value::String(status.to_string()),
+                );
             }
         }
     }
@@ -358,13 +358,13 @@ fn set_local_version_status(app: &mut App, tenant: &str, id: &str, version: &str
 fn set_local_secret_description(app: &mut App, tenant: &str, id: &str, description: &str) {
     if let Some(LoadState::Loaded(items)) = app.secret.list.data.get_mut(tenant) {
         for v in items.iter_mut() {
-            if id_of(v) == id {
-                if let Some(obj) = v.as_object_mut() {
-                    obj.insert(
-                        "description".into(),
-                        serde_json::Value::String(description.to_string()),
-                    );
-                }
+            if id_of(v) == id
+                && let Some(obj) = v.as_object_mut()
+            {
+                obj.insert(
+                    "description".into(),
+                    serde_json::Value::String(description.to_string()),
+                );
             }
         }
     }

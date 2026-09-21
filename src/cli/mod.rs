@@ -756,10 +756,10 @@ fn apply_no_prompt_env(cli: &mut Cli, value: Option<&std::ffi::OsStr>) {
 fn resolved_tenant() -> Option<String> {
     let ctx = config::workspace_context();
     let cfg = ProjectConfig::load().ok().flatten();
-    if let (Some(t), Some(cfg)) = (&ctx.tenant, &cfg) {
-        if cfg.tenants.iter().any(|x| &x.name == t) {
-            return Some(t.clone());
-        }
+    if let (Some(t), Some(cfg)) = (&ctx.tenant, &cfg)
+        && cfg.tenants.iter().any(|x| &x.name == t)
+    {
+        return Some(t.clone());
     }
     if let Ok(Some(c)) = config::read_current_context() {
         return Some(c);
@@ -773,11 +773,11 @@ fn resolved_tenant() -> Option<String> {
 fn inject_tenant_default(mut cmd: clap::Command, tenant: Option<&str>) -> clap::Command {
     // clap stores `default_value` as a `'static` borrow, so leak this
     // program-lifetime string (resolved once at startup) to satisfy it.
-    if let Some(t) = tenant {
-        if cmd.get_arguments().any(|a| a.get_id() == "tenant") {
-            let v: &'static str = Box::leak(t.to_string().into_boxed_str());
-            cmd = cmd.mut_arg("tenant", |a| a.default_value(v));
-        }
+    if let Some(t) = tenant
+        && cmd.get_arguments().any(|a| a.get_id() == "tenant")
+    {
+        let v: &'static str = Box::leak(t.to_string().into_boxed_str());
+        cmd = cmd.mut_arg("tenant", |a| a.default_value(v));
     }
     let subs: Vec<String> = cmd
         .get_subcommands()
@@ -1520,10 +1520,10 @@ fn resolve_tenant(arg: Option<String>, cfg: &ProjectConfig) -> Result<String> {
     // A `workspace/<tenant>/<realm>` working directory implies the tenant —
     // but only honour it if it's a tenant we actually know, so a stale
     // directory can't silently retarget writes.
-    if let Some(t) = config::workspace_context().tenant {
-        if cfg.tenants.iter().any(|x| x.name == t) {
-            return Ok(t);
-        }
+    if let Some(t) = config::workspace_context().tenant
+        && cfg.tenants.iter().any(|x| x.name == t)
+    {
+        return Ok(t);
     }
     if let Some(c) = config::read_current_context()? {
         return Ok(c);

@@ -98,10 +98,10 @@ pub(super) async fn write_checked(
     confirmed_prod: bool,
     gate: SyntaxGate,
 ) -> Result<Gated> {
-    if gate == SyntaxGate::Check {
-        if let Err(refusal) = decide(kind.check_syntax(tenant, realm, script).await?) {
-            return Ok(Gated::Refused(refusal));
-        }
+    if gate == SyntaxGate::Check
+        && let Err(refusal) = decide(kind.check_syntax(tenant, realm, script).await?)
+    {
+        return Ok(Gated::Refused(refusal));
     }
     // The only `WritePermit` in the crate.
     kind.write(tenant, realm, script, confirmed_prod, &WritePermit(()))

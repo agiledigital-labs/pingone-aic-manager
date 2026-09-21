@@ -126,10 +126,8 @@ pub fn help_lines(mode: Mode) -> Option<Vec<(&'static str, &'static str)>> {
 }
 
 pub fn refresh(app: &mut App, force: bool) {
-    if force {
-        if let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) {
-            app.oauth.clear_tenant_details(&tenant);
-        }
+    if force && let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) {
+        app.oauth.clear_tenant_details(&tenant);
     }
     ops::load_list(app, force);
 }

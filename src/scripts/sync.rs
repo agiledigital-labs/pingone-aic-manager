@@ -804,10 +804,10 @@ pub fn preview_source(tenant: &str, c: &Candidate) -> Option<String> {
         return Some(lossy(&bytes));
     }
     let store = SnapshotStore::open(tenant);
-    if let Ok(Some(cfg)) = store.load_config(&r, realm) {
-        if let Ok(bytes) = c.kind.decode_source(&cfg) {
-            return Some(lossy(&bytes));
-        }
+    if let Ok(Some(cfg)) = store.load_config(&r, realm)
+        && let Ok(bytes) = c.kind.decode_source(&cfg)
+    {
+        return Some(lossy(&bytes));
     }
     None
 }
@@ -838,13 +838,13 @@ async fn prepare_pull_with(
             .into_iter()
             .filter(|reference| target.selector.matches(reference))
             .collect();
-        if let Selector::Name(name) = &target.selector {
-            if refs.is_empty() {
-                return Err(Error::Config(format!(
-                    "no {} script named {name:?}",
-                    target.kind.as_str()
-                )));
-            }
+        if let Selector::Name(name) = &target.selector
+            && refs.is_empty()
+        {
+            return Err(Error::Config(format!(
+                "no {} script named {name:?}",
+                target.kind.as_str()
+            )));
         }
         for reference in refs {
             let script = io
@@ -914,13 +914,13 @@ async fn pull_with(
         .filter(|r| selector.matches(r))
         .collect();
 
-    if let Selector::Name(n) = selector {
-        if refs.is_empty() {
-            return Err(Error::Config(format!(
-                "no {} script named {n:?}",
-                kind.as_str()
-            )));
-        }
+    if let Selector::Name(n) = selector
+        && refs.is_empty()
+    {
+        return Err(Error::Config(format!(
+            "no {} script named {n:?}",
+            kind.as_str()
+        )));
     }
 
     let mut outcomes = Vec::new();
@@ -1194,12 +1194,12 @@ fn install_remote(
 ) -> Result<PullStatus> {
     let dest = workspace_file_in(workspace_tree, realm, &script.reference);
     let local = read_local(&dest)?;
-    if let LocalExpectation::Exact(expected) = expected_local {
-        if local.as_deref() != expected {
-            return Err(Error::Config(
-                "local source changed after pull preflight; this entry was not installed".into(),
-            ));
-        }
+    if let LocalExpectation::Exact(expected) = expected_local
+        && local.as_deref() != expected
+    {
+        return Err(Error::Config(
+            "local source changed after pull preflight; this entry was not installed".into(),
+        ));
     }
     let differs = local.as_deref() != Some(remote_source);
     let status = match &local {
@@ -1549,10 +1549,10 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
     let mut out = Vec::new();
     for entry in store.load_manifest()? {
         let r = &entry.reference;
-        if let Some(k) = only {
-            if r.kind != k {
-                continue;
-            }
+        if let Some(k) = only
+            && r.kind != k
+        {
+            continue;
         }
         let realm = entry.realm.as_deref().unwrap_or_default();
         let snapshot_cfg = match store.load_config(r, realm)? {

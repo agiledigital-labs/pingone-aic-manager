@@ -488,14 +488,14 @@ fn apply_removal(app: &mut App, removed: &str, report: &ExecuteReport) {
         return;
     }
 
-    if let Some(name) = previous_active {
-        if let Some(idx) = app.tenants.iter().position(|tenant| tenant.name == name) {
-            app.active_tenant_idx = idx;
-            if app.env_picker_idx >= app.tenants.len() {
-                app.env_picker_idx = app.tenants.len() - 1;
-            }
-            return;
+    if let Some(name) = previous_active
+        && let Some(idx) = app.tenants.iter().position(|tenant| tenant.name == name)
+    {
+        app.active_tenant_idx = idx;
+        if app.env_picker_idx >= app.tenants.len() {
+            app.env_picker_idx = app.tenants.len() - 1;
         }
+        return;
     }
 
     let idx = report

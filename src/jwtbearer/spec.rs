@@ -658,10 +658,11 @@ fn unwrap_inherited(value: Value) -> Value {
         Value::Array(values) => Value::Array(values.into_iter().map(unwrap_inherited).collect()),
         Value::Object(object) => {
             let wrapped_value = object.get("value").cloned();
-            if object.len() == 2 && object.contains_key("inherited") {
-                if let Some(wrapped_value) = wrapped_value {
-                    return unwrap_inherited(wrapped_value);
-                }
+            if object.len() == 2
+                && object.contains_key("inherited")
+                && let Some(wrapped_value) = wrapped_value
+            {
+                return unwrap_inherited(wrapped_value);
             }
             let mut unwrapped = Map::new();
             for (key, value) in object {

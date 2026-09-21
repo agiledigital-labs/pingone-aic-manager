@@ -372,10 +372,10 @@ pub fn validate_document(
 
 /// Resolve an index or displayed/full digest to every matching rule index.
 pub fn resolve_rule_address(rules: &[Value], address: &str) -> Result<BTreeSet<usize>> {
-    if let Ok(index) = address.parse::<usize>() {
-        if index < rules.len() {
-            return Ok(BTreeSet::from([index]));
-        }
+    if let Ok(index) = address.parse::<usize>()
+        && index < rules.len()
+    {
+        return Ok(BTreeSet::from([index]));
     }
 
     let matches = rules
