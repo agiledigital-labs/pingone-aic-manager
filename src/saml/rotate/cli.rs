@@ -282,10 +282,21 @@ async fn status(
     let realm = realm_arg("saml", realm_arg_value)?;
     let state = ops::read_state(&tenant, &realm, entity_id, location, role).await?;
     let phase = spec::phase(&state);
+    // Surveyed here and not only in the write verbs: `status` is where every
+    // sharing refusal sends the operator, and a report that could not say who
+    // else resolves the secret would send them nowhere. A role with no
+    // identifier resolves no label of its own, so there is nothing to survey
+    // and the reads are not made.
+    let consumers = match state.consumer() {
+        Some(mine) => Some(
+            ops::read_consumers(&tenant.name, &realm, &mine, state.mapped_alias.as_deref()).await?,
+        ),
+        None => None,
+    };
     if json {
-        return print_json(&spec::status_json(&state, &phase));
+        return print_json(&spec::status_json(&state, &phase, consumers.as_ref()));
     }
-    for line in spec::status_lines(&state, &phase) {
+    for line in spec::status_lines(&state, &phase, consumers.as_ref()) {
         println!("{line}");
     }
     Ok(())
@@ -336,6 +347,26 @@ async fn init(
         existing_secret.as_ref(),
         key.as_ref(),
     )?;
+    // Before the plan is printed, because a plan for a rollover that cannot
+    // happen is a plan to act on. `init` is where sharing is *created* — an
+    // identifier a second entity already names, or a secret a second label
+    // already maps to — so this is the cheapest place to refuse it.
+    let exclusive = spec::exclusive_ok(
+        "init",
+        &ops::read_consumers(
+            &tenant.name,
+            &realm,
+            &spec::Consumer {
+                entity_id: state.entity_id.clone(),
+                location: state.location,
+                role: state.role,
+                label: plan.label.clone(),
+            },
+            Some(&plan.secret_id),
+        )
+        .await?,
+    )?;
+
     for line in plan.lines(&state) {
         eprintln!("{line}");
     }
@@ -367,7 +398,7 @@ async fn init(
         return Ok(());
     }
 
-    let permit = match spec::authorize_init(dry_run) {
+    let permit = match spec::authorize_init(dry_run, &exclusive) {
         Decision::Preview => {
             eprintln!("dry run: nothing was sent");
             return Ok(());
@@ -463,6 +494,16 @@ async fn stage(
     let realm = realm_arg("saml", realm_arg_value)?;
     let state = ops::read_state(&tenant, &realm, entity_id, location, role).await?;
     let plan = spec::plan_stage(&state, &key)?;
+    let exclusive = spec::exclusive_ok(
+        "stage",
+        &ops::read_consumers(
+            &tenant.name,
+            &realm,
+            &rotating(&state),
+            Some(&plan.secret_id),
+        )
+        .await?,
+    )?;
 
     eprintln!(
         "will add a version to ESV secret {} holding certificate {}",
@@ -480,7 +521,7 @@ async fn stage(
         plan.retained
     );
 
-    let permit = match spec::authorize_stage(dry_run) {
+    let permit = match spec::authorize_stage(dry_run, &exclusive) {
         Decision::Preview => {
             eprintln!("dry run: nothing was sent");
             return Ok(());
@@ -571,12 +612,22 @@ async fn complete(
     let realm = realm_arg("saml", realm_arg_value)?;
     let state = ops::read_state(&tenant, &realm, entity_id, location, role).await?;
     let plan = spec::plan_complete(&state, retain, disable_version)?;
+    let exclusive = spec::exclusive_ok(
+        "complete",
+        &ops::read_consumers(
+            &tenant.name,
+            &realm,
+            &rotating(&state),
+            Some(&plan.secret_id),
+        )
+        .await?,
+    )?;
 
     for line in complete_plan_lines(&plan, &state) {
         eprintln!("{line}");
     }
 
-    let permit = match spec::authorize_complete(dry_run) {
+    let permit = match spec::authorize_complete(dry_run, &exclusive) {
         Decision::Preview => {
             eprintln!("dry run: nothing was sent");
             return Ok(());
@@ -632,6 +683,17 @@ async fn complete(
         return Ok(());
     }
     Err(settlement_error(&state, "complete"))
+}
+
+/// The rollover's own entry in the consumer survey.
+///
+/// `stage` and `complete` plan only from `Settled` or `Staged`, and both
+/// phases require the role to name an identifier — the survey is of the label
+/// that identifier mints.
+fn rotating(state: &RotationState) -> spec::Consumer {
+    state
+        .consumer()
+        .expect("a planned rollover means the role names a secretIdIdentifier")
 }
 
 fn complete_plan_lines(plan: &CompletePlan, state: &RotationState) -> Vec<String> {

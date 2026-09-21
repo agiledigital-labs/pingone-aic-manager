@@ -31,6 +31,18 @@
 //!   the peer has to load the two-certificate metadata in between, and that is
 //!   a human interval, not a timeout.
 //!
+//! ## One secret, one role
+//!
+//! A rollover is a change to the ESV **secret**, and AIC permits a secret
+//! label to back several providers — so `stage` and `complete` mutate
+//! something global while every check around them reads one entity. Each verb
+//! therefore surveys the realm first ([`spec::survey_consumers`]) and refuses
+//! anything but "this role and nobody else" ([`spec::exclusive_ok`]), which is
+//! the only minting site for the `ExclusivityProof` that every `authorize_*`
+//! now requires. The refusal names the other consumers: the remedy differs per
+//! consumer, and "this secret is shared" is not something an operator can act
+//! on.
+//!
 //! **Nothing here destroys anything.** `complete` disables, which
 //! `aic esv secret enable` undoes. Destroying the version and deleting the
 //! mapping are irreversible, and they stay explicit and elsewhere
