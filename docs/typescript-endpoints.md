@@ -380,12 +380,13 @@ component rather than inheriting the service account's.
 any of the three — a type error, and a throw as well, since `.mjs` tests are
 untyped.
 
-That last one models an **unverified** shape. `docs/api/11-idm-endpoints.md`
-records the anonymous endpoint path as not re-exercised against the sandbox, and
-IDM has historically sent an anonymous `security` block rather than omitting it.
-Absent `security` is therefore one of two candidates, and a passing test against
-it is not evidence about the live 401 path — probe it before relying on that
-branch.
+That last one is a deliberately conservative double, but it is **not faithful
+to the live anonymous GET measured 2026-09-21**. The endpoint observed
+`context.security != null`; the probe intentionally did not serialize the
+security object, so its fields remain unverified. A passing test against
+`security === undefined` is therefore not evidence that the branch fires live.
+Anonymous create and named-action POST additionally require
+`X-Requested-With: XMLHttpRequest`; see `docs/api/11-idm-endpoints.md`.
 
 **The double refuses what it cannot model, and that is the point.** It first
 shipped ignoring both the `fields` selector and `_queryFilter`, which is the one
