@@ -439,10 +439,9 @@ pub async fn map_label(
 /// ENABLED version is published at once** — which is the whole mechanism: two
 /// ENABLED versions, two `<KeyDescriptor use="signing">`.
 ///
-/// Re-reads the two documents the plan was decided from first
-/// ([`spec::rollover_write_ok`]); a second version added in the gap makes this
-/// the third certificate rather than the second, which is the `Inconsistent`
-/// phase every later verb refuses from.
+/// Rechecks the plan's inputs first ([`recheck`]); a second version added in
+/// the gap makes this the third certificate rather than the second, which is
+/// the `Inconsistent` phase every later verb refuses from.
 pub async fn add_version(
     tenant: &Tenant,
     state: &RotationState,
