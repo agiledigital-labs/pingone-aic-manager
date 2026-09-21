@@ -15,7 +15,7 @@ same content-based conflict-detection core.
 Service-account bearer. Scope: `fr:idm:*`. **No realm segment** — IDM config is
 tenant-global (`/openidm/...`), unlike realm-scoped AM scripts.
 
-### Public read endpoints
+### Public endpoints (GET and POST)
 
 The endpoint **configuration** APIs above always require the service-account
 bearer token. The endpoint's _runtime URL_ can, however, be intentionally made
@@ -36,17 +36,62 @@ object back):
 This permits an unauthenticated `GET /openidm/endpoint/announcement/{audience}`
 and is appropriate for deliberately public, read-only data such as a login-page
 announcement. `roles: "*"` is not a wildcard for an authenticated role; it
-includes anonymous callers. Do **not** grant it to a broad `endpoint/*` pattern,
-or permit write/action methods, and return only data intended to be public.
+includes anonymous callers.
+
+An anonymous custom endpoint can also accept POST. There are two distinct CREST
+forms:
+
+- bare `POST /openidm/endpoint/intake/submission` dispatches as `create`;
+- `POST /openidm/endpoint/intake/submission?_action=submit` dispatches as the
+  named `action` `submit`.
+
+Both require a matching access rule **and** the unsafe-method header
+`X-Requested-With: XMLHttpRequest`. Without that header the request is rejected
+with `403 "Access denied"` before the endpoint script runs, even when the access
+rule grants the anonymous caller. For a create:
+
+```json
+{
+  "pattern": "endpoint/intake/*",
+  "roles": "*",
+  "methods": "create",
+  "actions": "*"
+}
+```
+
+```bash
+curl -X POST \
+  'https://<your-tenant>.forgeblocks.com/openidm/endpoint/intake/submission' \
+  -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' \
+  -d '{"example":"value"}'
+```
+
+The script receives `request.method === "create"`,
+`request.resourcePath === "submission"`, and the JSON body in
+`request.content`; IDM returns HTTP 201 and adds `_id: "submission"` to a
+resource-shaped response. For a named action use `methods: "action"`, restrict
+`actions` to the intended name (for example `"submit"`), and include the same
+header; the verified action returned HTTP 200.
+
+Do **not** grant a broad `endpoint/*` pattern. A public write/action route is an
+internet-facing mutation surface: use an exact endpoint pattern, validate and
+limit the body, make the operation replay-safe where appropriate, and put rate
+limiting or an authenticated ingress in front of it when abuse has material
+impact. Return only data intended to be public.
 
 The calling hosted-page JavaScript is same-origin in the usual login-page
 deployment. A browser app hosted on another origin also needs an AIC CORS
-configuration; the access rule alone does not grant cross-origin browser access.
+configuration; the access rule alone does not grant cross-origin browser
+access. `X-Requested-With` is a non-safelisted request header, so a cross-origin
+POST triggers a preflight and the CORS policy must admit the origin, method, and
+header.
 
-This behavior is documented by Ping's IDM authorization guide and is also the
-mechanism used in Christian Brindley's announcement-at-login example. It has not
-yet been re-exercised anonymously against this sandbox because no unlocked local
-agent was available during the 2026-08-05 documentation pass.
+The public-read behavior is documented by Ping's IDM authorization guide and is
+also the mechanism used in Christian Brindley's announcement-at-login example.
+GET, create POST, and named-action POST were re-exercised anonymously against
+the sandbox on 2026-09-21; the POST header requirement is live observation, not
+an inference from the read example.
 
 ### Authenticated user endpoints
 
@@ -689,6 +734,18 @@ Object shape (real example, `schedule/UpdateReviewList`):
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-09-21 (anonymous runtime access and unsafe-method header). Four
+  throwaway scripted endpoints established the controls and the result:
+  authenticated create POST returned 201; anonymous GET and POST both returned
+  403 before a rule; `roles: "*"` plus `methods: "read,create"` on the exact
+  child wildcard changed GET to 200 while POST remained 403; adding
+  `X-Requested-With: XMLHttpRequest` changed the same anonymous create POST to
+  201. A named action behaved the same way: 403 without the header, 200 with
+  it and an `action`/`submit` grant. The public GET handler confirmed that
+  `context.security` was non-null, but did not expose its fields. Every
+  temporary rule and endpoint was removed; all four endpoint config reads then
+  returned 404, the matching-rule count was zero, and `config/access` returned
+  to its pre-probe canonical digest.
 - Date: 2026-09-09, second pass (the **type-spelling matrix** above, and the
   syntax gate end-to-end). Ten `compile` calls, one per row, each with source
   known to compile except the deliberate 400 control: `javascript`,

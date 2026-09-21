@@ -270,10 +270,19 @@ new things are learned.
   conflict behaviour? Last-write-wins, presumably. Verify by deliberately racing
   two PUTs on a throwaway script.
 
-### Q7. `X-Requested-With: XMLHttpRequest`
+### Q7. `X-Requested-With: XMLHttpRequest` (partly resolved 2026-09-21)
 
-- frodo-lib sends this on all AM requests. Is it actually required (CSRF guard
-  on PUT/POST/DELETE?), or just defensive? Test by omitting.
+- It is required for **anonymous POST to an IDM custom endpoint**. With a
+  matching `roles: "*"` `config/access` rule, anonymous GET returned 200 but
+  bare create POST and named-action POST returned 403 before the script ran.
+  Adding `X-Requested-With: XMLHttpRequest` changed create to 201 and the named
+  action to 200. Authenticated controls succeeded without it. Four throwaway
+  endpoints and all temporary rules were removed, their absence confirmed, and
+  `config/access` returned to its original digest. Documented in
+  `11-idm-endpoints.md` and `02-headers-and-versioning.md`.
+- Still open: frodo-lib sends the header on all AM requests. Whether an
+  authenticated AM PUT/POST/DELETE independently requires it, rather than it
+  merely being defensive there, has not been isolated.
 
 ### Q8. PUT response shape
 

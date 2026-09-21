@@ -36,7 +36,7 @@ the wrong one usually returns 400 with a "version not supported" message.
 | `Authorization`    | `Bearer <token>`   | Service-account token. Not for `/monitoring/logs/*`.                                      |
 | `Accept`           | `application/json` | Required for most JSON APIs.                                                              |
 | `Content-Type`     | `application/json` | On `POST`/`PUT` with a JSON body.                                                         |
-| `X-Requested-With` | `XMLHttpRequest`   | frodo-lib sends this on AM APIs; we should mirror. Probably required by some CSRF guards. |
+| `X-Requested-With` | `XMLHttpRequest`   | Required for anonymous POST to an IDM custom endpoint (verified 2026-09-21): a matching anonymous `config/access` grant still returned 403 without it; create/action succeeded with it. Continue mirroring it on AM calls. |
 
 ## CREST query parameters
 
@@ -81,6 +81,15 @@ matching rule and the collision it creates for sequentially numbered ids.
 ## Verified against
 
 - Tenant: `<your-tenant>.forgeblocks.com`
+- Date: 2026-09-21
+- Calls: anonymous POST to throwaway IDM scripted endpoints with a matching
+  `roles: "*"` access rule. Bare create returned 403 without
+  `X-Requested-With` and 201 with it; a named action returned 403 without it
+  and 200 with it. The authenticated controls succeeded, and anonymous GET
+  under the same wildcard rule returned 200, isolating the header requirement
+  to the unsafe anonymous method rather than routing or rule propagation. All
+  temporary endpoint configs and rules were removed and their absence
+  confirmed.
 - Date: 2026-09-14
 - Calls: `GET /am/json/realms/root/realms/alpha/scripts?_queryFilter=true`
   sent twice — once with `x-forgerock-transactionid: <supplied-id>`, once
@@ -107,5 +116,6 @@ matching rule and the collision it creates for sequentially numbered ids.
 
 ## Open questions
 
-- The `X-Requested-With: XMLHttpRequest` header — is it actually required for
-  any endpoint, or just frodo-lib defensive coding? Test by omitting on a `PUT`.
+- Whether any authenticated AM `PUT` independently requires
+  `X-Requested-With: XMLHttpRequest` remains unmeasured. Its necessity for
+  anonymous IDM custom-endpoint POST is resolved above.
