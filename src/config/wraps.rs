@@ -162,12 +162,11 @@ impl WrapsFile {
     /// `self.security_key_hmac_salt` (as base64) — the caller is responsible
     /// for `.save()`ing the file after a successful enrolment.
     pub fn get_or_create_security_key_salt(&mut self) -> [u8; 32] {
-        if let Some(b64) = &self.security_key_hmac_salt {
-            if let Ok(bytes) = b64_decode(b64) {
-                if let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                    return arr;
-                }
-            }
+        if let Some(b64) = &self.security_key_hmac_salt
+            && let Ok(bytes) = b64_decode(b64)
+            && let Ok(arr) = <[u8; 32]>::try_from(bytes.as_slice())
+        {
+            return arr;
         }
         use rand::RngCore;
         let mut salt = [0u8; 32];

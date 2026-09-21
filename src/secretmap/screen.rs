@@ -231,10 +231,8 @@ pub fn refresh(app: &mut App, force: bool) {
     if !is_available(app) {
         return;
     }
-    if force {
-        if let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) {
-            app.secretmap.invalidate_valid_label_cache(&tenant);
-        }
+    if force && let Some(tenant) = app.active_tenant().map(|tenant| tenant.name.clone()) {
+        app.secretmap.invalidate_valid_label_cache(&tenant);
     }
     ops::load_list(app, force);
     ops::load_esv_secrets(app, force);

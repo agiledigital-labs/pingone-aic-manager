@@ -174,10 +174,10 @@ pub(super) async fn write(
     // (and `watch`) can trust a returned Ok.
     for attempt in 0..APPLY_RETRIES {
         let mut live = fetch_managed_doc(tenant).await?;
-        if let Ok(slot) = hook_slot(&mut live, object, hook) {
-            if slot.get("source").and_then(Value::as_str) == Some(new_source_str.as_str()) {
-                return Ok(doc);
-            }
+        if let Ok(slot) = hook_slot(&mut live, object, hook)
+            && slot.get("source").and_then(Value::as_str) == Some(new_source_str.as_str())
+        {
+            return Ok(doc);
         }
         if attempt + 1 < APPLY_RETRIES {
             tokio::time::sleep(std::time::Duration::from_millis(APPLY_DELAY_MS)).await;

@@ -185,10 +185,10 @@ fn enroll(idx: Option<usize>) -> Result<(), String> {
     let mut a_builder = GetAssertionArgsBuilder::new(RP_ID, &challenge)
         .credential_id(&credential_id)
         .extensions(&[Aext::HmacSecret(Some(salt))]);
-    if let Some(p) = pin.as_deref() {
-        if !p.is_empty() {
-            a_builder = a_builder.pin(p);
-        }
+    if let Some(p) = pin.as_deref()
+        && !p.is_empty()
+    {
+        a_builder = a_builder.pin(p);
     }
     let assertions = device
         .get_assertion_with_args(&a_builder.build())
@@ -241,10 +241,10 @@ fn assert_hmac(args: Vec<String>) -> Result<(), String> {
     let mut builder = GetAssertionArgsBuilder::new(RP_ID, &challenge)
         .credential_id(&credential_id)
         .extensions(&[Aext::HmacSecret(Some(salt))]);
-    if let Some(p) = pin.as_deref() {
-        if !p.is_empty() {
-            builder = builder.pin(p);
-        }
+    if let Some(p) = pin.as_deref()
+        && !p.is_empty()
+    {
+        builder = builder.pin(p);
     }
     let assertions = device
         .get_assertion_with_args(&builder.build())
@@ -267,10 +267,10 @@ fn assert_hmac(args: Vec<String>) -> Result<(), String> {
 
 fn read_pin_optional() -> Option<String> {
     // 1. env var wins (lets you script without typing).
-    if let Ok(pin) = std::env::var("SECURITY_KEY_PIN") {
-        if !pin.is_empty() {
-            return Some(pin);
-        }
+    if let Ok(pin) = std::env::var("SECURITY_KEY_PIN")
+        && !pin.is_empty()
+    {
+        return Some(pin);
     }
     // 2. prompt only if attached to a tty.
     if !atty_stdin() {

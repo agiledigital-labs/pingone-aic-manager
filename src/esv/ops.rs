@@ -997,10 +997,10 @@ pub fn apply_save_result(
         .remove(&(tenant.clone(), id.clone()));
     match result {
         Ok(SaveOutcome { body, created }) => {
-            if let Some(LoadState::Loaded(items)) = app.esv.list.data.get_mut(&tenant) {
-                if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
-                    *slot = body.clone();
-                }
+            if let Some(LoadState::Loaded(items)) = app.esv.list.data.get_mut(&tenant)
+                && let Some(slot) = items.iter_mut().find(|v| id_of(v) == id)
+            {
+                *slot = body.clone();
             }
             // Refresh the pin so the new server-echoed body survives
             // the next poll's eventual-consistency window.
@@ -1054,13 +1054,13 @@ pub fn apply_delete_result(
         }
         Err(e) => {
             app.esv.recent_deletes.remove(&(tenant.clone(), id.clone()));
-            if let Some(original) = original {
-                if let Some(LoadState::Loaded(items)) = app.esv.list.data.get_mut(&tenant) {
-                    if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
-                        *slot = original.clone();
-                    } else {
-                        items.push(original.clone());
-                    }
+            if let Some(original) = original
+                && let Some(LoadState::Loaded(items)) = app.esv.list.data.get_mut(&tenant)
+            {
+                if let Some(slot) = items.iter_mut().find(|v| id_of(v) == id) {
+                    *slot = original.clone();
+                } else {
+                    items.push(original.clone());
                 }
             }
             app.push_toast(ToastKind::Error, format!("Delete failed: {id} — {e}"));

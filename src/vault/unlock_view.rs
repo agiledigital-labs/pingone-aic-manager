@@ -86,14 +86,14 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     // The waiting-for-tap status is rendered inside the PIN field's status
     // row, not here. Other errors land below the gap.
-    if let Some(err) = &app.unlock.error {
-        if !waiting_for_tap {
-            f.render_widget(
-                Paragraph::new(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
-                    .wrap(Wrap { trim: false }),
-                chunks[2],
-            );
-        }
+    if let Some(err) = &app.unlock.error
+        && !waiting_for_tap
+    {
+        f.render_widget(
+            Paragraph::new(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
+                .wrap(Wrap { trim: false }),
+            chunks[2],
+        );
     }
 }
 
@@ -176,14 +176,14 @@ pub fn draw_relock(f: &mut Frame, app: &App) {
             },
         );
     }
-    if let Some(error) = &app.unlock.error {
-        if !waiting_for_tap {
-            f.render_widget(
-                Paragraph::new(Span::styled(error, Style::default().fg(Color::Red)))
-                    .wrap(Wrap { trim: false }),
-                chunks[4],
-            );
-        }
+    if let Some(error) = &app.unlock.error
+        && !waiting_for_tap
+    {
+        f.render_widget(
+            Paragraph::new(Span::styled(error, Style::default().fg(Color::Red)))
+                .wrap(Wrap { trim: false }),
+            chunks[4],
+        );
     }
     f.render_widget(Paragraph::new(hint_line(hints)), chunks[6]);
 }

@@ -362,10 +362,10 @@ fn extract_query_param(url_or_query: &str, key: &str) -> Option<String> {
         None => url_or_query,
     };
     for pair in q.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            if k == key {
-                return Some(percent_decode(v));
-            }
+        if let Some((k, v)) = pair.split_once('=')
+            && k == key
+        {
+            return Some(percent_decode(v));
         }
     }
     None
@@ -376,14 +376,14 @@ fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) =
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(byte) =
                 u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
-            {
-                out.push(byte as char);
-                i += 3;
-                continue;
-            }
+        {
+            out.push(byte as char);
+            i += 3;
+            continue;
         }
         out.push(bytes[i] as char);
         i += 1;

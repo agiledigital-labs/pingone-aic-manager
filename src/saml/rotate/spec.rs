@@ -2063,20 +2063,20 @@ pub fn plan_init(
     let secret_id = validate_secret_id(secret_id)?.to_string();
     let label = signing_label(&identifier);
 
-    if let Some(current) = state.identifier.as_deref() {
-        if current != identifier {
-            return Err(Error::Config(format!(
-                "{} ({}) already points at secretIdIdentifier {current:?}. Repointing it would \
+    if let Some(current) = state.identifier.as_deref()
+        && current != identifier
+    {
+        return Err(Error::Config(format!(
+            "{} ({}) already points at secretIdIdentifier {current:?}. Repointing it would \
                  leave `{}` mapped to whatever it maps to now — changing the identifier does \
                  **not** remove the old mapping, and the labels vanish from the schema enum the \
                  moment the entity stops naming them. Rotate the certificate instead \
                  (`aic saml rotate stage`), or unpick the old label deliberately with \
                  `aic secretmap remove` before repointing.",
-                state.entity_id,
-                role_descriptor(state.role),
-                signing_label(current),
-            )));
-        }
+            state.entity_id,
+            role_descriptor(state.role),
+            signing_label(current),
+        )));
     }
 
     match label_mapping {

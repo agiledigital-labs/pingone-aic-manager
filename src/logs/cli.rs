@@ -450,12 +450,12 @@ pub async fn run(cmd: LogsCommand) -> Result<()> {
                 .as_deref()
                 .map(|value| parse_time(value, "end"))
                 .transpose()?;
-            if let (Some(begin), Some(end)) = (begin, end) {
-                if end <= begin {
-                    return Err(Error::Config(
-                        "log search end must be after begin".to_string(),
-                    ));
-                }
+            if let (Some(begin), Some(end)) = (begin, end)
+                && end <= begin
+            {
+                return Err(Error::Config(
+                    "log search end must be after begin".to_string(),
+                ));
             }
             let params = db::SearchParams {
                 transaction_id: tx,

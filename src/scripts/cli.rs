@@ -495,10 +495,10 @@ pub(crate) async fn run_with_runtime(
             for job in parse_ref(reference)? {
                 for sref in job.ns.kind.list(&t, job.ns.realm_arg()).await? {
                     // A specific-name ref filters the listing to that script.
-                    if let script::sync::Selector::Name(ref n) = job.selector {
-                        if sref.name != *n {
-                            continue;
-                        }
+                    if let script::sync::Selector::Name(ref n) = job.selector
+                        && sref.name != *n
+                    {
+                        continue;
                     }
                     listing.push((sref, job.ns.clone()));
                 }
@@ -841,10 +841,10 @@ pub(crate) async fn run_with_runtime(
             let mut shown = 0;
             for e in sync::status(&t, None).await? {
                 total += 1;
-                if let Some(term) = &filter {
-                    if !script::matches_term(term, e.kind, e.realm.as_deref(), &e.name) {
-                        continue;
-                    }
+                if let Some(term) = &filter
+                    && !script::matches_term(term, e.kind, e.realm.as_deref(), &e.name)
+                {
+                    continue;
                 }
                 let label = match e.state {
                     sync::ScriptState::InSync => "in sync",
@@ -1334,14 +1334,14 @@ async fn generate_managed_types(tenant: &str) -> usize {
     let mut written = 0;
     for (relative, contents) in files {
         let path = tree.join(relative);
-        if let Some(parent) = path.parent() {
-            if let Err(error) = std::fs::create_dir_all(parent) {
-                eprintln!(
-                    "warning: could not create managed type directory {}: {error}",
-                    crate::config::display_path(parent)
-                );
-                continue;
-            }
+        if let Some(parent) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            eprintln!(
+                "warning: could not create managed type directory {}: {error}",
+                crate::config::display_path(parent)
+            );
+            continue;
         }
         match std::fs::write(&path, contents) {
             Ok(()) => written += 1,
@@ -1411,14 +1411,14 @@ async fn generate_sync_mapping_types(tenant: &str) -> usize {
     let mut written = 0;
     for (relative, contents) in files {
         let path = tree.join(relative);
-        if let Some(parent) = path.parent() {
-            if let Err(error) = std::fs::create_dir_all(parent) {
-                eprintln!(
-                    "warning: could not create sync type directory {}: {error}",
-                    crate::config::display_path(parent)
-                );
-                continue;
-            }
+        if let Some(parent) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            eprintln!(
+                "warning: could not create sync type directory {}: {error}",
+                crate::config::display_path(parent)
+            );
+            continue;
         }
         match std::fs::write(&path, contents) {
             Ok(()) => written += 1,
@@ -2531,10 +2531,10 @@ fn select_synced(
     let Some(s) = reference.filter(|s| s != "all") else {
         return Ok(cands);
     };
-    if !s.contains('/') {
-        if let Some(ns) = Namespace::parse(&s) {
-            return Ok(cands.into_iter().filter(|c| same_ns(c, &ns)).collect());
-        }
+    if !s.contains('/')
+        && let Some(ns) = Namespace::parse(&s)
+    {
+        return Ok(cands.into_iter().filter(|c| same_ns(c, &ns)).collect());
     }
     let (ns, name) = parse_one(&s)?;
     let found: Vec<_> = cands

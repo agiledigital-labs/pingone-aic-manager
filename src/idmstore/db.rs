@@ -116,17 +116,17 @@ impl ObjectStore {
         prop_entries.sort_by(|a, b| a.0.cmp(b.0));
 
         for (prop, def) in prop_entries {
-            if let Some(kind) = scalar_column_type(def) {
-                if !BASE_COLUMNS.contains(&prop.as_str()) {
-                    generated.push(GeneratedColumn {
-                        name: prop.clone(),
-                        kind,
-                        searchable: def
-                            .get("searchable")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                    });
-                }
+            if let Some(kind) = scalar_column_type(def)
+                && !BASE_COLUMNS.contains(&prop.as_str())
+            {
+                generated.push(GeneratedColumn {
+                    name: prop.clone(),
+                    kind,
+                    searchable: def
+                        .get("searchable")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                });
             }
 
             if let Some(child) = ChildTable::from_property(object, prop, def, overrides.get(prop)) {
@@ -769,10 +769,10 @@ fn text_value(value: &Value) -> Result<String> {
 }
 
 fn element_json_text(element: &Value) -> Result<String> {
-    if let Value::String(s) = element {
-        if serde_json::from_str::<Value>(s).is_ok() {
-            return Ok(s.clone());
-        }
+    if let Value::String(s) = element
+        && serde_json::from_str::<Value>(s).is_ok()
+    {
+        return Ok(s.clone());
     }
     Ok(serde_json::to_string(element)?)
 }

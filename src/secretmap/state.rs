@@ -175,18 +175,18 @@ impl State {
     }
 
     pub fn clamp_picker_selection(&mut self, n: usize) {
-        if let Some(edit) = self.editing.as_mut() {
-            if edit.selected >= n {
-                edit.selected = n.saturating_sub(1);
-            }
+        if let Some(edit) = self.editing.as_mut()
+            && edit.selected >= n
+        {
+            edit.selected = n.saturating_sub(1);
         }
     }
 
     pub fn clamp_label_selection(&mut self, n: usize) {
-        if let Some(pick) = self.picking_label.as_mut() {
-            if pick.selected >= n {
-                pick.selected = n.saturating_sub(1);
-            }
+        if let Some(pick) = self.picking_label.as_mut()
+            && pick.selected >= n
+        {
+            pick.selected = n.saturating_sub(1);
         }
     }
 

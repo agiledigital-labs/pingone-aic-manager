@@ -807,10 +807,9 @@ pub(crate) fn remove_cached_mapping(app: &mut App, tenant: &str, secret_id: &str
     if app
         .active_tenant()
         .is_some_and(|active| active.name == tenant)
+        && let Some(n) = remaining
     {
-        if let Some(n) = remaining {
-            app.secretmap.clamp_selection(n);
-        }
+        app.secretmap.clamp_selection(n);
     }
 }
 

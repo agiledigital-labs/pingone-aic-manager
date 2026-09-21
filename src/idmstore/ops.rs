@@ -150,10 +150,10 @@ async fn sync_object(
         None => api::probe_incremental_supported(tenant, &object.name).await?,
     };
 
-    if incremental_supported {
-        if let Some(state) = stored.as_ref().filter(|state| state.watermark.is_some()) {
-            return incremental_sync(conn, tenant, object, state).await;
-        }
+    if incremental_supported
+        && let Some(state) = stored.as_ref().filter(|state| state.watermark.is_some())
+    {
+        return incremental_sync(conn, tenant, object, state).await;
     }
 
     full_sync(conn, tenant, object, incremental_supported).await
