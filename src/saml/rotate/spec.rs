@@ -3394,10 +3394,16 @@ mod tests {
         });
         assert!(rollover_write_ok("stage", "esv-sp-a-signing", &planned, &another_cert).is_err());
 
-        // And the inputs are the rollover's, not the whole picture: an
-        // unrelated document moving must not refuse a safe write, because the
-        // remedy is to re-run and a completion that will not run leaves two
-        // certificates published.
+        // And the inputs are the rollover's, not the whole picture: this
+        // function is about whether the rollover moved, so a document it does
+        // not decide from moving is not its refusal to make.
+        //
+        // That is **not** the same as the identifier and the mapping being
+        // unchecked, which is what this comment used to imply and what the
+        // code used to do. A role repointed at a label backed by a different
+        // secret is refused — by `rollover_target_ok`, which runs first in
+        // `ops::recheck` and asks the question certificate equality cannot:
+        // does this role still resolve the secret about to be written.
         let elsewhere = rollover_inputs(&RotationState {
             mapped_alias: Some("esv-something-else".into()),
             identifier: Some("spa2".into()),
@@ -3405,6 +3411,15 @@ mod tests {
             ..staged()
         });
         assert!(rollover_write_ok("complete", "esv-sp-a-signing", &planned, &elsewhere).is_ok());
+        assert!(
+            rollover_target_ok(
+                "complete",
+                "esv-sp-a-signing",
+                Some("spa2"),
+                Some("esv-something-else")
+            )
+            .is_err()
+        );
     }
 
     /// Red when `map_label` writes over a mapping made while it was planning.
