@@ -1526,7 +1526,7 @@ placeholders **off**.
 
 | Verb       | What it does                                            | Reversible?          |
 | ---------- | ------------------------------------------------------- | -------------------- |
-| `status`   | reads five documents and says what they mean together   | writes nothing       |
+| `status`   | correlates five documents; surveys who shares the key   | writes nothing       |
 | `init`     | sets the identifier, creates the secret, maps the label | one-time setup       |
 | `stage`    | adds an ESV secret version — two certificates published | `esv secret disable` |
 | `complete` | disables the **old** version — one certificate again    | `esv secret enable`  |
@@ -1596,6 +1596,52 @@ token rather than by returning in front of the write: the preview arm of
 requires one, and a preview that fell through would not compile — the same shape
 as `import`'s `ImportPermit` and `scripts::gate`'s `WritePermit`.
 
+#### One secret and one role, or no rollover
+
+**AIC permits a secret label to back several providers**, and a rollover is a
+change to the ESV *secret*, not to an entity: `stage` adds a version and every
+consumer starts publishing a second certificate; `complete` disables one and
+every consumer stops publishing what that version held. Everything else here —
+the phase, the export check, the settlement — reads only the entity named on
+the command line. So a shared secret is how a completion that reports success
+becomes an outage for the provider nobody looked at.
+
+Every verb therefore surveys the realm before it plans, and refuses anything
+but "this role and nobody else". Two channels bring a second consumer, and the
+survey covers both:
+
+- a second entity — or a second **role** of the same entity — carrying the same
+  `secretIdIdentifier`. AM enforces no uniqueness on that field, and the label
+  is minted from it, so they resolve the same key.
+- a second label mapped onto the same ESV secret. That includes the
+  `encryption` and `mtls` labels off this very identifier, and a label with
+  nothing to do with SAML at all.
+
+**The refusal names them**, each with the label it resolves through: "this
+secret is shared" is a dead end, and "`https://sp-b.example.com` resolves it
+through `…spb.signing`" is a diagnosis. A label mapped onto the secret that no
+entity provider in the realm names is listed too — it resolves nothing today,
+and it is one entity delete away from being claimed again.
+
+There is **no `--force`**. A shared rollover is not one operation with a risk
+attached; it is several this command cannot sequence, because each consumer's
+peer loads the new certificate on its own schedule and the two-certificate
+window has to stay open until the last of them has. Either give the role a
+label and an ESV secret of its own, or roll the shared key deliberately with
+`aic esv secret add-version` and — once **every** peer holds it —
+`aic esv secret disable`.
+
+`rotate status` reports the same survey whether or not anything is shared,
+because that is where every one of those refusals sends you. It costs one read
+per entity provider in the realm: the entity list is stubs only and carries no
+`secretIdIdentifier`, and there is no query filter for one, so each provider
+has to be read to find out what it names.
+
+The survey is **per realm**, and every sharing report says so. The secret-label
+mapping table is realm-scoped while ESV secrets are tenant-global, so a
+provider in the other realm backed by this same secret is outside what this can
+see.
+
 #### What `status` cannot tell you
 
 **Nothing readable says which published certificate came from which ESV secret
@@ -1648,11 +1694,19 @@ overruling half of it.
 A record counts as usable only while it still describes the tenant in front of
 it: the role must still point at the identifier that was staged, that
 identifier's signing label must still resolve to the same ESV secret, that
-secret must still have the version the record names, and the certificate it
-names must still be published. An entity deleted and recreated under the same
-id, from the same key pair, keeps the fingerprint matching while "version 2"
-comes to mean something the record has never seen — so a fingerprint alone is
-not the test.
+secret must still hold the version the record names **as an ENABLED one**, and
+the certificate it names must still be published. An entity deleted and
+recreated under the same id, from the same key pair, keeps the fingerprint
+matching while "version 2" comes to mean something the record has never seen —
+so a fingerprint alone is not the test.
+
+ENABLED rather than merely present, because a disabled version publishes
+nothing and so ties no published certificate to anything. The case that
+misleads is the same certificate material in two versions, one disabled and one
+enabled: everything weaker passes, and the version named is the one publishing
+none of it. `complete` was already safe — it derives only from ENABLED versions
+— but `status` reads the same rule, and the number it prints is the number you
+then type into `--disable-version`.
 
 With no usable record, `complete` refuses until it has both. That includes the
 case where picking by age would have been right — from inside the command that
@@ -1688,11 +1742,23 @@ staged.
 A plan can be minutes old by the time it is acted on — `complete`'s waits
 through a confirmation prompt, which is a human interval by design — and a
 version number outlives a change to the versions while the certificate it holds
-does not. So `stage` and `complete` re-read the secret's ENABLED versions and
-this role's published certificates and refuse if either moved; `init` re-reads
-the role's `secretIdIdentifier` and the label's mapping before overwriting
-either. Every one of those refusals sends nothing, and the remedy is
-`aic saml rotate status` followed by a re-run.
+does not. So `stage` and `complete` re-read four things: the role's
+`secretIdIdentifier` and that identifier's mapping, which together must still
+resolve to the ESV secret the plan named; and then the secret's ENABLED
+versions and this role's published certificates, which must still be the ones
+the plan was decided from. `init` re-reads the `secretIdIdentifier` and the
+label's mapping before overwriting either. Every one of those refusals sends
+nothing, and the remedy is `aic saml rotate status` followed by a re-run.
+
+The first two are not a formality, and leaving them out was a real gap.
+Published metadata carries no secret and no version attribution at all, so
+certificate equality cannot establish *which* secret is publishing a
+certificate: a role repointed in the gap publishes exactly the set the plan
+expected, while the secret about to be written is somebody else's. What is
+required is that the fresh identifier and the fresh mapping still **resolve to
+the planned secret** — not that they are unchanged. An identifier moved to a
+label backed by the same secret rotates the same key, and refusing that would
+leave a rollover stuck with two certificates published.
 
 #### When `init` adopts an ESV secret instead of creating one
 
