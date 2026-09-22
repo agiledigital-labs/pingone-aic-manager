@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use auth::TokenCache;
 
 use crate::config::tenant::{Tenant, TenantTheme};
+use crate::http::RequestBuilderExt;
 use crate::{Error, Result};
 
 /// Internal-only: the in-process AIC HTTP client used by the agent daemon.
@@ -101,6 +102,7 @@ impl AicClient {
             .header("Authorization", format!("Bearer {token}"))
             .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
             .header("Accept", "application/json")
+            .aic_transaction_id()
             .send()
             .await?;
         self.check_response(resp).await
@@ -151,7 +153,9 @@ impl AicClient {
         method: reqwest::Method,
         path: &str,
     ) -> reqwest::RequestBuilder {
-        self.http_no_redirect.request(method, self.url(path))
+        self.http_no_redirect
+            .request(method, self.url(path))
+            .aic_transaction_id()
     }
 
     /// Write method — checks prod confirmation for prod-themed tenants.
@@ -191,6 +195,7 @@ impl AicClient {
             .header("Accept-API-Version", api_version.unwrap_or("resource=1.0"))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
+            .aic_transaction_id()
             .json(&body);
         match if_match {
             Some(revision) => request.header("If-Match", revision),
@@ -247,6 +252,7 @@ impl AicClient {
             .request(method, &url)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("Accept", "application/json")
+            .aic_transaction_id()
             .body(body.to_string());
         match authorization {
             Some(authorization) => request.header("Authorization", authorization),

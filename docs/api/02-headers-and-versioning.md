@@ -37,6 +37,8 @@ the wrong one usually returns 400 with a "version not supported" message.
 | `Accept`           | `application/json` | Required for most JSON APIs.                                                              |
 | `Content-Type`     | `application/json` | On `POST`/`PUT` with a JSON body.                                                         |
 | `X-Requested-With` | `XMLHttpRequest`   | Required for anonymous POST to an IDM custom endpoint (verified 2026-09-21): a matching anonymous `config/access` grant still returned 403 without it; create/action succeeded with it. Continue mirroring it on AM calls. |
+| `User-Agent` | `aic/<version>` | Identifies the client and exact package version. |
+| `X-ForgeRock-TransactionId` | `aic-<uuid>` | Fresh for every request, for identification and audit-log correlation. |
 
 ## CREST query parameters
 
@@ -71,6 +73,10 @@ response echoes it back unchanged — no override by the edge, no decoration —
 and `/monitoring/logs` serves the resulting events under it. A caller that
 names its own id therefore knows the log key *before* it makes the call,
 instead of having to read a response header and correlate afterwards.
+
+`aic` sends a fresh `aic-<uuid>` value on every outbound request. The prefix
+identifies its traffic while the UUID keeps separate requests independently
+traceable.
 
 AM stores the id with a `/N/M` sub-request suffix appended
 (`<your-id>/0/0`, `<your-id>/0/1`), but the log query matches on a **prefix**,

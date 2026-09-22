@@ -14,6 +14,7 @@ use rsa::{RsaPrivateKey, traits::PrivateKeyParts};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::http::RequestBuilderExt;
 use crate::{Error, Result};
 
 const CLIENT_ID: &str = "idmAdminClient";
@@ -78,7 +79,7 @@ struct CreateLogApiKeyResp {
 /// Discover the tenant-specific AM session cookie name.
 pub async fn discover_cookie_name(http: &reqwest::Client, base_url: &str) -> Result<String> {
     let url = format!("{base_url}/am/json/serverinfo/*");
-    let resp = http.get(&url).send().await?;
+    let resp = http.get(&url).aic_transaction_id().send().await?;
     if !resp.status().is_success() {
         return Err(Error::Api {
             status: resp.status().as_u16(),
@@ -124,6 +125,7 @@ pub async fn session_to_bearer(
             "Cookie",
             format!("{cookie_name}={session_value}; amlbcookie=01"),
         )
+        .aic_transaction_id()
         .send()
         .await?;
 
@@ -161,6 +163,7 @@ pub async fn session_to_bearer(
     let resp = http_no_redirect
         .post(&token_url)
         .header("Content-Type", "application/x-www-form-urlencoded")
+        .aic_transaction_id()
         .body(body)
         .send()
         .await?;
@@ -184,6 +187,7 @@ pub async fn resolve_admin_username(
     let resp = http
         .get(&userinfo_url)
         .header("Authorization", format!("Bearer {bearer}"))
+        .aic_transaction_id()
         .send()
         .await
         .ok()?;
@@ -200,6 +204,7 @@ pub async fn resolve_admin_username(
     let resp = http
         .get(&teammember_url)
         .header("Authorization", format!("Bearer {bearer}"))
+        .aic_transaction_id()
         .send()
         .await
         .ok()?;
@@ -270,6 +275,7 @@ pub async fn create_service_account(
         .post(&url)
         .header("Authorization", format!("Bearer {bearer}"))
         .header("Content-Type", "application/json")
+        .aic_transaction_id()
         .json(&body)
         .send()
         .await?;
@@ -295,6 +301,7 @@ pub async fn create_log_api_key(
         .post(&url)
         .header("Authorization", format!("Bearer {bearer}"))
         .header("Content-Type", "application/json")
+        .aic_transaction_id()
         .json(&serde_json::json!({ "name": name }))
         .send()
         .await?;
