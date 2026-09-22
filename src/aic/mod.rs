@@ -44,7 +44,7 @@ impl AicClient {
         // *response* is still unbounded, and the connect timeout only catches
         // the common case of a host that never answers.
         let builder =
-            || reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(10));
+            || crate::http::client_builder().connect_timeout(std::time::Duration::from_secs(10));
         let http = builder().build().expect("failed to build reqwest client");
         // Confinement to the tenant is the point of the unauthenticated
         // transport, and `url()` only confines the request we *send*. reqwest

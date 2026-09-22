@@ -351,7 +351,7 @@ pub async fn mint_log_key_via_session(
 
 /// Build a reqwest client that does NOT follow redirects (so authorize 302 is observable).
 pub fn no_redirect_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+    Ok(crate::http::client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?)
 }

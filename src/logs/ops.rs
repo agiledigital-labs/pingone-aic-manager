@@ -42,7 +42,7 @@ pub async fn fetch_context(tenant: Option<String>) -> Result<FetchContext> {
     let tenant = tenant_config_for(tenant)?;
     let agent = AgentClient::connect_or_spawn().await?;
     let key = crate::logs::get_log_key(agent, &tenant.name).await?;
-    let client = Client::builder().build()?;
+    let client = crate::http::client_builder().build()?;
     Ok(FetchContext {
         tenant: tenant.name,
         client,
