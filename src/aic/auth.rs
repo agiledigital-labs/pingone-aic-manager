@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::config::tenant::Tenant;
+use crate::http::RequestBuilderExt;
 use crate::{Error, Result};
 
 /// What AIC issues, when it does not say otherwise (`docs/api/00-auth.md`).
@@ -166,6 +167,7 @@ pub async fn mint_token(
     let resp = client
         .post(&aud)
         .header("Content-Type", "application/x-www-form-urlencoded")
+        .aic_transaction_id()
         .body(body)
         .send()
         .await?;

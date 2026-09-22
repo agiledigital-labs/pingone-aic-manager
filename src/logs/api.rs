@@ -17,6 +17,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+use crate::http::RequestBuilderExt;
 use crate::logs::LogKeyPair;
 use crate::{Error, Result};
 
@@ -286,6 +287,7 @@ async fn get_json<T: DeserializeOwned>(
             .header("x-api-key", &key.api_key_id)
             .header("x-api-secret", &key.api_key_secret)
             .header("Accept", "application/json")
+            .aic_transaction_id()
             .send()
             .await?;
         let status = response.status();

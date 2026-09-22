@@ -13,6 +13,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::event::AppEvent;
 use crate::app::{App, InputMode};
 use crate::config::tenant::TenantTheme;
+use crate::http::RequestBuilderExt;
 use crate::tui::is_save_chord;
 use crate::tui::widgets::text_field::{TextField, fields};
 
@@ -551,6 +552,7 @@ async fn run_bootstrap(
                 .post(&auth_url)
                 .header("Accept-API-Version", "resource=2.0, protocol=1.0")
                 .header("Content-Type", "application/json")
+                .aic_transaction_id()
                 .body("{}")
                 .send()
                 .await
@@ -663,6 +665,7 @@ async fn run_bootstrap(
                     .post(&auth_url)
                     .header("Accept-API-Version", "resource=2.0, protocol=1.0")
                     .header("Content-Type", "application/json")
+                    .aic_transaction_id()
                     .json(&filled)
                     .send()
                     .await
