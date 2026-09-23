@@ -1522,20 +1522,45 @@ Measured end to end: map a `pem` ESV secret onto the label and the export
 carries that certificate; add a second version and the export publishes **two**
 `<KeyDescriptor use="signing">`; disable the old version and it drops back to
 one, in single-digit seconds. No restart — provided the secret was created with
-placeholders **off**.
+placeholders **off**. And AM **signs** with the newest ENABLED version, from the
+next request onwards, which is what makes `stage` the moment everything hinges
+on.
 
 | Verb       | What it does                                            | Reversible?          |
 | ---------- | ------------------------------------------------------- | -------------------- |
 | `status`   | correlates five documents; surveys who shares the key   | writes nothing       |
 | `init`     | sets the identifier, creates the secret, maps the label | one-time setup       |
-| `stage`    | adds an ESV secret version — two certificates published | `esv secret disable` |
+| `stage`    | adds a version — **signing cuts over**, both published  | re-add the old pair  |
 | `complete` | disables the **old** version — one certificate again    | `esv secret enable`  |
+
+**`stage` is the cutover, not the preparation for one.** AM signs with the
+newest ENABLED version of the ESV secret, from the next request onwards —
+measured 2026-09-22 over five rounds on the SP AuthnRequest-signing path,
+including a probe that re-added the *older* certificate as the newest version
+and watched it take over again (`docs/api/06-saml.md`). So the moment `stage`
+returns, this role is signing with the new certificate, and a peer that does
+not already trust it starts rejecting.
+
+The safe order is therefore:
+
+1. generate the new key pair locally — `stage --key-file` takes **your** key
+   pair, which is what makes the rest of this possible;
+2. give the new certificate to the peer and have them trust it, out of band;
+3. `stage` — signing cuts over here;
+4. `complete` — stops publishing the old certificate; no signing change.
 
 `stage` and `complete` are **separate operations, and that is not a style
 choice**: `aic esv secret disable` cannot disable the latest version
-(`400 Cannot disable latest secret version`), so completion disables the old one
-— and the interval between them is the peer loading the two-certificate
-metadata, which is a human interval, not a timeout.
+(`400 Cannot disable latest secret version`), so completion disables the old
+one. The interval between them is a peer that *refreshes* metadata catching up
+from the two-certificate export — genuinely useful, and a human interval rather
+than a timeout, but a catch-up rather than the safety step. The safety step is
+number 2.
+
+**There is no un-stage.** Disabling the version you just added is the 400 above.
+The rollback is to add the old key pair again as a **newer** version —
+`aic esv secret add-version <secret> --value-file old-pair.pem` — which was
+measured at ~7 s and destroys nothing.
 
 **Nothing here destroys anything.** `complete` disables, which
 `aic esv secret enable` undoes. Destroying a version and deleting a mapping are
@@ -1624,12 +1649,13 @@ entity provider in the realm names is listed too — it resolves nothing today,
 and it is one entity delete away from being claimed again.
 
 There is **no `--force`**. A shared rollover is not one operation with a risk
-attached; it is several this command cannot sequence, because each consumer's
-peer loads the new certificate on its own schedule and the two-certificate
-window has to stay open until the last of them has. Either give the role a
-label and an ESV secret of its own, or roll the shared key deliberately with
-`aic esv secret add-version` and — once **every** peer holds it —
-`aic esv secret disable`.
+attached; it is several this command cannot sequence, because adding a version
+cuts **every** consumer's signing over at the same instant — so every one of
+their peers has to have been given the new certificate before it happens, on
+schedules this command knows nothing about. Either give the role a label and an
+ESV secret of its own, or roll the shared key deliberately: once **every** peer
+above holds and trusts the new certificate, `aic esv secret add-version` (which
+is where signing changes for all of them), then `aic esv secret disable`.
 
 `rotate status` reports the same survey whether or not anything is shared,
 because that is where every one of those refusals sends you. It costs one read
@@ -1650,6 +1676,12 @@ during a two-certificate window the export is two anonymous fingerprints. The
 metadata lists the newest ENABLED version first, but that is an ordering
 convention, not an identity — and a `complete` that trusted it would be one
 convention-change away from retiring the new certificate and keeping the old.
+
+What *is* known is which certificate is **in use**: the newest ENABLED version's.
+`status` prints that as a rule rather than pointing at one of the fingerprints in
+front of it, because pointing would mean reading the export's order — the
+inference everything else here refuses. The two claims are different: which
+version holds a certificate is unreadable, which certificate signs is not.
 
 So `stage` records the pairing locally, in `.aic/saml-rotations.json`, and only
 **after the tenant's own export confirms** the new certificate is published —
@@ -1720,9 +1752,9 @@ version is the latest — and AIC will not disable the latest version
 the key pair you want to keep as a new version and complete that rollover
 instead.
 
-Nothing here can read which certificate AM actually **signs with**, either. The
-export says what is published; it does not say which of two published keys the
-runtime picks.
+What the export cannot do is **attribute**. It says what is published; which of
+two published keys the runtime picks follows from the rule above — the newest
+ENABLED version — and not from anything in the document.
 
 #### Resuming an interrupted run
 
@@ -1801,13 +1833,17 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
   -keyout new-key.pem -out new-cert.pem -subj "/CN=sp-a"
 cat new-key.pem new-cert.pem > new-pair.pem
 
+# Give new-cert.pem to the peer and have them trust it BEFORE staging:
+# `stage` is the signing cutover, so a peer that does not hold it by then breaks.
+
 aic saml rotate status https://sp-a.example.com --realm alpha
 aic saml rotate stage  https://sp-a.example.com --realm alpha \
   --key-file new-pair.pem --dry-run
 aic saml rotate stage  https://sp-a.example.com --realm alpha \
   --key-file new-pair.pem
 
-# Hand the two-certificate metadata to the peer and wait for them to load it.
+# Signing has now moved to new-cert.pem. The old certificate stays published so
+# a peer that refreshes metadata can catch up — a recovery, not a preparation.
 aic saml metadata export https://sp-a.example.com --realm alpha --out sp-a.xml
 
 aic saml rotate complete https://sp-a.example.com --realm alpha --force

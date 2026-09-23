@@ -1103,17 +1103,22 @@ Both failure modes were confirmed reachable by mutating the extractor: a
 first-line-only read fails the positive control, and removing the empty-string
 guard fails the empty case. **Measured** 2026-09-18.
 
-### Which certificate actually signs is unproven
+### Which certificate actually signs — answered for AIC on 2026-09-22
 
 During a two-certificate window, **which of the two does the signer use?**
 
-`docs/api/06-saml.md` is explicit that this is not established on the AIC side:
-the metadata lists the active ESV secret version first, and ordering is
-suggestive, not proof. The same gap exists on the Keycloak side of this file —
-the highest-priority provider is `active.RS256` on `GET /keys`, which is not the
-same statement as "this is the key that signed that assertion".
+**Answered on the AIC side on 2026-09-22**, by a purpose-built throwaway
+federation rather than by this harness: AM signs with the **newest ENABLED ESV
+secret version**, from the next request onwards, so `stage` is an immediate
+signing cutover (`docs/api/06-saml.md`). The experiment below is no longer the
+only way to find out — but it is still an *independent* one on a different rig,
+and a second rig disagreeing would be worth knowing about.
 
-Settling it needs a live federation and a real `<ds:Signature>`, which is
+The same gap remains on the Keycloak side of this file — the highest-priority
+provider is `active.RS256` on `GET /keys`, which is not the same statement as
+"this is the key that signed that assertion".
+
+Running it needs a live federation and a real `<ds:Signature>`, which is
 exactly what a wired direction gives you, and reading the answer out of one is
 what [`capture-signing`](#capturing-the-signature-what-signed-not-what-is-published)
 is for. Vary one thing at a time, and run the controls:
@@ -1131,9 +1136,13 @@ is for. Vary one thing at a time, and run the controls:
    metadata.
 4. **The measurement.** Log in again, fresh, and fingerprint the signing
    certificate: `harness.sh verify-signing <A> capture-B.b64`. A **zero** exit
-   says the old certificate still signs and the rollover window means what the
-   feature claims; a **non-zero** exit naming B says `stage` starts signing with
-   the new certificate immediately, and the window protects nobody.
+   says the old certificate still signs; a **non-zero** exit naming B says
+   `stage` starts signing with the new certificate immediately. The 2026-09-22
+   measurement got **B**, so this is now a check against that answer and a zero
+   exit would be the surprise. B does not mean the window protects nobody: it
+   still lets a peer that refreshes metadata catch up, and it is what a rollback
+   is read from. It means the window does not protect a peer that was not given
+   the certificate beforehand.
 5. **The staleness control.** `aic esv secret disable <id> 1` — the _old_
    version; the latest cannot be disabled (`docs/api/03-esvs.md`) — so the
    export drops back to B alone. Re-register and log in once more. If step 4
@@ -1145,7 +1154,10 @@ Note what the experiment cannot separate: the newest ENABLED version is _both_
 the active version and the first `KeyDescriptor` in the document, so a result of
 "B" does not distinguish "AM signs with the active version" from "AM signs with
 whatever is listed first". Only a result of **A** discriminates — and that is
-the answer worth knowing, because it is the one that breaks a rollover.
+the answer worth knowing, because it is the one that breaks a rollover. The
+2026-09-22 run shares this limitation exactly, and says so: its five rounds
+never separated version recency from document order either, because on AIC the
+two always move together.
 
 Whether Keycloak _accepts_ two-certificate metadata at all is a separate
 unexercised question — it has no `KeyName` to pick by, so it has to try both.
