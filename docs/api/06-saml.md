@@ -1167,6 +1167,15 @@ behind.
   re-adding the old key pair as a newer version: ~7 s, and it destroys nothing.
 - `aic esv secret versions` reported `LOADED false` for the very versions that
   were demonstrably signing, so that column does not mean "in use".
+- **What five rounds do not separate.** The newest ENABLED version is *also*
+  always the first `KeyDescriptor` in the export, in every round including the
+  rollback — they co-vary, and nothing here distinguishes "AM signs with the
+  newest ENABLED version" from "AM signs with whatever is listed first". AM
+  builds the export from the same ordering, so they may well be one fact; the
+  operational consequence is identical either way. What *is* ruled out is any
+  property of the certificate, which is what the rollback round buys.
+  `docs/saml-test-harness.md` raised this limitation first, and its independent
+  experiment shares it.
 - **Scope, and it is narrow.** Only the **SP AuthnRequest-signing** path was
   exercised. Resolution is by secret label through AM's secret store, so IdP
   assertion signing is very likely identical — but it was not measured and is
