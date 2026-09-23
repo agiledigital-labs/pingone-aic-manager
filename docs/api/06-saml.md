@@ -381,15 +381,24 @@ no such field anywhere in the entity schema.
 - Add a second version (`POST /environment/secrets/{id}/versions?_action=create`,
   or `aic esv secret add-version`) and the export carries **two** signing
   `KeyDescriptor`s — **the active (newest ENABLED) version first, the older one
-  second** — which is exactly the pre-trust window a relying party needs.
+  second**. That first one is also the one AM **signs** with, from the next
+  request onwards: adding a version is a signing **cutover**, not a window in
+  which to prepare for one (measured 2026-09-22, SP AuthnRequest path — see
+  "Verified against"). The two-certificate export still earns its keep — it is
+  what lets a peer that refreshes metadata catch up *afterwards*, and what makes
+  a rollback readable — but the peer has to be given the new certificate
+  **before** the version is added, not after.
 - Disable the old version (`aic esv secret disable <id> <v>`) and the export
   drops back to one. The published set tracks the ENABLED versions, in both
   directions.
 - The `<KeyDescriptor use="encryption">` is untouched throughout: it resolves
   its own label.
 
-So the rollover is: add a version → re-export → let the peer load the
-two-certificate metadata → disable (then destroy) the old version → re-export.
+So the rollover is: hand the peer the new certificate and have them trust it →
+add a version (**signing cuts over here**) → re-export → disable (then destroy)
+the old version → re-export. The re-export in the middle is still worth handing
+over, because a peer that auto-refreshes metadata recovers from it; it is a
+catch-up, not the safety step.
 
 **AM's other rotation mechanism — several aliases on one mapping — is not
 available on AIC.** A mapping `PUT` carrying two aliases is refused with
@@ -400,6 +409,20 @@ certificates for one purpose.
 AM emits **no `<ds:KeyName>`** in either `KeyDescriptor`, so a peer holding
 two-certificate metadata can only tell them apart by the certificates
 themselves.
+
+### There is no un-stage; the rollback is another version
+
+Disabling the version you just added is refused:
+`POST /environment/secrets/{id}/versions/{n}?_action=disable` on the **latest**
+version answers `400 Cannot disable latest secret version`, which
+`aic esv secret disable` surfaces verbatim. The obvious undo does not exist.
+
+The undo that works is to **re-add the previous key pair as a newer version**.
+Signing follows version recency, so a fresh version holding the old key pair
+puts the old certificate back in front — measured 2026-09-22 at ~7 s from
+`add-version` to the signature changing back, and it destroys nothing. The
+unwanted version stays enabled and can be disabled once it is no longer the
+latest.
 
 ### Propagation: no restart, no cache flush, seconds
 
@@ -895,12 +918,14 @@ non-sandbox tenant, or you will send a UAT token to the sandbox host.
 
 ## Verified against
 
-Four passes. The 2026-08-12 pass was read-only against a UAT tenant and is the
+Five passes. The 2026-08-12 pass was read-only against a UAT tenant and is the
 basis for the diagnosis sections; the first 2026-09-16 pass exercised the write
 surface against the sandbox; the second 2026-09-16 pass carried a signing-key
 rotation through end to end; the 2026-09-18 pass ran that rotation again
 through `aic saml rotate` rather than by hand, which is what surfaced the
-identifier rule.
+identifier rule (its entry is at the foot of this file); and the 2026-09-22 pass
+built a live federation to settle which of two published certificates AM signs
+with.
 
 ### 2026-08-12 — read-only, UAT `bravo`
 
@@ -1079,6 +1104,80 @@ behind.
   first) is the only evidence here, and ordering is not proof. Settling it needs
   a live federation: sign an AuthnRequest or an assertion and read the
   certificate out of the `<ds:Signature>`.
+- **Settled since**, by the 2026-09-22 pass below, which did exactly that: the
+  newest ENABLED version signs, and it is the one listed first. This pass's
+  reading of the order was right, for a reason this pass could not see.
+
+### 2026-09-22 — which published certificate AM signs with, sandbox `alpha`
+
+- Tenant: `<your-tenant>.forgeblocks.com` (**sandbox**), realm `alpha`. Realm
+  `bravo` was never read or written.
+- **The question.** The second 2026-09-16 pass established what a rollover
+  *publishes* and left open which of the two published certificates AM *signs*
+  with. Ordering was the only evidence, and ordering is not proof.
+- **Method.** A throwaway federation, built and torn down inside fifteen
+  minutes: a hosted SP `https://sp-sigprobe.example.com` (metaAlias
+  `/alpha/sp-sigprobe`, `AuthnRequestsSigned` true, and an
+  `AssertionConsumerService` added by `PUT` because `?_action=create` writes
+  none), a remote IdP imported from locally generated metadata, and a circle of
+  trust binding the two. `spSSOInit` was then driven once per round and the
+  signature on the resulting **AuthnRequest** read two independent ways:
+  - HTTP-POST binding — the certificate in `<ds:KeyInfo><ds:X509Certificate>`,
+    as the SHA-256 of its DER;
+  - HTTP-Redirect binding — the detached `Signature` query parameter verified
+    with `openssl dgst -verify` against **all three** candidate public keys.
+
+  Both readings were taken every round and agreed 5/5.
+- **What would have come out differently had the conclusion been false.** The
+  redirect verifier is not a rubber stamp: exactly one of the three candidate
+  keys verified in each round and the other two failed, so a round in which the
+  old certificate was still signing would have verified against the old key and
+  failed against the new one. The single-version control round proves the rig
+  reads the signer at all, and the rollback round is the discriminator between
+  "the newest version wins" and "that particular certificate wins".
+
+| Round                                     | ENABLED versions | Export order | Signs with |
+| ----------------------------------------- | ---------------- | ------------ | ---------- |
+| control, before any rollover              | v1 = A           | A            | **A**      |
+| ~12 s after `rotate stage`                | v1 = A, v2 = B   | B, A         | **B**      |
+| +3 min 51 s later, nothing touched        | v1 = A, v2 = B   | B, A         | **B**      |
+| after `rotate complete --force`           | v2 = B           | B            | **B**      |
+| rollback probe: cert A re-added as v3     | v2 = B, v3 = A   | A, B         | **A**      |
+
+- **AM signs with the newest ENABLED ESV secret version**, and the change is in
+  effect by the next request: the first post-stage reading was ~12 s after
+  `add-version` returned, and the reading 3 min 51 s later was identical. The
+  cutover is immediate *and* stable — neither transient nor delayed.
+- **So `stage` is the breaking moment, not `complete`.** A peer that does not
+  already trust the new certificate fails from the instant the version exists —
+  before it could possibly have loaded a certificate that did not exist until
+  then. The pre-trust step belongs *before* `stage`, which is why
+  `rotate stage --key-file` takes the operator's own key pair.
+- **The rollback round is what makes this a rule about versions.** Certificate A
+  is the *older* certificate by `notBefore`, and it won again when re-added as
+  v3. The signer is not a property of the certificate.
+- **`complete` does not change the signer.** It only stops publishing the
+  retired certificate; the cutover already happened at `stage`.
+- **The export order is a true indicator.** The first-listed (newest ENABLED)
+  certificate was the signer in all five rounds. That is what lets
+  `aic saml rotate status` name the active certificate; it still says nothing
+  about which *version* holds which certificate, which remains unreadable.
+- **You cannot un-stage by disabling.** `aic esv secret disable <id> <latest>`
+  is `400 Cannot disable latest secret version`. The rollback that works is
+  re-adding the old key pair as a newer version: ~7 s, and it destroys nothing.
+- `aic esv secret versions` reported `LOADED false` for the very versions that
+  were demonstrably signing, so that column does not mean "in use".
+- **Scope, and it is narrow.** Only the **SP AuthnRequest-signing** path was
+  exercised. Resolution is by secret label through AM's secret store, so IdP
+  assertion signing is very likely identical — but it was not measured and is
+  not claimed here.
+- **Cleanup confirmed.** The mapping was removed before the entity delete; both
+  entities and the CoT were deleted; the ESV secret was deleted. Entity list,
+  CoT list, secret-mapping list (33) and ESV secret list were captured before
+  and after and `diff`ed — identical every time. No label matching the probe
+  identifier remains in realm `alpha`'s label enum, the local rotation journal
+  is `[]`, and `GET /environment/startup` read `restartStatus: ready` afterwards;
+  `?_action=restart` was never called.
 
 ## Source citations
 
@@ -1109,16 +1208,23 @@ from exactly this reading and was wrong.
   path is a second `PUT` on the CoT — which is the call that can 500 half-way.
   There may be a console-only flow that does both atomically.
 - **Which of the two published certificates does AM sign with** during a
-  rollover? The metadata lists the active ESV secret version first, which is the
-  natural reading, but ordering is not proof. Answering it needs a live
-  federation and a look at the `<ds:Signature>` on a real message. Closed by
-  measurement on 2026-09-16: *that* mapping an ESV secret onto
-  `…saml2.<id>.signing` changes the exported certificate, that the published set
-  is the secret's ENABLED versions, and that no restart is involved.
+  rollover? **Answered 2026-09-22** (see that session): the **newest ENABLED ESV
+  secret version**, which is the one the export lists first — the first-listed
+  certificate was the signer in all five rounds, and that is what lets
+  `rotate status` name the active certificate truthfully. The consequence is
+  that adding a version cuts signing over immediately, so the two-certificate
+  export is a catch-up window rather than a pre-trust one. Measured on the **SP
+  AuthnRequest-signing path only**; the IdP assertion-signing path resolves
+  through the same secret label and is very likely the same, but it was not
+  exercised.
 - **Does a peer reliably accept two-certificate metadata?** AM publishes both
   with no `<ds:KeyName>` to tell them apart, so the peer has to try both. Ping
   and Entra do; a hand-rolled SP may not. This is a property of the peer, not of
-  AIC, and it is the thing that decides whether a rollover window is safe.
+  AIC. Since 2026-09-22 it is no longer what decides whether a rollover is safe
+  — signing cuts over the moment the version is added, so that is decided by
+  whether the peer trusts the new certificate beforehand — but it still decides
+  whether a metadata-refreshing peer can recover on its own, and whether the
+  rollback-by-newer-version path is visible to it.
 - **Is `mtls` on a SAML entity ever used on AIC?** The third label appears
   alongside `signing` and `encryption` whenever `secretIdIdentifier` is set, and
   `excludeClientCertificate` exists to keep it out of the metadata, but nothing
