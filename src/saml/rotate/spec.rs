@@ -717,8 +717,11 @@ pub enum Phase {
     /// One ENABLED version, one published certificate. The steady state, and
     /// the only one `stage` will act from.
     Settled,
-    /// Two ENABLED versions and two published certificates: the pre-trust
-    /// window. `complete` closes it.
+    /// Two ENABLED versions and two published certificates. **Signing has
+    /// already moved to the newer version** — AM signs with the newest ENABLED
+    /// one (measured 2026-09-22, `docs/api/06-saml.md`), so this is the state
+    /// that *follows* a cutover, not the one that precedes it. What is still
+    /// open is the old certificate's publication, which `complete` closes.
     Staged,
     /// The reads do not agree, so no verb may act on them.
     Inconsistent { detail: String },
@@ -1005,9 +1008,9 @@ pub struct ExclusivityProof {
 /// The refusal is the inventory, because the operator cannot act on "shared"
 /// — they need the names, and the remedy differs per consumer. There is no
 /// `--force`: a shared rollover is not one operation with a risk attached but
-/// several operations this command cannot sequence, since each consumer's
-/// peer loads the new certificate on its own schedule and the two-certificate
-/// window has to stay open until the last one has.
+/// several operations this command cannot sequence, since adding a version
+/// cuts **every** consumer's signing over at the same instant, and each
+/// consumer's peer has to have been given the new certificate before that.
 pub fn exclusive_ok(verb: &str, consumers: &Consumers) -> Result<ExclusivityProof> {
     if consumers.exclusive() {
         return Ok(ExclusivityProof {
@@ -1016,11 +1019,13 @@ pub fn exclusive_ok(verb: &str, consumers: &Consumers) -> Result<ExclusivityProo
     }
     let mut lines = vec![format!(
         "cannot {verb} a rollover of {}: it does not back {} alone, and a rollover of it is not \
-         a change to one entity. Adding a version publishes a second certificate for every \
-         consumer at once, and disabling one retires a certificate every consumer's peer must \
-         already have stopped verifying — while this command checks the export, the phase and \
-         the settlement of {} only. AIC permits a secret label to be shared between providers, \
-         so this is a supported tenant state and not a corrupted one. **Nothing has been sent.**",
+         a change to one entity. Adding a version cuts **every** consumer over to the new \
+         certificate at once — AM signs with the newest ENABLED version — so every one of their \
+         peers has to trust it beforehand; and disabling one retires a certificate every \
+         consumer's peer must already have stopped verifying. This command checks the export, \
+         the phase and the settlement of {} only. AIC permits a secret label to be shared \
+         between providers, so this is a supported tenant state and not a corrupted one. \
+         **Nothing has been sent.**",
         consumers.subject(),
         consumers.mine.describe(),
         consumers.mine.entity_id,
@@ -1048,9 +1053,10 @@ pub fn exclusive_ok(verb: &str, consumers: &Consumers) -> Result<ExclusivityProo
     }
     lines.push(format!(
         "  give this role a label and an ESV secret of its own if it should roll on its own \
-         schedule; otherwise roll the shared key deliberately with `aic esv secret add-version \
-         {0}` and, once **every** peer above holds the new certificate, `aic esv secret disable \
-         {0} <n>`. `aic secretmap list --realm {1}` shows what maps where.",
+         schedule; otherwise roll the shared key deliberately: once **every** peer above has \
+         been given the new certificate and trusts it, `aic esv secret add-version {0}` (which \
+         is where signing changes for all of them), then `aic esv secret disable {0} <n>`. \
+         `aic secretmap list --realm {1}` shows what maps where.",
         consumers.subject(),
         consumers.realm,
     ));
@@ -1142,7 +1148,7 @@ pub fn plan_stage(state: &RotationState, incoming: &KeyPair) -> Result<StagePlan
         (Phase::Staged, _) => {
             return Err(Error::Config(format!(
                 "a rollover is already staged for {} ({}): two certificates are published and \
-                 the peer has to load them before either can be retired. Finish it with \
+                 the newer one is already the one signing. Finish it with \
                  `aic saml rotate complete`, or re-enable the state you want with \
                  `aic esv secret enable`.",
                 state.entity_id,
@@ -1175,6 +1181,87 @@ pub fn plan_stage(state: &RotationState, incoming: &KeyPair) -> Result<StagePlan
         incoming: incoming.sha256.clone(),
         expected,
     })
+}
+
+/// What `stage` says before it sends anything — and the reason it is here
+/// rather than inline in `cli`.
+///
+/// **`stage` is the cutover.** AM signs with the newest ENABLED version of the
+/// ESV secret, from the next request onwards (measured 2026-09-22 on the SP
+/// AuthnRequest-signing path, `docs/api/06-saml.md`), so a peer that does not
+/// already trust the incoming certificate starts rejecting this role's
+/// signatures the moment the version exists — before it could possibly have
+/// loaded a certificate that did not exist until then. The two-certificate
+/// export that follows is how a peer which *refreshes* metadata catches up; it
+/// is not a window in which to prepare, and the module used to describe it as
+/// one.
+///
+/// That makes this the one message an operator must read before confirming, so
+/// it is built by a function a test can drive rather than assembled from
+/// `eprintln!`s no test can see. It prints on `--dry-run` too, which is where
+/// it is most useful.
+///
+/// It names the rollback because the obvious one does not exist: AIC refuses
+/// to disable the latest version (`400 Cannot disable latest secret version`),
+/// so the way back is another `add-version` holding the old key pair.
+pub fn stage_plan_lines(state: &RotationState, plan: &StagePlan) -> Vec<String> {
+    let role = role_descriptor(state.role);
+    vec![
+        format!(
+            "will add a version to ESV secret {} holding certificate {}",
+            plan.secret_id, plan.incoming
+        ),
+        format!(
+            "  **this cuts signing over**: AM signs with the newest ENABLED version, so {} \
+             ({role}) starts signing with {} within seconds of the version existing — not when \
+             the peer next loads metadata, and not when `complete` runs",
+            state.entity_id, plan.incoming
+        ),
+        format!(
+            "  stop here unless the peer already holds and trusts {}: from that moment it is \
+             what verifies this role's signatures, and a peer that does not have it starts \
+             rejecting them",
+            plan.incoming
+        ),
+        format!(
+            "  {} ({role}) will then publish both {} and {}. The already-published {} stays \
+             published — nothing is retired here — but it stops being the certificate in use; \
+             that export is how a peer which refreshes metadata catches up afterwards",
+            state.entity_id, plan.retained, plan.incoming, plan.retained
+        ),
+        format!(
+            "  there is no un-stage: AIC refuses to disable the version just added (400 Cannot \
+             disable latest secret version). To put {} back in front, add it again as a *newer* \
+             version — `aic esv secret add-version {} --value-file <its key pair>` — which \
+             takes seconds and destroys nothing",
+            plan.retained, plan.secret_id
+        ),
+    ]
+}
+
+/// What `stage` says once the tenant has confirmed the new certificate is
+/// published.
+///
+/// The plan lines above warn; this one reports, and an operator who confirmed
+/// past the warning and then found out reads it here. It names the rollback a
+/// second time with the version number in hand, because this is the moment the
+/// rollback is needed and [`stage_plan_lines`] has scrolled away.
+pub fn stage_outcome_lines(state: &RotationState, plan: &StagePlan, version: &str) -> Vec<String> {
+    vec![
+        format!(
+            "{} ({}) now signs with {} — from now, not from whenever the peer loads the \
+             metadata",
+            state.entity_id,
+            role_descriptor(state.role),
+            plan.incoming
+        ),
+        format!(
+            "if that is wrong, version {version} cannot be disabled while it is the latest \
+             (400 Cannot disable latest secret version): put {} back in front with `aic esv \
+             secret add-version {} --value-file <its key pair>`",
+            plan.retained, plan.secret_id
+        ),
+    ]
 }
 
 pub fn authorize_stage(dry_run: bool, _exclusive: &ExclusivityProof) -> Decision<StagePermit> {
@@ -1605,7 +1692,9 @@ pub fn complete_ok(forced: bool, plan: &CompletePlan, state: &RotationState) -> 
     }
     Err(Error::Config(format!(
         "would disable version {} of {} and stop publishing a certificate {} ({}) currently \
-         advertises. Any peer still pinned to it will start rejecting signatures. Confirm at a \
+         advertises. That copy is what a peer which refreshes metadata is catching up from, and \
+         once it is gone a peer still pinned to it has nothing left to move to — it will go on \
+         rejecting signatures with no published certificate that would fix it. Confirm at a \
          terminal, or pass --force.",
         plan.disable_version,
         plan.secret_id,
@@ -1636,7 +1725,8 @@ pub fn phase_summary(phase: &Phase) -> String {
                 .to_string()
         }
         Phase::Staged => {
-            "staged — two certificates published; the peer can load both before either is retired"
+            "staged — two certificates published; the newest ENABLED version is already the one \
+             signing, and `complete` stops publishing the other"
                 .to_string()
         }
         Phase::Inconsistent { detail } => format!("inconsistent — {detail}"),
@@ -1654,8 +1744,9 @@ pub fn next_step(state: &RotationState, phase: &Phase) -> String {
         }
         Phase::Settled => format!("aic saml rotate stage {scope} --key-file new-pair.pem"),
         Phase::Staged => format!(
-            "hand `aic saml metadata export {scope}` to the peer, then \
-             `aic saml rotate complete {scope}`"
+            "`aic saml rotate complete {scope}` — the peer needed the new certificate before \
+             the stage, not now; `aic saml metadata export {scope}` only lets one that \
+             refreshes metadata catch up"
         ),
         Phase::Dangling { .. } | Phase::Unusable { .. } | Phase::Inconsistent { .. } => {
             "nothing automatic — the state above has to be resolved first".to_string()
@@ -1688,6 +1779,27 @@ impl Adoption {
         }
     }
 }
+
+/// What a two-certificate report must say about which one is *in use*.
+///
+/// Sibling of [`PAIRING_CAVEAT`], and deliberately a different claim: that one
+/// says which **version** holds which certificate cannot be read, and this one
+/// says which **certificate** is signing can — not from the export's ordering,
+/// but from the rule the ordering reflects. Measured 2026-09-22
+/// (`docs/api/06-saml.md`), five rounds including a rollback probe that
+/// re-added the *older* certificate as the newest version and saw it take over
+/// again: recency of the ENABLED version decides, not any property of the
+/// certificate.
+///
+/// It is stated as the rule rather than pinned to one of the fingerprints
+/// above it, because naming one would mean reading it off the export's order —
+/// the inference this module refuses everywhere else.
+pub const SIGNER_RULE: &str = "\
+AM signs with the newest ENABLED version of the ESV secret, from the next request onwards (measured
+2026-09-22 on the SP AuthnRequest-signing path — docs/api/06-saml.md). So two published certificates
+means the cutover has already happened: the newer one is in use now, and the older one is published
+only so a peer that refreshes metadata can catch up. Retiring that older one — what `complete`
+normally does — changes nothing about what signs.";
 
 /// The sentence every two-certificate report carries.
 pub const PAIRING_CAVEAT: &str = "\
@@ -1861,6 +1973,8 @@ pub fn status_lines(
     lines.push(format!("phase       {}", phase_summary(phase)));
     lines.push(format!("next        {}", next_step(state, phase)));
     if published.len() > 1 {
+        lines.push(String::new());
+        lines.push(SIGNER_RULE.to_string());
         lines.push(String::new());
         lines.push(PAIRING_CAVEAT.to_string());
     }
@@ -2521,8 +2635,10 @@ mod tests {
         assert_eq!(plan.secret_id, "esv-sp-a-signing");
         assert_eq!(plan.retained, OLD);
         assert_eq!(plan.incoming, NEW);
-        // Both, not just the new one: the whole point of the window is that
-        // the certificate already in service keeps working.
+        // Both, not just the new one: the certificate that was in service
+        // stays *published* — that is what lets a peer which refreshes
+        // metadata catch up, and what makes the state readable afterwards.
+        // It does not stay in service; see the cutover tests below.
         assert_eq!(plan.expected, shas([OLD, NEW]));
 
         let same = message(plan_stage(&state(), &pair(OLD)).unwrap_err());
@@ -2531,6 +2647,102 @@ mod tests {
         let again = message(plan_stage(&staged(), &pair(STRANGER)).unwrap_err());
         assert!(again.contains("already staged"), "{again}");
         assert!(again.contains("rotate complete"), "{again}");
+    }
+
+    /// Red when the plan `stage` prints stops saying that it is the cutover,
+    /// or stops naming the only rollback there is.
+    ///
+    /// This is the message the 2026-09-22 measurement exists to put there:
+    /// the module used to describe the two-certificate export as the peer's
+    /// pre-trust window, when signing has already moved by then. The three
+    /// load-bearing facts are that the change is *now*, that the peer needed
+    /// the certificate *beforehand*, and that disabling the version just added
+    /// is refused — an operator who has only the first two still has no way
+    /// back.
+    #[test]
+    fn the_stage_plan_says_it_cuts_signing_over_and_names_the_way_back() {
+        let state = state();
+        let plan = plan_stage(&state, &pair(NEW)).unwrap();
+        let text = stage_plan_lines(&state, &plan).join("\n");
+
+        assert!(text.contains("cuts signing over"), "{text}");
+        assert!(
+            text.contains(NEW) && text.contains("within seconds"),
+            "the incoming certificate is what starts signing, and at once: {text}"
+        );
+        assert!(
+            text.contains("stop here unless the peer already holds"),
+            "the trust step belongs before this command, not after it: {text}"
+        );
+        // The old certificate's fate, stated as it is: still published, no
+        // longer in use. Both halves matter — "retired" would be wrong and
+        // "keeps working" is what this change is correcting.
+        assert!(text.contains("stays published"), "{text}");
+        assert!(
+            text.contains("stops being the certificate in use"),
+            "{text}"
+        );
+        // The rollback, as a command that can be run rather than a hint.
+        assert!(
+            text.contains("aic esv secret add-version esv-sp-a-signing"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Cannot disable latest secret version"),
+            "{text}"
+        );
+        assert!(
+            text.contains(OLD),
+            "the rollback needs the certificate it puts back: {text}"
+        );
+    }
+
+    /// Red when `stage` stops reporting the cutover after the write, or
+    /// reports it without the version number the refusal will quote.
+    ///
+    /// Separate from the plan lines because they are read at different
+    /// moments: the plan is read before a decision, this after one, and an
+    /// operator who confirmed past the warning finds out here.
+    #[test]
+    fn the_stage_outcome_repeats_the_cutover_with_the_version_in_hand() {
+        let state = state();
+        let plan = plan_stage(&state, &pair(NEW)).unwrap();
+        let text = stage_outcome_lines(&state, &plan, "2").join("\n");
+
+        assert!(text.contains("now signs with"), "{text}");
+        assert!(text.contains(NEW), "{text}");
+        assert!(
+            text.contains("version 2 cannot be disabled while it is the latest"),
+            "{text}"
+        );
+        assert!(
+            text.contains("aic esv secret add-version esv-sp-a-signing"),
+            "{text}"
+        );
+    }
+
+    /// Red when a two-certificate `status` stops saying which of them is in
+    /// use — and red if it starts saying so when there is only one.
+    ///
+    /// The control is the second half: [`SIGNER_RULE`] is a statement about a
+    /// rollover in progress, and a settled role that carried it would be
+    /// telling an operator about a cutover that is not happening.
+    #[test]
+    fn a_two_certificate_status_says_which_certificate_is_in_use() {
+        let staged = staged();
+        let staged_text = status_lines(&staged, &phase(&staged), None).join("\n");
+        assert!(staged_text.contains(SIGNER_RULE), "{staged_text}");
+        assert!(
+            staged_text.contains("newest ENABLED version is already the one signing"),
+            "the phase line carries it too, because that is the line read first: {staged_text}"
+        );
+        // And it is not the same claim as the pairing caveat: one says which
+        // certificate signs, the other says which version holds it.
+        assert!(staged_text.contains(PAIRING_CAVEAT), "{staged_text}");
+
+        let settled = state();
+        let settled_text = status_lines(&settled, &phase(&settled), None).join("\n");
+        assert!(!settled_text.contains(SIGNER_RULE), "{settled_text}");
     }
 
     // -----------------------------------------------------------------
@@ -2847,7 +3059,7 @@ mod tests {
         assert!(complete_ok(true, &plan, &state).is_ok());
         let refusal = message(complete_ok(false, &plan, &state).unwrap_err());
         assert!(refusal.contains("would disable version 1"), "{refusal}");
-        assert!(refusal.contains("start rejecting signatures"), "{refusal}");
+        assert!(refusal.contains("rejecting signatures"), "{refusal}");
         assert!(refusal.contains("--force"), "{refusal}");
     }
 

@@ -97,7 +97,12 @@ pub enum RotateCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// Publish a second certificate: add an ESV secret version.
+    /// Cut signing over to a new certificate: add an ESV secret version.
+    ///
+    /// AM signs with the newest ENABLED version, so this takes effect at once
+    /// rather than when the peer next loads metadata. Give the peer the new
+    /// certificate and have them trust it **first**; the old certificate stays
+    /// published afterwards so one that refreshes metadata can catch up.
     ///
     /// Preserves the identifier and its mapping — a certificate rotation is
     /// not entity repointing, which orphans the old mapping and rotates
@@ -126,11 +131,12 @@ pub enum RotateCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// Close the window: disable the old ESV secret version.
+    /// Stop publishing the old certificate: disable the old ESV secret version.
     ///
-    /// Run it once the peer holds the two-certificate metadata. Disabling is
-    /// reversible (`aic esv secret enable`); destroying the version is not,
-    /// and is deliberately a separate, explicit command.
+    /// It changes no signer — `stage` already cut signing over. What it ends is
+    /// the two-certificate export a peer that refreshes metadata catches up
+    /// from. Disabling is reversible (`aic esv secret enable`); destroying the
+    /// version is not, and is deliberately a separate, explicit command.
     Complete {
         /// The entity ID, exactly as the tenant stores it.
         entity_id: String,
@@ -505,21 +511,9 @@ async fn stage(
         .await?,
     )?;
 
-    eprintln!(
-        "will add a version to ESV secret {} holding certificate {}",
-        plan.secret_id, plan.incoming
-    );
-    eprintln!(
-        "  {} ({}) will then publish both {} and {}",
-        state.entity_id,
-        spec::role_descriptor(state.role),
-        plan.retained,
-        plan.incoming
-    );
-    eprintln!(
-        "  the certificate already published ({}) stays; nothing is retired here",
-        plan.retained
-    );
+    for line in spec::stage_plan_lines(&state, &plan) {
+        eprintln!("{line}");
+    }
 
     let permit = match spec::authorize_stage(dry_run, &exclusive) {
         Decision::Preview => {
@@ -568,6 +562,13 @@ async fn stage(
         .unwrap_or_default();
 
     confirm_publication(&tenant, &realm, entity_id, &state, &plan.expected).await?;
+    // After the export confirms it, not before: this says what the tenant is
+    // doing now, and `stage` is the moment it changes. The warning in the plan
+    // lines above has scrolled past a confirmation prompt by this point, and
+    // the rollback it names is needed *here*.
+    for line in spec::stage_outcome_lines(&state, &plan, &version) {
+        println!("{line}");
+    }
     journal::record(
         StagedRecord {
             tenant: tenant.name.clone(),

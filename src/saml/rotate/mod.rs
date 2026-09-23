@@ -24,12 +24,23 @@
 //!   only path that performs a **full-replace entity `PUT`** — the call that
 //!   answers 200 and deletes a whole role block when the body is wrong — and
 //!   an ordinary rollover must never be able to reach it.
-//! - **`stage`** adds an ESV secret version. It preserves the identifier and
-//!   its mapping: certificate rotation is not entity repointing, which would
-//!   leave an orphaned mapping nothing downstream removes.
-//! - **`complete`** disables the old version. Separate from `stage` because
-//!   the peer has to load the two-certificate metadata in between, and that is
-//!   a human interval, not a timeout.
+//! - **`stage`** adds an ESV secret version, **and that is the cutover**: AM
+//!   signs with the newest ENABLED version, from the next request onwards
+//!   (measured 2026-09-22 on the SP AuthnRequest-signing path,
+//!   `docs/api/06-saml.md`). So the peer must already hold and trust the
+//!   incoming certificate — which is what `--key-file` taking the operator's
+//!   own key pair is for — and the two-certificate export that follows is a
+//!   catch-up for a peer which refreshes metadata, not a window in which to
+//!   prepare. It preserves the identifier and its mapping: certificate
+//!   rotation is not entity repointing, which would leave an orphaned mapping
+//!   nothing downstream removes.
+//! - **`complete`** disables the old version, which stops publishing the old
+//!   certificate and — since the newest ENABLED version is the one signing and
+//!   the one being kept — **changes no signer**. Separate from `stage`
+//!   because AIC refuses to disable the latest version (`400 Cannot disable
+//!   latest secret version`), so what can be retired is the old one — and
+//!   because the interval in between is the catch-up, which is a human
+//!   interval, not a timeout.
 //!
 //! ## One secret, one role
 //!
@@ -62,6 +73,13 @@
 //! certificate to keep and `--disable-version <n>` for the version to disable.
 //! A fingerprint alone names no version, so one without the other leaves the
 //! choice to ordering, which is the thing being refused.
+//!
+//! The 2026-09-22 measurement narrows what is unknown without changing this:
+//! it settled which certificate is *in use* — the newest ENABLED version's, in
+//! all five rounds, which is also the first one listed — so
+//! [`spec::SIGNER_RULE`] can state that as a rule. It did not make the export's
+//! ordering an identity, and `complete` still derives a version to disable from
+//! the record or from the operator, never from the order.
 //!
 //! With a record, the derivation is the command's and `--disable-version` may
 //! only corroborate it — a named version that disagrees is refused, because
