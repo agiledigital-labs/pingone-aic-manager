@@ -1511,7 +1511,7 @@ fn restoration_lines(plan: &StagePlan, added: &str) -> Vec<String> {
 ///
 /// [`complete_ok`]'s sibling, and the same shape on purpose. `stage` is the
 /// verb that breaks a peer which was not prepared — more so than `complete`,
-/// which on its usual path changes no signer — so it asks the same question
+/// which on its usual path is not expected to change the signer — so it asks the same question
 /// in the same way: `--dry-run`, the permits and the production `--yes` gate
 /// each answer something else, and none of them is "have you pre-trusted the
 /// certificate this names".
@@ -1579,7 +1579,7 @@ pub struct CompletePlan {
     pub expected_drop: Option<String>,
     /// Whether the version being disabled is the **newest ENABLED** one —
     /// the one [`SIGNER_RULE`] says to treat as signing. `complete` usually
-    /// retires the other version and changes no signer; keeping the older
+    /// retires the other version and is not expected to change the signer; keeping the older
     /// certificate (`--retain` naming it, reachable when a DISABLED spare
     /// sits above the staged version) disables the signing one, and that is a
     /// cutover back to the retained certificate, with the same peer

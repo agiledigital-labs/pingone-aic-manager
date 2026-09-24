@@ -605,7 +605,7 @@ async fn stage(
     // After the export confirms it, not before: this says what the tenant is
     // doing now, and `stage` is the moment it changes. The warning in the plan
     // lines above has scrolled past a confirmation prompt by this point, and
-    // the rollback it names is needed *here*.
+    // the emergency signer restoration it names is needed *here*.
     for line in spec::stage_outcome_lines(&state, &plan, &version) {
         println!("{line}");
     }

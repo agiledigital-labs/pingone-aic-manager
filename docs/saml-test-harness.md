@@ -1107,12 +1107,15 @@ guard fails the empty case. **Measured** 2026-09-18.
 
 During a two-certificate window, **which of the two does the signer use?**
 
-**Answered on the AIC side on 2026-09-22**, by a purpose-built throwaway
-federation rather than by this harness: AM signs with the **newest ENABLED ESV
-secret version**, from the next request onwards, so `stage` is an immediate
-signing cutover (`docs/api/06-saml.md`). The experiment below is no longer the
-only way to find out — but it is still an *independent* one on a different rig,
-and a second rig disagreeing would be worth knowing about.
+**Answered on the AIC side for the SP path on 2026-09-22**, by a purpose-built
+throwaway federation rather than by this harness: on the **SP AuthnRequest**
+signing path AM signed with the **newest ENABLED ESV secret version** by the
+first observation, no later than 12 s after it was added, so `stage` is treated
+as an immediate signing cutover (`docs/api/06-saml.md`). That run did **not**
+measure IdP assertion signing, and the experiment below is direction B — AIC as
+the IdP — so it is now the way to close that gap as well as an *independent*
+check on a different rig. Until it is run, `aic saml rotate` treats the IdP
+cutover as a safety assumption and says so.
 
 The same gap remains on the Keycloak side of this file — the highest-priority
 provider is `active.RS256` on `GET /keys`, which is not the same statement as
@@ -1138,8 +1141,8 @@ is for. Vary one thing at a time, and run the controls:
    certificate: `harness.sh verify-signing <A> capture-B.b64`. A **zero** exit
    says the old certificate still signs; a **non-zero** exit naming B says
    `stage` starts signing with the new certificate immediately. The 2026-09-22
-   measurement got **B**, so this is now a check against that answer and a zero
-   exit would be the surprise. B does not mean the window protects nobody: it
+   measurement got **B** on the SP path; this is the IdP path, which nothing has
+   measured yet, so a zero exit here would be a real finding rather than noise. B does not mean the window protects nobody: it
    still lets a peer that refreshes metadata catch up, and it is what a rollback
    is read from. It means the window does not protect a peer that was not given
    the certificate beforehand.
