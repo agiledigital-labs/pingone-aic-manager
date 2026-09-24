@@ -502,6 +502,69 @@ pub fn rollover_pre_write_ok(
     Ok(proof)
 }
 
+/// Everything `init`'s pre-write recheck reads, after the prompt and the
+/// production gate and before the first of its writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitRecheck {
+    /// The entity, read fresh.
+    pub entity: Value,
+    /// The alias at the planned label now.
+    pub mapping: Option<String>,
+    /// A fresh consumer survey of every realm in [`SURVEYED_REALMS`].
+    pub survey: Vec<RealmSurvey>,
+}
+
+/// `init`'s counterpart of [`rollover_target_ok`]: is the setup still the
+/// one the plan was made against?
+///
+/// Both halves are the rules the per-step writers already apply —
+/// [`identifier_write_ok`] and [`mapping_write_ok`] — applied once more on
+/// the far side of the prompt, before anything is sent, so the refusal is
+/// never one that follows a completed step.
+pub fn init_target_ok(
+    state: &RotationState,
+    plan: &InitPlan,
+    planned_mapping: Option<&str>,
+    entity: &Value,
+    mapping: Option<&str>,
+) -> Result<()> {
+    identifier_write_ok(state.identifier.as_deref(), entity, state.role)?;
+    mapping_write_ok(&plan.label, &plan.secret_id, planned_mapping, mapping)
+}
+
+/// The whole pre-write decision for `init`, and the only source of the
+/// [`ExclusivityProof`] its writes hold — [`rollover_pre_write_ok`]'s
+/// sibling, in the same order: the target first, then the re-survey.
+///
+/// `mine` is this role through the **planned** label, because that is the
+/// label `init` is about to make it resolve; the target check has just shown
+/// the identifier is unchanged, so there is no fresher one to use.
+pub fn init_pre_write_ok(
+    state: &RotationState,
+    plan: &InitPlan,
+    planned_mapping: Option<&str>,
+    fresh: &InitRecheck,
+) -> Result<ExclusivityProof> {
+    init_target_ok(
+        state,
+        plan,
+        planned_mapping,
+        &fresh.entity,
+        fresh.mapping.as_deref(),
+    )?;
+    let mine = Consumer {
+        realm: state.realm.clone(),
+        entity_id: state.entity_id.clone(),
+        location: state.location,
+        role: state.role,
+        label: plan.label.clone(),
+    };
+    exclusive_ok(
+        "init",
+        &survey_consumers(&mine, Some(&plan.secret_id), &fresh.survey),
+    )
+}
+
 /// Whether the signing label is still unmapped, as `plan_init` found it.
 ///
 /// The orphan case from the other side. `plan_init` refuses when the label
@@ -4000,6 +4063,84 @@ mod tests {
             rollover_pre_write_ok("complete", "esv-sp-a-signing", &staged, &repointed).unwrap_err(),
         );
         assert!(refusal.contains("esv-sp-b-signing"), "{refusal}");
+    }
+
+    /// Red when `init`'s pre-write recheck stops re-surveying — the same
+    /// discriminating case as `a_consumer_added_after_the_plan_stops_the_write`,
+    /// for the third writing verb.
+    ///
+    /// The plan's survey was exclusive (it could not have been authorized
+    /// otherwise), and a second entity started carrying the same identifier
+    /// while the operator read the prompt. The identifier and mapping checks
+    /// the per-step writers make both still pass, so a recheck without the
+    /// survey writes. The refusal comes from the one recheck `apply_init` runs
+    /// before its first step, so nothing has been written when it fires.
+    #[test]
+    fn a_consumer_added_after_the_init_plan_stops_the_setup() {
+        let unconfigured = RotationState {
+            identifier: None,
+            mapped_alias: None,
+            secret: None,
+            versions: vec![],
+            ..state()
+        };
+        let plan = plan_init(
+            &unconfigured,
+            "spa",
+            "esv-sp-a-signing",
+            None,
+            None,
+            Some(&pair(NEW)),
+        )
+        .unwrap();
+        let fresh_entity = json!({"serviceProvider": {}});
+        let unmoved = || InitRecheck {
+            entity: fresh_entity.clone(),
+            mapping: None,
+            survey: vec![
+                realm_survey("alpha", &[], &[entity("https://sp-a.example.com", &[])]),
+                realm_survey("bravo", &[], &[]),
+            ],
+        };
+        // Plan time: exclusive, and the recheck agrees when nothing moved.
+        assert!(
+            exclusive_ok(
+                "init",
+                &alpha_survey(&[], &[entity("https://sp-a.example.com", &[])])
+            )
+            .is_ok()
+        );
+        assert!(init_pre_write_ok(&unconfigured, &plan, None, &unmoved()).is_ok());
+
+        // A second entity now names the identifier. The per-step checks are
+        // unmoved…
+        let mut arrived = unmoved();
+        assert!(
+            identifier_write_ok(None, &arrived.entity, Role::Sp).is_ok()
+                && mapping_write_ok(&plan.label, &plan.secret_id, None, None).is_ok(),
+            "the per-step writers' own checks have not moved"
+        );
+        arrived.survey[0] = realm_survey(
+            "alpha",
+            &[],
+            &[
+                entity("https://sp-a.example.com", &[]),
+                entity("https://sp-b.example.com", &[(Role::Sp, "spa")]),
+            ],
+        );
+        let refusal = message(init_pre_write_ok(&unconfigured, &plan, None, &arrived).unwrap_err());
+        assert!(refusal.contains("cannot init a rollover"), "{refusal}");
+        assert!(refusal.contains("https://sp-b.example.com"), "{refusal}");
+        assert!(refusal.contains("Nothing has been sent"), "{refusal}");
+
+        // The target half still refuses first, on its own: the label was
+        // mapped in the gap.
+        let mapped = InitRecheck {
+            mapping: Some("esv-other".into()),
+            ..unmoved()
+        };
+        let refusal = message(init_pre_write_ok(&unconfigured, &plan, None, &mapped).unwrap_err());
+        assert!(refusal.contains("esv-other"), "{refusal}");
     }
 
     /// Red when the pre-write recheck lets the identifier or the mapping move

@@ -1694,9 +1694,9 @@ before anything is printed as a plan — and again inside the pre-write recheck,
 after the confirmation prompt and the production gate, because a consumer added
 while you read the prompt would otherwise be cut over and never verified. The
 write holds the proof minted by that second survey; the first is consumed by
-authorising the plan. So `stage` and `complete` spend `2 × (4 + N)` calls on
-the question, and `init` the same (its second survey runs once, before its
-first write).
+authorising the plan. So each of `init`, `stage` and `complete` spends
+`2 × (4 + N)` calls on the question — `init`'s three steps are one write call
+with one recheck, like its siblings.
 
 The survey is **tenant-wide over the realms this tool addresses**, and a survey
 that skipped one is refused rather than trusted. What it still cannot see is
@@ -1821,10 +1821,11 @@ does not. So `stage` and `complete` re-read four things: the role's
 resolve to the ESV secret the plan named; and then the secret's ENABLED
 versions and this role's published certificates, which must still be the ones
 the plan was decided from — and between the two, they **re-survey every realm**
-for other consumers of the secret (above). `init` re-surveys once before its
-first write, and re-reads the `secretIdIdentifier` and the
-label's mapping before overwriting either. Every one of those refusals sends
-nothing, and the remedy is `aic saml rotate status` followed by a re-run.
+for other consumers of the secret (above). `init` does the same in the same
+order, once, before the first of its three steps: the `secretIdIdentifier` and
+the label's mapping must still be what the plan saw, then the re-survey — and
+each step re-reads its own document again before overwriting it. Every one of
+those refusals before the first step sends nothing, and the remedy is `aic saml rotate status` followed by a re-run.
 
 The first two are not a formality, and leaving them out was a real gap.
 Published metadata carries no secret and no version attribution at all, so

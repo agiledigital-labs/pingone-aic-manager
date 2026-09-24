@@ -446,48 +446,28 @@ async fn init(
             )?);
     spec::init_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
-    let fresh = ops::exclusive_before_init(&tenant.name, &mine, &plan.secret_id).await?;
 
-    if plan.set_identifier {
-        ops::set_identifier(&state, &plan.identifier, ok.confirmed_prod, &permit, &fresh).await?;
-        println!(
-            "entity {entity_id} now points at secretIdIdentifier {:?} (read back and compared \
-             whole)",
-            plan.identifier
-        );
-    }
-    if plan.create_secret {
-        let key = key.as_ref().expect("plan_init requires a key to create");
-        ops::create_key_secret(
-            &tenant.name,
-            &plan.secret_id,
-            &key.value,
-            &description
-                .map(str::to_string)
-                .unwrap_or_else(|| default_description(&state)),
-            ok.confirmed_prod,
-            &permit,
-            &fresh,
-        )
-        .await?;
-        println!(
-            "ESV secret {} created — encoding pem, useInPlaceholders false, certificate {}",
-            plan.secret_id, key.sha256
-        );
-    }
-    if plan.map_label {
-        ops::map_label(
-            &tenant.name,
-            &mine,
-            &plan.secret_id,
-            label_mapping.as_deref(),
-            ok.confirmed_prod,
-            &permit,
-            &fresh,
-        )
-        .await?;
-        println!("label {} now maps to {}", plan.label, plan.secret_id);
-    }
+    // One call for all three steps, the way `stage` and `complete` are one
+    // call each: `apply_init` rechecks and re-surveys once, before its first
+    // write, so a refusal can only come before anything is sent.
+    let description = description
+        .map(str::to_string)
+        .unwrap_or_else(|| default_description(&state));
+    ops::apply_init(
+        &tenant.name,
+        &state,
+        &plan,
+        &ops::InitInputs {
+            mine: &mine,
+            key: key.as_ref(),
+            description: &description,
+            planned_mapping: label_mapping.as_deref(),
+        },
+        ok.confirmed_prod,
+        &permit,
+        &mut |line| println!("{line}"),
+    )
+    .await?;
 
     // What the tenant publishes now, not what we expect it to — and the two
     // branches differ in what "expect" can even mean. A key pair this run
