@@ -604,75 +604,261 @@ impl InitStep {
 /// because there it would be false.
 pub const NOTHING_SENT: &str = "**Nothing has been sent.**";
 
+/// What is known about a tenant write that did not succeed.
+///
+/// Three states, because "it failed" is two different claims and an operator
+/// acts on whichever one they are told. The only safe retry is from a
+/// [`Refused`](WriteStatus::Refused) write; after either of the others the
+/// tenant has to be read first, since re-sending an ESV version or a mapping
+/// that already landed is a second write, not a retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteStatus {
+    /// Not applied: refused before it was sent — a recheck, a production
+    /// gate — or answered with a `4xx`, which is the tenant saying no.
+    Refused,
+    /// Sent, answered with success, and then the proof failed: the read-back
+    /// or the export that should show it could not be read, or showed
+    /// something else. **The write landed**; what it left is unverified.
+    AcceptedUnverified,
+    /// Sent, with no answer that says whether it was applied — a transport
+    /// failure, a lost or unreadable response, a `5xx`.
+    Unknown,
+}
+
+/// A failed tenant write and what is known about it ([`WriteStatus`]).
+///
+/// There is deliberately no `From<Error>`: every `?` on a writer's path has
+/// to say which side of the send it is on, because a conversion that
+/// defaulted to one of them would label a read-back failure "not sent" the
+/// first time someone added a `?` after the write.
+#[derive(Debug)]
+pub struct WriteFailure {
+    pub status: WriteStatus,
+    pub source: Error,
+}
+
+impl WriteFailure {
+    /// A failure before anything was sent: a read, a recheck, a refusal.
+    pub fn before_send(source: Error) -> Self {
+        Self {
+            status: WriteStatus::Refused,
+            source,
+        }
+    }
+
+    /// The write call itself failed. Only an answer from the tenant that
+    /// refused it — or a refusal raised before the request left, such as the
+    /// production gate — proves it was not applied; everything else is
+    /// unknown.
+    pub fn from_send(source: Error) -> Self {
+        let status = match &source {
+            Error::Api { status, .. } if (400..500).contains(status) => WriteStatus::Refused,
+            Error::ProdConfirmRequired | Error::AuthRequired => WriteStatus::Refused,
+            _ => WriteStatus::Unknown,
+        };
+        Self { status, source }
+    }
+
+    /// The write was accepted; proving what it left failed.
+    pub fn unverified(source: Error) -> Self {
+        Self {
+            status: WriteStatus::AcceptedUnverified,
+            source,
+        }
+    }
+
+    /// The operator-facing message for `verb`'s failed write `what`: the
+    /// source, preceded — unless the write was refused — by the sentence
+    /// that says it may have landed and to read the tenant before retrying.
+    ///
+    /// Shared by `init`, `stage` and `complete`, so the three verbs describe
+    /// the same state in the same words.
+    pub fn message(&self, verb: &str, what: &str, state: &RotationState) -> String {
+        let source = self.source.to_string();
+        match self.status {
+            WriteStatus::Refused => source,
+            WriteStatus::AcceptedUnverified | WriteStatus::Unknown => format!(
+                "{} {}\n{source}",
+                self.status.sentence(what),
+                read_before_retry(verb, state)
+            ),
+        }
+    }
+}
+
+impl WriteStatus {
+    /// What this status says about `what`, for the two states that are not a
+    /// refusal. A refusal's own message already says what it says.
+    fn sentence(self, what: &str) -> String {
+        match self {
+            Self::Refused => format!("{what} was not applied."),
+            Self::AcceptedUnverified => format!(
+                "{what} was **accepted by the tenant**, and proving what it left then failed. \
+                 **The write landed; this is not a no-op.**"
+            ),
+            Self::Unknown => format!(
+                "{what} was sent and **whether it was applied is unknown** — nothing answered \
+                 that proves it landed or that it did not. **Do not assume it did not land.**"
+            ),
+        }
+    }
+}
+
+/// The remedy for a write that may have landed: read, then decide.
+fn read_before_retry(verb: &str, state: &RotationState) -> String {
+    format!(
+        "Read the tenant before retrying: `aic saml rotate status {} --realm {} --role {}` shows \
+         what it resolves and publishes now, and re-running `aic saml rotate {verb}` plans from \
+         that state rather than from this run's.",
+        state.entity_id,
+        state.realm,
+        match state.role {
+            Role::Idp => "idp",
+            Role::Sp => "sp",
+        }
+    )
+}
+
+/// Where an `init` stopped: in a recheck, which never sends, or at a step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitStop {
+    /// The up-front recheck, in front of the first step.
+    Recheck,
+    /// The re-survey in front of this (activating) step.
+    Resurvey(InitStep),
+    /// This step's own write.
+    Step(InitStep),
+}
+
+impl InitStop {
+    fn describe(self, plan: &InitPlan) -> String {
+        match self {
+            Self::Recheck => "the pre-write recheck".to_string(),
+            Self::Resurvey(step) => format!("the re-survey before {}", step.describe(plan)),
+            Self::Step(step) => step.describe(plan),
+        }
+    }
+}
+
 /// An `init` that stopped partway — `.ai/core.md` §5's "a batch that stops
 /// partway must report what landed", in the shape `scripts::sync`'s
 /// `PullInstallError` gives it.
 ///
-/// `landed` is authoritative: each step in it completed. The step that failed
-/// is named separately and is never in it. The source error is kept whole,
-/// except that its [`NOTHING_SENT`] — true of the refused step, false of the
-/// run — is replaced once anything had landed.
+/// Two separate facts, because they are known differently. `completed` is
+/// authoritative: each step in it was sent, answered and verified. The step
+/// that stopped the run is **not** in it, and carries its own
+/// [`WriteStatus`] — refused, accepted but unverified, or unknown — because a
+/// write whose read-back failed has landed, and a write whose response was
+/// lost may have, and neither is a step that "did not complete" in the sense
+/// an operator retries from.
 #[derive(Debug)]
 pub struct InitApplyError {
-    landed: Vec<String>,
-    failed: String,
+    completed: Vec<String>,
+    stopped_at: String,
+    status: WriteStatus,
+    activating: bool,
     total: usize,
-    subject: String,
+    state: RotationState,
     source: Box<Error>,
 }
 
 impl InitApplyError {
-    /// `failed` is what was being attempted: a step, or the recheck in front
-    /// of the first one.
     pub fn new(
         state: &RotationState,
         plan: &InitPlan,
-        landed: &[InitStep],
-        failed: String,
-        source: Error,
+        completed: &[InitStep],
+        stop: InitStop,
+        failure: WriteFailure,
     ) -> Self {
+        let activating =
+            matches!(stop, InitStop::Step(step) if plan.activating_step() == Some(step));
         Self {
-            landed: landed.iter().map(|step| step.describe(plan)).collect(),
-            failed,
+            completed: completed.iter().map(|step| step.describe(plan)).collect(),
+            stopped_at: stop.describe(plan),
+            // A recheck sends nothing, whatever its error says.
+            status: match stop {
+                InitStop::Step(_) => failure.status,
+                InitStop::Recheck | InitStop::Resurvey(_) => WriteStatus::Refused,
+            },
+            activating,
             total: plan.steps().len(),
-            subject: format!("{} ({})", state.entity_id, role_descriptor(state.role)),
-            source: Box::new(source),
+            state: state.clone(),
+            source: Box::new(failure.source),
         }
     }
 
-    /// Steps that completed before the failure.
-    pub fn landed(&self) -> &[String] {
-        &self.landed
+    /// Steps that were sent, answered and verified before the stop.
+    pub fn completed(&self) -> &[String] {
+        &self.completed
+    }
+
+    /// What is known about the step that stopped the run.
+    pub fn status(&self) -> WriteStatus {
+        self.status
+    }
+
+    fn subject(&self) -> String {
+        format!(
+            "{} ({})",
+            self.state.entity_id,
+            role_descriptor(self.state.role)
+        )
     }
 }
 
 impl std::fmt::Display for InitApplyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let source = self.source.to_string();
-        if self.landed.is_empty() {
-            return write!(
-                f,
-                "0 of {} init steps landed; stopped at {}: {source}",
-                self.total, self.failed
-            );
-        }
-        write!(
-            f,
-            "{} of {} init steps landed — {} — then stopped at {}, which the message below \
-             describes. **Those steps were sent and have not been undone.** Unless that message \
-             says its own write landed, the identifier → mapping → secret chain is not complete, \
-             so {} still resolves what it did before this run and nothing has been cut over. \
-             Re-running `aic saml rotate init` skips the steps the tenant already shows done.\n{}",
-            self.landed.len(),
-            self.total,
-            self.landed.join("; "),
-            self.failed,
-            self.subject,
-            source.replace(
-                NOTHING_SENT,
-                "**That step was not sent — but the steps listed above were.**"
+        let done = if self.completed.is_empty() {
+            format!("0 of {} init steps completed", self.total)
+        } else {
+            format!(
+                "{} of {} init steps completed — {} — and **were sent and have not been undone**",
+                self.completed.len(),
+                self.total,
+                self.completed.join("; ")
             )
-        )
+        };
+        match self.status {
+            WriteStatus::Refused if self.completed.is_empty() => write!(
+                f,
+                "{done}; stopped at {}, which was not applied: {source}",
+                self.stopped_at
+            ),
+            // The activating step is the last planned one, and it was not
+            // applied, so no completed step can have finished the chain.
+            WriteStatus::Refused => write!(
+                f,
+                "{done}. Then {} was not applied, so the identifier → mapping → secret chain is \
+                 not complete: {} still resolves what it did before this run and nothing has \
+                 been cut over. Re-running `aic saml rotate init` skips the steps the tenant \
+                 already shows done.\n{}",
+                self.stopped_at,
+                self.subject(),
+                source.replace(
+                    NOTHING_SENT,
+                    "**That step was not sent — but the steps listed above were.**"
+                )
+            ),
+            // Nothing about the chain may be claimed: this step may have
+            // completed it.
+            WriteStatus::AcceptedUnverified | WriteStatus::Unknown => write!(
+                f,
+                "{done}. Then {}{} {}\n{source}",
+                self.status.sentence(&self.stopped_at),
+                if self.activating {
+                    format!(
+                        " It is the step that completes the identifier → mapping → secret \
+                         chain, so {} may already be resolving the new secret — treat signing \
+                         as possibly cut over.",
+                        self.subject()
+                    )
+                } else {
+                    String::new()
+                },
+                read_before_retry("init", &self.state)
+            ),
+        }
     }
 }
 
@@ -680,6 +866,55 @@ impl std::error::Error for InitApplyError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.source.as_ref())
     }
+}
+
+/// `init`'s step loop, after the up-front recheck: the seam a test drives.
+///
+/// Tenant-free on purpose. The two things that touch the tenant come in as
+/// callbacks — `activation_check`, the re-survey that mints a fresh proof in
+/// front of the activating step ([`InitPlan::resurveys_before`]), and
+/// `run_step`, which sends one step holding the proof it is given — so the
+/// ordering this function owns (re-survey, then send, then record) is what a
+/// test asserts, and deleting the re-survey fails one.
+///
+/// A step is recorded as completed only when `run_step` returns `Ok`; a
+/// failure carries its own [`WriteStatus`] into the [`InitApplyError`] rather
+/// than being counted either way.
+pub async fn run_init_steps(
+    state: &RotationState,
+    plan: &InitPlan,
+    upfront: &ExclusivityProof,
+    mut activation_check: impl AsyncFnMut(InitStep) -> Result<ExclusivityProof>,
+    mut run_step: impl AsyncFnMut(
+        InitStep,
+        &ExclusivityProof,
+    ) -> std::result::Result<String, WriteFailure>,
+    report: &mut dyn FnMut(String),
+) -> std::result::Result<(), InitApplyError> {
+    let mut completed = Vec::new();
+    for step in plan.steps() {
+        let activation;
+        let proof = if plan.resurveys_before(step) {
+            activation = activation_check(step).await.map_err(|error| {
+                InitApplyError::new(
+                    state,
+                    plan,
+                    &completed,
+                    InitStop::Resurvey(step),
+                    WriteFailure::before_send(error),
+                )
+            })?;
+            &activation
+        } else {
+            upfront
+        };
+        let line = run_step(step, proof).await.map_err(|failure| {
+            InitApplyError::new(state, plan, &completed, InitStop::Step(step), failure)
+        })?;
+        report(line);
+        completed.push(step);
+    }
+    Ok(())
 }
 
 /// Whether the signing label is still unmapped, as `plan_init` found it.
@@ -4414,8 +4649,8 @@ mod tests {
         assert!(init_exclusive(&unconfigured, &plan, &only_mine).is_ok());
     }
 
-    /// Red when an `init` that stopped partway says nothing was sent, or does
-    /// not name what landed — `.ai/core.md` §5's batch rule.
+    /// Red when an `init` refused partway says nothing was sent, or does not
+    /// name what completed — `.ai/core.md` §5's batch rule.
     ///
     /// Driven with the real refusals each later step can raise, because each
     /// carries [`NOTHING_SENT`], which is true of the refused step and false
@@ -4423,7 +4658,7 @@ mod tests {
     #[test]
     fn a_partial_init_names_what_landed_and_does_not_claim_nothing_was_sent() {
         let (unconfigured, plan) = init_plan(None, None);
-        let landed = [InitStep::SetIdentifier, InitStep::CreateSecret];
+        let completed = [InitStep::SetIdentifier, InitStep::CreateSecret];
         let refusals = [
             mapping_write_ok(&plan.label, &plan.secret_id, None, Some("esv-other")).unwrap_err(),
             exclusive_ok(
@@ -4441,33 +4676,286 @@ mod tests {
             let partial = InitApplyError::new(
                 &unconfigured,
                 &plan,
-                &landed,
-                InitStep::MapLabel.describe(&plan),
-                refusal,
+                &completed,
+                InitStop::Step(InitStep::MapLabel),
+                WriteFailure::before_send(refusal),
             );
             let text = partial.to_string();
             assert!(!text.contains(NOTHING_SENT), "{text}");
-            assert!(text.starts_with("2 of 3 init steps landed"), "{text}");
+            assert!(text.starts_with("2 of 3 init steps completed"), "{text}");
             assert!(text.contains("the entity PUT"), "{text}");
             assert!(
                 text.contains("creating ESV secret esv-sp-a-signing"),
                 "{text}"
             );
             assert!(text.contains("have not been undone"), "{text}");
-            assert_eq!(partial.landed().len(), 2);
+            assert!(text.contains("nothing has been cut over"), "{text}");
+            assert_eq!(partial.completed().len(), 2);
+            assert_eq!(partial.status(), WriteStatus::Refused);
         }
 
-        // Nothing landed: the refusal's own sentence is true and stays.
+        // Nothing completed: the refusal's own sentence is true and stays.
         let first = InitApplyError::new(
             &unconfigured,
             &plan,
             &[],
-            "the pre-write recheck".into(),
-            mapping_write_ok(&plan.label, &plan.secret_id, None, Some("esv-other")).unwrap_err(),
+            InitStop::Recheck,
+            WriteFailure::before_send(
+                mapping_write_ok(&plan.label, &plan.secret_id, None, Some("esv-other"))
+                    .unwrap_err(),
+            ),
         );
         let text = first.to_string();
-        assert!(text.starts_with("0 of 3 init steps landed"), "{text}");
+        assert!(text.starts_with("0 of 3 init steps completed"), "{text}");
         assert!(text.contains(NOTHING_SENT), "{text}");
+    }
+
+    /// Red when a send failure is called "not applied" without the tenant
+    /// having said no.
+    ///
+    /// The discriminating pair is a `4xx` against a `5xx` from the same call:
+    /// only the first is the tenant refusing. A dropped agent connection has
+    /// no answer at all.
+    #[test]
+    fn only_a_refusal_proves_a_write_was_not_applied() {
+        let api = |status| Error::Api {
+            status,
+            body: "x".into(),
+        };
+        assert_eq!(
+            WriteFailure::from_send(api(400)).status,
+            WriteStatus::Refused
+        );
+        assert_eq!(
+            WriteFailure::from_send(api(409)).status,
+            WriteStatus::Refused
+        );
+        assert_eq!(
+            WriteFailure::from_send(Error::ProdConfirmRequired).status,
+            WriteStatus::Refused
+        );
+        assert_eq!(
+            WriteFailure::from_send(api(502)).status,
+            WriteStatus::Unknown
+        );
+        assert_eq!(
+            WriteFailure::from_send(Error::AgentProtocolMismatch).status,
+            WriteStatus::Unknown
+        );
+        assert_eq!(
+            WriteFailure::before_send(api(502)).status,
+            WriteStatus::Refused
+        );
+        assert_eq!(
+            WriteFailure::unverified(api(400)).status,
+            WriteStatus::AcceptedUnverified
+        );
+    }
+
+    /// Red when a write that may have landed is reported the way a refused
+    /// one is — by any of the three verbs, since they share the wording.
+    #[test]
+    fn a_write_that_may_have_landed_says_to_read_the_tenant_first() {
+        let state = state();
+        let refused = WriteFailure::from_send(Error::Api {
+            status: 400,
+            body: "Cannot disable latest secret version".into(),
+        });
+        let text = refused.message("complete", "disabling version 1", &state);
+        assert!(!text.contains("read the tenant"), "{text}");
+        assert!(
+            !text.to_lowercase().contains("read the tenant before"),
+            "{text}"
+        );
+
+        for (failure, marker) in [
+            (
+                WriteFailure::from_send(Error::AgentProtocolMismatch),
+                "whether it was applied is unknown",
+            ),
+            (
+                WriteFailure::unverified(Error::Config("export unreadable".into())),
+                "The write landed",
+            ),
+        ] {
+            for verb in ["stage", "complete"] {
+                let text = failure.message(verb, "the write", &state);
+                assert!(text.contains(marker), "{text}");
+                assert!(text.contains("Read the tenant before retrying"), "{text}");
+                assert!(
+                    text.contains(
+                        "`aic saml rotate status https://sp-a.example.com --realm alpha --role sp`"
+                    ),
+                    "{text}"
+                );
+                assert!(
+                    text.contains(&format!("`aic saml rotate {verb}`")),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    /// Red when an `init` whose write was accepted, or whose outcome is
+    /// unknown, is counted as not having happened — the round-6 blocker.
+    ///
+    /// The activating step here is the entity `PUT` alone (mapping and
+    /// secret already exist), so a `PUT` accepted and then unreadable may
+    /// already have moved signing. "0 of 1 … nothing has been cut over" would
+    /// be false.
+    #[test]
+    fn an_accepted_or_unknown_step_makes_no_claim_about_the_chain() {
+        let (unconfigured, only_put) = init_plan(Some("esv-sp-a-signing"), Some(facts()));
+        assert_eq!(only_put.activating_step(), Some(InitStep::SetIdentifier));
+        for failure in [
+            WriteFailure::unverified(Error::Config("reading it back failed".into())),
+            WriteFailure::from_send(Error::AgentProtocolMismatch),
+        ] {
+            let status = failure.status;
+            let error = InitApplyError::new(
+                &unconfigured,
+                &only_put,
+                &[],
+                InitStop::Step(InitStep::SetIdentifier),
+                failure,
+            );
+            assert_eq!(error.status(), status);
+            let text = error.to_string();
+            assert!(!text.contains("nothing has been cut over"), "{text}");
+            assert!(
+                !text.contains("still resolves what it did before"),
+                "{text}"
+            );
+            assert!(!text.contains("which was not applied"), "{text}");
+            assert!(text.contains("possibly cut over"), "{text}");
+            assert!(text.contains("Read the tenant before retrying"), "{text}");
+        }
+
+        // A non-activating step that may have landed: still no chain claim,
+        // but no cutover warning either — the chain needs a later step.
+        let (unconfigured, full) = init_plan(None, None);
+        let text = InitApplyError::new(
+            &unconfigured,
+            &full,
+            &[InitStep::SetIdentifier],
+            InitStop::Step(InitStep::CreateSecret),
+            WriteFailure::from_send(Error::AgentProtocolMismatch),
+        )
+        .to_string();
+        assert!(text.starts_with("1 of 3 init steps completed"), "{text}");
+        assert!(!text.contains("nothing has been cut over"), "{text}");
+        assert!(!text.contains("possibly cut over"), "{text}");
+        assert!(text.contains("Read the tenant before retrying"), "{text}");
+    }
+
+    /// Red when `init`'s loop sends the activating step without re-surveying
+    /// in front of it — the call the round-6 review found no test for.
+    ///
+    /// Drives the real [`run_init_steps`] with recording callbacks: step one
+    /// completes, the re-survey refuses, and the activating write is never
+    /// called.
+    #[tokio::test]
+    async fn a_refused_resurvey_stops_the_activating_write_from_being_sent() {
+        use std::cell::RefCell;
+        let (unconfigured, dangling) = init_plan(Some("esv-sp-a-signing"), None);
+        assert_eq!(
+            dangling.steps(),
+            vec![InitStep::SetIdentifier, InitStep::CreateSecret]
+        );
+        let upfront = proof();
+        let log = RefCell::new(Vec::new());
+        let error = run_init_steps(
+            &unconfigured,
+            &dangling,
+            &upfront,
+            async |step| {
+                log.borrow_mut().push(format!("resurvey {step:?}"));
+                Err(Error::Config(format!("taken in the gap. {NOTHING_SENT}")))
+            },
+            async |step, _proof| {
+                log.borrow_mut().push(format!("send {step:?}"));
+                Ok(format!("{step:?} done"))
+            },
+            &mut |line| log.borrow_mut().push(format!("report {line}")),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "send SetIdentifier",
+                "report SetIdentifier done",
+                "resurvey CreateSecret",
+            ]
+        );
+        assert_eq!(error.completed().len(), 1);
+        assert_eq!(error.status(), WriteStatus::Refused);
+        let text = error.to_string();
+        assert!(
+            text.contains("the re-survey before creating ESV secret"),
+            "{text}"
+        );
+        assert!(text.contains("nothing has been cut over"), "{text}");
+
+        // Control: a re-survey that passes lets the activating step through,
+        // after it and not before.
+        log.borrow_mut().clear();
+        run_init_steps(
+            &unconfigured,
+            &dangling,
+            &upfront,
+            async |step| {
+                log.borrow_mut().push(format!("resurvey {step:?}"));
+                Ok(proof())
+            },
+            async |step, _proof| {
+                log.borrow_mut().push(format!("send {step:?}"));
+                Ok(String::new())
+            },
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "send SetIdentifier",
+                "resurvey CreateSecret",
+                "send CreateSecret"
+            ]
+        );
+    }
+
+    /// Red when the loop counts a step whose write was accepted but not
+    /// verified as either completed or not applied — the path item 1 of the
+    /// round-6 review describes, reached through the real loop.
+    #[tokio::test]
+    async fn the_loop_reports_an_accepted_activating_write_as_possibly_cut_over() {
+        let (unconfigured, full) = init_plan(None, None);
+        let upfront = proof();
+        let error = run_init_steps(
+            &unconfigured,
+            &full,
+            &upfront,
+            async |_| Ok(proof()),
+            async |step, _proof| match step {
+                InitStep::MapLabel => Err(WriteFailure::unverified(Error::Config(
+                    "mapping read-back failed".into(),
+                ))),
+                _ => Ok(String::new()),
+            },
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.completed().len(), 2);
+        assert_eq!(error.status(), WriteStatus::AcceptedUnverified);
+        let text = error.to_string();
+        assert!(text.starts_with("2 of 3 init steps completed"), "{text}");
+        assert!(text.contains("The write landed"), "{text}");
+        assert!(text.contains("possibly cut over"), "{text}");
+        assert!(!text.contains("nothing has been cut over"), "{text}");
     }
 
     /// Red when the pre-write recheck lets the identifier or the mapping move

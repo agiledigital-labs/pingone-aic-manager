@@ -471,6 +471,11 @@ async fn init(
     )
     .await
     .map_err(|error| Error::Config(error.to_string()))?;
+    // Every step was sent, answered and verified; what follows proves the
+    // chain resolves, so a failure from here on is of an accepted write.
+    let unverified = |failure: spec::WriteFailure| {
+        Error::Config(failure.message("init", "this init run", &state))
+    };
 
     // What the tenant publishes now, not what we expect it to — and the two
     // branches differ in what "expect" can even mean. A key pair this run
@@ -488,17 +493,23 @@ async fn init(
         // staged — handed a later `complete` a pairing describing the setup
         // rather than a rollover, and with a higher DISABLED spare version
         // AIC's latest-version refusal no longer catches the result.
-        return confirm_publication(&tenant, &realm, entity_id, &state, &expected).await;
+        return confirm_publication(&tenant, &realm, entity_id, &state, &expected)
+            .await
+            .map_err(unverified);
     }
 
-    let published = ops::wait_for_any_cert(&tenant, &realm, entity_id, state.role).await?;
+    let published = ops::wait_for_any_cert(&tenant, &realm, entity_id, state.role)
+        .await
+        .map_err(|error| unverified(spec::WriteFailure::unverified(error)))?;
     for line in spec::adoption_outcome(
         &state,
         &plan.secret_id,
         &published,
         key.as_ref().map(|key| key.sha256.as_str()),
         spec::Adoption::Applied,
-    )? {
+    )
+    .map_err(|error| unverified(spec::WriteFailure::unverified(error)))?
+    {
         println!("{line}");
     }
     Ok(())
@@ -557,6 +568,7 @@ async fn stage(
     spec::stage_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
+    let adding = format!("adding a version to ESV secret {}", plan.secret_id);
     let created = ops::add_version(
         &tenant,
         &state,
@@ -565,12 +577,13 @@ async fn stage(
         ok.confirmed_prod,
         &permit,
     )
-    .await?;
+    .await
+    .map_err(|failure| Error::Config(failure.message("stage", &adding, &state)))?;
     let version = created
         .get("version")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            Error::Config(format!(
+            spec::WriteFailure::unverified(Error::Config(format!(
                 "ESV secret {} accepted the new version but its response named no version \
                  number, so this rollover cannot be recorded, and the record is the only \
                  thing that ties a certificate to a version. \
@@ -579,12 +592,16 @@ async fn stage(
                  --disable-version <n>`, naming the version holding the certificate being \
                  retired. Both halves are needed: {} names a certificate, not a version.",
                 plan.secret_id, plan.secret_id, plan.incoming, plan.incoming
-            ))
-        })?
+            )))
+            .message("stage", &adding, &state)
+        })
+        .map_err(Error::Config)?
         .to_string();
     println!("ESV secret {} version {version} added", plan.secret_id);
 
-    confirm_publication(&tenant, &realm, entity_id, &state, &plan.expected).await?;
+    confirm_publication(&tenant, &realm, entity_id, &state, &plan.expected)
+        .await
+        .map_err(|failure| Error::Config(failure.message("stage", &adding, &state)))?;
     // After the export confirms it, not before: this says what the tenant is
     // doing now, and `stage` is the moment it changes. The warning in the plan
     // lines above has scrolled past a confirmation prompt by this point, and
@@ -683,14 +700,25 @@ async fn complete(
     spec::complete_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
-    ops::disable_version(&tenant, &state, &plan, ok.confirmed_prod, &permit).await?;
+    let disabling = format!(
+        "disabling version {} of ESV secret {}",
+        plan.disable_version, plan.secret_id
+    );
+    let unverified = |failure: spec::WriteFailure| {
+        Error::Config(failure.message("complete", &disabling, &state))
+    };
+    ops::disable_version(&tenant, &state, &plan, ok.confirmed_prod, &permit)
+        .await
+        .map_err(unverified)?;
     println!(
         "ESV secret {} version {} disabled",
         plan.secret_id, plan.disable_version
     );
 
     let expected = std::iter::once(plan.retain.clone()).collect();
-    let settled = ops::wait_for_export(&tenant, &realm, entity_id, state.role, &expected).await?;
+    let settled = ops::wait_for_export(&tenant, &realm, entity_id, state.role, &expected)
+        .await
+        .map_err(|error| unverified(spec::WriteFailure::unverified(error)))?;
     report_settlement(&settled, &state);
     if matches!(settled, Settlement::Settled) {
         journal::clear(&key_for(&state))?;
@@ -711,7 +739,9 @@ async fn complete(
         );
         return Ok(());
     }
-    Err(settlement_error(&state, "complete"))
+    Err(unverified(spec::WriteFailure::unverified(
+        settlement_error(&state, "complete"),
+    )))
 }
 
 /// The rollover's own entry in the consumer survey.
@@ -803,11 +833,17 @@ async fn confirm_publication(
     entity_id: &str,
     state: &RotationState,
     expected: &std::collections::BTreeSet<String>,
-) -> Result<()> {
-    let settled = ops::wait_for_export(tenant, realm, entity_id, state.role, expected).await?;
+) -> std::result::Result<(), spec::WriteFailure> {
+    // Only ever called after an accepted write, so every failure here is one
+    // of proving it: the write landed either way.
+    let settled = ops::wait_for_export(tenant, realm, entity_id, state.role, expected)
+        .await
+        .map_err(spec::WriteFailure::unverified)?;
     report_settlement(&settled, state);
     if !matches!(settled, Settlement::Settled) {
-        return Err(settlement_error(state, "confirm"));
+        return Err(spec::WriteFailure::unverified(settlement_error(
+            state, "confirm",
+        )));
     }
     println!(
         "{} ({}) now publishes {}",
