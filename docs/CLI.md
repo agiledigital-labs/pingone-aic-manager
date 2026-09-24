@@ -1702,7 +1702,15 @@ The survey is **tenant-wide over the realms this tool addresses**, and a survey
 that skipped one is refused rather than trusted. What it still cannot see is
 the **root** realm: AIC answers 403 for every root realm-config family measured
 so far, but whether root can hold a SAML entity provider or a secret mapping
-has not been measured, and every sharing report says so.
+has not been measured, and every sharing report says so — every refusal, and
+`status` in text and in `--json` alike, whether or not anything is shared.
+
+**`rotate status --json` changed shape** when the survey became tenant-wide:
+`sharing.unclaimedLabels` is now an array of `{realm, label}` objects (it was
+an array of label strings), each `sharing.others[]` entry gained `realm`, and
+`sharing` gained `realms` (what was surveyed) and `unsurveyedRealms`. A
+consumer of the old shape has to be updated; nothing in this repository was
+one.
 
 #### What `status` cannot tell you
 
@@ -1789,9 +1797,10 @@ version is the latest — and AIC will not disable the latest version
 (`400 Cannot disable latest secret version`). There is no flag for that: stage
 the key pair you want to keep as a new version and complete that rollover
 instead. Where it *is* reachable — a DISABLED spare version above the staged
-one — that `complete` disables the version to treat as signing, so it **moves
-signing back** to the retained certificate: a cutover with `stage`'s peer
-precondition, and the plan and the prompt say so.
+one — that `complete` disables the version to treat as signing, so **treat it
+as a signer cutover** back to the retained certificate, with `stage`'s peer
+precondition. That is a prediction from the rule, never measured on either
+role, and the plan and the prompt say so in that form.
 
 What the export cannot do is **attribute**. It says what is published; which of
 two published keys the runtime picks follows from the rule above — the newest

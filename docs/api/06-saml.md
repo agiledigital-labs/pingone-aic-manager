@@ -1185,13 +1185,16 @@ behind.
 - **The measured `complete` did not change the signer.** It retired the
   certificate that was not signing (v1 = A, keeping B); the cutover had already
   happened at `stage`. A `complete` that keeps the *older* certificate disables
-  the signing version instead — not exercised here, and expected to move
-  signing back, which is why `rotate complete` says so in its plan when it
+  the signing version instead — not exercised here, and so only *treated as*
+  a signer cutover back, which is how `rotate complete`'s plan puts it when it
   would.
 - **The export order is a true indicator.** The first-listed (newest ENABLED)
-  certificate was the signer in all five rounds. That is what lets
-  `aic saml rotate status` name the active certificate; it still says nothing
-  about which *version* holds which certificate, which remains unreadable.
+  certificate was the signer in all five rounds. `aic saml rotate status`
+  still does **not** name the active certificate from it — pointing at one
+  fingerprint would mean reading the export's order — and states the rule
+  instead (`SIGNER_RULE`). Nor does it say which *version* holds which
+  certificate, which remains unreadable. (Corrected 2026-09-24: this line used
+  to say `status` names the active certificate, which it never has.)
 - **You cannot un-stage by disabling.** `aic esv secret disable <id> <latest>`
   is `400 Cannot disable latest secret version`. What works is emergency signer
   restoration — re-adding the old key pair, private key included, as a newer
