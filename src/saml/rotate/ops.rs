@@ -319,19 +319,24 @@ pub struct InitInputs<'a> {
 }
 
 /// Perform `init`'s planned steps — the entity `PUT`, the secret, the mapping
-/// — after one pre-write recheck.
+/// — each holding an exclusivity proof no older than it needs to be.
 ///
-/// The sibling of [`add_version`] and [`disable_version`], and the same
-/// shape: the writer's first act is [`init_recheck`], which re-reads what the
-/// plan was decided from, re-surveys every realm, and mints the
-/// [`spec::ExclusivityProof`] this call holds. It runs after the prompt and
-/// the production gate and before the first write, so a refusal can only
-/// happen while nothing has been sent — which is what keeps the refusal's own
-/// "Nothing has been sent" true by construction rather than by care.
+/// The sibling of [`add_version`] and [`disable_version`]: the first act is
+/// [`init_recheck`], after the prompt and the production gate, which
+/// re-reads what the plan was decided from, re-surveys every realm and mints
+/// the proof. `init` differs from its siblings in having up to **three**
+/// writes, and the survey in front of the first is older than the third. So
+/// the step that **activates** the chain ([`spec::InitPlan::activating_step`]
+/// — the write from which the role resolves the secret) re-surveys again
+/// immediately before it is sent, and holds the proof minted there
+/// ([`spec::InitPlan::resurveys_before`]). A second entity that took the
+/// identifier after step one is refused rather than cut over with this one.
+/// That narrows the race to one round trip; it cannot make it atomic — no
+/// REST read followed by a write can.
 ///
-/// `report` receives one line per completed step, as it completes, so a
-/// failure in step two still leaves step one reported. This module prints
-/// nothing itself; the caller decides where the lines go.
+/// A stop partway is an [`spec::InitApplyError`] naming the steps that
+/// landed, `.ai/core.md` §5's batch rule. `report` still receives one line
+/// per completed step as it completes; this module prints nothing itself.
 pub async fn apply_init(
     tenant: &str,
     state: &RotationState,
@@ -340,48 +345,104 @@ pub async fn apply_init(
     confirmed_prod: bool,
     permit: &spec::InitPermit,
     report: &mut dyn FnMut(String),
-) -> Result<()> {
-    let _fresh: spec::ExclusivityProof = init_recheck(tenant, state, plan, inputs).await?;
+) -> std::result::Result<(), spec::InitApplyError> {
+    let stop = |landed: &[spec::InitStep], failed: String, error: Error| {
+        spec::InitApplyError::new(state, plan, landed, failed, error)
+    };
+    let upfront = init_recheck(tenant, state, plan, inputs)
+        .await
+        .map_err(|error| stop(&[], "the pre-write recheck".to_string(), error))?;
 
-    if plan.set_identifier {
-        set_identifier(state, &plan.identifier, confirmed_prod, permit).await?;
-        report(format!(
-            "entity {} now points at secretIdIdentifier {:?} (read back and compared whole)",
-            state.entity_id, plan.identifier
-        ));
-    }
-    if plan.create_secret {
-        let key = inputs.key.expect("plan_init requires a key to create");
-        create_key_secret(
-            tenant,
-            &plan.secret_id,
-            &key.value,
-            inputs.description,
-            confirmed_prod,
-            permit,
-        )
-        .await?;
-        report(format!(
-            "ESV secret {} created — encoding pem, useInPlaceholders false, certificate {}",
-            plan.secret_id, key.sha256
-        ));
-    }
-    if plan.map_label {
-        map_label(
-            tenant,
-            inputs.mine,
-            &plan.secret_id,
-            inputs.planned_mapping,
-            confirmed_prod,
-            permit,
-        )
-        .await?;
-        report(format!(
-            "label {} now maps to {}",
-            plan.label, plan.secret_id
-        ));
+    let mut landed = Vec::new();
+    for step in plan.steps() {
+        let activation;
+        let _proof: &spec::ExclusivityProof = if plan.resurveys_before(step) {
+            activation = activation_recheck(tenant, state, plan)
+                .await
+                .map_err(|error| {
+                    stop(
+                        &landed,
+                        format!("the re-survey before {}", step.describe(plan)),
+                        error,
+                    )
+                })?;
+            &activation
+        } else {
+            &upfront
+        };
+        let line = run_step(tenant, state, plan, inputs, step, confirmed_prod, permit)
+            .await
+            .map_err(|error| stop(&landed, step.describe(plan), error))?;
+        report(line);
+        landed.push(step);
     }
     Ok(())
+}
+
+/// Send one of `init`'s steps and say what it did.
+async fn run_step(
+    tenant: &str,
+    state: &RotationState,
+    plan: &spec::InitPlan,
+    inputs: &InitInputs<'_>,
+    step: spec::InitStep,
+    confirmed_prod: bool,
+    permit: &spec::InitPermit,
+) -> Result<String> {
+    match step {
+        spec::InitStep::SetIdentifier => {
+            set_identifier(state, &plan.identifier, confirmed_prod, permit).await?;
+            Ok(format!(
+                "entity {} now points at secretIdIdentifier {:?} (read back and compared whole)",
+                state.entity_id, plan.identifier
+            ))
+        }
+        spec::InitStep::CreateSecret => {
+            let key = inputs.key.expect("plan_init requires a key to create");
+            create_key_secret(
+                tenant,
+                &plan.secret_id,
+                &key.value,
+                inputs.description,
+                confirmed_prod,
+                permit,
+            )
+            .await?;
+            Ok(format!(
+                "ESV secret {} created — encoding pem, useInPlaceholders false, certificate {}",
+                plan.secret_id, key.sha256
+            ))
+        }
+        spec::InitStep::MapLabel => {
+            map_label(
+                tenant,
+                inputs.mine,
+                &plan.secret_id,
+                inputs.planned_mapping,
+                confirmed_prod,
+                permit,
+            )
+            .await?;
+            Ok(format!(
+                "label {} now maps to {}",
+                plan.label, plan.secret_id
+            ))
+        }
+    }
+}
+
+/// The re-survey in front of `init`'s activating step
+/// ([`spec::init_exclusive`]).
+async fn activation_recheck(
+    tenant: &str,
+    state: &RotationState,
+    plan: &spec::InitPlan,
+) -> Result<spec::ExclusivityProof> {
+    let mut survey = Vec::new();
+    for realm in spec::SURVEYED_REALMS {
+        survey.push(read_realm_survey(tenant, realm).await?);
+    }
+    spec::init_exclusive(state, plan, &survey)
 }
 
 /// `init`'s pre-write recheck: [`recheck`]'s sibling, in the same order.

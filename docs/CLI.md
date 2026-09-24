@@ -1694,9 +1694,15 @@ before anything is printed as a plan — and again inside the pre-write recheck,
 after the confirmation prompt and the production gate, because a consumer added
 while you read the prompt would otherwise be cut over and never verified. The
 write holds the proof minted by that second survey; the first is consumed by
-authorising the plan. So each of `init`, `stage` and `complete` spends
-`2 × (4 + N)` calls on the question — `init`'s three steps are one write call
-with one recheck, like its siblings.
+authorising the plan. So `stage` and `complete` spend `2 × (4 + N)` calls on
+the question. `init` can spend one survey more, `3 × (4 + N)`: it has up to
+three writes, and the one that **activates** the chain — the last planned step,
+from which the role resolves the secret; usually the mapping, or creating the
+secret when a mapping already points at it — re-surveys immediately before it
+is sent unless it is also the first step. Without that, a second entity taking
+the identifier after step one would be cut over along with this one. This
+narrows the race to one round trip; it cannot make it atomic, because no REST
+read followed by a write can.
 
 The survey is **tenant-wide over the realms this tool addresses**, and a survey
 that skipped one is refused rather than trusted. What it still cannot see is
@@ -1831,10 +1837,16 @@ resolve to the ESV secret the plan named; and then the secret's ENABLED
 versions and this role's published certificates, which must still be the ones
 the plan was decided from — and between the two, they **re-survey every realm**
 for other consumers of the secret (above). `init` does the same in the same
-order, once, before the first of its three steps: the `secretIdIdentifier` and
-the label's mapping must still be what the plan saw, then the re-survey — and
-each step re-reads its own document again before overwriting it. Every one of
-those refusals before the first step sends nothing, and the remedy is `aic saml rotate status` followed by a re-run.
+order before the first of its three steps — the `secretIdIdentifier` and the
+label's mapping must still be what the plan saw, then the re-survey — surveys
+again before its activating step (above), and each step re-reads its own
+document before overwriting it. A refusal before the first step sends nothing.
+A refusal or failure **after** a step has landed is reported the way `.ai/core.md`
+§5 says a batch that stops partway must be: it names the steps that landed
+(`2 of 3 init steps landed — …`), says they were sent and not undone, and does
+not claim that nothing was sent. Either way the remedy is
+`aic saml rotate status` followed by a re-run, which skips the steps the tenant
+already shows done.
 
 The first two are not a formality, and leaving them out was a real gap.
 Published metadata carries no secret and no version attribution at all, so
