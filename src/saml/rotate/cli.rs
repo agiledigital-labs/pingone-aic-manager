@@ -147,7 +147,8 @@ pub enum RotateCommand {
     /// On its usual path it is not expected to change the signer — `stage`
     /// already cut signing over, and this retires the other certificate. The
     /// exception is `--retain` naming the older certificate, which disables
-    /// the signing version and so moves signing back; the plan says which.
+    /// the version to treat as signing, and is treated as a signer cutover
+    /// back; the plan says which.
     /// What it ends is the two-certificate export a peer that refreshes
     /// metadata catches up from. Disabling is reversible (`aic esv secret
     /// enable`); destroying the version is not, and is deliberately a
@@ -448,8 +449,9 @@ async fn init(
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
     // One call for all three steps, the way `stage` and `complete` are one
-    // call each: `apply_init` rechecks and re-surveys once, before its first
-    // write, so a refusal can only come before anything is sent.
+    // call each: `apply_init` rechecks and re-surveys before its first write,
+    // re-surveys again before the step that activates the chain, and reports
+    // what landed if it stops partway.
     let description = description
         .map(str::to_string)
         .unwrap_or_else(|| default_description(&state));
@@ -467,7 +469,8 @@ async fn init(
         &permit,
         &mut |line| println!("{line}"),
     )
-    .await?;
+    .await
+    .map_err(|error| Error::Config(error.to_string()))?;
 
     // What the tenant publishes now, not what we expect it to — and the two
     // branches differ in what "expect" can even mean. A key pair this run
@@ -670,7 +673,7 @@ async fn complete(
                     plan.disable_version,
                     plan.secret_id,
                     if plan.moves_signer {
-                        format!(" This also moves signing back to {}.", plan.retain)
+                        format!(" Treat this as a signer cutover back to {}.", plan.retain)
                     } else {
                         String::new()
                     }
@@ -761,10 +764,11 @@ fn complete_plan_lines(plan: &CompletePlan, state: &RotationState) -> Vec<String
     });
     lines.push(if plan.moves_signer {
         format!(
-            "  **this moves signing back to {}**: version {} is the newest ENABLED version, the \
-             one to treat as signing, so disabling it is a cutover like `stage` — the peer must \
-             already trust {}",
-            plan.retain, plan.disable_version, plan.retain
+            "  **treat this as a signer cutover back to {}**: version {} is the newest ENABLED \
+             version, the one to treat as signing, so disabling it is expected to move signing \
+             to {} — a prediction, never measured on either role — and the peer must already \
+             trust {}",
+            plan.retain, plan.disable_version, plan.retain, plan.retain
         )
     } else {
         format!(

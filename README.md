@@ -127,7 +127,8 @@ in this bash helper — the Rust app does it natively).
 
 ### 4. Build & run
 
-Requires Rust 1.85+ (Rust 2024 edition).
+Requires Rust 1.95+ (Rust 2024 edition) — the `rust-version` in `Cargo.toml`,
+which CI's MSRV job checks.
 
 ```bash
 cargo build

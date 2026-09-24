@@ -552,6 +552,20 @@ pub fn init_pre_write_ok(
         &fresh.entity,
         fresh.mapping.as_deref(),
     )?;
+    init_exclusive(state, plan, &fresh.survey)
+}
+
+/// Whether the planned label and secret still back this role alone, from a
+/// survey — the half of [`init_pre_write_ok`] that is asked **again** before
+/// the step that activates the chain ([`InitPlan::resurveys_before`]).
+///
+/// `mine` is this role through the **planned** label, because that is the
+/// label `init` is about to make it resolve.
+pub fn init_exclusive(
+    state: &RotationState,
+    plan: &InitPlan,
+    survey: &[RealmSurvey],
+) -> Result<ExclusivityProof> {
     let mine = Consumer {
         realm: state.realm.clone(),
         entity_id: state.entity_id.clone(),
@@ -561,8 +575,111 @@ pub fn init_pre_write_ok(
     };
     exclusive_ok(
         "init",
-        &survey_consumers(&mine, Some(&plan.secret_id), &fresh.survey),
+        &survey_consumers(&mine, Some(&plan.secret_id), survey),
     )
+}
+
+/// One of `init`'s three writes, in the order they are sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitStep {
+    SetIdentifier,
+    CreateSecret,
+    MapLabel,
+}
+
+impl InitStep {
+    pub fn describe(self, plan: &InitPlan) -> String {
+        match self {
+            Self::SetIdentifier => {
+                format!("the entity PUT (secretIdIdentifier {:?})", plan.identifier)
+            }
+            Self::CreateSecret => format!("creating ESV secret {}", plan.secret_id),
+            Self::MapLabel => format!("mapping {} to {}", plan.label, plan.secret_id),
+        }
+    }
+}
+
+/// The sentence a refusal ends with when it is the first write that was
+/// refused. [`InitApplyError`] rewrites it when earlier steps had landed,
+/// because there it would be false.
+pub const NOTHING_SENT: &str = "**Nothing has been sent.**";
+
+/// An `init` that stopped partway — `.ai/core.md` §5's "a batch that stops
+/// partway must report what landed", in the shape `scripts::sync`'s
+/// `PullInstallError` gives it.
+///
+/// `landed` is authoritative: each step in it completed. The step that failed
+/// is named separately and is never in it. The source error is kept whole,
+/// except that its [`NOTHING_SENT`] — true of the refused step, false of the
+/// run — is replaced once anything had landed.
+#[derive(Debug)]
+pub struct InitApplyError {
+    landed: Vec<String>,
+    failed: String,
+    total: usize,
+    subject: String,
+    source: Box<Error>,
+}
+
+impl InitApplyError {
+    /// `failed` is what was being attempted: a step, or the recheck in front
+    /// of the first one.
+    pub fn new(
+        state: &RotationState,
+        plan: &InitPlan,
+        landed: &[InitStep],
+        failed: String,
+        source: Error,
+    ) -> Self {
+        Self {
+            landed: landed.iter().map(|step| step.describe(plan)).collect(),
+            failed,
+            total: plan.steps().len(),
+            subject: format!("{} ({})", state.entity_id, role_descriptor(state.role)),
+            source: Box::new(source),
+        }
+    }
+
+    /// Steps that completed before the failure.
+    pub fn landed(&self) -> &[String] {
+        &self.landed
+    }
+}
+
+impl std::fmt::Display for InitApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let source = self.source.to_string();
+        if self.landed.is_empty() {
+            return write!(
+                f,
+                "0 of {} init steps landed; stopped at {}: {source}",
+                self.total, self.failed
+            );
+        }
+        write!(
+            f,
+            "{} of {} init steps landed — {} — then stopped at {}, which the message below \
+             describes. **Those steps were sent and have not been undone.** Unless that message \
+             says its own write landed, the identifier → mapping → secret chain is not complete, \
+             so {} still resolves what it did before this run and nothing has been cut over. \
+             Re-running `aic saml rotate init` skips the steps the tenant already shows done.\n{}",
+            self.landed.len(),
+            self.total,
+            self.landed.join("; "),
+            self.failed,
+            self.subject,
+            source.replace(
+                NOTHING_SENT,
+                "**That step was not sent — but the steps listed above were.**"
+            )
+        )
+    }
+}
+
+impl std::error::Error for InitApplyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
 }
 
 /// Whether the signing label is still unmapped, as `plan_init` found it.
@@ -1644,9 +1761,11 @@ pub struct CompletePlan {
     /// the one [`SIGNER_RULE`] says to treat as signing. `complete` usually
     /// retires the other version and is not expected to change the signer; keeping the older
     /// certificate (`--retain` naming it, reachable when a DISABLED spare
-    /// sits above the staged version) disables the signing one, and that is a
-    /// cutover back to the retained certificate, with the same peer
-    /// precondition as `stage`.
+    /// sits above the staged version) disables the one to treat as signing,
+    /// so it is **treated as** a cutover back to the retained certificate,
+    /// with the same peer precondition as `stage`. Never measured on either
+    /// role: the 2026-09-22 rounds did not exercise it, so this is the same
+    /// conservative form `init` uses, not an observation.
     pub moves_signer: bool,
 }
 
@@ -2035,8 +2154,8 @@ pub fn complete_ok(forced: bool, plan: &CompletePlan, state: &RotationState) -> 
     let signer = if plan.moves_signer {
         format!(
             " And version {} is the newest ENABLED version — the one to treat as signing — so \
-             this also moves signing back to {}: a peer that does not trust {} starts rejecting \
-             this role's signatures.",
+             treat this as a signer cutover back to {} (expected, never measured on either \
+             role): a peer that does not trust {} would start rejecting this role's signatures.",
             plan.disable_version, plan.retain, plan.retain
         )
     } else {
@@ -2216,7 +2335,7 @@ not separated. IdP assertion signing is unmeasured; assume the same. So treat tw
 certificates as meaning the cutover has already happened: the newer one is in use, and the older
 one is published only so a peer that refreshes metadata can catch up. Retiring that older one — what
 `complete` normally does — is not expected to change what signs; `--retain` naming the older
-certificate is the exception, and moves signing back to it.";
+certificate is the exception, and is to be treated as moving signing back to it.";
 
 /// The sentence every two-certificate report carries.
 pub const PAIRING_CAVEAT: &str = "\
@@ -2395,7 +2514,10 @@ pub fn status_lines(
         lines.push(String::new());
         lines.push(PAIRING_CAVEAT.to_string());
     }
-    if consumers.is_some_and(|consumers| !consumers.exclusive()) {
+    // Whenever a survey was made, exclusive or not — the JSON report carries
+    // it the same way. "Nothing else in realms alpha, bravo" is exactly the
+    // sentence that needs the root-realm gap next to it.
+    if consumers.is_some() {
         lines.push(String::new());
         lines.push(SHARING_CAVEAT.to_string());
     }
@@ -2524,6 +2646,40 @@ pub struct InitPlan {
 impl InitPlan {
     pub fn is_noop(&self) -> bool {
         !self.set_identifier && !self.create_secret && !self.map_label
+    }
+
+    /// The planned writes, in the order `ops::apply_init` sends them.
+    pub fn steps(&self) -> Vec<InitStep> {
+        [
+            (self.set_identifier, InitStep::SetIdentifier),
+            (self.create_secret, InitStep::CreateSecret),
+            (self.map_label, InitStep::MapLabel),
+        ]
+        .into_iter()
+        .filter_map(|(todo, step)| todo.then_some(step))
+        .collect()
+    }
+
+    /// The step that completes the identifier → mapping → secret chain: the
+    /// **last** planned one, since a plan skips exactly the links already in
+    /// place. Usually `MapLabel`; `CreateSecret` when a mapping already
+    /// points at the absent secret; `SetIdentifier` when both already exist.
+    /// From that write on, the role resolves the secret — it is `init`'s
+    /// cutover, and the one whose exclusivity matters.
+    pub fn activating_step(&self) -> Option<InitStep> {
+        self.steps().last().copied()
+    }
+
+    /// Whether `step` must re-survey immediately before it is sent.
+    ///
+    /// The activating step does, unless it is also the first — then the
+    /// up-front recheck is already immediately before it. Otherwise the
+    /// up-front survey is older than the writes in between, and a second
+    /// entity taking the identifier after step one would be cut over with
+    /// this one. It narrows the race to one round trip; no REST read followed
+    /// by a write can close it.
+    pub fn resurveys_before(&self, step: InitStep) -> bool {
+        self.activating_step() == Some(step) && self.steps().first() != Some(&step)
     }
 
     pub fn lines(&self, state: &RotationState) -> Vec<String> {
@@ -2828,6 +2984,13 @@ mod tests {
 
     fn proof() -> ExclusivityProof {
         exclusive_ok("stage", &exclusive_survey()).expect("the fixture is exclusive")
+    }
+
+    fn message_of(error: &Error) -> String {
+        match error {
+            Error::Config(text) => text.clone(),
+            other => panic!("expected a Config error, got {other:?}"),
+        }
     }
 
     fn message(error: Error) -> String {
@@ -3434,7 +3597,7 @@ mod tests {
         assert!(plan.moves_signer);
         let refusal = message(complete_ok(false, &plan, &with_spare).unwrap_err());
         assert!(
-            refusal.contains(&format!("moves signing back to {OLD}")),
+            refusal.contains(&format!("treat this as a signer cutover back to {OLD}")),
             "{refusal}"
         );
     }
@@ -3647,7 +3810,7 @@ mod tests {
         assert!(refusal.contains("--force"), "{refusal}");
         // The usual completion retires the version that is not signing.
         assert!(!plan.moves_signer);
-        assert!(!refusal.contains("moves signing back"), "{refusal}");
+        assert!(!refusal.contains("signer cutover back"), "{refusal}");
     }
 
     // -----------------------------------------------------------------
@@ -3848,7 +4011,14 @@ mod tests {
             alone.contains("nothing else in realms alpha, bravo resolves esv-sp-a-signing"),
             "{alone}"
         );
-        assert!(!alone.contains(SHARING_CAVEAT), "{alone}");
+        // An exclusive survey still carries the root-realm caveat, as the
+        // JSON report does: "nothing else in alpha, bravo" is the claim it
+        // qualifies.
+        assert!(alone.contains(SHARING_CAVEAT), "{alone}");
+        assert_eq!(
+            status_json(&state(), &phase(&state()), Some(&exclusive_survey()))["sharing"]["caveat"],
+            SHARING_CAVEAT
+        );
 
         let json = status_json(&state(), &phase(&state()), Some(&shared));
         assert_eq!(json["sharing"]["exclusive"], false);
@@ -4141,6 +4311,163 @@ mod tests {
         };
         let refusal = message(init_pre_write_ok(&unconfigured, &plan, None, &mapped).unwrap_err());
         assert!(refusal.contains("esv-other"), "{refusal}");
+    }
+
+    /// An `init` plan for an unconfigured role, with the given steps already
+    /// done on the tenant.
+    fn init_plan(
+        label_mapping: Option<&str>,
+        existing: Option<SecretFacts>,
+    ) -> (RotationState, InitPlan) {
+        let unconfigured = RotationState {
+            identifier: None,
+            mapped_alias: None,
+            secret: None,
+            versions: vec![],
+            ..state()
+        };
+        let plan = plan_init(
+            &unconfigured,
+            "spa",
+            "esv-sp-a-signing",
+            label_mapping,
+            existing.as_ref(),
+            Some(&pair(NEW)),
+        )
+        .unwrap();
+        (unconfigured, plan)
+    }
+
+    /// Red when the step that completes the chain is not the one that
+    /// re-surveys, or when a first step re-surveys twice.
+    ///
+    /// The activating step is the last planned one, and which step that is
+    /// depends on what already exists — the case the review named is the
+    /// mapping that already points at the absent secret, where creating the
+    /// secret is the cutover and mapping is not planned at all.
+    #[test]
+    fn the_step_that_completes_the_chain_is_the_one_that_resurveys() {
+        use InitStep::*;
+        // Nothing exists: map_label activates, after two steps have landed.
+        let (_, full) = init_plan(None, None);
+        assert_eq!(full.steps(), vec![SetIdentifier, CreateSecret, MapLabel]);
+        assert_eq!(full.activating_step(), Some(MapLabel));
+        assert!(full.resurveys_before(MapLabel));
+        assert!(!full.resurveys_before(SetIdentifier) && !full.resurveys_before(CreateSecret));
+
+        // A mapping already points at the absent secret: creating it activates.
+        let (_, dangling) = init_plan(Some("esv-sp-a-signing"), None);
+        assert_eq!(dangling.steps(), vec![SetIdentifier, CreateSecret]);
+        assert_eq!(dangling.activating_step(), Some(CreateSecret));
+        assert!(dangling.resurveys_before(CreateSecret));
+
+        // Mapping and secret both exist: the entity PUT activates, and it is
+        // also the first step, so the up-front recheck is already right in
+        // front of it.
+        let (_, only_put) = init_plan(Some("esv-sp-a-signing"), Some(facts()));
+        assert_eq!(only_put.steps(), vec![SetIdentifier]);
+        assert_eq!(only_put.activating_step(), Some(SetIdentifier));
+        assert!(!only_put.resurveys_before(SetIdentifier));
+    }
+
+    /// Red when `init`'s activating step trusts the up-front survey.
+    ///
+    /// The discriminating case the round-5 review named: the up-front survey
+    /// was exclusive, step one landed, and then a second entity took the
+    /// identifier. The up-front proof says nothing about that; the survey in
+    /// front of the activating step does.
+    #[test]
+    fn an_identifier_taken_after_step_one_stops_the_activating_step() {
+        let (unconfigured, plan) = init_plan(None, None);
+        let before = vec![
+            realm_survey("alpha", &[], &[entity("https://sp-a.example.com", &[])]),
+            realm_survey("bravo", &[], &[]),
+        ];
+        assert!(init_exclusive(&unconfigured, &plan, &before).is_ok());
+
+        // Step one landed (this entity now names `spa`), and sp-b took `spa`.
+        let after = vec![
+            realm_survey(
+                "alpha",
+                &[],
+                &[
+                    entity("https://sp-a.example.com", &[(Role::Sp, "spa")]),
+                    entity("https://sp-b.example.com", &[(Role::Sp, "spa")]),
+                ],
+            ),
+            realm_survey("bravo", &[], &[]),
+        ];
+        let refused = init_exclusive(&unconfigured, &plan, &after).unwrap_err();
+        let text = message(refused);
+        assert!(text.contains("https://sp-b.example.com"), "{text}");
+
+        // Control: step one alone — this entity naming its own identifier —
+        // is not a second consumer.
+        let only_mine = vec![
+            realm_survey(
+                "alpha",
+                &[],
+                &[entity("https://sp-a.example.com", &[(Role::Sp, "spa")])],
+            ),
+            realm_survey("bravo", &[], &[]),
+        ];
+        assert!(init_exclusive(&unconfigured, &plan, &only_mine).is_ok());
+    }
+
+    /// Red when an `init` that stopped partway says nothing was sent, or does
+    /// not name what landed — `.ai/core.md` §5's batch rule.
+    ///
+    /// Driven with the real refusals each later step can raise, because each
+    /// carries [`NOTHING_SENT`], which is true of the refused step and false
+    /// of the run.
+    #[test]
+    fn a_partial_init_names_what_landed_and_does_not_claim_nothing_was_sent() {
+        let (unconfigured, plan) = init_plan(None, None);
+        let landed = [InitStep::SetIdentifier, InitStep::CreateSecret];
+        let refusals = [
+            mapping_write_ok(&plan.label, &plan.secret_id, None, Some("esv-other")).unwrap_err(),
+            exclusive_ok(
+                "init",
+                &alpha_survey(
+                    &[],
+                    &[entity("https://sp-b.example.com", &[(Role::Sp, "spa")])],
+                ),
+            )
+            .unwrap_err(),
+            identifier_write_ok(None, &json!({"serviceProvider": {"assertionContent": {"secrets": {"secretIdIdentifier": "x"}}}}), Role::Sp).unwrap_err(),
+        ];
+        for refusal in refusals {
+            assert!(message_of(&refusal).contains(NOTHING_SENT), "{refusal:?}");
+            let partial = InitApplyError::new(
+                &unconfigured,
+                &plan,
+                &landed,
+                InitStep::MapLabel.describe(&plan),
+                refusal,
+            );
+            let text = partial.to_string();
+            assert!(!text.contains(NOTHING_SENT), "{text}");
+            assert!(text.starts_with("2 of 3 init steps landed"), "{text}");
+            assert!(text.contains("the entity PUT"), "{text}");
+            assert!(
+                text.contains("creating ESV secret esv-sp-a-signing"),
+                "{text}"
+            );
+            assert!(text.contains("have not been undone"), "{text}");
+            assert_eq!(partial.landed().len(), 2);
+        }
+
+        // Nothing landed: the refusal's own sentence is true and stays.
+        let first = InitApplyError::new(
+            &unconfigured,
+            &plan,
+            &[],
+            "the pre-write recheck".into(),
+            mapping_write_ok(&plan.label, &plan.secret_id, None, Some("esv-other")).unwrap_err(),
+        );
+        let text = first.to_string();
+        assert!(text.starts_with("0 of 3 init steps landed"), "{text}");
+        assert!(text.contains(NOTHING_SENT), "{text}");
     }
 
     /// Red when the pre-write recheck lets the identifier or the mapping move
