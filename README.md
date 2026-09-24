@@ -72,7 +72,7 @@ curl -fsSL .../install.sh | bash -s -- --from-source
 **From crates.io** (compiles locally; needs a Rust toolchain):
 
 ```bash
-cargo install pingone-aic-manager   # installs the `aic` binary
+cargo install --locked pingone-aic-manager   # installs the `aic` binary
 ```
 
 Either way the command is **`aic`**. Prefer building from a checkout? See
