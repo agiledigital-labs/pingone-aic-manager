@@ -61,7 +61,12 @@
 //! site for the `ExclusivityProof` every `authorize_*` consumes. It surveys
 //! **again** inside `ops`' pre-write recheck, after the confirmation prompt,
 //! and the write holds the proof minted there — so a consumer added while the
-//! operator read the prompt is caught rather than cut over. The refusal names
+//! operator read the prompt is caught rather than cut over. Every writer the
+//! three verbs reach requires that proof as a parameter, which guards against
+//! a write path that leaves the check out; it cannot make the survey atomic.
+//! A write that fails says whether it was refused, accepted but unverified, or
+//! of unknown outcome ([`spec::WriteStatus`]), and only the first is reported
+//! as not having happened. The refusal names
 //! the other consumers: the remedy differs per consumer, and "this secret is
 //! shared" is not something an operator can act on.
 //!
