@@ -431,6 +431,140 @@ pub fn rollover_target_ok(
     )))
 }
 
+/// Everything `ops`' pre-write recheck reads, immediately before a `stage` or
+/// a `complete` writes — after the confirmation prompt and the production
+/// gate, which is the human interval every earlier read is older than.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolloverRecheck {
+    /// The role's `secretIdIdentifier`, read fresh.
+    pub identifier: Option<String>,
+    /// The ESV secret that identifier's signing label maps to now.
+    pub alias: Option<String>,
+    /// The planned secret's versions.
+    pub versions: Vec<SecretVersion>,
+    /// This role's published signing fingerprints.
+    pub published: BTreeSet<String>,
+    /// A fresh consumer survey of every realm in [`SURVEYED_REALMS`].
+    pub survey: Vec<RealmSurvey>,
+}
+
+/// The whole pre-write decision for `stage` and `complete`, and the only
+/// source of the [`ExclusivityProof`] their write holds.
+///
+/// Three questions, in the order a failure is cheapest to explain:
+///
+/// 1. does the role still resolve the planned secret ([`rollover_target_ok`]);
+/// 2. does that secret still back this role and nothing else — **re-surveyed
+///    here**, not carried over from the plan. The plan-time survey ran before
+///    the prompt, and a consumer added while the operator read it (or one in a
+///    realm the old survey never read) was cut over and never verified. The
+///    survey's own `mine` is built from the fresh identifier, because (1)
+///    permits an identifier that moved to a label backed by the same secret;
+/// 3. is the rollover itself unchanged ([`rollover_write_ok`]).
+///
+/// Pure, so a test drives the real decision: the discriminating case is a
+/// plan whose survey was exclusive and a recheck whose survey is not, which a
+/// recheck that never re-surveyed passes.
+pub fn rollover_pre_write_ok(
+    verb: &str,
+    secret_id: &str,
+    state: &RotationState,
+    fresh: &RolloverRecheck,
+) -> Result<ExclusivityProof> {
+    rollover_target_ok(
+        verb,
+        secret_id,
+        fresh.identifier.as_deref(),
+        fresh.alias.as_deref(),
+    )?;
+    let mine = Consumer {
+        realm: state.realm.clone(),
+        entity_id: state.entity_id.clone(),
+        location: state.location,
+        role: state.role,
+        label: signing_label(
+            fresh
+                .identifier
+                .as_deref()
+                .expect("rollover_target_ok refuses a role with no identifier"),
+        ),
+    };
+    let proof = exclusive_ok(
+        verb,
+        &survey_consumers(&mine, Some(secret_id), &fresh.survey),
+    )?;
+    rollover_write_ok(
+        verb,
+        secret_id,
+        &rollover_inputs(state),
+        &rollover_inputs_from(&fresh.versions, fresh.published.clone()),
+    )?;
+    Ok(proof)
+}
+
+/// Everything `init`'s pre-write recheck reads, after the prompt and the
+/// production gate and before the first of its writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitRecheck {
+    /// The entity, read fresh.
+    pub entity: Value,
+    /// The alias at the planned label now.
+    pub mapping: Option<String>,
+    /// A fresh consumer survey of every realm in [`SURVEYED_REALMS`].
+    pub survey: Vec<RealmSurvey>,
+}
+
+/// `init`'s counterpart of [`rollover_target_ok`]: is the setup still the
+/// one the plan was made against?
+///
+/// Both halves are the rules the per-step writers already apply —
+/// [`identifier_write_ok`] and [`mapping_write_ok`] — applied once more on
+/// the far side of the prompt, before anything is sent, so the refusal is
+/// never one that follows a completed step.
+pub fn init_target_ok(
+    state: &RotationState,
+    plan: &InitPlan,
+    planned_mapping: Option<&str>,
+    entity: &Value,
+    mapping: Option<&str>,
+) -> Result<()> {
+    identifier_write_ok(state.identifier.as_deref(), entity, state.role)?;
+    mapping_write_ok(&plan.label, &plan.secret_id, planned_mapping, mapping)
+}
+
+/// The whole pre-write decision for `init`, and the only source of the
+/// [`ExclusivityProof`] its writes hold — [`rollover_pre_write_ok`]'s
+/// sibling, in the same order: the target first, then the re-survey.
+///
+/// `mine` is this role through the **planned** label, because that is the
+/// label `init` is about to make it resolve; the target check has just shown
+/// the identifier is unchanged, so there is no fresher one to use.
+pub fn init_pre_write_ok(
+    state: &RotationState,
+    plan: &InitPlan,
+    planned_mapping: Option<&str>,
+    fresh: &InitRecheck,
+) -> Result<ExclusivityProof> {
+    init_target_ok(
+        state,
+        plan,
+        planned_mapping,
+        &fresh.entity,
+        fresh.mapping.as_deref(),
+    )?;
+    let mine = Consumer {
+        realm: state.realm.clone(),
+        entity_id: state.entity_id.clone(),
+        location: state.location,
+        role: state.role,
+        label: plan.label.clone(),
+    };
+    exclusive_ok(
+        "init",
+        &survey_consumers(&mine, Some(&plan.secret_id), &fresh.survey),
+    )
+}
+
 /// Whether the signing label is still unmapped, as `plan_init` found it.
 ///
 /// The orphan case from the other side. `plan_init` refuses when the label
@@ -680,6 +814,7 @@ impl RotationState {
     /// exclusivity could be surveyed.
     pub fn consumer(&self) -> Option<Consumer> {
         Some(Consumer {
+            realm: self.realm.clone(),
             entity_id: self.entity_id.clone(),
             location: self.location,
             role: self.role,
@@ -717,11 +852,13 @@ pub enum Phase {
     /// One ENABLED version, one published certificate. The steady state, and
     /// the only one `stage` will act from.
     Settled,
-    /// Two ENABLED versions and two published certificates. **Signing has
-    /// already moved to the newer version** — AM signs with the newest ENABLED
-    /// one (measured 2026-09-22, `docs/api/06-saml.md`), so this is the state
-    /// that *follows* a cutover, not the one that precedes it. What is still
-    /// open is the old certificate's publication, which `complete` closes.
+    /// Two ENABLED versions and two published certificates. **Treat signing
+    /// as having already moved to the newer version**: on the measured SP
+    /// path the newest ENABLED version was the signer by the first
+    /// observation (2026-09-22, `docs/api/06-saml.md`; the IdP path is
+    /// unmeasured and assumed the same), so this is the state that *follows* a
+    /// cutover, not the one that precedes it. What is still open is the old
+    /// certificate's publication, which `complete` closes.
     Staged,
     /// The reads do not agree, so no verb may act on them.
     Inconsistent { detail: String },
@@ -797,6 +934,10 @@ fn unusable_reason(secret: &SecretFacts) -> Option<String> {
 /// them being mapped to the same ESV secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Consumer {
+    /// The realm the entity lives in. Part of the identity for the same reason
+    /// location is: an ESV secret is tenant-global, so the same entity ID in
+    /// `alpha` and in `bravo` are two consumers of it, not one.
+    pub realm: String,
     pub entity_id: String,
     pub location: Location,
     pub role: Role,
@@ -808,20 +949,27 @@ pub struct Consumer {
 }
 
 impl Consumer {
-    /// One line naming it in a refusal. Location is part of the identity:
-    /// the same entity ID can exist in both collections.
+    /// One line naming it in a refusal. Location and realm are part of the
+    /// identity: the same entity ID can exist in both collections, and in
+    /// both realms.
     pub fn describe(&self) -> String {
         format!(
-            "{} ({} {}) through {}",
+            "{} ({} {} in realm {}) through {}",
             self.entity_id,
             self.location,
             role_descriptor(self.role),
+            self.realm,
             self.label
         )
     }
 
-    fn sort_key(&self) -> (&str, &str, &str) {
-        (&self.entity_id, self.location.as_str(), &self.label)
+    fn sort_key(&self) -> (&str, &str, &str, &str) {
+        (
+            &self.realm,
+            &self.entity_id,
+            self.location.as_str(),
+            &self.label,
+        )
     }
 }
 
@@ -870,8 +1018,31 @@ pub fn label_parts(label: &str) -> Option<(&str, &str)> {
     (!identifier.is_empty() && !key_use.is_empty()).then_some((identifier, key_use))
 }
 
-/// Who, in this realm, resolves a key through the ESV secret a rotation is
-/// about.
+/// Every realm a consumer of an ESV secret can be found in, and so every realm
+/// [`survey_consumers`] must be handed before it will call a secret exclusive.
+///
+/// `alpha` and `bravo`, because those are the realms AIC gives a tenant and
+/// the only two this tool addresses (`docs/api/01-realms-and-paths.md`). The
+/// **root** realm is not here, and that is a measured gap rather than a
+/// decision — see [`SHARING_CAVEAT`].
+pub const SURVEYED_REALMS: &[&str] = &["alpha", "bravo"];
+
+/// What one realm contributed to a survey: its secret-label mapping table and
+/// every entity provider in it.
+///
+/// Per realm because both halves are: the mapping table lives in the realm's
+/// ESV secret store, and the entity collection is realm-scoped. The ESV secret
+/// they point at is not, which is the whole reason a survey has several of
+/// these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RealmSurvey {
+    pub realm: String,
+    pub mappings: Vec<Mapping>,
+    pub entities: Vec<EntityIdentifiers>,
+}
+
+/// Who, anywhere on the tenant, resolves a key through the ESV secret a
+/// rotation is about.
 ///
 /// **This is the release-blocking question, not a nicety.** AIC explicitly
 /// permits one secret label to back several providers, and `stage` and
@@ -890,67 +1061,93 @@ pub fn label_parts(label: &str) -> Option<(&str, &str)> {
 ///    many-to-one, so `…spb.signing` and `…spa.encryption` can both point at
 ///    the ESV secret this rollover is about.
 ///
-/// Both are found through the realm's mapping table, which is the choke
+/// Both are found through each realm's mapping table, which is the choke
 /// point: a label resolves only where it is mapped, so every consumer of this
-/// secret in this realm holds a label the table names. `mine`'s own label
-/// joins that set whether or not it is mapped yet, because `init` is the verb
-/// that maps it — and an `init` that adopts an identifier a second entity is
-/// already carrying is how the sharing gets created in the first place.
+/// secret in a realm holds a label that realm's table names. `mine`'s own
+/// label joins that set **in `mine`'s realm** whether or not it is mapped yet,
+/// because `init` is the verb that maps it — and an `init` that adopts an
+/// identifier a second entity is already carrying is how the sharing gets
+/// created in the first place. In any other realm the same identifier is only
+/// a consumer if that realm maps its label onto this secret, which the table
+/// already says; an identifier is a namespace per realm, not per tenant.
 ///
-/// **Realm-scoped, and that is a limit rather than a contract** — see
-/// [`SHARING_CAVEAT`]. ESV secrets are tenant-global while the mapping table
-/// is per realm.
+/// **Tenant-wide, and checked rather than assumed.** A realm in
+/// [`SURVEYED_REALMS`] that is absent from `realms` is reported in
+/// [`Consumers::unsurveyed`], which makes the survey not exclusive: a caller
+/// that surveyed one realm gets a refusal naming the other, rather than a
+/// proof that covers less than it says.
 pub fn survey_consumers(
-    realm: &str,
     mine: &Consumer,
     secret_id: Option<&str>,
-    mappings: &[Mapping],
-    entities: &[EntityIdentifiers],
+    realms: &[RealmSurvey],
 ) -> Consumers {
-    // `Mapping::secret_id` is AM's name for the **label**; the ESV secret is
-    // its `alias`. Getting those two the wrong way round would survey the
-    // right table for the wrong thing.
-    let mut labels: BTreeSet<String> = mappings
-        .iter()
-        .filter(|mapping| secret_id.is_some() && mapping.alias.as_deref() == secret_id)
-        .map(|mapping| mapping.secret_id.clone())
-        .collect();
-    labels.insert(mine.label.clone());
-
     let mut others = Vec::new();
     let mut unclaimed_labels = Vec::new();
-    for label in &labels {
-        let claimants: Vec<Consumer> = label_parts(label)
-            .map(|(identifier, _)| {
-                entities
-                    .iter()
-                    .flat_map(|entity| {
-                        entity
-                            .identifiers
-                            .iter()
-                            .filter(|(_, named)| named == identifier)
-                            .map(|(role, _)| Consumer {
-                                entity_id: entity.entity_id.clone(),
-                                location: entity.location,
-                                role: *role,
-                                label: label.clone(),
-                            })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        // `mine`'s own label is never unclaimed: on a fresh `init` the entity
-        // has not been written yet, so nothing names it, and that is the
-        // state `init` exists to leave behind rather than a finding.
-        if claimants.is_empty() && label != &mine.label {
-            unclaimed_labels.push(label.clone());
+    for surveyed in realms {
+        let here = surveyed.realm == mine.realm;
+        // `Mapping::secret_id` is AM's name for the **label**; the ESV secret
+        // is its `alias`. Getting those two the wrong way round would survey
+        // the right table for the wrong thing.
+        let mut labels: BTreeSet<String> = surveyed
+            .mappings
+            .iter()
+            .filter(|mapping| secret_id.is_some() && mapping.alias.as_deref() == secret_id)
+            .map(|mapping| mapping.secret_id.clone())
+            .collect();
+        if here {
+            labels.insert(mine.label.clone());
         }
-        others.extend(claimants.into_iter().filter(|consumer| consumer != mine));
+
+        for label in &labels {
+            let claimants: Vec<Consumer> = label_parts(label)
+                .map(|(identifier, _)| {
+                    surveyed
+                        .entities
+                        .iter()
+                        .flat_map(|entity| {
+                            entity
+                                .identifiers
+                                .iter()
+                                .filter(|(_, named)| named == identifier)
+                                .map(|(role, _)| Consumer {
+                                    realm: surveyed.realm.clone(),
+                                    entity_id: entity.entity_id.clone(),
+                                    location: entity.location,
+                                    role: *role,
+                                    label: label.clone(),
+                                })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            // `mine`'s own label is never unclaimed: on a fresh `init` the
+            // entity has not been written yet, so nothing names it, and that
+            // is the state `init` exists to leave behind rather than a finding.
+            if claimants.is_empty() && !(here && label == &mine.label) {
+                unclaimed_labels.push(UnclaimedLabel {
+                    realm: surveyed.realm.clone(),
+                    label: label.clone(),
+                });
+            }
+            others.extend(claimants.into_iter().filter(|consumer| consumer != mine));
+        }
     }
     others.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
 
+    let covered: BTreeSet<&str> = realms.iter().map(|realm| realm.realm.as_str()).collect();
+    let unsurveyed = SURVEYED_REALMS
+        .iter()
+        .copied()
+        .chain(std::iter::once(mine.realm.as_str()))
+        .filter(|realm| !covered.contains(realm))
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
     Consumers {
-        realm: realm.to_string(),
+        realms: covered.into_iter().map(str::to_string).collect(),
+        unsurveyed,
         secret_id: secret_id.map(str::to_string),
         mine: mine.clone(),
         others,
@@ -958,28 +1155,39 @@ pub fn survey_consumers(
     }
 }
 
+/// A label mapped onto the surveyed secret that no entity provider names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnclaimedLabel {
+    pub realm: String,
+    pub label: String,
+}
+
 /// What [`survey_consumers`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Consumers {
-    pub realm: String,
+    /// The realms whose tables and entities were read.
+    pub realms: Vec<String>,
+    /// Realms that should have been and were not. Never non-empty on a survey
+    /// `ops` made; the field exists so a survey that covered less than the
+    /// tenant cannot be mistaken for one that covered all of it.
+    pub unsurveyed: Vec<String>,
     /// The ESV secret surveyed, when the label is mapped to one. `None` is
     /// the pre-`init` state, where only the identifier can be shared.
     pub secret_id: Option<String>,
     pub mine: Consumer,
     /// Every other (entity, role) resolving a key through it.
     pub others: Vec<Consumer>,
-    /// Labels on it that no entity in this realm names: an orphan mapping, or
-    /// a label belonging to something that is not SAML at all. Neither is
-    /// resolving a key **today**, and both say the secret is not this
-    /// rollover's alone — a non-SAML label is another AM subsystem holding
-    /// the same key, and an orphan is one entity delete away from being
-    /// claimed again.
-    pub unclaimed_labels: Vec<String>,
+    /// Labels on it that no entity names: an orphan mapping, or a label
+    /// belonging to something that is not SAML at all. Neither is resolving a
+    /// key **today**, and both say the secret is not this rollover's alone — a
+    /// non-SAML label is another AM subsystem holding the same key, and an
+    /// orphan is one entity delete away from being claimed again.
+    pub unclaimed_labels: Vec<UnclaimedLabel>,
 }
 
 impl Consumers {
     pub fn exclusive(&self) -> bool {
-        self.others.is_empty() && self.unclaimed_labels.is_empty()
+        self.others.is_empty() && self.unclaimed_labels.is_empty() && self.unsurveyed.is_empty()
     }
 
     /// What the secret is called in a report — its ESV id, or the label that
@@ -987,17 +1195,33 @@ impl Consumers {
     fn subject(&self) -> &str {
         self.secret_id.as_deref().unwrap_or(&self.mine.label)
     }
+
+    fn realm_list(&self) -> String {
+        self.realms.join(", ")
+    }
 }
 
 /// Proof that a rotation's ESV secret backs the role being rotated and
-/// nothing else.
+/// nothing else, anywhere on the tenant.
 ///
 /// The field is private and [`exclusive_ok`] is the only thing that fills it
-/// in; each of [`authorize_init`], [`authorize_stage`] and
-/// [`authorize_complete`] requires one before it will mint a write permit. So
-/// a verb that forgot to survey cannot reach a tenant write — the same
-/// construction as the permits themselves, one step earlier: those prove the
-/// write was authorized, this proves what it was authorized *about*.
+/// in. It is minted **twice** per write, and the two proofs do different jobs:
+///
+/// - the plan-time one is **consumed** by [`authorize_init`],
+///   [`authorize_stage`] or [`authorize_complete`], so a verb that forgot to
+///   survey cannot mint a write permit — the permit construction, one step
+///   earlier;
+/// - the write-time one is minted inside `ops`' pre-write recheck, after the
+///   confirmation prompt and the production gate, from a survey that recheck
+///   made itself. The plan-time proof is gone by then (moved into the
+///   authorizer), so the proof in hand at the write is by construction no
+///   older than the recheck — which is what closes "a consumer added while
+///   the operator was reading the prompt".
+///
+/// What it proves is the **coverage** of the survey it was minted from —
+/// [`survey_consumers`] refuses exclusivity to a survey missing a realm — and
+/// that the survey said "nobody else". It cannot prove the reads behind it
+/// were honest, which is the same limit every permit here has.
 #[derive(Debug)]
 pub struct ExclusivityProof {
     _minted_by_exclusive_ok: (),
@@ -1009,7 +1233,7 @@ pub struct ExclusivityProof {
 /// — they need the names, and the remedy differs per consumer. There is no
 /// `--force`: a shared rollover is not one operation with a risk attached but
 /// several operations this command cannot sequence, since adding a version
-/// cuts **every** consumer's signing over at the same instant, and each
+/// may cut **every** consumer's signing over at the same instant, and each
 /// consumer's peer has to have been given the new certificate before that.
 pub fn exclusive_ok(verb: &str, consumers: &Consumers) -> Result<ExclusivityProof> {
     if consumers.exclusive() {
@@ -1019,13 +1243,12 @@ pub fn exclusive_ok(verb: &str, consumers: &Consumers) -> Result<ExclusivityProo
     }
     let mut lines = vec![format!(
         "cannot {verb} a rollover of {}: it does not back {} alone, and a rollover of it is not \
-         a change to one entity. Adding a version cuts **every** consumer over to the new \
-         certificate at once — AM signs with the newest ENABLED version — so every one of their \
-         peers has to trust it beforehand; and disabling one retires a certificate every \
-         consumer's peer must already have stopped verifying. This command checks the export, \
-         the phase and the settlement of {} only. AIC permits a secret label to be shared \
-         between providers, so this is a supported tenant state and not a corrupted one. \
-         **Nothing has been sent.**",
+         a change to one entity. Adding a version is treated as cutting **every** consumer over \
+         to the new certificate at once, so every one of their peers has to trust it \
+         beforehand; and disabling one retires a certificate every consumer's peer must already \
+         have stopped verifying. This command checks the export, the phase and the settlement \
+         of {} only. AIC permits a secret label to be shared between providers, so this is a \
+         supported tenant state and not a corrupted one. **Nothing has been sent.**",
         consumers.subject(),
         consumers.mine.describe(),
         consumers.mine.entity_id,
@@ -1040,42 +1263,46 @@ pub fn exclusive_ok(verb: &str, consumers: &Consumers) -> Result<ExclusivityProo
         );
     }
     if !consumers.unclaimed_labels.is_empty() {
-        lines.push(format!(
-            "  mapped onto it, but named by no entity provider in realm {}:",
-            consumers.realm
-        ));
+        lines.push("  mapped onto it, but named by no entity provider in its realm:".to_string());
         lines.extend(
             consumers
                 .unclaimed_labels
                 .iter()
-                .map(|label| format!("    {label}")),
+                .map(|unclaimed| format!("    {} (realm {})", unclaimed.label, unclaimed.realm)),
         );
+    }
+    if !consumers.unsurveyed.is_empty() {
+        lines.push(format!(
+            "  not surveyed, so not known to be free of it: realm {}",
+            consumers.unsurveyed.join(", realm ")
+        ));
     }
     lines.push(format!(
         "  give this role a label and an ESV secret of its own if it should roll on its own \
          schedule; otherwise roll the shared key deliberately: once **every** peer above has \
          been given the new certificate and trusts it, `aic esv secret add-version {0}` (which \
          is where signing changes for all of them), then `aic esv secret disable {0} <n>`. \
-         `aic secretmap list --realm {1}` shows what maps where.",
+         `aic secretmap list --realm <realm>` shows what maps where.",
         consumers.subject(),
-        consumers.realm,
     ));
     lines.push(SHARING_CAVEAT.to_string());
     Err(Error::Config(lines.join("\n")))
 }
 
-/// The sentence every sharing report carries.
+/// The sentence every sharing report carries: what the survey still cannot
+/// see now that it covers every realm this tool addresses.
 pub const SHARING_CAVEAT: &str = "\
-Who resolves an ESV secret is surveyed one realm at a time: the secret-label mapping table is
-realm-scoped and ESV secrets are tenant-global, so a provider in another realm can be backed by
-the same secret through a mapping this never read.";
+Who resolves an ESV secret is surveyed across realms alpha and bravo. The root realm is not read:
+AIC answers 403 for every root realm-config family measured so far (scripts, OAuth2 clients,
+Trusted JWT issuers), but whether it can hold a SAML entity provider or a secret mapping has not
+been measured.";
 
 /// The sharing rows of `aic saml rotate status`.
 fn sharing_lines(consumers: &Consumers) -> Vec<String> {
     if consumers.exclusive() {
         return vec![format!(
-            "sharing     nothing else in realm {} resolves {}",
-            consumers.realm,
+            "sharing     nothing else in realms {} resolves {}",
+            consumers.realm_list(),
             consumers.subject()
         )];
     }
@@ -1089,11 +1316,17 @@ fn sharing_lines(consumers: &Consumers) -> Vec<String> {
             .iter()
             .map(|consumer| format!("              {}", consumer.describe())),
     );
+    lines.extend(consumers.unclaimed_labels.iter().map(|unclaimed| {
+        format!(
+            "              {} in realm {} (mapped, named by no entity provider)",
+            unclaimed.label, unclaimed.realm
+        )
+    }));
     lines.extend(
         consumers
-            .unclaimed_labels
+            .unsurveyed
             .iter()
-            .map(|label| format!("              {label} (mapped, named by no entity provider)")),
+            .map(|realm| format!("              realm {realm} (not surveyed)")),
     );
     lines
 }
@@ -1135,6 +1368,11 @@ pub struct StagePlan {
     pub secret_id: String,
     /// The certificate currently published, which must survive the stage.
     pub retained: String,
+    /// The one ENABLED version before the stage — the version holding
+    /// `retained`, since `Settled` means exactly one of each. Named because
+    /// the way back needs it and nothing can work it out once this run is
+    /// gone.
+    pub retained_version: String,
     /// The certificate in the supplied key pair.
     pub incoming: String,
     /// What the export must settle on once the version exists.
@@ -1148,7 +1386,7 @@ pub fn plan_stage(state: &RotationState, incoming: &KeyPair) -> Result<StagePlan
         (Phase::Staged, _) => {
             return Err(Error::Config(format!(
                 "a rollover is already staged for {} ({}): two certificates are published and \
-                 the newer one is already the one signing. Finish it with \
+                 the newer one should be treated as the one signing. Finish it with \
                  `aic saml rotate complete`, or re-enable the state you want with \
                  `aic esv secret enable`.",
                 state.entity_id,
@@ -1173,49 +1411,86 @@ pub fn plan_stage(state: &RotationState, incoming: &KeyPair) -> Result<StagePlan
         )));
     }
 
+    let retained_version = state
+        .enabled_versions()
+        .first()
+        .map(|version| version.version.clone())
+        .expect("Settled means exactly one ENABLED version");
+
     let mut expected = published;
     expected.insert(incoming.sha256.clone());
     Ok(StagePlan {
         secret_id: secret.id.clone(),
         retained,
+        retained_version,
         incoming: incoming.sha256.clone(),
         expected,
     })
 }
 
+/// What is known about **when** signing moves to a newly added version, for
+/// one role — stated as a measurement where there is one and as an assumption
+/// where there is not.
+///
+/// The 2026-09-22 measurement (`docs/api/06-saml.md`) covered the **SP
+/// AuthnRequest-signing** path only: the signer had moved to the new version by
+/// the first observation, about 12 s after the version was added, and was
+/// unchanged minutes later. Nothing measured the IdP's assertion signing. The
+/// resolution is the same secret label through the same store, so the same
+/// behaviour is plausible — but plausible is a reason to prepare as though it
+/// were true, not a reason to report it as observed. So the *warning* is the
+/// same for both roles (the conservative direction) and the *evidence* line is
+/// not.
+pub fn cutover_evidence(role: Role) -> &'static str {
+    match role {
+        Role::Sp => {
+            "measured on this path (SP AuthnRequest signing, 2026-09-22): signing had moved to \
+             the new version by the first observation, no later than 12 s after it was added"
+        }
+        Role::Idp => {
+            "IdP assertion signing is unmeasured — only the SP AuthnRequest path was measured — \
+             so assume signing moves to the new version immediately"
+        }
+    }
+}
+
 /// What `stage` says before it sends anything — and the reason it is here
 /// rather than inline in `cli`.
 ///
-/// **`stage` is the cutover.** AM signs with the newest ENABLED version of the
-/// ESV secret, from the next request onwards (measured 2026-09-22 on the SP
-/// AuthnRequest-signing path, `docs/api/06-saml.md`), so a peer that does not
-/// already trust the incoming certificate starts rejecting this role's
-/// signatures the moment the version exists — before it could possibly have
-/// loaded a certificate that did not exist until then. The two-certificate
-/// export that follows is how a peer which *refreshes* metadata catches up; it
-/// is not a window in which to prepare, and the module used to describe it as
-/// one.
+/// **Treat `stage` as the cutover.** On the measured SP path the signer moved
+/// to the newest ENABLED version by the first observation, ≤12 s after it was
+/// added ([`cutover_evidence`]), so a peer that does not already trust the
+/// incoming certificate starts rejecting this role's signatures the moment the
+/// version exists — before it could possibly have loaded a certificate that
+/// did not exist until then. The IdP path is unmeasured and is warned about
+/// the same way, as an assumption. The two-certificate export that follows is
+/// how a peer which *refreshes* metadata catches up; it is not a window in
+/// which to prepare, and the module used to describe it as one.
 ///
 /// That makes this the one message an operator must read before confirming, so
 /// it is built by a function a test can drive rather than assembled from
 /// `eprintln!`s no test can see. It prints on `--dry-run` too, which is where
 /// it is most useful.
 ///
-/// It names the rollback because the obvious one does not exist: AIC refuses
-/// to disable the latest version (`400 Cannot disable latest secret version`),
-/// so the way back is another `add-version` holding the old key pair.
+/// It names **emergency signer restoration** because the obvious rollback does
+/// not exist: AIC refuses to disable the latest version (`400 Cannot disable
+/// latest secret version`). Restoration is another `add-version` holding the
+/// old key pair, and it is only half of the way back — see
+/// [`restoration_lines`].
 pub fn stage_plan_lines(state: &RotationState, plan: &StagePlan) -> Vec<String> {
     let role = role_descriptor(state.role);
-    vec![
+    let mut lines = vec![
         format!(
             "will add a version to ESV secret {} holding certificate {}",
             plan.secret_id, plan.incoming
         ),
         format!(
-            "  **this cuts signing over**: AM signs with the newest ENABLED version, so {} \
-             ({role}) starts signing with {} within seconds of the version existing — not when \
-             the peer next loads metadata, and not when `complete` runs",
-            state.entity_id, plan.incoming
+            "  **treat this as the signing cutover**: {} ({role}) is expected to start signing \
+             with {} as soon as the version exists — not when the peer next loads metadata, and \
+             not when `complete` runs. {}",
+            state.entity_id,
+            plan.incoming,
+            cutover_evidence(state.role)
         ),
         format!(
             "  stop here unless the peer already holds and trusts {}: from that moment it is \
@@ -1225,46 +1500,103 @@ pub fn stage_plan_lines(state: &RotationState, plan: &StagePlan) -> Vec<String> 
         ),
         format!(
             "  {} ({role}) will then publish both {} and {}. The already-published {} stays \
-             published — nothing is retired here — but it stops being the certificate in use; \
-             that export is how a peer which refreshes metadata catches up afterwards",
+             published — nothing is retired here — but it is expected to stop being the \
+             certificate in use; that export is how a peer which refreshes metadata catches up \
+             afterwards",
             state.entity_id, plan.retained, plan.incoming, plan.retained
         ),
-        format!(
-            "  there is no un-stage: AIC refuses to disable the version just added (400 Cannot \
-             disable latest secret version). To put {} back in front, add it again as a *newer* \
-             version — `aic esv secret add-version {} --value-file <its key pair>` — which \
-             takes seconds and destroys nothing",
-            plan.retained, plan.secret_id
-        ),
-    ]
+    ];
+    lines.extend(restoration_lines(plan, "<the version this adds>"));
+    lines
 }
 
 /// What `stage` says once the tenant has confirmed the new certificate is
 /// published.
 ///
 /// The plan lines above warn; this one reports, and an operator who confirmed
-/// past the warning and then found out reads it here. It names the rollback a
-/// second time with the version number in hand, because this is the moment the
-/// rollback is needed and [`stage_plan_lines`] has scrolled away.
+/// past the warning and then found out reads it here. What it reports as
+/// **read** is publication, because that is what this run read; which
+/// certificate signs is stated as the expectation [`cutover_evidence`] supports
+/// for this role, never as an observation this run did not make. It names
+/// restoration a second time with both version numbers in hand, because this
+/// is the moment it is needed and [`stage_plan_lines`] has scrolled away.
 pub fn stage_outcome_lines(state: &RotationState, plan: &StagePlan, version: &str) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{} ({}) publishes {} as version {version}; treat it as the certificate signing now, \
+         not from whenever the peer loads the metadata — {}",
+        state.entity_id,
+        role_descriptor(state.role),
+        plan.incoming,
+        cutover_evidence(state.role)
+    )];
+    lines.extend(restoration_lines(plan, version));
+    lines
+}
+
+/// Emergency signer restoration, stated completely.
+///
+/// "Add the old key pair again" restores the signer and leaves three ENABLED
+/// versions — the one that was in service, the one `stage` added, and the
+/// restored copy — which is a state `rotate` treats like its other off-path
+/// states (`Inconsistent`: nothing automatic), not one it finishes. So the
+/// lines name the finish as well: disable the two superseded versions, which
+/// is possible because neither is the latest any more. And they say what the
+/// restoration needs, because nothing here keeps it: the **old private key**,
+/// not only its certificate — an ESV secret value is write-only, so a key
+/// pair that was not kept cannot be read back out of the tenant.
+fn restoration_lines(plan: &StagePlan, added: &str) -> Vec<String> {
     vec![
         format!(
-            "{} ({}) now signs with {} — from now, not from whenever the peer loads the \
-             metadata",
-            state.entity_id,
-            role_descriptor(state.role),
-            plan.incoming
+            "  there is no un-stage: AIC refuses to disable the version just added (400 Cannot \
+             disable latest secret version). **Emergency signer restoration** puts {} back in \
+             front by adding its key pair again as a *newer* version — `aic esv secret \
+             add-version {} --value-file <old key pair>` — and it needs the **old private key** \
+             as well as its certificate: ESV secret values are write-only, so a key pair that \
+             was not kept cannot be recovered from the tenant",
+            plan.retained, plan.secret_id
         ),
         format!(
-            "if that is wrong, version {version} cannot be disabled while it is the latest \
-             (400 Cannot disable latest secret version): put {} back in front with `aic esv \
-             secret add-version {} --value-file <its key pair>`",
-            plan.retained, plan.secret_id
+            "  restoration alone leaves versions {}, {added} and the restored one all ENABLED, a \
+             state `rotate` will not finish; settle it by disabling the two superseded versions \
+             — `aic esv secret disable {} {added}` and `aic esv secret disable {} {}` — which \
+             leaves the restored version, and {}, alone. Nothing is destroyed",
+            plan.retained_version,
+            plan.secret_id,
+            plan.secret_id,
+            plan.retained_version,
+            plan.retained
         ),
     ]
 }
 
-pub fn authorize_stage(dry_run: bool, _exclusive: &ExclusivityProof) -> Decision<StagePermit> {
+/// Permission to cut signing over: `--force` was supplied, or the operator
+/// confirmed at a terminal.
+///
+/// [`complete_ok`]'s sibling, and the same shape on purpose. `stage` is the
+/// verb that breaks a peer which was not prepared — more so than `complete`,
+/// which on its usual path is not expected to change the signer — so it asks the same question
+/// in the same way: `--dry-run`, the permits and the production `--yes` gate
+/// each answer something else, and none of them is "have you pre-trusted the
+/// certificate this names".
+pub fn stage_ok(forced: bool, plan: &StagePlan, state: &RotationState) -> Result<()> {
+    if forced {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "would add certificate {} to ESV secret {} as a new version, which is treated as \
+         cutting {} ({}) signing over to it at once. A peer that does not already hold and trust \
+         {} starts rejecting this role's signatures from then, and there is no un-stage — only \
+         emergency signer restoration, which needs the old private key. Confirm at a terminal, \
+         or pass --force.",
+        plan.incoming,
+        plan.secret_id,
+        state.entity_id,
+        role_descriptor(state.role),
+        plan.incoming,
+    )))
+}
+
+pub fn authorize_stage(dry_run: bool, _exclusive: ExclusivityProof) -> Decision<StagePermit> {
     if dry_run {
         Decision::Preview
     } else {
@@ -1308,6 +1640,14 @@ pub struct CompletePlan {
     /// which would be right only if the version/certificate pairing were
     /// known, and it is exactly what is not known.
     pub expected_drop: Option<String>,
+    /// Whether the version being disabled is the **newest ENABLED** one —
+    /// the one [`SIGNER_RULE`] says to treat as signing. `complete` usually
+    /// retires the other version and is not expected to change the signer; keeping the older
+    /// certificate (`--retain` naming it, reachable when a DISABLED spare
+    /// sits above the staged version) disables the signing one, and that is a
+    /// cutover back to the retained certificate, with the same peer
+    /// precondition as `stage`.
+    pub moves_signer: bool,
 }
 
 /// Decide which version to disable, and what must remain afterwards.
@@ -1461,12 +1801,17 @@ pub fn plan_complete(
         }
     });
 
+    let moves_signer = enabled
+        .last()
+        .is_some_and(|newest| newest.version == disable_version);
+
     Ok(CompletePlan {
         secret_id: secret.id.clone(),
         disable_version,
         chosen_by,
         retain,
         expected_drop,
+        moves_signer,
     })
 }
 
@@ -1609,10 +1954,7 @@ fn no_pairing(state: &RotationState) -> Error {
     ))
 }
 
-pub fn authorize_complete(
-    dry_run: bool,
-    _exclusive: &ExclusivityProof,
-) -> Decision<CompletePermit> {
+pub fn authorize_complete(dry_run: bool, _exclusive: ExclusivityProof) -> Decision<CompletePermit> {
     if dry_run {
         Decision::Preview
     } else {
@@ -1622,7 +1964,7 @@ pub fn authorize_complete(
     }
 }
 
-pub fn authorize_init(dry_run: bool, _exclusive: &ExclusivityProof) -> Decision<InitPermit> {
+pub fn authorize_init(dry_run: bool, _exclusive: ExclusivityProof) -> Decision<InitPermit> {
     if dry_run {
         Decision::Preview
     } else {
@@ -1690,17 +2032,84 @@ pub fn complete_ok(forced: bool, plan: &CompletePlan, state: &RotationState) -> 
     if forced {
         return Ok(());
     }
+    let signer = if plan.moves_signer {
+        format!(
+            " And version {} is the newest ENABLED version — the one to treat as signing — so \
+             this also moves signing back to {}: a peer that does not trust {} starts rejecting \
+             this role's signatures.",
+            plan.disable_version, plan.retain, plan.retain
+        )
+    } else {
+        String::new()
+    };
     Err(Error::Config(format!(
         "would disable version {} of {} and stop publishing a certificate {} ({}) currently \
          advertises. That copy is what a peer which refreshes metadata is catching up from, and \
          once it is gone a peer still pinned to it has nothing left to move to — it will go on \
-         rejecting signatures with no published certificate that would fix it. Confirm at a \
-         terminal, or pass --force.",
+         rejecting signatures with no published certificate that would fix it.{signer} Confirm \
+         at a terminal, or pass --force.",
         plan.disable_version,
         plan.secret_id,
         state.entity_id,
         role_descriptor(state.role)
     )))
+}
+
+/// Permission to point a role at its own ESV secret: `--force` was supplied,
+/// or the operator confirmed at a terminal.
+///
+/// The third of [`stage_ok`] and [`complete_ok`], because `init` is a
+/// certificate change too. Whichever of its steps runs last completes the
+/// chain identifier → label → mapping → secret, and from then the role
+/// resolves the ESV secret instead of the realm default. **Mapping a label
+/// replaces the default certificate; it does not add to it** (measured
+/// 2026-09-16, `docs/api/06-saml.md`), so unlike `stage` there is not even a
+/// two-certificate export to catch up from: the old certificate stops being
+/// published at the same moment. Which certificate then *signs* was not
+/// measured for this transition; the same conservative assumption as
+/// `stage` applies. Only a plan with nothing to do (`is_noop`) skips this,
+/// and that plan never reaches here.
+pub fn init_ok(forced: bool, plan: &InitPlan, state: &RotationState) -> Result<()> {
+    if forced {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "would point {} ({}) at ESV secret {}, which replaces the certificate it publishes — \
+         {} now — with {}, and is treated as cutting signing over to it at once. There is no \
+         two-certificate export afterwards: mapping a label replaces the default certificate \
+         rather than adding to it, so a peer that does not already trust the new one starts \
+         rejecting this role's signatures. Confirm at a terminal, or pass --force.",
+        state.entity_id,
+        role_descriptor(state.role),
+        plan.secret_id,
+        init_current(state),
+        init_incoming(plan),
+    )))
+}
+
+/// What a role publishes before `init`, for the confirmation.
+pub fn init_current(state: &RotationState) -> String {
+    let published = state.published_fingerprints();
+    if published.is_empty() {
+        "nothing".to_string()
+    } else {
+        published.into_iter().collect::<Vec<_>>().join(", ")
+    }
+}
+
+/// The certificate `init` brings in, or why it cannot be named.
+///
+/// Only a secret this run **creates** has a known certificate. An adopted one
+/// was never read — values are write-only — so naming the supplied key pair's
+/// fingerprint there would name a certificate nothing wrote.
+pub fn init_incoming(plan: &InitPlan) -> String {
+    match (plan.create_secret, plan.certificate.as_deref()) {
+        (true, Some(sha)) => format!("certificate {sha}"),
+        _ => format!(
+            "whatever certificate {} holds (it already exists, so its value was never seen here)",
+            plan.secret_id
+        ),
+    }
 }
 
 /// The one-line reading of a phase, for a human.
@@ -1725,8 +2134,8 @@ pub fn phase_summary(phase: &Phase) -> String {
                 .to_string()
         }
         Phase::Staged => {
-            "staged — two certificates published; the newest ENABLED version is already the one \
-             signing, and `complete` stops publishing the other"
+            "staged — two certificates published; treat the newest ENABLED version as the one \
+             already signing, and `complete` as what stops publishing the other"
                 .to_string()
         }
         Phase::Inconsistent { detail } => format!("inconsistent — {detail}"),
@@ -1784,22 +2193,30 @@ impl Adoption {
 ///
 /// Sibling of [`PAIRING_CAVEAT`], and deliberately a different claim: that one
 /// says which **version** holds which certificate cannot be read, and this one
-/// says which **certificate** is signing can — not from the export's ordering,
-/// but from the rule the ordering reflects. Measured 2026-09-22
-/// (`docs/api/06-saml.md`), five rounds including a rollback probe that
-/// re-added the *older* certificate as the newest version and saw it take over
-/// again: recency of the ENABLED version decides, not any property of the
-/// certificate.
+/// says what is known about which **certificate** signs — which is less than
+/// this constant used to claim. Measured 2026-09-22 (`docs/api/06-saml.md`),
+/// five rounds on the SP AuthnRequest-signing path only: the signer was the
+/// newest ENABLED version every time, by the first observation, and a rollback
+/// round that re-added the *older* certificate as the newest version saw it
+/// take over again — which rules out any property of the certificate. What the
+/// rounds did **not** separate is recency from export order: the newest
+/// ENABLED version was also listed first every time, so "AM picks the newest"
+/// and "AM picks whatever is first" fit the evidence equally. The operational
+/// consequence is the same either way, which is why the rule is safe to act
+/// on and not safe to state as a mechanism.
 ///
-/// It is stated as the rule rather than pinned to one of the fingerprints
-/// above it, because naming one would mean reading it off the export's order —
-/// the inference this module refuses everywhere else.
+/// It is stated as a rule rather than pinned to one of the fingerprints above
+/// it, because naming one would mean reading it off the export's order — the
+/// inference this module refuses everywhere else.
 pub const SIGNER_RULE: &str = "\
-AM signs with the newest ENABLED version of the ESV secret, from the next request onwards (measured
-2026-09-22 on the SP AuthnRequest-signing path — docs/api/06-saml.md). So two published certificates
-means the cutover has already happened: the newer one is in use now, and the older one is published
-only so a peer that refreshes metadata can catch up. Retiring that older one — what `complete`
-normally does — changes nothing about what signs.";
+Observed on the SP AuthnRequest-signing path only (2026-09-22, docs/api/06-saml.md): after a version
+was added, the signer was the newest ENABLED version by the first observation, no later than 12 s —
+and that version was also always listed first in the export, so which of the two AM selects by was
+not separated. IdP assertion signing is unmeasured; assume the same. So treat two published
+certificates as meaning the cutover has already happened: the newer one is in use, and the older
+one is published only so a peer that refreshes metadata can catch up. Retiring that older one — what
+`complete` normally does — is not expected to change what signs; `--retain` naming the older
+certificate is the exception, and moves signing back to it.";
 
 /// The sentence every two-certificate report carries.
 pub const PAIRING_CAVEAT: &str = "\
@@ -2053,12 +2470,18 @@ pub fn status_json(state: &RotationState, phase: &Phase, consumers: Option<&Cons
             "exclusive": consumers.exclusive(),
             "secretId": consumers.secret_id,
             "others": consumers.others.iter().map(|consumer| serde_json::json!({
+                "realm": consumer.realm,
                 "entityId": consumer.entity_id,
                 "location": consumer.location.as_str(),
                 "role": consumer.role.wire(),
                 "label": consumer.label,
             })).collect::<Vec<_>>(),
-            "unclaimedLabels": consumers.unclaimed_labels,
+            "unclaimedLabels": consumers.unclaimed_labels.iter().map(|unclaimed| serde_json::json!({
+                "realm": unclaimed.realm,
+                "label": unclaimed.label,
+            })).collect::<Vec<_>>(),
+            "realms": consumers.realms,
+            "unsurveyedRealms": consumers.unsurveyed,
             "caveat": SHARING_CAVEAT,
         })),
         "phase": phase_key(phase),
@@ -2371,12 +2794,35 @@ mod tests {
     /// Ours and nobody else's — the state every other survey here is a
     /// departure from.
     fn exclusive_survey() -> Consumers {
-        survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
+        alpha_survey(
             &[mapping(&signing_label("spa"), "esv-sp-a-signing")],
             &[entity("https://sp-a.example.com", &[(Role::Sp, "spa")])],
+        )
+    }
+
+    fn realm_survey(
+        realm: &str,
+        mappings: &[Mapping],
+        entities: &[EntityIdentifiers],
+    ) -> RealmSurvey {
+        RealmSurvey {
+            realm: realm.to_string(),
+            mappings: mappings.to_vec(),
+            entities: entities.to_vec(),
+        }
+    }
+
+    /// A tenant-wide survey whose `bravo` is empty: every single-realm
+    /// departure below is made in `alpha`, the rotation's own realm, and the
+    /// cross-realm ones are built explicitly.
+    fn alpha_survey(mappings: &[Mapping], entities: &[EntityIdentifiers]) -> Consumers {
+        survey_consumers(
+            &mine(),
+            Some("esv-sp-a-signing"),
+            &[
+                realm_survey("alpha", mappings, entities),
+                realm_survey("bravo", &[], &[]),
+            ],
         )
     }
 
@@ -2649,40 +3095,54 @@ mod tests {
         assert!(again.contains("rotate complete"), "{again}");
     }
 
+    /// The same single-certificate rotation, on an IdP role. The claims about
+    /// *when* signing moves differ by role — the SP path was measured and the
+    /// IdP path was not — so every cutover message is checked on both.
+    fn idp_state() -> RotationState {
+        RotationState {
+            role: Role::Idp,
+            certs: vec![cert("IDPSSODescriptor", Some("signing"), OLD)],
+            ..state()
+        }
+    }
+
     /// Red when the plan `stage` prints stops saying that it is the cutover,
-    /// or stops naming the only rollback there is.
+    /// stops naming the complete way back, or states the IdP cutover as a
+    /// measurement.
     ///
-    /// This is the message the 2026-09-22 measurement exists to put there:
-    /// the module used to describe the two-certificate export as the peer's
-    /// pre-trust window, when signing has already moved by then. The three
-    /// load-bearing facts are that the change is *now*, that the peer needed
-    /// the certificate *beforehand*, and that disabling the version just added
-    /// is refused — an operator who has only the first two still has no way
-    /// back.
+    /// The load-bearing facts: the change should be treated as *now*, the peer
+    /// needed the certificate *beforehand*, disabling the version just added
+    /// is refused, and restoration needs the old private key and then two
+    /// disables — an operator who has only the first two still has no way back,
+    /// and one given "add it again" alone is left with three ENABLED versions
+    /// `rotate` will not finish.
     #[test]
     fn the_stage_plan_says_it_cuts_signing_over_and_names_the_way_back() {
         let state = state();
         let plan = plan_stage(&state, &pair(NEW)).unwrap();
+        assert_eq!(plan.retained_version, "1");
         let text = stage_plan_lines(&state, &plan).join("\n");
 
-        assert!(text.contains("cuts signing over"), "{text}");
-        assert!(
-            text.contains(NEW) && text.contains("within seconds"),
-            "the incoming certificate is what starts signing, and at once: {text}"
-        );
+        assert!(text.contains("treat this as the signing cutover"), "{text}");
+        assert!(text.contains(NEW), "{text}");
         assert!(
             text.contains("stop here unless the peer already holds"),
             "the trust step belongs before this command, not after it: {text}"
         );
         // The old certificate's fate, stated as it is: still published, no
-        // longer in use. Both halves matter — "retired" would be wrong and
-        // "keeps working" is what this change is correcting.
+        // longer expected to be in use.
         assert!(text.contains("stays published"), "{text}");
         assert!(
-            text.contains("stops being the certificate in use"),
+            text.contains("expected to stop being the certificate in use"),
             "{text}"
         );
-        // The rollback, as a command that can be run rather than a hint.
+        // The measured bound, not the unmeasured "next request".
+        assert!(text.contains("no later than 12 s"), "{text}");
+        assert!(!text.contains("next request"), "{text}");
+
+        // Emergency signer restoration, stated completely.
+        assert!(text.contains("Emergency signer restoration"), "{text}");
+        assert!(text.contains("old private key"), "{text}");
         assert!(
             text.contains("aic esv secret add-version esv-sp-a-signing"),
             "{text}"
@@ -2693,12 +3153,38 @@ mod tests {
         );
         assert!(
             text.contains(OLD),
-            "the rollback needs the certificate it puts back: {text}"
+            "restoration needs the certificate it puts back: {text}"
         );
+        assert!(text.contains("will not finish"), "{text}");
+        assert!(
+            text.contains("aic esv secret disable esv-sp-a-signing 1"),
+            "the version that was in service is one of the two to disable: {text}"
+        );
+        assert!(
+            text.contains("aic esv secret disable esv-sp-a-signing <the version this adds>"),
+            "{text}"
+        );
+
+        // The IdP role gets the same warning and a different evidence line:
+        // its signing path was never measured.
+        let idp = idp_state();
+        let idp_plan = plan_stage(&idp, &pair(NEW)).unwrap();
+        let idp_text = stage_plan_lines(&idp, &idp_plan).join("\n");
+        assert!(
+            idp_text.contains("treat this as the signing cutover"),
+            "{idp_text}"
+        );
+        assert!(
+            idp_text.contains("IdP assertion signing is unmeasured"),
+            "{idp_text}"
+        );
+        assert!(!idp_text.contains("measured on this path"), "{idp_text}");
+        assert!(!text.contains("IdP assertion signing"), "{text}");
     }
 
-    /// Red when `stage` stops reporting the cutover after the write, or
-    /// reports it without the version number the refusal will quote.
+    /// Red when `stage` stops reporting the cutover after the write, reports
+    /// signing as something this run observed, or names restoration without
+    /// the version numbers it needs.
     ///
     /// Separate from the plan lines because they are read at different
     /// moments: the plan is read before a decision, this after one, and an
@@ -2709,20 +3195,105 @@ mod tests {
         let plan = plan_stage(&state, &pair(NEW)).unwrap();
         let text = stage_outcome_lines(&state, &plan, "2").join("\n");
 
-        assert!(text.contains("now signs with"), "{text}");
-        assert!(text.contains(NEW), "{text}");
         assert!(
-            text.contains("version 2 cannot be disabled while it is the latest"),
+            text.contains(&format!("publishes {NEW} as version 2")),
             "{text}"
         );
+        assert!(
+            text.contains("treat it as the certificate signing now"),
+            "{text}"
+        );
+        // This run read publication, not signing; it must not say "signs".
+        assert!(!text.contains("now signs with"), "{text}");
         assert!(
             text.contains("aic esv secret add-version esv-sp-a-signing"),
             "{text}"
         );
+        assert!(
+            text.contains("aic esv secret disable esv-sp-a-signing 2")
+                && text.contains("aic esv secret disable esv-sp-a-signing 1"),
+            "both superseded versions, by number: {text}"
+        );
+
+        let idp = idp_state();
+        let idp_plan = plan_stage(&idp, &pair(NEW)).unwrap();
+        let idp_text = stage_outcome_lines(&idp, &idp_plan, "2").join("\n");
+        assert!(
+            idp_text.contains("IdP assertion signing is unmeasured"),
+            "{idp_text}"
+        );
     }
 
-    /// Red when a two-certificate `status` stops saying which of them is in
-    /// use — and red if it starts saying so when there is only one.
+    /// Red when `stage` can reach its write unconfirmed — the sibling of
+    /// `closing_the_window_is_refused_until_it_is_confirmed`, and driven
+    /// through the same kind of function.
+    #[test]
+    fn cutting_signing_over_is_refused_until_it_is_confirmed() {
+        let state = state();
+        let plan = plan_stage(&state, &pair(NEW)).unwrap();
+        assert!(stage_ok(true, &plan, &state).is_ok());
+        let refusal = message(stage_ok(false, &plan, &state).unwrap_err());
+        assert!(
+            refusal.contains(&format!("would add certificate {NEW}")),
+            "the prompt's subject is the incoming certificate: {refusal}"
+        );
+        assert!(refusal.contains("no un-stage"), "{refusal}");
+        assert!(refusal.contains("old private key"), "{refusal}");
+        assert!(refusal.contains("--force"), "{refusal}");
+    }
+
+    /// Red when `init` can complete the label chain unconfirmed, or when its
+    /// confirmation names a certificate nothing wrote.
+    ///
+    /// `init` replaces the published certificate outright — mapping a label
+    /// replaces the default rather than adding to it — so it is a cutover
+    /// with no catch-up export at all. The discriminating case is adoption:
+    /// a key pair supplied to an `init` that adopts an existing secret is not
+    /// written, so naming its fingerprint as the incoming certificate would be
+    /// a claim about a value this run never saw.
+    #[test]
+    fn pointing_a_role_at_its_own_secret_is_refused_until_it_is_confirmed() {
+        let unconfigured = RotationState {
+            identifier: None,
+            mapped_alias: None,
+            secret: None,
+            versions: vec![],
+            certs: vec![cert("SPSSODescriptor", Some("signing"), STRANGER)],
+            ..state()
+        };
+        let creating = plan_init(
+            &unconfigured,
+            "spa",
+            "esv-sp-a-signing",
+            None,
+            None,
+            Some(&pair(NEW)),
+        )
+        .unwrap();
+        assert!(init_ok(true, &creating, &unconfigured).is_ok());
+        let refusal = message(init_ok(false, &creating, &unconfigured).unwrap_err());
+        assert!(refusal.contains(&format!("certificate {NEW}")), "{refusal}");
+        assert!(refusal.contains(STRANGER), "what it replaces: {refusal}");
+        assert!(refusal.contains("no two-certificate export"), "{refusal}");
+        assert!(refusal.contains("--force"), "{refusal}");
+
+        let adopting = plan_init(
+            &unconfigured,
+            "spa",
+            "esv-sp-a-signing",
+            None,
+            Some(&facts()),
+            Some(&pair(NEW)),
+        )
+        .unwrap();
+        let adopted = message(init_ok(false, &adopting, &unconfigured).unwrap_err());
+        assert!(!adopted.contains(NEW), "{adopted}");
+        assert!(adopted.contains("never seen here"), "{adopted}");
+    }
+
+    /// Red when a two-certificate `status` stops saying which certificate to
+    /// treat as in use — and red if it starts saying so when there is only
+    /// one, or if it claims more than the evidence separated.
     ///
     /// The control is the second half: [`SIGNER_RULE`] is a statement about a
     /// rollover in progress, and a settled role that carried it would be
@@ -2733,12 +3304,16 @@ mod tests {
         let staged_text = status_lines(&staged, &phase(&staged), None).join("\n");
         assert!(staged_text.contains(SIGNER_RULE), "{staged_text}");
         assert!(
-            staged_text.contains("newest ENABLED version is already the one signing"),
+            staged_text.contains("treat the newest ENABLED version as the one already signing"),
             "the phase line carries it too, because that is the line read first: {staged_text}"
         );
         // And it is not the same claim as the pairing caveat: one says which
         // certificate signs, the other says which version holds it.
         assert!(staged_text.contains(PAIRING_CAVEAT), "{staged_text}");
+        // What the measurement did not separate, and what it did not cover.
+        assert!(SIGNER_RULE.contains("not separated"), "{SIGNER_RULE}");
+        assert!(SIGNER_RULE.contains("IdP assertion signing is unmeasured"));
+        assert!(!SIGNER_RULE.contains("next request"), "{SIGNER_RULE}");
 
         let settled = state();
         let settled_text = status_lines(&settled, &phase(&settled), None).join("\n");
@@ -2853,6 +3428,15 @@ mod tests {
         // Direct from the record, not by elimination: version 2 is the one
         // being disabled and the record names the certificate it holds.
         assert_eq!(plan.expected_drop.as_deref(), Some(NEW));
+        // And disabling version 2 — the newest ENABLED one — moves the
+        // signer, which the usual completion does not. Both are said before
+        // the confirmation.
+        assert!(plan.moves_signer);
+        let refusal = message(complete_ok(false, &plan, &with_spare).unwrap_err());
+        assert!(
+            refusal.contains(&format!("moves signing back to {OLD}")),
+            "{refusal}"
+        );
     }
 
     /// Red when a stale record is read as a pairing.
@@ -3061,6 +3645,9 @@ mod tests {
         assert!(refusal.contains("would disable version 1"), "{refusal}");
         assert!(refusal.contains("rejecting signatures"), "{refusal}");
         assert!(refusal.contains("--force"), "{refusal}");
+        // The usual completion retires the version that is not signing.
+        assert!(!plan.moves_signer);
+        assert!(!refusal.contains("moves signing back"), "{refusal}");
     }
 
     // -----------------------------------------------------------------
@@ -3084,10 +3671,7 @@ mod tests {
         // Channel 1 — a second entity carrying the *same* identifier. It
         // needs no mapping of its own: the label is the same label.
         // Discriminating against a survey that only reads the mapping table.
-        let shared_identifier = survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
+        let shared_identifier = alpha_survey(
             &[mapping(&signing_label("spa"), "esv-sp-a-signing")],
             &[
                 entity("https://sp-a.example.com", &[(Role::Sp, "spa")]),
@@ -3103,10 +3687,7 @@ mod tests {
         // Channel 2 — a second label mapped onto the same ESV secret. The
         // identifiers differ, so an identifier-only survey calls this one
         // exclusive.
-        let shared_secret = survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
+        let shared_secret = alpha_survey(
             &[
                 mapping(&signing_label("spa"), "esv-sp-a-signing"),
                 mapping(&signing_label("spb"), "esv-sp-a-signing"),
@@ -3122,10 +3703,7 @@ mod tests {
         // ...and its control, which is the same tenant one mapping different:
         // the second label points somewhere else, so it is not this secret's
         // business at all.
-        let neighbour = survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
+        let neighbour = alpha_survey(
             &[
                 mapping(&signing_label("spa"), "esv-sp-a-signing"),
                 mapping(&signing_label("spb"), "esv-sp-b-signing"),
@@ -3140,10 +3718,7 @@ mod tests {
         // One entity, both roles, one identifier: an entity-keyed survey
         // calls this exclusive, and disabling a version retires the IdP
         // role's certificate as surely as the SP role's.
-        let both_roles = survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
+        let both_roles = alpha_survey(
             &[mapping(&signing_label("spa"), "esv-sp-a-signing")],
             &[entity(
                 "https://sp-a.example.com",
@@ -3157,10 +3732,7 @@ mod tests {
         // identifier mapped onto the same secret: an (entity, role) survey
         // calls this exclusive, and the rollover would roll a key no
         // `<KeyDescriptor use="signing">` ever showed.
-        let also_encryption = survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
+        let also_encryption = alpha_survey(
             &[
                 mapping(&signing_label("spa"), "esv-sp-a-signing"),
                 mapping(
@@ -3175,10 +3747,7 @@ mod tests {
 
         // A label mapped onto the secret that nobody names resolves nothing
         // today and still says the secret is not this rollover's alone.
-        let orphan = survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
+        let orphan = alpha_survey(
             &[
                 mapping(&signing_label("spa"), "esv-sp-a-signing"),
                 mapping(&signing_label("spb"), "esv-sp-a-signing"),
@@ -3186,15 +3755,18 @@ mod tests {
             &[entity("https://sp-a.example.com", &[(Role::Sp, "spa")])],
         );
         assert!(orphan.others.is_empty());
-        assert_eq!(orphan.unclaimed_labels, vec![signing_label("spb")]);
+        assert_eq!(
+            orphan.unclaimed_labels,
+            vec![UnclaimedLabel {
+                realm: "alpha".into(),
+                label: signing_label("spb")
+            }]
+        );
 
         // Including one that is not SAML's at all — another AM subsystem
         // holding the same key. It cannot be named as a provider, so it is
         // reported as a label rather than dropped for not parsing.
-        let foreign = survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
+        let foreign = alpha_survey(
             &[
                 mapping(&signing_label("spa"), "esv-sp-a-signing"),
                 mapping("am.services.oauth2.stateless.signing", "esv-sp-a-signing"),
@@ -3203,30 +3775,24 @@ mod tests {
         );
         assert_eq!(
             foreign.unclaimed_labels,
-            vec!["am.services.oauth2.stateless.signing"]
+            vec![UnclaimedLabel {
+                realm: "alpha".into(),
+                label: "am.services.oauth2.stateless.signing".into()
+            }]
         );
 
         // The state a fresh `init` surveys from: nothing is mapped and the
         // entity does not name the identifier yet, because writing it is what
         // `init` is about. Counting our own label as an orphan here would
         // refuse every first-time setup.
-        let fresh = survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
-            &[],
-            &[entity("https://sp-a.example.com", &[])],
-        );
+        let fresh = alpha_survey(&[], &[entity("https://sp-a.example.com", &[])]);
         assert!(fresh.exclusive(), "{fresh:?}");
 
         // But an `init` adopting an identifier a second entity already
         // carries is refused, with nothing mapped anywhere — the sharing does
         // not exist in the mapping table yet, which is exactly why `init` is
         // the cheapest place to catch it.
-        let adopting_a_busy_identifier = survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
+        let adopting_a_busy_identifier = alpha_survey(
             &[],
             &[
                 entity("https://sp-a.example.com", &[]),
@@ -3241,10 +3807,7 @@ mod tests {
     /// though nothing were in the way.
     #[test]
     fn a_shared_secret_is_refused_by_name_and_named_again_by_status() {
-        let shared = survey_consumers(
-            "alpha",
-            &mine(),
-            Some("esv-sp-a-signing"),
+        let shared = alpha_survey(
             &[
                 mapping(&signing_label("spa"), "esv-sp-a-signing"),
                 mapping(&signing_label("spc"), "esv-sp-a-signing"),
@@ -3282,7 +3845,7 @@ mod tests {
 
         let alone = status_lines(&state(), &phase(&state()), Some(&exclusive_survey())).join("\n");
         assert!(
-            alone.contains("nothing else in realm alpha resolves esv-sp-a-signing"),
+            alone.contains("nothing else in realms alpha, bravo resolves esv-sp-a-signing"),
             "{alone}"
         );
         assert!(!alone.contains(SHARING_CAVEAT), "{alone}");
@@ -3293,10 +3856,291 @@ mod tests {
             json["sharing"]["others"][0]["entityId"],
             "https://sp-b.example.com"
         );
-        assert_eq!(json["sharing"]["unclaimedLabels"][0], signing_label("spc"));
+        assert_eq!(
+            json["sharing"]["unclaimedLabels"][0]["label"],
+            signing_label("spc")
+        );
+        assert_eq!(json["sharing"]["unclaimedLabels"][0]["realm"], "alpha");
         // A role with no identifier of its own has nothing to survey, and
         // says so rather than claiming exclusivity it never checked.
         assert!(status_json(&state(), &phase(&state()), None)["sharing"].is_null());
+    }
+
+    /// Red when the survey reads only the rotation's own realm, or when it
+    /// treats an identifier as tenant-wide rather than per realm.
+    ///
+    /// The ESV secret is tenant-global and the mapping table is not, so a
+    /// consumer in `bravo` is cut over by an `alpha` rotation's write. The two
+    /// controls are what a plausible over-reach gets wrong: the same
+    /// identifier in `bravo` is **not** a consumer unless `bravo` maps its
+    /// label onto this secret, because identifiers are a per-realm namespace.
+    #[test]
+    fn a_consumer_in_the_other_realm_is_found_and_a_namesake_there_is_not() {
+        let alpha = realm_survey(
+            "alpha",
+            &[mapping(&signing_label("spa"), "esv-sp-a-signing")],
+            &[entity("https://sp-a.example.com", &[(Role::Sp, "spa")])],
+        );
+
+        // A bravo entity whose label bravo maps onto the same secret.
+        let across = survey_consumers(
+            &mine(),
+            Some("esv-sp-a-signing"),
+            &[
+                alpha.clone(),
+                realm_survey(
+                    "bravo",
+                    &[mapping(&signing_label("spb"), "esv-sp-a-signing")],
+                    &[entity("https://sp-b.example.com", &[(Role::Sp, "spb")])],
+                ),
+            ],
+        );
+        assert_eq!(across.others.len(), 1, "{across:?}");
+        assert_eq!(across.others[0].realm, "bravo");
+        let refusal = message(exclusive_ok("stage", &across).unwrap_err());
+        assert!(refusal.contains("in realm bravo"), "{refusal}");
+
+        // The same entity id in bravo is a different consumer from mine.
+        let same_id_elsewhere = survey_consumers(
+            &mine(),
+            Some("esv-sp-a-signing"),
+            &[
+                alpha.clone(),
+                realm_survey(
+                    "bravo",
+                    &[mapping(&signing_label("spa"), "esv-sp-a-signing")],
+                    &[entity("https://sp-a.example.com", &[(Role::Sp, "spa")])],
+                ),
+            ],
+        );
+        assert_eq!(same_id_elsewhere.others.len(), 1);
+        assert_eq!(same_id_elsewhere.others[0].realm, "bravo");
+
+        // Control: bravo carries the same identifier, and maps its label
+        // somewhere else — or nowhere. Not this secret's business.
+        for bravo_mappings in [
+            vec![mapping(&signing_label("spa"), "esv-sp-b-signing")],
+            vec![],
+        ] {
+            let namesake = survey_consumers(
+                &mine(),
+                Some("esv-sp-a-signing"),
+                &[
+                    alpha.clone(),
+                    realm_survey(
+                        "bravo",
+                        &bravo_mappings,
+                        &[entity("https://sp-z.example.com", &[(Role::Sp, "spa")])],
+                    ),
+                ],
+            );
+            assert!(namesake.exclusive(), "{namesake:?}");
+        }
+    }
+
+    /// Red when a survey that skipped a realm can still mint a proof.
+    ///
+    /// Coverage is checked in the pure function rather than trusted of the
+    /// caller, so "surveyed one realm" cannot be mistaken for "surveyed the
+    /// tenant" — which is exactly the proof the old per-realm survey minted.
+    #[test]
+    fn a_survey_missing_a_realm_is_not_exclusive() {
+        let partial = survey_consumers(
+            &mine(),
+            Some("esv-sp-a-signing"),
+            &[realm_survey(
+                "alpha",
+                &[mapping(&signing_label("spa"), "esv-sp-a-signing")],
+                &[entity("https://sp-a.example.com", &[(Role::Sp, "spa")])],
+            )],
+        );
+        assert!(partial.others.is_empty() && partial.unclaimed_labels.is_empty());
+        assert_eq!(partial.unsurveyed, vec!["bravo".to_string()]);
+        assert!(!partial.exclusive());
+        let refusal = message(exclusive_ok("complete", &partial).unwrap_err());
+        assert!(refusal.contains("not surveyed"), "{refusal}");
+        assert!(refusal.contains("realm bravo"), "{refusal}");
+
+        // The positive control is the full survey the fixtures use.
+        assert!(exclusive_survey().unsurveyed.is_empty());
+        assert!(exclusive_survey().exclusive());
+    }
+
+    /// What the pre-write recheck reads when nothing has moved since
+    /// `staged()` was planned.
+    fn unmoved_recheck() -> RolloverRecheck {
+        let staged = staged();
+        RolloverRecheck {
+            identifier: staged.identifier.clone(),
+            alias: staged.mapped_alias.clone(),
+            versions: staged.versions.clone(),
+            published: staged.published_fingerprints(),
+            survey: vec![
+                realm_survey(
+                    "alpha",
+                    &[mapping(&signing_label("spa"), "esv-sp-a-signing")],
+                    &[entity("https://sp-a.example.com", &[(Role::Sp, "spa")])],
+                ),
+                realm_survey("bravo", &[], &[]),
+            ],
+        }
+    }
+
+    /// Red when the pre-write recheck stops re-surveying — the defect the
+    /// round-4 review found.
+    ///
+    /// The discriminating case: the plan's survey was exclusive (the plan
+    /// could not have been authorized otherwise), and a consumer appeared
+    /// while the operator was reading the prompt. Every other input is
+    /// unchanged, so a recheck of only the target, the versions and the
+    /// published set — the previous implementation — passes it and writes.
+    #[test]
+    fn a_consumer_added_after_the_plan_stops_the_write() {
+        let staged = staged();
+        assert!(exclusive_ok("complete", &exclusive_survey()).is_ok());
+        assert!(
+            rollover_pre_write_ok("complete", "esv-sp-a-signing", &staged, &unmoved_recheck())
+                .is_ok()
+        );
+
+        // The same inputs the old recheck compared, all unchanged…
+        let mut arrived = unmoved_recheck();
+        assert!(
+            rollover_target_ok(
+                "complete",
+                "esv-sp-a-signing",
+                arrived.identifier.as_deref(),
+                arrived.alias.as_deref()
+            )
+            .is_ok()
+                && rollover_write_ok(
+                    "complete",
+                    "esv-sp-a-signing",
+                    &rollover_inputs(&staged),
+                    &rollover_inputs_from(&arrived.versions, arrived.published.clone()),
+                )
+                .is_ok(),
+            "the old recheck's inputs have not moved"
+        );
+        // …and a second consumer in the other realm, mapped in the gap.
+        arrived.survey[1] = realm_survey(
+            "bravo",
+            &[mapping(&signing_label("spb"), "esv-sp-a-signing")],
+            &[entity("https://sp-b.example.com", &[(Role::Sp, "spb")])],
+        );
+        let refusal = message(
+            rollover_pre_write_ok("complete", "esv-sp-a-signing", &staged, &arrived).unwrap_err(),
+        );
+        assert!(refusal.contains("https://sp-b.example.com"), "{refusal}");
+        assert!(refusal.contains("Nothing has been sent"), "{refusal}");
+
+        // `mine` comes from the *fresh* identifier: an identifier moved to a
+        // label backed by the same secret is allowed by the target check, and
+        // a survey keyed on the planned label would count this role itself as
+        // a second consumer and refuse a safe write.
+        let moved_same_secret = RolloverRecheck {
+            identifier: Some("spa2".into()),
+            survey: vec![
+                realm_survey(
+                    "alpha",
+                    &[mapping(&signing_label("spa2"), "esv-sp-a-signing")],
+                    &[entity("https://sp-a.example.com", &[(Role::Sp, "spa2")])],
+                ),
+                realm_survey("bravo", &[], &[]),
+            ],
+            ..unmoved_recheck()
+        };
+        assert!(
+            rollover_pre_write_ok("stage", "esv-sp-a-signing", &staged, &moved_same_secret).is_ok()
+        );
+
+        // The target check still comes first and still refuses on its own.
+        let repointed = RolloverRecheck {
+            alias: Some("esv-sp-b-signing".into()),
+            ..unmoved_recheck()
+        };
+        let refusal = message(
+            rollover_pre_write_ok("complete", "esv-sp-a-signing", &staged, &repointed).unwrap_err(),
+        );
+        assert!(refusal.contains("esv-sp-b-signing"), "{refusal}");
+    }
+
+    /// Red when `init`'s pre-write recheck stops re-surveying — the same
+    /// discriminating case as `a_consumer_added_after_the_plan_stops_the_write`,
+    /// for the third writing verb.
+    ///
+    /// The plan's survey was exclusive (it could not have been authorized
+    /// otherwise), and a second entity started carrying the same identifier
+    /// while the operator read the prompt. The identifier and mapping checks
+    /// the per-step writers make both still pass, so a recheck without the
+    /// survey writes. The refusal comes from the one recheck `apply_init` runs
+    /// before its first step, so nothing has been written when it fires.
+    #[test]
+    fn a_consumer_added_after_the_init_plan_stops_the_setup() {
+        let unconfigured = RotationState {
+            identifier: None,
+            mapped_alias: None,
+            secret: None,
+            versions: vec![],
+            ..state()
+        };
+        let plan = plan_init(
+            &unconfigured,
+            "spa",
+            "esv-sp-a-signing",
+            None,
+            None,
+            Some(&pair(NEW)),
+        )
+        .unwrap();
+        let fresh_entity = json!({"serviceProvider": {}});
+        let unmoved = || InitRecheck {
+            entity: fresh_entity.clone(),
+            mapping: None,
+            survey: vec![
+                realm_survey("alpha", &[], &[entity("https://sp-a.example.com", &[])]),
+                realm_survey("bravo", &[], &[]),
+            ],
+        };
+        // Plan time: exclusive, and the recheck agrees when nothing moved.
+        assert!(
+            exclusive_ok(
+                "init",
+                &alpha_survey(&[], &[entity("https://sp-a.example.com", &[])])
+            )
+            .is_ok()
+        );
+        assert!(init_pre_write_ok(&unconfigured, &plan, None, &unmoved()).is_ok());
+
+        // A second entity now names the identifier. The per-step checks are
+        // unmoved…
+        let mut arrived = unmoved();
+        assert!(
+            identifier_write_ok(None, &arrived.entity, Role::Sp).is_ok()
+                && mapping_write_ok(&plan.label, &plan.secret_id, None, None).is_ok(),
+            "the per-step writers' own checks have not moved"
+        );
+        arrived.survey[0] = realm_survey(
+            "alpha",
+            &[],
+            &[
+                entity("https://sp-a.example.com", &[]),
+                entity("https://sp-b.example.com", &[(Role::Sp, "spa")]),
+            ],
+        );
+        let refusal = message(init_pre_write_ok(&unconfigured, &plan, None, &arrived).unwrap_err());
+        assert!(refusal.contains("cannot init a rollover"), "{refusal}");
+        assert!(refusal.contains("https://sp-b.example.com"), "{refusal}");
+        assert!(refusal.contains("Nothing has been sent"), "{refusal}");
+
+        // The target half still refuses first, on its own: the label was
+        // mapped in the gap.
+        let mapped = InitRecheck {
+            mapping: Some("esv-other".into()),
+            ..unmoved()
+        };
+        let refusal = message(init_pre_write_ok(&unconfigured, &plan, None, &mapped).unwrap_err());
+        assert!(refusal.contains("esv-other"), "{refusal}");
     }
 
     /// Red when the pre-write recheck lets the identifier or the mapping move
@@ -3379,26 +4223,16 @@ mod tests {
     /// one thing deciding, and that it says no.
     #[test]
     fn a_dry_run_is_handed_no_permit_by_any_of_the_three_authorizers() {
-        let exclusive = &proof();
-        assert!(matches!(authorize_init(true, exclusive), Decision::Preview));
+        assert!(matches!(authorize_init(true, proof()), Decision::Preview));
+        assert!(matches!(authorize_stage(true, proof()), Decision::Preview));
         assert!(matches!(
-            authorize_stage(true, exclusive),
+            authorize_complete(true, proof()),
             Decision::Preview
         ));
+        assert!(matches!(authorize_init(false, proof()), Decision::Send(_)));
+        assert!(matches!(authorize_stage(false, proof()), Decision::Send(_)));
         assert!(matches!(
-            authorize_complete(true, exclusive),
-            Decision::Preview
-        ));
-        assert!(matches!(
-            authorize_init(false, exclusive),
-            Decision::Send(_)
-        ));
-        assert!(matches!(
-            authorize_stage(false, exclusive),
-            Decision::Send(_)
-        ));
-        assert!(matches!(
-            authorize_complete(false, exclusive),
+            authorize_complete(false, proof()),
             Decision::Send(_)
         ));
     }
