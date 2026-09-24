@@ -118,16 +118,19 @@ pub async fn secret_facts(tenant: &str, secret_id: &str) -> Result<Option<spec::
     }
 }
 
-/// Who else in this realm resolves a key through the ESV secret a rotation is
-/// about ([`spec::survey_consumers`]).
+/// Who else, anywhere on the tenant, resolves a key through the ESV secret a
+/// rotation is about ([`spec::survey_consumers`]).
 ///
-/// **One read per entity provider in the realm**, on top of the mapping table
-/// and the entity list — and that cost is the finding, not an oversight. The
-/// entity list is **stubs only** (`docs/api/06-saml.md`) and carries no
-/// `secretIdIdentifier`, and there is no query filter for one, so the only way
-/// to learn which providers name a label family is to read them. Every verb
-/// pays it once, because the question it answers is whether the write is about
-/// one entity or about the whole federation.
+/// **Every realm in [`spec::SURVEYED_REALMS`]**, because the ESV secret is
+/// tenant-global while the mapping table and the entity collection are per
+/// realm: a consumer in the realm the operator did not name is cut over by
+/// the same write. Per realm that is the mapping table, the entity list, and
+/// **one read per entity provider** — the list is stubs only
+/// (`docs/api/06-saml.md`) and carries no `secretIdIdentifier`, and there is
+/// no query filter for one, so the only way to learn which providers name a
+/// label family is to read them. So a survey costs `2 × realms + N` calls for
+/// a tenant with N entity providers across those realms, and a write verb
+/// pays it twice: once to plan, once in the pre-write recheck.
 ///
 /// A 404 mid-survey is skipped rather than fatal: an entity deleted between
 /// the list and its read resolves nothing and consumes nothing. Any other
@@ -135,10 +138,17 @@ pub async fn secret_facts(tenant: &str, secret_id: &str) -> Result<Option<spec::
 /// is absent.
 pub async fn read_consumers(
     tenant: &str,
-    realm: &str,
     mine: &spec::Consumer,
     secret_id: Option<&str>,
 ) -> Result<spec::Consumers> {
+    let mut realms = Vec::new();
+    for realm in spec::SURVEYED_REALMS {
+        realms.push(read_realm_survey(tenant, realm).await?);
+    }
+    Ok(spec::survey_consumers(mine, secret_id, &realms))
+}
+
+async fn read_realm_survey(tenant: &str, realm: &str) -> Result<spec::RealmSurvey> {
     let mappings = crate::secretmap::api::list_mappings(tenant, realm).await?;
     let mut entities = Vec::new();
     for stub in api::list(tenant, realm).await? {
@@ -152,9 +162,33 @@ pub async fn read_consumers(
             Err(error) => return Err(error),
         }
     }
-    Ok(spec::survey_consumers(
-        realm, mine, secret_id, &mappings, &entities,
-    ))
+    Ok(spec::RealmSurvey {
+        realm: realm.to_string(),
+        mappings,
+        entities,
+    })
+}
+
+/// Survey again, immediately before `init` writes, and mint the proof its
+/// writers require.
+///
+/// `init`'s sibling of the re-survey inside [`recheck`]. It is called once,
+/// after the confirmation prompt and the production gate and before the first
+/// of `init`'s up to three writes — the writers take the proof, and the
+/// plan-time one was consumed by [`spec::authorize_init`], so the only proof
+/// that can reach them is one minted here. Once rather than per step because
+/// the interval it closes is the human one; the steps after the first follow
+/// it within seconds, and a refusal between two of them would have to report
+/// a half-written setup as "nothing has been sent".
+pub async fn exclusive_before_init(
+    tenant: &str,
+    mine: &spec::Consumer,
+    secret_id: &str,
+) -> Result<spec::ExclusivityProof> {
+    spec::exclusive_ok(
+        "init",
+        &read_consumers(tenant, mine, Some(secret_id)).await?,
+    )
 }
 
 /// Fetch and fingerprint the entity's published certificates.
@@ -318,6 +352,7 @@ pub async fn set_identifier(
     identifier: &str,
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
+    _fresh: &spec::ExclusivityProof,
 ) -> Result<Value> {
     // Taken from the state rather than passed alongside it: tenant, realm,
     // entity id, location and role are five positional arguments of which
@@ -398,6 +433,7 @@ pub async fn create_key_secret(
     description: &str,
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
+    _fresh: &spec::ExclusivityProof,
 ) -> Result<Value> {
     let value_base64 = encode_pem(value);
     crate::esv::api::create_secret(
@@ -421,13 +457,16 @@ pub async fn create_key_secret(
 /// evidence that it is safe have to be in the same function.
 pub async fn map_label(
     tenant: &str,
-    realm: &str,
-    label: &str,
+    mine: &spec::Consumer,
     secret_id: &str,
     planned_from: Option<&str>,
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
+    _fresh: &spec::ExclusivityProof,
 ) -> Result<Value> {
+    // The realm and label are the consumer's own, so the label written is
+    // the one the exclusivity proof was minted about.
+    let (realm, label) = (mine.realm.as_str(), mine.label.as_str());
     let fresh = mapping_alias(tenant, realm, label).await?;
     spec::mapping_write_ok(label, secret_id, planned_from, fresh.as_deref())?;
     crate::secretmap::api::set_mapping(tenant, realm, label, secret_id, confirmed_prod).await
@@ -450,7 +489,7 @@ pub async fn add_version(
     confirmed_prod: bool,
     _permit: &spec::StagePermit,
 ) -> Result<Value> {
-    recheck(tenant, state, "stage", &plan.secret_id).await?;
+    let _fresh: spec::ExclusivityProof = recheck(tenant, state, "stage", &plan.secret_id).await?;
     let value_base64 = encode_pem(value);
     crate::esv::api::create_secret_version(
         &tenant.name,
@@ -478,7 +517,8 @@ pub async fn disable_version(
     confirmed_prod: bool,
     _permit: &spec::CompletePermit,
 ) -> Result<Value> {
-    recheck(tenant, state, "complete", &plan.secret_id).await?;
+    let _fresh: spec::ExclusivityProof =
+        recheck(tenant, state, "complete", &plan.secret_id).await?;
     crate::esv::api::change_version_status(
         &tenant.name,
         &plan.secret_id,
@@ -489,18 +529,25 @@ pub async fn disable_version(
     .await
 }
 
-/// Read the rollover's inputs again and compare them with the plan's.
+/// Read the rollover's inputs again, re-survey its consumers, and compare
+/// them with the plan's — returning the only [`spec::ExclusivityProof`] the
+/// write holds.
 ///
-/// Four calls, not the five [`read_state`] makes, and they answer two
-/// different questions.
+/// The reads are the entity, the mapping, the secret's versions and the
+/// export, plus a full tenant-wide consumer survey ([`read_consumers`]); the
+/// decision is [`spec::rollover_pre_write_ok`], pure so a test drives it. It
+/// answers three questions: whether this role still resolves the secret about
+/// to be mutated (which certificate equality cannot answer — published
+/// metadata names no secret and no version), whether that secret still backs
+/// this role **alone**, and whether the rollover itself is still the one that
+/// was planned.
 ///
-/// [`spec::rollover_target_ok`] asks whether this role still resolves the
-/// secret about to be mutated, which is the question certificate equality
-/// cannot answer: published metadata names no secret and no version, so an
-/// identifier or a mapping that moved in the gap leaves the versions and the
-/// fingerprints looking exactly as planned while the secret behind them is
-/// somebody else's. [`spec::rollover_write_ok`] then asks whether the rollover
-/// itself is still the one that was planned.
+/// The survey is here, and not only at plan time, because this is the far
+/// side of the confirmation prompt: a consumer added while the operator read
+/// it was invisible to the plan's survey and is cut over by this write. The
+/// plan-time proof was consumed by `authorize_*`, so returning a proof at all
+/// means this function minted one — a recheck that stopped surveying would not
+/// compile.
 ///
 /// The secret's own metadata is still not re-read: `encoding` and
 /// `useInPlaceholders` are immutable after create (`docs/api/03-esvs.md`), so
@@ -510,7 +557,7 @@ async fn recheck(
     state: &RotationState,
     verb: &str,
     secret_id: &str,
-) -> Result<()> {
+) -> Result<spec::ExclusivityProof> {
     let entity = api::read(&tenant.name, &state.realm, state.location, &state.entity_id).await?;
     let identifier = spec::current_identifier(&entity, state.role);
     let alias = match identifier.as_deref() {
@@ -519,6 +566,9 @@ async fn recheck(
         }
         None => None,
     };
+    // Refused before the survey when the role no longer resolves the secret:
+    // there is no consumer set to survey for a role that is not one, and the
+    // survey is the expensive half of this recheck.
     spec::rollover_target_ok(verb, secret_id, identifier.as_deref(), alias.as_deref())?;
 
     let versions = spec::parse_versions(
@@ -533,11 +583,21 @@ async fn recheck(
         })
         .map(|cert| cert.sha256.clone())
         .collect();
-    spec::rollover_write_ok(
+    let mut survey = Vec::new();
+    for realm in spec::SURVEYED_REALMS {
+        survey.push(read_realm_survey(&tenant.name, realm).await?);
+    }
+    spec::rollover_pre_write_ok(
         verb,
         secret_id,
-        &spec::rollover_inputs(state),
-        &spec::rollover_inputs_from(&versions, published),
+        state,
+        &spec::RolloverRecheck {
+            identifier,
+            alias,
+            versions,
+            published,
+            survey,
+        },
     )
 }
 

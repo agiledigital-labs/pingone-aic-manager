@@ -23,20 +23,28 @@
 //!   secret, and maps the label. It is separate from `stage` because it is the
 //!   only path that performs a **full-replace entity `PUT`** — the call that
 //!   answers 200 and deletes a whole role block when the body is wrong — and
-//!   an ordinary rollover must never be able to reach it.
-//! - **`stage`** adds an ESV secret version, **and that is the cutover**: AM
-//!   signs with the newest ENABLED version, from the next request onwards
-//!   (measured 2026-09-22 on the SP AuthnRequest-signing path,
-//!   `docs/api/06-saml.md`). So the peer must already hold and trust the
+//!   an ordinary rollover must never be able to reach it. It is a certificate
+//!   change as well — mapping a label *replaces* the published default — so
+//!   it confirms the way `stage` and `complete` do.
+//! - **`stage`** adds an ESV secret version, **and it is to be treated as the
+//!   cutover**: on the SP AuthnRequest-signing path the newest ENABLED version
+//!   was signing by the first observation, ≤12 s after it was added (measured
+//!   2026-09-22, `docs/api/06-saml.md`); IdP assertion signing is unmeasured
+//!   and assumed the same. So the peer must already hold and trust the
 //!   incoming certificate — which is what `--key-file` taking the operator's
 //!   own key pair is for — and the two-certificate export that follows is a
 //!   catch-up for a peer which refreshes metadata, not a window in which to
 //!   prepare. It preserves the identifier and its mapping: certificate
 //!   rotation is not entity repointing, which would leave an orphaned mapping
-//!   nothing downstream removes.
+//!   nothing downstream removes. It asks for confirmation naming the incoming
+//!   certificate. The way back is **emergency signer restoration** — re-add the
+//!   old key pair, private key included, as a newer version, then disable the
+//!   two superseded versions by hand (`spec::stage_plan_lines`).
 //! - **`complete`** disables the old version, which stops publishing the old
-//!   certificate and — since the newest ENABLED version is the one signing and
-//!   the one being kept — **changes no signer**. Separate from `stage`
+//!   certificate and, on its usual path — the newest ENABLED version being the
+//!   one kept — is **not expected to change the signer**. `--retain` naming the
+//!   older certificate is the exception: it disables the signing version and
+//!   moves signing back, and the plan says so. Separate from `stage`
 //!   because AIC refuses to disable the latest version (`400 Cannot disable
 //!   latest secret version`), so what can be retired is the old one — and
 //!   because the interval in between is the catch-up, which is a human
@@ -47,12 +55,15 @@
 //! A rollover is a change to the ESV **secret**, and AIC permits a secret
 //! label to back several providers — so `stage` and `complete` mutate
 //! something global while every check around them reads one entity. Each verb
-//! therefore surveys the realm first ([`spec::survey_consumers`]) and refuses
-//! anything but "this role and nobody else" ([`spec::exclusive_ok`]), which is
-//! the only minting site for the `ExclusivityProof` that every `authorize_*`
-//! now requires. The refusal names the other consumers: the remedy differs per
-//! consumer, and "this secret is shared" is not something an operator can act
-//! on.
+//! therefore surveys **every realm** first ([`spec::survey_consumers`] refuses
+//! exclusivity to a survey that skipped one) and refuses anything but "this
+//! role and nobody else" ([`spec::exclusive_ok`]), which is the only minting
+//! site for the `ExclusivityProof` every `authorize_*` consumes. It surveys
+//! **again** inside `ops`' pre-write recheck, after the confirmation prompt,
+//! and the write holds the proof minted there — so a consumer added while the
+//! operator read the prompt is caught rather than cut over. The refusal names
+//! the other consumers: the remedy differs per consumer, and "this secret is
+//! shared" is not something an operator can act on.
 //!
 //! **Nothing here destroys anything.** `complete` disables, which
 //! `aic esv secret enable` undoes. Destroying the version and deleting the
@@ -75,9 +86,10 @@
 //! choice to ordering, which is the thing being refused.
 //!
 //! The 2026-09-22 measurement narrows what is unknown without changing this:
-//! it settled which certificate is *in use* — the newest ENABLED version's, in
-//! all five rounds, which is also the first one listed — so
-//! [`spec::SIGNER_RULE`] can state that as a rule. It did not make the export's
+//! on the SP path, the certificate *in use* was the newest ENABLED version's in
+//! all five rounds — which was also the first one listed, so the two were not
+//! separated — and [`spec::SIGNER_RULE`] states that as a rule to act on, not
+//! as a mechanism. It did not make the export's
 //! ordering an identity, and `complete` still derives a version to disable from
 //! the record or from the operator, never from the order.
 //!
