@@ -588,6 +588,21 @@ pub enum InitStep {
 }
 
 impl InitStep {
+    /// Whether completing this step changes what the role resolves.
+    ///
+    /// The rule: a step changes the resolution if it rewrites a link the role
+    /// reads — the entity's `secretIdIdentifier` or the label's mapping — or
+    /// creates the secret an existing mapping already names. Creating a
+    /// secret nothing maps to yet changes nothing the role reads (the
+    /// exclusivity survey has already established no other label maps onto
+    /// it).
+    pub fn changes_resolution(self, plan: &InitPlan) -> bool {
+        match self {
+            Self::SetIdentifier | Self::MapLabel => true,
+            Self::CreateSecret => !plan.map_label,
+        }
+    }
+
     pub fn describe(self, plan: &InitPlan) -> String {
         match self {
             Self::SetIdentifier => {
@@ -613,17 +628,48 @@ pub const NOTHING_SENT: &str = "**Nothing has been sent.**";
 /// that already landed is a second write, not a retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteStatus {
-    /// Not applied: refused before it was sent — a recheck, a production
-    /// gate — or answered with a `4xx`, which is the tenant saying no.
+    /// Not applied: refused before it was sent — a recheck, the production
+    /// gate, a locked agent — or answered with one of the refusals
+    /// **measured** for that endpoint ([`MeasuredRefusal`]). A status class
+    /// alone never earns this: a `408` does not say whether a forwarded write
+    /// applied, a `409` can accompany a concurrent change, and the
+    /// authenticated client follows redirects, so the status seen need not
+    /// be the answer to the write that was sent.
     Refused,
     /// Sent, answered with success, and then the proof failed: the read-back
     /// or the export that should show it could not be read, or showed
     /// something else. **The write landed**; what it left is unverified.
     AcceptedUnverified,
-    /// Sent, with no answer that says whether it was applied — a transport
-    /// failure, a lost or unreadable response, a `5xx`.
+    /// Sent, with no response this command can read as settling it — any
+    /// error status that is not a measured refusal, a transport failure, a
+    /// lost connection to the agent, or a success whose body could not be
+    /// decoded (the agent reports that last one without its status).
     Unknown,
 }
+
+/// A refusal measured on a live tenant for one endpoint: the status **and**
+/// the message, both required, because neither alone identifies it.
+///
+/// This is the only way a post-send error is classified as not applied, so
+/// an entry needs the evidence a `docs/api/` row needs. There are two, both
+/// in `docs/api/03-esvs.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeasuredRefusal {
+    pub status: u16,
+    pub message: &'static str,
+}
+
+/// `PUT /environment/secrets/{id}` on an id that exists: create-only.
+pub const SECRET_ALREADY_EXISTS: MeasuredRefusal = MeasuredRefusal {
+    status: 400,
+    message: "Failed to create secret, the secret already exists",
+};
+
+/// `…/versions/{v}?_action=changestatus` naming the latest version.
+pub const CANNOT_DISABLE_LATEST: MeasuredRefusal = MeasuredRefusal {
+    status: 400,
+    message: "Cannot disable latest secret version",
+};
 
 /// A failed tenant write and what is known about it ([`WriteStatus`]).
 ///
@@ -646,14 +692,20 @@ impl WriteFailure {
         }
     }
 
-    /// The write call itself failed. Only an answer from the tenant that
-    /// refused it — or a refusal raised before the request left, such as the
-    /// production gate — proves it was not applied; everything else is
-    /// unknown.
-    pub fn from_send(source: Error) -> Self {
+    /// The write call itself failed. **Unknown by default**: only a refusal
+    /// raised before the request left — the production gate, a locked agent
+    /// — or one of `measured`, this endpoint's measured refusals, proves it
+    /// was not applied. Everything else, whatever its status, is unknown.
+    pub fn from_send(source: Error, measured: &[MeasuredRefusal]) -> Self {
         let status = match &source {
-            Error::Api { status, .. } if (400..500).contains(status) => WriteStatus::Refused,
             Error::ProdConfirmRequired | Error::AuthRequired => WriteStatus::Refused,
+            Error::Api { status, body }
+                if measured
+                    .iter()
+                    .any(|refusal| refusal.status == *status && body.contains(refusal.message)) =>
+            {
+                WriteStatus::Refused
+            }
             _ => WriteStatus::Unknown,
         };
         Self { status, source }
@@ -697,8 +749,10 @@ impl WriteStatus {
                  **The write landed; this is not a no-op.**"
             ),
             Self::Unknown => format!(
-                "{what} was sent and **whether it was applied is unknown** — nothing answered \
-                 that proves it landed or that it did not. **Do not assume it did not land.**"
+                "{what} was sent and **whether it was applied is unknown**: what came back — an \
+                 error status that is not a refusal measured for this endpoint, a lost \
+                 connection, or a response that could not be read — does not establish \
+                 either way. **Do not assume it did not land.**"
             ),
         }
     }
@@ -757,6 +811,7 @@ pub struct InitApplyError {
     stopped_at: String,
     status: WriteStatus,
     activating: bool,
+    resolution_changed: bool,
     total: usize,
     state: RotationState,
     source: Box<Error>,
@@ -781,6 +836,7 @@ impl InitApplyError {
                 InitStop::Recheck | InitStop::Resurvey(_) => WriteStatus::Refused,
             },
             activating,
+            resolution_changed: completed.iter().any(|step| step.changes_resolution(plan)),
             total: plan.steps().len(),
             state: state.clone(),
             source: Box::new(failure.source),
@@ -825,8 +881,25 @@ impl std::fmt::Display for InitApplyError {
                 "{done}; stopped at {}, which was not applied: {source}",
                 self.stopped_at
             ),
-            // The activating step is the last planned one, and it was not
-            // applied, so no completed step can have finished the chain.
+            // A completed step changed what the role resolves — the entity
+            // PUT, or a secret an existing mapping names — so what it signs
+            // with now is not known from here, whether or not the chain is
+            // complete. Whether AM keeps the old signer is unmeasured.
+            WriteStatus::Refused if self.resolution_changed => write!(
+                f,
+                "{done}. Then {} was not applied. A completed step changed what {} resolves, and \
+                 whether it still signs with the certificate it used before this run is not \
+                 known from here — it has not been measured. {}\n{}",
+                self.stopped_at,
+                self.subject(),
+                read_before_retry("init", &self.state),
+                source.replace(
+                    NOTHING_SENT,
+                    "**That step was not sent — but the steps listed above were.**"
+                )
+            ),
+            // No completed step touched a link the role reads, and the one
+            // that stopped was not applied: the resolution is as it was.
             WriteStatus::Refused => write!(
                 f,
                 "{done}. Then {} was not applied, so the identifier → mapping → secret chain is \
@@ -4689,7 +4762,9 @@ mod tests {
                 "{text}"
             );
             assert!(text.contains("have not been undone"), "{text}");
-            assert!(text.contains("nothing has been cut over"), "{text}");
+            // The entity PUT completed, so the role's resolution has moved.
+            assert!(!text.contains("nothing has been cut over"), "{text}");
+            assert!(text.contains("Read the tenant before retrying"), "{text}");
             assert_eq!(partial.completed().len(), 2);
             assert_eq!(partial.status(), WriteStatus::Refused);
         }
@@ -4710,46 +4785,151 @@ mod tests {
         assert!(text.contains(NOTHING_SENT), "{text}");
     }
 
-    /// Red when a send failure is called "not applied" without the tenant
-    /// having said no.
+    /// Red when `init` promises the old signer after a completed step changed
+    /// what the role resolves — or withholds the reassurance when none did.
     ///
-    /// The discriminating pair is a `4xx` against a `5xx` from the same call:
-    /// only the first is the tenant refusing. A dropped agent connection has
-    /// no answer at all.
+    /// The rule ([`InitStep::changes_resolution`]): the entity PUT and the
+    /// mapping always change it; creating the secret changes it only when an
+    /// existing mapping already names it (the dangling plan, round 7's case).
     #[test]
-    fn only_a_refusal_proves_a_write_was_not_applied() {
-        let api = |status| Error::Api {
-            status,
-            body: "x".into(),
+    fn only_a_run_that_left_the_resolution_alone_says_nothing_was_cut_over() {
+        let refused =
+            || WriteFailure::before_send(Error::Config(format!("refused. {NOTHING_SENT}")));
+        // Dangling plan: SetIdentifier completed, CreateSecret refused.
+        let (unconfigured, dangling) = init_plan(Some("esv-sp-a-signing"), None);
+        assert!(InitStep::SetIdentifier.changes_resolution(&dangling));
+        assert!(InitStep::CreateSecret.changes_resolution(&dangling));
+        let text = InitApplyError::new(
+            &unconfigured,
+            &dangling,
+            &[InitStep::SetIdentifier],
+            InitStop::Step(InitStep::CreateSecret),
+            refused(),
+        )
+        .to_string();
+        assert!(!text.contains("nothing has been cut over"), "{text}");
+        assert!(text.contains("has not been measured"), "{text}");
+        assert!(text.contains("Read the tenant before retrying"), "{text}");
+
+        // Identifier already set; creating an unmapped secret completed and
+        // mapping was refused: nothing the role reads moved.
+        let named = RotationState {
+            identifier: Some("spa".into()),
+            ..unconfigured.clone()
         };
+        let plan = plan_init(
+            &named,
+            "spa",
+            "esv-sp-a-signing",
+            None,
+            None,
+            Some(&pair(NEW)),
+        )
+        .unwrap();
         assert_eq!(
-            WriteFailure::from_send(api(400)).status,
+            plan.steps(),
+            vec![InitStep::CreateSecret, InitStep::MapLabel]
+        );
+        assert!(!InitStep::CreateSecret.changes_resolution(&plan));
+        let text = InitApplyError::new(
+            &named,
+            &plan,
+            &[InitStep::CreateSecret],
+            InitStop::Step(InitStep::MapLabel),
+            refused(),
+        )
+        .to_string();
+        assert!(text.contains("nothing has been cut over"), "{text}");
+        assert!(!text.contains(NOTHING_SENT), "{text}");
+    }
+
+    /// Red when an error status after the send is taken as proof the write
+    /// was not applied — the round-7 blocker.
+    ///
+    /// After the send the default is unknown, whatever the status class: a
+    /// `409` is `Unknown` (it can accompany a concurrent change), so is a
+    /// `408` and a bare `400`. The discriminating cases are the measured
+    /// refusal's own body — `Refused` only against the endpoint it was
+    /// measured on, and only at its measured status.
+    #[test]
+    fn after_the_send_only_a_measured_refusal_is_not_applied() {
+        let api = |status, body: &str| Error::Api {
+            status,
+            body: body.into(),
+        };
+        let latest = r#"{"code":400,"message":"Cannot disable latest secret version"}"#;
+        for status in [400, 404, 408, 409, 412, 429, 500, 502] {
+            assert_eq!(
+                WriteFailure::from_send(api(status, "x"), &[CANNOT_DISABLE_LATEST]).status,
+                WriteStatus::Unknown,
+                "{status}"
+            );
+        }
+        assert_eq!(
+            WriteFailure::from_send(api(400, latest), &[CANNOT_DISABLE_LATEST]).status,
             WriteStatus::Refused
         );
+        // The same body from an endpoint where it was not measured, or at a
+        // status it was not measured with, proves nothing.
         assert_eq!(
-            WriteFailure::from_send(api(409)).status,
-            WriteStatus::Refused
-        );
-        assert_eq!(
-            WriteFailure::from_send(Error::ProdConfirmRequired).status,
-            WriteStatus::Refused
-        );
-        assert_eq!(
-            WriteFailure::from_send(api(502)).status,
+            WriteFailure::from_send(api(400, latest), &[]).status,
             WriteStatus::Unknown
         );
         assert_eq!(
-            WriteFailure::from_send(Error::AgentProtocolMismatch).status,
+            WriteFailure::from_send(api(400, latest), &[SECRET_ALREADY_EXISTS]).status,
             WriteStatus::Unknown
         );
         assert_eq!(
-            WriteFailure::before_send(api(502)).status,
+            WriteFailure::from_send(api(409, latest), &[CANNOT_DISABLE_LATEST]).status,
+            WriteStatus::Unknown
+        );
+        assert_eq!(
+            WriteFailure::from_send(
+                api(
+                    400,
+                    r#"{"code":400,"message":"Failed to create secret, the secret already exists"}"#
+                ),
+                &[SECRET_ALREADY_EXISTS]
+            )
+            .status,
+            WriteStatus::Refused
+        );
+        // Refusals raised before the request left.
+        assert_eq!(
+            WriteFailure::from_send(Error::ProdConfirmRequired, &[]).status,
             WriteStatus::Refused
         );
         assert_eq!(
-            WriteFailure::unverified(api(400)).status,
+            WriteFailure::from_send(Error::AuthRequired, &[]).status,
+            WriteStatus::Refused
+        );
+        assert_eq!(
+            WriteFailure::from_send(Error::AgentProtocolMismatch, &[]).status,
+            WriteStatus::Unknown
+        );
+        assert_eq!(
+            WriteFailure::before_send(api(502, "x")).status,
+            WriteStatus::Refused
+        );
+        assert_eq!(
+            WriteFailure::unverified(api(400, "x")).status,
             WriteStatus::AcceptedUnverified
         );
+    }
+
+    /// Red when the unknown-outcome sentence claims the tenant did not
+    /// answer: a 2xx whose body could not be decoded is unknown too, and the
+    /// agent reports it without its status.
+    #[test]
+    fn an_unknown_outcome_does_not_claim_nothing_answered() {
+        let text = WriteFailure::from_send(Error::AgentProtocolMismatch, &[]).message(
+            "stage",
+            "the write",
+            &state(),
+        );
+        assert!(text.contains("whether it was applied is unknown"), "{text}");
+        assert!(!text.contains("nothing answered"), "{text}");
+        assert!(text.contains("could not be read"), "{text}");
     }
 
     /// Red when a write that may have landed is reported the way a refused
@@ -4757,10 +4937,14 @@ mod tests {
     #[test]
     fn a_write_that_may_have_landed_says_to_read_the_tenant_first() {
         let state = state();
-        let refused = WriteFailure::from_send(Error::Api {
-            status: 400,
-            body: "Cannot disable latest secret version".into(),
-        });
+        let refused = WriteFailure::from_send(
+            Error::Api {
+                status: 400,
+                body: "Cannot disable latest secret version".into(),
+            },
+            &[CANNOT_DISABLE_LATEST],
+        );
+        assert_eq!(refused.status, WriteStatus::Refused);
         let text = refused.message("complete", "disabling version 1", &state);
         assert!(!text.contains("read the tenant"), "{text}");
         assert!(
@@ -4770,7 +4954,7 @@ mod tests {
 
         for (failure, marker) in [
             (
-                WriteFailure::from_send(Error::AgentProtocolMismatch),
+                WriteFailure::from_send(Error::AgentProtocolMismatch, &[]),
                 "whether it was applied is unknown",
             ),
             (
@@ -4809,7 +4993,7 @@ mod tests {
         assert_eq!(only_put.activating_step(), Some(InitStep::SetIdentifier));
         for failure in [
             WriteFailure::unverified(Error::Config("reading it back failed".into())),
-            WriteFailure::from_send(Error::AgentProtocolMismatch),
+            WriteFailure::from_send(Error::AgentProtocolMismatch, &[]),
         ] {
             let status = failure.status;
             let error = InitApplyError::new(
@@ -4839,7 +5023,7 @@ mod tests {
             &full,
             &[InitStep::SetIdentifier],
             InitStop::Step(InitStep::CreateSecret),
-            WriteFailure::from_send(Error::AgentProtocolMismatch),
+            WriteFailure::from_send(Error::AgentProtocolMismatch, &[]),
         )
         .to_string();
         assert!(text.starts_with("1 of 3 init steps completed"), "{text}");
@@ -4896,7 +5080,13 @@ mod tests {
             text.contains("the re-survey before creating ESV secret"),
             "{text}"
         );
-        assert!(text.contains("nothing has been cut over"), "{text}");
+        // The entity PUT completed: no promise about the old signer.
+        assert!(!text.contains("nothing has been cut over"), "{text}");
+        assert!(
+            !text.contains("still resolves what it did before"),
+            "{text}"
+        );
+        assert!(text.contains("Read the tenant before retrying"), "{text}");
 
         // Control: a re-survey that passes lets the activating step through,
         // after it and not before.
