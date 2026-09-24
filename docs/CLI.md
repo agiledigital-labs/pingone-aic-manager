@@ -1858,16 +1858,17 @@ because "it failed" is two different claims:
   secret create, `400 "Cannot disable latest secret version"` for the disable
   (`docs/api/03-esvs.md`). No status class earns this on its own — a `408` or a
   `409` is **unknown**, and the client follows redirects, so the status seen
-  need not answer the write that was sent. `init` says nothing has been cut
-  over only when, in addition, **no completed step changed what the role
-  resolves**: the entity `PUT` and the mapping always do, and creating the
-  secret does when an existing mapping already names it. After such a step it
-  names what completed and says to read the tenant, because whether AM keeps
-  the old signer is unmeasured.
+  need not answer the write that was sent. `init` treats the role as untouched
+  only when **no step completed at all**. After any completed step — even
+  creating a secret nothing mapped to yet, since another writer can map the
+  label in the gap and no survey can prove it did not — it names what
+  completed, says signing is unmeasured, and says to read the tenant.
 - **accepted but not verified** — the tenant answered success and proving what
   it left then failed: the entity read-back, the export, the response's version
   number. The write landed.
-- **outcome unknown** — sent, and what came back does not settle it: any error
+- **outcome unknown** — attempted and possibly sent (the bearer is minted
+  before the request, and a minting failure looks the same), and what came
+  back does not settle it: any error
   status that is not a measured refusal, a transport failure, a lost agent
   connection, or a success whose body could not be decoded (the agent reports
   that one without its status).
