@@ -6,8 +6,11 @@ realm, then a certificate rotation end to end, then real SAML authentication in
 both directions against a local Keycloak.
 
 Every command here was run against a live sandbox tenant on 2026-09-18 unless
-the step says otherwise. Where a step has a **watch for** note, that is the
-thing worth looking at rather than the exit code.
+the step says otherwise. Part D's expected output was re-checked against the
+code on 2026-09-24, after the rotate review rounds 5–8, but **not re-run live**
+— if what you see differs, the code is the one to report. Each checkbox is one
+thing to confirm; where a step has a **watch for** note, that is the thing worth
+looking at rather than the exit code.
 
 ## Before you start
 
@@ -36,7 +39,7 @@ Nothing here leaves your disk. Safe to run anywhere, locked agent or not.
 aic saml metadata inspect src/saml/fixtures/entra-federationmetadata.xml
 ```
 
-**Watch for:** the two `RoleDescriptor` blocks reported as WS-Fed rather than
+- [ ] **Watch for:** the two `RoleDescriptor` blocks reported as WS-Fed rather than
 SAML 2.0, and the enveloped `<ds:Signature>`. Those three sections are what AIC's
 importer rejects, and this is the pain point the next step exists for.
 
@@ -47,7 +50,7 @@ aic saml metadata sanitise src/saml/fixtures/entra-federationmetadata.xml \
   --out /tmp/entra-clean.xml
 ```
 
-**Watch for:** each removal named with its line number and its reason. Then
+- [ ] **Watch for:** each removal named with its line number and its reason. Then
 confirm the tool spliced rather than rewrote:
 
 ```sh
@@ -68,7 +71,7 @@ head -c 400 src/saml/fixtures/entra-federationmetadata.xml > /tmp/truncated.xml
 aic saml metadata inspect /tmp/truncated.xml; echo "exit $?"
 ```
 
-**Watch for:** a non-zero exit and a refusal that names the problem. A tool that
+- [ ] **Watch for:** a non-zero exit and a refusal that names the problem. A tool that
 reported something confident about a truncated document is the failure mode here.
 
 ---
@@ -84,6 +87,8 @@ aic saml list --realm bravo
 aic saml show <ENTITY-ID-FROM-THE-LIST> --realm bravo
 ```
 
+- [ ] both exit 0, and `show` prints the entity `list` named.
+
 ### B2 · Export metadata — the thing the console will not do
 
 ```sh
@@ -91,7 +96,7 @@ aic saml metadata export <ENTITY-ID> --realm bravo --out /tmp/exported.xml
 aic saml metadata inspect /tmp/exported.xml
 ```
 
-**Watch for:** this works with the agent **locked** as well as unlocked — the
+- [ ] **Watch for:** this works with the agent **locked** as well as unlocked — the
 export endpoint takes no bearer. Try it after `aic session logout` if you want
 to confirm.
 
@@ -104,7 +109,7 @@ aic saml metadata export https://nope.example.com --realm bravo --out /tmp/nope.
 echo "exit $?"; ls /tmp/nope.xml
 ```
 
-**Watch for:** non-zero exit, and **no file created**.
+- [ ] **Watch for:** non-zero exit, and **no file created**.
 
 ### B3 · Circles of trust, and the caveat that matters most
 
@@ -112,7 +117,7 @@ echo "exit $?"; ls /tmp/nope.xml
 aic saml cot list --realm bravo
 ```
 
-**Watch for:** circles showing **0 providers** while being live, working
+- [ ] **Watch for:** circles showing **0 providers** while being live, working
 federations. That is not a bug in the listing — AM stores membership twice, in
 the CoT document's `trustedProviders` (which REST returns) and in each entity's
 `cotlist` in extended metadata (which REST never exposes). The runtime trust
@@ -131,7 +136,7 @@ aic saml create-hosted 'https://sp-a.example.com' \
 aic saml show 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** the output telling you the 201 body is a stub and nothing was
+- [ ] **Watch for:** the output telling you the 201 body is a stub and nothing was
 read back. Both the entity ID and the metaAlias are imposed by `aic`; AM
 requires neither, and without the second it fails with a 500 naming no field.
 
@@ -141,7 +146,7 @@ requires neither, and without the second it fails with a 500 naming no field.
 aic saml import /tmp/entra-clean.xml --realm alpha --dry-run
 ```
 
-**Watch for:** every entity id listed exactly, the preflight against **both**
+- [ ] **Watch for:** every entity id listed exactly, the preflight against **both**
 collections, and `dry run: nothing was sent`. The preview cannot write — it
 holds no permit, so the write path will not compile for it, rather than being
 branched around.
@@ -150,7 +155,7 @@ branched around.
 aic saml import /tmp/entra-clean.xml --realm alpha
 ```
 
-**Watch for:** the entity id echoed back byte-identically, trailing `/` and all
+- [ ] **Watch for:** the entity id echoed back byte-identically, trailing `/` and all
 — Entra ids end in one, and this was the open question until it was measured on
 2026-09-18. Then the caveat that no post-import `cotlist` verification is
 possible, because `importEntity` rewrites extended metadata.
@@ -163,7 +168,7 @@ Run the same import again:
 aic saml import /tmp/entra-clean.xml --realm alpha; echo "exit $?"
 ```
 
-**Watch for:** a refusal naming the existing entity, and **no** `--force` that
+- [ ] **Watch for:** a refusal naming the existing entity, and **no** `--force` that
 offers to delete and re-import. There is deliberately no such flag: the
 `cotlist` cannot be read back or restored, so a delete-and-recreate would
 silently drop a federation's trust and nothing could detect it.
@@ -201,8 +206,10 @@ and an ESV secret value cannot be read back out of the tenant.
 aic saml rotate status 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** `phase unconfigured`, and one published certificate that is the
-**realm-wide default** — shared with every other entity in the realm. Note its
+- [ ] **Watch for:** `phase       unconfigured — this role has no secret label of its
+own, so it signs with the realm-wide default certificate`, no `sharing` rows
+(there is no label yet, so nothing to survey), and one published certificate
+that is the **realm-wide default** — shared with every other entity in the realm. Note its
 fingerprint; it is your baseline, and the fact that it is a known, named
 certificate is what makes the next step's change observable rather than assumed.
 
@@ -214,8 +221,12 @@ aic saml rotate init 'https://sp-a.example.com' --realm alpha \
   --key-file /tmp/pair1.pem --dry-run
 ```
 
-**Watch for:** three steps planned — the entity `PUT`, the ESV secret, the label
-mapping — and the certificate fingerprint matching your cert1.
+- [ ] **Watch for:** three steps planned, each on a `  will   ` line — `PUT the whole
+entity with secretIdIdentifier "sprotatetest" (full replace, no If-Match)`,
+`create ESV secret esv-saml-sprotatetest-signing — encoding pem,
+useInPlaceholders false, certificate <cert1>`, and `map
+am.applications.federation.entity.providers.saml2.sprotatetest.signing at
+esv-saml-sprotatetest-signing` — then `dry run: nothing was sent`.
 
 > `--identifier` takes **letters and digits only**. AM rejects `-` and `_` with
 > `400 Invalid character present in Secret ID Identifier` and names no flag,
@@ -224,7 +235,23 @@ mapping — and the certificate fingerprint matching your cert1.
 `init` is a certificate change, not only setup: mapping the label **replaces**
 the default certificate rather than adding a second one, so there is no
 two-certificate catch-up afterwards. In production the peer must already trust
-cert1 before this runs. Here there is no peer yet, so go ahead:
+cert1 before this runs. First confirm it will not do that unconfirmed:
+
+```sh
+aic saml rotate init 'https://sp-a.example.com' --realm alpha \
+  --identifier sprotatetest --secret-id esv-saml-sprotatetest-signing \
+  --key-file /tmp/pair1.pem --no-prompt; echo "exit $?"
+aic saml rotate status 'https://sp-a.example.com' --realm alpha
+```
+
+- [ ] **Watch for:** a non-zero exit and `would point https://sp-a.example.com
+(SPSSODescriptor) at ESV secret esv-saml-sprotatetest-signing, which replaces
+the certificate it publishes — <default fingerprint> now — with certificate
+<cert1>, and is treated as cutting signing over to it at once.` … `Confirm at a
+terminal, or pass --force.` The status that follows is still `unconfigured`:
+the refusal came before anything was sent.
+
+Here there is no peer yet, so go ahead:
 
 ```sh
 aic saml rotate init 'https://sp-a.example.com' --realm alpha \
@@ -232,14 +259,24 @@ aic saml rotate init 'https://sp-a.example.com' --realm alpha \
   --description 'throwaway rotate test, delete me' --key-file /tmp/pair1.pem
 ```
 
-**Watch for:** a confirmation prompt — `Replace <default fingerprint> with
+- [ ] **Watch for:** a confirmation prompt — `Replace <default fingerprint> with
 certificate <cert1> for https://sp-a.example.com (SPSSODescriptor)? The peer
 must already trust the new one.` — answer yes. Without a terminal (or with
-`--no-prompt`) it refuses instead, naming both certificates and `--force`.
-Then `(read back and compared whole)` on the entity line. The entity `PUT` is a
-full replace with no `If-Match` — sending `{"entityId": "<same>"}` is a 200 that
-deletes the role block — so it re-reads and compares the whole document rather
-than trusting the status code.
+`--no-prompt`) it refuses, as above. Then one line per step:
+
+- `entity https://sp-a.example.com now points at secretIdIdentifier
+  "sprotatetest" (read back and compared whole)`;
+- `ESV secret esv-saml-sprotatetest-signing created — encoding pem,
+  useInPlaceholders false, certificate <cert1>`;
+- `label am.applications.federation.entity.providers.saml2.sprotatetest.signing
+  now maps to esv-saml-sprotatetest-signing`;
+- `https://sp-a.example.com (SPSSODescriptor) now publishes <cert1>`.
+
+The entity `PUT` is a full replace with no `If-Match` — sending
+`{"entityId": "<same>"}` is a 200 that deletes the role block — so it re-reads
+and compares the whole document rather than trusting the status code. Before
+the mapping (the step that completes the chain) it surveys every realm again;
+that survey prints nothing when it passes, so there is nothing to see here.
 
 Then verify from the tenant's own metadata rather than from what `aic` claimed:
 
@@ -248,9 +285,9 @@ aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/d2.
 aic saml metadata inspect /tmp/d2.xml
 ```
 
-**Watch for:** the signing certificate is now **cert1**, the encryption
+- [ ] **Watch for:** the signing certificate is now **cert1**, the encryption
 certificate is untouched, and **no restart was needed** — that is the
-`--no-placeholders` ESV secret doing its job.
+`useInPlaceholders: false` ESV secret doing its job.
 
 ### D3 · Pre-trust the new certificate at the peer — before anything is staged
 
@@ -273,7 +310,7 @@ aic saml rotate stage 'https://sp-a.example.com' --realm alpha \
   --key-file /tmp/pair2.pem --dry-run
 ```
 
-**Watch for:** `will add a version to ESV secret esv-saml-sprotatetest-signing
+- [ ] **Watch for:** `will add a version to ESV secret esv-saml-sprotatetest-signing
 holding certificate <cert2>`, then `**treat this as the signing cutover**`,
 `stop here unless the peer already holds and trusts <cert2>`, and the
 **emergency signer restoration** lines — which say it needs the **old private
@@ -285,7 +322,7 @@ aic saml rotate stage 'https://sp-a.example.com' --realm alpha \
   --key-file /tmp/pair2.pem
 ```
 
-**Watch for:** the same plan, then a confirmation prompt naming the incoming
+- [ ] **Watch for:** the same plan, then a confirmation prompt naming the incoming
 certificate — `Add certificate <cert2> to esv-saml-sprotatetest-signing and
 treat it as signing for https://sp-a.example.com (SPSSODescriptor) from now? The
 peer must already trust it.` — answer yes. Without a terminal it refuses
@@ -309,7 +346,7 @@ aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/d4.
 aic saml metadata inspect /tmp/d4.xml
 ```
 
-**Watch for:** two `use="signing"` KeyDescriptors, cert2 and cert1.
+- [ ] **Watch for:** two `use="signing"` KeyDescriptors, cert2 and cert1.
 
 ### D5 · Read what the tool admits it cannot know
 
@@ -317,7 +354,7 @@ aic saml metadata inspect /tmp/d4.xml
 aic saml rotate status 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** `phase staged — two certificates published; treat the newest
+- [ ] **Watch for:** `phase staged — two certificates published; treat the newest
 ENABLED version as the one already signing`, then cert2 attributed to "ESV
 secret version 2, staged here <time>", and cert1 marked "(no local record of
 which version holds it)". That asymmetry is the honest answer: secret values are
@@ -330,8 +367,22 @@ The closing paragraph says what the signer measurement did and did not show:
 observed on the SP path only, and the newest ENABLED version was also always
 listed first, so which of the two AM selects by was not separated.
 
-`sharing  nothing else in realms alpha, bravo resolves …` — the consumer survey
-covers both realms, because the ESV secret is tenant-global.
+- [ ] `sharing     nothing else in realms alpha, bravo resolves
+  esv-saml-sprotatetest-signing` — the consumer survey covers both realms,
+  because the ESV secret is tenant-global — and, as the last paragraph, the
+  root-realm caveat: `Who resolves an ESV secret is surveyed across realms alpha
+  and bravo. The root realm is not read: …`. The text report carries it whenever
+  a survey was made, as the JSON does.
+
+```sh
+aic saml rotate status 'https://sp-a.example.com' --realm alpha --json \
+  | jq '.sharing | {exclusive, realms, unsurveyedRealms, unclaimedLabels, caveat}'
+```
+
+- [ ] **Watch for:** `"exclusive": true`, `"realms": ["alpha", "bravo"]`,
+`"unsurveyedRealms": []`, `"unclaimedLabels": []` (each entry, when there is
+one, is an object `{realm, label}`, not a bare string), and `caveat` holding the
+same root-realm sentence.
 
 The peer was given cert2 back in D3. What remains open now is only cert1's
 publication — which is what `complete` ends.
@@ -342,7 +393,7 @@ publication — which is what `complete` ends.
 aic saml rotate complete 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** the plan — `will disable version 1`, and `not expected to change
+- [ ] **Watch for:** the plan — `will disable version 1`, and `not expected to change
 what signs: version 1 is not the newest ENABLED version` — then a confirmation
 prompt. Answer **no**: it refuses, naming the version and `--force`. Then:
 
@@ -351,9 +402,12 @@ aic saml rotate complete 'https://sp-a.example.com' --realm alpha --force
 aic saml rotate status 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** `phase settled`, one published certificate (cert2), and
-version 1 `DISABLED` — **not destroyed**. The output tells you how to put it
-back. Nothing in this whole verb destroys anything.
+- [ ] **Watch for:** from `complete`, `ESV secret esv-saml-sprotatetest-signing
+version 1 disabled`, `rollover complete: https://sp-a.example.com
+(SPSSODescriptor) publishes only <cert2>` and ``version 1 is DISABLED, not
+destroyed — `aic esv secret enable esv-saml-sprotatetest-signing 1` puts the old
+certificate back …``; from `status`, `phase       settled — one certificate
+published, backed by one ENABLED ESV secret version`. Nothing in this whole verb destroys anything.
 
 Confirm from the tenant one more time:
 
@@ -362,7 +416,7 @@ aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/d6.
 aic saml metadata inspect /tmp/d6.xml
 ```
 
-**Watch for:** cert1 gone, cert2 alone. Checking the *count* would not have been
+- [ ] **Watch for:** cert1 gone, cert2 alone. Checking the *count* would not have been
 enough — a `complete` that disabled the wrong version also leaves exactly one
 certificate published. It is the identity that matters.
 
@@ -373,10 +427,25 @@ aic esv secret enable esv-saml-sprotatetest-signing 1
 aic saml rotate status 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** both certificates published again; cert2 is still the newest
-ENABLED version, so it is still the one to treat as signing. Re-disable with
-`aic esv secret disable esv-saml-sprotatetest-signing 1` when you are done
-looking.
+- [ ] **Watch for:** both certificates published again; cert2 is still the newest
+ENABLED version, so it is still the one to treat as signing.
+
+While both are enabled, ask to keep the **older** one:
+
+```sh
+aic saml rotate complete 'https://sp-a.example.com' --realm alpha \
+  --retain <cert1> --disable-version 2 --dry-run; echo "exit $?"
+```
+
+- [ ] **Watch for:** a non-zero exit and ``version 2 is the newest version of
+esv-saml-sprotatetest-signing, and AIC refuses to disable the latest version
+(`400 Cannot disable latest secret version`).`` Keeping the older certificate
+means retiring the newest version, which AIC does not allow, so this refusal is
+what you get here — not the "treat this as a signer cutover back" plan (see
+[What this plan cannot exercise](#what-this-plan-cannot-exercise)).
+
+Re-disable with `aic esv secret disable esv-saml-sprotatetest-signing 1` when
+you are done looking.
 
 ### D8 · Optional: rehearse emergency signer restoration
 
@@ -398,14 +467,14 @@ aic esv secret add-version esv-saml-sprotatetest-signing --value-file /tmp/pair2
 aic saml rotate status 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** three ENABLED versions (2 = cert2, 3 = cert3, and the restored
+- [ ] **Watch for:** three ENABLED versions (2 = cert2, 3 = cert3, and the restored
 cert2) and `phase inconsistent`. `rotate` does not finish this state:
 
 ```sh
 aic saml rotate complete 'https://sp-a.example.com' --realm alpha --force
 ```
 
-**Watch for:** a refusal (`cannot complete a rollover: …`), with nothing sent.
+- [ ] **Watch for:** a refusal (`cannot complete a rollover: …`), with nothing sent.
 Finish by hand, disabling the two superseded versions — the one `stage` added
 and the one that was in service before it. Neither is the latest any more, so
 both are allowed:
@@ -416,8 +485,37 @@ aic esv secret disable esv-saml-sprotatetest-signing 2
 aic saml rotate status 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** `phase settled`, cert2 alone, published by the restored version.
+- [ ] **Watch for:** `phase settled`, cert2 alone, published by the restored version.
 Nothing was destroyed.
+
+### What this plan cannot exercise
+
+These behaviours are real and tested, but reaching them by hand needs a race or
+a failure this sandbox cannot be made to produce on demand. They are listed so
+their absence from the steps above is not mistaken for coverage; the unit tests
+in `src/saml/rotate/spec.rs` named here pin the wording.
+
+- **A partial `init`.** A step completes and a later one is refused or fails —
+  for example, another writer maps the label between `init`'s secret and its
+  mapping. The report says `1 of 2 init steps completed — …`, that what the role
+  resolves and signs with now "has not been measured", and to read the tenant
+  before retrying; it never says the old signer is still in use
+  (`a_partial_init_never_promises_the_old_signer`).
+- **The re-survey before `init`'s activating step refusing.** Needs a second
+  entity to take the identifier mid-run
+  (`a_refused_resurvey_stops_the_activating_write_from_being_sent`).
+- **A write accepted but not verified, or of unknown outcome**, on any of
+  `init`, `stage` and `complete`. These need a failing read-back or a lost
+  response; the messages say the write "was **accepted by the tenant**" or
+  "was attempted and may have been sent, and **whether it was applied is
+  unknown**", then ``Read the tenant before retrying: `aic saml rotate status …` ``
+  (`a_write_that_may_have_landed_says_to_read_the_tenant_first`).
+- **`complete --retain <older>` treated as a signer cutover back.** It needs a
+  DISABLED version newer than the newest ENABLED one, which AIC's
+  latest-version refusal (D7) prevents here. The plan line would read
+  `**treat this as a signer cutover back to <sha>**` and the prompt `Treat this
+  as a signer cutover back to <sha>.`
+  (`keeping_the_older_certificate_disables_the_version_holding_the_newer_one`).
 
 ---
 
@@ -434,7 +532,7 @@ aic secretmap list | grep sprotatetest
 aic esv secret list | grep sprotatetest
 ```
 
-**Watch for:** the mapping and the ESV secret both still there, now naming an
+- [ ] **Watch for:** the mapping and the ESV secret both still there, now naming an
 entity that does not exist. Nothing in AM cleans these up.
 
 ### E2 · Repointing an entity's identifier orphans the old mapping
@@ -450,7 +548,7 @@ aic secretmap remove \
   am.applications.federation.entity.providers.saml2.sprotatetest.signing --force
 ```
 
-**Watch for:** it works. It did not before this sprint: `remove` consulted the
+- [ ] **Watch for:** it works. It did not before this sprint: `remove` consulted the
 schema enum to decide whether a label existed, and a label vanishes from that
 enum the moment the entity stops naming it — so the one mapping you most needed
 to delete was the one the tool said was not there.
@@ -495,7 +593,7 @@ write verb, and `docs/api/06-saml.md` gives the REST call. See
 scripts/saml-harness/harness.sh verify-rotate aic-idp
 ```
 
-**Watch for:** this adds a key, removes one, and asserts the **surviving signing
+- [ ] **Watch for:** this adds a key, removes one, and asserts the **surviving signing
 key is the added one and is not a pre-rotation one**, by certificate
 fingerprint. A count of `KeyDescriptor`s would pass whether or not the rotation
 worked, which is why it does not use one.
@@ -521,6 +619,8 @@ aic esv secret list  | grep -c sprotatetest     # expect: 0
 
 scripts/saml-harness/harness.sh down
 ```
+
+- [ ] the three confirmation commands print what their comments expect.
 
 The rotation journal at `.aic/saml-rotations.json` is local, holds no key
 material, and is gitignored. It should be `[]` when nothing is mid-rollover.
