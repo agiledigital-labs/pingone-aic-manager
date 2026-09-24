@@ -1694,7 +1694,10 @@ before anything is printed as a plan — and again inside the pre-write recheck,
 after the confirmation prompt and the production gate, because a consumer added
 while you read the prompt would otherwise be cut over and never verified. The
 write holds the proof minted by that second survey; the first is consumed by
-authorising the plan. So `stage` and `complete` spend `2 × (4 + N)` calls on
+authorising the plan. Every writer `init`, `stage` and `complete` reach takes
+that proof as a required parameter, so a write path with the survey left out
+does not compile — which guards against omitting the check, and does not make
+the survey atomic or prove it is still current when the write lands. So `stage` and `complete` spend `2 × (4 + N)` calls on
 the question. `init` can spend one survey more, `3 × (4 + N)`: it has up to
 three writes, and the one that **activates** the chain — the last planned step,
 from which the role resolves the secret; usually the mapping, or creating the
@@ -1841,12 +1844,30 @@ order before the first of its three steps — the `secretIdIdentifier` and the
 label's mapping must still be what the plan saw, then the re-survey — surveys
 again before its activating step (above), and each step re-reads its own
 document before overwriting it. A refusal before the first step sends nothing.
-A refusal or failure **after** a step has landed is reported the way `.ai/core.md`
-§5 says a batch that stops partway must be: it names the steps that landed
-(`2 of 3 init steps landed — …`), says they were sent and not undone, and does
-not claim that nothing was sent. Either way the remedy is
-`aic saml rotate status` followed by a re-run, which skips the steps the tenant
-already shows done.
+A stop **after** a step has completed is reported the way `.ai/core.md` §5 says
+a batch that stops partway must be: it names the steps that completed
+(`2 of 3 init steps completed — …`), says they were sent and not undone, and
+does not claim that nothing was sent.
+
+The step that stopped the run is reported separately, in one of three states,
+because "it failed" is two different claims:
+
+- **not applied** — refused before it was sent (a recheck, the production
+  gate), or answered with a `4xx`. Only here does `init` say the chain is
+  incomplete and nothing has been cut over.
+- **accepted but not verified** — the tenant answered success and proving what
+  it left then failed: the entity read-back, the export, the response's version
+  number. The write landed.
+- **outcome unknown** — sent, with no answer that says either way: a transport
+  failure, a lost or unreadable response, a `5xx`.
+
+For the last two the message says to read the tenant before retrying, makes no
+claim about the chain, and — when the step was the activating one — says to
+treat signing as possibly cut over. `stage` and `complete` report their write,
+and every post-write check after it, in the same three states and the same
+words; a re-sent version or disable that had already landed is a second write,
+not a retry. In every case the remedy is `aic saml rotate status` followed by a
+re-run, which plans from what the tenant shows.
 
 The first two are not a formality, and leaving them out was a real gap.
 Published metadata carries no secret and no version attribution at all, so
