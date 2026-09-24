@@ -178,11 +178,11 @@ entity** — the entity holds a `secretIdIdentifier`, a label into AM's secret
 store, backed on AIC by an ESV secret. A rollover is an ESV secret *version*
 operation. There is nothing to upload and no metadata to push.
 
-### D0 · Make two throwaway key pairs
+### D0 · Make three throwaway key pairs
 
 ```sh
 cd /tmp
-for n in 1 2; do
+for n in 1 2 3; do
   openssl req -x509 -newkey rsa:2048 -keyout k$n.pem -out c$n.pem -days 30 \
     -nodes -subj "/CN=aic-rotate-test-$n"
   cat k$n.pem c$n.pem > pair$n.pem
@@ -190,7 +190,10 @@ for n in 1 2; do
 done
 ```
 
-Keep those two fingerprints on screen. Every step below is checked against them.
+Keep those fingerprints on screen. Every step below is checked against them.
+The third pair is only for the optional D8. Keep the **private keys** as well
+as the certificates: emergency signer restoration (D8) re-adds an old key pair,
+and an ESV secret value cannot be read back out of the tenant.
 
 ### D1 · Where it stands now
 
@@ -218,16 +221,25 @@ mapping — and the certificate fingerprint matching your cert1.
 > `400 Invalid character present in Secret ID Identifier` and names no flag,
 > which is why `aic` refuses them first.
 
+`init` is a certificate change, not only setup: mapping the label **replaces**
+the default certificate rather than adding a second one, so there is no
+two-certificate catch-up afterwards. In production the peer must already trust
+cert1 before this runs. Here there is no peer yet, so go ahead:
+
 ```sh
 aic saml rotate init 'https://sp-a.example.com' --realm alpha \
   --identifier sprotatetest --secret-id esv-saml-sprotatetest-signing \
   --description 'throwaway rotate test, delete me' --key-file /tmp/pair1.pem
 ```
 
-**Watch for:** `(read back and compared whole)` on the entity line. The entity
-`PUT` is a full replace with no `If-Match` — sending `{"entityId": "<same>"}`
-is a 200 that deletes the role block — so it re-reads and compares the whole
-document rather than trusting the status code.
+**Watch for:** a confirmation prompt — `Replace <default fingerprint> with
+certificate <cert1> for https://sp-a.example.com (SPSSODescriptor)? The peer
+must already trust the new one.` — answer yes. Without a terminal (or with
+`--no-prompt`) it refuses instead, naming both certificates and `--force`.
+Then `(read back and compared whole)` on the entity line. The entity `PUT` is a
+full replace with no `If-Match` — sending `{"entityId": "<same>"}` is a 200 that
+deletes the role block — so it re-reads and compares the whole document rather
+than trusting the status code.
 
 Then verify from the tenant's own metadata rather than from what `aic` claimed:
 
@@ -240,49 +252,99 @@ aic saml metadata inspect /tmp/d2.xml
 certificate is untouched, and **no restart was needed** — that is the
 `--no-placeholders` ESV secret doing its job.
 
-### D3 · Stage the second certificate
+### D3 · Pre-trust the new certificate at the peer — before anything is staged
+
+**`stage` is to be treated as the signing cutover, not as a preparation for
+one.** On the measured SP AuthnRequest-signing path, AM was signing with the
+newly added version by the first observation, no later than 12 s after it was
+added; IdP assertion signing is unmeasured, and is assumed to behave the same.
+So a peer that does not already trust cert2 starts rejecting this entity's
+signatures the moment `stage` runs.
+
+In production, this is the step where you give the peer **cert2** and wait until
+they confirm they trust it **alongside cert1**. Only then continue. In this
+throwaway there is no peer in Part D; Part F's Keycloak is where a real peer is
+exercised.
+
+### D4 · Preview, then stage the second certificate
+
+```sh
+aic saml rotate stage 'https://sp-a.example.com' --realm alpha \
+  --key-file /tmp/pair2.pem --dry-run
+```
+
+**Watch for:** `will add a version to ESV secret esv-saml-sprotatetest-signing
+holding certificate <cert2>`, then `**treat this as the signing cutover**`,
+`stop here unless the peer already holds and trusts <cert2>`, and the
+**emergency signer restoration** lines — which say it needs the **old private
+key**, and that restoring alone leaves three ENABLED versions `rotate` will not
+finish. Then `dry run: nothing was sent`.
 
 ```sh
 aic saml rotate stage 'https://sp-a.example.com' --realm alpha \
   --key-file /tmp/pair2.pem
 ```
 
-**Watch for:** `version 2 added`, then **both** fingerprints published. This is
-the window in which a peer can load the new certificate while the old one still
-works. Confirm independently:
+**Watch for:** the same plan, then a confirmation prompt naming the incoming
+certificate — `Add certificate <cert2> to esv-saml-sprotatetest-signing and
+treat it as signing for https://sp-a.example.com (SPSSODescriptor) from now? The
+peer must already trust it.` — answer yes. Without a terminal it refuses
+instead (`would add certificate <cert2> …`, naming `--force`). Then:
+
+- `ESV secret esv-saml-sprotatetest-signing version 2 added`;
+- `https://sp-a.example.com (SPSSODescriptor) now publishes …` naming both
+  fingerprints (sorted, not in signing order);
+- `… publishes <cert2> as version 2; treat it as the certificate signing now`,
+  with the evidence line for this role (for an SP, the measured ≤12 s; for an
+  IdP, that its signing path is unmeasured);
+- the restoration lines again, now with both version numbers:
+  `aic esv secret disable esv-saml-sprotatetest-signing 2` and `… 1`.
+
+cert1 is **still published but is not expected to be what signs**. The
+two-certificate export is a catch-up for a peer that refreshes metadata, not a
+window in which the old certificate keeps working. Confirm independently:
 
 ```sh
-aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/d3.xml
-aic saml metadata inspect /tmp/d3.xml
+aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/d4.xml
+aic saml metadata inspect /tmp/d4.xml
 ```
 
 **Watch for:** two `use="signing"` KeyDescriptors, cert2 and cert1.
 
-### D4 · Read what the tool admits it cannot know
+### D5 · Read what the tool admits it cannot know
 
 ```sh
 aic saml rotate status 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** cert2 attributed to "ESV secret version 2, staged here <time>",
-and cert1 marked "(no local record of which version holds it)". That asymmetry
-is the honest answer: secret values are write-only and AM publishes no
-`<ds:KeyName>`, so nothing on the tenant ties a certificate to a version.
-`aic` knows about cert2 only because **this install staged it** and confirmed it
-from the tenant's export afterwards. It never guesses the other by elimination.
+**Watch for:** `phase staged — two certificates published; treat the newest
+ENABLED version as the one already signing`, then cert2 attributed to "ESV
+secret version 2, staged here <time>", and cert1 marked "(no local record of
+which version holds it)". That asymmetry is the honest answer: secret values are
+write-only and AM publishes no `<ds:KeyName>`, so nothing on the tenant ties a
+certificate to a version. `aic` knows about cert2 only because **this install
+staged it** and confirmed it from the tenant's export afterwards. It never
+guesses the other by elimination.
 
-This is the point at which you would hand the peer the two-certificate metadata
-and wait for them to load it. In production that wait is the whole reason
-`stage` and `complete` are separate verbs.
+The closing paragraph says what the signer measurement did and did not show:
+observed on the SP path only, and the newest ENABLED version was also always
+listed first, so which of the two AM selects by was not separated.
 
-### D5 · Close the window
+`sharing  nothing else in realms alpha, bravo resolves …` — the consumer survey
+covers both realms, because the ESV secret is tenant-global.
+
+The peer was given cert2 back in D3. What remains open now is only cert1's
+publication — which is what `complete` ends.
+
+### D6 · Close the window
 
 ```sh
 aic saml rotate complete 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** a **refusal**. Retiring a published certificate needs confirmation
-at a terminal, or `--force`. Then:
+**Watch for:** the plan — `will disable version 1`, and `not expected to change
+what signs: version 1 is not the newest ENABLED version` — then a confirmation
+prompt. Answer **no**: it refuses, naming the version and `--force`. Then:
 
 ```sh
 aic saml rotate complete 'https://sp-a.example.com' --realm alpha --force
@@ -296,24 +358,66 @@ back. Nothing in this whole verb destroys anything.
 Confirm from the tenant one more time:
 
 ```sh
-aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/d5.xml
-aic saml metadata inspect /tmp/d5.xml
+aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/d6.xml
+aic saml metadata inspect /tmp/d6.xml
 ```
 
 **Watch for:** cert1 gone, cert2 alone. Checking the *count* would not have been
 enough — a `complete` that disabled the wrong version also leaves exactly one
 certificate published. It is the identity that matters.
 
-### D6 · Undo it, to prove nothing was lost
+### D7 · Undo it, to prove nothing was lost
 
 ```sh
 aic esv secret enable esv-saml-sprotatetest-signing 1
 aic saml rotate status 'https://sp-a.example.com' --realm alpha
 ```
 
-**Watch for:** both certificates published again. Re-disable with
+**Watch for:** both certificates published again; cert2 is still the newest
+ENABLED version, so it is still the one to treat as signing. Re-disable with
 `aic esv secret disable esv-saml-sprotatetest-signing 1` when you are done
 looking.
+
+### D8 · Optional: rehearse emergency signer restoration
+
+This is the way back from a `stage` whose peer turned out not to be ready. Start
+from D7's end state (cert2 alone, version 2), and stage cert3:
+
+```sh
+aic saml rotate stage 'https://sp-a.example.com' --realm alpha \
+  --key-file /tmp/pair3.pem --force
+```
+
+Now pretend the peer rejects cert3. There is no un-stage — the new version is
+the latest, and `aic esv secret disable … <latest>` is `400 Cannot disable
+latest secret version`. Restore the old signer by adding **its key pair,
+private key included,** again as a newer version:
+
+```sh
+aic esv secret add-version esv-saml-sprotatetest-signing --value-file /tmp/pair2.pem
+aic saml rotate status 'https://sp-a.example.com' --realm alpha
+```
+
+**Watch for:** three ENABLED versions (2 = cert2, 3 = cert3, and the restored
+cert2) and `phase inconsistent`. `rotate` does not finish this state:
+
+```sh
+aic saml rotate complete 'https://sp-a.example.com' --realm alpha --force
+```
+
+**Watch for:** a refusal (`cannot complete a rollover: …`), with nothing sent.
+Finish by hand, disabling the two superseded versions — the one `stage` added
+and the one that was in service before it. Neither is the latest any more, so
+both are allowed:
+
+```sh
+aic esv secret disable esv-saml-sprotatetest-signing 3
+aic esv secret disable esv-saml-sprotatetest-signing 2
+aic saml rotate status 'https://sp-a.example.com' --realm alpha
+```
+
+**Watch for:** `phase settled`, cert2 alone, published by the restored version.
+Nothing was destroyed.
 
 ---
 

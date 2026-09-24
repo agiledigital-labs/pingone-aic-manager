@@ -1166,9 +1166,9 @@ aic saml metadata sanitise <FILE> [--out PATH] [--keep-signature]
 aic saml rotate status <ENTITY-ID> [--role idp|sp] [--realm alpha] [--json]
 aic saml rotate init <ENTITY-ID> --identifier <NAME> --secret-id esv-<NAME> \
   (--key-file PATH | --key-stdin) [--description TEXT] \
-  [--role idp|sp] [--realm alpha] [--dry-run] [--yes]
+  [--role idp|sp] [--realm alpha] [--force] [--dry-run] [--yes]
 aic saml rotate stage <ENTITY-ID> (--key-file PATH | --key-stdin) \
-  [--role idp|sp] [--realm alpha] [--dry-run] [--yes]
+  [--role idp|sp] [--realm alpha] [--force] [--dry-run] [--yes]
 aic saml rotate complete <ENTITY-ID> [--retain <SHA256>] \
   [--disable-version <N>] \
   [--role idp|sp] [--realm alpha] --force [--dry-run] [--yes]
@@ -1522,32 +1522,39 @@ Measured end to end: map a `pem` ESV secret onto the label and the export
 carries that certificate; add a second version and the export publishes **two**
 `<KeyDescriptor use="signing">`; disable the old version and it drops back to
 one, in single-digit seconds. No restart — provided the secret was created with
-placeholders **off**. And AM **signs** with the newest ENABLED version, from the
-next request onwards, which is what makes `stage` the moment everything hinges
-on.
+placeholders **off**. And on the measured SP path AM **signed** with the newest
+ENABLED version by the first observation, no later than 12 s after it was added,
+which is what makes `stage` the moment everything hinges on.
 
 | Verb       | What it does                                            | Reversible?          |
 | ---------- | ------------------------------------------------------- | -------------------- |
 | `status`   | correlates five documents; surveys who shares the key   | writes nothing       |
-| `init`     | sets the identifier, creates the secret, maps the label | one-time setup       |
-| `stage`    | adds a version — **signing cuts over**, both published  | re-add the old pair  |
+| `init`     | sets the identifier, creates the secret, maps the label — replaces the published certificate | one-time setup |
+| `stage`    | adds a version — **treat as the signing cutover**; both published | emergency signer restoration, then two disables |
 | `complete` | disables the **old** version — one certificate again    | `esv secret enable`  |
 
-**`stage` is the cutover, not the preparation for one.** AM signs with the
-newest ENABLED version of the ESV secret, from the next request onwards —
-measured 2026-09-22 over five rounds on the SP AuthnRequest-signing path,
-including a probe that re-added the *older* certificate as the newest version
-and watched it take over again (`docs/api/06-saml.md`). So the moment `stage`
-returns, this role is signing with the new certificate, and a peer that does
-not already trust it starts rejecting.
+**Treat `stage` as the cutover, not the preparation for one.** On the SP
+AuthnRequest-signing path, AM signed with the newest ENABLED version of the ESV
+secret by the first observation — no later than 12 s after the version was
+added — measured 2026-09-22 over five rounds, including a probe that re-added
+the *older* certificate as the newest version and watched it take over again
+(`docs/api/06-saml.md`). The newest ENABLED version was also always the first
+listed in the export, so whether AM selects by recency or by that order was not
+separated; the consequence is the same either way. **IdP assertion signing was
+not measured**, and is assumed to behave the same — a safety assumption, not an
+observation, and `stage`'s messages say which applies to the role in hand. So by
+the time `stage` returns, treat this role as signing with the new certificate:
+a peer that does not already trust it starts rejecting.
 
 The safe order is therefore:
 
 1. generate the new key pair locally — `stage --key-file` takes **your** key
    pair, which is what makes the rest of this possible;
 2. give the new certificate to the peer and have them trust it, out of band;
-3. `stage` — signing cuts over here;
-4. `complete` — stops publishing the old certificate; no signing change.
+3. `stage` — confirm at the prompt, which names the new certificate, or pass
+   `--force`; treat signing as cutting over here;
+4. `complete` — stops publishing the old certificate; on its usual path it is
+   not expected to change what signs.
 
 `stage` and `complete` are **separate operations, and that is not a style
 choice**: `aic esv secret disable` cannot disable the latest version
@@ -1557,10 +1564,27 @@ from the two-certificate export — genuinely useful, and a human interval rathe
 than a timeout, but a catch-up rather than the safety step. The safety step is
 number 2.
 
+**`init`, `stage` and `complete` confirm the same way.** Each is a certificate
+change — `init` because mapping the label *replaces* the published default,
+with no two-certificate catch-up at all — so each prints its plan, then asks at
+a terminal (the prompt names the certificate coming in, or for `complete` the
+version going out), and refuses without one unless `--force` is given. The
+production `--yes` gate is asked after that, and answers a different question.
+`--dry-run` never reaches the prompt.
+
 **There is no un-stage.** Disabling the version you just added is the 400 above.
-The rollback is to add the old key pair again as a **newer** version —
-`aic esv secret add-version <secret> --value-file old-pair.pem` — which was
-measured at ~7 s and destroys nothing.
+What works is **emergency signer restoration**: add the old key pair again as a
+**newer** version — `aic esv secret add-version <secret> --value-file
+old-pair.pem` — which was measured at ~7 s and destroys nothing. It needs the
+**old private key**, not only its certificate: secret values are write-only, so
+a pair that was not kept cannot be read back. And it is half of the way back:
+run straight after `stage` it leaves three ENABLED versions (the one that was in
+service, the staged one, the restored copy), which `rotate` reports as
+`inconsistent` and will not finish. Settle it by disabling the two superseded
+versions — neither is the latest any more — with `aic esv secret disable
+<secret> <staged>` and `aic esv secret disable <secret> <previous>`. `stage`
+prints this path with the numbers filled in, before it asks and again after it
+lands.
 
 **Nothing here destroys anything.** `complete` disables, which
 `aic esv secret enable` undoes. Destroying a version and deleting a mapping are
@@ -1631,9 +1655,9 @@ the phase, the export check, the settlement — reads only the entity named on
 the command line. So a shared secret is how a completion that reports success
 becomes an outage for the provider nobody looked at.
 
-Every verb therefore surveys the realm before it plans, and refuses anything
-but "this role and nobody else". Two channels bring a second consumer, and the
-survey covers both:
+Every verb therefore surveys **every realm** — `alpha` and `bravo` — before it
+plans, and refuses anything but "this role and nobody else". Two channels bring
+a second consumer, and the survey covers both:
 
 - a second entity — or a second **role** of the same entity — carrying the same
   `secretIdIdentifier`. AM enforces no uniqueness on that field, and the label
@@ -1645,12 +1669,13 @@ survey covers both:
 **The refusal names them**, each with the label it resolves through: "this
 secret is shared" is a dead end, and "`https://sp-b.example.com` resolves it
 through `…spb.signing`" is a diagnosis. A label mapped onto the secret that no
-entity provider in the realm names is listed too — it resolves nothing today,
-and it is one entity delete away from being claimed again.
+entity provider in its realm names is listed too — it resolves nothing today,
+and it is one entity delete away from being claimed again. Each is named with
+its realm: the same entity ID in `alpha` and `bravo` is two consumers.
 
 There is **no `--force`**. A shared rollover is not one operation with a risk
 attached; it is several this command cannot sequence, because adding a version
-cuts **every** consumer's signing over at the same instant — so every one of
+is treated as cutting **every** consumer's signing over at the same instant — so every one of
 their peers has to have been given the new certificate before it happens, on
 schedules this command knows nothing about. Either give the role a label and an
 ESV secret of its own, or roll the shared key deliberately: once **every** peer
@@ -1658,15 +1683,26 @@ above holds and trusts the new certificate, `aic esv secret add-version` (which
 is where signing changes for all of them), then `aic esv secret disable`.
 
 `rotate status` reports the same survey whether or not anything is shared,
-because that is where every one of those refusals sends you. It costs one read
-per entity provider in the realm: the entity list is stubs only and carries no
-`secretIdIdentifier`, and there is no query filter for one, so each provider
-has to be read to find out what it names.
+because that is where every one of those refusals sends you. It costs, per
+realm, the mapping table, the entity list and one read per entity provider —
+`4 + N` calls for N providers across both realms: the entity list is stubs
+only and carries no `secretIdIdentifier`, and there is no query filter for one,
+so each provider has to be read to find out what it names.
 
-The survey is **per realm**, and every sharing report says so. The secret-label
-mapping table is realm-scoped while ESV secrets are tenant-global, so a
-provider in the other realm backed by this same secret is outside what this can
-see.
+**The write verbs survey twice.** Once to plan — so a shared secret is refused
+before anything is printed as a plan — and again inside the pre-write recheck,
+after the confirmation prompt and the production gate, because a consumer added
+while you read the prompt would otherwise be cut over and never verified. The
+write holds the proof minted by that second survey; the first is consumed by
+authorising the plan. So `stage` and `complete` spend `2 × (4 + N)` calls on
+the question, and `init` the same (its second survey runs once, before its
+first write).
+
+The survey is **tenant-wide over the realms this tool addresses**, and a survey
+that skipped one is refused rather than trusted. What it still cannot see is
+the **root** realm: AIC answers 403 for every root realm-config family measured
+so far, but whether root can hold a SAML entity provider or a secret mapping
+has not been measured, and every sharing report says so.
 
 #### What `status` cannot tell you
 
@@ -1677,11 +1713,13 @@ metadata lists the newest ENABLED version first, but that is an ordering
 convention, not an identity — and a `complete` that trusted it would be one
 convention-change away from retiring the new certificate and keeping the old.
 
-What *is* known is which certificate is **in use**: the newest ENABLED version's.
-`status` prints that as a rule rather than pointing at one of the fingerprints in
-front of it, because pointing would mean reading the export's order — the
-inference everything else here refuses. The two claims are different: which
-version holds a certificate is unreadable, which certificate signs is not.
+What *is* known, as a rule to act on, is which certificate to treat as **in
+use**: the newest ENABLED version's — observed on the SP path, where it was also
+always listed first, and assumed for the IdP. `status` prints that as a rule
+rather than pointing at one of the fingerprints in front of it, because pointing
+would mean reading the export's order — the inference everything else here
+refuses. The two claims are different: which version holds a certificate is
+unreadable; which certificate signs follows from a measured rule.
 
 So `stage` records the pairing locally, in `.aic/saml-rotations.json`, and only
 **after the tenant's own export confirms** the new certificate is published —
@@ -1750,11 +1788,15 @@ Keeping the older certificate usually means retiring the newer one, whose
 version is the latest — and AIC will not disable the latest version
 (`400 Cannot disable latest secret version`). There is no flag for that: stage
 the key pair you want to keep as a new version and complete that rollover
-instead.
+instead. Where it *is* reachable — a DISABLED spare version above the staged
+one — that `complete` disables the version to treat as signing, so it **moves
+signing back** to the retained certificate: a cutover with `stage`'s peer
+precondition, and the plan and the prompt say so.
 
 What the export cannot do is **attribute**. It says what is published; which of
 two published keys the runtime picks follows from the rule above — the newest
-ENABLED version — and not from anything in the document.
+ENABLED version, observed on the SP path — and not from anything in the
+document.
 
 #### Resuming an interrupted run
 
@@ -1778,7 +1820,9 @@ does not. So `stage` and `complete` re-read four things: the role's
 `secretIdIdentifier` and that identifier's mapping, which together must still
 resolve to the ESV secret the plan named; and then the secret's ENABLED
 versions and this role's published certificates, which must still be the ones
-the plan was decided from. `init` re-reads the `secretIdIdentifier` and the
+the plan was decided from — and between the two, they **re-survey every realm**
+for other consumers of the secret (above). `init` re-surveys once before its
+first write, and re-reads the `secretIdIdentifier` and the
 label's mapping before overwriting either. Every one of those refusals sends
 nothing, and the remedy is `aic saml rotate status` followed by a re-run.
 
