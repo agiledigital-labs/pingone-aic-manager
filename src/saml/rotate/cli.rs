@@ -60,6 +60,10 @@ pub enum RotateCommand {
     /// One-time setup: give the role its own signing label and back it with an
     /// ESV secret.
     ///
+    /// A certificate change: mapping the label replaces the certificate the
+    /// role publishes (and, assumed, signs with), so it asks for confirmation
+    /// the way `stage` and `complete` do.
+    ///
     /// The only path that writes the SAML entity, and it writes it as a full
     /// replace of a document it has just read. Each of its three steps is
     /// skipped when the tenant already shows it done, so an interrupted run
@@ -96,13 +100,18 @@ pub enum RotateCommand {
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
+        #[command(flatten)]
+        force: OperationForce,
     },
     /// Cut signing over to a new certificate: add an ESV secret version.
     ///
-    /// AM signs with the newest ENABLED version, so this takes effect at once
-    /// rather than when the peer next loads metadata. Give the peer the new
-    /// certificate and have them trust it **first**; the old certificate stays
-    /// published afterwards so one that refreshes metadata can catch up.
+    /// Treat this as taking effect at once rather than when the peer next
+    /// loads metadata: on the measured SP AuthnRequest path the newest ENABLED
+    /// version was signing by the first observation (≤12 s), and IdP
+    /// assertion signing is unmeasured and assumed the same. Give the peer the
+    /// new certificate and have them trust it **first**; the old certificate
+    /// stays published afterwards so one that refreshes metadata can catch
+    /// up. Asks for confirmation, naming the incoming certificate.
     ///
     /// Preserves the identifier and its mapping — a certificate rotation is
     /// not entity repointing, which orphans the old mapping and rotates
@@ -130,13 +139,19 @@ pub enum RotateCommand {
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
+        #[command(flatten)]
+        force: OperationForce,
     },
     /// Stop publishing the old certificate: disable the old ESV secret version.
     ///
-    /// It changes no signer — `stage` already cut signing over. What it ends is
-    /// the two-certificate export a peer that refreshes metadata catches up
-    /// from. Disabling is reversible (`aic esv secret enable`); destroying the
-    /// version is not, and is deliberately a separate, explicit command.
+    /// On its usual path it is not expected to change the signer — `stage`
+    /// already cut signing over, and this retires the other certificate. The
+    /// exception is `--retain` naming the older certificate, which disables
+    /// the signing version and so moves signing back; the plan says which.
+    /// What it ends is the two-certificate export a peer that refreshes
+    /// metadata catches up from. Disabling is reversible (`aic esv secret
+    /// enable`); destroying the version is not, and is deliberately a
+    /// separate, explicit command.
     Complete {
         /// The entity ID, exactly as the tenant stores it.
         entity_id: String,
@@ -192,6 +207,7 @@ pub async fn run(command: RotateCommand) -> Result<()> {
             tenant,
             dry_run,
             yes,
+            force,
         } => {
             init(
                 tenant,
@@ -205,6 +221,7 @@ pub async fn run(command: RotateCommand) -> Result<()> {
                 description.as_deref(),
                 dry_run,
                 yes,
+                force,
             )
             .await
         }
@@ -218,6 +235,7 @@ pub async fn run(command: RotateCommand) -> Result<()> {
             tenant,
             dry_run,
             yes,
+            force,
         } => {
             let key = read_key_pair(key_file.as_deref(), key_stdin)?.ok_or_else(|| {
                 Error::Config(
@@ -227,7 +245,10 @@ pub async fn run(command: RotateCommand) -> Result<()> {
                         .into(),
                 )
             })?;
-            stage(tenant, realm, &entity_id, location, role, key, dry_run, yes).await
+            stage(
+                tenant, realm, &entity_id, location, role, key, dry_run, yes, force,
+            )
+            .await
         }
         RotateCommand::Complete {
             entity_id,
@@ -294,9 +315,9 @@ async fn status(
     // identifier resolves no label of its own, so there is nothing to survey
     // and the reads are not made.
     let consumers = match state.consumer() {
-        Some(mine) => Some(
-            ops::read_consumers(&tenant.name, &realm, &mine, state.mapped_alias.as_deref()).await?,
-        ),
+        Some(mine) => {
+            Some(ops::read_consumers(&tenant.name, &mine, state.mapped_alias.as_deref()).await?)
+        }
         None => None,
     };
     if json {
@@ -321,6 +342,7 @@ async fn init(
     description: Option<&str>,
     dry_run: bool,
     yes: bool,
+    force: OperationForce,
 ) -> Result<()> {
     let tenant = tenant_config_for(tenant_arg)?;
     // A mapping `PUT` is the static-content edit `aic secretmap` restricts to
@@ -357,20 +379,16 @@ async fn init(
     // happen is a plan to act on. `init` is where sharing is *created* — an
     // identifier a second entity already names, or a secret a second label
     // already maps to — so this is the cheapest place to refuse it.
+    let mine = spec::Consumer {
+        realm: realm.clone(),
+        entity_id: state.entity_id.clone(),
+        location: state.location,
+        role: state.role,
+        label: plan.label.clone(),
+    };
     let exclusive = spec::exclusive_ok(
         "init",
-        &ops::read_consumers(
-            &tenant.name,
-            &realm,
-            &spec::Consumer {
-                entity_id: state.entity_id.clone(),
-                location: state.location,
-                role: state.role,
-                label: plan.label.clone(),
-            },
-            Some(&plan.secret_id),
-        )
-        .await?,
+        &ops::read_consumers(&tenant.name, &mine, Some(&plan.secret_id)).await?,
     )?;
 
     for line in plan.lines(&state) {
@@ -404,17 +422,34 @@ async fn init(
         return Ok(());
     }
 
-    let permit = match spec::authorize_init(dry_run, &exclusive) {
+    let permit = match spec::authorize_init(dry_run, exclusive) {
         Decision::Preview => {
             eprintln!("dry run: nothing was sent");
             return Ok(());
         }
         Decision::Send(permit) => permit,
     };
+    // Same mechanism as `stage` and `complete`, for the reason given at
+    // `spec::init_ok`: completing the chain replaces the certificate.
+    let confirmed = force.operation()
+        || (prompt_available()
+            && confirm_destructive(
+                "pointing a SAML role at its own signing certificate",
+                &format!(
+                    "Replace {} with {} for {} ({})? The peer must already trust the new one.",
+                    spec::init_current(&state),
+                    spec::init_incoming(&plan),
+                    state.entity_id,
+                    spec::role_descriptor(state.role)
+                ),
+                "--force",
+            )?);
+    spec::init_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
+    let fresh = ops::exclusive_before_init(&tenant.name, &mine, &plan.secret_id).await?;
 
     if plan.set_identifier {
-        ops::set_identifier(&state, &plan.identifier, ok.confirmed_prod, &permit).await?;
+        ops::set_identifier(&state, &plan.identifier, ok.confirmed_prod, &permit, &fresh).await?;
         println!(
             "entity {entity_id} now points at secretIdIdentifier {:?} (read back and compared \
              whole)",
@@ -432,6 +467,7 @@ async fn init(
                 .unwrap_or_else(|| default_description(&state)),
             ok.confirmed_prod,
             &permit,
+            &fresh,
         )
         .await?;
         println!(
@@ -442,12 +478,12 @@ async fn init(
     if plan.map_label {
         ops::map_label(
             &tenant.name,
-            &realm,
-            &plan.label,
+            &mine,
             &plan.secret_id,
             label_mapping.as_deref(),
             ok.confirmed_prod,
             &permit,
+            &fresh,
         )
         .await?;
         println!("label {} now maps to {}", plan.label, plan.secret_id);
@@ -495,6 +531,7 @@ async fn stage(
     key: KeyPair,
     dry_run: bool,
     yes: bool,
+    force: OperationForce,
 ) -> Result<()> {
     let tenant = tenant_config_for(tenant_arg)?;
     let realm = realm_arg("saml", realm_arg_value)?;
@@ -502,26 +539,39 @@ async fn stage(
     let plan = spec::plan_stage(&state, &key)?;
     let exclusive = spec::exclusive_ok(
         "stage",
-        &ops::read_consumers(
-            &tenant.name,
-            &realm,
-            &rotating(&state),
-            Some(&plan.secret_id),
-        )
-        .await?,
+        &ops::read_consumers(&tenant.name, &rotating(&state), Some(&plan.secret_id)).await?,
     )?;
 
     for line in spec::stage_plan_lines(&state, &plan) {
         eprintln!("{line}");
     }
 
-    let permit = match spec::authorize_stage(dry_run, &exclusive) {
+    let permit = match spec::authorize_stage(dry_run, exclusive) {
         Decision::Preview => {
             eprintln!("dry run: nothing was sent");
             return Ok(());
         }
         Decision::Send(permit) => permit,
     };
+    // `complete`'s mechanism exactly, and for its reason: the refusal on a
+    // headless run comes from `spec::stage_ok`, which names the certificate
+    // and the consequence, rather than from `confirm_destructive`'s generic
+    // "pass --force".
+    let confirmed = force.operation()
+        || (prompt_available()
+            && confirm_destructive(
+                "cutting SAML signing over to a new certificate",
+                &format!(
+                    "Add certificate {} to {} and treat it as signing for {} ({}) from now? The \
+                     peer must already trust it.",
+                    plan.incoming,
+                    plan.secret_id,
+                    state.entity_id,
+                    spec::role_descriptor(state.role)
+                ),
+                "--force",
+            )?);
+    spec::stage_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
     let created = ops::add_version(
@@ -550,16 +600,6 @@ async fn stage(
         })?
         .to_string();
     println!("ESV secret {} version {version} added", plan.secret_id);
-
-    // The one ENABLED version before this one, which `plan_stage` proved
-    // there was exactly one of. Named here because it is what the recovery
-    // instruction below needs and what nothing will be able to work out once
-    // this process is gone.
-    let previous = state
-        .enabled_versions()
-        .first()
-        .map(|version| version.version.clone())
-        .unwrap_or_default();
 
     confirm_publication(&tenant, &realm, entity_id, &state, &plan.expected).await?;
     // After the export confirms it, not before: this says what the tenant is
@@ -590,8 +630,13 @@ async fn stage(
              could not write that down: {error}. **Nothing needs re-sending.** The record is \
              the only thing that ties a certificate to a version, so close the window by \
              naming both halves yourself: `aic saml rotate complete {} --realm {realm} \
-             --retain {} --disable-version {previous}`.",
-            plan.secret_id, key.sha256, state.entity_id, entity_id, key.sha256,
+             --retain {} --disable-version {}`.",
+            plan.secret_id,
+            key.sha256,
+            state.entity_id,
+            entity_id,
+            key.sha256,
+            plan.retained_version,
         ))
     })
 }
@@ -615,20 +660,14 @@ async fn complete(
     let plan = spec::plan_complete(&state, retain, disable_version)?;
     let exclusive = spec::exclusive_ok(
         "complete",
-        &ops::read_consumers(
-            &tenant.name,
-            &realm,
-            &rotating(&state),
-            Some(&plan.secret_id),
-        )
-        .await?,
+        &ops::read_consumers(&tenant.name, &rotating(&state), Some(&plan.secret_id)).await?,
     )?;
 
     for line in complete_plan_lines(&plan, &state) {
         eprintln!("{line}");
     }
 
-    let permit = match spec::authorize_complete(dry_run, &exclusive) {
+    let permit = match spec::authorize_complete(dry_run, exclusive) {
         Decision::Preview => {
             eprintln!("dry run: nothing was sent");
             return Ok(());
@@ -647,8 +686,14 @@ async fn complete(
             && confirm_destructive(
                 "closing a SAML certificate rollover",
                 &format!(
-                    "Disable version {} of {} and stop publishing the other certificate?",
-                    plan.disable_version, plan.secret_id
+                    "Disable version {} of {} and stop publishing the other certificate?{}",
+                    plan.disable_version,
+                    plan.secret_id,
+                    if plan.moves_signer {
+                        format!(" This also moves signing back to {}.", plan.retain)
+                    } else {
+                        String::new()
+                    }
                 ),
                 "--force",
             )?);
@@ -733,6 +778,20 @@ fn complete_plan_lines(plan: &CompletePlan, state: &RotationState) -> Vec<String
              survives",
             plan.retain
         ),
+    });
+    lines.push(if plan.moves_signer {
+        format!(
+            "  **this moves signing back to {}**: version {} is the newest ENABLED version, the \
+             one to treat as signing, so disabling it is a cutover like `stage` — the peer must \
+             already trust {}",
+            plan.retain, plan.disable_version, plan.retain
+        )
+    } else {
+        format!(
+            "  not expected to change what signs: version {} is not the newest ENABLED version, \
+             and the newest is the one to treat as signing",
+            plan.disable_version
+        )
     });
     lines.push("  disabling is reversible; nothing is destroyed here".to_string());
     lines
