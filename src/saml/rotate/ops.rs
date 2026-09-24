@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::config::tenant::Tenant;
 use crate::saml::metadata;
 use crate::saml::rotate::journal::{self, Key};
+use crate::saml::rotate::pem::KeyPair;
 use crate::saml::rotate::spec::{
     self, Phase, RotationState, SecretVersion, role_descriptor, signing_label,
 };
@@ -129,8 +130,9 @@ pub async fn secret_facts(tenant: &str, secret_id: &str) -> Result<Option<spec::
 /// (`docs/api/06-saml.md`) and carries no `secretIdIdentifier`, and there is
 /// no query filter for one, so the only way to learn which providers name a
 /// label family is to read them. So a survey costs `2 × realms + N` calls for
-/// a tenant with N entity providers across those realms, and a write verb
-/// pays it twice: once to plan, once in the pre-write recheck.
+/// a tenant with N entity providers across those realms, and every write verb
+/// pays it twice: once to plan, once in its pre-write recheck ([`recheck`],
+/// [`init_recheck`]).
 ///
 /// A 404 mid-survey is skipped rather than fatal: an entity deleted between
 /// the list and its read resolves nothing and consumes nothing. Any other
@@ -167,28 +169,6 @@ async fn read_realm_survey(tenant: &str, realm: &str) -> Result<spec::RealmSurve
         mappings,
         entities,
     })
-}
-
-/// Survey again, immediately before `init` writes, and mint the proof its
-/// writers require.
-///
-/// `init`'s sibling of the re-survey inside [`recheck`]. It is called once,
-/// after the confirmation prompt and the production gate and before the first
-/// of `init`'s up to three writes — the writers take the proof, and the
-/// plan-time one was consumed by [`spec::authorize_init`], so the only proof
-/// that can reach them is one minted here. Once rather than per step because
-/// the interval it closes is the human one; the steps after the first follow
-/// it within seconds, and a refusal between two of them would have to report
-/// a half-written setup as "nothing has been sent".
-pub async fn exclusive_before_init(
-    tenant: &str,
-    mine: &spec::Consumer,
-    secret_id: &str,
-) -> Result<spec::ExclusivityProof> {
-    spec::exclusive_ok(
-        "init",
-        &read_consumers(tenant, mine, Some(secret_id)).await?,
-    )
 }
 
 /// Fetch and fingerprint the entity's published certificates.
@@ -326,6 +306,126 @@ async fn poll_signing_certs(
     }
 }
 
+/// What `init`'s steps need beyond the plan and the state.
+pub struct InitInputs<'a> {
+    /// This role as a consumer of the planned label — the survey's `mine`,
+    /// and the realm and label `map_label` writes.
+    pub mine: &'a spec::Consumer,
+    /// The key pair, when the plan creates the secret.
+    pub key: Option<&'a KeyPair>,
+    pub description: &'a str,
+    /// The alias at the label when the plan was made (none, if it maps it).
+    pub planned_mapping: Option<&'a str>,
+}
+
+/// Perform `init`'s planned steps — the entity `PUT`, the secret, the mapping
+/// — after one pre-write recheck.
+///
+/// The sibling of [`add_version`] and [`disable_version`], and the same
+/// shape: the writer's first act is [`init_recheck`], which re-reads what the
+/// plan was decided from, re-surveys every realm, and mints the
+/// [`spec::ExclusivityProof`] this call holds. It runs after the prompt and
+/// the production gate and before the first write, so a refusal can only
+/// happen while nothing has been sent — which is what keeps the refusal's own
+/// "Nothing has been sent" true by construction rather than by care.
+///
+/// `report` receives one line per completed step, as it completes, so a
+/// failure in step two still leaves step one reported. This module prints
+/// nothing itself; the caller decides where the lines go.
+pub async fn apply_init(
+    tenant: &str,
+    state: &RotationState,
+    plan: &spec::InitPlan,
+    inputs: &InitInputs<'_>,
+    confirmed_prod: bool,
+    permit: &spec::InitPermit,
+    report: &mut dyn FnMut(String),
+) -> Result<()> {
+    let _fresh: spec::ExclusivityProof = init_recheck(tenant, state, plan, inputs).await?;
+
+    if plan.set_identifier {
+        set_identifier(state, &plan.identifier, confirmed_prod, permit).await?;
+        report(format!(
+            "entity {} now points at secretIdIdentifier {:?} (read back and compared whole)",
+            state.entity_id, plan.identifier
+        ));
+    }
+    if plan.create_secret {
+        let key = inputs.key.expect("plan_init requires a key to create");
+        create_key_secret(
+            tenant,
+            &plan.secret_id,
+            &key.value,
+            inputs.description,
+            confirmed_prod,
+            permit,
+        )
+        .await?;
+        report(format!(
+            "ESV secret {} created — encoding pem, useInPlaceholders false, certificate {}",
+            plan.secret_id, key.sha256
+        ));
+    }
+    if plan.map_label {
+        map_label(
+            tenant,
+            inputs.mine,
+            &plan.secret_id,
+            inputs.planned_mapping,
+            confirmed_prod,
+            permit,
+        )
+        .await?;
+        report(format!(
+            "label {} now maps to {}",
+            plan.label, plan.secret_id
+        ));
+    }
+    Ok(())
+}
+
+/// `init`'s pre-write recheck: [`recheck`]'s sibling, in the same order.
+///
+/// The cheap reads first — the entity's identifier and the label's mapping,
+/// which must still be what the plan saw ([`spec::init_pre_write_ok`] applies
+/// [`spec::identifier_write_ok`] and [`spec::mapping_write_ok`]) — and a
+/// refusal there comes before the survey, as `recheck`'s target check does.
+/// Then the tenant-wide survey, from which the proof is minted.
+///
+/// The per-step checks inside [`set_identifier`] and [`map_label`] stay: they
+/// guard the seconds between steps, this guards the prompt.
+async fn init_recheck(
+    tenant: &str,
+    state: &RotationState,
+    plan: &spec::InitPlan,
+    inputs: &InitInputs<'_>,
+) -> Result<spec::ExclusivityProof> {
+    let entity = api::read(tenant, &state.realm, state.location, &state.entity_id).await?;
+    let mapping = mapping_alias(tenant, &state.realm, &plan.label).await?;
+    spec::init_target_ok(
+        state,
+        plan,
+        inputs.planned_mapping,
+        &entity,
+        mapping.as_deref(),
+    )?;
+
+    let mut survey = Vec::new();
+    for realm in spec::SURVEYED_REALMS {
+        survey.push(read_realm_survey(tenant, realm).await?);
+    }
+    spec::init_pre_write_ok(
+        state,
+        plan,
+        inputs.planned_mapping,
+        &spec::InitRecheck {
+            entity,
+            mapping,
+            survey,
+        },
+    )
+}
+
 /// `PUT` the entity with a `secretIdIdentifier`, and prove it survived.
 ///
 /// Five steps, and the shape is `.ai/core.md` §5 applied to a family with no
@@ -347,12 +447,11 @@ async fn poll_signing_certs(
 /// step 1 carries a concurrent change through into the body verbatim, which is
 /// right for every leaf except the one this write is about — that one gets
 /// replaced, and without step 2 nothing says so.
-pub async fn set_identifier(
+async fn set_identifier(
     state: &RotationState,
     identifier: &str,
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
-    _fresh: &spec::ExclusivityProof,
 ) -> Result<Value> {
     // Taken from the state rather than passed alongside it: tenant, realm,
     // entity id, location and role are five positional arguments of which
@@ -426,14 +525,13 @@ pub async fn set_identifier(
 /// rotation restart-free. With placeholders on it reads `loaded: false`,
 /// `loadedVersion: ""`, and every later version waits for a tenant restart
 /// (`docs/api/03-esvs.md`). Neither property can be changed afterwards.
-pub async fn create_key_secret(
+async fn create_key_secret(
     tenant: &str,
     secret_id: &str,
     value: &str,
     description: &str,
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
-    _fresh: &spec::ExclusivityProof,
 ) -> Result<Value> {
     let value_base64 = encode_pem(value);
     crate::esv::api::create_secret(
@@ -455,14 +553,13 @@ pub async fn create_key_secret(
 /// call site for the reason [`set_identifier`]'s is: `set_mapping` is a `PUT`
 /// that updates as happily as it creates, so the dangerous write and the
 /// evidence that it is safe have to be in the same function.
-pub async fn map_label(
+async fn map_label(
     tenant: &str,
     mine: &spec::Consumer,
     secret_id: &str,
     planned_from: Option<&str>,
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
-    _fresh: &spec::ExclusivityProof,
 ) -> Result<Value> {
     // The realm and label are the consumer's own, so the label written is
     // the one the exclusivity proof was minted about.
