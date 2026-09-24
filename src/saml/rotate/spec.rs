@@ -588,21 +588,6 @@ pub enum InitStep {
 }
 
 impl InitStep {
-    /// Whether completing this step changes what the role resolves.
-    ///
-    /// The rule: a step changes the resolution if it rewrites a link the role
-    /// reads — the entity's `secretIdIdentifier` or the label's mapping — or
-    /// creates the secret an existing mapping already names. Creating a
-    /// secret nothing maps to yet changes nothing the role reads (the
-    /// exclusivity survey has already established no other label maps onto
-    /// it).
-    pub fn changes_resolution(self, plan: &InitPlan) -> bool {
-        match self {
-            Self::SetIdentifier | Self::MapLabel => true,
-            Self::CreateSecret => !plan.map_label,
-        }
-    }
-
     pub fn describe(self, plan: &InitPlan) -> String {
         match self {
             Self::SetIdentifier => {
@@ -640,10 +625,13 @@ pub enum WriteStatus {
     /// or the export that should show it could not be read, or showed
     /// something else. **The write landed**; what it left is unverified.
     AcceptedUnverified,
-    /// Sent, with no response this command can read as settling it — any
-    /// error status that is not a measured refusal, a transport failure, a
-    /// lost connection to the agent, or a success whose body could not be
-    /// decoded (the agent reports that last one without its status).
+    /// Attempted, and possibly sent, with no response this command can read
+    /// as settling it — any error status that is not a measured refusal, a
+    /// transport failure, a lost connection to the agent, or a success whose
+    /// body could not be decoded (the agent reports that last one without its
+    /// status). "Possibly": the transport mints its bearer before sending,
+    /// and a minting failure is an `Error::Api` indistinguishable from the
+    /// write's own, so this state cannot claim the request left.
     Unknown,
 }
 
@@ -749,7 +737,8 @@ impl WriteStatus {
                  **The write landed; this is not a no-op.**"
             ),
             Self::Unknown => format!(
-                "{what} was sent and **whether it was applied is unknown**: what came back — an \
+                "{what} was attempted and may have been sent, and **whether it was applied is \
+                 unknown**: what came back — an \
                  error status that is not a refusal measured for this endpoint, a lost \
                  connection, or a response that could not be read — does not establish \
                  either way. **Do not assume it did not land.**"
@@ -811,7 +800,6 @@ pub struct InitApplyError {
     stopped_at: String,
     status: WriteStatus,
     activating: bool,
-    resolution_changed: bool,
     total: usize,
     state: RotationState,
     source: Box<Error>,
@@ -836,7 +824,6 @@ impl InitApplyError {
                 InitStop::Recheck | InitStop::Resurvey(_) => WriteStatus::Refused,
             },
             activating,
-            resolution_changed: completed.iter().any(|step| step.changes_resolution(plan)),
             total: plan.steps().len(),
             state: state.clone(),
             source: Box::new(failure.source),
@@ -881,33 +868,21 @@ impl std::fmt::Display for InitApplyError {
                 "{done}; stopped at {}, which was not applied: {source}",
                 self.stopped_at
             ),
-            // A completed step changed what the role resolves — the entity
-            // PUT, or a secret an existing mapping names — so what it signs
-            // with now is not known from here, whether or not the chain is
-            // complete. Whether AM keeps the old signer is unmeasured.
-            WriteStatus::Refused if self.resolution_changed => write!(
+            // Any completed step ends the categorical reassurance. Each
+            // exception carved for a "harmless" step was broken by a state the
+            // survey could not rule out — a mapping made in the gap after a
+            // secret was created, say — because a survey cannot prove a link
+            // stayed as it saw it. So a partial run reports what completed,
+            // says signing is unmeasured, and requires a read.
+            WriteStatus::Refused => write!(
                 f,
-                "{done}. Then {} was not applied. A completed step changed what {} resolves, and \
-                 whether it still signs with the certificate it used before this run is not \
-                 known from here — it has not been measured. {}\n{}",
+                "{done}. Then {} was not applied. What {} resolves and signs with now is not \
+                 known from here: steps of this run completed, the tenant may have changed \
+                 around them, and whether AM keeps signing with the certificate it used before \
+                 has not been measured. {}\n{}",
                 self.stopped_at,
                 self.subject(),
                 read_before_retry("init", &self.state),
-                source.replace(
-                    NOTHING_SENT,
-                    "**That step was not sent — but the steps listed above were.**"
-                )
-            ),
-            // No completed step touched a link the role reads, and the one
-            // that stopped was not applied: the resolution is as it was.
-            WriteStatus::Refused => write!(
-                f,
-                "{done}. Then {} was not applied, so the identifier → mapping → secret chain is \
-                 not complete: {} still resolves what it did before this run and nothing has \
-                 been cut over. Re-running `aic saml rotate init` skips the steps the tenant \
-                 already shows done.\n{}",
-                self.stopped_at,
-                self.subject(),
                 source.replace(
                     NOTHING_SENT,
                     "**That step was not sent — but the steps listed above were.**"
@@ -4785,34 +4760,19 @@ mod tests {
         assert!(text.contains(NOTHING_SENT), "{text}");
     }
 
-    /// Red when `init` promises the old signer after a completed step changed
-    /// what the role resolves — or withholds the reassurance when none did.
+    /// Red when a partial `init` promises the old signer — for any completed
+    /// step, including creating a secret nothing mapped to yet.
     ///
-    /// The rule ([`InitStep::changes_resolution`]): the entity PUT and the
-    /// mapping always change it; creating the secret changes it only when an
-    /// existing mapping already names it (the dangling plan, round 7's case).
-    #[test]
-    fn only_a_run_that_left_the_resolution_alone_says_nothing_was_cut_over() {
-        let refused =
-            || WriteFailure::before_send(Error::Config(format!("refused. {NOTHING_SENT}")));
-        // Dangling plan: SetIdentifier completed, CreateSecret refused.
-        let (unconfigured, dangling) = init_plan(Some("esv-sp-a-signing"), None);
-        assert!(InitStep::SetIdentifier.changes_resolution(&dangling));
-        assert!(InitStep::CreateSecret.changes_resolution(&dangling));
-        let text = InitApplyError::new(
-            &unconfigured,
-            &dangling,
-            &[InitStep::SetIdentifier],
-            InitStop::Step(InitStep::CreateSecret),
-            refused(),
-        )
-        .to_string();
-        assert!(!text.contains("nothing has been cut over"), "{text}");
-        assert!(text.contains("has not been measured"), "{text}");
-        assert!(text.contains("Read the tenant before retrying"), "{text}");
-
-        // Identifier already set; creating an unmapped secret completed and
-        // mapping was refused: nothing the role reads moved.
+    /// The round-8 race, driven through the real loop and the real refusal:
+    /// the identifier already names the label, `CreateSecret` completes, and
+    /// another writer maps the label to an existing secret in the gap, so
+    /// `mapping_write_ok` refuses the mapping. The role's resolution *did*
+    /// change, and no survey could have proved it would not. The rule is
+    /// therefore categorical: the reassurance appears only when zero steps
+    /// completed.
+    #[tokio::test]
+    async fn a_partial_init_never_promises_the_old_signer() {
+        let (unconfigured, _) = init_plan(None, None);
         let named = RotationState {
             identifier: Some("spa".into()),
             ..unconfigured.clone()
@@ -4830,17 +4790,50 @@ mod tests {
             plan.steps(),
             vec![InitStep::CreateSecret, InitStep::MapLabel]
         );
-        assert!(!InitStep::CreateSecret.changes_resolution(&plan));
-        let text = InitApplyError::new(
+        let upfront = proof();
+        let error = run_init_steps(
             &named,
             &plan,
-            &[InitStep::CreateSecret],
-            InitStop::Step(InitStep::MapLabel),
-            refused(),
+            &upfront,
+            async |_| Ok(proof()),
+            async |step, _proof| match step {
+                InitStep::CreateSecret => Ok(String::new()),
+                InitStep::MapLabel => Err(WriteFailure::before_send(
+                    mapping_write_ok(&plan.label, &plan.secret_id, None, Some("esv-other"))
+                        .unwrap_err(),
+                )),
+                InitStep::SetIdentifier => unreachable!("not planned"),
+            },
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.completed().len(), 1);
+        assert_eq!(error.status(), WriteStatus::Refused);
+        let text = error.to_string();
+        assert!(text.starts_with("1 of 2 init steps completed"), "{text}");
+        assert!(!text.contains("nothing has been cut over"), "{text}");
+        assert!(
+            !text.contains("still resolves what it did before"),
+            "{text}"
+        );
+        assert!(!text.contains(NOTHING_SENT), "{text}");
+        assert!(text.contains("has not been measured"), "{text}");
+        assert!(text.contains("Read the tenant before retrying"), "{text}");
+        assert!(text.contains("esv-other"), "{text}");
+
+        // The dangling plan, round 7's case: the entity PUT completed.
+        let (unconfigured, dangling) = init_plan(Some("esv-sp-a-signing"), None);
+        let text = InitApplyError::new(
+            &unconfigured,
+            &dangling,
+            &[InitStep::SetIdentifier],
+            InitStop::Step(InitStep::CreateSecret),
+            WriteFailure::before_send(Error::Config(format!("refused. {NOTHING_SENT}"))),
         )
         .to_string();
-        assert!(text.contains("nothing has been cut over"), "{text}");
-        assert!(!text.contains(NOTHING_SENT), "{text}");
+        assert!(!text.contains("nothing has been cut over"), "{text}");
+        assert!(text.contains("Read the tenant before retrying"), "{text}");
     }
 
     /// Red when an error status after the send is taken as proof the write
@@ -4929,6 +4922,13 @@ mod tests {
         );
         assert!(text.contains("whether it was applied is unknown"), "{text}");
         assert!(!text.contains("nothing answered"), "{text}");
+        // Bearer minting precedes the send and fails as `Error::Api` too, so
+        // the sentence cannot claim the request left.
+        assert!(
+            text.contains("was attempted and may have been sent"),
+            "{text}"
+        );
+        assert!(!text.contains("was sent and"), "{text}");
         assert!(text.contains("could not be read"), "{text}");
     }
 
