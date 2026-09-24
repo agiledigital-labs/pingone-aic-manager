@@ -449,8 +449,9 @@ async fn init(
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
     // One call for all three steps, the way `stage` and `complete` are one
-    // call each: `apply_init` rechecks and re-surveys once, before its first
-    // write, so a refusal can only come before anything is sent.
+    // call each: `apply_init` rechecks and re-surveys before its first write,
+    // re-surveys again before the step that activates the chain, and reports
+    // what landed if it stops partway.
     let description = description
         .map(str::to_string)
         .unwrap_or_else(|| default_description(&state));
@@ -468,7 +469,8 @@ async fn init(
         &permit,
         &mut |line| println!("{line}"),
     )
-    .await?;
+    .await
+    .map_err(|error| Error::Config(error.to_string()))?;
 
     // What the tenant publishes now, not what we expect it to — and the two
     // branches differ in what "expect" can even mean. A key pair this run
