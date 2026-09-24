@@ -39,7 +39,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -260,7 +259,7 @@ pub(crate) fn load_at(file: &Path) -> Result<Vec<StagedRecord>> {
 /// protection. The lock therefore lives on [`lock_path`], whose inode nothing
 /// replaces; that file is only ever locked, never read or written. Its cost is
 /// one more name for `ProjectConfig::gitignore_content` to carry, and nothing
-/// else: an `flock` is released by the kernel when the descriptor closes, so a
+/// else: the lock (`flock` underneath) is released by the kernel when the descriptor closes, so a
 /// killed `aic` leaves a stale *file* and never a stale lock.
 pub(crate) fn update_at(file: &Path, change: impl FnOnce(&mut Vec<StagedRecord>)) -> Result<()> {
     if let Some(parent) = parent_of(file) {
@@ -277,7 +276,7 @@ pub(crate) fn update_at(file: &Path, change: impl FnOnce(&mut Vec<StagedRecord>)
         .truncate(false)
         .open(&lock_file)
         .map_err(|error| io_failure("lock", &lock_file, &error))?;
-    lock(&guard, libc::LOCK_EX, &lock_file)?;
+    lock(&guard, &lock_file)?;
 
     let mut entries = load_at(file)?;
     change(&mut entries);
@@ -359,36 +358,25 @@ fn parse(bytes: &[u8], file: &Path) -> Result<Vec<StagedRecord>> {
     })
 }
 
-/// Take a whole-file advisory lock, blocking until it is granted.
+/// Take a whole-file exclusive advisory lock, blocking until it is granted.
 ///
-/// `std::fs::File::lock` is the obvious answer and is the wrong one here: it
-/// is stable since 1.89 and this crate declares 1.85, so reaching for it would
-/// smuggle a project-wide policy change in behind a journal fix.
+/// `std::fs::File::lock`, which is `flock(LOCK_EX)` on Unix. It is stable
+/// since 1.89, and this used to be a raw `libc::flock` because the crate then
+/// declared 1.85 — a reason that went away when `rust-version` moved to the
+/// measured 1.95 (`ci.yml`'s MSRV job), so the `unsafe` block went with it.
+/// The primitive is the same one: a lock the kernel releases when the
+/// descriptor closes, which a dying process does for free. That is true
+/// wherever the lock lives, so it is **not** an argument against the sidecar
+/// in [`update_at`] — a crash there leaves a stale file, which is inert, and
+/// never a stale lock.
 ///
-/// `clippy::incompatible_msrv` does **not** cover you here, and the test module
-/// below is where that was learned: the lint is silent inside `#[cfg(test)]`
-/// code, so a `try_lock_shared` call in a test compiled green under every gate
-/// this repo ran (measured 2026-09-21 — the same call in library code warns).
-/// The MSRV job in `ci.yml` is `cargo check --all-targets` for that reason.
-///
-/// `flock` is the same primitive one layer down, and the property that matters
-/// is the kernel's: the lock is released when the descriptor closes, which a
-/// dying process does for free. That is true wherever the lock lives, so it is
-/// **not** an argument against the sidecar in [`update_at`] — a crash there
-/// leaves a stale file, which is inert, and never a stale lock. This comment
-/// used to claim otherwise, and that claim is what kept the write in place.
-///
-/// A raw syscall is the established shape for this in this binary
-/// (`src/cli/mod.rs`'s `kill`, `src/agent/client.rs`'s `setsid`), which is
-/// also why there is no `cfg(unix)` here: those two are unguarded, so the
-/// crate already builds nowhere else.
-fn lock(handle: &File, operation: i32, file: &Path) -> Result<()> {
-    // SAFETY: `handle` owns the descriptor for the whole call, and `flock`
-    // dereferences no pointer and writes no memory through one.
-    if unsafe { libc::flock(handle.as_raw_fd(), operation) } == 0 {
-        return Ok(());
-    }
-    Err(io_failure("lock", file, &std::io::Error::last_os_error()))
+/// `clippy::incompatible_msrv` is still worth distrusting for this kind of
+/// call: it is silent inside `#[cfg(test)]` code (measured 2026-09-21), which
+/// is why the MSRV job runs `cargo check --all-targets`.
+fn lock(handle: &File, file: &Path) -> Result<()> {
+    handle
+        .lock()
+        .map_err(|error| io_failure("lock", file, &error))
 }
 
 fn io_failure(verb: &str, file: &Path, error: &std::io::Error) -> Error {
@@ -734,8 +722,7 @@ mod tests {
     /// conflict a second `aic` would meet.
     fn shared_lock_available(file: &Path) -> bool {
         let handle = File::open(file).expect("open");
-        // SAFETY: as `lock`; the descriptor outlives the call.
-        unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) == 0 }
+        handle.try_lock_shared().is_ok()
     }
 
     /// `record`, but against a caller-chosen file rather than `.aic/`.

@@ -1694,15 +1694,29 @@ before anything is printed as a plan — and again inside the pre-write recheck,
 after the confirmation prompt and the production gate, because a consumer added
 while you read the prompt would otherwise be cut over and never verified. The
 write holds the proof minted by that second survey; the first is consumed by
-authorising the plan. So each of `init`, `stage` and `complete` spends
-`2 × (4 + N)` calls on the question — `init`'s three steps are one write call
-with one recheck, like its siblings.
+authorising the plan. So `stage` and `complete` spend `2 × (4 + N)` calls on
+the question. `init` can spend one survey more, `3 × (4 + N)`: it has up to
+three writes, and the one that **activates** the chain — the last planned step,
+from which the role resolves the secret; usually the mapping, or creating the
+secret when a mapping already points at it — re-surveys immediately before it
+is sent unless it is also the first step. Without that, a second entity taking
+the identifier after step one would be cut over along with this one. This
+narrows the race to one round trip; it cannot make it atomic, because no REST
+read followed by a write can.
 
 The survey is **tenant-wide over the realms this tool addresses**, and a survey
 that skipped one is refused rather than trusted. What it still cannot see is
 the **root** realm: AIC answers 403 for every root realm-config family measured
 so far, but whether root can hold a SAML entity provider or a secret mapping
-has not been measured, and every sharing report says so.
+has not been measured, and every sharing report says so — every refusal, and
+`status` in text and in `--json` alike, whether or not anything is shared.
+
+**`rotate status --json` changed shape** when the survey became tenant-wide:
+`sharing.unclaimedLabels` is now an array of `{realm, label}` objects (it was
+an array of label strings), each `sharing.others[]` entry gained `realm`, and
+`sharing` gained `realms` (what was surveyed) and `unsurveyedRealms`. A
+consumer of the old shape has to be updated; nothing in this repository was
+one.
 
 #### What `status` cannot tell you
 
@@ -1789,9 +1803,10 @@ version is the latest — and AIC will not disable the latest version
 (`400 Cannot disable latest secret version`). There is no flag for that: stage
 the key pair you want to keep as a new version and complete that rollover
 instead. Where it *is* reachable — a DISABLED spare version above the staged
-one — that `complete` disables the version to treat as signing, so it **moves
-signing back** to the retained certificate: a cutover with `stage`'s peer
-precondition, and the plan and the prompt say so.
+one — that `complete` disables the version to treat as signing, so **treat it
+as a signer cutover** back to the retained certificate, with `stage`'s peer
+precondition. That is a prediction from the rule, never measured on either
+role, and the plan and the prompt say so in that form.
 
 What the export cannot do is **attribute**. It says what is published; which of
 two published keys the runtime picks follows from the rule above — the newest
@@ -1822,10 +1837,16 @@ resolve to the ESV secret the plan named; and then the secret's ENABLED
 versions and this role's published certificates, which must still be the ones
 the plan was decided from — and between the two, they **re-survey every realm**
 for other consumers of the secret (above). `init` does the same in the same
-order, once, before the first of its three steps: the `secretIdIdentifier` and
-the label's mapping must still be what the plan saw, then the re-survey — and
-each step re-reads its own document again before overwriting it. Every one of
-those refusals before the first step sends nothing, and the remedy is `aic saml rotate status` followed by a re-run.
+order before the first of its three steps — the `secretIdIdentifier` and the
+label's mapping must still be what the plan saw, then the re-survey — surveys
+again before its activating step (above), and each step re-reads its own
+document before overwriting it. A refusal before the first step sends nothing.
+A refusal or failure **after** a step has landed is reported the way `.ai/core.md`
+§5 says a batch that stops partway must be: it names the steps that landed
+(`2 of 3 init steps landed — …`), says they were sent and not undone, and does
+not claim that nothing was sent. Either way the remedy is
+`aic saml rotate status` followed by a re-run, which skips the steps the tenant
+already shows done.
 
 The first two are not a formality, and leaving them out was a real gap.
 Published metadata carries no secret and no version attribution at all, so

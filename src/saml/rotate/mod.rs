@@ -44,7 +44,7 @@
 //!   certificate and, on its usual path — the newest ENABLED version being the
 //!   one kept — is **not expected to change the signer**. `--retain` naming the
 //!   older certificate is the exception: it disables the signing version and
-//!   moves signing back, and the plan says so. Separate from `stage`
+//!   is treated as a signer cutover back, and the plan says so. Separate from `stage`
 //!   because AIC refuses to disable the latest version (`400 Cannot disable
 //!   latest secret version`), so what can be retired is the old one — and
 //!   because the interval in between is the catch-up, which is a human
