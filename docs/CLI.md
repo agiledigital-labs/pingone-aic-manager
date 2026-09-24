@@ -1853,13 +1853,24 @@ The step that stopped the run is reported separately, in one of three states,
 because "it failed" is two different claims:
 
 - **not applied** — refused before it was sent (a recheck, the production
-  gate), or answered with a `4xx`. Only here does `init` say the chain is
-  incomplete and nothing has been cut over.
+  gate, a locked agent), or answered with a refusal **measured** for that
+  endpoint: `400 "Failed to create secret, the secret already exists"` for the
+  secret create, `400 "Cannot disable latest secret version"` for the disable
+  (`docs/api/03-esvs.md`). No status class earns this on its own — a `408` or a
+  `409` is **unknown**, and the client follows redirects, so the status seen
+  need not answer the write that was sent. `init` says nothing has been cut
+  over only when, in addition, **no completed step changed what the role
+  resolves**: the entity `PUT` and the mapping always do, and creating the
+  secret does when an existing mapping already names it. After such a step it
+  names what completed and says to read the tenant, because whether AM keeps
+  the old signer is unmeasured.
 - **accepted but not verified** — the tenant answered success and proving what
   it left then failed: the entity read-back, the export, the response's version
   number. The write landed.
-- **outcome unknown** — sent, with no answer that says either way: a transport
-  failure, a lost or unreadable response, a `5xx`.
+- **outcome unknown** — sent, and what came back does not settle it: any error
+  status that is not a measured refusal, a transport failure, a lost agent
+  connection, or a success whose body could not be decoded (the agent reports
+  that one without its status).
 
 For the last two the message says to read the tenant before retrying, makes no
 claim about the chain, and — when the step was the activating one — says to
