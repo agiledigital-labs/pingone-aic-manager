@@ -377,16 +377,19 @@ no such field anywhere in the entity schema.
 
 - One ENABLED version → **one** signing `KeyDescriptor`, carrying that version's
   certificate. Mapping a label replaces the default certificate; it does not add
-  to it.
+  to it — which makes `rotate init` a certificate change as well, with no
+  two-certificate catch-up at all, and is why it confirms the way `stage` does.
 - Add a second version (`POST /environment/secrets/{id}/versions?_action=create`,
   or `aic esv secret add-version`) and the export carries **two** signing
   `KeyDescriptor`s — **the active (newest ENABLED) version first, the older one
-  second**. That first one is also the one AM **signs** with, from the next
-  request onwards: adding a version is a signing **cutover**, not a window in
-  which to prepare for one (measured 2026-09-22, SP AuthnRequest path — see
-  "Verified against"). The two-certificate export still earns its keep — it is
+  second**. On the SP AuthnRequest-signing path that first one was also the one
+  AM **signed** with, by the first observation — no later than 12 s after the
+  version was added (measured 2026-09-22 — see "Verified against"). IdP
+  assertion signing is unmeasured and is assumed to behave the same. So treat
+  adding a version as a signing **cutover**, not a window in which to prepare
+  for one. The two-certificate export still earns its keep — it is
   what lets a peer that refreshes metadata catch up *afterwards*, and what makes
-  a rollback readable — but the peer has to be given the new certificate
+  a restoration readable — but the peer has to be given the new certificate
   **before** the version is added, not after.
 - Disable the old version (`aic esv secret disable <id> <v>`) and the export
   drops back to one. The published set tracks the ENABLED versions, in both
@@ -395,7 +398,7 @@ no such field anywhere in the entity schema.
   its own label.
 
 So the rollover is: hand the peer the new certificate and have them trust it →
-add a version (**signing cuts over here**) → re-export → disable (then destroy)
+add a version (**treat signing as cutting over here**) → re-export → disable (then destroy)
 the old version → re-export. The re-export in the middle is still worth handing
 over, because a peer that auto-refreshes metadata recovers from it; it is a
 catch-up, not the safety step.
@@ -410,19 +413,38 @@ AM emits **no `<ds:KeyName>`** in either `KeyDescriptor`, so a peer holding
 two-certificate metadata can only tell them apart by the certificates
 themselves.
 
-### There is no un-stage; the rollback is another version
+### There is no un-stage; emergency signer restoration is another version
 
 Disabling the version you just added is refused:
 `POST /environment/secrets/{id}/versions/{n}?_action=disable` on the **latest**
 version answers `400 Cannot disable latest secret version`, which
 `aic esv secret disable` surfaces verbatim. The obvious undo does not exist.
 
-The undo that works is to **re-add the previous key pair as a newer version**.
-Signing follows version recency, so a fresh version holding the old key pair
-puts the old certificate back in front — measured 2026-09-22 at ~7 s from
-`add-version` to the signature changing back, and it destroys nothing. The
-unwanted version stays enabled and can be disabled once it is no longer the
-latest.
+What works is **emergency signer restoration**: re-add the previous key pair as
+a newer version. On the measured SP path the signer followed the newest ENABLED
+version, so a fresh version holding the old key pair put the old certificate
+back in front — measured 2026-09-22 at ~7 s from `add-version` to the signature
+changing back — and it destroys nothing. Two things about it are easy to miss:
+
+- **It needs the old private key**, not only the old certificate. The version's
+  value is the key pair, and ESV secret values are write-only, so a pair that
+  was not kept cannot be read back out of the tenant. Without it there is no
+  restoration, only a fresh rollover to a third key.
+- **It is half of the way back.** Run straight after `stage`, it leaves three
+  ENABLED versions — the one that was in service (`v1 = A`), the staged one
+  (`v2 = B`) and the restored copy (`v3 = A`). `aic saml rotate` treats that
+  like every other state it did not produce: `inconsistent`, nothing automatic,
+  and `complete` refuses it. Settle it by hand by disabling the two superseded
+  versions, both of which are allowed because neither is the latest any more —
+  `aic esv secret disable <id> 2` and `aic esv secret disable <id> 1` — which
+  leaves `v3 = A` alone and the role `settled` again. The measured restoration
+  started from the completed state (`v2 = B` alone), so which certificate signs
+  *during* the three-version state was not observed; the newest ENABLED version
+  is `v3 = A`, which is the one expected.
+
+`rotate stage` prints this whole path — restoration, the private-key
+requirement and the two disables, with the version numbers — before it asks
+for confirmation and again once the stage has landed.
 
 ### Propagation: no restart, no cache flush, seconds
 
@@ -1104,9 +1126,10 @@ behind.
   first) is the only evidence here, and ordering is not proof. Settling it needs
   a live federation: sign an AuthnRequest or an assertion and read the
   certificate out of the `<ds:Signature>`.
-- **Settled since**, by the 2026-09-22 pass below, which did exactly that: the
-  newest ENABLED version signs, and it is the one listed first. This pass's
-  reading of the order was right, for a reason this pass could not see.
+- **Settled since** for the SP path, by the 2026-09-22 pass below, which did
+  exactly that: the newest ENABLED version signed, and it was the one listed
+  first — the two were not separated. This pass's reading of the order was
+  right, for a reason this pass could not see.
 
 ### 2026-09-22 — which published certificate AM signs with, sandbox `alpha`
 
@@ -1144,27 +1167,37 @@ behind.
 | after `rotate complete --force`           | v2 = B           | B            | **B**      |
 | rollback probe: cert A re-added as v3     | v2 = B, v3 = A   | A, B         | **A**      |
 
-- **AM signs with the newest ENABLED ESV secret version**, and the change is in
-  effect by the next request: the first post-stage reading was ~12 s after
-  `add-version` returned, and the reading 3 min 51 s later was identical. The
-  cutover is immediate *and* stable — neither transient nor delayed.
+- **On this path AM signed with the newest ENABLED ESV secret version**, and
+  the change was in effect by the first observation: the first post-stage
+  reading was ~12 s after `add-version` returned, so the bound is **≤12 s** —
+  nothing sampled the interval before it — and the reading 3 min 51 s later was
+  identical. The cutover was prompt *and* stable, neither transient nor
+  delayed. (Wording narrowed 2026-09-24 to what the rounds show — it used to
+  say "by the next request", which nothing measured. No new calls.)
 - **So `stage` is the breaking moment, not `complete`.** A peer that does not
-  already trust the new certificate fails from the instant the version exists —
-  before it could possibly have loaded a certificate that did not exist until
-  then. The pre-trust step belongs *before* `stage`, which is why
+  already trust the new certificate fails within seconds of the version
+  existing — before it could possibly have loaded a certificate that did not
+  exist until then. The pre-trust step belongs *before* `stage`, which is why
   `rotate stage --key-file` takes the operator's own key pair.
 - **The rollback round is what makes this a rule about versions.** Certificate A
   is the *older* certificate by `notBefore`, and it won again when re-added as
   v3. The signer is not a property of the certificate.
-- **`complete` does not change the signer.** It only stops publishing the
-  retired certificate; the cutover already happened at `stage`.
+- **The measured `complete` did not change the signer.** It retired the
+  certificate that was not signing (v1 = A, keeping B); the cutover had already
+  happened at `stage`. A `complete` that keeps the *older* certificate disables
+  the signing version instead — not exercised here, and expected to move
+  signing back, which is why `rotate complete` says so in its plan when it
+  would.
 - **The export order is a true indicator.** The first-listed (newest ENABLED)
   certificate was the signer in all five rounds. That is what lets
   `aic saml rotate status` name the active certificate; it still says nothing
   about which *version* holds which certificate, which remains unreadable.
 - **You cannot un-stage by disabling.** `aic esv secret disable <id> <latest>`
-  is `400 Cannot disable latest secret version`. The rollback that works is
-  re-adding the old key pair as a newer version: ~7 s, and it destroys nothing.
+  is `400 Cannot disable latest secret version`. What works is emergency signer
+  restoration — re-adding the old key pair, private key included, as a newer
+  version: ~7 s, and it destroys nothing. That round started from the completed
+  state; run straight after `stage` it leaves three ENABLED versions (see
+  "There is no un-stage" above).
 - `aic esv secret versions` reported `LOADED false` for the very versions that
   were demonstrably signing, so that column does not mean "in use".
 - **What five rounds do not separate.** The newest ENABLED version is *also*
@@ -1217,23 +1250,24 @@ from exactly this reading and was wrong.
   path is a second `PUT` on the CoT — which is the call that can 500 half-way.
   There may be a console-only flow that does both atomically.
 - **Which of the two published certificates does AM sign with** during a
-  rollover? **Answered 2026-09-22** (see that session): the **newest ENABLED ESV
-  secret version**, which is the one the export lists first — the first-listed
-  certificate was the signer in all five rounds, and that is what lets
-  `rotate status` name the active certificate truthfully. The consequence is
-  that adding a version cuts signing over immediately, so the two-certificate
-  export is a catch-up window rather than a pre-trust one. Measured on the **SP
-  AuthnRequest-signing path only**; the IdP assertion-signing path resolves
-  through the same secret label and is very likely the same, but it was not
-  exercised.
+  rollover? **Answered for the SP path 2026-09-22** (see that session): the
+  **newest ENABLED ESV secret version**, which was also the one the export
+  lists first — the first-listed certificate was the signer in all five rounds,
+  so recency and order were not separated. The consequence is that adding a
+  version cut signing over by the first observation (≤12 s), so the
+  two-certificate export is a catch-up window rather than a pre-trust one.
+  Measured on the **SP AuthnRequest-signing path only**. The IdP
+  assertion-signing path resolves through the same secret label and plausibly
+  behaves the same, but it was not exercised: `aic saml rotate` treats an
+  immediate IdP cutover as a safety assumption, not as an observation.
 - **Does a peer reliably accept two-certificate metadata?** AM publishes both
   with no `<ds:KeyName>` to tell them apart, so the peer has to try both. Ping
   and Entra do; a hand-rolled SP may not. This is a property of the peer, not of
   AIC. Since 2026-09-22 it is no longer what decides whether a rollover is safe
-  — signing cuts over the moment the version is added, so that is decided by
-  whether the peer trusts the new certificate beforehand — but it still decides
-  whether a metadata-refreshing peer can recover on its own, and whether the
-  rollback-by-newer-version path is visible to it.
+  — signing is to be treated as cutting over when the version is added, so that
+  is decided by whether the peer trusts the new certificate beforehand — but it
+  still decides whether a metadata-refreshing peer can recover on its own, and
+  whether emergency signer restoration is visible to it.
 - **Is `mtls` on a SAML entity ever used on AIC?** The third label appears
   alongside `signing` and `encryption` whenever `secretIdIdentifier` is set, and
   `excludeClientCertificate` exists to keep it out of the metadata, but nothing
