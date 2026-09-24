@@ -556,7 +556,7 @@ async fn set_identifier(
         _permit,
     )
     .await
-    .map_err(spec::WriteFailure::from_send)?;
+    .map_err(|error| spec::WriteFailure::from_send(error, &[]))?;
     // The write is already gone. An error from here on is an error about the
     // *proof*, and it has to say which: an operator who reads "failed" and
     // re-runs to be sure is acting on the belief that nothing changed, and on
@@ -627,7 +627,7 @@ async fn create_key_secret(
         confirmed_prod,
     )
     .await
-    .map_err(spec::WriteFailure::from_send)
+    .map_err(|error| spec::WriteFailure::from_send(error, &[spec::SECRET_ALREADY_EXISTS]))
 }
 
 /// Point the signing label at the ESV secret, having checked it is still free.
@@ -656,7 +656,7 @@ async fn map_label(
         .map_err(spec::WriteFailure::before_send)?;
     crate::secretmap::api::set_mapping(tenant, realm, label, secret_id, confirmed_prod)
         .await
-        .map_err(spec::WriteFailure::from_send)
+        .map_err(|error| spec::WriteFailure::from_send(error, &[]))
 }
 
 /// Add the second key pair as a new ESV secret version.
@@ -701,7 +701,7 @@ async fn send_version(
         confirmed_prod,
     )
     .await
-    .map_err(spec::WriteFailure::from_send)
+    .map_err(|error| spec::WriteFailure::from_send(error, &[]))
 }
 
 /// Disable the old version, closing the window.
@@ -746,7 +746,7 @@ async fn send_disable(
         confirmed_prod,
     )
     .await
-    .map_err(spec::WriteFailure::from_send)
+    .map_err(|error| spec::WriteFailure::from_send(error, &[spec::CANNOT_DISABLE_LATEST]))
 }
 
 /// Read the rollover's inputs again, re-survey its consumers, and compare
