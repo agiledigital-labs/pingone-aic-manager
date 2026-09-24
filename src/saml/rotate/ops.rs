@@ -334,9 +334,18 @@ pub struct InitInputs<'a> {
 /// That narrows the race to one round trip; it cannot make it atomic — no
 /// REST read followed by a write can.
 ///
+/// The loop itself is [`spec::run_init_steps`], handed the two tenant calls
+/// as callbacks so a test can drive the ordering; this function is only the
+/// up-front recheck and the wiring. Every writer a step calls takes the
+/// [`spec::ExclusivityProof`] it is holding, as `stage`'s and `complete`'s
+/// do — which guards against a writer being reached with the check left
+/// out, and says nothing about the survey being atomic or still current.
+///
 /// A stop partway is an [`spec::InitApplyError`] naming the steps that
-/// landed, `.ai/core.md` §5's batch rule. `report` still receives one line
-/// per completed step as it completes; this module prints nothing itself.
+/// completed, `.ai/core.md` §5's batch rule, plus what is known about the
+/// step that stopped — refused, accepted but unverified, or unknown
+/// ([`spec::WriteStatus`]). `report` still receives one line per completed
+/// step as it completes; this module prints nothing itself.
 pub async fn apply_init(
     tenant: &str,
     state: &RotationState,
@@ -346,40 +355,42 @@ pub async fn apply_init(
     permit: &spec::InitPermit,
     report: &mut dyn FnMut(String),
 ) -> std::result::Result<(), spec::InitApplyError> {
-    let stop = |landed: &[spec::InitStep], failed: String, error: Error| {
-        spec::InitApplyError::new(state, plan, landed, failed, error)
-    };
     let upfront = init_recheck(tenant, state, plan, inputs)
         .await
-        .map_err(|error| stop(&[], "the pre-write recheck".to_string(), error))?;
-
-    let mut landed = Vec::new();
-    for step in plan.steps() {
-        let activation;
-        let _proof: &spec::ExclusivityProof = if plan.resurveys_before(step) {
-            activation = activation_recheck(tenant, state, plan)
-                .await
-                .map_err(|error| {
-                    stop(
-                        &landed,
-                        format!("the re-survey before {}", step.describe(plan)),
-                        error,
-                    )
-                })?;
-            &activation
-        } else {
-            &upfront
-        };
-        let line = run_step(tenant, state, plan, inputs, step, confirmed_prod, permit)
+        .map_err(|error| {
+            spec::InitApplyError::new(
+                state,
+                plan,
+                &[],
+                spec::InitStop::Recheck,
+                spec::WriteFailure::before_send(error),
+            )
+        })?;
+    spec::run_init_steps(
+        state,
+        plan,
+        &upfront,
+        async |_step| activation_recheck(tenant, state, plan).await,
+        async |step, proof| {
+            run_step(
+                tenant,
+                state,
+                plan,
+                inputs,
+                step,
+                confirmed_prod,
+                permit,
+                proof,
+            )
             .await
-            .map_err(|error| stop(&landed, step.describe(plan), error))?;
-        report(line);
-        landed.push(step);
-    }
-    Ok(())
+        },
+        report,
+    )
+    .await
 }
 
 /// Send one of `init`'s steps and say what it did.
+#[allow(clippy::too_many_arguments)]
 async fn run_step(
     tenant: &str,
     state: &RotationState,
@@ -388,10 +399,11 @@ async fn run_step(
     step: spec::InitStep,
     confirmed_prod: bool,
     permit: &spec::InitPermit,
-) -> Result<String> {
+    proof: &spec::ExclusivityProof,
+) -> std::result::Result<String, spec::WriteFailure> {
     match step {
         spec::InitStep::SetIdentifier => {
-            set_identifier(state, &plan.identifier, confirmed_prod, permit).await?;
+            set_identifier(state, &plan.identifier, confirmed_prod, permit, proof).await?;
             Ok(format!(
                 "entity {} now points at secretIdIdentifier {:?} (read back and compared whole)",
                 state.entity_id, plan.identifier
@@ -406,6 +418,7 @@ async fn run_step(
                 inputs.description,
                 confirmed_prod,
                 permit,
+                proof,
             )
             .await?;
             Ok(format!(
@@ -421,6 +434,7 @@ async fn run_step(
                 inputs.planned_mapping,
                 confirmed_prod,
                 permit,
+                proof,
             )
             .await?;
             Ok(format!(
@@ -513,7 +527,8 @@ async fn set_identifier(
     identifier: &str,
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
-) -> Result<Value> {
+    _proof: &spec::ExclusivityProof,
+) -> std::result::Result<Value, spec::WriteFailure> {
     // Taken from the state rather than passed alongside it: tenant, realm,
     // entity id, location and role are five positional arguments of which
     // three are `&str`, and a transposed pair would `PUT` a full replace at
@@ -524,9 +539,13 @@ async fn set_identifier(
         state.entity_id.as_str(),
     );
     let (location, role) = (state.location, state.role);
-    let before = api::read(tenant, realm, location, entity_id).await?;
-    spec::identifier_write_ok(state.identifier.as_deref(), &before, role)?;
-    let intended = spec::set_secret_identifier(&before, location, role, identifier)?;
+    let before = api::read(tenant, realm, location, entity_id)
+        .await
+        .map_err(spec::WriteFailure::before_send)?;
+    spec::identifier_write_ok(state.identifier.as_deref(), &before, role)
+        .map_err(spec::WriteFailure::before_send)?;
+    let intended = spec::set_secret_identifier(&before, location, role, identifier)
+        .map_err(spec::WriteFailure::before_send)?;
     api::update_entity(
         tenant,
         realm,
@@ -536,7 +555,8 @@ async fn set_identifier(
         confirmed_prod,
         _permit,
     )
-    .await?;
+    .await
+    .map_err(spec::WriteFailure::from_send)?;
     // The write is already gone. An error from here on is an error about the
     // *proof*, and it has to say which: an operator who reads "failed" and
     // re-runs to be sure is acting on the belief that nothing changed, and on
@@ -553,13 +573,14 @@ async fn set_identifier(
                  secret until the identifier is right. Re-running `aic saml rotate init` is \
                  safe — it skips a step the tenant already shows done."
             ))
-        })?;
+        })
+        .map_err(spec::WriteFailure::unverified)?;
 
     let differences = spec::entity_write_differences(&intended, &after);
     if differences.is_empty() {
         return Ok(after);
     }
-    Err(Error::Config(format!(
+    Err(spec::WriteFailure::unverified(Error::Config(format!(
         "the entity `PUT` returned success but {}/{realm}/{entity_id} does not match what was \
          sent — {} differ(s). An entity `PUT` is a full replace with no `If-Match`, so a body \
          AM reshaped leaves the entity in whatever state it chose; read it with \
@@ -567,7 +588,7 @@ async fn set_identifier(
          not create the ESV secret until it is right.",
         tenant,
         differences.join(", ")
-    )))
+    ))))
 }
 
 /// Create the `pem` ESV secret that will hold the key pairs.
@@ -593,7 +614,8 @@ async fn create_key_secret(
     description: &str,
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
-) -> Result<Value> {
+    _proof: &spec::ExclusivityProof,
+) -> std::result::Result<Value, spec::WriteFailure> {
     let value_base64 = encode_pem(value);
     crate::esv::api::create_secret(
         tenant,
@@ -605,6 +627,7 @@ async fn create_key_secret(
         confirmed_prod,
     )
     .await
+    .map_err(spec::WriteFailure::from_send)
 }
 
 /// Point the signing label at the ESV secret, having checked it is still free.
@@ -621,13 +644,19 @@ async fn map_label(
     planned_from: Option<&str>,
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
-) -> Result<Value> {
+    _proof: &spec::ExclusivityProof,
+) -> std::result::Result<Value, spec::WriteFailure> {
     // The realm and label are the consumer's own, so the label written is
     // the one the exclusivity proof was minted about.
     let (realm, label) = (mine.realm.as_str(), mine.label.as_str());
-    let fresh = mapping_alias(tenant, realm, label).await?;
-    spec::mapping_write_ok(label, secret_id, planned_from, fresh.as_deref())?;
-    crate::secretmap::api::set_mapping(tenant, realm, label, secret_id, confirmed_prod).await
+    let fresh = mapping_alias(tenant, realm, label)
+        .await
+        .map_err(spec::WriteFailure::before_send)?;
+    spec::mapping_write_ok(label, secret_id, planned_from, fresh.as_deref())
+        .map_err(spec::WriteFailure::before_send)?;
+    crate::secretmap::api::set_mapping(tenant, realm, label, secret_id, confirmed_prod)
+        .await
+        .map_err(spec::WriteFailure::from_send)
 }
 
 /// Add the second key pair as a new ESV secret version.
@@ -639,23 +668,40 @@ async fn map_label(
 /// Rechecks the plan's inputs first ([`recheck`]); a second version added in
 /// the gap makes this the third certificate rather than the second, which is
 /// the `Inconsistent` phase every later verb refuses from.
+///
+/// The proof the recheck mints is passed to the writer, which requires one.
+/// A failure says which side of the send it is on ([`spec::WriteFailure`]).
 pub async fn add_version(
     tenant: &Tenant,
     state: &RotationState,
     plan: &spec::StagePlan,
     value: &str,
     confirmed_prod: bool,
+    permit: &spec::StagePermit,
+) -> std::result::Result<Value, spec::WriteFailure> {
+    let fresh = recheck(tenant, state, "stage", &plan.secret_id)
+        .await
+        .map_err(spec::WriteFailure::before_send)?;
+    send_version(tenant, plan, value, confirmed_prod, permit, &fresh).await
+}
+
+/// `stage`'s write: holds the permit and the proof the recheck minted.
+async fn send_version(
+    tenant: &Tenant,
+    plan: &spec::StagePlan,
+    value: &str,
+    confirmed_prod: bool,
     _permit: &spec::StagePermit,
-) -> Result<Value> {
-    let _fresh: spec::ExclusivityProof = recheck(tenant, state, "stage", &plan.secret_id).await?;
-    let value_base64 = encode_pem(value);
+    _proof: &spec::ExclusivityProof,
+) -> std::result::Result<Value, spec::WriteFailure> {
     crate::esv::api::create_secret_version(
         &tenant.name,
         &plan.secret_id,
-        &value_base64,
+        &encode_pem(value),
         confirmed_prod,
     )
     .await
+    .map_err(spec::WriteFailure::from_send)
 }
 
 /// Disable the old version, closing the window.
@@ -668,15 +714,30 @@ pub async fn add_version(
 /// plan is made, the operator is asked to confirm at a terminal — a human
 /// interval by design — and only then is a version disabled **by number**.
 /// Whatever moved in between, the number still resolves.
+///
+/// The proof the recheck mints is passed to the writer, which requires one.
+/// A failure says which side of the send it is on ([`spec::WriteFailure`]).
 pub async fn disable_version(
     tenant: &Tenant,
     state: &RotationState,
     plan: &spec::CompletePlan,
     confirmed_prod: bool,
+    permit: &spec::CompletePermit,
+) -> std::result::Result<Value, spec::WriteFailure> {
+    let fresh = recheck(tenant, state, "complete", &plan.secret_id)
+        .await
+        .map_err(spec::WriteFailure::before_send)?;
+    send_disable(tenant, plan, confirmed_prod, permit, &fresh).await
+}
+
+/// `complete`'s write: holds the permit and the proof the recheck minted.
+async fn send_disable(
+    tenant: &Tenant,
+    plan: &spec::CompletePlan,
+    confirmed_prod: bool,
     _permit: &spec::CompletePermit,
-) -> Result<Value> {
-    let _fresh: spec::ExclusivityProof =
-        recheck(tenant, state, "complete", &plan.secret_id).await?;
+    _proof: &spec::ExclusivityProof,
+) -> std::result::Result<Value, spec::WriteFailure> {
     crate::esv::api::change_version_status(
         &tenant.name,
         &plan.secret_id,
@@ -685,6 +746,7 @@ pub async fn disable_version(
         confirmed_prod,
     )
     .await
+    .map_err(spec::WriteFailure::from_send)
 }
 
 /// Read the rollover's inputs again, re-survey its consumers, and compare
