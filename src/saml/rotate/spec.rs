@@ -1644,9 +1644,11 @@ pub struct CompletePlan {
     /// the one [`SIGNER_RULE`] says to treat as signing. `complete` usually
     /// retires the other version and is not expected to change the signer; keeping the older
     /// certificate (`--retain` naming it, reachable when a DISABLED spare
-    /// sits above the staged version) disables the signing one, and that is a
-    /// cutover back to the retained certificate, with the same peer
-    /// precondition as `stage`.
+    /// sits above the staged version) disables the one to treat as signing,
+    /// so it is **treated as** a cutover back to the retained certificate,
+    /// with the same peer precondition as `stage`. Never measured on either
+    /// role: the 2026-09-22 rounds did not exercise it, so this is the same
+    /// conservative form `init` uses, not an observation.
     pub moves_signer: bool,
 }
 
@@ -2035,8 +2037,8 @@ pub fn complete_ok(forced: bool, plan: &CompletePlan, state: &RotationState) -> 
     let signer = if plan.moves_signer {
         format!(
             " And version {} is the newest ENABLED version — the one to treat as signing — so \
-             this also moves signing back to {}: a peer that does not trust {} starts rejecting \
-             this role's signatures.",
+             treat this as a signer cutover back to {} (expected, never measured on either \
+             role): a peer that does not trust {} would start rejecting this role's signatures.",
             plan.disable_version, plan.retain, plan.retain
         )
     } else {
@@ -2216,7 +2218,7 @@ not separated. IdP assertion signing is unmeasured; assume the same. So treat tw
 certificates as meaning the cutover has already happened: the newer one is in use, and the older
 one is published only so a peer that refreshes metadata can catch up. Retiring that older one — what
 `complete` normally does — is not expected to change what signs; `--retain` naming the older
-certificate is the exception, and moves signing back to it.";
+certificate is the exception, and is to be treated as moving signing back to it.";
 
 /// The sentence every two-certificate report carries.
 pub const PAIRING_CAVEAT: &str = "\
@@ -2395,7 +2397,10 @@ pub fn status_lines(
         lines.push(String::new());
         lines.push(PAIRING_CAVEAT.to_string());
     }
-    if consumers.is_some_and(|consumers| !consumers.exclusive()) {
+    // Whenever a survey was made, exclusive or not — the JSON report carries
+    // it the same way. "Nothing else in realms alpha, bravo" is exactly the
+    // sentence that needs the root-realm gap next to it.
+    if consumers.is_some() {
         lines.push(String::new());
         lines.push(SHARING_CAVEAT.to_string());
     }
@@ -3434,7 +3439,7 @@ mod tests {
         assert!(plan.moves_signer);
         let refusal = message(complete_ok(false, &plan, &with_spare).unwrap_err());
         assert!(
-            refusal.contains(&format!("moves signing back to {OLD}")),
+            refusal.contains(&format!("treat this as a signer cutover back to {OLD}")),
             "{refusal}"
         );
     }
@@ -3647,7 +3652,7 @@ mod tests {
         assert!(refusal.contains("--force"), "{refusal}");
         // The usual completion retires the version that is not signing.
         assert!(!plan.moves_signer);
-        assert!(!refusal.contains("moves signing back"), "{refusal}");
+        assert!(!refusal.contains("signer cutover back"), "{refusal}");
     }
 
     // -----------------------------------------------------------------
@@ -3848,7 +3853,14 @@ mod tests {
             alone.contains("nothing else in realms alpha, bravo resolves esv-sp-a-signing"),
             "{alone}"
         );
-        assert!(!alone.contains(SHARING_CAVEAT), "{alone}");
+        // An exclusive survey still carries the root-realm caveat, as the
+        // JSON report does: "nothing else in alpha, bravo" is the claim it
+        // qualifies.
+        assert!(alone.contains(SHARING_CAVEAT), "{alone}");
+        assert_eq!(
+            status_json(&state(), &phase(&state()), Some(&exclusive_survey()))["sharing"]["caveat"],
+            SHARING_CAVEAT
+        );
 
         let json = status_json(&state(), &phase(&state()), Some(&shared));
         assert_eq!(json["sharing"]["exclusive"], false);
