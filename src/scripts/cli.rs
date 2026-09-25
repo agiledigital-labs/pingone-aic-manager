@@ -2062,7 +2062,10 @@ fn recreate_unavailable_reason(
     candidate: &script::sync::Candidate,
 ) -> Option<String> {
     if !candidate.kind.standalone() {
-        return Some(script::embedded_kind_error(candidate.kind, &candidate.name).to_string());
+        return Some(script::embedded_kind_message(
+            candidate.kind,
+            &candidate.name,
+        ));
     }
     if candidate.local == script::sync::LocalState::Missing {
         let path = script::sync::candidate_workspace_path(workspace_tree, candidate);
@@ -3007,7 +3010,12 @@ mod tests {
         );
         assert_eq!(
             recreate_unavailable_reason(&workspace, &embedded),
-            Some(script::embedded_kind_error(embedded.kind, &embedded.name).to_string())
+            Some(
+                "managed/user.onCreate is a hook slot inside /openidm/config/managed, not a \
+                 standalone script — edit it with `aic script push` (the slot must already \
+                 exist), or add/remove the slot in the Managed tab"
+                    .to_string()
+            )
         );
 
         let missing = candidate(
