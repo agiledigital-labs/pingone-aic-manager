@@ -394,6 +394,11 @@ pub enum ScriptState {
     RemotelyModified,
     BothModified,
     LocalMissing,
+    /// The tenant no longer has this script, and the local source still
+    /// matches the last-synced snapshot.
+    RemoteMissing,
+    /// The tenant no longer has this script, and the local source has edits.
+    RemoteMissingLocallyModified,
 }
 
 #[derive(Debug, Clone)]
@@ -402,6 +407,14 @@ pub struct StatusEntry {
     pub kind: Kind,
     pub realm: Option<String>,
     pub state: ScriptState,
+}
+
+/// Filtered status entries plus the number of manifest entries in the selected
+/// kind scope before applying the text filter.
+#[derive(Debug, Clone)]
+pub struct StatusResult {
+    pub total: usize,
+    pub entries: Vec<StatusEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1542,15 +1555,33 @@ async fn push_with(
 // Status / diff
 // ---------------------------------------------------------------------------
 
-/// Compute the state of every synced script for the tenant (optionally just one
-/// kind). Realm comes from each manifest entry.
-pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>> {
+/// Compute the state of selected synced scripts. Both filters are applied to
+/// manifest identities before reading snapshots or making tenant requests.
+pub async fn status(tenant: &str, only: Option<Kind>, term: Option<&str>) -> Result<StatusResult> {
     let store = SnapshotStore::open(tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    status_with(&store, &workspace_tree, &LiveSyncIo, tenant, only, term).await
+}
+
+async fn status_with(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    only: Option<Kind>,
+    term: Option<&str>,
+) -> Result<StatusResult> {
+    let manifest = store.load_manifest()?;
+    let selected_kind =
+        |entry: &&SyncedScript| only.is_none_or(|kind| entry.reference.kind == kind);
+    let total = manifest.iter().filter(selected_kind).count();
     let mut out = Vec::new();
-    for entry in store.load_manifest()? {
+    for entry in manifest {
         let r = &entry.reference;
-        if let Some(k) = only
-            && r.kind != k
+        if only.is_some_and(|kind| r.kind != kind)
+            || term.is_some_and(|term| {
+                !super::matches_term(term, r.kind, entry.realm.as_deref(), &r.name)
+            })
         {
             continue;
         }
@@ -1561,7 +1592,7 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
         };
         let snapshot_src = r.kind.decode_source(&snapshot_cfg)?;
 
-        let dest = workspace_file(tenant, realm, r);
+        let dest = workspace_file_in(workspace_tree, realm, r);
         let Some(local_src) = read_local(&dest)? else {
             out.push(StatusEntry {
                 name: r.name.clone(),
@@ -1571,18 +1602,11 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
             });
             continue;
         };
-        let local_modified = local_src != snapshot_src;
-
-        let remote = r.kind.fetch(tenant, realm, &r.id).await?;
-        let remote_src = r.kind.decode_source(&remote.raw_config)?;
-        let remote_modified = remote_src != snapshot_src;
-
-        let state = match (local_modified, remote_modified) {
-            (false, false) => ScriptState::InSync,
-            (true, false) => ScriptState::LocallyModified,
-            (false, true) => ScriptState::RemotelyModified,
-            (true, true) => ScriptState::BothModified,
-        };
+        let remote_src = io
+            .fetch(r.kind, tenant, realm, &r.id)
+            .await
+            .and_then(|remote| r.kind.decode_source(&remote.raw_config));
+        let state = classify_status(&snapshot_src, &local_src, remote_src)?;
         out.push(StatusEntry {
             name: r.name.clone(),
             kind: r.kind,
@@ -1590,7 +1614,38 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
             state,
         });
     }
-    Ok(out)
+    Ok(StatusResult {
+        total,
+        entries: out,
+    })
+}
+
+/// Classify the snapshot/local/remote content. A remote 404 is a state of this
+/// synced entry; all other API and decode errors remain operation failures.
+fn classify_status(snapshot: &[u8], local: &[u8], remote: Result<Vec<u8>>) -> Result<ScriptState> {
+    let local_modified = local != snapshot;
+    let remote = match remote {
+        Ok(source) => source,
+        Err(error) if is_remote_missing(&error) => {
+            return Ok(if local_modified {
+                ScriptState::RemoteMissingLocallyModified
+            } else {
+                ScriptState::RemoteMissing
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let remote_modified = remote != snapshot;
+    Ok(match (local_modified, remote_modified) {
+        (false, false) => ScriptState::InSync,
+        (true, false) => ScriptState::LocallyModified,
+        (false, true) => ScriptState::RemotelyModified,
+        (true, true) => ScriptState::BothModified,
+    })
+}
+
+fn is_remote_missing(error: &Error) -> bool {
+    matches!(error, Error::Api { status: 404, .. })
 }
 
 /// Which two script versions to load for `aic script diff`.
@@ -1658,6 +1713,9 @@ pub async fn diff(
 pub enum ReconcileOutcome {
     InSync,
     Pushed,
+    /// The manifest entry and local source remain, but the remote id returned
+    /// a genuine not-found response. The caller must choose re-create/forget.
+    RemoteMissing,
     /// A write was accepted, but its read-back could not be confirmed. The
     /// local file and snapshot remain unchanged.
     NotConfirmed(ConfirmationFailure),
@@ -1718,7 +1776,11 @@ async fn reconcile_with(
         .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing — pull again")))?;
     let snapshot = kind.decode_source(&snap_cfg)?;
 
-    let remote_script = context.io.fetch(kind, tenant, realm, &r.id).await?;
+    let remote_script = match context.io.fetch(kind, tenant, realm, &r.id).await {
+        Ok(remote) => remote,
+        Err(error) if is_remote_missing(&error) => return Ok(ReconcileOutcome::RemoteMissing),
+        Err(error) => return Err(error),
+    };
     let remote = kind.decode_source(&remote_script.raw_config)?;
     let remote_changed = remote != snapshot;
 
@@ -1847,7 +1909,7 @@ async fn reconcile_resolved_with(
     } = request;
     match resolution {
         Resolution::Local => {
-            match push_with(
+            let pushed = push_with(
                 context,
                 request,
                 PushOptions {
@@ -1855,8 +1917,15 @@ async fn reconcile_resolved_with(
                     ..options
                 },
             )
-            .await?
-            {
+            .await;
+            let pushed = match pushed {
+                Ok(pushed) => pushed,
+                Err(error) if is_remote_missing(&error) => {
+                    return Ok(ReconcileOutcome::RemoteMissing);
+                }
+                Err(error) => return Err(error),
+            };
+            match pushed {
                 PushOutcome::Pushed => Ok(ReconcileOutcome::Pushed),
                 PushOutcome::NotConfirmed(reason) => Ok(ReconcileOutcome::NotConfirmed(reason)),
                 PushOutcome::Unchanged | PushOutcome::AlreadyInSync => Ok(ReconcileOutcome::InSync),
@@ -1869,10 +1938,17 @@ async fn reconcile_resolved_with(
                 .store
                 .lookup(kind, name, realm)?
                 .ok_or_else(|| Error::Config(format!("{name:?} not synced")))?;
-            let remote_script = context
+            let remote_script = match context
                 .io
                 .fetch(kind, tenant, realm, &entry.reference.id)
-                .await?;
+                .await
+            {
+                Ok(remote) => remote,
+                Err(error) if is_remote_missing(&error) => {
+                    return Ok(ReconcileOutcome::RemoteMissing);
+                }
+                Err(error) => return Err(error),
+            };
             let remote = kind.decode_source(&remote_script.raw_config)?;
             let status = install_remote(
                 context.store,
@@ -1892,6 +1968,103 @@ async fn reconcile_resolved_with(
     }
 }
 
+/// Re-create a standalone synced script after the caller resolved a genuine
+/// remote 404 in favour of the local copy. The tenant write and snapshot
+/// confirmation use the same gated path as an ordinary push.
+pub async fn recreate_missing<const ALLOWED: u8>(
+    request: PushContext<'_>,
+    confirmed_prod: bool,
+    force: ForceFlags<ALLOWED>,
+) -> Result<ReconcileOutcome> {
+    let store = SnapshotStore::open(request.tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(request.tenant);
+    let context = SyncContext {
+        store: &store,
+        workspace_tree: &workspace_tree,
+        io: &LiveSyncIo,
+        tenant: request.tenant,
+    };
+    recreate_missing_with(
+        &context,
+        request,
+        PushOptions::from_force(force, confirmed_prod),
+    )
+    .await
+}
+
+async fn recreate_missing_with(
+    context: &SyncContext<'_, impl SyncIo>,
+    request: PushContext<'_>,
+    options: PushOptions,
+) -> Result<ReconcileOutcome> {
+    let PushContext {
+        tenant,
+        realm,
+        kind,
+        name,
+    } = request;
+    if !kind.standalone() {
+        return Err(crate::scripts::embedded_kind_error(kind, name));
+    }
+    let entry = context
+        .store
+        .lookup(kind, name, realm)?
+        .ok_or_else(|| Error::Config(format!("{name:?} not synced")))?;
+    let reference = &entry.reference;
+    let snapshot = context
+        .store
+        .load_config(reference, realm)?
+        .ok_or_else(|| Error::Config(format!("snapshot for {name:?} missing — pull first")))?;
+    let local_path = workspace_file_in(context.workspace_tree, realm, reference);
+    let local = read_local(&local_path)?.ok_or_else(|| {
+        Error::Config(format!(
+            "local file {} not found — cannot re-create",
+            local_path.display()
+        ))
+    })?;
+
+    // The prompt can sit open while another operator restores this id. Do not
+    // turn that race into an unconditional overwrite.
+    match context.io.fetch(kind, tenant, realm, &reference.id).await {
+        Err(error) if is_remote_missing(&error) => {}
+        Ok(_) => {
+            return Err(Error::Config(format!(
+                "{name:?} exists on the tenant again — re-run sync"
+            )));
+        }
+        Err(error) => return Err(error),
+    }
+
+    let mut raw_config = snapshot;
+    kind.encode_source(&mut raw_config, &local)?;
+    let script = RemoteScript {
+        reference: reference.clone(),
+        raw_config,
+    };
+    match context
+        .io
+        .write_checked(
+            kind,
+            tenant,
+            realm,
+            &script,
+            options.confirmed_prod,
+            options.gate,
+        )
+        .await?
+    {
+        Gated::Written => {}
+        Gated::Refused(refusal) => return Ok(ReconcileOutcome::Refused(refusal)),
+    }
+    let confirmed =
+        match confirm_write(context.io, kind, tenant, realm, &reference.id, &local).await {
+            Ok(confirmed) => confirmed,
+            Err(reason) => return Ok(ReconcileOutcome::NotConfirmed(reason)),
+        };
+    context.store.record(&confirmed, realm)?;
+    Ok(ReconcileOutcome::Pushed)
+}
+
 /// Remove a script's snapshot + manifest entry after a remote delete. Does not
 /// touch the user's local `.cjs` (they may still want it).
 pub fn forget(tenant: &str, realm: &str, kind: Kind, name: &str) -> Result<()> {
@@ -1906,6 +2079,69 @@ mod tests {
     use clap::Parser;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    #[test]
+    fn status_classifies_remote_404_without_swallowing_other_errors() {
+        let missing = || {
+            Err(Error::Api {
+                status: 404,
+                body: "missing".into(),
+            })
+        };
+        assert_eq!(
+            classify_status(b"snapshot", b"snapshot", missing()).unwrap(),
+            ScriptState::RemoteMissing
+        );
+        assert_eq!(
+            classify_status(b"snapshot", b"local edit", missing()).unwrap(),
+            ScriptState::RemoteMissingLocallyModified
+        );
+        assert!(matches!(
+            classify_status(
+                b"snapshot",
+                b"snapshot",
+                Err(Error::Api {
+                    status: 503,
+                    body: "unavailable".into(),
+                }),
+            ),
+            Err(Error::Api { status: 503, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn filtered_status_never_fetches_a_nonmatching_manifest_entry() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let matching = endpoint_ref("OIDC profile");
+        let excluded = endpoint_ref("healthcheck");
+        for reference in [&matching, &excluded] {
+            store
+                .record(&endpoint_script(reference, "source", "snapshot"), "")
+                .unwrap();
+            let path = workspace_file_in(&workspace, "", reference);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"source").unwrap();
+        }
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&matching, "source", "remote")),
+            Err(Error::Api {
+                status: 503,
+                body: "excluded entry must not be fetched".into(),
+            }),
+        ]);
+
+        let status = status_with(&store, &workspace, &io, "tenant", None, Some("OIDC"))
+            .await
+            .unwrap();
+
+        assert_eq!(status.total, 2);
+        assert_eq!(status.entries.len(), 1);
+        assert_eq!(status.entries[0].name, matching.name);
+        assert_eq!(io.pending_fetch_count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn local_reads_only_treat_not_found_as_missing() {
@@ -2113,6 +2349,10 @@ mod tests {
         fn write_count(&self) -> usize {
             self.writes.lock().unwrap().len()
         }
+
+        fn pending_fetch_count(&self) -> usize {
+            self.fetches.lock().unwrap().len()
+        }
     }
 
     impl SyncIo for FakeSyncIo {
@@ -2248,6 +2488,21 @@ mod tests {
                 &context,
                 request,
                 resolution,
+                PushOptions::from_force(force, confirmed_prod),
+            )
+            .await
+        }
+
+        async fn recreate_missing(
+            &self,
+            request: PushContext<'_>,
+            force: OperationAndSyntaxCheckForce,
+            confirmed_prod: bool,
+        ) -> Result<ReconcileOutcome> {
+            let context = test_context(&self.store, &self.workspace, &self.io, request.tenant);
+            recreate_missing_with(
+                &context,
+                request,
                 PushOptions::from_force(force, confirmed_prod),
             )
             .await
@@ -3351,7 +3606,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_remote_is_an_error_in_every_reconcile_mode() {
+    async fn missing_remote_is_a_resolution_outcome_but_other_errors_stay_failures() {
         for resolution in [None, Some(Resolution::Local), Some(Resolution::Remote)] {
             let (dir, store, workspace, reference) = push_fixture("old", "local edit");
             let io = FakeSyncIo::new(vec![Err(Error::Api {
@@ -3378,10 +3633,109 @@ mod tests {
                     .await
                 }
             };
-            assert!(result.is_err());
+            assert!(matches!(result, Ok(ReconcileOutcome::RemoteMissing)));
             assert_eq!(io.write_count(), 0);
             std::fs::remove_dir_all(dir).unwrap();
         }
+
+        for resolution in [None, Some(Resolution::Local), Some(Resolution::Remote)] {
+            let (dir, store, workspace, reference) = push_fixture("old", "local edit");
+            let io = FakeSyncIo::new(vec![Err(Error::Api {
+                status: 503,
+                body: "unavailable".into(),
+            })]);
+            let context = test_context(&store, &workspace, &io, "tenant");
+            let result = match resolution {
+                Some(direction) => {
+                    reconcile_resolved_with(
+                        &context,
+                        test_request(&reference),
+                        direction,
+                        push_options(false, SyntaxGate::Check),
+                    )
+                    .await
+                }
+                None => {
+                    reconcile_with(
+                        &context,
+                        test_request(&reference),
+                        push_options(false, SyntaxGate::Check),
+                    )
+                    .await
+                }
+            };
+            assert!(matches!(result, Err(Error::Api { status: 503, .. })));
+            assert_eq!(io.write_count(), 0);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn recreate_missing_reuses_the_synced_id_and_confirms_the_read_back() {
+        let (dir, store, workspace, reference) = push_fixture("snapshot", "local edit");
+        let confirmed = endpoint_script(&reference, "local edit", "confirmed");
+        let io = FakeSyncIo::new(vec![
+            Err(Error::Api {
+                status: 404,
+                body: "missing".into(),
+            }),
+            Ok(confirmed.clone()),
+        ]);
+        let context = test_context(&store, &workspace, &io, "tenant");
+        let outcome = recreate_missing_with(
+            &context,
+            test_request(&reference),
+            push_options(false, SyntaxGate::Check),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(outcome, ReconcileOutcome::Pushed));
+        assert_eq!(io.write_count(), 1);
+        let written = io.writes.lock().unwrap()[0].clone();
+        assert_eq!(written.reference.id, reference.id);
+        assert_eq!(
+            reference.kind.decode_source(&written.raw_config).unwrap(),
+            b"local edit"
+        );
+        assert_eq!(
+            store.load_config(&reference, "alpha").unwrap(),
+            Some(confirmed.raw_config)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn embedded_remote_missing_recreate_is_refused_before_fetch_or_write() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let reference = RemoteRef {
+            kind: Kind::IdmSyncMapping,
+            id: "sync/mapping.onCreate".into(),
+            name: "mapping.onCreate".into(),
+            context: None,
+            is_default: false,
+            evaluator_version: None,
+        };
+        let remote = mapping_script(&reference, "snapshot");
+        store.record(&remote, "").unwrap();
+        let local_path = workspace_file_in(&workspace, "", &reference);
+        std::fs::create_dir_all(local_path.parent().unwrap()).unwrap();
+        std::fs::write(&local_path, b"local").unwrap();
+        let io = FakeSyncIo::new(Vec::new());
+        let context = test_context(&store, &workspace, &io, "tenant");
+
+        let result = recreate_missing_with(
+            &context,
+            PushContext::new("tenant", "", reference.kind, &reference.name),
+            push_options(false, SyntaxGate::Check),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(io.write_count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
