@@ -109,12 +109,12 @@ fn pull_backup_note(status: &script::sync::PullStatus) -> String {
     }
 }
 
-fn sync_failure(refused: u32, failed: u32, conflicts: usize) -> Result<()> {
-    if refused == 0 && failed == 0 && conflicts == 0 {
+fn sync_failure(refused: u32, failed: u32, conflicts: usize, remote_missing: usize) -> Result<()> {
+    if refused == 0 && failed == 0 && conflicts == 0 && remote_missing == 0 {
         return Ok(());
     }
     Err(Error::Config(format!(
-        "sync left {conflicts} conflict(s) unresolved, {refused} write(s) refused, and {failed} operation(s) failed"
+        "sync left {conflicts} conflict(s) and {remote_missing} missing remote script(s) unresolved, {refused} write(s) refused, and {failed} operation(s) failed"
     )))
 }
 
@@ -270,7 +270,7 @@ pub enum ScriptCommand {
         json: bool,
     },
     /// Bidirectionally sync the workspace with the tenant: push local-only
-    /// changes, pull remote-only changes, and resolve conflicts (both changed).
+    /// changes, pull remote-only changes, and resolve conflicts or deleted scripts.
     /// Scope with an optional <ref>; default reconciles everything synced.
     Sync {
         #[arg(help = "namespace, <namespace>/<name>, `all`, or empty for everything synced")]
@@ -316,11 +316,13 @@ pub enum ScriptCommand {
 }
 
 /// Which side every selected `sync` entry converges to when `--resolve` is set.
+/// On a remote 404, local re-creates a standalone resource and remote forgets
+/// the sync record while keeping the local file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Resolution {
-    /// Overwrite the tenant with your local copy.
+    /// Overwrite the tenant with your local copy, or re-create a missing id.
     Local,
-    /// Overwrite your local copy with the tenant's.
+    /// Overwrite your local copy with the tenant's, or forget a missing id.
     Remote,
 }
 
@@ -401,6 +403,13 @@ pub(crate) trait PushSyncRuntime {
         confirmed_prod: bool,
     ) -> Result<script::sync::ReconcileOutcome>;
 
+    async fn recreate_missing(
+        &self,
+        request: script::sync::PushContext<'_>,
+        force: OperationAndSyntaxCheckForce,
+        confirmed_prod: bool,
+    ) -> Result<script::sync::ReconcileOutcome>;
+
     fn workspace_update_hint(&self, tenant: &str) -> Result<()>;
 }
 
@@ -464,6 +473,15 @@ impl PushSyncRuntime for LivePushSyncRuntime {
         confirmed_prod: bool,
     ) -> Result<script::sync::ReconcileOutcome> {
         script::sync::reconcile_resolved(request, resolution, force, confirmed_prod).await
+    }
+
+    async fn recreate_missing(
+        &self,
+        request: script::sync::PushContext<'_>,
+        force: OperationAndSyntaxCheckForce,
+        confirmed_prod: bool,
+    ) -> Result<script::sync::ReconcileOutcome> {
+        script::sync::recreate_missing(request, confirmed_prod, force).await
     }
 
     fn workspace_update_hint(&self, tenant: &str) -> Result<()> {
@@ -902,6 +920,7 @@ pub(crate) async fn run_with_runtime(
             let (mut pushed, mut pulled, mut in_sync, mut invalid) = (0u32, 0u32, 0u32, 0u32);
             let mut failed = 0u32;
             let mut conflicts: Vec<String> = Vec::new();
+            let mut remote_missing: Vec<String> = Vec::new();
             let mut stopped = false;
             for c in cands {
                 if stopped {
@@ -957,6 +976,78 @@ pub(crate) async fn run_with_runtime(
                 };
                 match outcome {
                     sync::ReconcileOutcome::InSync => in_sync += 1,
+                    sync::ReconcileOutcome::RemoteMissing => {
+                        let can_recreate =
+                            c.kind.standalone() && c.local != sync::LocalState::Missing;
+                        let choice = match resolve {
+                            Some(Resolution::Local) => RemoteMissingChoice::Recreate,
+                            Some(Resolution::Remote) => RemoteMissingChoice::Forget,
+                            None => prompt_remote_missing(&full, can_recreate)?,
+                        };
+                        match choice {
+                            RemoteMissingChoice::Recreate if !can_recreate => {
+                                eprintln!(
+                                    "! {full}: cannot re-create this kind or missing local file"
+                                );
+                                failed += 1;
+                            }
+                            RemoteMissingChoice::Recreate => {
+                                let result = prod_hint(
+                                    runtime
+                                        .recreate_missing(
+                                            sync::PushContext::new(
+                                                &t,
+                                                ns.realm_arg(),
+                                                c.kind,
+                                                &c.name,
+                                            ),
+                                            force,
+                                            yes,
+                                        )
+                                        .await,
+                                );
+                                match result {
+                                    Ok(sync::ReconcileOutcome::Pushed) => {
+                                        pushed += 1;
+                                        println!("→ re-created {full}");
+                                    }
+                                    Ok(sync::ReconcileOutcome::Refused(refusal)) => {
+                                        invalid += 1;
+                                        report_refusal(&full, &refusal);
+                                    }
+                                    Ok(sync::ReconcileOutcome::NotConfirmed(reason)) => {
+                                        eprintln!("! {full}: {}", reason.message());
+                                        failed += 1;
+                                    }
+                                    Ok(other) => {
+                                        eprintln!(
+                                            "! {full}: unexpected re-create outcome: {other:?}"
+                                        );
+                                        failed += 1;
+                                    }
+                                    Err(error) if batch_fatal(&error) => return Err(error),
+                                    Err(error) => {
+                                        eprintln!("! {full}: {error}");
+                                        failed += 1;
+                                    }
+                                }
+                            }
+                            RemoteMissingChoice::Forget => {
+                                match sync::forget(&t, ns.realm_arg(), c.kind, &c.name) {
+                                    Ok(()) => println!("forgot {full} from sync (local file kept)"),
+                                    Err(error) => {
+                                        eprintln!("! {full}: {error}");
+                                        failed += 1;
+                                    }
+                                }
+                            }
+                            RemoteMissingChoice::Skip => remote_missing.push(full),
+                            RemoteMissingChoice::Stop => {
+                                remote_missing.push(full);
+                                stopped = true;
+                            }
+                        }
+                    }
                     sync::ReconcileOutcome::Refused(refusal) => {
                         invalid += 1;
                         report_refusal(&full, &refusal);
@@ -1085,9 +1176,10 @@ pub(crate) async fn run_with_runtime(
                 }
             }
             println!(
-                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {}{}{}",
+                "\nsync{}: pushed {pushed} · pulled {pulled} · in sync {in_sync} · conflicts {} · remote missing {}{}{}",
                 if stopped { " (stopped, partial)" } else { "" },
                 conflicts.len(),
+                remote_missing.len(),
                 if invalid > 0 {
                     format!(" · refused {invalid}")
                 } else {
@@ -1107,12 +1199,18 @@ pub(crate) async fn run_with_runtime(
                     println!("  {c}");
                 }
             }
+            if !remote_missing.is_empty() {
+                println!("remote scripts left unresolved (choose re-create or forget):");
+                for name in &remote_missing {
+                    println!("  {name}");
+                }
+            }
             runtime.workspace_update_hint(&t)?;
             // The summary is printed first, then the failure: a batch that
             // left something unpushed must not exit 0, or a caller reads the
             // refusal as a success (`docs/CLI.md`). `push all` has always done
             // this; `sync` counted refusals and exited 0.
-            sync_failure(invalid, failed, conflicts.len())
+            sync_failure(invalid, failed, conflicts.len(), remote_missing.len())
         }
         ScriptCommand::Watch { tenant, yes, force } => {
             let t = writable_tenant_for(tenant)?;
@@ -1946,6 +2044,56 @@ enum ConflictChoice {
     Local,
     Remote,
     Skip,
+}
+
+enum RemoteMissingChoice {
+    Stop,
+    Recreate,
+    Forget,
+    Skip,
+}
+
+/// Prompt what to do when a synced id has disappeared from the tenant. A
+/// non-TTY, cancellation, or disabled prompting leaves it unresolved.
+fn prompt_remote_missing(full: &str, allow_recreate: bool) -> Result<RemoteMissingChoice> {
+    use inquire::{Select, error::InquireError};
+    if crate::cli::prompting_disabled() {
+        return Ok(RemoteMissingChoice::Skip);
+    }
+    let opts = if allow_recreate {
+        vec![
+            "skip — leave local copy and sync record",
+            "re-create — write the local copy to the tenant",
+            "forget — remove sync record, keep local file",
+        ]
+    } else {
+        vec![
+            "skip — leave local copy and sync record",
+            "forget — remove sync record, keep local file",
+        ]
+    };
+    match Select::new(
+        &format!("{full} was deleted on the tenant — resolve:"),
+        opts,
+    )
+    .raw_prompt()
+    {
+        Ok(answer) if allow_recreate => Ok(match answer.index {
+            1 => RemoteMissingChoice::Recreate,
+            2 => RemoteMissingChoice::Forget,
+            _ => RemoteMissingChoice::Skip,
+        }),
+        Ok(answer) => Ok(if answer.index == 1 {
+            RemoteMissingChoice::Forget
+        } else {
+            RemoteMissingChoice::Skip
+        }),
+        Err(InquireError::OperationInterrupted) => Ok(RemoteMissingChoice::Stop),
+        Err(InquireError::OperationCanceled | InquireError::NotTTY) => {
+            Ok(RemoteMissingChoice::Skip)
+        }
+        Err(error) => Err(Error::Config(format!("remote-missing prompt: {error}"))),
+    }
 }
 
 /// Prompt how to resolve a both-changed conflict during `sync`. No TTY (or
@@ -3341,13 +3489,14 @@ mod tests {
     #[test]
     fn batch_conflicts_and_unconfirmed_sync_operations_exit_nonzero() {
         assert!(push_all_failure(0, 1, 0).is_err());
-        assert!(sync_failure(0, 0, 1).is_err());
+        assert!(sync_failure(0, 0, 1, 0).is_err());
+        assert!(sync_failure(0, 0, 0, 1).is_err());
         assert!(
-            sync_failure(0, 1, 0).is_err(),
+            sync_failure(0, 1, 0, 0).is_err(),
             "NotConfirmed is counted in the failed-operation total"
         );
         assert!(push_all_failure(0, 0, 0).is_ok());
-        assert!(sync_failure(0, 0, 0).is_ok());
+        assert!(sync_failure(0, 0, 0, 0).is_ok());
     }
 
     #[test]
