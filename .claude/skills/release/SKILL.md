@@ -84,6 +84,11 @@ indistinguishable from a one-line fix unless the notes say otherwise.
 
 ## Gotchas
 
+- **`release-check.sh` ready is not CI green.** It mirrors CI's steps, not its
+  tool versions: CI lints with floating `stable`, and v0.12.0–v0.12.2 were cut
+  while CI was red on a clippy lint the local toolchain did not have. Run
+  `gh run list -L 3 --workflow ci.yml` before tagging, and after pushing,
+  watch the release commit's run.
 - **`release.sh` is live from the first argument.** There is no confirmation
   prompt: given a clean tree and a valid version it bumps, tags, pushes and
   publishes. Never point it at the repo to test its behaviour — a case that
