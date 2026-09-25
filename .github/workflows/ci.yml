@@ -88,6 +88,27 @@ jobs:
           shellcheck --version
           scripts/shellcheck-all.sh
 
+  # Known-vulnerable dependencies in Cargo.lock. It reads the lockfile and the
+  # RustSec database only, so it needs no build. A pinned release binary, for
+  # the reason the gitleaks step gives. Ignores live in .cargo/audit.toml, each
+  # with its reason; warnings (unmaintained, yanked) are reported, not fatal.
+  # A new advisory fails the next run whatever that run changed: this is
+  # deliberate, because the fix is a lockfile update that ships the same day.
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cargo audit (advisories)
+        env:
+          CARGO_AUDIT_VERSION: 0.22.2
+        run: |
+          name="cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}"
+          curl -sSfL "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v${CARGO_AUDIT_VERSION}/${name}.tgz" \
+            | tar -xz -C /tmp "${name}/cargo-audit"
+          "/tmp/${name}/cargo-audit" audit
+
   gate:
     name: fmt + clippy + test
     runs-on: ubuntu-22.04

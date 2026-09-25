@@ -114,6 +114,7 @@ CI_STEPS_REPRODUCED=(
   "Scan tracked files"
   "Scan introduced history"
   "Gitleaks (credentials)"
+  "Cargo audit (advisories)"
   "Shellcheck (all scripts)"
   "Format"
   "Clippy (default)"
@@ -240,6 +241,44 @@ gate "gitleaks: credentials in history" \
   If it is a false positive, allowlist it by SHAPE in .gitleaks.toml — never by
   fingerprint, which pins a commit hash this repo has rewritten before." \
   "$GITLEAKS_BIN" git . --redact --no-banner --exit-code 1
+
+# --- cargo audit -------------------------------------------------------------
+#
+# Same pinning as gitleaks: the version is read from ci.yml, and the static musl
+# binary is fetched into the cache unless the exact version is already on PATH.
+# Ignores, each with its reason, are in .cargo/audit.toml.
+CARGO_AUDIT_VERSION="$(grep -oP '^\s+CARGO_AUDIT_VERSION:\s*\K\S+' "$CI_YML" | head -1)"
+[ -n "$CARGO_AUDIT_VERSION" ] || fail "could not read CARGO_AUDIT_VERSION from $CI_YML"
+
+CARGO_AUDIT_BIN="$CACHE/cargo-audit-$CARGO_AUDIT_VERSION"
+
+if command -v cargo-audit >/dev/null 2>&1 &&
+  [ "$(cargo-audit --version 2>/dev/null)" = "cargo-audit $CARGO_AUDIT_VERSION" ]; then
+  CARGO_AUDIT_BIN="$(command -v cargo-audit)"
+elif [ ! -x "$CARGO_AUDIT_BIN" ]; then
+  step "cargo-audit: fetch $CARGO_AUDIT_VERSION"
+  mkdir -p "$CACHE"
+  tmp="$(mktemp -d)"
+  name="cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}"
+  if curl -sSfL "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v${CARGO_AUDIT_VERSION}/${name}.tgz" \
+    | tar -xz -C "$tmp" "${name}/cargo-audit" >>"$LOG" 2>&1; then
+    mv "$tmp/${name}/cargo-audit" "$CARGO_AUDIT_BIN"
+    rm -rf "$tmp"
+    ok
+  else
+    rm -rf "$tmp"
+    echo
+    fail "could not fetch cargo-audit $CARGO_AUDIT_VERSION.
+  CI runs it, so a release cannot skip it. Install it on PATH at that exact
+  version, or make the download work and re-run."
+  fi
+fi
+
+gate "cargo audit: advisories" \
+  "a dependency in Cargo.lock has a security advisory (see above). Update it
+  (cargo update -p <crate>); ignore it in .cargo/audit.toml only when no fix
+  exists, with the reason and the condition for removing the ignore." \
+  "$CARGO_AUDIT_BIN" audit
 
 # --- shell -------------------------------------------------------------------
 #
