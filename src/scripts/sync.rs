@@ -574,6 +574,13 @@ fn workspace_file_in(workspace_tree: &Path, realm: &str, r: &RemoteRef) -> PathB
     workspace_tree.join(r.kind.workspace_subpath(r, realm))
 }
 
+/// Workspace path for a selected sync candidate, using the same identity
+/// reconstruction as the sync engine's reads and writes.
+pub(crate) fn candidate_workspace_path(workspace_tree: &Path, candidate: &Candidate) -> PathBuf {
+    let realm = candidate.realm.as_deref().unwrap_or_default();
+    workspace_file_in(workspace_tree, realm, &ref_of(candidate))
+}
+
 /// Read a local workspace file without collapsing permission / transient I/O
 /// errors into "missing". Only a genuine `NotFound` means there is no local
 /// copy.
