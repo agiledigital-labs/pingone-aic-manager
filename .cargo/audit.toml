@@ -1,0 +1,15 @@
+# cargo-audit configuration, read by the `audit` job in .github/workflows/ci.yml
+# and by scripts/release-check.sh.
+#
+# Every ignore needs a reason and a condition for removing it. An ignore without
+# one is how an advisory that later gains a fix stays ignored forever.
+
+[advisories]
+ignore = [
+  # rsa 0.9 — Marvin timing side channel. No fixed release exists. `aic` uses
+  # RSA only to sign its own service-account JWT assertion, locally, with a key
+  # held in the vault, and an attacker needs to time many private-key
+  # operations to exploit this. Reached directly and via jsonwebtoken. Remove
+  # when an rsa release with constant-time operations ships.
+  "RUSTSEC-2023-0071",
+]
