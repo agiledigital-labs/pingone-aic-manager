@@ -394,6 +394,11 @@ pub enum ScriptState {
     RemotelyModified,
     BothModified,
     LocalMissing,
+    /// The tenant no longer has this script, and the local source still
+    /// matches the last-synced snapshot.
+    RemoteMissing,
+    /// The tenant no longer has this script, and the local source has edits.
+    RemoteMissingLocallyModified,
 }
 
 #[derive(Debug, Clone)]
@@ -1571,18 +1576,12 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
             });
             continue;
         };
-        let local_modified = local_src != snapshot_src;
-
-        let remote = r.kind.fetch(tenant, realm, &r.id).await?;
-        let remote_src = r.kind.decode_source(&remote.raw_config)?;
-        let remote_modified = remote_src != snapshot_src;
-
-        let state = match (local_modified, remote_modified) {
-            (false, false) => ScriptState::InSync,
-            (true, false) => ScriptState::LocallyModified,
-            (false, true) => ScriptState::RemotelyModified,
-            (true, true) => ScriptState::BothModified,
-        };
+        let remote_src = r
+            .kind
+            .fetch(tenant, realm, &r.id)
+            .await
+            .and_then(|remote| r.kind.decode_source(&remote.raw_config));
+        let state = classify_status(&snapshot_src, &local_src, remote_src)?;
         out.push(StatusEntry {
             name: r.name.clone(),
             kind: r.kind,
@@ -1591,6 +1590,30 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
         });
     }
     Ok(out)
+}
+
+/// Classify the snapshot/local/remote content. A remote 404 is a state of this
+/// synced entry; all other API and decode errors remain operation failures.
+fn classify_status(snapshot: &[u8], local: &[u8], remote: Result<Vec<u8>>) -> Result<ScriptState> {
+    let local_modified = local != snapshot;
+    let remote = match remote {
+        Ok(source) => source,
+        Err(Error::Api { status: 404, .. }) => {
+            return Ok(if local_modified {
+                ScriptState::RemoteMissingLocallyModified
+            } else {
+                ScriptState::RemoteMissing
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let remote_modified = remote != snapshot;
+    Ok(match (local_modified, remote_modified) {
+        (false, false) => ScriptState::InSync,
+        (true, false) => ScriptState::LocallyModified,
+        (false, true) => ScriptState::RemotelyModified,
+        (true, true) => ScriptState::BothModified,
+    })
 }
 
 /// Which two script versions to load for `aic script diff`.
@@ -1906,6 +1929,35 @@ mod tests {
     use clap::Parser;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    #[test]
+    fn status_classifies_remote_404_without_swallowing_other_errors() {
+        let missing = || {
+            Err(Error::Api {
+                status: 404,
+                body: "missing".into(),
+            })
+        };
+        assert_eq!(
+            classify_status(b"snapshot", b"snapshot", missing()).unwrap(),
+            ScriptState::RemoteMissing
+        );
+        assert_eq!(
+            classify_status(b"snapshot", b"local edit", missing()).unwrap(),
+            ScriptState::RemoteMissingLocallyModified
+        );
+        assert!(matches!(
+            classify_status(
+                b"snapshot",
+                b"snapshot",
+                Err(Error::Api {
+                    status: 503,
+                    body: "unavailable".into(),
+                }),
+            ),
+            Err(Error::Api { status: 503, .. })
+        ));
+    }
 
     #[test]
     fn local_reads_only_treat_not_found_as_missing() {
