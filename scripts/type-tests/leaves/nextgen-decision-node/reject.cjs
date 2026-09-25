@@ -120,8 +120,8 @@ idRepository.getAttribute("u", "mail"); // expect: TS2339 — legacy IdRepositor
 
 logger.message("plain"); // expect: TS2339 — classic Debug name; next-gen is slf4j info/debug/warn
 
-// existingSession's `| undefined`: the accept file's guard survives losing it,
-// because a definite ExistingSession still type-checks inside `if (existingSession)`.
+// existingSession's `| undefined`: the accept file's typeof guard survives
+// losing it, because a definite ExistingSession still type-checks inside it.
 /** @type {ExistingSession} */
 var sessionMustExist = existingSession; // expect: TS2322 — may be undefined
 logger.info("{}", sessionMustExist.Principal);
