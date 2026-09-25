@@ -917,7 +917,7 @@ pub(crate) async fn run_with_runtime(
             let (mut pushed, mut pulled, mut in_sync, mut invalid) = (0u32, 0u32, 0u32, 0u32);
             let mut failed = 0u32;
             let mut conflicts: Vec<String> = Vec::new();
-            let mut remote_missing: Vec<String> = Vec::new();
+            let mut remote_missing: Vec<(String, Option<String>)> = Vec::new();
             let mut stopped = false;
             for c in cands {
                 if stopped {
@@ -974,17 +974,18 @@ pub(crate) async fn run_with_runtime(
                 match outcome {
                     sync::ReconcileOutcome::InSync => in_sync += 1,
                     sync::ReconcileOutcome::RemoteMissing => {
-                        let can_recreate =
-                            c.kind.standalone() && c.local != sync::LocalState::Missing;
+                        let unavailable =
+                            recreate_unavailable_reason(&ProjectConfig::workspace_tree(&t), &c);
                         let choice = match resolve {
                             Some(Resolution::Local) => RemoteMissingChoice::Recreate,
                             Some(Resolution::Remote) => RemoteMissingChoice::Forget,
-                            None => prompt_remote_missing(&full, can_recreate)?,
+                            None => prompt_remote_missing(&full, unavailable.as_deref())?,
                         };
                         match choice {
-                            RemoteMissingChoice::Recreate if !can_recreate => {
+                            RemoteMissingChoice::Recreate if unavailable.is_some() => {
                                 eprintln!(
-                                    "! {full}: cannot re-create this kind or missing local file"
+                                    "! {full}: cannot re-create: {}",
+                                    unavailable.as_deref().unwrap_or_default()
                                 );
                                 failed += 1;
                             }
@@ -1038,9 +1039,9 @@ pub(crate) async fn run_with_runtime(
                                     }
                                 }
                             }
-                            RemoteMissingChoice::Skip => remote_missing.push(full),
+                            RemoteMissingChoice::Skip => remote_missing.push((full, unavailable)),
                             RemoteMissingChoice::Stop => {
-                                remote_missing.push(full);
+                                remote_missing.push((full, unavailable));
                                 stopped = true;
                             }
                         }
@@ -1198,8 +1199,12 @@ pub(crate) async fn run_with_runtime(
             }
             if !remote_missing.is_empty() {
                 println!("remote scripts left unresolved (choose re-create or forget):");
-                for name in &remote_missing {
-                    println!("  {name}");
+                for (name, reason) in &remote_missing {
+                    if let Some(reason) = reason {
+                        println!("  {name} — re-create unavailable: {reason}");
+                    } else {
+                        println!("  {name}");
+                    }
                 }
             }
             runtime.workspace_update_hint(&t)?;
@@ -2052,11 +2057,35 @@ enum RemoteMissingChoice {
 
 /// Prompt what to do when a synced id has disappeared from the tenant. A
 /// non-TTY, cancellation, or disabled prompting leaves it unresolved.
-fn prompt_remote_missing(full: &str, allow_recreate: bool) -> Result<RemoteMissingChoice> {
+fn recreate_unavailable_reason(
+    workspace_tree: &std::path::Path,
+    candidate: &script::sync::Candidate,
+) -> Option<String> {
+    if !candidate.kind.standalone() {
+        return Some(script::embedded_kind_error(candidate.kind, &candidate.name).to_string());
+    }
+    if candidate.local == script::sync::LocalState::Missing {
+        let path = script::sync::candidate_workspace_path(workspace_tree, candidate);
+        return Some(format!("local file {} is missing", path.display()));
+    }
+    None
+}
+
+fn prompt_remote_missing(
+    full: &str,
+    unavailable_reason: Option<&str>,
+) -> Result<RemoteMissingChoice> {
     use inquire::{Select, error::InquireError};
     if crate::cli::prompting_disabled() {
         return Ok(RemoteMissingChoice::Skip);
     }
+    let allow_recreate = unavailable_reason.is_none();
+    let prompt = match unavailable_reason {
+        Some(reason) => {
+            format!("{full} was deleted on the tenant — re-create unavailable ({reason}); resolve:")
+        }
+        None => format!("{full} was deleted on the tenant — resolve:"),
+    };
     let opts = if allow_recreate {
         vec![
             "skip — leave local copy and sync record",
@@ -2069,12 +2098,7 @@ fn prompt_remote_missing(full: &str, allow_recreate: bool) -> Result<RemoteMissi
             "forget — remove sync record, keep local file",
         ]
     };
-    match Select::new(
-        &format!("{full} was deleted on the tenant — resolve:"),
-        opts,
-    )
-    .raw_prompt()
-    {
+    match Select::new(&prompt, opts).raw_prompt() {
         Ok(answer) if allow_recreate => Ok(match answer.index {
             1 => RemoteMissingChoice::Recreate,
             2 => RemoteMissingChoice::Forget,
@@ -2955,6 +2979,50 @@ fn print_conflict(name: &str, tw: &crate::scripts::sync::ThreeWay) {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn recreate_unavailable_reason_matches_kind_and_local_file_state() {
+        let workspace = std::env::temp_dir().join("aic-recreate-reason-workspace");
+        let candidate = |kind, name: &str, local| script::sync::Candidate {
+            kind,
+            realm: None,
+            name: name.into(),
+            local,
+            is_default: false,
+            context: None,
+            evaluator_version: None,
+        };
+
+        let available = candidate(
+            script::Kind::IdmEndpoint,
+            "java-probe",
+            script::sync::LocalState::Clean,
+        );
+        assert_eq!(recreate_unavailable_reason(&workspace, &available), None);
+
+        let embedded = candidate(
+            script::Kind::IdmManagedHook,
+            "user.onCreate",
+            script::sync::LocalState::Clean,
+        );
+        assert_eq!(
+            recreate_unavailable_reason(&workspace, &embedded),
+            Some(script::embedded_kind_error(embedded.kind, &embedded.name).to_string())
+        );
+
+        let missing = candidate(
+            script::Kind::IdmEndpoint,
+            "java-probe",
+            script::sync::LocalState::Missing,
+        );
+        assert_eq!(
+            recreate_unavailable_reason(&workspace, &missing),
+            Some(format!(
+                "local file {} is missing",
+                workspace.join("idm/endpoint/java-probe.cjs").display()
+            ))
+        );
+    }
 
     /// The discriminating case is the one that caused the bug: a **404** must
     /// not be fatal. A stale snapshot entry pointing at a script someone

@@ -2072,7 +2072,8 @@ When `sync` finds a synced script missing on the tenant, it prompts to skip,
 re-create from the local source, or forget the sync record while keeping the
 local file. `--resolve local` re-creates standalone resources with their saved
 id; `--resolve remote` forgets the record for missing resources. Embedded
-managed-hook and sync-mapping scripts cannot be re-created by this prompt.
+managed-hook and sync-mapping scripts cannot be re-created by this prompt; the
+prompt names the owning config or missing local file when re-create is unavailable.
 Skipped entries are listed and make the command exit non-zero.
 
 - `list` tags each row with its `ref` and narrows three ways. `--context TEXT`
