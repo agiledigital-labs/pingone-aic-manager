@@ -409,6 +409,14 @@ pub struct StatusEntry {
     pub state: ScriptState,
 }
 
+/// Filtered status entries plus the number of manifest entries in the selected
+/// kind scope before applying the text filter.
+#[derive(Debug, Clone)]
+pub struct StatusResult {
+    pub total: usize,
+    pub entries: Vec<StatusEntry>,
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot store: .aic-sync/{manifest.json, configs/<kind>/<realm?>/<file>, backups/}
 // ---------------------------------------------------------------------------
@@ -1547,15 +1555,33 @@ async fn push_with(
 // Status / diff
 // ---------------------------------------------------------------------------
 
-/// Compute the state of every synced script for the tenant (optionally just one
-/// kind). Realm comes from each manifest entry.
-pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>> {
+/// Compute the state of selected synced scripts. Both filters are applied to
+/// manifest identities before reading snapshots or making tenant requests.
+pub async fn status(tenant: &str, only: Option<Kind>, term: Option<&str>) -> Result<StatusResult> {
     let store = SnapshotStore::open(tenant);
+    let workspace_tree = ProjectConfig::workspace_tree(tenant);
+    status_with(&store, &workspace_tree, &LiveSyncIo, tenant, only, term).await
+}
+
+async fn status_with(
+    store: &SnapshotStore,
+    workspace_tree: &Path,
+    io: &impl SyncIo,
+    tenant: &str,
+    only: Option<Kind>,
+    term: Option<&str>,
+) -> Result<StatusResult> {
+    let manifest = store.load_manifest()?;
+    let selected_kind =
+        |entry: &&SyncedScript| only.is_none_or(|kind| entry.reference.kind == kind);
+    let total = manifest.iter().filter(selected_kind).count();
     let mut out = Vec::new();
-    for entry in store.load_manifest()? {
+    for entry in manifest {
         let r = &entry.reference;
-        if let Some(k) = only
-            && r.kind != k
+        if only.is_some_and(|kind| r.kind != kind)
+            || term.is_some_and(|term| {
+                !super::matches_term(term, r.kind, entry.realm.as_deref(), &r.name)
+            })
         {
             continue;
         }
@@ -1566,7 +1592,7 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
         };
         let snapshot_src = r.kind.decode_source(&snapshot_cfg)?;
 
-        let dest = workspace_file(tenant, realm, r);
+        let dest = workspace_file_in(workspace_tree, realm, r);
         let Some(local_src) = read_local(&dest)? else {
             out.push(StatusEntry {
                 name: r.name.clone(),
@@ -1576,9 +1602,8 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
             });
             continue;
         };
-        let remote_src = r
-            .kind
-            .fetch(tenant, realm, &r.id)
+        let remote_src = io
+            .fetch(r.kind, tenant, realm, &r.id)
             .await
             .and_then(|remote| r.kind.decode_source(&remote.raw_config));
         let state = classify_status(&snapshot_src, &local_src, remote_src)?;
@@ -1589,7 +1614,10 @@ pub async fn status(tenant: &str, only: Option<Kind>) -> Result<Vec<StatusEntry>
             state,
         });
     }
-    Ok(out)
+    Ok(StatusResult {
+        total,
+        entries: out,
+    })
 }
 
 /// Classify the snapshot/local/remote content. A remote 404 is a state of this
@@ -2081,6 +2109,40 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn filtered_status_never_fetches_a_nonmatching_manifest_entry() {
+        let dir = tmp();
+        let store = store_at(&dir.join(".aic-sync"));
+        let workspace = dir.join("workspace");
+        let matching = endpoint_ref("OIDC profile");
+        let excluded = endpoint_ref("healthcheck");
+        for reference in [&matching, &excluded] {
+            store
+                .record(&endpoint_script(reference, "source", "snapshot"), "")
+                .unwrap();
+            let path = workspace_file_in(&workspace, "", reference);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"source").unwrap();
+        }
+        let io = FakeSyncIo::new(vec![
+            Ok(endpoint_script(&matching, "source", "remote")),
+            Err(Error::Api {
+                status: 503,
+                body: "excluded entry must not be fetched".into(),
+            }),
+        ]);
+
+        let status = status_with(&store, &workspace, &io, "tenant", None, Some("OIDC"))
+            .await
+            .unwrap();
+
+        assert_eq!(status.total, 2);
+        assert_eq!(status.entries.len(), 1);
+        assert_eq!(status.entries[0].name, matching.name);
+        assert_eq!(io.pending_fetch_count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn local_reads_only_treat_not_found_as_missing() {
         let dir = std::env::temp_dir().join(format!("aic-sync-read-{}", uuid::Uuid::new_v4()));
@@ -2286,6 +2348,10 @@ mod tests {
 
         fn write_count(&self) -> usize {
             self.writes.lock().unwrap().len()
+        }
+
+        fn pending_fetch_count(&self) -> usize {
+            self.fetches.lock().unwrap().len()
         }
     }
 

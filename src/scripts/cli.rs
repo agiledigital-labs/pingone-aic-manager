@@ -855,15 +855,9 @@ pub(crate) async fn run_with_runtime(
             // namespace (`alpha`/`endpoint`/…), a full-name (`alpha/Email OTP`),
             // or any fragment. See `script::matches_term`.
             let filter = reference.filter(|s| !s.trim().is_empty());
-            let mut total = 0;
             let mut shown = 0;
-            for e in sync::status(&t, None).await? {
-                total += 1;
-                if let Some(term) = &filter
-                    && !script::matches_term(term, e.kind, e.realm.as_deref(), &e.name)
-                {
-                    continue;
-                }
+            let status = sync::status(&t, None, filter.as_deref()).await?;
+            for e in status.entries {
                 let label = match e.state {
                     sync::ScriptState::InSync => "in sync",
                     sync::ScriptState::LocallyModified => "modified locally",
@@ -881,8 +875,11 @@ pub(crate) async fn run_with_runtime(
             }
             if shown == 0 {
                 match &filter {
-                    Some(term) if total > 0 => {
-                        println!("no synced script matches {term:?} ({total} synced)");
+                    Some(term) if status.total > 0 => {
+                        println!(
+                            "no synced script matches {term:?} ({} synced)",
+                            status.total
+                        );
                     }
                     _ => println!("nothing synced yet — `aic script pull …` first"),
                 }
