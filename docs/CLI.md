@@ -2063,7 +2063,7 @@ aic script pull [<ref>] [--force] [--force=backup] # protected pull; no ref → 
 aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
 aic script sync [<ref>] [--resolve local|remote --force] [--force=syntax-check] [--tenant TENANT] [--yes]
 aic script watch [--tenant TENANT] [--yes] [--force=syntax-check] # auto-push each .cjs you save (Ctrl-C to stop)
-aic script status [<ref>]                       # in sync / modified / remote / conflict; template/type drift notes
+aic script status [<ref>]                       # in sync / modified / remote / conflict / deleted on remote; template/type drift notes
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```

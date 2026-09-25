@@ -852,6 +852,10 @@ pub(crate) async fn run_with_runtime(
                     sync::ScriptState::RemotelyModified => "modified on remote",
                     sync::ScriptState::BothModified => "CONFLICT (both changed)",
                     sync::ScriptState::LocalMissing => "local file missing",
+                    sync::ScriptState::RemoteMissing => "deleted on remote",
+                    sync::ScriptState::RemoteMissingLocallyModified => {
+                        "deleted on remote (local edits)"
+                    }
                 };
                 let full = script::full_name(e.kind, e.realm.as_deref(), &e.name);
                 println!("  {full:<48} {label}");
