@@ -315,17 +315,23 @@ impl Kind {
 /// own: it is a script *slot* inside a shared config document, so creating or
 /// deleting it means changing the document that owns it.
 pub fn embedded_kind_error(kind: Kind, name: &str) -> crate::Error {
+    crate::Error::Config(embedded_kind_message(kind, name))
+}
+
+/// The bare explanation behind [`embedded_kind_error`], for surfaces that
+/// embed it in their own sentence rather than reporting it as an error.
+pub fn embedded_kind_message(kind: Kind, name: &str) -> String {
     let (prefix, slot, document, tab) = match kind {
         Kind::IdmManagedHook => ("managed", "hook slot", "/openidm/config/managed", "Managed"),
         Kind::IdmSyncMapping => ("sync", "script slot", "/openidm/config/sync", "Mappings"),
         // Standalone kinds never reach here — `standalone()` gates every caller.
-        _ => return crate::Error::Config(format!("{name} has its own lifecycle")),
+        _ => return format!("{name} has its own lifecycle"),
     };
-    crate::Error::Config(format!(
+    format!(
         "{prefix}/{name} is a {slot} inside {document}, not a standalone script — \
          edit it with `aic script push` (the slot must already exist), or add/remove \
          the slot in the {tab} tab"
-    ))
+    )
 }
 
 /// A lightweight remote identity — enough to locate a script and place it in
