@@ -74,7 +74,7 @@ $USAGE" ;;
   esac
 done
 
-[ -n "$VERSION" ] && [ -n "$NOTES" ] || die "$USAGE"
+{ [ -n "$VERSION" ] && [ -n "$NOTES" ]; } || die "$USAGE"
 
 # --- validate (no mutations past this block) ---------------------------------
 

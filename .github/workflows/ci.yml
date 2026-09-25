@@ -79,12 +79,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Installed on the hosted image today; installing only when it is absent
-      # means this step does not quietly stop running if that changes.
+      # Pinned, like gitleaks and cargo-audit. It used to be whatever the image
+      # shipped (0.8.0 on ubuntu-22.04), which disagreed with 0.11.0 locally in
+      # both directions: it flagged SC2015 sites 0.11.0 accepts, and found
+      # NOT_YET_CLEAN files clean that 0.11.0 does not. So CI was red for a week
+      # while release-check reported ready. release-check reads this version.
       - name: Shellcheck (all scripts)
+        env:
+          SHELLCHECK_VERSION: 0.11.0
         run: |
-          command -v shellcheck >/dev/null 2>&1 \
-            || { sudo apt-get update && sudo apt-get install -y shellcheck; }
+          curl -sSfL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ -C /tmp "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          export PATH="/tmp/shellcheck-v${SHELLCHECK_VERSION}:$PATH"
           shellcheck --version
           scripts/shellcheck-all.sh
 
