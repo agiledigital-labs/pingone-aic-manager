@@ -285,6 +285,19 @@ gate "cargo audit: advisories" \
 # scripts/shellcheck-all.sh holds the severity and the not-yet-clean list, so CI
 # and this script cannot drift into linting different files at different bars.
 
+# Pinned in ci.yml, and the version matters: shellcheck releases disagree about
+# both findings and the NOT_YET_CLEAN list, which is how CI sat red for a week
+# while this script said ready. So a different local version is refused, not
+# used.
+SHELLCHECK_VERSION="$(grep -oP '^\s+SHELLCHECK_VERSION:\s*\K\S+' "$CI_YML" | head -1)"
+[ -n "$SHELLCHECK_VERSION" ] || fail "could not read SHELLCHECK_VERSION from $CI_YML"
+step "shellcheck version"
+command -v shellcheck >/dev/null 2>&1 || fail "shellcheck is not on PATH; CI pins $SHELLCHECK_VERSION"
+have="$(shellcheck --version | grep -oP '^version: \K\S+')"
+[ "$have" = "$SHELLCHECK_VERSION" ] || fail "shellcheck $have is on PATH but CI pins $SHELLCHECK_VERSION.
+  The two disagree about findings, so a green run here would not predict CI."
+ok
+
 gate "shellcheck" \
   "shellcheck findings in a tracked script (see above), or an exemption in
   scripts/shellcheck-all.sh that is no longer needed" \

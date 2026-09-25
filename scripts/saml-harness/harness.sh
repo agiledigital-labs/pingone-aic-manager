@@ -202,7 +202,7 @@ ensure_token() {
       -d "password=${ADMIN_PASSWORD}" \
       -d "grant_type=password" | jq -r '.access_token'
   )"
-  [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] || die "failed to obtain admin token"
+  { [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ]; } || die "failed to obtain admin token"
 }
 
 # kc_req METHOD PATH [curl args…]
@@ -860,7 +860,7 @@ cmd_verify_rotate() {
 
 cmd_register_sp() {
   local file="${1:-}"
-  [ -n "$file" ] && [ -f "$file" ] || die "usage: $0 register-sp <spssodescriptor.xml>"
+  { [ -n "$file" ] && [ -f "$file" ]; } || die "usage: $0 register-sp <spssodescriptor.xml>"
   container_running || die "container not running; try: $0 up"
   ensure_token
   local tmp code conv client_id existing
@@ -898,7 +898,7 @@ cmd_register_sp() {
 
 cmd_register_idp() {
   local file="${1:-}"
-  [ -n "$file" ] && [ -f "$file" ] || die "usage: $0 register-idp <idpssodescriptor.xml>"
+  { [ -n "$file" ] && [ -f "$file" ]; } || die "usage: $0 register-idp <idpssodescriptor.xml>"
   container_running || die "container not running; try: $0 up"
   ensure_token
   local imported code merged
@@ -1488,7 +1488,7 @@ cmd_capture_signing() {
 cmd_signature_report() {
   local file="${1:-}"
   local meta="${2:-}"
-  [ -n "$file" ] && [ -f "$file" ] \
+  { [ -n "$file" ] && [ -f "$file" ]; } \
     || die "usage: $0 signature-report <captured-samlresponse> [published-metadata.xml]"
   local report published ident where
   report="$(signature_report <"$file")" || die "signature-report: ${file} could not be read"
