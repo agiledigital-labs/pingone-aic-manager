@@ -170,11 +170,9 @@ if (callbacks.isEmpty()) {
   logger.info("no callbacks");
 }
 
-// existingSession is declared `| undefined` because it is absent when there
-// is no session. The guard is the requiredness half; the reject file pins
-// the undefined, because `ExistingSession` is assignable to
-// `ExistingSession | undefined` and this block would survive losing it.
-if (existingSession) {
+// AM leaves the name undeclared without a session, so a bare truthiness check
+// can throw before the script reaches the branch.
+if (typeof existingSession !== "undefined" && existingSession != null) {
   logger.info("principal {}", existingSession.Principal);
 }
 

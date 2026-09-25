@@ -83,6 +83,8 @@ declare let outcome: StringLike | undefined;
 interface ExistingSession {
   Principal: string;
 }
+// AM leaves this name undeclared when no authenticated session is supplied.
+// Guard with `typeof existingSession !== "undefined"` before reading it.
 declare const existingSession: ExistingSession | undefined;
 
 // Present on both engines (verified 2026-06-04).

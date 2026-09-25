@@ -107,3 +107,11 @@ interface Identity {
 declare const identity: Identity;
 
 declare const scopes: any[];
+
+// Conditional binding: check `typeof session !== 'undefined' && session != null`
+// before using it. The context metadata omits this binding.
+interface OAuthScriptedSession {
+  getProperty(name: StringLike): StringLike | null;
+  setProperty(name: StringLike, value: StringLike): void;
+}
+declare const session: OAuthScriptedSession | null | undefined;

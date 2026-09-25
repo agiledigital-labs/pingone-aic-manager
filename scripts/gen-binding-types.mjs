@@ -192,6 +192,21 @@ const TOKEN_FIELD_VALUE = [
   "",
 ];
 
+// The token-modification and OIDC claims metadata omit `session`, but Ping
+// documents it in both contexts. Token modification binds it conditionally when
+// the request has a session cookie. An absent binding is an undeclared name at
+// runtime, so callers need `typeof`. Do not add it to every next-gen context.
+const CONDITIONAL_OAUTH_SESSION = [
+  "// Conditional binding: check `typeof session !== 'undefined' && session != null`",
+  "// before using it. The context metadata omits this binding.",
+  "interface OAuthScriptedSession {",
+  "  getProperty(name: StringLike): StringLike | null;",
+  "  setProperty(name: StringLike, value: StringLike): void;",
+  "}",
+  "declare const session: OAuthScriptedSession | null | undefined;",
+  "",
+];
+
 const emit = (out) => {
   while (out.length && out[out.length - 1] === "") out.pop();
   process.stdout.write(out.join("\n") + "\n");
@@ -228,6 +243,9 @@ function perContext(jsonPath, skip) {
     }
     const iface = pascal(b.name);
     out.push(`interface ${iface} {`, ...body(b.elements, iface).map((m) => m.text), `}`, `declare const ${safe(b.name)}: ${iface};`, "");
+  }
+  if (["OAUTH2_ACCESS_TOKEN_MODIFICATION_NEXT_GEN", "OIDC_CLAIMS_NEXT_GEN"].includes(ctx._id)) {
+    out.push("", ...CONDITIONAL_OAUTH_SESSION);
   }
   emit(out);
 }
