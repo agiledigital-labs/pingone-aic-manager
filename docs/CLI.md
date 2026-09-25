@@ -2061,12 +2061,19 @@ aic script copy <src-ref> <dst-ref> [--tenant TENANT] [--yes] [--force=syntax-ch
 aic script delete <ref> --force [--tenant TENANT] [--yes]
 aic script pull [<ref>] [--force] [--force=backup] # protected pull; no ref → fuzzy picker
 aic script push [<ref>] [--force] [--force=syntax-check] [--yes] # independent convergence/syntax permissions
-aic script sync [<ref>] [--resolve local|remote --force] [--force=syntax-check] [--tenant TENANT] [--yes]
+aic script sync [<ref>] [--resolve local|remote --force] [--force=syntax-check] [--tenant TENANT] [--yes] # prompts on remote deletion
 aic script watch [--tenant TENANT] [--yes] [--force=syntax-check] # auto-push each .cjs you save (Ctrl-C to stop)
-aic script status [<ref>]                       # in sync / modified / remote / conflict; template/type drift notes
+aic script status [<ref>]                       # in sync / modified / remote / conflict / deleted on remote; template/type drift notes
 aic script diff [<ref>] [--local-vs-snapshot | --snapshot-vs-remote]
 aic script who <ref> [--history] [--minutes N] [--json]   # who created/last modified it
 ```
+
+When `sync` finds a synced script missing on the tenant, it prompts to skip,
+re-create from the local source, or forget the sync record while keeping the
+local file. `--resolve local` re-creates standalone resources with their saved
+id; `--resolve remote` forgets the record for missing resources. Embedded
+managed-hook and sync-mapping scripts cannot be re-created by this prompt.
+Skipped entries are listed and make the command exit non-zero.
 
 - `list` tags each row with its `ref` and narrows three ways. `--context TEXT`
   keeps AM scripts whose context **or** workspace folder slug contains `TEXT`,
