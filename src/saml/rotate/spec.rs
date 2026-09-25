@@ -801,7 +801,8 @@ pub struct InitApplyError {
     status: WriteStatus,
     activating: bool,
     total: usize,
-    state: RotationState,
+    // Boxed with `source` to keep the `Err` variant small (`result_large_err`).
+    state: Box<RotationState>,
     source: Box<Error>,
 }
 
@@ -825,7 +826,7 @@ impl InitApplyError {
             },
             activating,
             total: plan.steps().len(),
-            state: state.clone(),
+            state: Box::new(state.clone()),
             source: Box::new(failure.source),
         }
     }
