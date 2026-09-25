@@ -1,6 +1,6 @@
 [package]
 name = "pingone-aic-manager"
-version = "0.12.0"
+version = "0.12.1"
 edition = "2024"
 # Measured 2026-09-21 on 1.85, 1.88, 1.91, 1.92, 1.93 and 1.94 — all red.
 # 1.95 is the first toolchain on which `cargo check --all-targets` succeeds.
