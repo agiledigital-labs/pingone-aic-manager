@@ -107,12 +107,13 @@
 //!
 //! The vertical's standard seams, one directory deeper, because a rotation is
 //! a feature that happens to live inside `saml/` rather than another view of
-//! an entity: [`pem`] and [`spec`] are tenant-free, [`journal`] is the local
-//! record, [`ops`] is the only module that performs I/O across the three
-//! stores, and [`cli`] is the parser.
+//! an entity: [`spec`] is tenant-free, [`journal`] is the local record,
+//! [`ops`] is the only module that performs I/O across the three stores, and
+//! [`cli`] is the parser. The key-pair and certificate reader it validates
+//! with is [`crate::saml::pem`], shared with [`crate::saml::cert`]; it holds
+//! no rotation state.
 
 pub mod cli;
 pub mod journal;
 pub mod ops;
-pub mod pem;
 pub mod spec;

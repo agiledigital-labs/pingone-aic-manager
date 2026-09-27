@@ -1117,3 +1117,27 @@ findings). Each should name the guard that will eventually retire it.
   Note this is the opposite of the `.ai/core.md` `is_dir()` ban, which governs
   walkers that write or delete; this walker only reads, and here following the
   link is what matches the runner. _Fix: `entry.path().is_dir()`._
+
+### 2026-09-28 — saml cert: a third export reader, and doc comments split by insertion
+
+- **What:** (1) `cert::ops::read_export` is a near-verbatim copy of
+  `rotate::ops::export_certs` (same `classify_export` match, same messages),
+  and `cert::ops::apply`'s settle loop copies `rotate::ops::poll_signing_certs`
+  with different, unexplained timeouts (20s/2s vs 45s/3s). `cert` also reaches
+  into `rotate::spec` for `WriteFailure`, `WriteStatus` (made `pub` for it),
+  `Decision`, `SIGNING_USE`, `role_descriptor`, and into `rotate::pem` for a
+  generic X.509 reader — shared SAML write/cert machinery living in a sibling
+  feature. (2) Two new items were inserted between an existing doc comment and
+  its item: `PendingFact` in `metadata.rs` now wears `PendingKey`'s doc, and
+  the new `import_takes_certs_…` test in `saml/cli.rs` wears
+  `import_parses_its_flags_…`'s. (3) `pem::time` slices `&str` by byte index
+  after only a UTF-8 check, so a multibyte char in a tenant-supplied
+  certificate's UTCTime panics `cert list`.
+- **Guard:** (1) lift `read_export`, the settle poll, `WriteFailure`/
+  `WriteStatus`/`Decision` and the cert reader to `saml::{ops,spec,pem}` — then
+  a fourth consumer cannot copy them. (2) none automatable cheaply; when a diff
+  adds an item directly above an existing one, read the three lines above the
+  insertion. (3) a table row with a non-ASCII time byte, plus a
+  "`certificate_details` never panics on arbitrary bytes" fuzz/property test
+  behind `#[ignore]` (the repo has no proptest yet). Not applied (report-only
+  review).

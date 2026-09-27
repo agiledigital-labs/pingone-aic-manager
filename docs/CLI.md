@@ -1145,10 +1145,11 @@ intermediate state retains a working key.
 
 ## `aic saml` — SAML 2.0 entity providers and metadata
 
-Realm-scoped, CLI-only (no TUI tab). Six verbs write: `create-hosted`, `import`,
-`delete`, and the three halves of a certificate rollover — `rotate init`,
-`rotate stage` and `rotate complete`. There is no circle-of-trust write verb — a
-later slice.
+Realm-scoped, CLI-only (no TUI tab). Eight verbs write: `create-hosted`,
+`import`, `delete`, `cert add` and `cert remove` (a remote entity's signing
+certificates), and the three halves of a hosted certificate rollover —
+`rotate init`, `rotate stage` and `rotate complete`. There is no
+circle-of-trust write verb — a later slice.
 
 ```bash
 aic saml list [--location hosted|remote] [--role idp|sp] [--realm alpha] [--json]
@@ -1157,12 +1158,18 @@ aic saml cot list [--realm alpha] [--json]
 aic saml cot show <NAME> [--realm alpha] [--json]
 aic saml create-hosted <ENTITY-ID> --role idp|sp \
   --meta-alias /<realm>/<name> [--realm alpha] [--yes]
-aic saml import <FILE> [--realm alpha] [--dry-run] [--no-sanitise] [--yes]
+aic saml import <FILE> [--realm alpha] [--dry-run] [--no-sanitise] \
+  [--certs add|replace] [--force] [--yes]
 aic saml delete <ENTITY-ID> [--location hosted|remote] \
   [--realm alpha] --force [--yes]
 aic saml metadata export <ENTITY-ID> [--realm alpha] [--out PATH]
 aic saml metadata inspect <FILE>
 aic saml metadata sanitise <FILE> [--out PATH] [--keep-signature]
+aic saml cert list <ENTITY-ID> [--role idp|sp] [--realm alpha] [--json]
+aic saml cert add <ENTITY-ID> --cert-file PATH [--role idp|sp] \
+  [--realm alpha] [--force] [--dry-run] [--yes]
+aic saml cert remove <ENTITY-ID> <SHA256-OR-PREFIX> [--role idp|sp] \
+  [--realm alpha] [--force] [--dry-run] [--yes]
 aic saml rotate status <ENTITY-ID> [--role idp|sp] [--realm alpha] [--json]
 aic saml rotate init <ENTITY-ID> --identifier <NAME> --secret-id esv-<NAME> \
   (--key-file PATH | --key-stdin) [--description TEXT] \
@@ -1176,9 +1183,11 @@ aic saml rotate complete <ENTITY-ID> [--retain <SHA256>] \
 
 ### Which verbs need an unlocked agent
 
-Everything but `metadata`, `rotate` included — even `rotate status`, which
-writes nothing: it correlates the entity, the secret mapping and the ESV secret,
-and only the metadata export inside it is unauthenticated.
+Everything but `metadata` and `cert list`, `rotate` included — even
+`rotate status`, which writes nothing: it correlates the entity, the secret
+mapping and the ESV secret, and only the metadata export inside it is
+unauthenticated. `cert list` reads nothing but that export, so it works locked;
+`cert add` and `cert remove` list the realm over the bearer before they write.
 
 `metadata inspect` and `metadata sanitise` are local file rewrites, and
 **`metadata export` reaches the tenant over an endpoint that takes no
@@ -1287,7 +1296,8 @@ widening the import path must not widen the classifier that decides whether an
 HTTP-200 body is metadata at all. `import --dry-run` is how an aggregate gets
 inspected.
 
-**Any pre-existing entity id refuses the whole operation**, including the
+**Any pre-existing entity id refuses the whole operation** — with the one
+exception below — including the
 entities that would have been created — an aggregate is one call, so there is no
 partial send to offer. `?_action=importEntity` is **create-only**: a re-import
 of an existing entity is a `500`, there is no upsert, and there is deliberately
@@ -1297,6 +1307,54 @@ metadata — the half of CoT membership the runtime actually reads — is not
 exposed by REST, so nothing could tell an operator what the "recovery"
 destroyed. Remove an entity deliberately with `aic saml delete` if that is what
 is meant.
+
+**The one exception: a file whose single entity already exists as a _remote_
+entity** becomes a certificate update — the same `importEntity` call with
+`"updateType": "UPDATE_CERTIFICATES"`, which replaces that entity's certificates
+in place and leaves its circle-of-trust membership alone (`docs/api/06-saml.md`).
+It is `aic saml cert`'s machinery, so everything under [`cert`](#cert--a-remote-entitys-signing-certificates)
+holds: the document sent is the entity's **own export** with signing
+`KeyDescriptor`s spliced in or out, never the uploaded file, and a certificate
+from the file reaches it as a key descriptor written fresh from its DER — after
+the same X.509 check `cert add` gives a `--cert-file`, so a signing certificate
+body that is not a certificate refuses the import, naming its line.
+
+- The plan shows, per role, the signing certificates added, removed and kept
+  (subject, SHA-256, `notAfter`), recomputed for the chosen mode before the
+  final confirmation.
+- `--certs add` merges the file's signing certificates in, deduplicated by
+  fingerprint; `--certs replace` makes each role's signing certificates exactly
+  the file's. Encryption and `use`-less key descriptors are kept either way.
+  They are compared by role, `use`, `KeyName` and certificate SHA-256, in both
+  directions and over every role either side declares: one only the file
+  carries — including a certificate the file moved from signing to encryption,
+  or one it only renamed — is listed as not applied, and one only the tenant
+  carries, including in a role the file omits, is listed as kept. Nothing else
+  inside a key descriptor is compared, and never its raw bytes: AM re-indents
+  the whitespace inside `<KeyInfo>`.
+- Every other difference is listed as **not applied — AIC ignores
+  non-certificate changes on an update; changing them means delete and
+  re-import, which drops the entity's circle-of-trust membership.** When
+  nothing compared differs besides signing certificates, one line says so and
+  names what was compared — the entity's and each role's attributes and every
+  element nested in them (names, attributes and text, so a changed attribute deep
+  inside an `<AttributeConsumingService>` counts), and the non-signing key
+  descriptors as above. Whitespace is not compared, because AM re-indents what
+  it stores; it is not a byte comparison.
+- `--certs` chooses the mode and nothing else. Consent is separate, exactly as
+  for `cert add`: a yes at a terminal, or `--force` without one. So at a
+  terminal the flow is choose the mode (an add / replace / cancel menu when
+  `--certs` is absent), read the plan, confirm; choosing cancel sends nothing
+  and exits non-zero. Without a terminal (or with `--no-prompt`) it needs both
+  `--certs` and `--force`, and refuses naming whichever is missing.
+  `--dry-run` without `--certs` prints both modes' plans.
+- A file that declares a role the entity lacks is refused: AM would add that
+  role whole, endpoints and all.
+- Everything else still refuses whole: an aggregate with any collision, a
+  collision with a hosted entity, and a mix of new and existing entities.
+  `--certs` or `--force` on a file that would not update a remote entity is
+  refused rather than ignored. `--force` only ever confirms a certificate
+  update: it never means delete and re-import, and there is no forced create.
 
 There is **no `--cot`**. `{"standardMetadata": …, "cot": "<name>"}` returns 200
 and leaves the named circle of trust unchanged, and a `cot` naming one that does
@@ -1508,6 +1566,64 @@ is neither stripped nor counted.
 There is no circle-of-trust **write** verb: a CoT `PUT` drives the entity-side
 membership too and can return 500 having already written the document, so the
 command that does it has to re-read and re-check (`docs/api/06-saml.md`).
+
+### `cert` — a remote entity's signing certificates
+
+A **remote** entity's certificates are in its metadata, and AM replaces them
+with `POST …/realm-config/saml2/remote/?_action=importEntity` and
+`"updateType": "UPDATE_CERTIFICATES"` (measured 2026-09-28,
+`docs/api/06-saml.md`). A **hosted** entity's are not — they come from the
+secret store — which is what [`rotate`](#rotate--roll-the-certificate-a-role-signs-with)
+is for, and `cert add` / `cert remove` refuse a hosted entity and say so.
+
+`cert list` reads the unauthenticated metadata export and prints a block per
+certificate: role, `use` (`signing`, `encryption`, or `unspecified` for a key
+descriptor with no `use`), SHA-256, subject, issuer, `notBefore`, `notAfter`
+with the days left, and the key algorithm and size. Expired and
+expiring-within-30-days certificates are flagged. `--json` is an array of the
+same fields plus `daysUntilExpiry` and `expiry` (`valid`, `expiring-soon`,
+`expired`). It lists hosted entities too.
+
+`cert add` takes one PEM `CERTIFICATE` block or a DER file and refuses a file
+holding a private key. A certificate the role already publishes for signing is
+a no-op that says so and exits 0. `cert remove` takes a full fingerprint or an
+unambiguous prefix (colons allowed) and considers **signing** certificates
+only. Both need `--role` when the choice is ambiguous: `add` on a dual-role
+entity, `remove` of a certificate both roles sign with.
+
+`UPDATE_CERTIFICATES` is careless in four ways, and each is a guard here:
+
+- **It replaces every `KeyDescriptor` of each role the document names,
+  encryption included.** So the document sent is the entity's current export
+  with signing `KeyDescriptor`s spliced in or out — never re-serialised — and
+  every other key descriptor goes back byte for byte.
+- **The document's `entityID` is the target, and the remote collection writes
+  to hosted entities too.** So the entity is confirmed `remote` from the realm's
+  list, and the sent document's `entityID` must match it exactly.
+- **A role the entity lacks is added whole.** So the sent document's roles must
+  be a subset of the ones the realm list shows.
+- **It accepts a role with no signing certificate.** So every role must keep at
+  least one `use="signing"` certificate that reads as X.509 — a `use`-less one
+  does not count, since what AM does with it for signing is unmeasured, and nor
+  does one whose body is not a certificate — and removing the last one is
+  refused with **no `--force`**. Add the replacement first, or end trust
+  deliberately with `aic saml delete`.
+
+The realm list and the export are re-read immediately before the write, and a
+change to the entity's location or roles, or a single differing byte of the
+export, refuses it ("run the command again"). Afterwards the export is read again —
+certificates are not in the entity JSON, and its `_rev` does not move — and the
+exact `(role, use, sha256)` **set** is compared with the plan, never a count. A
+mismatch or a failed re-read exits non-zero, says whether the write was
+refused, accepted but unverified, or unknown, and names
+`aic saml cert list <ENTITY-ID> --realm <realm>` as the read to do before
+retrying.
+
+Confirmation follows `rotate stage`: the plan, then `--dry-run` stops holding no
+permission token, then `--force` or a terminal prompt, then `--yes` for a
+production-themed tenant. AM re-indents what it stores, so the export after an
+add-then-remove round trip holds the same certificates but need not be
+byte-identical to the one before it.
 
 ### `rotate` — roll the certificate a role signs with
 
@@ -1841,8 +1957,11 @@ versions and this role's published certificates, which must still be the ones
 the plan was decided from — and between the two, they **re-survey every realm**
 for other consumers of the secret (above). `init` does the same in the same
 order before the first of its three steps — the `secretIdIdentifier` and the
-label's mapping must still be what the plan saw, then the re-survey — surveys
-again before its activating step (above), and each step re-reads its own
+label's mapping must still be what the plan saw, then this role's published
+certificates must still be the ones the confirmation named as being replaced,
+then the re-survey — surveys again before its activating step (above; not the
+published certificates, which `init`'s own earlier steps can legitimately
+change), and each step re-reads its own
 document before overwriting it. A refusal before the first step sends nothing.
 A stop **after** a step has completed is reported the way `.ai/core.md` §5 says
 a batch that stops partway must be: it names the steps that completed

@@ -183,27 +183,63 @@ aic saml import /tmp/entra-clean.xml --realm alpha
 2026-09-18. Then the caveat that no post-import `cotlist` verification is
 possible, because `importEntity` rewrites extended metadata.
 
-### C3 · Confirm the import collided safely
+### C3 · Re-importing the same file is a certificate update, not a re-create
 
-Run the same import again:
+Run the same import again, headless and as a preview:
 
 ```sh
-aic saml import /tmp/entra-clean.xml --realm alpha; echo "exit $?"
+aic saml import /tmp/entra-clean.xml --realm alpha --no-prompt; echo "exit $?"
+aic saml import /tmp/entra-clean.xml --realm alpha --dry-run
 ```
 
 <details>
 <summary>fish</summary>
 
 ```fish
-aic saml import /tmp/entra-clean.xml --realm alpha; echo "exit $status"
+aic saml import /tmp/entra-clean.xml --realm alpha --no-prompt; echo "exit $status"
+aic saml import /tmp/entra-clean.xml --realm alpha --dry-run
 ```
 
 </details>
 
-- [ ] **Watch for:** a refusal naming the existing entity, and **no** `--force` that
-offers to delete and re-import. There is deliberately no such flag: the
-`cotlist` cannot be read back or restored, so a delete-and-recreate would
-silently drop a federation's trust and nothing could detect it.
+- [ ] **Watch for:** the headless run refuses, non-zero, asking for
+`--certs add|replace` and `--force`, and sends nothing. The file's one entity
+already exists as a **remote** entity, so the only thing an import can do is
+update its certificates (Part G exercises that). The dry run says so and prints
+both modes' plans; with the same certificate on both sides, each plan changes
+nothing.
+- [ ] **Watch for:** **no** route to delete and re-import. `--force` only
+confirms a certificate update: the `cotlist` cannot be read back or restored,
+so a delete-and-recreate would silently drop a federation's trust and nothing
+could detect it.
+
+### C4 · A collision with a hosted entity still refuses whole
+
+Export the hosted SP from C1 and try to import it. Its entity id exists, but in
+the **hosted** collection, so there is no certificate update to fall back on:
+
+```sh
+aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/sp-a.xml
+aic saml import /tmp/sp-a.xml --realm alpha --no-prompt; echo "exit $?"
+aic saml import /tmp/sp-a.xml --realm alpha --certs replace --force --no-prompt; echo "exit $?"
+```
+
+<details>
+<summary>fish</summary>
+
+```fish
+aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/sp-a.xml
+aic saml import /tmp/sp-a.xml --realm alpha --no-prompt; echo "exit $status"
+aic saml import /tmp/sp-a.xml --realm alpha --certs replace --force --no-prompt; echo "exit $status"
+```
+
+</details>
+
+- [ ] **Watch for:** both runs refuse, non-zero, after a preflight that lists
+`https://sp-a.example.com (hosted)`. The first refuses the whole import as
+create-only; the second says `--certs` and `--force` apply only to an existing
+**remote** entity and that there is no forced create. `aic saml list --realm
+alpha` afterwards shows the same entities as before.
 
 ---
 
@@ -218,12 +254,11 @@ operation. There is nothing to upload and no metadata to push.
 ### D0 · Make three throwaway key pairs
 
 ```sh
-cd /tmp
 for n in 1 2 3; do
-  openssl req -x509 -newkey rsa:2048 -keyout k$n.pem -out c$n.pem -days 30 \
-    -nodes -subj "/CN=aic-rotate-test-$n"
-  cat k$n.pem c$n.pem > pair$n.pem
-  printf 'cert%s ' $n; openssl x509 -in c$n.pem -outform DER | sha256sum
+  openssl req -x509 -newkey rsa:2048 -keyout /tmp/k$n.pem -out /tmp/c$n.pem \
+    -days 30 -nodes -subj "/CN=aic-rotate-test-$n"
+  cat /tmp/k$n.pem /tmp/c$n.pem > /tmp/pair$n.pem
+  printf 'cert%s ' $n; openssl x509 -in /tmp/c$n.pem -outform DER | sha256sum
 done
 ```
 
@@ -231,12 +266,11 @@ done
 <summary>fish</summary>
 
 ```fish
-cd /tmp
 for n in 1 2 3
-  openssl req -x509 -newkey rsa:2048 -keyout k$n.pem -out c$n.pem -days 30 \
-    -nodes -subj "/CN=aic-rotate-test-$n"
-  cat k$n.pem c$n.pem > pair$n.pem
-  printf 'cert%s ' $n; openssl x509 -in c$n.pem -outform DER | sha256sum
+  openssl req -x509 -newkey rsa:2048 -keyout /tmp/k$n.pem -out /tmp/c$n.pem \
+    -days 30 -nodes -subj "/CN=aic-rotate-test-$n"
+  cat /tmp/k$n.pem /tmp/c$n.pem > /tmp/pair$n.pem
+  printf 'cert%s ' $n; openssl x509 -in /tmp/c$n.pem -outform DER | sha256sum
 end
 ```
 
@@ -669,6 +703,179 @@ worked, which is why it does not use one.
 
 ---
 
+## Part G — a remote entity's signing certificates
+
+Parts D–F are about a **hosted** entity, whose certificate lives in the secret
+store. A **remote** entity is the opposite case: its certificates are in its
+metadata, and `aic saml cert` changes them through AM's `UPDATE_CERTIFICATES`
+import without touching its circle-of-trust membership. This part uses the
+Entra entity imported in C2; substitute its id for
+`https://sts.windows.net/<tenant-guid>/` below. Every step ends with the entity
+back on its original certificate. First measured live on 2026-09-28.
+
+### G0 · Make a throwaway certificate
+
+Only the certificate is needed — nothing here signs anything — so the key is
+deleted straight away.
+
+```sh
+openssl req -x509 -newkey rsa:2048 -keyout /tmp/gk1.pem -out /tmp/gc1.pem \
+  -days 30 -nodes -subj "/CN=aic-cert-test-1"
+rm /tmp/gk1.pem
+openssl x509 -in /tmp/gc1.pem -outform DER | sha256sum
+```
+
+### G1 · List what it publishes
+
+```sh
+aic saml cert list 'https://sts.windows.net/<tenant-guid>/' --realm alpha
+aic saml cert list 'https://sts.windows.net/<tenant-guid>/' --realm alpha --json
+```
+
+- [ ] **Watch for:** one block per certificate — role, `use`, SHA-256, subject,
+issuer, validity with the days left, and the key algorithm and size. Note the
+original certificate's fingerprint: every later step is checked against it.
+- [ ] **Watch for:** it works with the agent locked (`aic logout`, run it, then
+`aic login` again). It reads only the metadata export, which takes no
+authentication.
+
+### G2 · Preview, then add a certificate
+
+```sh
+aic saml cert add 'https://sts.windows.net/<tenant-guid>/' --realm alpha \
+  --cert-file /tmp/gc1.pem --dry-run
+aic saml cert add 'https://sts.windows.net/<tenant-guid>/' --realm alpha \
+  --cert-file /tmp/gc1.pem --force
+```
+
+- [ ] **Watch for:** the plan names `gc1` under `add` and the original under
+`keep`, and the dry run ends `dry run: nothing was sent`.
+- [ ] **Watch for:** the real run ends `the export now publishes exactly the
+planned certificates`. That is a read of the export after the write, compared
+as a set — the entity JSON cannot show it, because certificates are not in it
+and its `_rev` does not move. Confirm with a tool that is not the one under
+test:
+
+```sh
+aic saml metadata export 'https://sts.windows.net/<tenant-guid>/' --realm alpha \
+  --out /tmp/g2.xml
+aic saml metadata inspect /tmp/g2.xml | grep sha256
+```
+
+- [ ] exactly two fingerprints: the original and `gc1`.
+
+### G3 · Adding it again changes nothing
+
+```sh
+aic saml cert add 'https://sts.windows.net/<tenant-guid>/' --realm alpha \
+  --cert-file /tmp/gc1.pem --force
+```
+
+- [ ] **Watch for:** `already publishes … nothing to send`, exit 0, and no write.
+
+### G4 · Remove the original by a fingerprint prefix
+
+Use the first eight hex characters of the original's fingerprint from G1.
+
+```sh
+aic saml cert remove 'https://sts.windows.net/<tenant-guid>/' <first-8-hex> \
+  --realm alpha --force
+aic saml metadata export 'https://sts.windows.net/<tenant-guid>/' --realm alpha \
+  --out /tmp/g4.xml
+aic saml metadata inspect /tmp/g4.xml | grep sha256
+```
+
+- [ ] only `gc1` is left.
+
+### G5 · The last signing certificate cannot be removed
+
+```sh
+aic saml cert remove 'https://sts.windows.net/<tenant-guid>/' <gc1-first-8-hex> \
+  --realm alpha --force; echo "exit $?"
+```
+
+<details>
+<summary>fish</summary>
+
+```fish
+aic saml cert remove 'https://sts.windows.net/<tenant-guid>/' <gc1-first-8-hex> \
+  --realm alpha --force; echo "exit $status"
+```
+
+</details>
+
+- [ ] **Watch for:** a refusal, even with `--force`, that points at
+`aic saml cert add` and `aic saml delete`. AM itself accepts a role with no
+signing certificate — this guard is the only thing standing in the way.
+
+### G6 · Import over the existing entity: add, then replace
+
+`/tmp/entra-clean.xml` from A2 carries the original certificate.
+
+```sh
+aic saml import /tmp/entra-clean.xml --realm alpha --dry-run
+aic saml import /tmp/entra-clean.xml --realm alpha --no-prompt; echo "exit $?"
+```
+
+<details>
+<summary>fish</summary>
+
+```fish
+aic saml import /tmp/entra-clean.xml --realm alpha --dry-run
+aic saml import /tmp/entra-clean.xml --realm alpha --no-prompt; echo "exit $status"
+```
+
+</details>
+
+- [ ] **Watch for:** the dry run says this import is a **certificate update**
+and prints both plans — `--certs add` keeps `gc1`, `--certs replace` removes
+it — and the headless run refuses and asks for `--certs` and `--force`. At a
+terminal without `--certs` it offers add / replace / cancel instead; choosing
+cancel sends nothing and exits non-zero.
+- [ ] **Watch for:** `--certs` alone is not consent. Headless, `--certs replace`
+without `--force` refuses; at a terminal it still shows the plan and asks.
+
+```sh
+aic saml import /tmp/entra-clean.xml --realm alpha --certs add --force
+aic saml cert list 'https://sts.windows.net/<tenant-guid>/' --realm alpha
+aic saml import /tmp/entra-clean.xml --realm alpha --certs replace --force
+aic saml metadata export 'https://sts.windows.net/<tenant-guid>/' --realm alpha \
+  --out /tmp/g6.xml
+aic saml metadata inspect /tmp/g6.xml | grep sha256
+```
+
+- [ ] after `add`: the original and `gc1`. After `replace`: the original only —
+the entity is back where G1 found it.
+
+### G7 · What an update will not apply
+
+```sh
+sed 's#Location="[^"]*"#Location="https://idp-changed.example.com/saml2"#' \
+  /tmp/entra-clean.xml > /tmp/entra-moved.xml
+aic saml import /tmp/entra-moved.xml --realm alpha --certs replace --dry-run
+```
+
+- [ ] **Watch for:** each moved endpoint listed under `file only` and
+`tenant only`, headed **not applied — AIC ignores non-certificate changes on an
+update; changing them means delete and re-import, which drops the entity's
+circle-of-trust membership**. The plan itself contains only certificates.
+
+### G8 · A hosted entity is refused
+
+```sh
+aic saml create-hosted 'https://sp-certprobe.example.com' \
+  --realm alpha --role sp --meta-alias /alpha/certprobe
+aic saml cert add 'https://sp-certprobe.example.com' --realm alpha \
+  --cert-file /tmp/gc1.pem --force
+aic saml delete 'https://sp-certprobe.example.com' --realm alpha --force
+```
+
+- [ ] **Watch for:** the refusal points at `aic saml rotate`. AM would not have
+refused: the remote collection's certificate update writes to a hosted entity
+and can add a whole role to it.
+
+---
+
 ## Cleaning up
 
 Run this whether or not you got to the end. It should leave `alpha` exactly as
@@ -676,6 +883,7 @@ you found it — empty.
 
 ```sh
 aic saml delete 'https://sp-a.example.com' --realm alpha --force
+aic saml delete 'https://sp-certprobe.example.com' --realm alpha --force  # if G8 stopped early
 aic saml delete 'https://sts.windows.net/<tenant-guid>/' --realm alpha --force
 aic secretmap remove \
   am.applications.federation.entity.providers.saml2.sprotatetest.signing --force
@@ -687,6 +895,7 @@ aic secretmap list | grep -c sprotatetest       # expect: 0
 aic esv secret list  | grep -c sprotatetest     # expect: 0
 
 scripts/saml-harness/harness.sh down
+rm -f /tmp/gc1.pem /tmp/g2.xml /tmp/g4.xml /tmp/g6.xml /tmp/entra-moved.xml
 ```
 
 - [ ] the three confirmation commands print what their comments expect.
