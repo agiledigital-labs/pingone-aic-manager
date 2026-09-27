@@ -135,7 +135,10 @@ Consequences for this project:
 - **Re-importing an entity's metadata is a hazard**, for the same reason:
   `importEntity` rewrites extended metadata and can drop a `cotlist` that was
   added afterwards, breaking a federation that was working, with no visible
-  change to the CoT document.
+  change to the CoT document. `"updateType": "UPDATE_CERTIFICATES"` is the
+  exception: AM's own debug log shows it writing the entity's existing
+  `cotlist` back unchanged (2026-09-28; see "Updating a remote entity's
+  certificates").
 
 ## Creating a hosted entity
 
@@ -250,9 +253,13 @@ Content-Type: application/json
   `aic saml import <file>` must handle 1..n created entities and report them
   all; one file is not one entity.
 - **Re-importing an entity that already exists is `500 Unable to import SAML2
-  entity provider`.** `importEntity` is create-only — there is no upsert. To
-  re-import, `DELETE` first, which is exactly the `cotlist`-destroying hazard
-  this file warns about. A CLI should refuse and say so rather than deleting.
+  entity provider`.** Without `updateType`, `importEntity` is create-only —
+  there is no upsert. To re-import, `DELETE` first, which is exactly the
+  `cotlist`-destroying hazard this file warns about. A CLI should refuse and say
+  so rather than deleting. The one exception is `"updateType":
+  "UPDATE_CERTIFICATES"`, which updates an existing entity's certificates and
+  nothing else it already has — see the next section, including the two ways it
+  writes more than that.
 - **`cot` at import time does nothing.** `{"standardMetadata": …, "cot":
   "<name>"}` returns 200 and leaves the named CoT's `trustedProviders`
   unchanged; a `cot` naming a CoT that does not exist is *also* accepted with
@@ -265,6 +272,189 @@ Content-Type: application/json
 The imported entity's JSON carries the metadata's `singleSignOnService` /
 `singleLogoutService` endpoints and `nameIdFormatList`, but **not the signing
 certificate** — see below.
+
+## Updating a remote entity's certificates: `updateType`
+
+**Where this came from.** A console HAR capture taken on 2026-09-28 (by the
+main working session, not by the measuring pass below) showed the admin
+console's "upload metadata to an existing remote entity" action calling the
+same endpoint as an import, with two more body fields:
+
+```
+POST /am/json{realm-path}/realm-config/saml2/remote?_action=importEntity
+accept-api-version: protocol=2.0,resource=1.0
+content-type: application/json
+
+{"standardMetadata": "<base64url>", "updateType": "UPDATE_CERTIFICATES",
+ "skipMetadataSignatureVerification": false}
+```
+
+→ `200 {"importedEntities": ["<entityId>"]}`. In that capture the console first
+imported with `"updateType": "CREATE"`, then sent a second document with
+`UPDATE_CERTIFICATES`, and the exported metadata afterwards held only the second
+document's certificate. `aic saml import` has never sent `updateType`.
+
+Everything else in this section was measured on 2026-09-28 against sandbox
+`alpha` (see "Verified against"). The observation instrument is the exported
+metadata (`exportmetadata.jsp`), the entity JSON, and — for the extended
+metadata REST never shows — the `am-core` debug log described under "The
+`cotlist` survives" below.
+
+### The values
+
+`updateType` is the Java enum
+`com.sun.identity.saml2.meta.SAML2MetaUtils.MetadataUpdateType`.
+
+| `updateType`                                  | Entity exists                                                   | Entity absent                                     |
+| --------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------- |
+| omitted                                       | **500** `Unable to import SAML2 entity provider`                | creates (today's `aic saml import`)               |
+| `""`                                          | **500**, same                                                   | not tried                                         |
+| `CREATE`                                      | **500**, same — `CREATE` is the default, not an upsert          | creates                                           |
+| `UPDATE_CERTIFICATES`                         | **200** — see below                                             | **500** `Unable to import…`; **nothing created**  |
+| any other string                              | **400** `No enum constant com.sun.identity.saml2.meta.SAML2MetaUtils.MetadataUpdateType.<value>` | not tried |
+
+- The 400 is **case-sensitive** (`update_certificates` is refused) and **does
+  not list the legal values**. Twelve plausible names were tried and all
+  refused (listed in "Verified against"); the remote `?_action=schema` document
+  does not mention `updateType` at all. So `CREATE` and `UPDATE_CERTIFICATES`
+  are the two values known to exist — not proven to be the only two.
+- There is no "target" field: **the document's `entityID` is the target.** An
+  `UPDATE_CERTIFICATES` naming an entity that does not exist is the same opaque
+  500 as a create collision, and creates nothing. A client cannot tell those two
+  500s apart, so it must establish existence itself first.
+
+### What `UPDATE_CERTIFICATES` writes
+
+It works **per role descriptor in the document**, and the answer depends on
+whether the entity already has that role.
+
+**A role the entity already has: its whole `<KeyDescriptor>` set is replaced by
+the document's, and nothing else in the role changes.**
+
+- **Replace, not merge.** Sending one certificate after two leaves one.
+- **Several certificates are kept, in document order.** Two signing
+  `KeyDescriptor`s (cert 1, cert 2) exported as cert 1, cert 2; the same two
+  sent the other way round exported as cert 2, cert 1.
+- **Every `use` is replaced, not only signing.** A role holding a signing, a
+  `use`-less and an encryption `KeyDescriptor`, updated with a document carrying
+  none, exported with **no** `KeyDescriptor` at all; updated with an
+  encryption-only document, it exported encryption-only. So removing one
+  signing certificate means re-sending every other `KeyDescriptor` the role
+  should keep, encryption ones included.
+- **`use` round-trips as sent.** A `KeyDescriptor` with no `use` attribute
+  exports with no `use` attribute; `use="encryption"` exports as encryption.
+  (That a `use`-less descriptor applies to both signing and encryption is the
+  SAML metadata specification, not something measured here.)
+- **AM accepts zero certificates.** A document with no `KeyDescriptor` — and one
+  with only an encryption one — both returned 200 and left a remote IdP with
+  no signing certificate. AM does not guard this; a client has to.
+- **Non-certificate content is ignored.** With the certificates unchanged, a
+  document whose `SingleSignOnService` `Location`s were changed to
+  `https://idp-changed.example.com/saml2`, and separately one that added a
+  `<NameIDFormat>`, both returned 200 and changed nothing: the export was
+  unchanged and the entity JSON identical (its `_rev` included). A document
+  changing the certificate **and** the SSO `Location` applied the certificate
+  only. The control, on a second entity *created* with the changed `Location`
+  and a `NameIDFormat` (so the export demonstrably shows both): an
+  `UPDATE_CERTIFICATES` document omitting the `NameIDFormat` and restoring the
+  original `Location` swapped the certificate and left both in place. The
+  stored document's own `ID` attribute also survived documents that had none —
+  after the final restore the export was byte-identical to the pre-test one.
+- **The entity JSON does not move.** Certificates are not in it, so `_rev` stays
+  the same across a certificate-only update. Detect the change from the export.
+
+**A role the entity does NOT have: the whole role descriptor is added.** An
+`SPSSODescriptor` document sent to a remote IdP returned 200 and the entity
+became `roles: ["identityProvider", "serviceProvider"]`, with the SP role's
+`AssertionConsumerService`, `SingleLogoutService` and certificate all exported
+and a `serviceProvider` block in the JSON. A second update to that now-existing
+SP role, with a changed `AssertionConsumerService` `Location`, changed only the
+certificate — the rule above, applied to the new role. So **"only touches
+certificates" holds only for roles the entity already has.** A client must
+refuse a document whose roles are not a subset of the entity's.
+
+**A role the document omits is left alone.** The IdP role kept its certificate
+through the SP-only document above.
+
+### Hosted entities: the remote collection writes to them anyway
+
+`UPDATE_CERTIFICATES` on the **remote** collection naming a **hosted** SP
+(`https://sp-certprobe.example.com`, created for the purpose) is not refused.
+Both an SP-role and an IdP-role document returned 200 with the hosted entity id
+in `importedEntities`. No remote duplicate was created — the list still showed
+one entity, `location: hosted`. But the IdP-role document **added an
+`identityProvider` role to the hosted entity**: the list read
+`serviceProvider,identityProvider`, the JSON gained an `identityProvider` block
+(with no `metaAlias`), and the export gained an `IDPSSODescriptor` whose
+`KeyDescriptor`s were the tenant's hosted keys, not the certificate sent.
+
+Whether the SP-role document wrote the sent certificate into the hosted
+entity's stored metadata is **not known**: a hosted export generates its
+`KeyDescriptor`s from the secret store, so it cannot show a stored certificate,
+and the debug log that recorded every other write in this pass had no
+`setConfiguration` line for these two. **A client must confirm
+`location: remote` itself before sending** — the endpoint's collection name is
+not a guard.
+
+### The `cotlist` survives — as AM writes it
+
+REST cannot show the entity-side `cotlist` (see the membership section at the
+top of this file): across an update the entity JSON was identical, the export
+carries no extended metadata, and the CoT document came back unchanged,
+`_rev` included. The readable signal is AM's **`am-core` debug log**: every
+SAML2 entity write logs one line from
+`com.sun.identity.plugin.configuration.impl.ConfigurationInstanceImpl`,
+
+```
+ConfigurationInstanceImpl.setConfiguration: componentName = SAML2, realm = /alpha,
+configName = <entityId>, avPairs = DefaultConfigurationAttributes{attributes={
+sun-fm-saml2-metadata=[<EntityDescriptor …>], sun-fm-saml2-entityconfig=[<EntityConfig …>]}, …}
+```
+
+which carries both the standard metadata **and the extended entity config**,
+`cotlist` included. The sequence for the Entra-shaped test entity:
+
+| Write                                                      | `sun-fm-saml2-entityconfig` logged                     |
+| ---------------------------------------------------------- | ------------------------------------------------------ |
+| six `UPDATE_CERTIFICATES`, before any CoT existed           | `[]`                                                   |
+| CoT `?_action=create` with the entity in `trustedProviders` | `<IDPSSOConfig>` with `cotlist` = `aic-certprobe-cot`  |
+| `UPDATE_CERTIFICATES` (two certificates)                   | the same `cotlist`; metadata carries both certificates |
+| `UPDATE_CERTIFICATES` (back to one)                        | the same `cotlist`                                     |
+| CoT `PUT` `{"trustedProviders": []}`                       | `<IDPSSOConfig>` with an empty `cotlist`               |
+
+The falsifier: a first import (`CREATE`, on a second entity) logged
+`entityconfig=[]`, so an update that rebuilt extended metadata from the
+document the way an import does would have logged `[]` too. It logged the CoT
+name. The last row is the positive control that the instrument sees a `cotlist`
+change when there is one.
+
+What this does **not** establish: that a live assertion verifies afterwards (no
+federation was run), and it is what AM logged as written, not a read-back from
+its store. It also depends on `am-core` emitting DEBUG `setConfiguration`
+lines, which is observed behaviour, not a contract.
+
+### `skipMetadataSignatureVerification`
+
+For an **unsigned** document it makes no difference: omitted, `false` and
+`true` all returned 200 and applied the certificate. Signed metadata was not
+tested.
+
+### Consequences for `aic`
+
+- `UPDATE_CERTIFICATES` is a **replace-the-certificate-set** primitive. "Add a
+  certificate" is: read the current metadata, splice a `KeyDescriptor` into the
+  role, send; "remove" is the same with one dropped. Either way the document
+  must carry **every** `KeyDescriptor` the role keeps, encryption and `use`-less
+  ones included.
+- Guards AM does not provide, all measured above: the entity exists in the
+  **remote** collection; the document's `entityID` is exactly it; the document's
+  roles are a subset of the entity's; each role keeps at least one signing
+  certificate.
+- Confirm from the export after the write (§5): the JSON cannot see the change.
+- Using the exported document as the splice base is **inferred**, not measured
+  as such — it is what the non-certificate content is ignored against, so what
+  is sent besides the certificates does not matter to AM, but the export is the
+  only view of the current certificate set.
 
 ## Exporting metadata
 
@@ -937,17 +1127,24 @@ non-sandbox tenant, or you will send a UAT token to the sandbox host.
 - **`exportmetadata.jsp` needs no bearer at all** — the response is identical
   with and without one.
 - **`/am/AuthConsumer/…` is not audited** in `am-access`.
+- **`importEntity` with `"updateType": "UPDATE_CERTIFICATES"` replaces an
+  existing role's whole `KeyDescriptor` set — encryption included — and adds
+  any role the entity lacks, hosted entities included.** It ignores every other
+  change to a role that exists. Its 500 for a missing entity is the same text as
+  a create collision.
+- **An invalid `updateType` is a 400 naming the Java enum** and not listing its
+  values.
 
 ## Verified against
 
-Five passes. The 2026-08-12 pass was read-only against a UAT tenant and is the
+Six passes. The 2026-08-12 pass was read-only against a UAT tenant and is the
 basis for the diagnosis sections; the first 2026-09-16 pass exercised the write
 surface against the sandbox; the second 2026-09-16 pass carried a signing-key
 rotation through end to end; the 2026-09-18 pass ran that rotation again
 through `aic saml rotate` rather than by hand, which is what surfaced the
-identifier rule (its entry is at the foot of this file); and the 2026-09-22 pass
+identifier rule (its entry is at the foot of this file); the 2026-09-22 pass
 built a live federation to settle which of two published certificates AM signs
-with.
+with; and the 2026-09-28 pass measured `importEntity`'s `updateType`.
 
 ### 2026-08-12 — read-only, UAT `bravo`
 
@@ -1223,6 +1420,62 @@ behind.
   identifier remains in realm `alpha`'s label enum, the local rotation journal
   is `[]`, and `GET /environment/startup` read `restartStatus: ready` afterwards;
   `?_action=restart` was never called.
+
+### 2026-09-28 — `importEntity` `updateType`, sandbox `alpha`
+
+- Tenant: `<your-tenant>.forgeblocks.com` (**sandbox**), realm `alpha`. AM
+  `9.0.0-SNAPSHOT`, build `2026-September-16 17:26`. Realm `bravo` was never
+  read or written.
+- **Attribution.** The endpoint shape, the `CREATE` / `UPDATE_CERTIFICATES`
+  values and the first replace observation come from a console HAR capture the
+  main working session took the same day; this pass did not make that capture.
+  Everything in the table below is this pass's own live calls.
+- **Starting and ending state**, both from `…/saml2?_queryFilter=true` and
+  `…/circlesoftrust?_queryFilter=true`: one hosted SP (not touched) and the
+  remote Entra-shaped test IdP
+  `https://sts.windows.net/00000000-0000-0000-0000-000000000000/` holding one
+  signing certificate; no CoTs. At the end its export was byte-identical to the
+  opening one and its JSON identical. One residue REST cannot see: its extended
+  config is now an `<IDPSSOConfig>` with an empty `cotlist` where it was `[]`
+  (per the debug log), left by adding it to and removing it from a CoT.
+- Throwaway objects, all deleted: remote IdP `https://idp-certprobe.example.com`,
+  hosted SP `https://sp-certprobe.example.com` (metaAlias `/alpha/certprobe`),
+  CoT `aic-certprobe-cot`. Test documents were generated locally with
+  self-signed certificates.
+
+| Call (`POST …/saml2/remote?_action=importEntity` unless stated)             | Result                                                            | What it establishes                                          |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------ |
+| existing entity, `updateType: "NOPE"`                                       | **400** `No enum constant …MetadataUpdateType.NOPE`               | The enum's name; values not listed                           |
+| … `update_certificates`                                                     | 400, same form                                                    | Case-sensitive                                               |
+| … `UPDATE`, `UPDATE_ALL`, `UPDATE_METADATA`, `UPDATE_ENTITY`, `REPLACE`, `OVERWRITE`, `MERGE`, `UPDATE_CERTIFICATE`, `ADD_CERTIFICATES`, `NONE`, `IMPORT`, `UPSERT` | 400 each | No other guessed value exists |
+| … `updateType` omitted / `""` / `CREATE`                                    | **500** `Unable to import SAML2 entity provider` each             | The default is create; still no upsert                       |
+| `POST …/saml2/remote?_action=schema`, searched for `updateType`             | absent                                                            | The schema does not document it                              |
+| `UPDATE_CERTIFICATES`, cert 1 + cert 2 (entity held cert 2)                 | 200; export: cert 1, cert 2                                       | Several certificates kept                                    |
+| … cert 2 + cert 1                                                           | 200; export: cert 2, cert 1                                       | Document order is kept — the discriminator for the row above |
+| … cert 2 only                                                               | 200; export: cert 2                                               | Replace, not merge                                           |
+| … cert 2 only, SSO `Location` → `https://idp-changed.example.com/saml2`     | 200; export and JSON (`_rev` too) unchanged                       | Non-cert content ignored                                     |
+| … cert 2 only, `<NameIDFormat>` added                                       | 200; unchanged                                                    | Same                                                         |
+| … cert 1, SSO `Location` changed                                            | 200; export: cert 1, SSO unchanged                                | The document was read — only its certificates were applied   |
+| `UPDATE_CERTIFICATES` for `https://idp-certprobe-absent.example.com`         | **500** `Unable to import…`; list and export: no such entity      | Does not create                                              |
+| `CREATE` `https://idp-certprobe.example.com` with changed SSO + `NameIDFormat` | 200; export shows both                                         | Control: the export does show these fields                   |
+| … then `UPDATE_CERTIFICATES` with original SSO, no `NameIDFormat`, other cert | 200; cert swapped, SSO and `NameIDFormat` kept                  | Non-cert content ignored in the other direction too          |
+| … signing + no-`use` + encryption `KeyDescriptor`s                          | 200; exported as `signing`, no `use`, `encryption`, in that order | How each `use` comes back                                    |
+| … no `KeyDescriptor`                                                        | **200**; export has none                                          | AM accepts zero certificates; encryption replaced too        |
+| … encryption only                                                           | 200; export: encryption only                                      | An IdP with no signing certificate is accepted               |
+| … `skipMetadataSignatureVerification` omitted / `true` / `false` (unsigned) | 200 each, certificate applied each time                           | Irrelevant for unsigned metadata                             |
+| … an `SPSSODescriptor` document to the remote IdP                           | 200; roles → `identityProvider,serviceProvider`; ACS exported     | A missing role is **added whole**                            |
+| … same SP role again, ACS `Location` changed, other cert                    | 200; cert changed, ACS unchanged                                  | Once the role exists, certificates only                      |
+| CoT `?_action=create` with the Entra entity, then `UPDATE_CERTIFICATES` ×2   | 200; CoT `trustedProviders` unchanged (`_rev` too, checked after the first) and entity JSON unchanged; `am-core` `setConfiguration` logs `cotlist` = the CoT on both updates | The `cotlist` is written back unchanged |
+| earlier updates (no CoT); `CREATE` of the second entity                     | `am-core` logs `sun-fm-saml2-entityconfig=[]`                     | Falsifier for the row above                                  |
+| CoT `PUT` `{"trustedProviders": []}`                                        | 200; `am-core` logs an empty `cotlist`                            | The log shows a `cotlist` change when there is one           |
+| `aic saml create-hosted https://sp-certprobe.example.com --role sp`, then `UPDATE_CERTIFICATES` with an SP-role document | 200; still one entity, `location: hosted` | Not refused; no remote duplicate |
+| … with an IdP-role document                                                 | 200; hosted entity roles → `serviceProvider,identityProvider`     | The remote collection **writes to a hosted entity**          |
+
+- **Not established:** that an assertion verifies after an update (no
+  federation run); whether the SP-role document stored the sent certificate in
+  the hosted entity (a hosted export cannot show it and no `setConfiguration`
+  line was logged for either hosted write); signed metadata; whether
+  `MetadataUpdateType` has constants beyond the two known.
 
 ## Source citations
 

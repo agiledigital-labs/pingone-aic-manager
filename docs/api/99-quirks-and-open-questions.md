@@ -1579,3 +1579,19 @@ adding a version gives two certificates in the exported metadata and disabling
 the old one takes it away again — within seconds, with no tenant restart. Any
 guidance transcribed from AM documentation about aliases-as-rotation is wrong
 here. Full measurement in `docs/api/06-saml.md`.
+
+## 2026-09-28 — `importEntity` is not create-only after all
+
+`docs/api/06-saml.md` said, from the 2026-09-16 measurement, that SAML
+`importEntity` is create-only and that updating a remote entity means `DELETE`
+and re-import. That was true of the body we sent. A console HAR capture on
+2026-09-28 showed the console sending an extra field, `"updateType":
+"UPDATE_CERTIFICATES"`, which updates an existing remote entity in place; a
+measuring pass the same day confirmed it and mapped its edges. It replaces the
+whole `KeyDescriptor` set of each role it names (encryption included), ignores
+all other changes to an existing role, **adds** a role the entity lacks, is not
+refused for a hosted entity, and — per AM's own debug log — writes the
+existing `cotlist` back unchanged. The only other value found is `CREATE`, the
+default; an invalid one is a 400 naming the Java enum
+`SAML2MetaUtils.MetadataUpdateType` without listing its values. Full
+measurement in `docs/api/06-saml.md`.
