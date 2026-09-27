@@ -129,7 +129,7 @@ pub enum SamlCommand {
         /// file's (`replace`). Required without a terminal; nothing else in
         /// the file is applied.
         #[arg(long, value_enum)]
-        certs: Option<crate::saml::cert::spec::ImportMode>,
+        certs: Option<crate::saml::cert::import::ImportMode>,
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
@@ -475,7 +475,7 @@ async fn import(
     file: &Path,
     dry_run: bool,
     no_sanitise: bool,
-    certs: Option<crate::saml::cert::spec::ImportMode>,
+    certs: Option<crate::saml::cert::import::ImportMode>,
     yes: bool,
 ) -> Result<()> {
     // The file first, and before the tenant is even resolved: a document we
@@ -1546,7 +1546,7 @@ mod tests {
     #[test]
     fn import_takes_certs_as_its_update_consent_and_only_add_or_replace() {
         use crate::cli::{Cli, Command};
-        use crate::saml::cert::spec::ImportMode;
+        use crate::saml::cert::import::ImportMode;
 
         for (word, mode) in [("add", ImportMode::Add), ("replace", ImportMode::Replace)] {
             let Some(Command::Saml {
