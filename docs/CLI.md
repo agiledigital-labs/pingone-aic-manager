@@ -1950,8 +1950,11 @@ versions and this role's published certificates, which must still be the ones
 the plan was decided from — and between the two, they **re-survey every realm**
 for other consumers of the secret (above). `init` does the same in the same
 order before the first of its three steps — the `secretIdIdentifier` and the
-label's mapping must still be what the plan saw, then the re-survey — surveys
-again before its activating step (above), and each step re-reads its own
+label's mapping must still be what the plan saw, then this role's published
+certificates must still be the ones the confirmation named as being replaced,
+then the re-survey — surveys again before its activating step (above; not the
+published certificates, which `init`'s own earlier steps can legitimately
+change), and each step re-reads its own
 document before overwriting it. A refusal before the first step sends nothing.
 A stop **after** a step has completed is reported the way `.ai/core.md` §5 says
 a batch that stops partway must be: it names the steps that completed

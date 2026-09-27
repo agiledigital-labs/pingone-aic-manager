@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 use crate::config::tenant::Tenant;
+use crate::saml::metadata::CertRef;
 use crate::saml::pem::KeyPair;
 use crate::saml::rotate::journal::{self, Key};
 use crate::saml::rotate::spec::{self, Phase, RotationState, SecretVersion, signing_label};
@@ -307,7 +308,7 @@ pub struct InitInputs<'a> {
 /// ([`WriteStatus`]). `report` still receives one line per completed
 /// step as it completes; this module prints nothing itself.
 pub async fn apply_init(
-    tenant: &str,
+    tenant: &Tenant,
     state: &RotationState,
     plan: &spec::InitPlan,
     inputs: &InitInputs<'_>,
@@ -330,10 +331,10 @@ pub async fn apply_init(
         state,
         plan,
         &upfront,
-        async |_step| activation_recheck(tenant, state, plan).await,
+        async |_step| activation_recheck(&tenant.name, state, plan).await,
         async |step, proof| {
             run_step(
-                tenant,
+                &tenant.name,
                 state,
                 plan,
                 inputs,
@@ -425,18 +426,22 @@ async fn activation_recheck(
 /// which must still be what the plan saw ([`spec::init_pre_write_ok`] applies
 /// [`spec::identifier_write_ok`] and [`spec::mapping_write_ok`]) — and a
 /// refusal there comes before the survey, as `recheck`'s target check does.
-/// Then the tenant-wide survey, from which the proof is minted.
+/// Then the role's published certificates, which must still be the ones the
+/// prompt named as being replaced ([`spec::init_publication_ok`]; here only,
+/// before the first write — see that function for why not before the
+/// activating step). Then the tenant-wide survey, from which the proof is
+/// minted.
 ///
 /// The per-step checks inside [`set_identifier`] and [`map_label`] stay: they
 /// guard the seconds between steps, this guards the prompt.
 async fn init_recheck(
-    tenant: &str,
+    tenant: &Tenant,
     state: &RotationState,
     plan: &spec::InitPlan,
     inputs: &InitInputs<'_>,
 ) -> Result<spec::ExclusivityProof> {
-    let entity = api::read(tenant, &state.realm, state.location, &state.entity_id).await?;
-    let mapping = mapping_alias(tenant, &state.realm, &plan.label).await?;
+    let entity = api::read(&tenant.name, &state.realm, state.location, &state.entity_id).await?;
+    let mapping = mapping_alias(&tenant.name, &state.realm, &plan.label).await?;
     spec::init_target_ok(
         state,
         plan,
@@ -444,10 +449,15 @@ async fn init_recheck(
         &entity,
         mapping.as_deref(),
     )?;
+    let published = role_signing(
+        &export::cert_refs(tenant, &state.realm, &state.entity_id).await?,
+        state.role,
+    );
+    spec::init_publication_ok(state, &published)?;
 
     let mut survey = Vec::new();
     for realm in spec::SURVEYED_REALMS {
-        survey.push(read_realm_survey(tenant, realm).await?);
+        survey.push(read_realm_survey(&tenant.name, realm).await?);
     }
     spec::init_pre_write_ok(
         state,
@@ -456,6 +466,7 @@ async fn init_recheck(
         &spec::InitRecheck {
             entity,
             mapping,
+            published,
             survey,
         },
     )
@@ -709,6 +720,18 @@ async fn send_disable(
     .map_err(|error| WriteFailure::from_send(error, &[spec::CANNOT_DISABLE_LATEST]))
 }
 
+/// The signing fingerprints `role` publishes, from an export's certificates
+/// — what both pre-write rechecks compare against the plan.
+fn role_signing(certs: &[CertRef], role: Role) -> BTreeSet<String> {
+    certs
+        .iter()
+        .filter(|cert| {
+            cert.descriptor == role_descriptor(role) && cert.key_use.as_deref() == Some(SIGNING_USE)
+        })
+        .map(|cert| cert.sha256.clone())
+        .collect()
+}
+
 /// Read the rollover's inputs again, re-survey its consumers, and compare
 /// them with the plan's — returning the only [`spec::ExclusivityProof`] the
 /// write holds.
@@ -754,15 +777,10 @@ async fn recheck(
     let versions = spec::parse_versions(
         &crate::esv::api::list_secret_versions(&tenant.name, secret_id).await?,
     );
-    let certs = export::cert_refs(tenant, &state.realm, &state.entity_id).await?;
-    let published = certs
-        .iter()
-        .filter(|cert| {
-            cert.descriptor == role_descriptor(state.role)
-                && cert.key_use.as_deref() == Some(SIGNING_USE)
-        })
-        .map(|cert| cert.sha256.clone())
-        .collect();
+    let published = role_signing(
+        &export::cert_refs(tenant, &state.realm, &state.entity_id).await?,
+        state.role,
+    );
     let mut survey = Vec::new();
     for realm in spec::SURVEYED_REALMS {
         survey.push(read_realm_survey(&tenant.name, realm).await?);

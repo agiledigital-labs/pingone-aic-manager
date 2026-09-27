@@ -457,7 +457,7 @@ async fn init(
         .map(str::to_string)
         .unwrap_or_else(|| default_description(&state));
     ops::apply_init(
-        &tenant.name,
+        &tenant,
         &state,
         &plan,
         &ops::InitInputs {
