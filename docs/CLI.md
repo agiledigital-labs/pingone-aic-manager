@@ -1159,7 +1159,7 @@ aic saml cot show <NAME> [--realm alpha] [--json]
 aic saml create-hosted <ENTITY-ID> --role idp|sp \
   --meta-alias /<realm>/<name> [--realm alpha] [--yes]
 aic saml import <FILE> [--realm alpha] [--dry-run] [--no-sanitise] \
-  [--certs add|replace] [--yes]
+  [--certs add|replace] [--force] [--yes]
 aic saml delete <ENTITY-ID> [--location hosted|remote] \
   [--realm alpha] --force [--yes]
 aic saml metadata export <ENTITY-ID> [--realm alpha] [--out PATH]
@@ -1296,7 +1296,8 @@ widening the import path must not widen the classifier that decides whether an
 HTTP-200 body is metadata at all. `import --dry-run` is how an aggregate gets
 inspected.
 
-**Any pre-existing entity id refuses the whole operation**, including the
+**Any pre-existing entity id refuses the whole operation** — with the one
+exception below — including the
 entities that would have been created — an aggregate is one call, so there is no
 partial send to offer. `?_action=importEntity` is **create-only**: a re-import
 of an existing entity is a `500`, there is no upsert, and there is deliberately
@@ -1321,22 +1322,30 @@ from the file reaches it as a key descriptor written fresh from its DER.
   final confirmation.
 - `--certs add` merges the file's signing certificates in, deduplicated by
   fingerprint; `--certs replace` makes each role's signing certificates exactly
-  the file's. Encryption and `use`-less key descriptors are kept either way,
-  and the file's own are listed as not applied.
+  the file's. Encryption and `use`-less key descriptors are kept either way.
+  They are compared by `(role, use, SHA-256)` in both directions: one only the
+  file carries — including a certificate the file moved from signing to
+  encryption — is listed as not applied, and one only the tenant carries is
+  listed as kept.
 - Every other difference is listed as **not applied — AIC ignores
   non-certificate changes on an update; changing them means delete and
   re-import, which drops the entity's circle-of-trust membership.** When only
-  certificates differ, one line says so.
-- `--certs` is the consent flag, the way `--force` is for `cert add`. At a
-  terminal without it the command offers add / replace / cancel; without a
-  terminal (or with `--no-prompt`) it refuses and asks for `--certs`.
+  signing certificates differ, one line says so; it does not appear when any
+  non-signing key descriptor differs.
+- `--certs` chooses the mode and nothing else. Consent is separate, exactly as
+  for `cert add`: a yes at a terminal, or `--force` without one. So at a
+  terminal the flow is choose the mode (an add / replace / cancel menu when
+  `--certs` is absent), read the plan, confirm; choosing cancel sends nothing
+  and exits non-zero. Without a terminal (or with `--no-prompt`) it needs both
+  `--certs` and `--force`, and refuses naming whichever is missing.
   `--dry-run` without `--certs` prints both modes' plans.
 - A file that declares a role the entity lacks is refused: AM would add that
   role whole, endpoints and all.
 - Everything else still refuses whole: an aggregate with any collision, a
   collision with a hosted entity, and a mix of new and existing entities.
-  `--certs` on a file that would not update a remote entity is refused rather
-  than ignored.
+  `--certs` or `--force` on a file that would not update a remote entity is
+  refused rather than ignored. `--force` only ever confirms a certificate
+  update: it never means delete and re-import, and there is no forced create.
 
 There is **no `--cot`**. `{"standardMetadata": …, "cot": "<name>"}` returns 200
 and leaves the named circle of trust unchanged, and a `cot` naming one that does
@@ -1552,7 +1561,7 @@ command that does it has to re-read and re-check (`docs/api/06-saml.md`).
 ### `cert` — a remote entity's signing certificates
 
 A **remote** entity's certificates are in its metadata, and AM replaces them
-with `POST …/realm-config/saml2/remote?_action=importEntity` and
+with `POST …/realm-config/saml2/remote/?_action=importEntity` and
 `"updateType": "UPDATE_CERTIFICATES"` (measured 2026-09-28,
 `docs/api/06-saml.md`). A **hosted** entity's are not — they come from the
 secret store — which is what [`rotate`](#rotate--roll-the-certificate-a-role-signs-with)

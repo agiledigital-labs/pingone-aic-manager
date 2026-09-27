@@ -41,6 +41,7 @@ Replace `{realm-path}` with `/realms/root/realms/alpha` (or `bravo`). Send
 | Create hosted        | `POST`   | `/am/json{realm-path}/realm-config/saml2/hosted/?_action=create`       | 201. **Nothing is required** — see "Creating a hosted entity".                    |
 | Create remote        | `POST`   | `/am/json{realm-path}/realm-config/saml2/remote/?_action=create`       | **400 `Create not supported`.** Remote entities arrive only via `importEntity`.   |
 | Import remote        | `POST`   | `/am/json{realm-path}/realm-config/saml2/remote/?_action=importEntity` | 200. `{"standardMetadata":"<base64url>"}` — **url**-safe alphabet; see below. |
+| Update remote certs  | `POST`   | `/am/json{realm-path}/realm-config/saml2/remote/?_action=importEntity` | 200. Adds `"updateType":"UPDATE_CERTIFICATES"`: replaces every `KeyDescriptor` of each role named, adds a missing role whole. See "Updating a remote entity's certificates". |
 | Import hosted        | `POST`   | `/am/json{realm-path}/realm-config/saml2/hosted/?_action=importEntity` | **501 `importEntity not supported`.** Hosted entities are built from JSON only.   |
 | Update               | `PUT`    | `/am/json{realm-path}/realm-config/saml2/{location}/{entityId64}`      | 200. **Full replace**, no `If-Match`. 404 on an unknown id — no create-by-`PUT`.  |
 | Delete               | `DELETE` | `/am/json{realm-path}/realm-config/saml2/{location}/{entityId64}`      | 200, echoes the deleted document. **Cascades into every CoT that listed it.**     |
@@ -451,6 +452,14 @@ tested.
   roles are a subset of the entity's; each role keeps at least one signing
   certificate.
 - Confirm from the export after the write (§5): the JSON cannot see the change.
+- **Path spelling.** The console and the measuring pass sent
+  `…/saml2/remote?_action=importEntity`; `aic` sends `…/saml2/remote/?_action=`
+  (with the slash), the spelling its plain import already used. Both updateTypes
+  were checked live on the slashed spelling on 2026-09-28 in sandbox `alpha`:
+  a `CREATE` of `https://idp-pathprobe.example.com/` created that entity (its
+  export published the sent certificate; deleted afterwards), and an
+  `UPDATE_CERTIFICATES` on the Entra-shaped test IdP changed its exported
+  certificate set as planned.
 - Using the exported document as the splice base is **inferred**, not measured
   as such — it is what the non-certificate content is ignored against, so what
   is sent besides the certificates does not matter to AM, but the export is the

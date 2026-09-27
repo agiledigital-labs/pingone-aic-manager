@@ -25,7 +25,8 @@
 //! follows from one fact: **`cotlist` damage cannot be detected, before or
 //! after.** So the command refuses rather than recovers — every entity id is
 //! preflighted against both collections and any collision refuses the whole
-//! operation, with no `--force` that deletes and re-imports (the delete
+//! operation — except one file entity colliding with one remote entity, which
+//! becomes a [`cert`] update — with no `--force` that deletes and re-imports (the delete
 //! cascades through every circle of trust and the `cotlist` cannot be read
 //! back) and no `--cot` (AM discards it with a 200). `--dry-run` stops by
 //! holding no [`spec::ImportPermit`] rather than by returning in front of the
@@ -72,6 +73,12 @@
 //! `updateType: UPDATE_CERTIFICATES` replaces them. `cert add|remove` and an
 //! `import` over an existing remote entity send the entity's own export with
 //! signing key descriptors spliced in or out.
+//!
+//! What the two share sits at this level rather than inside either:
+//! [`write`] (the preview/send decision, the refused / accepted-but-unverified
+//! / unknown classification of a failed write, and `consent`), [`export`]
+//! (the classified metadata read and the one settle poll) and [`pem`] (the
+//! certificate reader). None of it holds rotation state.
 
 pub mod api;
 pub mod cert;

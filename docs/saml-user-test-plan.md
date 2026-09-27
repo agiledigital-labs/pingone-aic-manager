@@ -183,27 +183,63 @@ aic saml import /tmp/entra-clean.xml --realm alpha
 2026-09-18. Then the caveat that no post-import `cotlist` verification is
 possible, because `importEntity` rewrites extended metadata.
 
-### C3 · Confirm the import collided safely
+### C3 · Re-importing the same file is a certificate update, not a re-create
 
-Run the same import again:
+Run the same import again, headless and as a preview:
 
 ```sh
-aic saml import /tmp/entra-clean.xml --realm alpha; echo "exit $?"
+aic saml import /tmp/entra-clean.xml --realm alpha --no-prompt; echo "exit $?"
+aic saml import /tmp/entra-clean.xml --realm alpha --dry-run
 ```
 
 <details>
 <summary>fish</summary>
 
 ```fish
-aic saml import /tmp/entra-clean.xml --realm alpha; echo "exit $status"
+aic saml import /tmp/entra-clean.xml --realm alpha --no-prompt; echo "exit $status"
+aic saml import /tmp/entra-clean.xml --realm alpha --dry-run
 ```
 
 </details>
 
-- [ ] **Watch for:** a refusal naming the existing entity, and **no** `--force` that
-offers to delete and re-import. There is deliberately no such flag: the
-`cotlist` cannot be read back or restored, so a delete-and-recreate would
-silently drop a federation's trust and nothing could detect it.
+- [ ] **Watch for:** the headless run refuses, non-zero, asking for
+`--certs add|replace` and `--force`, and sends nothing. The file's one entity
+already exists as a **remote** entity, so the only thing an import can do is
+update its certificates (Part G exercises that). The dry run says so and prints
+both modes' plans; with the same certificate on both sides, each plan changes
+nothing.
+- [ ] **Watch for:** **no** route to delete and re-import. `--force` only
+confirms a certificate update: the `cotlist` cannot be read back or restored,
+so a delete-and-recreate would silently drop a federation's trust and nothing
+could detect it.
+
+### C4 · A collision with a hosted entity still refuses whole
+
+Export the hosted SP from C1 and try to import it. Its entity id exists, but in
+the **hosted** collection, so there is no certificate update to fall back on:
+
+```sh
+aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/sp-a.xml
+aic saml import /tmp/sp-a.xml --realm alpha --no-prompt; echo "exit $?"
+aic saml import /tmp/sp-a.xml --realm alpha --certs replace --force --no-prompt; echo "exit $?"
+```
+
+<details>
+<summary>fish</summary>
+
+```fish
+aic saml metadata export 'https://sp-a.example.com' --realm alpha --out /tmp/sp-a.xml
+aic saml import /tmp/sp-a.xml --realm alpha --no-prompt; echo "exit $status"
+aic saml import /tmp/sp-a.xml --realm alpha --certs replace --force --no-prompt; echo "exit $status"
+```
+
+</details>
+
+- [ ] **Watch for:** both runs refuse, non-zero, after a preflight that lists
+`https://sp-a.example.com (hosted)`. The first refuses the whole import as
+create-only; the second says `--certs` and `--force` apply only to an existing
+**remote** entity and that there is no forced create. `aic saml list --realm
+alpha` afterwards shows the same entities as before.
 
 ---
 
@@ -796,13 +832,16 @@ aic saml import /tmp/entra-clean.xml --realm alpha --no-prompt; echo "exit $stat
 
 - [ ] **Watch for:** the dry run says this import is a **certificate update**
 and prints both plans — `--certs add` keeps `gc1`, `--certs replace` removes
-it — and the headless run refuses and asks for `--certs`. At a terminal without
-`--certs` it offers add / replace / cancel instead.
+it — and the headless run refuses and asks for `--certs` and `--force`. At a
+terminal without `--certs` it offers add / replace / cancel instead; choosing
+cancel sends nothing and exits non-zero.
+- [ ] **Watch for:** `--certs` alone is not consent. Headless, `--certs replace`
+without `--force` refuses; at a terminal it still shows the plan and asks.
 
 ```sh
-aic saml import /tmp/entra-clean.xml --realm alpha --certs add
+aic saml import /tmp/entra-clean.xml --realm alpha --certs add --force
 aic saml cert list 'https://sts.windows.net/<tenant-guid>/' --realm alpha
-aic saml import /tmp/entra-clean.xml --realm alpha --certs replace
+aic saml import /tmp/entra-clean.xml --realm alpha --certs replace --force
 aic saml metadata export 'https://sts.windows.net/<tenant-guid>/' --realm alpha \
   --out /tmp/g6.xml
 aic saml metadata inspect /tmp/g6.xml | grep sha256
