@@ -109,8 +109,9 @@ pub enum SamlCommand {
     /// Import remote entity metadata from a file.
     ///
     /// One call, n entities: an `EntitiesDescriptor` aggregate creates every
-    /// entity it contains. Create-only — a re-import is a 500, and there is
-    /// no `--force` that deletes first.
+    /// entity it contains. A file whose one entity already exists as a remote
+    /// entity is a certificate update instead (`--certs`); every other
+    /// collision refuses, and nothing deletes and re-imports.
     Import {
         /// Path to a SAML 2.0 `EntityDescriptor` or `EntitiesDescriptor` file.
         file: PathBuf,
@@ -126,13 +127,18 @@ pub enum SamlCommand {
         no_sanitise: bool,
         /// When the file's one entity already exists as a remote entity:
         /// merge its signing certificates in (`add`) or make them exactly the
-        /// file's (`replace`). Required without a terminal; nothing else in
-        /// the file is applied.
+        /// file's (`replace`). Chooses the mode only; nothing else in the
+        /// file is applied. Refused on a file that would be created.
         #[arg(long, value_enum)]
         certs: Option<crate::saml::cert::import::ImportMode>,
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
+        /// Confirm a certificate update without a prompt, as for
+        /// `saml cert add`. Refused on a file that would be created: it never
+        /// means delete and re-import.
+        #[command(flatten)]
+        force: OperationForce,
     },
     /// Delete an entity provider — and, with it, its circle-of-trust entries.
     Delete {
@@ -310,7 +316,15 @@ pub async fn run(command: SamlCommand) -> Result<()> {
             no_sanitise,
             certs,
             yes,
-        } => import(tenant, realm, &file, dry_run, no_sanitise, certs, yes).await,
+            force,
+        } => {
+            let flags = crate::saml::cert::cli::WriteFlags {
+                dry_run,
+                yes,
+                force: force.operation(),
+            };
+            import(tenant, realm, &file, no_sanitise, certs, flags).await
+        }
         SamlCommand::Delete {
             entity_id,
             location,
@@ -473,11 +487,15 @@ async fn import(
     tenant_arg: Option<String>,
     realm_arg_value: Option<String>,
     file: &Path,
-    dry_run: bool,
     no_sanitise: bool,
     certs: Option<crate::saml::cert::import::ImportMode>,
-    yes: bool,
+    flags: crate::saml::cert::cli::WriteFlags,
 ) -> Result<()> {
+    let crate::saml::cert::cli::WriteFlags {
+        dry_run,
+        yes,
+        force,
+    } = flags;
     // The file first, and before the tenant is even resolved: a document we
     // cannot read is not an import, and finding that out should not depend on
     // a context, a daemon or a network call.
@@ -519,11 +537,11 @@ async fn import(
     // certificates in place without touching its circle-of-trust membership.
     // Every other collision — an aggregate, a hosted entity, new and existing
     // mixed — is still refused whole by `authorize_import` below.
-    match spec::import_route(&declared, &found, certs.is_some())? {
+    match spec::import_route(&declared, &found, certs.is_some(), force)? {
         spec::ImportRoute::Create => {}
         spec::ImportRoute::UpdateCertificates(entity_id) => {
             return crate::saml::cert::cli::import_update(
-                &tenant, &realm, &entity_id, &body, dry_run, certs, yes,
+                &tenant, &realm, &entity_id, &body, certs, flags,
             )
             .await;
         }
@@ -1543,8 +1561,10 @@ mod tests {
         assert_eq!(location, Some(Location::Remote));
     }
 
+    /// `--certs` names a mode — `add` or `replace` — and nothing else; it is
+    /// not consent, which is `--force` or a prompt, as for `cert add`.
     #[test]
-    fn import_takes_certs_as_its_update_consent_and_only_add_or_replace() {
+    fn import_takes_certs_as_its_update_mode_and_only_add_or_replace() {
         use crate::cli::{Cli, Command};
         use crate::saml::cert::import::ImportMode;
 
@@ -1618,10 +1638,13 @@ mod tests {
     ///
     /// `--cot` would report a membership change AM silently discards, and a
     /// `--force` that deleted first would destroy a `cotlist` nothing can read
-    /// back (`docs/api/06-saml.md`). Both are absent on purpose, so a parse
-    /// failure is the assertion.
+    /// back (`docs/api/06-saml.md`). So there is no `--cot` at all, and the
+    /// `--force` that does exist is the certificate update's operation
+    /// consent and nothing more: `operation` is its only value, so no
+    /// spelling of it can mean delete-and-re-import, and on a file that would
+    /// be created `spec::import_route` refuses it.
     #[test]
-    fn import_parses_its_flags_and_offers_neither_cot_nor_force() {
+    fn import_parses_its_flags_and_offers_no_cot_and_no_reimport_force() {
         use crate::cli::{Cli, Command};
 
         let Some(Command::Saml {
@@ -1632,6 +1655,7 @@ mod tests {
                     dry_run,
                     no_sanitise,
                     yes,
+                    force,
                     ..
                 },
         }) = Cli::try_parse_from([
@@ -1644,6 +1668,7 @@ mod tests {
             "--dry-run",
             "--no-sanitise",
             "--yes",
+            "--force",
         ])
         .unwrap()
         .command
@@ -1652,7 +1677,7 @@ mod tests {
         };
         assert_eq!(file, PathBuf::from("peer.xml"));
         assert_eq!(realm.as_deref(), Some("bravo"));
-        assert!(dry_run && no_sanitise && yes);
+        assert!(dry_run && no_sanitise && yes && force.operation());
 
         // Defaults: sanitise on, nothing sent without the operator asking.
         let Some(Command::Saml {
@@ -1661,6 +1686,8 @@ mod tests {
                     dry_run,
                     no_sanitise,
                     yes,
+                    force,
+                    certs,
                     ..
                 },
         }) = Cli::try_parse_from(["aic", "saml", "import", "peer.xml"])
@@ -1671,12 +1698,13 @@ mod tests {
         };
         assert!(!dry_run, "a bare import is a real import");
         assert!(!no_sanitise, "sanitise is the default");
-        assert!(!yes);
+        assert!(!yes && !force.operation() && certs.is_none());
 
         for refused in [
             vec!["aic", "saml", "import", "peer.xml", "--cot", "client-b"],
-            vec!["aic", "saml", "import", "peer.xml", "--force"],
-            vec!["aic", "saml", "import", "peer.xml", "--force=operation"],
+            vec!["aic", "saml", "import", "peer.xml", "--force=delete"],
+            vec!["aic", "saml", "import", "peer.xml", "--force=reimport"],
+            vec!["aic", "saml", "import", "peer.xml", "--force=backup"],
         ] {
             assert!(
                 Cli::try_parse_from(&refused).is_err(),
@@ -1709,6 +1737,7 @@ mod tests {
             no_sanitise: false,
             certs: None,
             yes: false,
+            force: OperationForce::default(),
         })
         .await
         .expect_err("a truncated document is not importable");
@@ -1727,6 +1756,7 @@ mod tests {
                 no_sanitise: false,
                 certs: None,
                 yes: false,
+                force: OperationForce::default(),
             })
             .await
             .is_err()

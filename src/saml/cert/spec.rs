@@ -707,9 +707,9 @@ pub fn authorize(dry_run: bool, _plan: &CertPlan) -> Decision<CertPermit> {
 }
 
 /// The consent gate, after the prompt: refuse unless confirmed, naming what
-/// would change. `flag` is the escape the verb offers — `--force` for `add`
-/// and `remove`, `--certs <mode>` for an import.
-pub fn write_ok(confirmed: bool, plan: &CertPlan, flag: &str) -> Result<()> {
+/// would change. `--force` is the one escape, for `add`, `remove` and an
+/// import alike.
+pub fn write_ok(confirmed: bool, plan: &CertPlan) -> Result<()> {
     if confirmed {
         return Ok(());
     }
@@ -722,7 +722,7 @@ pub fn write_ok(confirmed: bool, plan: &CertPlan, flag: &str) -> Result<()> {
     Err(Error::Config(format!(
         "would change {}'s published signing certificates ({added} added, {removed} removed), \
          which changes which signatures its peers' assertions are verified against. Confirm \
-         at a terminal, or pass {flag}.",
+         at a terminal, or pass --force.",
         plan.entity_id
     )))
 }
@@ -1135,11 +1135,9 @@ mod tests {
         let export = document(&idp(&[(Some("signing"), RSA_DER)]));
         let plan =
             change(plan_add(&target(&[Role::Idp]), &export, &der(EC_PEM), EC_SHA, None).unwrap());
-        let error = write_ok(false, &plan, "--certs replace")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("1 added, 0 removed") && error.contains("--certs replace"));
-        assert!(write_ok(true, &plan, "--force").is_ok());
+        let error = write_ok(false, &plan).unwrap_err().to_string();
+        assert!(error.contains("1 added, 0 removed") && error.contains("--force"));
+        assert!(write_ok(true, &plan).is_ok());
         assert!(matches!(authorize(true, &plan), Decision::Preview));
         assert!(matches!(authorize(false, &plan), Decision::Send(_)));
     }
