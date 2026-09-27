@@ -1334,8 +1334,11 @@ from the file reaches it as a key descriptor written fresh from its DER.
   non-certificate changes on an update; changing them means delete and
   re-import, which drops the entity's circle-of-trust membership.** When
   nothing compared differs besides signing certificates, one line says so and
-  names what was compared — the entity's and each role's attributes and child elements, and the
-  non-signing key descriptors as above. It is not a byte comparison.
+  names what was compared — the entity's and each role's attributes and every
+  element nested in them (names, attributes and text, so a changed attribute deep
+  inside an `<AttributeConsumingService>` counts), and the non-signing key
+  descriptors as above. Whitespace is not compared, because AM re-indents what
+  it stores; it is not a byte comparison.
 - `--certs` chooses the mode and nothing else. Consent is separate, exactly as
   for `cert add`: a yes at a terminal, or `--force` without one. So at a
   terminal the flow is choose the mode (an add / replace / cancel menu when

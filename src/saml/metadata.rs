@@ -1331,6 +1331,20 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                         }
                     }
                     let signature_here = name == SIGNATURE_LOCAL_NAME && ns == Some(DSIG_NS);
+                    // Inside an open fact, a descendant element is part of
+                    // the fact: its expanded name and attributes, as well as
+                    // its text. Without this a `<RequestedAttribute
+                    // Name="…">` changed inside an unchanged parent is
+                    // invisible to the comparison. Spaced so that whitespace
+                    // collapsing at the end makes indentation insignificant.
+                    if let Some(open_fact) = fact.as_mut() {
+                        open_fact.text.push_str(&format!(
+                            " <{}{}{}> ",
+                            expanded_name(ns, &name),
+                            attrs.fact(&[]),
+                            if empty { "/" } else { "" }
+                        ));
+                    }
                     if entity_start {
                         scan.facts.push(Fact {
                             owner: ROOT_LOCAL_NAME.to_string(),
@@ -1614,6 +1628,15 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                     if path.len() + 1 == child_depth {
                         open_role = None;
                     }
+                }
+                if let Some(open_fact) = fact.as_mut()
+                    && open_fact.depth < path.len()
+                    && let Some(open) = &closed
+                {
+                    open_fact.text.push_str(&format!(
+                        " </{}> ",
+                        expanded_name(open.ns.as_deref(), &open.local)
+                    ));
                 }
                 if let Some(done) = fact.take_if(|open| open.depth == path.len()) {
                     let text = done.text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2172,6 +2195,15 @@ impl Attrs {
     }
 }
 
+/// An element name as a [`Fact`] spells it: `{namespace-uri}local`, so two
+/// prefixes for one namespace compare equal.
+fn expanded_name(ns: Option<&[u8]>, local: &str) -> String {
+    match ns {
+        Some(uri) => format!("{{{}}}{local}", String::from_utf8_lossy(uri)),
+        None => local.to_string(),
+    }
+}
+
 fn unknown_prefix(offset: usize, prefix: &[u8]) -> MetadataError {
     MetadataError::Malformed {
         offset,
@@ -2373,11 +2405,15 @@ pub struct KeyEntry {
 
 /// One piece of non-key content an owner (the entity, or a role) declares:
 /// its own attributes, or a direct child other than a key descriptor or a
-/// signature, spelled as the child's name, its sorted attributes and its
-/// descendants' text with whitespace collapsed.
+/// signature, spelled as the child's name and sorted attributes followed by
+/// its descendants in document order — each descendant element's expanded
+/// name and sorted attributes, and the text between them — with whitespace
+/// collapsed, so re-indentation is not a difference and a nested attribute
+/// change is.
 ///
-/// Deliberately shallow. It exists to answer "does the file say something
-/// the tenant's copy does not", for an operator summary — not to diff XML.
+/// One fact per direct child, not a tree diff: it exists to answer "does the
+/// file say something the tenant's copy does not", for an operator summary,
+/// and a whole changed child is reported rather than the path inside it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Fact {
     /// `EntityDescriptor`, or the role's local name.
@@ -4537,7 +4573,11 @@ mod tests {
             .replace("<NameIDFormat>", "<md:NameIDFormat>")
             .replace("</NameIDFormat>", "</md:NameIDFormat>")
             .replace("<AssertionConsumerService", "<md:AssertionConsumerService")
-            .replace("<SingleLogoutService", "<md:SingleLogoutService");
+            .replace("<SingleLogoutService", "<md:SingleLogoutService")
+            // `<Organization>` and its three children, which are compared
+            // by expanded name since facts carry nested structure.
+            .replace("<Organization", "<md:Organization")
+            .replace("</Organization", "</md:Organization");
         assert_eq!(facts(&respelled), plain);
         // A key change is not a fact change; an endpoint change is.
         let rekeyed = String::from_utf8(add_signing(AM_SP.as_bytes(), "SPSSODescriptor")).unwrap();

@@ -67,8 +67,9 @@ pub const NOT_APPLIED: &str = "not applied — AIC ignores non-certificate chang
 /// except signing certificates. It says what it compared, because the
 /// comparison is shallow: see [`Differences`] and [`metadata::Fact`].
 pub const ONLY_CERTS_DIFFER: &str = "no differences found besides signing certificates, \
-     comparing the entity's and each role's attributes and child elements, and each \
-     non-signing key descriptor's role, use, KeyName and certificate SHA-256";
+     comparing the entity's and each role's attributes and every element nested in them \
+     (names, attributes and text, whitespace aside), and each non-signing key descriptor's \
+     role, use, KeyName and certificate SHA-256";
 
 impl Differences {
     pub fn lines(&self) -> Vec<String> {
@@ -477,6 +478,50 @@ mod tests {
             comparison.differences
         );
         assert_ne!(comparison.differences.lines(), [ONLY_CERTS_DIFFER]);
+    }
+
+    /// Discriminating: an attribute changed on an element nested inside an
+    /// unchanged direct child. A comparison of the child's own attributes and
+    /// its text alone finds nothing and says only signing certificates
+    /// differ. And the control: the same structure re-indented is no
+    /// difference at all.
+    #[test]
+    fn a_nested_attribute_change_is_reported_and_reindentation_is_not() {
+        let acs = |name: &str, gap: &str| {
+            let service = format!(
+                "        <AttributeConsumingService index=\"0\">{gap}<ServiceName \
+                 xml:lang=\"en\">Portal</ServiceName>{gap}<RequestedAttribute \
+                 Name=\"{name}\" isRequired=\"true\"/>{gap}</AttributeConsumingService>\n"
+            );
+            document(&sp(&[(Some("signing"), RSA_DER)]).replace(
+                "    </SPSSODescriptor>",
+                &format!("{service}    </SPSSODescriptor>"),
+            ))
+        };
+        let export = acs("mail", "\n            ");
+        let renamed = acs("email", "\n            ");
+        let comparison = compare_import(&target(&[Role::Sp]), &export, &renamed).unwrap();
+        let lines = comparison.differences.lines();
+        assert!(
+            !lines.contains(&ONLY_CERTS_DIFFER.to_string()),
+            "{lines:#?}"
+        );
+        assert!(
+            comparison.differences.only_in_file.iter().any(|fact| {
+                fact.text.contains("AttributeConsumingService") && fact.text.contains("\"email\"")
+            }),
+            "{:#?}",
+            comparison.differences
+        );
+        assert!(
+            lines.iter().any(|line| line.contains(NOT_APPLIED)),
+            "{lines:#?}"
+        );
+
+        let reindented = acs("mail", "\n\t ");
+        assert_ne!(export, reindented, "the control must differ in bytes");
+        let comparison = compare_import(&target(&[Role::Sp]), &export, &reindented).unwrap();
+        assert_eq!(comparison.differences.lines(), [ONLY_CERTS_DIFFER]);
     }
 
     #[test]
