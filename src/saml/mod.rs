@@ -66,8 +66,15 @@
 //! that label is backed by an ESV secret — so a rollover adds an ESV secret
 //! *version* and spans `saml/`, `esv/` and `secretmap/`. There is nothing to
 //! upload and no metadata to push.
+//!
+//! **A remote entity's certificates are the opposite case, and live in
+//! [`cert`]**: they *are* in its metadata, and `importEntity` with
+//! `updateType: UPDATE_CERTIFICATES` replaces them. `cert add|remove` and an
+//! `import` over an existing remote entity send the entity's own export with
+//! signing key descriptors spliced in or out.
 
 pub mod api;
+pub mod cert;
 pub mod cli;
 pub mod metadata;
 pub mod rotate;

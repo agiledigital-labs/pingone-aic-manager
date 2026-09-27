@@ -154,6 +154,30 @@ fn import_request(realm: &str, body: Value, confirmed_prod: bool) -> SamlRequest
     }
 }
 
+/// `POST …/saml2/remote?_action=importEntity` with
+/// `updateType: UPDATE_CERTIFICATES` — the certificate update of an existing
+/// remote entity (measured 2026-09-28, `docs/api/06-saml.md`).
+///
+/// Its path is the measured one, **without** the slash `import_request`
+/// carries after `remote`; both answer, but only this spelling was exercised
+/// with an `updateType`. The target is the `entityID` inside the document —
+/// the path names no entity — which is why the caller builds the document
+/// from the entity's own export. `skipMetadataSignatureVerification` is sent
+/// `false` explicitly: a document this tool spliced carries no signature to
+/// verify, and it must never be the flag that lets an unverified one through.
+fn update_certificates_request(realm: &str, xml: &[u8], confirmed_prod: bool) -> SamlRequest {
+    SamlRequest {
+        method: "POST",
+        path: format!("{}/remote?_action=importEntity", entities_path(realm)),
+        body: Some(serde_json::json!({
+            "standardMetadata": spec::standard_metadata(xml),
+            "updateType": "UPDATE_CERTIFICATES",
+            "skipMetadataSignatureVerification": false,
+        })),
+        confirmed_prod,
+    }
+}
+
 /// `PUT …/saml2/{location}/{entityId64}` — a **full replace**.
 ///
 /// There is no create-by-`PUT` (an unknown id is a 404) and no `If-Match`: a
@@ -333,6 +357,21 @@ pub async fn import_entity(
         .await
 }
 
+/// Replace the key descriptors of every role `xml` names on the remote entity
+/// its `entityID` names. Requires a [`CertPermit`](crate::saml::cert::spec::CertPermit),
+/// which only `cert::spec::authorize` mints, so a preview cannot reach it.
+pub async fn update_certificates(
+    tenant: &str,
+    realm: &str,
+    xml: &[u8],
+    confirmed_prod: bool,
+    _permit: &crate::saml::cert::spec::CertPermit,
+) -> Result<Value> {
+    update_certificates_request(realm, xml, confirmed_prod)
+        .send(tenant)
+        .await
+}
+
 /// Export an entity's standard metadata XML.
 ///
 /// Takes the tenant **record**, not its name, and never touches the daemon:
@@ -468,6 +507,32 @@ mod tests {
         assert_eq!(call.api_version.as_deref(), Some(API_VERSION));
     }
 
+    /// The measured shape, field by field: the entity is named only by the
+    /// document, so the body is the document and the update type — an
+    /// omitted `updateType` is a 500 and `CREATE` on an existing entity is
+    /// another, neither of which says what was wrong.
+    #[test]
+    fn the_certificate_update_is_an_import_with_update_certificates() {
+        let xml = b"<EntityDescriptor entityID=\"https://sp-a.example.com\"/>";
+        let call = envelope(&update_certificates_request("alpha", xml, false));
+        assert_eq!(call.method, "POST");
+        assert_eq!(
+            call.path,
+            "/am/json/realms/root/realms/alpha/realm-config/saml2/remote?_action=importEntity"
+        );
+        assert_eq!(call.api_version.as_deref(), Some(API_VERSION));
+        let body = call.body.expect("a body");
+        assert_eq!(body["updateType"], "UPDATE_CERTIFICATES");
+        assert_eq!(body["skipMetadataSignatureVerification"], false);
+        assert_eq!(body.as_object().map(|fields| fields.len()), Some(3));
+        let sent = base64::Engine::decode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            body["standardMetadata"].as_str().expect("a string"),
+        )
+        .expect("base64url");
+        assert_eq!(sent, xml);
+    }
+
     /// Both writes carry the operator's production consent, and neither
     /// invents it. `confirmed_prod` defaulting to `true` would silently lift
     /// the daemon's prod gate for every SAML write.
@@ -480,6 +545,10 @@ mod tests {
             );
             assert_eq!(
                 envelope(&import_request("bravo", json!({}), confirmed)).confirmed_prod,
+                confirmed
+            );
+            assert_eq!(
+                envelope(&update_certificates_request("bravo", b"<x/>", confirmed)).confirmed_prod,
                 confirmed
             );
             assert_eq!(
