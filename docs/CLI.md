@@ -1323,15 +1323,19 @@ from the file reaches it as a key descriptor written fresh from its DER.
 - `--certs add` merges the file's signing certificates in, deduplicated by
   fingerprint; `--certs replace` makes each role's signing certificates exactly
   the file's. Encryption and `use`-less key descriptors are kept either way.
-  They are compared by `(role, use, SHA-256)` in both directions: one only the
-  file carries — including a certificate the file moved from signing to
-  encryption — is listed as not applied, and one only the tenant carries is
-  listed as kept.
+  They are compared by role, `use`, `KeyName` and certificate SHA-256, in both
+  directions and over every role either side declares: one only the file
+  carries — including a certificate the file moved from signing to encryption,
+  or one it only renamed — is listed as not applied, and one only the tenant
+  carries, including in a role the file omits, is listed as kept. Nothing else
+  inside a key descriptor is compared, and never its raw bytes: AM re-indents
+  the whitespace inside `<KeyInfo>`.
 - Every other difference is listed as **not applied — AIC ignores
   non-certificate changes on an update; changing them means delete and
-  re-import, which drops the entity's circle-of-trust membership.** When only
-  signing certificates differ, one line says so; it does not appear when any
-  non-signing key descriptor differs.
+  re-import, which drops the entity's circle-of-trust membership.** When
+  nothing compared differs besides signing certificates, one line says so and
+  names what was compared — the entity's and each role's attributes and child elements, and the
+  non-signing key descriptors as above. It is not a byte comparison.
 - `--certs` chooses the mode and nothing else. Consent is separate, exactly as
   for `cert add`: a yes at a terminal, or `--force` without one. So at a
   terminal the flow is choose the mode (an add / replace / cancel menu when
