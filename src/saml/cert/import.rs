@@ -13,7 +13,7 @@ use crate::saml::cert::spec::{
     CertInfo, Planned, RoleChange, SigningCerts, Target, editable, finish, insert, is_signing,
     role_keys, role_of, signing_certs, use_label,
 };
-use crate::saml::metadata::{self, Fact, KeyLayout};
+use crate::saml::metadata::{self, Fact, KeyLayout, RoleKeys};
 use crate::saml::spec::Role;
 use crate::{Error, Result};
 
@@ -43,9 +43,13 @@ pub struct Differences {
     pub only_in_file: Vec<Fact>,
     /// Non-certificate content on the tenant and not in the file.
     pub only_on_tenant: Vec<Fact>,
-    /// Encryption or `use`-less certificates the file has and the tenant's
-    /// role does not — out of this verb's scope, so ignored.
-    pub ignored_keys: Vec<String>,
+    /// Non-signing key descriptors — encryption or `use`-less — as
+    /// `role use sha256`, compared by all three: in the file and not on the
+    /// tenant (ignored), and on the tenant and not in the file (kept). A
+    /// certificate the tenant signs with and the file lists for encryption is
+    /// a difference here, not a match.
+    pub file_only_keys: Vec<String>,
+    pub tenant_only_keys: Vec<String>,
 }
 
 /// The sentence every summary with a non-certificate difference carries.
@@ -55,15 +59,16 @@ pub const NOT_APPLIED: &str = "not applied — AIC ignores non-certificate chang
      changing them means delete and re-import, which drops the entity's circle-of-trust \
      membership";
 
-/// The one line for a file whose only differences are certificates.
-pub const ONLY_CERTS_DIFFER: &str =
-    "the file and the tenant differ only in certificates; nothing else would be left behind";
+/// The one line for a file whose only differences are signing certificates.
+pub const ONLY_CERTS_DIFFER: &str = "the file and the tenant differ only in signing \
+     certificates; nothing else would be left behind";
 
 impl Differences {
     pub fn lines(&self) -> Vec<String> {
         if self.only_in_file.is_empty()
             && self.only_on_tenant.is_empty()
-            && self.ignored_keys.is_empty()
+            && self.file_only_keys.is_empty()
+            && self.tenant_only_keys.is_empty()
         {
             return vec![ONLY_CERTS_DIFFER.to_string()];
         }
@@ -77,14 +82,18 @@ impl Differences {
                 lines.push(format!("  tenant only  {}: {}", fact.owner, fact.text));
             }
         }
-        if !self.ignored_keys.is_empty() {
+        if !self.file_only_keys.is_empty() || !self.tenant_only_keys.is_empty() {
             lines.push(
-                "non-signing certificates in the file: not applied — `aic saml cert` changes \
-                 signing certificates only, and the tenant's encryption keys are kept as they are"
+                "non-signing key descriptors: not applied — `aic saml cert` changes signing \
+                 certificates only, and the tenant's encryption and use-less key descriptors \
+                 are sent back as they are"
                     .to_string(),
             );
-            for key in &self.ignored_keys {
-                lines.push(format!("  {key}"));
+            for key in &self.file_only_keys {
+                lines.push(format!("  file only    {key}"));
+            }
+            for key in &self.tenant_only_keys {
+                lines.push(format!("  tenant only  {key}"));
             }
         }
         lines
@@ -104,6 +113,25 @@ fn minus(a: &[Fact], b: &[Fact]) -> Vec<Fact> {
     }
     out.sort();
     out
+}
+
+/// A role's non-signing key descriptors as `role use sha256` — the identity
+/// the summary compares them by.
+fn non_signing(keys: &RoleKeys, role: Role) -> BTreeSet<String> {
+    keys.keys
+        .iter()
+        .filter(|key| !is_signing(key))
+        .flat_map(|key| {
+            key.certs.iter().map(|(cert, _)| {
+                format!(
+                    "{} {} {}",
+                    role.cli_word(),
+                    use_label(key.key_use.as_deref()),
+                    cert.sha256
+                )
+            })
+        })
+        .collect()
 }
 
 /// An import over an existing remote entity, read against its export.
@@ -137,7 +165,8 @@ pub fn compare_import(target: &Target, export: &[u8], file: &[u8]) -> Result<Imp
         .map(|role| role_of(role.role))
         .collect::<Vec<_>>();
     let mut file_signing = Vec::new();
-    let mut ignored_keys = Vec::new();
+    let mut file_only_keys = Vec::new();
+    let mut tenant_only_keys = Vec::new();
     for file_role in &file_layout.roles {
         let role = role_of(file_role.role);
         if !held.contains(&role) {
@@ -156,27 +185,14 @@ pub fn compare_import(target: &Target, export: &[u8], file: &[u8]) -> Result<Imp
                 file_role.descriptor
             )));
         }
-        let tenant_role = role_keys(&export_layout, role);
-        let tenant_all = tenant_role
-            .keys
-            .iter()
-            .flat_map(|key| key.certs.iter().map(|(cert, _)| cert.sha256.clone()))
-            .collect::<BTreeSet<_>>();
+        let file_keys = non_signing(file_role, role);
+        let tenant_keys = non_signing(role_keys(&export_layout, role), role);
+        file_only_keys.extend(file_keys.difference(&tenant_keys).cloned());
+        tenant_only_keys.extend(tenant_keys.difference(&file_keys).cloned());
         let mut signing: SigningCerts = Vec::new();
-        for key in &file_role.keys {
-            for (cert, der) in &key.certs {
-                if is_signing(key) {
-                    if !signing.iter().any(|(sha, _)| *sha == cert.sha256) {
-                        signing.push((cert.sha256.clone(), der.clone()));
-                    }
-                } else if !tenant_all.contains(&cert.sha256) {
-                    ignored_keys.push(format!(
-                        "{} {} {}",
-                        role.cli_word(),
-                        use_label(key.key_use.as_deref()),
-                        cert.sha256
-                    ));
-                }
+        for (sha, der) in signing_certs(file_role) {
+            if !signing.iter().any(|(held, _)| *held == sha) {
+                signing.push((sha, der));
             }
         }
         file_signing.push((role, signing));
@@ -184,7 +200,8 @@ pub fn compare_import(target: &Target, export: &[u8], file: &[u8]) -> Result<Imp
     let differences = Differences {
         only_in_file: minus(&file_layout.facts, &export_layout.facts),
         only_on_tenant: minus(&export_layout.facts, &file_layout.facts),
-        ignored_keys,
+        file_only_keys,
+        tenant_only_keys,
     };
     Ok(ImportComparison {
         differences,
@@ -325,9 +342,58 @@ mod tests {
         assert!(plan_import(&comparison, ImportMode::Replace).is_err());
         // The encryption certificate is reported as not applied.
         assert_eq!(
-            comparison.differences.ignored_keys,
+            comparison.differences.file_only_keys,
             [format!("idp encryption {EC_SHA}")]
         );
+    }
+
+    /// Discriminating: the same DER, moved from signing on the tenant to
+    /// encryption in the file. A comparison by fingerprint alone finds it on
+    /// the tenant and reports nothing; by `(role, use, sha256)` it is a
+    /// difference the update will not apply.
+    #[test]
+    fn a_certificate_moved_from_signing_to_encryption_is_reported_as_not_applied() {
+        let export = document(&idp(&[
+            (Some("signing"), RSA_DER),
+            (Some("signing"), &der(EC_PEM)),
+        ]));
+        let upload = file(&idp(&[
+            (Some("signing"), RSA_DER),
+            (Some("encryption"), &der(EC_PEM)),
+        ]));
+        let comparison = compare_import(&target(&[Role::Idp]), &export, &upload).unwrap();
+        assert_eq!(
+            comparison.differences.file_only_keys,
+            [format!("idp encryption {EC_SHA}")]
+        );
+        let lines = comparison.differences.lines();
+        assert!(
+            !lines.contains(&ONLY_CERTS_DIFFER.to_string()),
+            "{lines:#?}"
+        );
+        assert!(
+            lines.contains(&format!("  file only    idp encryption {EC_SHA}")),
+            "{lines:#?}"
+        );
+    }
+
+    /// And the other direction: an encryption key the tenant has and the
+    /// file lacks is kept, so the file does not "differ only in signing
+    /// certificates".
+    #[test]
+    fn a_tenant_encryption_key_the_file_lacks_is_a_difference_too() {
+        let export = document(&idp(&[
+            (Some("signing"), RSA_DER),
+            (Some("encryption"), &der(EC_PEM)),
+        ]));
+        let upload = file(&idp(&[(Some("signing"), RSA_DER)]));
+        let comparison = compare_import(&target(&[Role::Idp]), &export, &upload).unwrap();
+        assert_eq!(
+            comparison.differences.tenant_only_keys,
+            [format!("idp encryption {EC_SHA}")]
+        );
+        assert!(comparison.differences.file_only_keys.is_empty());
+        assert_ne!(comparison.differences.lines(), [ONLY_CERTS_DIFFER]);
     }
 
     #[test]
