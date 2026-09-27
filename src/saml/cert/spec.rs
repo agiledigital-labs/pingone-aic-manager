@@ -17,9 +17,11 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::saml::metadata::{self, Edit, Fact, KeyEntry, KeyLayout, RoleKeys};
-use crate::saml::rotate::pem::{self, CertDetails};
-use crate::saml::rotate::spec::{Decision, SIGNING_USE, WriteStatus, role_descriptor};
-use crate::saml::spec::{EntityStub, Located, Location, Role, locate};
+use crate::saml::pem::{self, CertDetails};
+use crate::saml::spec::{
+    EntityStub, Located, Location, Role, SIGNING_USE, locate, role_descriptor,
+};
+use crate::saml::write::{Decision, WriteFailure};
 use crate::{Error, Result};
 
 /// A certificate expiring within this many days is flagged in `cert list`.
@@ -83,13 +85,6 @@ pub fn target_ok(entity_id: &str, stubs: &[EntityStub], realm: &str) -> Result<T
 
 // ── reading what is published ───────────────────────────────────────────────
 
-fn short(role: Role) -> &'static str {
-    match role {
-        Role::Idp => "idp",
-        Role::Sp => "sp",
-    }
-}
-
 fn role_of(role: metadata::Role) -> Role {
     match role {
         metadata::Role::IdentityProvider => Role::Idp,
@@ -129,7 +124,7 @@ fn serialize_role<S: serde::Serializer>(
     role: &Role,
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
-    serializer.serialize_str(short(*role))
+    serializer.serialize_str(role.cli_word())
 }
 
 /// Every certificate in the export, in document order, optionally for one
@@ -217,7 +212,7 @@ pub fn list_lines(entity_id: &str, rows: &[CertRow], now: DateTime<Utc>) -> Vec<
         }
         lines.push(format!(
             "{} {}  sha256 {}",
-            short(row.role),
+            row.role.cli_word(),
             row.key_use,
             row.sha256
         ));
@@ -332,6 +327,11 @@ pub struct CertPlan {
     /// with [`finish`] the only constructor, so holding a plan means every
     /// structural guard passed over the exact bytes it carries.
     base: Vec<u8>,
+    /// The roles the realm's list showed when this plan was computed, which
+    /// [`finish`] checked the document against. Private for the same reason
+    /// as `base`: the recheck compares a fresh list with it, because a role
+    /// the list stops showing is one the update would add back whole.
+    roles: BTreeSet<Role>,
     /// The document that will be sent: `base` with signing key descriptors
     /// spliced in or out.
     pub document: Vec<u8>,
@@ -453,7 +453,7 @@ pub fn plan_add(
             "{} already publishes {sha256} as a signing certificate of its {} role; nothing to \
              send",
             target.entity_id,
-            short(role)
+            role.cli_word()
         )));
     }
     let edit = insert(keys, der, &target.entity_id)?;
@@ -738,7 +738,7 @@ pub fn compare_import(target: &Target, export: &[u8], file: &[u8]) -> Result<Imp
                 } else if !tenant_all.contains(&cert.sha256) {
                     ignored_keys.push(format!(
                         "{} {} {}",
-                        short(role),
+                        role.cli_word(),
                         use_label(key.key_use.as_deref()),
                         cert.sha256
                     ));
@@ -863,7 +863,7 @@ fn finish(
                  the replacement first (`aic saml cert add`), or delete the entity deliberately \
                  with `aic saml delete` if trust is meant to end.",
                 target.entity_id,
-                short(role)
+                role.cli_word()
             )));
         }
     }
@@ -878,6 +878,7 @@ fn finish(
         entity_id: target.entity_id.clone(),
         realm: target.realm.clone(),
         base: export.to_vec(),
+        roles: target.roles.iter().copied().collect(),
         document,
         changes,
         expected,
@@ -893,7 +894,7 @@ pub fn plan_lines(plan: &CertPlan) -> Vec<String> {
     for change in &plan.changes {
         lines.push(format!(
             "{} signing certificates ({}):",
-            short(change.role),
+            change.role.cli_word(),
             role_descriptor(change.role)
         ));
         let groups: [(&str, &Vec<CertInfo>); 3] = [
@@ -961,14 +962,38 @@ pub fn write_ok(confirmed: bool, plan: &CertPlan, flag: &str) -> Result<()> {
     )))
 }
 
-/// The pre-write recheck: the entity is still remote with the same roles,
-/// and its export is byte-identical to the one the plan was computed from.
-/// Anything else means the plan describes a document that no longer exists.
+/// The pre-write recheck: the entity is still remote, the realm's list shows
+/// exactly the roles it showed at planning time, and the export is
+/// byte-identical to the one the plan was computed from. Anything else means
+/// the plan describes an entity that no longer exists.
+///
+/// The roles are not implied by the export. They come from the entity list,
+/// and `UPDATE_CERTIFICATES` adds a role the entity lacks whole, endpoints and
+/// all (measured) — so a role removed between the plan and the write would be
+/// recreated by it, from an export that had not changed a byte.
 pub fn recheck_ok(plan: &CertPlan, fresh_target: &Target, fresh_export: &[u8]) -> Result<()> {
     if fresh_target.entity_id != plan.entity_id {
         return Err(Error::Config(format!(
             "{} changed identity between the plan and the write; refusing",
             plan.entity_id
+        )));
+    }
+    let fresh_roles = fresh_target.roles.iter().copied().collect::<BTreeSet<_>>();
+    if fresh_roles != plan.roles {
+        let words = |roles: &BTreeSet<Role>| {
+            roles
+                .iter()
+                .map(|role| role.wire())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(Error::Config(format!(
+            "the realm's entity list shows {} holding roles [{}], not the [{}] this plan was \
+             computed against; sending it could add a role back whole. Nothing was sent; run \
+             the command again to plan from what is there now.",
+            plan.entity_id,
+            words(&fresh_roles),
+            words(&plan.roles)
         )));
     }
     if fresh_export != plan.base.as_slice() {
@@ -1014,18 +1039,15 @@ pub fn settlement_gap(published: &BTreeSet<CertKey>, expected: &BTreeSet<CertKey
 
 /// The message for a failed or unproven update: what is known, then the
 /// read to do before retrying.
-pub fn failure_message(status: WriteStatus, source: &Error, plan: &CertPlan) -> String {
-    let what = format!("the certificate update of {}", plan.entity_id);
-    match status {
-        WriteStatus::Refused => source.to_string(),
-        WriteStatus::AcceptedUnverified | WriteStatus::Unknown => format!(
-            "{} Read the tenant before retrying: `aic saml cert list {} --realm {}` shows what it \
-             publishes now.\n{source}",
-            status.sentence(&what),
-            plan.entity_id,
-            plan.realm
+pub fn failure_message(failure: &WriteFailure, plan: &CertPlan) -> String {
+    failure.message(
+        &format!("the certificate update of {}", plan.entity_id),
+        &format!(
+            "Read the tenant before retrying: `aic saml cert list {} --realm {}` shows what it \
+             publishes now.",
+            plan.entity_id, plan.realm
         ),
-    }
+    )
 }
 
 /// What landed, once the export confirms it.
@@ -1037,7 +1059,7 @@ pub fn outcome_lines(plan: &CertPlan) -> Vec<String> {
     for change in &plan.changes {
         lines.push(format!(
             "  {}  {} added, {} removed, {} kept",
-            short(change.role),
+            change.role.cli_word(),
             change.added.len(),
             change.removed.len(),
             change.kept.len()
@@ -1509,6 +1531,24 @@ mod tests {
         assert!(error.contains("Nothing was sent"), "{error}");
     }
 
+    /// The export is byte-identical in every case, so only the roles can
+    /// refuse: a role gone from the list, a role added to it, both swapped.
+    #[test]
+    fn the_recheck_refuses_roles_that_changed_under_an_identical_export() {
+        let export = document(&idp(&[(Some("signing"), RSA_DER)]));
+        let plan =
+            change(plan_add(&target(&[Role::Idp]), &export, &der(EC_PEM), EC_SHA, None).unwrap());
+        for roles in [vec![], vec![Role::Sp], vec![Role::Idp, Role::Sp]] {
+            let error = recheck_ok(&plan, &target(&roles), &export)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("roles") && error.contains("Nothing was sent"),
+                "{roles:?}: {error}"
+            );
+        }
+    }
+
     /// A set, not a count: two published and two expected is not settled when
     /// they are different two.
     #[test]
@@ -1556,9 +1596,12 @@ mod tests {
         let export = document(&idp(&[(Some("signing"), RSA_DER)]));
         let plan =
             change(plan_add(&target(&[Role::Idp]), &export, &der(EC_PEM), EC_SHA, None).unwrap());
-        let source = Error::Config("boom".into());
-        for status in [WriteStatus::Unknown, WriteStatus::AcceptedUnverified] {
-            let message = failure_message(status, &source, &plan);
+        let boom = || Error::Config("boom".into());
+        for failure in [
+            WriteFailure::from_send(boom(), &[]),
+            WriteFailure::unverified(boom()),
+        ] {
+            let message = failure_message(&failure, &plan);
             assert!(
                 message.contains(&format!("aic saml cert list {ENTITY} --realm alpha"))
                     && message.ends_with("boom"),
@@ -1566,8 +1609,8 @@ mod tests {
             );
         }
         assert_eq!(
-            failure_message(WriteStatus::Refused, &source, &plan),
-            source.to_string()
+            failure_message(&WriteFailure::before_send(boom()), &plan),
+            "Config error: boom"
         );
     }
 

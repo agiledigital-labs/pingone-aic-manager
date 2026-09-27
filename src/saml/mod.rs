@@ -76,6 +76,9 @@
 pub mod api;
 pub mod cert;
 pub mod cli;
+pub mod export;
 pub mod metadata;
+pub mod pem;
 pub mod rotate;
 pub mod spec;
+pub mod write;

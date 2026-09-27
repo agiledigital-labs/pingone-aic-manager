@@ -5,30 +5,17 @@
 //! and the rule that a claim is only made after the tenant confirmed it.
 
 use std::collections::BTreeSet;
-use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::config::tenant::Tenant;
-use crate::saml::metadata;
+use crate::saml::pem::KeyPair;
 use crate::saml::rotate::journal::{self, Key};
-use crate::saml::rotate::pem::KeyPair;
-use crate::saml::rotate::spec::{
-    self, Phase, RotationState, SecretVersion, role_descriptor, signing_label,
-};
-use crate::saml::spec::{ExportOutcome, Location, Role};
-use crate::saml::{api, spec as saml_spec};
+use crate::saml::rotate::spec::{self, Phase, RotationState, SecretVersion, signing_label};
+use crate::saml::spec::{Location, Role, SIGNING_USE, role_descriptor};
+use crate::saml::write::WriteFailure;
+use crate::saml::{api, export, spec as saml_spec};
 use crate::{Error, Result};
-
-/// How long to wait for the export to show a change, and how often to look.
-///
-/// Every change measured on the sandbox appeared within **single-digit
-/// seconds** (`docs/api/06-saml.md`), so this is generous rather than
-/// hopeful. A timeout is reported, never treated as a failure of the write:
-/// the version exists either way, and telling an operator the stage failed
-/// when it landed is how a rollover gets staged twice.
-const SETTLE_TIMEOUT: Duration = Duration::from_secs(45);
-const SETTLE_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Read the whole picture: entity, mapping, secret, versions, export.
 ///
@@ -64,7 +51,7 @@ pub async fn read_state(
         }
     }
 
-    let certs = export_certs(tenant, realm, entity_id).await?;
+    let certs = export::cert_refs(tenant, realm, entity_id).await?;
     let record = journal::find(&Key {
         tenant: tenant.name.clone(),
         realm: realm.to_string(),
@@ -171,33 +158,6 @@ async fn read_realm_survey(tenant: &str, realm: &str) -> Result<spec::RealmSurve
     })
 }
 
-/// Fetch and fingerprint the entity's published certificates.
-///
-/// **The export endpoint answers 200 for failure too**, so the body is
-/// classified before it is parsed — otherwise `ERROR : No metadata for
-/// entity …` would fingerprint to nothing and read as "this entity publishes
-/// no certificates", which is the same shape as a successful roleless export.
-async fn export_certs(
-    tenant: &Tenant,
-    realm: &str,
-    entity_id: &str,
-) -> Result<Vec<metadata::CertRef>> {
-    let body = api::export_metadata(tenant, realm, entity_id).await?;
-    match saml_spec::classify_export(body.as_bytes()) {
-        ExportOutcome::Metadata => Ok(metadata::cert_refs(body.as_bytes())?),
-        ExportOutcome::TenantError(message) => Err(Error::Config(format!(
-            "tenant {} refused to export {entity_id:?} from realm {realm}, so what it publishes \
-             is unknown: {message}",
-            tenant.name
-        ))),
-        ExportOutcome::Unrecognised(excerpt) => Err(Error::Config(format!(
-            "tenant {} answered the metadata export for {entity_id:?} in realm {realm} with \
-             something that is not SAML metadata: {excerpt}",
-            tenant.name
-        ))),
-    }
-}
-
 async fn resolve_location(tenant: &str, realm: &str, entity_id: &str) -> Result<Location> {
     let stubs = api::list(tenant, realm).await?;
     match saml_spec::locate(entity_id, &stubs) {
@@ -288,22 +248,22 @@ async fn poll_signing_certs(
     role: Role,
     settled: impl Fn(&BTreeSet<String>) -> bool,
 ) -> Result<BTreeSet<String>> {
-    let deadline = std::time::Instant::now() + SETTLE_TIMEOUT;
-    loop {
-        let certs = export_certs(tenant, realm, entity_id).await?;
-        let seen: BTreeSet<String> = certs
-            .iter()
-            .filter(|cert| {
-                cert.descriptor == role_descriptor(role)
-                    && cert.key_use.as_deref() == Some(spec::SIGNING_USE)
-            })
-            .map(|cert| cert.sha256.clone())
-            .collect();
-        if settled(&seen) || std::time::Instant::now() >= deadline {
-            return Ok(seen);
-        }
-        tokio::time::sleep(SETTLE_INTERVAL).await;
-    }
+    export::poll(
+        export::SETTLE,
+        async || {
+            let certs = export::cert_refs(tenant, realm, entity_id).await?;
+            Ok(certs
+                .iter()
+                .filter(|cert| {
+                    cert.descriptor == role_descriptor(role)
+                        && cert.key_use.as_deref() == Some(SIGNING_USE)
+                })
+                .map(|cert| cert.sha256.clone())
+                .collect::<BTreeSet<String>>())
+        },
+        settled,
+    )
+    .await
 }
 
 /// What `init`'s steps need beyond the plan and the state.
@@ -344,7 +304,7 @@ pub struct InitInputs<'a> {
 /// A stop partway is an [`spec::InitApplyError`] naming the steps that
 /// completed, `.ai/core.md` §5's batch rule, plus what is known about the
 /// step that stopped — refused, accepted but unverified, or unknown
-/// ([`spec::WriteStatus`]). `report` still receives one line per completed
+/// ([`WriteStatus`]). `report` still receives one line per completed
 /// step as it completes; this module prints nothing itself.
 pub async fn apply_init(
     tenant: &str,
@@ -363,7 +323,7 @@ pub async fn apply_init(
                 plan,
                 &[],
                 spec::InitStop::Recheck,
-                spec::WriteFailure::before_send(error),
+                WriteFailure::before_send(error),
             )
         })?;
     spec::run_init_steps(
@@ -400,7 +360,7 @@ async fn run_step(
     confirmed_prod: bool,
     permit: &spec::InitPermit,
     proof: &spec::ExclusivityProof,
-) -> std::result::Result<String, spec::WriteFailure> {
+) -> std::result::Result<String, WriteFailure> {
     match step {
         spec::InitStep::SetIdentifier => {
             set_identifier(state, &plan.identifier, confirmed_prod, permit, proof).await?;
@@ -528,7 +488,7 @@ async fn set_identifier(
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
     _proof: &spec::ExclusivityProof,
-) -> std::result::Result<Value, spec::WriteFailure> {
+) -> std::result::Result<Value, WriteFailure> {
     // Taken from the state rather than passed alongside it: tenant, realm,
     // entity id, location and role are five positional arguments of which
     // three are `&str`, and a transposed pair would `PUT` a full replace at
@@ -541,11 +501,11 @@ async fn set_identifier(
     let (location, role) = (state.location, state.role);
     let before = api::read(tenant, realm, location, entity_id)
         .await
-        .map_err(spec::WriteFailure::before_send)?;
+        .map_err(WriteFailure::before_send)?;
     spec::identifier_write_ok(state.identifier.as_deref(), &before, role)
-        .map_err(spec::WriteFailure::before_send)?;
+        .map_err(WriteFailure::before_send)?;
     let intended = spec::set_secret_identifier(&before, location, role, identifier)
-        .map_err(spec::WriteFailure::before_send)?;
+        .map_err(WriteFailure::before_send)?;
     api::update_entity(
         tenant,
         realm,
@@ -556,7 +516,7 @@ async fn set_identifier(
         _permit,
     )
     .await
-    .map_err(|error| spec::WriteFailure::from_send(error, &[]))?;
+    .map_err(|error| WriteFailure::from_send(error, &[]))?;
     // The write is already gone. An error from here on is an error about the
     // *proof*, and it has to say which: an operator who reads "failed" and
     // re-runs to be sure is acting on the belief that nothing changed, and on
@@ -574,13 +534,13 @@ async fn set_identifier(
                  safe — it skips a step the tenant already shows done."
             ))
         })
-        .map_err(spec::WriteFailure::unverified)?;
+        .map_err(WriteFailure::unverified)?;
 
     let differences = spec::entity_write_differences(&intended, &after);
     if differences.is_empty() {
         return Ok(after);
     }
-    Err(spec::WriteFailure::unverified(Error::Config(format!(
+    Err(WriteFailure::unverified(Error::Config(format!(
         "the entity `PUT` returned success but {}/{realm}/{entity_id} does not match what was \
          sent — {} differ(s). An entity `PUT` is a full replace with no `If-Match`, so a body \
          AM reshaped leaves the entity in whatever state it chose; read it with \
@@ -615,7 +575,7 @@ async fn create_key_secret(
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
     _proof: &spec::ExclusivityProof,
-) -> std::result::Result<Value, spec::WriteFailure> {
+) -> std::result::Result<Value, WriteFailure> {
     let value_base64 = encode_pem(value);
     crate::esv::api::create_secret(
         tenant,
@@ -627,7 +587,7 @@ async fn create_key_secret(
         confirmed_prod,
     )
     .await
-    .map_err(|error| spec::WriteFailure::from_send(error, &[spec::SECRET_ALREADY_EXISTS]))
+    .map_err(|error| WriteFailure::from_send(error, &[spec::SECRET_ALREADY_EXISTS]))
 }
 
 /// Point the signing label at the ESV secret, having checked it is still free.
@@ -645,18 +605,18 @@ async fn map_label(
     confirmed_prod: bool,
     _permit: &spec::InitPermit,
     _proof: &spec::ExclusivityProof,
-) -> std::result::Result<Value, spec::WriteFailure> {
+) -> std::result::Result<Value, WriteFailure> {
     // The realm and label are the consumer's own, so the label written is
     // the one the exclusivity proof was minted about.
     let (realm, label) = (mine.realm.as_str(), mine.label.as_str());
     let fresh = mapping_alias(tenant, realm, label)
         .await
-        .map_err(spec::WriteFailure::before_send)?;
+        .map_err(WriteFailure::before_send)?;
     spec::mapping_write_ok(label, secret_id, planned_from, fresh.as_deref())
-        .map_err(spec::WriteFailure::before_send)?;
+        .map_err(WriteFailure::before_send)?;
     crate::secretmap::api::set_mapping(tenant, realm, label, secret_id, confirmed_prod)
         .await
-        .map_err(|error| spec::WriteFailure::from_send(error, &[]))
+        .map_err(|error| WriteFailure::from_send(error, &[]))
 }
 
 /// Add the second key pair as a new ESV secret version.
@@ -670,7 +630,7 @@ async fn map_label(
 /// the `Inconsistent` phase every later verb refuses from.
 ///
 /// The proof the recheck mints is passed to the writer, which requires one.
-/// A failure says which side of the send it is on ([`spec::WriteFailure`]).
+/// A failure says which side of the send it is on ([`WriteFailure`]).
 pub async fn add_version(
     tenant: &Tenant,
     state: &RotationState,
@@ -678,10 +638,10 @@ pub async fn add_version(
     value: &str,
     confirmed_prod: bool,
     permit: &spec::StagePermit,
-) -> std::result::Result<Value, spec::WriteFailure> {
+) -> std::result::Result<Value, WriteFailure> {
     let fresh = recheck(tenant, state, "stage", &plan.secret_id)
         .await
-        .map_err(spec::WriteFailure::before_send)?;
+        .map_err(WriteFailure::before_send)?;
     send_version(tenant, plan, value, confirmed_prod, permit, &fresh).await
 }
 
@@ -693,7 +653,7 @@ async fn send_version(
     confirmed_prod: bool,
     _permit: &spec::StagePermit,
     _proof: &spec::ExclusivityProof,
-) -> std::result::Result<Value, spec::WriteFailure> {
+) -> std::result::Result<Value, WriteFailure> {
     crate::esv::api::create_secret_version(
         &tenant.name,
         &plan.secret_id,
@@ -701,7 +661,7 @@ async fn send_version(
         confirmed_prod,
     )
     .await
-    .map_err(|error| spec::WriteFailure::from_send(error, &[]))
+    .map_err(|error| WriteFailure::from_send(error, &[]))
 }
 
 /// Disable the old version, closing the window.
@@ -716,17 +676,17 @@ async fn send_version(
 /// Whatever moved in between, the number still resolves.
 ///
 /// The proof the recheck mints is passed to the writer, which requires one.
-/// A failure says which side of the send it is on ([`spec::WriteFailure`]).
+/// A failure says which side of the send it is on ([`WriteFailure`]).
 pub async fn disable_version(
     tenant: &Tenant,
     state: &RotationState,
     plan: &spec::CompletePlan,
     confirmed_prod: bool,
     permit: &spec::CompletePermit,
-) -> std::result::Result<Value, spec::WriteFailure> {
+) -> std::result::Result<Value, WriteFailure> {
     let fresh = recheck(tenant, state, "complete", &plan.secret_id)
         .await
-        .map_err(spec::WriteFailure::before_send)?;
+        .map_err(WriteFailure::before_send)?;
     send_disable(tenant, plan, confirmed_prod, permit, &fresh).await
 }
 
@@ -737,7 +697,7 @@ async fn send_disable(
     confirmed_prod: bool,
     _permit: &spec::CompletePermit,
     _proof: &spec::ExclusivityProof,
-) -> std::result::Result<Value, spec::WriteFailure> {
+) -> std::result::Result<Value, WriteFailure> {
     crate::esv::api::change_version_status(
         &tenant.name,
         &plan.secret_id,
@@ -746,7 +706,7 @@ async fn send_disable(
         confirmed_prod,
     )
     .await
-    .map_err(|error| spec::WriteFailure::from_send(error, &[spec::CANNOT_DISABLE_LATEST]))
+    .map_err(|error| WriteFailure::from_send(error, &[spec::CANNOT_DISABLE_LATEST]))
 }
 
 /// Read the rollover's inputs again, re-survey its consumers, and compare
@@ -794,12 +754,12 @@ async fn recheck(
     let versions = spec::parse_versions(
         &crate::esv::api::list_secret_versions(&tenant.name, secret_id).await?,
     );
-    let certs = export_certs(tenant, &state.realm, &state.entity_id).await?;
+    let certs = export::cert_refs(tenant, &state.realm, &state.entity_id).await?;
     let published = certs
         .iter()
         .filter(|cert| {
             cert.descriptor == role_descriptor(state.role)
-                && cert.key_use.as_deref() == Some(spec::SIGNING_USE)
+                && cert.key_use.as_deref() == Some(SIGNING_USE)
         })
         .map(|cert| cert.sha256.clone())
         .collect();
@@ -826,7 +786,7 @@ async fn recheck(
 /// [`crate::esv::api::encode_secret_value`] would do this, and deliberately is
 /// not used: its `pem` arm accepts anything containing `-----BEGIN`, and the
 /// value reaching here has already been through
-/// [`super::pem::validate_key_pair`], which is a far stronger check that a
+/// [`crate::saml::pem::validate_key_pair`], which is a far stronger check that a
 /// weaker one cannot add to.
 fn encode_pem(value: &str) -> String {
     use base64::Engine as _;

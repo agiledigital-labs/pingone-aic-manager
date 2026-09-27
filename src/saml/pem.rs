@@ -1540,9 +1540,9 @@ mod tests {
     // output (public certificates only; their keys were discarded).
     // -----------------------------------------------------------------
 
-    const RSA_PEM: &[u8] = include_bytes!("../fixtures/cert-rsa.crt");
-    const RSA_DER: &[u8] = include_bytes!("../fixtures/cert-rsa.der");
-    const EC_PEM: &[u8] = include_bytes!("../fixtures/cert-ec.crt");
+    const RSA_PEM: &[u8] = include_bytes!("fixtures/cert-rsa.crt");
+    const RSA_DER: &[u8] = include_bytes!("fixtures/cert-rsa.der");
+    const EC_PEM: &[u8] = include_bytes!("fixtures/cert-ec.crt");
 
     #[test]
     fn a_certificate_reads_the_same_from_pem_and_der() {
