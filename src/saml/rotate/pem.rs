@@ -15,6 +15,13 @@
 //! certificate alone, or a key and a stranger's certificate are all refused by
 //! name.
 //!
+//! The same DER walk also serves `aic saml cert`, which handles a certificate
+//! **on its own** — a remote entity publishes only the public half, so there
+//! is no key to match. [`read_certificate`] takes one PEM or DER certificate
+//! and refuses a private key by name, and [`certificate_details`] reads the
+//! subject, issuer, validity and key an operator needs to tell certificates
+//! apart. Still read, never verified: no signature, no chain, no policy.
+//!
 //! ## What "exactly one of each" does and does not mean
 //!
 //! It is a statement about the armour, not about every byte of the file.
@@ -638,6 +645,338 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+// ---------------------------------------------------------------------------
+// A certificate on its own: `aic saml cert`.
+// ---------------------------------------------------------------------------
+
+/// Why a `--cert-file` is not one certificate.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CertificateError {
+    #[error(
+        "the file holds a `{0}` block. `aic saml cert` takes the certificate alone and never a \
+         private key — a remote entity's metadata publishes only the public half"
+    )]
+    PrivateKey(String),
+    #[error("the file must hold exactly one CERTIFICATE PEM block or one DER certificate ({0})")]
+    NotOneCertificate(String),
+    #[error("the PEM armour is not well formed: {0}")]
+    BrokenArmour(String),
+    #[error("the certificate is not valid base64: {0}")]
+    NotBase64(String),
+    #[error("the certificate is not a readable X.509 document: {0}")]
+    Unreadable(String),
+}
+
+impl From<CertificateError> for crate::Error {
+    fn from(error: CertificateError) -> Self {
+        crate::Error::Config(format!("certificate file: {error}"))
+    }
+}
+
+/// One X.509 certificate, read from a PEM or DER file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Certificate {
+    pub der: Vec<u8>,
+    /// Lowercase hex SHA-256 over [`Self::der`] — the identity
+    /// [`crate::saml::metadata::CertRef::sha256`] reports for the same
+    /// certificate in exported metadata.
+    pub sha256: String,
+    pub details: CertDetails,
+}
+
+/// What a certificate says about itself. Read, never verified: no signature
+/// is checked and no chain is built, the same limit as the key-pair walk.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertDetails {
+    pub subject: String,
+    pub issuer: String,
+    pub not_before: chrono::DateTime<chrono::Utc>,
+    pub not_after: chrono::DateTime<chrono::Utc>,
+    /// `RSA`, `EC`, `Ed25519`, … or the dotted OID when unrecognised.
+    pub key_algorithm: String,
+    /// RSA modulus bits, or the curve's field size for a named EC curve.
+    pub key_size: Option<usize>,
+}
+
+impl CertDetails {
+    /// `RSA 2048`, `EC 256`, `Ed25519`.
+    pub fn key(&self) -> String {
+        match self.key_size {
+            Some(bits) => format!("{} {bits}", self.key_algorithm),
+            None => self.key_algorithm.clone(),
+        }
+    }
+}
+
+/// Read a `--cert-file`: one `CERTIFICATE` PEM block, or one DER certificate.
+///
+/// A private key anywhere in the file is refused by name rather than skipped.
+/// The file is on its way into published metadata, and the operator who
+/// passed `cat key.pem cert.pem` meant to pass something else.
+pub fn read_certificate(bytes: &[u8]) -> Result<Certificate, CertificateError> {
+    let der = match std::str::from_utf8(bytes) {
+        Ok(text) if text.contains("-----BEGIN ") => {
+            let blocks = pem_blocks(text).map_err(|error| match error {
+                KeyPairError::BrokenArmour(detail) => CertificateError::BrokenArmour(detail),
+                other => CertificateError::BrokenArmour(other.to_string()),
+            })?;
+            if let Some(key) = blocks
+                .iter()
+                .find(|block| PRIVATE_KEY_LABELS.contains(&block.label.as_str()))
+            {
+                return Err(CertificateError::PrivateKey(key.label.clone()));
+            }
+            let [block] = blocks.as_slice() else {
+                return Err(CertificateError::NotOneCertificate(describe(&blocks)));
+            };
+            if block.label != CERTIFICATE_LABEL {
+                return Err(CertificateError::NotOneCertificate(describe(&blocks)));
+            }
+            B64.decode(&block.body)
+                .map_err(|error| CertificateError::NotBase64(error.to_string()))?
+        }
+        _ => bytes.to_vec(),
+    };
+    let details = certificate_details(&der).map_err(CertificateError::Unreadable)?;
+    Ok(Certificate {
+        sha256: hex(&Sha256::digest(&der)),
+        der,
+        details,
+    })
+}
+
+/// Subject, issuer, validity and public key of an X.509 certificate.
+///
+/// The same walk as [`certificate_spki`], one step wider: it proves the whole
+/// certificate is structure (`read_whole`, three outer elements) and then reads
+/// the fields an operator needs to tell two certificates apart.
+pub fn certificate_details(der: &[u8]) -> Result<CertDetails, String> {
+    let spki = certificate_spki(der)?;
+    let fields = tbs_fields(der)?;
+    let first = usize::from(fields.first().map(|tlv| tlv.tag) == Some(TAG_CONTEXT_0));
+    let field = |offset: usize, what: &str| {
+        fields
+            .get(first + offset)
+            .ok_or_else(|| format!("TBSCertificate ends before {what}"))
+    };
+    let issuer = distinguished_name(expect(field(2, "issuer")?, TAG_SEQUENCE, "issuer")?)?;
+    let validity = elements(expect(field(3, "validity")?, TAG_SEQUENCE, "validity")?)?;
+    let [not_before, not_after] = validity.as_slice() else {
+        return Err(format!(
+            "validity has {} element(s), not notBefore and notAfter",
+            validity.len()
+        ));
+    };
+    let subject = distinguished_name(expect(field(4, "subject")?, TAG_SEQUENCE, "subject")?)?;
+    let (key_algorithm, key_size) = key_description(der, &spki)?;
+    Ok(CertDetails {
+        subject,
+        issuer,
+        not_before: time(not_before)?,
+        not_after: time(not_after)?,
+        key_algorithm,
+        key_size,
+    })
+}
+
+fn tbs_fields(der: &[u8]) -> Result<Vec<Tlv<'_>>, String> {
+    let certificate = expect(
+        &read_whole(der, "Certificate")?,
+        TAG_SEQUENCE,
+        "Certificate",
+    )?;
+    let outer = elements(certificate)?;
+    let tbs = expect(
+        outer.first().ok_or("Certificate is empty")?,
+        TAG_SEQUENCE,
+        "TBSCertificate",
+    )?;
+    elements(tbs)
+}
+
+/// `id-ecPublicKey`, 1.2.840.10045.2.1 — readable here, but a key pair on
+/// it cannot be matched by [`validate_key_pair`].
+const EC_PUBLIC_KEY_OID: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+const RSA_PSS_OID: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0a];
+const ED25519_OID: &[u8] = &[0x2b, 0x65, 0x70];
+const ED448_OID: &[u8] = &[0x2b, 0x65, 0x71];
+/// Named curves by OID content bytes, with their field size in bits.
+const CURVES: &[(&[u8], usize)] = &[
+    (&[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07], 256), // prime256v1
+    (&[0x2b, 0x81, 0x04, 0x00, 0x22], 384),                   // secp384r1
+    (&[0x2b, 0x81, 0x04, 0x00, 0x23], 521),                   // secp521r1
+];
+
+/// The algorithm name and size. The curve OID sits in the SPKI algorithm's
+/// parameters, which [`certificate_spki`] does not keep, so it is re-read.
+fn key_description(der: &[u8], spki: &Spki) -> Result<(String, Option<usize>), String> {
+    let oid = spki.algorithm_oid.as_slice();
+    if oid == RSA_ENCRYPTION_OID || oid == RSA_PSS_OID {
+        let key = rsa_public_key(&spki.subject_public_key)?;
+        let bits = key.modulus.first().map_or(0, |top| {
+            key.modulus.len() * 8 - top.leading_zeros() as usize
+        });
+        let name = if oid == RSA_PSS_OID { "RSA-PSS" } else { "RSA" };
+        return Ok((name.to_string(), Some(bits)));
+    }
+    if oid == EC_PUBLIC_KEY_OID {
+        let fields = tbs_fields(der)?;
+        let first = usize::from(fields.first().map(|tlv| tlv.tag) == Some(TAG_CONTEXT_0));
+        let spki_fields = elements(expect(
+            fields.get(first + 5).ok_or("no subjectPublicKeyInfo")?,
+            TAG_SEQUENCE,
+            "subjectPublicKeyInfo",
+        )?)?;
+        let algorithm = elements(expect(
+            spki_fields.first().ok_or("no algorithm")?,
+            TAG_SEQUENCE,
+            "AlgorithmIdentifier",
+        )?)?;
+        let size = algorithm
+            .get(1)
+            .filter(|parameter| parameter.tag == TAG_OID)
+            .and_then(|curve| {
+                CURVES
+                    .iter()
+                    .find(|(known, _)| *known == curve.value)
+                    .map(|(_, bits)| *bits)
+            });
+        return Ok(("EC".to_string(), size));
+    }
+    if oid == ED25519_OID {
+        return Ok(("Ed25519".to_string(), None));
+    }
+    if oid == ED448_OID {
+        return Ok(("Ed448".to_string(), None));
+    }
+    Ok((dotted(oid), None))
+}
+
+/// `Name ::= SEQUENCE OF RelativeDistinguishedName`, rendered in document
+/// order as `CN=…, O=…` — the order `openssl x509 -subject` prints.
+fn distinguished_name(name: &[u8]) -> Result<String, String> {
+    let mut parts = Vec::new();
+    for rdn in elements(name)? {
+        for attribute in elements(expect(&rdn, 0x31, "RelativeDistinguishedName")?)? {
+            let pair = elements(expect(&attribute, TAG_SEQUENCE, "AttributeTypeAndValue")?)?;
+            let [kind, value] = pair.as_slice() else {
+                return Err("AttributeTypeAndValue is not a type and a value".to_string());
+            };
+            let kind = expect(kind, TAG_OID, "attribute type")?;
+            parts.push(format!("{}={}", attribute_name(kind), string_value(value)));
+        }
+    }
+    Ok(parts.join(", "))
+}
+
+fn attribute_name(oid: &[u8]) -> String {
+    match oid {
+        [0x55, 0x04, 0x03] => "CN".into(),
+        [0x55, 0x04, 0x05] => "serialNumber".into(),
+        [0x55, 0x04, 0x06] => "C".into(),
+        [0x55, 0x04, 0x07] => "L".into(),
+        [0x55, 0x04, 0x08] => "ST".into(),
+        [0x55, 0x04, 0x0a] => "O".into(),
+        [0x55, 0x04, 0x0b] => "OU".into(),
+        [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x01] => "emailAddress".into(),
+        [0x09, 0x92, 0x26, 0x89, 0x93, 0xf2, 0x2c, 0x64, 0x01, 0x19] => "DC".into(),
+        other => dotted(other),
+    }
+}
+
+/// The directory-string types a DN value may be, decoded for reading. A type
+/// this does not know is shown as hex rather than guessed at.
+fn string_value(value: &Tlv<'_>) -> String {
+    match value.tag {
+        // UTF8String, PrintableString, IA5String, NumericString, VisibleString
+        0x0c | 0x13 | 0x16 | 0x12 | 0x1a => String::from_utf8_lossy(value.value).into_owned(),
+        // TeletexString: Latin-1 in practice.
+        0x14 => value.value.iter().map(|byte| char::from(*byte)).collect(),
+        // BMPString: UTF-16BE.
+        0x1e => String::from_utf16_lossy(
+            &value
+                .value
+                .chunks(2)
+                .map(|pair| u16::from_be_bytes([pair[0], *pair.get(1).unwrap_or(&0)]))
+                .collect::<Vec<_>>(),
+        ),
+        _ => format!("#{}", hex(value.value)),
+    }
+}
+
+/// `UTCTime` (`YYMMDDHHMMSSZ`, years 1950–2049 per RFC 5280) or
+/// `GeneralizedTime` (`YYYYMMDDHHMMSSZ`).
+fn time(tlv: &Tlv<'_>) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    use chrono::TimeZone as _;
+    let text = std::str::from_utf8(tlv.value).map_err(|_| "a time is not ASCII".to_string())?;
+    let digits = text
+        .strip_suffix('Z')
+        .ok_or_else(|| format!("time {text:?} is not UTC ('Z')"))?;
+    let (year, rest) = match (tlv.tag, digits.len()) {
+        (0x17, 12) => {
+            let short: i32 = digits[..2].parse().map_err(|_| format!("time {text:?}"))?;
+            (
+                if short >= 50 {
+                    1900 + short
+                } else {
+                    2000 + short
+                },
+                &digits[2..],
+            )
+        }
+        (0x18, 14) => (
+            digits[..4].parse().map_err(|_| format!("time {text:?}"))?,
+            &digits[4..],
+        ),
+        _ => {
+            return Err(format!(
+                "time {text:?} (tag 0x{:02x}) is not RFC 5280",
+                tlv.tag
+            ));
+        }
+    };
+    let number = |range: std::ops::Range<usize>| -> Result<u32, String> {
+        rest.get(range)
+            .and_then(|part| part.parse().ok())
+            .ok_or_else(|| format!("time {text:?}"))
+    };
+    chrono::Utc
+        .with_ymd_and_hms(
+            year,
+            number(0..2)?,
+            number(2..4)?,
+            number(4..6)?,
+            number(6..8)?,
+            number(8..10)?,
+        )
+        .single()
+        .ok_or_else(|| format!("time {text:?} is not a date"))
+}
+
+/// An OID's content bytes in dotted form.
+fn dotted(oid: &[u8]) -> String {
+    let mut arcs: Vec<u64> = Vec::new();
+    let mut value: u64 = 0;
+    for byte in oid {
+        value = (value << 7) | u64::from(byte & 0x7f);
+        if byte & 0x80 == 0 {
+            if arcs.is_empty() {
+                let first = (value / 40).min(2);
+                arcs.push(first);
+                arcs.push(value - first * 40);
+            } else {
+                arcs.push(value);
+            }
+            value = 0;
+        }
+    }
+    arcs.iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,10 +1029,6 @@ mod tests {
         body.extend_from_slice(content);
         tlv(TAG_BIT_STRING, &body)
     }
-
-    /// `id-ecPublicKey`, 1.2.840.10045.2.1 — a real algorithm this module
-    /// deliberately cannot check.
-    const EC_PUBLIC_KEY_OID: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
 
     fn spki(algorithm: &[u8], modulus: &[u8], exponent: &[u8]) -> Vec<u8> {
         seq(&[
@@ -1192,5 +1527,78 @@ mod tests {
         // Long form, correctly read.
         let long = tlv(TAG_OCTET_STRING, &[0u8; 200]);
         assert_eq!(read_tlv(&long).unwrap().value.len(), 200);
+    }
+
+    // -----------------------------------------------------------------
+    // `read_certificate` / `certificate_details`, against real openssl
+    // output (public certificates only; their keys were discarded).
+    // -----------------------------------------------------------------
+
+    const RSA_PEM: &[u8] = include_bytes!("../fixtures/cert-rsa.crt");
+    const RSA_DER: &[u8] = include_bytes!("../fixtures/cert-rsa.der");
+    const EC_PEM: &[u8] = include_bytes!("../fixtures/cert-ec.crt");
+
+    #[test]
+    fn a_certificate_reads_the_same_from_pem_and_der() {
+        let pem = read_certificate(RSA_PEM).expect("pem");
+        let der = read_certificate(RSA_DER).expect("der");
+        assert_eq!(pem, der);
+        // `openssl x509 -fingerprint -sha256`, minus the colons.
+        assert_eq!(
+            pem.sha256,
+            "353f92d3903677e8efd96420323c35de7f7961c088e9b6f2c1828fc3c3ba8447"
+        );
+    }
+
+    #[test]
+    fn certificate_details_match_what_openssl_prints() {
+        let rsa = read_certificate(RSA_PEM).expect("rsa").details;
+        assert_eq!(rsa.subject, "CN=aic-cert-fixture-rsa, O=Example Org");
+        assert_eq!(rsa.issuer, rsa.subject);
+        assert_eq!(rsa.not_before.to_rfc3339(), "2026-09-27T21:30:20+00:00");
+        assert_eq!(rsa.not_after.to_rfc3339(), "2027-09-27T21:30:20+00:00");
+        assert_eq!(rsa.key(), "RSA 2048");
+
+        let ec = read_certificate(EC_PEM).expect("ec").details;
+        assert_eq!(ec.subject, "CN=aic-cert-fixture-ec");
+        assert_eq!(ec.not_after.to_rfc3339(), "2026-10-27T21:30:20+00:00");
+        assert_eq!(ec.key(), "EC 256");
+    }
+
+    /// The file is headed for published metadata, so a private key in it is
+    /// a refusal by name — including the `cat key.pem cert.pem` shape a
+    /// rotation takes, which is the likeliest mistake.
+    #[test]
+    fn a_certificate_file_refuses_private_keys_and_second_documents() {
+        let pair = format!(
+            "{}{}",
+            armour(PKCS8_LABEL, &pkcs8(MODULUS, EXPONENT)),
+            String::from_utf8_lossy(RSA_PEM)
+        );
+        assert!(matches!(
+            read_certificate(pair.as_bytes()),
+            Err(CertificateError::PrivateKey(label)) if label == PKCS8_LABEL
+        ));
+
+        let two = [RSA_PEM, EC_PEM].concat();
+        assert!(matches!(
+            read_certificate(&two),
+            Err(CertificateError::NotOneCertificate(_))
+        ));
+        assert!(matches!(
+            read_certificate(b"not a certificate"),
+            Err(CertificateError::Unreadable(_))
+        ));
+        let truncated = &RSA_DER[..RSA_DER.len() - 1];
+        assert!(read_certificate(truncated).is_err());
+    }
+
+    #[test]
+    fn an_unknown_algorithm_is_named_by_its_oid() {
+        assert_eq!(
+            dotted(&[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]),
+            "1.2.840.10045.2.1"
+        );
+        assert_eq!(dotted(&[0x55, 0x04, 0x03]), "2.5.4.3");
     }
 }
