@@ -455,6 +455,17 @@ tested.
   as such — it is what the non-certificate content is ignored against, so what
   is sent besides the certificates does not matter to AM, but the export is the
   only view of the current certificate set.
+- **Implemented as `aic saml cert` and `import --certs`** (`src/saml/cert/`).
+  Its live smoke on 2026-09-28 in sandbox `alpha`, against the Entra-shaped
+  test IdP, exercised the export-as-splice-base path end to end: add, remove,
+  import `add` and import `replace` each returned 200 and the next export
+  published exactly the planned `(role, use, sha256)` set on the first read.
+  One observation from it: **AM re-indents what it stores.** After the entity
+  went from one certificate to two and back, the export carried the same single
+  certificate but was not byte-identical to the opening one — whitespace inside
+  `<ds:KeyInfo>` differed. So a splice-then-unsplice round trip is
+  certificate-identical on the tenant, not byte-identical, and a pre-write
+  recheck must compare against a fresh export, not a remembered one.
 
 ## Exporting metadata
 
