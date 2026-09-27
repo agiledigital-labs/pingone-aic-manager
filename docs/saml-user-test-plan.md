@@ -254,12 +254,11 @@ operation. There is nothing to upload and no metadata to push.
 ### D0 · Make three throwaway key pairs
 
 ```sh
-cd /tmp
 for n in 1 2 3; do
-  openssl req -x509 -newkey rsa:2048 -keyout k$n.pem -out c$n.pem -days 30 \
-    -nodes -subj "/CN=aic-rotate-test-$n"
-  cat k$n.pem c$n.pem > pair$n.pem
-  printf 'cert%s ' $n; openssl x509 -in c$n.pem -outform DER | sha256sum
+  openssl req -x509 -newkey rsa:2048 -keyout /tmp/k$n.pem -out /tmp/c$n.pem \
+    -days 30 -nodes -subj "/CN=aic-rotate-test-$n"
+  cat /tmp/k$n.pem /tmp/c$n.pem > /tmp/pair$n.pem
+  printf 'cert%s ' $n; openssl x509 -in /tmp/c$n.pem -outform DER | sha256sum
 done
 ```
 
@@ -267,12 +266,11 @@ done
 <summary>fish</summary>
 
 ```fish
-cd /tmp
 for n in 1 2 3
-  openssl req -x509 -newkey rsa:2048 -keyout k$n.pem -out c$n.pem -days 30 \
-    -nodes -subj "/CN=aic-rotate-test-$n"
-  cat k$n.pem c$n.pem > pair$n.pem
-  printf 'cert%s ' $n; openssl x509 -in c$n.pem -outform DER | sha256sum
+  openssl req -x509 -newkey rsa:2048 -keyout /tmp/k$n.pem -out /tmp/c$n.pem \
+    -days 30 -nodes -subj "/CN=aic-rotate-test-$n"
+  cat /tmp/k$n.pem /tmp/c$n.pem > /tmp/pair$n.pem
+  printf 'cert%s ' $n; openssl x509 -in /tmp/c$n.pem -outform DER | sha256sum
 end
 ```
 
@@ -721,11 +719,10 @@ Only the certificate is needed — nothing here signs anything — so the key is
 deleted straight away.
 
 ```sh
-cd /tmp
-openssl req -x509 -newkey rsa:2048 -keyout gk1.pem -out gc1.pem -days 30 \
-  -nodes -subj "/CN=aic-cert-test-1"
-rm gk1.pem
-openssl x509 -in gc1.pem -outform DER | sha256sum
+openssl req -x509 -newkey rsa:2048 -keyout /tmp/gk1.pem -out /tmp/gc1.pem \
+  -days 30 -nodes -subj "/CN=aic-cert-test-1"
+rm /tmp/gk1.pem
+openssl x509 -in /tmp/gc1.pem -outform DER | sha256sum
 ```
 
 ### G1 · List what it publishes
