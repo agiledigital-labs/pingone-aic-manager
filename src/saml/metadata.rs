@@ -863,12 +863,6 @@ impl Open {
     }
 }
 
-/// A `<KeyDescriptor>` being read. Certificates are flushed at its end tag so
-/// a `<KeyName>` that follows the certificate is still picked up.
-///
-/// A stack, not a single slot: nesting one key descriptor inside another is
-/// not legal metadata, but a document that does it anyway must not silently
-/// drop the outer descriptor's certificates.
 /// A [`Fact`] whose element is still open: its descendants' text is still
 /// arriving.
 struct PendingFact {
@@ -878,6 +872,12 @@ struct PendingFact {
     text: String,
 }
 
+/// A `<KeyDescriptor>` being read. Certificates are flushed at its end tag so
+/// a `<KeyName>` that follows the certificate is still picked up.
+///
+/// A stack, not a single slot: nesting one key descriptor inside another is
+/// not legal metadata, but a document that does it anyway must not silently
+/// drop the outer descriptor's certificates.
 struct PendingKey {
     descriptor: String,
     key_use: Option<String>,

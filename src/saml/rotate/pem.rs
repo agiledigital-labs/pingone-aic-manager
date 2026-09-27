@@ -913,6 +913,12 @@ fn time(tlv: &Tlv<'_>) -> Result<chrono::DateTime<chrono::Utc>, String> {
     let digits = text
         .strip_suffix('Z')
         .ok_or_else(|| format!("time {text:?} is not UTC ('Z')"))?;
+    // Every slice below is by byte offset, so anything but ASCII digits has
+    // to be refused first: `1é…` is valid UTF-8 whose second byte is not a
+    // char boundary, and slicing it panics.
+    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!("time {text:?} is not all digits"));
+    }
     let (year, rest) = match (tlv.tag, digits.len()) {
         (0x17, 12) => {
             let short: i32 = digits[..2].parse().map_err(|_| format!("time {text:?}"))?;
@@ -1591,6 +1597,89 @@ mod tests {
         ));
         let truncated = &RSA_DER[..RSA_DER.len() - 1];
         assert!(read_certificate(truncated).is_err());
+    }
+
+    /// Every RFC 5280 shape, and the inputs that used to reach a byte slice
+    /// unchecked: a multi-byte character where a digit belongs panicked.
+    #[test]
+    fn a_time_reads_both_encodings_and_refuses_anything_else_without_panicking() {
+        let read = |tag: u8, text: &str| {
+            time(&Tlv {
+                tag,
+                value: text.as_bytes(),
+                consumed: 0,
+            })
+            .map(|at| at.to_rfc3339())
+        };
+        const UTC: u8 = 0x17;
+        const GENERALIZED: u8 = 0x18;
+        for (tag, text, expected) in [
+            (UTC, "260927213020Z", Some("2026-09-27T21:30:20+00:00")),
+            // The RFC 5280 pivot: 50–99 is 19xx, 00–49 is 20xx.
+            (UTC, "500101000000Z", Some("1950-01-01T00:00:00+00:00")),
+            (UTC, "991231235959Z", Some("1999-12-31T23:59:59+00:00")),
+            (UTC, "491231235959Z", Some("2049-12-31T23:59:59+00:00")),
+            (
+                GENERALIZED,
+                "20500101000000Z",
+                Some("2050-01-01T00:00:00+00:00"),
+            ),
+            (
+                GENERALIZED,
+                "19491231235959Z",
+                Some("1949-12-31T23:59:59+00:00"),
+            ),
+            // Refusals. The first three put a two-byte character where the
+            // year slice ends; they panicked before the digit check.
+            (UTC, "1\u{e9}010100000Z", None),
+            (UTC, "1\u{e9}0101000000Z", None),
+            (GENERALIZED, "202\u{e9}0101000000Z", None),
+            (UTC, "+60101000000Z", None),
+            (UTC, "260927213020", None),
+            (UTC, "2609272130Z", None),
+            (GENERALIZED, "260927213020Z", None),
+            (UTC, "261327213020Z", None),
+            (0x04, "260927213020Z", None),
+        ] {
+            assert_eq!(
+                read(tag, text).ok().as_deref(),
+                expected,
+                "tag 0x{tag:02x} {text:?}"
+            );
+        }
+    }
+
+    /// Never panics on a mutated certificate. `#[ignore]`d because it is a
+    /// fuzz loop, not a unit test: `cargo test -- --ignored never_panics`.
+    ///
+    /// No fuzzing dependency — an xorshift over byte flips, truncations and
+    /// insertions of the fixture certificates, deterministic from its seed so
+    /// a failure reproduces.
+    #[test]
+    #[ignore = "randomized; run with --ignored"]
+    fn certificate_details_never_panics_on_mutated_input() {
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let seeds = [RSA_DER.to_vec(), read_certificate(EC_PEM).expect("ec").der];
+        for round in 0..200_000usize {
+            let mut bytes = seeds[round % seeds.len()].clone();
+            for _ in 0..=(next() % 4) {
+                let at = usize::try_from(next()).unwrap_or(0) % bytes.len().max(1);
+                let byte = next().to_le_bytes()[0];
+                match next() % 3 {
+                    0 if !bytes.is_empty() => bytes[at] = byte,
+                    1 => bytes.truncate(at),
+                    _ => bytes.insert(at.min(bytes.len()), byte),
+                }
+            }
+            let _ = certificate_details(&bytes);
+            let _ = read_certificate(&bytes);
+        }
     }
 
     #[test]

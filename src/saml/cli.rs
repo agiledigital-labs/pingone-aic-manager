@@ -1543,12 +1543,6 @@ mod tests {
         assert_eq!(location, Some(Location::Remote));
     }
 
-    /// The flags, and — just as much — the flags that are **not** there.
-    ///
-    /// `--cot` would report a membership change AM silently discards, and a
-    /// `--force` that deleted first would destroy a `cotlist` nothing can read
-    /// back (`docs/api/06-saml.md`). Both are absent on purpose, so a parse
-    /// failure is the assertion.
     #[test]
     fn import_takes_certs_as_its_update_consent_and_only_add_or_replace() {
         use crate::cli::{Cli, Command};
@@ -1620,6 +1614,12 @@ mod tests {
         assert!(!force.operation());
     }
 
+    /// The flags, and — just as much — the flags that are **not** there.
+    ///
+    /// `--cot` would report a membership change AM silently discards, and a
+    /// `--force` that deleted first would destroy a `cotlist` nothing can read
+    /// back (`docs/api/06-saml.md`). Both are absent on purpose, so a parse
+    /// failure is the assertion.
     #[test]
     fn import_parses_its_flags_and_offers_neither_cot_nor_force() {
         use crate::cli::{Cli, Command};
