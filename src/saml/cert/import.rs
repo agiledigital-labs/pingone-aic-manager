@@ -14,6 +14,7 @@ use crate::saml::cert::spec::{
     role_keys, role_of, signing_certs, use_label,
 };
 use crate::saml::metadata::{self, Fact, KeyLayout, RoleKeys};
+use crate::saml::pem;
 use crate::saml::spec::Role;
 use crate::{Error, Result};
 
@@ -123,6 +124,16 @@ fn minus(a: &[Fact], b: &[Fact]) -> Vec<Fact> {
     out
 }
 
+/// The 1-based line of the first non-whitespace byte at or after `offset` —
+/// a [`metadata::KeyEntry`]'s range starts at the newline before its element.
+fn line_of(xml: &[u8], offset: usize) -> usize {
+    let at = xml[offset..]
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .map_or(xml.len(), |skip| offset + skip);
+    1 + xml[..at].iter().filter(|byte| **byte == b'\n').count()
+}
+
 /// A role's non-signing key descriptors as `role use sha256`, with
 /// ` KeyName "…"` appended when there is one — the identity the summary
 /// compares them by. `None` (a role one side does not declare) is empty.
@@ -197,6 +208,24 @@ pub fn compare_import(target: &Target, export: &[u8], file: &[u8]) -> Result<Imp
                 "the file declares {} twice; refusing",
                 file_role.descriptor
             )));
+        }
+        // Every signing certificate the file brings is checked the way
+        // `cert add` checks its `--cert-file`, before any plan exists: a body
+        // that decodes to bytes but not to a certificate would otherwise be
+        // published, and count towards the last-signing-certificate guard.
+        for key in file_role.keys.iter().filter(|key| is_signing(key)) {
+            for (cert, der) in &key.certs {
+                if let Err(error) = pem::certificate_from_der(der.clone()) {
+                    return Err(Error::Config(format!(
+                        "the file's {} signing <KeyDescriptor> at line {} holds a certificate \
+                         (sha256 {}) that `aic saml cert add` would refuse: {error}. Refusing \
+                         the import; nothing was sent",
+                        file_role.descriptor,
+                        line_of(file, key.range.start),
+                        cert.sha256
+                    )));
+                }
+            }
         }
         let mut signing: SigningCerts = Vec::new();
         for (sha, der) in signing_certs(file_role) {
@@ -522,6 +551,44 @@ mod tests {
         assert_ne!(export, reindented, "the control must differ in bytes");
         let comparison = compare_import(&target(&[Role::Sp]), &export, &reindented).unwrap();
         assert_eq!(comparison.differences.lines(), [ONLY_CERTS_DIFFER]);
+    }
+
+    /// `<ds:X509Certificate>AQID</ds:X509Certificate>` is valid base64 for
+    /// three bytes and no certificate. Unchecked, `--certs replace` would
+    /// swap it in for the real one: it counts as a signing certificate for
+    /// the last-one guard and its details just come out blank. The import
+    /// applies `cert add`'s check and names where it is.
+    #[test]
+    fn a_file_certificate_that_is_not_x509_is_refused_before_any_plan() {
+        let export = document(&idp(&[(Some("signing"), RSA_DER)]));
+        let upload = file(&idp(&[(Some("signing"), &[1, 2, 3])]));
+        assert!(
+            String::from_utf8(upload.clone())
+                .unwrap()
+                .contains(">\nAQID\n<"),
+            "the fixture must carry the three-byte body"
+        );
+        let error = compare_import(&target(&[Role::Idp]), &export, &upload)
+            .unwrap_err()
+            .to_string();
+        let line = String::from_utf8(upload.clone())
+            .unwrap()
+            .lines()
+            .position(|line| line.contains("<KeyDescriptor"))
+            .unwrap()
+            + 1;
+        assert!(
+            error.contains(&format!("at line {line}"))
+                && error.contains("would refuse")
+                && error.contains("nothing was sent"),
+            "{error}"
+        );
+        // A real certificate beside it does not rescue it.
+        let mixed = file(&idp(&[
+            (Some("signing"), RSA_DER),
+            (Some("signing"), &[1, 2, 3]),
+        ]));
+        assert!(compare_import(&target(&[Role::Idp]), &export, &mixed).is_err());
     }
 
     #[test]

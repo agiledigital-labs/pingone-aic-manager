@@ -1315,7 +1315,9 @@ in place and leaves its circle-of-trust membership alone (`docs/api/06-saml.md`)
 It is `aic saml cert`'s machinery, so everything under [`cert`](#cert--a-remote-entitys-signing-certificates)
 holds: the document sent is the entity's **own export** with signing
 `KeyDescriptor`s spliced in or out, never the uploaded file, and a certificate
-from the file reaches it as a key descriptor written fresh from its DER.
+from the file reaches it as a key descriptor written fresh from its DER — after
+the same X.509 check `cert add` gives a `--cert-file`, so a signing certificate
+body that is not a certificate refuses the import, naming its line.
 
 - The plan shows, per role, the signing certificates added, removed and kept
   (subject, SHA-256, `notAfter`), recomputed for the chosen mode before the
@@ -1601,13 +1603,15 @@ entity, `remove` of a certificate both roles sign with.
 - **A role the entity lacks is added whole.** So the sent document's roles must
   be a subset of the ones the realm list shows.
 - **It accepts a role with no signing certificate.** So every role must keep at
-  least one `use="signing"` certificate — a `use`-less one does not count, since
-  what AM does with it for signing is unmeasured — and removing the last one is
+  least one `use="signing"` certificate that reads as X.509 — a `use`-less one
+  does not count, since what AM does with it for signing is unmeasured, and nor
+  does one whose body is not a certificate — and removing the last one is
   refused with **no `--force`**. Add the replacement first, or end trust
   deliberately with `aic saml delete`.
 
-The export is re-read immediately before the write, and a single differing byte
-refuses it ("run the command again"). Afterwards the export is read again —
+The realm list and the export are re-read immediately before the write, and a
+change to the entity's location or roles, or a single differing byte of the
+export, refuses it ("run the command again"). Afterwards the export is read again —
 certificates are not in the entity JSON, and its `_rev` does not move — and the
 exact `(role, use, sha256)` **set** is compared with the plan, never a count. A
 mismatch or a failed re-read exits non-zero, says whether the write was
