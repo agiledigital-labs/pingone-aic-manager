@@ -74,6 +74,16 @@ head -c 400 src/saml/fixtures/entra-federationmetadata.xml > /tmp/truncated.xml
 aic saml metadata inspect /tmp/truncated.xml; echo "exit $?"
 ```
 
+<details>
+<summary>fish</summary>
+
+```fish
+head -c 400 src/saml/fixtures/entra-federationmetadata.xml > /tmp/truncated.xml
+aic saml metadata inspect /tmp/truncated.xml; echo "exit $status"
+```
+
+</details>
+
 - [ ] **Watch for:** a non-zero exit and a refusal that names the problem. A tool that
 reported something confident about a truncated document is the failure mode here.
 
@@ -111,6 +121,16 @@ that does not exist and check you get a refusal rather than a file:
 aic saml metadata export https://nope.example.com --realm bravo --out /tmp/nope.xml
 echo "exit $?"; ls /tmp/nope.xml
 ```
+
+<details>
+<summary>fish</summary>
+
+```fish
+aic saml metadata export https://nope.example.com --realm bravo --out /tmp/nope.xml
+echo "exit $status"; ls /tmp/nope.xml
+```
+
+</details>
 
 - [ ] **Watch for:** non-zero exit, and **no file created**.
 
@@ -171,6 +191,15 @@ Run the same import again:
 aic saml import /tmp/entra-clean.xml --realm alpha; echo "exit $?"
 ```
 
+<details>
+<summary>fish</summary>
+
+```fish
+aic saml import /tmp/entra-clean.xml --realm alpha; echo "exit $status"
+```
+
+</details>
+
 - [ ] **Watch for:** a refusal naming the existing entity, and **no** `--force` that
 offers to delete and re-import. There is deliberately no such flag: the
 `cotlist` cannot be read back or restored, so a delete-and-recreate would
@@ -197,6 +226,21 @@ for n in 1 2 3; do
   printf 'cert%s ' $n; openssl x509 -in c$n.pem -outform DER | sha256sum
 done
 ```
+
+<details>
+<summary>fish</summary>
+
+```fish
+cd /tmp
+for n in 1 2 3
+  openssl req -x509 -newkey rsa:2048 -keyout k$n.pem -out c$n.pem -days 30 \
+    -nodes -subj "/CN=aic-rotate-test-$n"
+  cat k$n.pem c$n.pem > pair$n.pem
+  printf 'cert%s ' $n; openssl x509 -in c$n.pem -outform DER | sha256sum
+end
+```
+
+</details>
 
 Keep those fingerprints on screen. Every step below is checked against them.
 The third pair is only for the optional D8. Keep the **private keys** as well
@@ -246,6 +290,18 @@ aic saml rotate init 'https://sp-a.example.com' --realm alpha \
   --key-file /tmp/pair1.pem --no-prompt; echo "exit $?"
 aic saml rotate status 'https://sp-a.example.com' --realm alpha
 ```
+
+<details>
+<summary>fish</summary>
+
+```fish
+aic saml rotate init 'https://sp-a.example.com' --realm alpha \
+  --identifier sprotatetest --secret-id esv-saml-sprotatetest-signing \
+  --key-file /tmp/pair1.pem --no-prompt; echo "exit $status"
+aic saml rotate status 'https://sp-a.example.com' --realm alpha
+```
+
+</details>
 
 - [ ] **Watch for:** a non-zero exit and `would point https://sp-a.example.com
 (SPSSODescriptor) at ESV secret esv-saml-sprotatetest-signing, which replaces
@@ -439,6 +495,16 @@ While both are enabled, ask to keep the **older** one:
 aic saml rotate complete 'https://sp-a.example.com' --realm alpha \
   --retain <cert1> --disable-version 2 --dry-run; echo "exit $?"
 ```
+
+<details>
+<summary>fish</summary>
+
+```fish
+aic saml rotate complete 'https://sp-a.example.com' --realm alpha \
+  --retain <cert1> --disable-version 2 --dry-run; echo "exit $status"
+```
+
+</details>
 
 - [ ] **Watch for:** a non-zero exit and ``version 2 is the newest version of
 esv-saml-sprotatetest-signing, and AIC refuses to disable the latest version
