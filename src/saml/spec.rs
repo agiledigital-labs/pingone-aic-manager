@@ -1028,7 +1028,8 @@ pub fn import_route(
     }
     if certs_given {
         return Err(crate::Error::Config(
-            "--certs applies only to a file whose one entity already exists as a remote entity              in the realm; this file would not update one, so refusing rather than ignoring it"
+            "--certs applies only to a file whose one entity already exists as a remote entity \
+             in the realm; this file would not update one, so refusing rather than ignoring it"
                 .into(),
         ));
     }

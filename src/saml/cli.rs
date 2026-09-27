@@ -4,7 +4,9 @@
 //! `cot list|show` read the `realm-config` JSON collections; `create-hosted`,
 //! `import` and `delete` write; and `metadata export` fetches standard
 //! metadata from a JSP that takes **no authentication**, so it works against a
-//! locked daemon. Cert rotation is a later slice.
+//! locked daemon. `cert` (a remote entity's signing certificates) and
+//! `rotate` (a hosted entity's signing key) are submodules with their own
+//! parsers; `cert list` is the other verb that needs no unlock.
 //!
 //! [`needs_tenant_auth`] is where that three-way split is recorded, and it is
 //! the one thing a new verb must classify itself in.

@@ -450,7 +450,8 @@ pub fn plan_add(
     let current = signing_certs(keys);
     if current.iter().any(|(held, _)| held == sha256) {
         return Ok(Planned::NoChange(format!(
-            "{} already publishes {sha256} as a {} signing certificate; nothing to send",
+            "{} already publishes {sha256} as a signing certificate of its {} role; nothing to \
+             send",
             target.entity_id,
             short(role)
         )));
