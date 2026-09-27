@@ -5,8 +5,9 @@
 //! fetched; this module owns the order of the calls and the reporting. The
 //! confirmation order is the sibling verbs' (`rotate stage` and `complete`):
 //! plan → print → `spec::authorize` (a dry run stops holding no permit) →
-//! the consent flag or `prompt_available() && confirm_destructive(..)` →
-//! `spec::write_ok` → the production gate → the write.
+//! [`consent`] (`--force`, or a yes at a terminal) → `spec::write_ok` → the
+//! production gate → the write. `import`'s `--certs` picks a mode; it is not
+//! consent.
 
 use std::path::{Path, PathBuf};
 
@@ -23,7 +24,7 @@ use crate::saml::cert::ops;
 use crate::saml::cert::spec::{self, CertPlan, Planned};
 use crate::saml::pem;
 use crate::saml::spec::Role;
-use crate::saml::write::Decision;
+use crate::saml::write::{Decision, consent};
 use crate::{Error, Result};
 
 #[derive(Subcommand, Debug)]
@@ -109,6 +110,18 @@ pub fn needs_tenant_auth(command: &CertCommand) -> bool {
     }
 }
 
+/// The three flags every certificate write takes, so a verb passes one
+/// value rather than three booleans.
+#[derive(Debug, Clone, Copy)]
+pub struct WriteFlags {
+    /// Print the plan and send nothing.
+    pub dry_run: bool,
+    /// Confirm a write to a production-themed tenant.
+    pub yes: bool,
+    /// `--force` (operation): consent without a prompt.
+    pub force: bool,
+}
+
 pub async fn run(command: CertCommand) -> Result<()> {
     match command {
         CertCommand::List {
@@ -128,10 +141,12 @@ pub async fn run(command: CertCommand) -> Result<()> {
             yes,
             force,
         } => {
-            add(
-                tenant, realm, &entity_id, &cert_file, role, dry_run, yes, force,
-            )
-            .await
+            let flags = WriteFlags {
+                dry_run,
+                yes,
+                force: force.operation(),
+            };
+            add(tenant, realm, &entity_id, &cert_file, role, flags).await
         }
         CertCommand::Remove {
             entity_id,
@@ -142,7 +157,14 @@ pub async fn run(command: CertCommand) -> Result<()> {
             dry_run,
             yes,
             force,
-        } => remove(tenant, realm, &entity_id, &cert, role, dry_run, yes, force).await,
+        } => {
+            let flags = WriteFlags {
+                dry_run,
+                yes,
+                force: force.operation(),
+            };
+            remove(tenant, realm, &entity_id, &cert, role, flags).await
+        }
     }
 }
 
@@ -168,16 +190,13 @@ async fn list(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn add(
     tenant_arg: Option<String>,
     realm_arg_value: Option<String>,
     entity_id: &str,
     cert_file: &Path,
     role: Option<Role>,
-    dry_run: bool,
-    yes: bool,
-    force: OperationForce,
+    flags: WriteFlags,
 ) -> Result<()> {
     // The file first: a certificate we cannot read is not a plan, and that
     // should not depend on a context or a network call.
@@ -196,32 +215,21 @@ async fn add(
         }
         Planned::Change(plan) => plan,
     };
-    execute(&tenant, &plan, dry_run, yes, "--force", |plan| {
-        Ok(force.operation()
-            || (prompt_available()
-                && confirm_destructive(
-                    "changing a SAML entity's signing certificates",
-                    &format!(
-                        "Add signing certificate {} to {}? Its peers' signatures will be \
-                         verified against it from now.",
-                        cert.sha256, plan.entity_id
-                    ),
-                    "--force",
-                )?))
-    })
-    .await
+    let question = format!(
+        "Add signing certificate {} to {}? Its peers' signatures will be verified against it \
+         from now.",
+        cert.sha256, plan.entity_id
+    );
+    execute(&tenant, &plan, flags, &question).await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn remove(
     tenant_arg: Option<String>,
     realm_arg_value: Option<String>,
     entity_id: &str,
     selector: &str,
     role: Option<Role>,
-    dry_run: bool,
-    yes: bool,
-    force: OperationForce,
+    flags: WriteFlags,
 ) -> Result<()> {
     let tenant = tenant_config_for(tenant_arg)?;
     let realm = realm_arg("saml", realm_arg_value)?;
@@ -234,51 +242,51 @@ async fn remove(
         }
         Planned::Change(plan) => plan,
     };
-    execute(&tenant, &plan, dry_run, yes, "--force", |plan| {
-        let removing = plan
-            .changes
-            .iter()
-            .flat_map(|change| &change.removed)
-            .map(|cert| cert.sha256.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        Ok(force.operation()
-            || (prompt_available()
-                && confirm_destructive(
-                    "changing a SAML entity's signing certificates",
-                    &format!(
-                        "Remove signing certificate {removing} from {}? Assertions signed with \
-                         it will stop verifying.",
-                        plan.entity_id
-                    ),
-                    "--force",
-                )?))
-    })
-    .await
+    let removing = plan
+        .changes
+        .iter()
+        .flat_map(|change| &change.removed)
+        .map(|cert| cert.sha256.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let question = format!(
+        "Remove signing certificate {removing} from {}? Assertions signed with it will stop \
+         verifying.",
+        plan.entity_id
+    );
+    execute(&tenant, &plan, flags, &question).await
 }
 
-/// The shared tail of every certificate write, in the sibling verbs' order.
+/// The shared tail of every certificate write, in the sibling verbs' order:
+/// print the plan, `spec::authorize` (a dry run stops holding no permit),
+/// [`consent`] — `--force`, or a yes at a terminal — then `spec::write_ok`,
+/// which refuses a headless run without `--force` by naming what would
+/// change, then the production gate, then the write.
 async fn execute(
     tenant: &Tenant,
     plan: &CertPlan,
-    dry_run: bool,
-    yes: bool,
-    flag: &str,
-    consent: impl FnOnce(&CertPlan) -> Result<bool>,
+    flags: WriteFlags,
+    question: &str,
 ) -> Result<()> {
     for line in spec::plan_lines(plan) {
         eprintln!("{line}");
     }
-    let permit = match spec::authorize(dry_run, plan) {
+    let permit = match spec::authorize(flags.dry_run, plan) {
         Decision::Preview => {
             eprintln!("dry run: nothing was sent");
             return Ok(());
         }
         Decision::Send(permit) => permit,
     };
-    let confirmed = consent(plan)?;
-    spec::write_ok(confirmed, plan, flag)?;
-    let ok = ensure_prod_confirmed(&tenant.name, yes)?;
+    let confirmed = consent(flags.force, prompt_available(), || {
+        confirm_destructive(
+            "changing a SAML entity's signing certificates",
+            question,
+            "--force",
+        )
+    })?;
+    spec::write_ok(confirmed, plan)?;
+    let ok = ensure_prod_confirmed(&tenant.name, flags.yes)?;
     ops::apply(tenant, plan, ok.confirmed_prod, &permit)
         .await
         .map_err(|failure| Error::Config(spec::failure_message(&failure, plan)))?;
@@ -293,17 +301,20 @@ async fn execute(
 /// `file` is the document the import would otherwise have sent. None of its
 /// bytes are sent — the plan is the entity's export with the file's signing
 /// certificates spliced in, and every other difference is reported as not
-/// applied. `certs` is the consent flag, the way `--force` is for `add`;
-/// without it a terminal offers add / replace / cancel, and a headless run
-/// is refused.
+/// applied.
+///
+/// `--certs` chooses the **mode** and nothing else. Without it a terminal
+/// offers add / replace / cancel, a dry run prints both plans, and a headless
+/// run is refused. Consent is then exactly `cert add|remove`'s: a prompt at a
+/// terminal, `--force` without one — so `--certs replace` at a terminal still
+/// shows its summary and asks.
 pub async fn import_update(
     tenant_name: &str,
     realm: &str,
     entity_id: &str,
     file: &[u8],
-    dry_run: bool,
     certs: Option<ImportMode>,
-    yes: bool,
+    flags: WriteFlags,
 ) -> Result<()> {
     let tenant = tenant_config_for(Some(tenant_name.to_string()))?;
     let target = ops::read_target(&tenant.name, realm, entity_id).await?;
@@ -319,7 +330,7 @@ pub async fn import_update(
 
     let mode = match certs {
         Some(mode) => mode,
-        None if dry_run => {
+        None if flags.dry_run => {
             for mode in [ImportMode::Add, ImportMode::Replace] {
                 eprintln!("with --certs {}:", mode.as_str());
                 match import::plan_import(&comparison, mode) {
@@ -335,19 +346,13 @@ pub async fn import_update(
             eprintln!("dry run: nothing was sent");
             return Ok(());
         }
-        None if prompt_available() => match choose_mode()? {
-            Some(mode) => mode,
-            None => {
-                eprintln!("cancelled: nothing was sent");
-                return Ok(());
-            }
-        },
+        None if prompt_available() => choose_mode()?,
         None => {
             return Err(Error::Config(format!(
                 "{entity_id} already exists as a remote entity in realm {realm}, so this import \
                  would update its certificates; with no terminal to ask, pass --certs add \
                  (merge the file's signing certificates in) or --certs replace (make them \
-                 exactly the file's)"
+                 exactly the file's), and --force to confirm"
             )));
         }
     };
@@ -359,41 +364,37 @@ pub async fn import_update(
         }
         Planned::Change(plan) => plan,
     };
-    let flag = format!("--certs {}", mode.as_str());
-    execute(&tenant, &plan, dry_run, yes, &flag, |plan| {
-        Ok(certs.is_some()
-            || (prompt_available()
-                && confirm_destructive(
-                    "changing a SAML entity's signing certificates",
-                    &format!(
-                        "Apply these certificate changes to {} ({})?",
-                        plan.entity_id,
-                        mode.as_str()
-                    ),
-                    &flag,
-                )?))
-    })
-    .await
+    let question = format!(
+        "Apply these certificate changes to {} ({})?",
+        plan.entity_id,
+        mode.as_str()
+    );
+    execute(&tenant, &plan, flags, &question).await
 }
 
-/// add / replace / cancel, at a terminal.
-fn choose_mode() -> Result<Option<ImportMode>> {
+/// add / replace / cancel, at a terminal. Cancelling is an error, so it
+/// exits non-zero the way a declined confirmation does: nothing was applied,
+/// and a zero would say the import happened.
+fn choose_mode() -> Result<ImportMode> {
     use inquire::{Select, error::InquireError};
 
+    let cancelled = || Error::Config("cancelled: nothing was sent".into());
     let options = vec![
         "add — merge the file's signing certificates into the entity's",
         "replace — make each role's signing certificates exactly the file's",
         "cancel — send nothing",
     ];
     match Select::new("This entity exists. Update its certificates how?", options).raw_prompt() {
-        Ok(answer) => Ok(match answer.index {
-            0 => Some(ImportMode::Add),
-            1 => Some(ImportMode::Replace),
-            _ => None,
-        }),
-        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
+        Ok(answer) => match answer.index {
+            0 => Ok(ImportMode::Add),
+            1 => Ok(ImportMode::Replace),
+            _ => Err(cancelled()),
+        },
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+            Err(cancelled())
+        }
         Err(InquireError::NotTTY) => Err(Error::Config(
-            "no terminal to ask on; pass --certs add or --certs replace".into(),
+            "no terminal to ask on; pass --certs add or --certs replace, and --force".into(),
         )),
         Err(error) => Err(Error::Config(format!("certificate mode prompt: {error}"))),
     }

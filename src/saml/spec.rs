@@ -1045,25 +1045,35 @@ pub enum ImportRoute {
 /// declared entity colliding with exactly one remote entity; everything else
 /// is a create, so every other collision keeps its whole-import refusal.
 ///
-/// `--certs` on a file that would be created is refused rather than ignored:
-/// an operator who asked for a certificate update and got a new entity has
-/// been told something false by the exit code.
+/// `--certs` and `--force` belong to the certificate update, and on a file
+/// that would be created both are refused rather than ignored: an operator
+/// who asked for a certificate update and got a new entity has been told
+/// something false by the exit code, and a `--force` on a create must never
+/// read as "delete and re-import".
 pub fn import_route(
     declared: &[String],
     found: &[Collision],
     certs_given: bool,
+    force_given: bool,
 ) -> crate::Result<ImportRoute> {
     if let ([entity_id], [collision]) = (declared, found)
         && collision.locations == [Location::Remote]
     {
         return Ok(ImportRoute::UpdateCertificates(entity_id.clone()));
     }
-    if certs_given {
-        return Err(crate::Error::Config(
-            "--certs applies only to a file whose one entity already exists as a remote entity \
-             in the realm; this file would not update one, so refusing rather than ignoring it"
-                .into(),
-        ));
+    let flags = [("--certs", certs_given), ("--force", force_given)]
+        .iter()
+        .filter(|(_, given)| *given)
+        .map(|(flag, _)| *flag)
+        .collect::<Vec<_>>();
+    if !flags.is_empty() {
+        return Err(crate::Error::Config(format!(
+            "{} applies only to a file whose one entity already exists as a remote entity in \
+             the realm, where it updates that entity's certificates; this file would not \
+             update one, so refusing rather than ignoring it. There is no forced create: \
+             nothing here deletes and re-imports.",
+            flags.join(" and ")
+        )));
     }
     Ok(ImportRoute::Create)
 }
@@ -2921,7 +2931,12 @@ mod tests {
             locations,
         };
         assert_eq!(
-            import_route(&one, &[collision(vec![Location::Remote])], false).unwrap(),
+            import_route(&one, &[collision(vec![Location::Remote])], false, false).unwrap(),
+            ImportRoute::UpdateCertificates("https://sp-a.example.com".into())
+        );
+        // Both flags belong there, so neither changes the route.
+        assert_eq!(
+            import_route(&one, &[collision(vec![Location::Remote])], true, true).unwrap(),
             ImportRoute::UpdateCertificates("https://sp-a.example.com".into())
         );
         for (declared, found) in [
@@ -2935,11 +2950,24 @@ mod tests {
             (&one, vec![]),
         ] {
             assert_eq!(
-                import_route(declared, &found, false).unwrap(),
+                import_route(declared, &found, false, false).unwrap(),
                 ImportRoute::Create
             );
-            // `--certs` there is refused, not ignored.
-            assert!(import_route(declared, &found, true).is_err());
+            // `--certs` and `--force` there are refused, not ignored — a
+            // forced create would read as delete-and-re-import.
+            for (certs, force, named) in [
+                (true, false, "--certs"),
+                (false, true, "--force"),
+                (true, true, "--certs and --force"),
+            ] {
+                let error = import_route(declared, &found, certs, force)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains(named) && error.contains("nothing here deletes"),
+                    "{error}"
+                );
+            }
         }
     }
 }
