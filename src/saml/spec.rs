@@ -1068,11 +1068,12 @@ pub fn import_route(
         .collect::<Vec<_>>();
     if !flags.is_empty() {
         return Err(crate::Error::Config(format!(
-            "{} applies only to a file whose one entity already exists as a remote entity in \
+            "{} {} only to a file whose one entity already exists as a remote entity in \
              the realm, where it updates that entity's certificates; this file would not \
              update one, so refusing rather than ignoring it. There is no forced create: \
              nothing here deletes and re-imports.",
-            flags.join(" and ")
+            flags.join(" and "),
+            if flags.len() == 1 { "applies" } else { "apply" }
         )));
     }
     Ok(ImportRoute::Create)
@@ -2956,9 +2957,9 @@ mod tests {
             // `--certs` and `--force` there are refused, not ignored — a
             // forced create would read as delete-and-re-import.
             for (certs, force, named) in [
-                (true, false, "--certs"),
-                (false, true, "--force"),
-                (true, true, "--certs and --force"),
+                (true, false, "--certs applies only"),
+                (false, true, "--force applies only"),
+                (true, true, "--certs and --force apply only"),
             ] {
                 let error = import_route(declared, &found, certs, force)
                     .unwrap_err()
