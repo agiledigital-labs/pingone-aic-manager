@@ -738,6 +738,15 @@ pub fn read_certificate(bytes: &[u8]) -> Result<Certificate, CertificateError> {
         }
         _ => bytes.to_vec(),
     };
+    certificate_from_der(der)
+}
+
+/// The structural check every certificate on its way into published
+/// metadata goes through — a `--cert-file` via [`read_certificate`], and
+/// each signing certificate an `import` update would take from its file.
+/// One function, so the two cannot drift: a DER that is not a whole X.509
+/// structure with readable names, validity and key is refused.
+pub fn certificate_from_der(der: Vec<u8>) -> Result<Certificate, CertificateError> {
     let details = certificate_details(&der).map_err(CertificateError::Unreadable)?;
     Ok(Certificate {
         sha256: hex(&Sha256::digest(&der)),

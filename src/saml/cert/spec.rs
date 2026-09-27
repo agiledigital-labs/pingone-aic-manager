@@ -593,9 +593,10 @@ pub fn plan_remove(
 ///   addresses the update by;
 /// - every role is one the entity holds, because a role it lacks is added
 ///   whole, endpoints and all;
-/// - every role keeps at least one explicit `use="signing"` certificate,
-///   because AM accepts none (a `use`-less one does not count: what AM makes
-///   of it for signing is not measured).
+/// - every role keeps at least one explicit `use="signing"` certificate
+///   that reads as X.509, because AM accepts none (a `use`-less one does not
+///   count: what AM makes of it for signing is not measured; nor does one
+///   whose DER is not a certificate).
 pub(super) fn finish(
     target: &Target,
     export: &[u8],
@@ -621,10 +622,16 @@ pub(super) fn finish(
             )));
         }
         seen.push(role);
-        if signing_certs(keys).is_empty() {
+        // Only a certificate that reads counts: a role left holding nothing
+        // but unreadable signing certificates verifies nothing either.
+        let readable = signing_certs(keys)
+            .iter()
+            .filter(|(_, der)| pem::certificate_details(der).is_ok())
+            .count();
+        if readable == 0 {
             return Err(Error::Config(format!(
-                "this would leave {}'s {} role with no signing certificate. AM accepts that, and \
-                 then nothing the peer signs can be verified. There is no --force for it: add \
+                "this would leave {}'s {} role with no readable signing certificate. AM accepts \
+                 that, and then nothing the peer signs can be verified. There is no --force for it: add \
                  the replacement first (`aic saml cert add`), or delete the entity deliberately \
                  with `aic saml delete` if trust is meant to end.",
                 target.entity_id,
@@ -928,11 +935,26 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("no signing certificate")
+            error.contains("no readable signing certificate")
                 && error.contains("no --force")
                 && error.contains("aic saml delete"),
             "{error}"
         );
+    }
+
+    /// Discriminating: a signing key descriptor whose body decodes to three
+    /// bytes is still a signing key descriptor, so a guard that counted them
+    /// would let the one real certificate go and leave nothing that verifies.
+    #[test]
+    fn an_unreadable_signing_certificate_does_not_count_as_the_last_one() {
+        let export = document(&idp(&[
+            (Some("signing"), RSA_DER),
+            (Some("signing"), &[1, 2, 3]),
+        ]));
+        let error = plan_remove(&target(&[Role::Idp]), &export, RSA_SHA, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no readable signing certificate"), "{error}");
     }
 
     /// A `use`-less key serves both purposes by the schema, but what AM does
