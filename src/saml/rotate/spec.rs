@@ -487,8 +487,35 @@ pub struct InitRecheck {
     pub entity: Value,
     /// The alias at the planned label now.
     pub mapping: Option<String>,
+    /// This role's published signing fingerprints, read fresh from the export.
+    pub published: BTreeSet<String>,
     /// A fresh consumer survey of every realm in [`SURVEYED_REALMS`].
     pub survey: Vec<RealmSurvey>,
+}
+
+/// Whether this role still publishes the certificates `init`'s prompt named
+/// as the ones being replaced ([`init_current`], from the same state).
+///
+/// Asked before the **first** write only, and never again before the
+/// activating step: `init`'s own earlier steps can change what the role
+/// publishes — pointing the identifier at a label, creating the secret behind
+/// it — so a later comparison against the planned set would refuse the
+/// changes `init` itself made. Compared as a set, like
+/// [`rollover_write_ok`]'s, because a certificate swapped for another leaves
+/// the count where it was.
+pub fn init_publication_ok(state: &RotationState, published: &BTreeSet<String>) -> Result<()> {
+    let planned = state.published_fingerprints();
+    if &planned == published {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "this role published {} when the init was planned and publishes {} now, so the \
+         confirmation named a certificate that is no longer the one being replaced. \
+         Something else is writing this entity or the secret behind it. **Nothing has been \
+         sent.** `aic saml rotate status` reads the state that exists now.",
+        named(planned.iter()),
+        named(published.iter())
+    )))
 }
 
 /// `init`'s counterpart of [`rollover_target_ok`]: is the setup still the
@@ -511,7 +538,8 @@ pub fn init_target_ok(
 
 /// The whole pre-write decision for `init`, and the only source of the
 /// [`ExclusivityProof`] its writes hold — [`rollover_pre_write_ok`]'s
-/// sibling, in the same order: the target first, then the re-survey.
+/// sibling, in the same order: the target first, then what the role
+/// publishes ([`init_publication_ok`]), then the re-survey.
 ///
 /// `mine` is this role through the **planned** label, because that is the
 /// label `init` is about to make it resolve; the target check has just shown
@@ -529,6 +557,7 @@ pub fn init_pre_write_ok(
         &fresh.entity,
         fresh.mapping.as_deref(),
     )?;
+    init_publication_ok(state, &fresh.published)?;
     init_exclusive(state, plan, &fresh.survey)
 }
 
@@ -4398,6 +4427,7 @@ mod tests {
         let unmoved = || InitRecheck {
             entity: fresh_entity.clone(),
             mapping: None,
+            published: unconfigured.published_fingerprints(),
             survey: vec![
                 realm_survey("alpha", &[], &[entity("https://sp-a.example.com", &[])]),
                 realm_survey("bravo", &[], &[]),
@@ -4442,6 +4472,23 @@ mod tests {
         };
         let refusal = message(init_pre_write_ok(&unconfigured, &plan, None, &mapped).unwrap_err());
         assert!(refusal.contains("esv-other"), "{refusal}");
+
+        // The certificate the prompt named as being replaced was swapped for
+        // another while the prompt was open. Same count, target and survey
+        // unmoved — so only the publication check can see it, and it refuses
+        // in the recheck `apply_init` runs before its first step.
+        let swapped = InitRecheck {
+            published: BTreeSet::from([NEW.to_string()]),
+            ..unmoved()
+        };
+        assert_eq!(swapped.published.len(), unmoved().published.len());
+        assert_ne!(swapped.published, unmoved().published);
+        let refusal = message(init_pre_write_ok(&unconfigured, &plan, None, &swapped).unwrap_err());
+        assert!(
+            refusal.contains("no longer the one being replaced"),
+            "{refusal}"
+        );
+        assert!(refusal.contains("Nothing has been sent"), "{refusal}");
     }
 
     /// An `init` plan for an unconfigured role, with the given steps already
