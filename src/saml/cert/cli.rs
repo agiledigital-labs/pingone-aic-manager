@@ -18,8 +18,9 @@ use crate::cli::{
     tenant_config_for,
 };
 use crate::config::tenant::Tenant;
+use crate::saml::cert::import::{self, ImportMode};
 use crate::saml::cert::ops;
-use crate::saml::cert::spec::{self, CertPlan, ImportMode, Planned};
+use crate::saml::cert::spec::{self, CertPlan, Planned};
 use crate::saml::pem;
 use crate::saml::spec::Role;
 use crate::saml::write::Decision;
@@ -307,7 +308,7 @@ pub async fn import_update(
     let tenant = tenant_config_for(Some(tenant_name.to_string()))?;
     let target = ops::read_target(&tenant.name, realm, entity_id).await?;
     let export = ops::read_export(&tenant, realm, entity_id).await?;
-    let comparison = spec::compare_import(&target, &export, file)?;
+    let comparison = import::compare_import(&target, &export, file)?;
     eprintln!(
         "update      {entity_id} exists as a remote entity in realm {realm}, so this import \
          is a certificate update"
@@ -321,7 +322,7 @@ pub async fn import_update(
         None if dry_run => {
             for mode in [ImportMode::Add, ImportMode::Replace] {
                 eprintln!("with --certs {}:", mode.as_str());
-                match spec::plan_import(&comparison, mode) {
+                match import::plan_import(&comparison, mode) {
                     Ok(Planned::Change(plan)) => {
                         for line in spec::plan_lines(&plan) {
                             eprintln!("  {line}");
@@ -351,7 +352,7 @@ pub async fn import_update(
         }
     };
 
-    let plan = match spec::plan_import(&comparison, mode)? {
+    let plan = match import::plan_import(&comparison, mode)? {
         Planned::NoChange(sentence) => {
             println!("{sentence}");
             return Ok(());

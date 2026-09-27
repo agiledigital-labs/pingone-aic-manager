@@ -33,5 +33,8 @@
 //! secret store, and [`crate::saml::rotate`] is the verb that owns them.
 
 pub mod cli;
+pub mod import;
 pub mod ops;
 pub mod spec;
+#[cfg(test)]
+mod testdoc;
