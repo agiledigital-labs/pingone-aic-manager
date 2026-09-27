@@ -44,10 +44,14 @@ pub struct Differences {
     /// Non-certificate content on the tenant and not in the file.
     pub only_on_tenant: Vec<Fact>,
     /// Non-signing key descriptors — encryption or `use`-less — as
-    /// `role use sha256`, compared by all three: in the file and not on the
-    /// tenant (ignored), and on the tenant and not in the file (kept). A
-    /// certificate the tenant signs with and the file lists for encryption is
-    /// a difference here, not a match.
+    /// `role use sha256`, plus `KeyName "…"` when the descriptor has one,
+    /// compared by all of those: in the file and not on the tenant (ignored),
+    /// and on the tenant and not in the file (kept). A certificate the tenant
+    /// signs with and the file lists for encryption is a difference here, not
+    /// a match. Every role either side declares is visited, so a role the
+    /// file omits contributes its keys as tenant only. Nothing else inside a
+    /// key descriptor is compared — `EncryptionMethod`, say — and never its
+    /// raw bytes, because AM re-indents the whitespace inside `<KeyInfo>`.
     pub file_only_keys: Vec<String>,
     pub tenant_only_keys: Vec<String>,
 }
@@ -59,9 +63,12 @@ pub const NOT_APPLIED: &str = "not applied — AIC ignores non-certificate chang
      changing them means delete and re-import, which drops the entity's circle-of-trust \
      membership";
 
-/// The one line for a file whose only differences are signing certificates.
-pub const ONLY_CERTS_DIFFER: &str = "the file and the tenant differ only in signing \
-     certificates; nothing else would be left behind";
+/// The one line for a file in which nothing this summary compares differs
+/// except signing certificates. It says what it compared, because the
+/// comparison is shallow: see [`Differences`] and [`metadata::Fact`].
+pub const ONLY_CERTS_DIFFER: &str = "no differences found besides signing certificates, \
+     comparing the entity's and each role's attributes and child elements, and each \
+     non-signing key descriptor's role, use, KeyName and certificate SHA-256";
 
 impl Differences {
     pub fn lines(&self) -> Vec<String> {
@@ -84,9 +91,9 @@ impl Differences {
         }
         if !self.file_only_keys.is_empty() || !self.tenant_only_keys.is_empty() {
             lines.push(
-                "non-signing key descriptors: not applied — `aic saml cert` changes signing \
-                 certificates only, and the tenant's encryption and use-less key descriptors \
-                 are sent back as they are"
+                "non-signing key descriptors, compared by role, use, KeyName and certificate \
+                 SHA-256: not applied — `aic saml cert` changes signing certificates only, and \
+                 the tenant's encryption and use-less key descriptors are sent back as they are"
                     .to_string(),
             );
             for key in &self.file_only_keys {
@@ -115,16 +122,21 @@ fn minus(a: &[Fact], b: &[Fact]) -> Vec<Fact> {
     out
 }
 
-/// A role's non-signing key descriptors as `role use sha256` — the identity
-/// the summary compares them by.
-fn non_signing(keys: &RoleKeys, role: Role) -> BTreeSet<String> {
-    keys.keys
-        .iter()
+/// A role's non-signing key descriptors as `role use sha256`, with
+/// ` KeyName "…"` appended when there is one — the identity the summary
+/// compares them by. `None` (a role one side does not declare) is empty.
+fn non_signing(keys: Option<&RoleKeys>, role: Role) -> BTreeSet<String> {
+    keys.into_iter()
+        .flat_map(|keys| keys.keys.iter())
         .filter(|key| !is_signing(key))
         .flat_map(|key| {
             key.certs.iter().map(|(cert, _)| {
+                let name = cert
+                    .key_name
+                    .as_deref()
+                    .map_or(String::new(), |name| format!(" KeyName {name:?}"));
                 format!(
-                    "{} {} {}",
+                    "{} {} {}{name}",
                     role.cli_word(),
                     use_label(key.key_use.as_deref()),
                     cert.sha256
@@ -185,10 +197,6 @@ pub fn compare_import(target: &Target, export: &[u8], file: &[u8]) -> Result<Imp
                 file_role.descriptor
             )));
         }
-        let file_keys = non_signing(file_role, role);
-        let tenant_keys = non_signing(role_keys(&export_layout, role), role);
-        file_only_keys.extend(file_keys.difference(&tenant_keys).cloned());
-        tenant_only_keys.extend(tenant_keys.difference(&file_keys).cloned());
         let mut signing: SigningCerts = Vec::new();
         for (sha, der) in signing_certs(file_role) {
             if !signing.iter().any(|(held, _)| *held == sha) {
@@ -196,6 +204,19 @@ pub fn compare_import(target: &Target, export: &[u8], file: &[u8]) -> Result<Imp
             }
         }
         file_signing.push((role, signing));
+    }
+    // The union of both sides' roles, not the file's: a role the file omits
+    // is left as it is, and its non-signing keys are still named as kept.
+    // Every file role is one the entity holds (refused above otherwise), so
+    // the entity's roles are that union.
+    for role in held.iter().copied().collect::<BTreeSet<_>>() {
+        fn find(layout: &KeyLayout, role: Role) -> Option<&RoleKeys> {
+            layout.roles.iter().find(|keys| role_of(keys.role) == role)
+        }
+        let file_keys = non_signing(find(&file_layout, role), role);
+        let tenant_keys = non_signing(find(&export_layout, role), role);
+        file_only_keys.extend(file_keys.difference(&tenant_keys).cloned());
+        tenant_only_keys.extend(tenant_keys.difference(&file_keys).cloned());
     }
     let differences = Differences {
         only_in_file: minus(&file_layout.facts, &export_layout.facts),
@@ -393,6 +414,68 @@ mod tests {
             [format!("idp encryption {EC_SHA}")]
         );
         assert!(comparison.differences.file_only_keys.is_empty());
+        assert_ne!(comparison.differences.lines(), [ONLY_CERTS_DIFFER]);
+    }
+
+    /// Discriminating: the same encryption certificate, only its `KeyName`
+    /// changed. A comparison by `(role, use, sha256)` finds nothing and says
+    /// only signing certificates differ; the name is part of the identity.
+    /// And the control: the same name under different whitespace — which AM's
+    /// re-indenting produces — is no difference at all.
+    #[test]
+    fn a_key_name_change_is_a_difference_and_its_whitespace_is_not() {
+        let slot = "        <SingleSignOnService";
+        // The IdP role with a signing key, then an encryption key named
+        // `name`, `pad` being the whitespace before the name.
+        let with = |name: &str, pad: &str| {
+            let key = am_key(Some("encryption"), &der(EC_PEM)).replace(
+                "<ds:KeyInfo>",
+                &format!("<ds:KeyInfo>{pad}<ds:KeyName>{name}</ds:KeyName>"),
+            );
+            document(&idp(&[(Some("signing"), RSA_DER)]).replacen(slot, &format!("{key}{slot}"), 1))
+        };
+        let export = with("enc-1", "\n                ");
+        let renamed = with("enc-2", "\n                ");
+        let comparison = compare_import(&target(&[Role::Idp]), &export, &renamed).unwrap();
+        assert_eq!(
+            comparison.differences.file_only_keys,
+            [format!("idp encryption {EC_SHA} KeyName \"enc-2\"")]
+        );
+        assert_eq!(
+            comparison.differences.tenant_only_keys,
+            [format!("idp encryption {EC_SHA} KeyName \"enc-1\"")]
+        );
+        assert_ne!(comparison.differences.lines(), [ONLY_CERTS_DIFFER]);
+
+        let reindented = with("enc-1", "\n\t  ");
+        assert_ne!(export, reindented, "the control must differ in bytes");
+        let comparison = compare_import(&target(&[Role::Idp]), &export, &reindented).unwrap();
+        assert_eq!(comparison.differences.lines(), [ONLY_CERTS_DIFFER]);
+    }
+
+    /// A role the file does not declare is left alone by AM and by the plan,
+    /// but its non-signing keys are still named: without visiting the union of
+    /// roles the summary would say only signing certificates differ.
+    #[test]
+    fn a_role_the_file_omits_still_has_its_encryption_keys_named() {
+        let export = document(&format!(
+            "{}{}",
+            idp(&[(Some("signing"), RSA_DER)]),
+            sp(&[
+                (Some("signing"), RSA_DER),
+                (Some("encryption"), &der(EC_PEM))
+            ])
+        ));
+        let upload = file(&idp(&[(Some("signing"), RSA_DER)]));
+        let comparison = compare_import(&target(&[Role::Idp, Role::Sp]), &export, &upload).unwrap();
+        assert!(
+            comparison
+                .differences
+                .tenant_only_keys
+                .contains(&format!("sp encryption {EC_SHA}")),
+            "{:#?}",
+            comparison.differences
+        );
         assert_ne!(comparison.differences.lines(), [ONLY_CERTS_DIFFER]);
     }
 
