@@ -46,7 +46,7 @@ impl std::fmt::Display for Location {
 ///
 /// Distinct from [`metadata::Role`], which names the XML descriptor elements.
 /// This one is the short CLI word and the wire string AM puts in `roles`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum Role {
     Idp,
@@ -60,6 +60,38 @@ impl Role {
             Self::Idp => "identityProvider",
             Self::Sp => "serviceProvider",
         }
+    }
+
+    /// The word `--role` takes, and the one output names a role by.
+    pub fn cli_word(self) -> &'static str {
+        match self {
+            Self::Idp => "idp",
+            Self::Sp => "sp",
+        }
+    }
+}
+
+/// The `use` attribute a signing key descriptor carries.
+///
+/// `rotate` and `cert` both change **signing** keys and nothing else.
+/// `encryption` and `mtls` get their own labels off the same identifier and a
+/// rotation of them looks identical, but nobody has measured that an
+/// encryption rollover publishes two `KeyDescriptor`s the way a signing one
+/// does, and `mtls` may be suppressed from the metadata entirely by
+/// `clientAuthentication.excludeClientCertificate` — which would leave the
+/// verification step with nothing to read (`docs/api/06-saml.md`).
+pub const SIGNING_USE: &str = "signing";
+
+/// The metadata descriptor element a role publishes its keys under.
+///
+/// The entity JSON says `serviceProvider`; the exported XML says
+/// `SPSSODescriptor`. Both names are needed at once here — one addresses the
+/// role block being written, the other the certificates being verified — and
+/// conflating them is how a dual-role entity's two signing keys become one.
+pub fn role_descriptor(role: Role) -> &'static str {
+    match role {
+        Role::Idp => "IDPSSODescriptor",
+        Role::Sp => "SPSSODescriptor",
     }
 }
 
@@ -997,6 +1029,54 @@ pub fn preflight_lines(entity_ids: &[String], found: &[Collision], realm: &str) 
         ));
     }
     lines
+}
+
+/// Which path an import takes once the preflight is known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportRoute {
+    /// Create — and let [`authorize_import`] refuse any collision.
+    Create,
+    /// The file's one entity exists as a **remote** entity: update its
+    /// certificates (`saml::cert`).
+    UpdateCertificates(String),
+}
+
+/// Route an import. The certificate update is taken only for exactly one
+/// declared entity colliding with exactly one remote entity; everything else
+/// is a create, so every other collision keeps its whole-import refusal.
+///
+/// `--certs` and `--force` belong to the certificate update, and on a file
+/// that would be created both are refused rather than ignored: an operator
+/// who asked for a certificate update and got a new entity has been told
+/// something false by the exit code, and a `--force` on a create must never
+/// read as "delete and re-import".
+pub fn import_route(
+    declared: &[String],
+    found: &[Collision],
+    certs_given: bool,
+    force_given: bool,
+) -> crate::Result<ImportRoute> {
+    if let ([entity_id], [collision]) = (declared, found)
+        && collision.locations == [Location::Remote]
+    {
+        return Ok(ImportRoute::UpdateCertificates(entity_id.clone()));
+    }
+    let flags = [("--certs", certs_given), ("--force", force_given)]
+        .iter()
+        .filter(|(_, given)| *given)
+        .map(|(flag, _)| *flag)
+        .collect::<Vec<_>>();
+    if !flags.is_empty() {
+        return Err(crate::Error::Config(format!(
+            "{} {} only to a file whose one entity already exists as a remote entity in \
+             the realm, where it updates that entity's certificates; this file would not \
+             update one, so refusing rather than ignoring it. There is no forced create: \
+             nothing here deletes and re-imports.",
+            flags.join(" and "),
+            if flags.len() == 1 { "applies" } else { "apply" }
+        )));
+    }
+    Ok(ImportRoute::Create)
 }
 
 /// Permission to send one import.
@@ -2834,6 +2914,61 @@ mod tests {
                 .is_err(),
                 "a non-string member was given a spelling instead of being refused: {member}"
             );
+        }
+    }
+
+    /// Only one declared entity colliding with one **remote** entity takes
+    /// the certificate-update path; every other collision stays a create,
+    /// which `authorize_import` then refuses whole.
+    #[test]
+    fn only_one_entity_colliding_with_one_remote_entity_routes_to_a_certificate_update() {
+        let one = vec!["https://sp-a.example.com".to_string()];
+        let two = vec![
+            "https://sp-a.example.com".to_string(),
+            "https://sp-b.example.com".to_string(),
+        ];
+        let collision = |locations: Vec<Location>| Collision {
+            entity_id: "https://sp-a.example.com".into(),
+            locations,
+        };
+        assert_eq!(
+            import_route(&one, &[collision(vec![Location::Remote])], false, false).unwrap(),
+            ImportRoute::UpdateCertificates("https://sp-a.example.com".into())
+        );
+        // Both flags belong there, so neither changes the route.
+        assert_eq!(
+            import_route(&one, &[collision(vec![Location::Remote])], true, true).unwrap(),
+            ImportRoute::UpdateCertificates("https://sp-a.example.com".into())
+        );
+        for (declared, found) in [
+            (&one, vec![collision(vec![Location::Hosted])]),
+            (
+                &one,
+                vec![collision(vec![Location::Hosted, Location::Remote])],
+            ),
+            // An aggregate mixing a new entity with an existing remote one.
+            (&two, vec![collision(vec![Location::Remote])]),
+            (&one, vec![]),
+        ] {
+            assert_eq!(
+                import_route(declared, &found, false, false).unwrap(),
+                ImportRoute::Create
+            );
+            // `--certs` and `--force` there are refused, not ignored — a
+            // forced create would read as delete-and-re-import.
+            for (certs, force, named) in [
+                (true, false, "--certs applies only"),
+                (false, true, "--force applies only"),
+                (true, true, "--certs and --force apply only"),
+            ] {
+                let error = import_route(declared, &found, certs, force)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains(named) && error.contains("nothing here deletes"),
+                    "{error}"
+                );
+            }
         }
     }
 }
