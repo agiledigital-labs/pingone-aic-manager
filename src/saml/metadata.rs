@@ -1337,13 +1337,17 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                     // Name="…">` changed inside an unchanged parent is
                     // invisible to the comparison. Spaced so that whitespace
                     // collapsing at the end makes indentation insignificant.
+                    // A self-closing element is spelled as an empty start/end
+                    // pair, which is what it is: `<a/>` and `<a></a>` are one
+                    // element and must be one fact.
                     if let Some(open_fact) = fact.as_mut() {
-                        open_fact.text.push_str(&format!(
-                            " <{}{}{}> ",
-                            expanded_name(ns, &name),
-                            attrs.fact(&[]),
-                            if empty { "/" } else { "" }
-                        ));
+                        let expanded = expanded_name(ns, &name);
+                        open_fact
+                            .text
+                            .push_str(&format!(" <{expanded}{}> ", attrs.fact(&[])));
+                        if empty {
+                            open_fact.text.push_str(&format!(" </{expanded}> "));
+                        }
                     }
                     if entity_start {
                         scan.facts.push(Fact {

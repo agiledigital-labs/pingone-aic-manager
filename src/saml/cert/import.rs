@@ -591,6 +591,30 @@ mod tests {
         assert!(compare_import(&target(&[Role::Idp]), &export, &mixed).is_err());
     }
 
+    /// `<RequestedAttribute …/>` and `<RequestedAttribute …></RequestedAttribute>`
+    /// are the same element, so neither side's spelling is a difference —
+    /// and the control: an attribute change on that element still is.
+    #[test]
+    fn a_self_closing_nested_element_equals_its_empty_pair() {
+        let acs = |element: &str| {
+            document(&sp(&[(Some("signing"), RSA_DER)]).replace(
+                "    </SPSSODescriptor>",
+                &format!(
+                    "        <AttributeConsumingService index=\"0\">{element}\
+                     </AttributeConsumingService>\n    </SPSSODescriptor>"
+                ),
+            ))
+        };
+        let closed = acs("<RequestedAttribute Name=\"mail\"/>");
+        let paired = acs("<RequestedAttribute Name=\"mail\"></RequestedAttribute>");
+        let comparison = compare_import(&target(&[Role::Sp]), &closed, &paired).unwrap();
+        assert_eq!(comparison.differences.lines(), [ONLY_CERTS_DIFFER]);
+
+        let renamed = acs("<RequestedAttribute Name=\"email\"></RequestedAttribute>");
+        let comparison = compare_import(&target(&[Role::Sp]), &closed, &renamed).unwrap();
+        assert_ne!(comparison.differences.lines(), [ONLY_CERTS_DIFFER]);
+    }
+
     #[test]
     fn a_file_role_the_entity_lacks_is_refused() {
         let export = document(&idp(&[(Some("signing"), RSA_DER)]));
