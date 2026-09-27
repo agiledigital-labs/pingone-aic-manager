@@ -141,26 +141,32 @@ fn create_hosted_request(realm: &str, body: Value, confirmed_prod: bool) -> Saml
     }
 }
 
-/// `?_action=importEntity` exists only on `/remote`; on `/hosted` it is a
-/// **501 `importEntity not supported`**, so the path is not parameterised by
-/// location either. Same trailing slash as the create path, for the same
-/// reason: it is what every measurement in `docs/api/06-saml.md` used.
+/// The one spelling of `?_action=importEntity`, for a create and a
+/// certificate update alike.
+///
+/// It exists only on `/remote`; on `/hosted` it is a **501 `importEntity not
+/// supported`**, so the path is not parameterised by location. The trailing
+/// slash matches the create path's and AM's console; both `updateType`s were
+/// measured on exactly this spelling (2026-09-28, `docs/api/06-saml.md`).
+fn import_entity_path(realm: &str) -> String {
+    format!("{}/remote/?_action=importEntity", entities_path(realm))
+}
+
+/// An import that creates every entity the document names.
 fn import_request(realm: &str, body: Value, confirmed_prod: bool) -> SamlRequest {
     SamlRequest {
         method: "POST",
-        path: format!("{}/remote/?_action=importEntity", entities_path(realm)),
+        path: import_entity_path(realm),
         body: Some(body),
         confirmed_prod,
     }
 }
 
-/// `POST …/saml2/remote?_action=importEntity` with
-/// `updateType: UPDATE_CERTIFICATES` — the certificate update of an existing
-/// remote entity (measured 2026-09-28, `docs/api/06-saml.md`).
+/// [`import_entity_path`] with `updateType: UPDATE_CERTIFICATES` — the
+/// certificate update of an existing remote entity (measured 2026-09-28,
+/// `docs/api/06-saml.md`).
 ///
-/// Its path is the measured one, **without** the slash `import_request`
-/// carries after `remote`; both answer, but only this spelling was exercised
-/// with an `updateType`. The target is the `entityID` inside the document —
+/// The target is the `entityID` inside the document —
 /// the path names no entity — which is why the caller builds the document
 /// from the entity's own export. `skipMetadataSignatureVerification` is sent
 /// `false` explicitly: a document this tool spliced carries no signature to
@@ -168,7 +174,7 @@ fn import_request(realm: &str, body: Value, confirmed_prod: bool) -> SamlRequest
 fn update_certificates_request(realm: &str, xml: &[u8], confirmed_prod: bool) -> SamlRequest {
     SamlRequest {
         method: "POST",
-        path: format!("{}/remote?_action=importEntity", entities_path(realm)),
+        path: import_entity_path(realm),
         body: Some(serde_json::json!({
             "standardMetadata": spec::standard_metadata(xml),
             "updateType": "UPDATE_CERTIFICATES",
@@ -492,15 +498,19 @@ mod tests {
     /// `?_action=importEntity` is a 501 on `/hosted`, and the one field in
     /// the body is `standardMetadata` — `{}` and a wrong base64 alphabet both
     /// answer with the same 400, so nothing in a response would tell us this
-    /// path was wrong.
+    /// path was wrong. The literal is pinned here, once, for both requests.
     #[test]
     fn the_import_request_targets_remote_only_and_carries_the_body() {
         let body = json!({ "standardMetadata": "PD94bWw" });
         let call = envelope(&import_request("bravo", body.clone(), false));
         assert_eq!(call.method, "POST");
+        let pinned =
+            "/am/json/realms/root/realms/bravo/realm-config/saml2/remote/?_action=importEntity";
+        assert_eq!(call.path, pinned);
         assert_eq!(
-            call.path,
-            "/am/json/realms/root/realms/bravo/realm-config/saml2/remote/?_action=importEntity"
+            envelope(&update_certificates_request("bravo", b"<x/>", false)).path,
+            pinned,
+            "a create and a certificate update share one importEntity spelling"
         );
         assert!(!call.path.contains("/hosted"), "{}", call.path);
         assert_eq!(call.body.as_ref(), Some(&body));
@@ -516,10 +526,7 @@ mod tests {
         let xml = b"<EntityDescriptor entityID=\"https://sp-a.example.com\"/>";
         let call = envelope(&update_certificates_request("alpha", xml, false));
         assert_eq!(call.method, "POST");
-        assert_eq!(
-            call.path,
-            "/am/json/realms/root/realms/alpha/realm-config/saml2/remote?_action=importEntity"
-        );
+        assert_eq!(call.path, import_entity_path("alpha"));
         assert_eq!(call.api_version.as_deref(), Some(API_VERSION));
         let body = call.body.expect("a body");
         assert_eq!(body["updateType"], "UPDATE_CERTIFICATES");
