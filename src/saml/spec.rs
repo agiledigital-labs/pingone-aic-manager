@@ -999,6 +999,42 @@ pub fn preflight_lines(entity_ids: &[String], found: &[Collision], realm: &str) 
     lines
 }
 
+/// Which path an import takes once the preflight is known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportRoute {
+    /// Create — and let [`authorize_import`] refuse any collision.
+    Create,
+    /// The file's one entity exists as a **remote** entity: update its
+    /// certificates (`saml::cert`).
+    UpdateCertificates(String),
+}
+
+/// Route an import. The certificate update is taken only for exactly one
+/// declared entity colliding with exactly one remote entity; everything else
+/// is a create, so every other collision keeps its whole-import refusal.
+///
+/// `--certs` on a file that would be created is refused rather than ignored:
+/// an operator who asked for a certificate update and got a new entity has
+/// been told something false by the exit code.
+pub fn import_route(
+    declared: &[String],
+    found: &[Collision],
+    certs_given: bool,
+) -> crate::Result<ImportRoute> {
+    if let ([entity_id], [collision]) = (declared, found)
+        && collision.locations == [Location::Remote]
+    {
+        return Ok(ImportRoute::UpdateCertificates(entity_id.clone()));
+    }
+    if certs_given {
+        return Err(crate::Error::Config(
+            "--certs applies only to a file whose one entity already exists as a remote entity              in the realm; this file would not update one, so refusing rather than ignoring it"
+                .into(),
+        ));
+    }
+    Ok(ImportRoute::Create)
+}
+
 /// Permission to send one import.
 ///
 /// The field is private to this module and [`authorize_import`] is the only
@@ -2834,6 +2870,43 @@ mod tests {
                 .is_err(),
                 "a non-string member was given a spelling instead of being refused: {member}"
             );
+        }
+    }
+
+    /// Only one declared entity colliding with one **remote** entity takes
+    /// the certificate-update path; every other collision stays a create,
+    /// which `authorize_import` then refuses whole.
+    #[test]
+    fn only_one_entity_colliding_with_one_remote_entity_routes_to_a_certificate_update() {
+        let one = vec!["https://sp-a.example.com".to_string()];
+        let two = vec![
+            "https://sp-a.example.com".to_string(),
+            "https://sp-b.example.com".to_string(),
+        ];
+        let collision = |locations: Vec<Location>| Collision {
+            entity_id: "https://sp-a.example.com".into(),
+            locations,
+        };
+        assert_eq!(
+            import_route(&one, &[collision(vec![Location::Remote])], false).unwrap(),
+            ImportRoute::UpdateCertificates("https://sp-a.example.com".into())
+        );
+        for (declared, found) in [
+            (&one, vec![collision(vec![Location::Hosted])]),
+            (
+                &one,
+                vec![collision(vec![Location::Hosted, Location::Remote])],
+            ),
+            // An aggregate mixing a new entity with an existing remote one.
+            (&two, vec![collision(vec![Location::Remote])]),
+            (&one, vec![]),
+        ] {
+            assert_eq!(
+                import_route(declared, &found, false).unwrap(),
+                ImportRoute::Create
+            );
+            // `--certs` there is refused, not ignored.
+            assert!(import_route(declared, &found, true).is_err());
         }
     }
 }

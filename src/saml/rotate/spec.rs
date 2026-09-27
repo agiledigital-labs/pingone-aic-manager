@@ -729,7 +729,7 @@ impl WriteFailure {
 impl WriteStatus {
     /// What this status says about `what`, for the two states that are not a
     /// refusal. A refusal's own message already says what it says.
-    fn sentence(self, what: &str) -> String {
+    pub fn sentence(self, what: &str) -> String {
         match self {
             Self::Refused => format!("{what} was not applied."),
             Self::AcceptedUnverified => format!(

@@ -36,6 +36,7 @@ use crate::cli::{
     ensure_prod_confirmed, print_json, print_table, realm_arg, tenant_config_for, tenant_for,
 };
 use crate::saml::api;
+use crate::saml::cert::cli::CertCommand;
 use crate::saml::metadata::{self, SanitiseOpts};
 use crate::saml::rotate::cli::RotateCommand;
 use crate::saml::spec::{self, ExportOutcome, HostedCreate, Located, Location, Role};
@@ -121,6 +122,12 @@ pub enum SamlCommand {
         /// Send the file's bytes verbatim, WS-Federation roles and all.
         #[arg(long)]
         no_sanitise: bool,
+        /// When the file's one entity already exists as a remote entity:
+        /// merge its signing certificates in (`add`) or make them exactly the
+        /// file's (`replace`). Required without a terminal; nothing else in
+        /// the file is applied.
+        #[arg(long, value_enum)]
+        certs: Option<crate::saml::cert::spec::ImportMode>,
         /// Confirm a write to a production-themed tenant.
         #[arg(long)]
         yes: bool,
@@ -141,6 +148,11 @@ pub enum SamlCommand {
         yes: bool,
         #[command(flatten)]
         force: OperationForce,
+    },
+    /// List, add and remove a remote entity's signing certificates.
+    Cert {
+        #[command(subcommand)]
+        command: CertCommand,
     },
     /// Roll the certificate a SAML role signs with.
     ///
@@ -244,6 +256,9 @@ pub fn needs_tenant_auth(command: &SamlCommand) -> bool {
         // including `status`, whose one unauthenticated call is the metadata
         // export the other three reads are correlated against.
         SamlCommand::Rotate { command } => crate::saml::rotate::cli::needs_tenant_auth(command),
+        // Split one level down: `cert list` reads only the unauthenticated
+        // export and must work locked; `add` and `remove` list and write.
+        SamlCommand::Cert { command } => crate::saml::cert::cli::needs_tenant_auth(command),
     }
 }
 
@@ -291,8 +306,9 @@ pub async fn run(command: SamlCommand) -> Result<()> {
             tenant,
             dry_run,
             no_sanitise,
+            certs,
             yes,
-        } => import(tenant, realm, &file, dry_run, no_sanitise, yes).await,
+        } => import(tenant, realm, &file, dry_run, no_sanitise, certs, yes).await,
         SamlCommand::Delete {
             entity_id,
             location,
@@ -302,6 +318,7 @@ pub async fn run(command: SamlCommand) -> Result<()> {
             force,
         } => delete(tenant, realm, &entity_id, location, yes, force).await,
         SamlCommand::Rotate { command } => crate::saml::rotate::cli::run(command).await,
+        SamlCommand::Cert { command } => crate::saml::cert::cli::run(command).await,
     }
 }
 
@@ -456,6 +473,7 @@ async fn import(
     file: &Path,
     dry_run: bool,
     no_sanitise: bool,
+    certs: Option<crate::saml::cert::spec::ImportMode>,
     yes: bool,
 ) -> Result<()> {
     // The file first, and before the tenant is even resolved: a document we
@@ -492,6 +510,21 @@ async fn import(
     let found = spec::collisions(&declared, &stubs);
     for line in spec::preflight_lines(&declared, &found, &realm) {
         eprintln!("{line}");
+    }
+
+    // One entity, and it already exists as a remote entity: the only
+    // collision with a safe answer, because AM can update a remote entity's
+    // certificates in place without touching its circle-of-trust membership.
+    // Every other collision — an aggregate, a hosted entity, new and existing
+    // mixed — is still refused whole by `authorize_import` below.
+    match spec::import_route(&declared, &found, certs.is_some())? {
+        spec::ImportRoute::Create => {}
+        spec::ImportRoute::UpdateCertificates(entity_id) => {
+            return crate::saml::cert::cli::import_update(
+                &tenant, &realm, &entity_id, &body, dry_run, certs, yes,
+            )
+            .await;
+        }
     }
 
     // The permit is minted here or not at all, so the `Preview` arm below
@@ -1254,7 +1287,7 @@ mod tests {
     /// daemon. Every verb is listed, so a new one is a visibly missing row.
     #[test]
     fn needs_tenant_auth_follows_what_each_verb_actually_sends() {
-        let cases: [(bool, &[&str]); 10] = [
+        let cases: [(bool, &[&str]); 13] = [
             (true, &["aic", "saml", "list"]),
             (true, &["aic", "saml", "show", "https://sp-a.example.com"]),
             (true, &["aic", "saml", "cot", "list"]),
@@ -1297,6 +1330,35 @@ mod tests {
             ),
             (false, &["aic", "saml", "metadata", "inspect", "in.xml"]),
             (false, &["aic", "saml", "metadata", "sanitise", "in.xml"]),
+            // `cert list` reads only the export, so it works locked; the two
+            // writers list the realm over the bearer before they write.
+            (
+                false,
+                &["aic", "saml", "cert", "list", "https://sp-a.example.com"],
+            ),
+            (
+                true,
+                &[
+                    "aic",
+                    "saml",
+                    "cert",
+                    "add",
+                    "https://sp-a.example.com",
+                    "--cert-file",
+                    "c.pem",
+                ],
+            ),
+            (
+                true,
+                &[
+                    "aic",
+                    "saml",
+                    "cert",
+                    "remove",
+                    "https://sp-a.example.com",
+                    "353f92d3",
+                ],
+            ),
         ];
 
         for (expected, argv) in cases {
@@ -1486,6 +1548,77 @@ mod tests {
     /// back (`docs/api/06-saml.md`). Both are absent on purpose, so a parse
     /// failure is the assertion.
     #[test]
+    fn import_takes_certs_as_its_update_consent_and_only_add_or_replace() {
+        use crate::cli::{Cli, Command};
+        use crate::saml::cert::spec::ImportMode;
+
+        for (word, mode) in [("add", ImportMode::Add), ("replace", ImportMode::Replace)] {
+            let Some(Command::Saml {
+                command: SamlCommand::Import { certs, .. },
+            }) = Cli::try_parse_from(["aic", "saml", "import", "peer.xml", "--certs", word])
+                .unwrap()
+                .command
+            else {
+                panic!("expected saml import");
+            };
+            assert_eq!(certs, Some(mode));
+        }
+        assert!(
+            Cli::try_parse_from(["aic", "saml", "import", "peer.xml", "--certs", "merge"]).is_err()
+        );
+    }
+
+    #[test]
+    fn cert_verbs_parse_their_flags() {
+        let SamlCommand::Cert {
+            command:
+                CertCommand::Add {
+                    entity_id,
+                    cert_file,
+                    role,
+                    dry_run,
+                    force,
+                    ..
+                },
+        } = saml_command(&[
+            "aic",
+            "saml",
+            "cert",
+            "add",
+            "https://sp-a.example.com",
+            "--cert-file",
+            "c.pem",
+            "--role",
+            "idp",
+            "--dry-run",
+            "--force",
+        ])
+        else {
+            panic!("expected saml cert add");
+        };
+        assert_eq!(entity_id, "https://sp-a.example.com");
+        assert_eq!(cert_file, PathBuf::from("c.pem"));
+        assert_eq!(role, Some(Role::Idp));
+        assert!(dry_run && force.operation());
+
+        let SamlCommand::Cert {
+            command: CertCommand::Remove { cert, force, .. },
+        } = saml_command(&[
+            "aic",
+            "saml",
+            "cert",
+            "remove",
+            "https://sp-a.example.com",
+            "353f92d3",
+        ])
+        else {
+            panic!("expected saml cert remove");
+        };
+        assert_eq!(cert, "353f92d3");
+        assert!(!force.operation());
+    }
+
+    #[test]
     fn import_parses_its_flags_and_offers_neither_cot_nor_force() {
         use crate::cli::{Cli, Command};
 
@@ -1572,6 +1705,7 @@ mod tests {
             tenant: Some("no-such-tenant".into()),
             dry_run: true,
             no_sanitise: false,
+            certs: None,
             yes: false,
         })
         .await
@@ -1589,6 +1723,7 @@ mod tests {
                 tenant: Some("no-such-tenant".into()),
                 dry_run: true,
                 no_sanitise: false,
+                certs: None,
                 yes: false,
             })
             .await
