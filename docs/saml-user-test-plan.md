@@ -54,12 +54,15 @@ aic saml metadata sanitise src/saml/fixtures/entra-federationmetadata.xml \
 confirm the tool spliced rather than rewrote:
 
 ```sh
-diff <(aic saml metadata inspect /tmp/entra-clean.xml) \
-     <(aic saml metadata inspect src/saml/fixtures/entra-federationmetadata.xml)
+cmp /tmp/entra-clean.xml src/saml/fixtures/entra-federationmetadata.sanitised.xml
+diff src/saml/fixtures/entra-federationmetadata.xml /tmp/entra-clean.xml | grep '^>'
 ```
 
-The surviving bytes should be byte-identical to the original's, not
-reserialised — that is what keeps a signature you chose to keep verifiable.
+`cmp` should print nothing: the output matches the committed sanitised fixture
+byte for byte. The `diff` should print nothing too — every line of the output is
+a line of the original, so the removals are the only change. The surviving bytes
+are the original's, not reserialised — that is what keeps a signature you chose
+to keep verifiable.
 
 ### A3 · Prove it fails closed
 
