@@ -84,6 +84,10 @@ const XSI_NS: &[u8] = b"http://www.w3.org/2001/XMLSchema-instance";
 /// rather than by a schema this module does not read — see [`ElementId`].
 const XML_NS: &[u8] = b"http://www.w3.org/XML/1998/namespace";
 
+/// Where `quick_xml` may resolve an `xmlns:` declaration to. Declarations are
+/// left out of a [`Fact`]: they say how a name is spelled, not what it is.
+const XMLNS_NS: &[u8] = b"http://www.w3.org/2000/xmlns/";
+
 /// The XML-Signature element. Matched wherever it appears, because placement
 /// does not say what a signature covers — the `<ds:Reference>` elements of
 /// its `<ds:SignedInfo>` do, and [`Coverage`] is where that is resolved. Conditional on
@@ -747,6 +751,11 @@ struct Scan {
     endpoints: Vec<Endpoint>,
     certs: Vec<CertRef>,
     cuts: Cuts,
+    /// Every IdP/SP role descriptor and where its keys sit — [`key_layout`].
+    roles: Vec<RoleKeys>,
+    facts: Vec<Fact>,
+    /// Every `<ds:Signature>` start tag, wherever it sits, cut or not.
+    signatures_seen: usize,
 }
 
 impl Scan {
@@ -860,12 +869,23 @@ impl Open {
 /// A stack, not a single slot: nesting one key descriptor inside another is
 /// not legal metadata, but a document that does it anyway must not silently
 /// drop the outer descriptor's certificates.
+/// A [`Fact`] whose element is still open: its descendants' text is still
+/// arriving.
+struct PendingFact {
+    owner: String,
+    head: String,
+    depth: usize,
+    text: String,
+}
+
 struct PendingKey {
     descriptor: String,
     key_use: Option<String>,
     key_name: Option<String>,
     depth: usize,
     certs: Vec<(usize, String)>,
+    /// Start of its byte range, already extended back over its indentation.
+    from: usize,
 }
 
 /// A `<ds:Signature>` being read.
@@ -1064,6 +1084,15 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
     let mut signatures: Vec<PendingSignature> = Vec::new();
     let mut ids: Vec<ElementId> = Vec::new();
     let mut root_range: Range<usize> = 0..0;
+    // The IdP/SP role open right now: its index in `scan.roles` and the path
+    // length at which its direct children sit.
+    let mut open_role: Option<(usize, usize)> = None;
+    let mut fact: Option<PendingFact> = None;
+    let newline = if xml.windows(2).any(|pair| pair == b"\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
 
     let mut scan = Scan {
         root: BundleRoot::Entity,
@@ -1072,6 +1101,9 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
         endpoints: Vec::new(),
         certs: Vec::new(),
         cuts: Cuts::default(),
+        roles: Vec::new(),
+        facts: Vec::new(),
+        signatures_seen: 0,
     };
 
     loop {
@@ -1281,10 +1313,79 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                 {
                     entity.roles.push(role);
                 }
+                if depth == Depth::Content {
+                    let role_child = open_role
+                        .filter(|(_, child_depth)| path.len() == *child_depth)
+                        .map(|(index, _)| index);
+                    if let Some(index) = role_child
+                        && let Some(role) = scan.roles.get_mut(index)
+                    {
+                        if role.first_child {
+                            role.first_child = false;
+                            if let Some(indent) = line_indent(xml, start) {
+                                role.indent = indent;
+                            }
+                        }
+                        if empty && is_key_preamble(&name, ns) {
+                            role.insert_at = Some(end);
+                        }
+                    }
+                    let signature_here = name == SIGNATURE_LOCAL_NAME && ns == Some(DSIG_NS);
+                    if entity_start {
+                        scan.facts.push(Fact {
+                            owner: ROOT_LOCAL_NAME.to_string(),
+                            text: format!("{name}{}", attrs.fact(&["entityID", "ID"])),
+                        });
+                    } else if entity_role && let Some(role) = Role::from_expanded_name(&name, ns) {
+                        let indent = line_indent(xml, start).unwrap_or_default();
+                        scan.roles.push(RoleKeys {
+                            role,
+                            descriptor: name.clone(),
+                            prefix: element.name().prefix().map(|prefix| {
+                                String::from_utf8_lossy(prefix.as_ref()).into_owned()
+                            }),
+                            insert_at: (!empty).then_some(end),
+                            // Until a child says otherwise: one more step
+                            // of the same indent the role itself sits at.
+                            indent: format!("{indent}{indent}"),
+                            newline,
+                            first_child: true,
+                            keys: Vec::new(),
+                        });
+                        if !empty {
+                            open_role = Some((scan.roles.len() - 1, path.len() + 1));
+                        }
+                        scan.facts.push(Fact {
+                            owner: name.clone(),
+                            text: format!("{name}{}", attrs.fact(&[])),
+                        });
+                    } else if fact.is_none()
+                        && !signature_here
+                        && !(name == "KeyDescriptor" && saml)
+                        && (entity_role || role_child.is_some())
+                    {
+                        let owner = match role_child.and_then(|index| scan.roles.get(index)) {
+                            Some(role) => role.descriptor.clone(),
+                            None => ROOT_LOCAL_NAME.to_string(),
+                        };
+                        let head = format!("{name}{}", attrs.fact(&[]));
+                        if empty {
+                            scan.facts.push(Fact { owner, text: head });
+                        } else {
+                            fact = Some(PendingFact {
+                                owner,
+                                head,
+                                depth: path.len(),
+                                text: String::new(),
+                            });
+                        }
+                    }
+                }
                 // A signature is collected wherever it sits. Which bytes it
                 // covers is decided after the walk, from its references —
                 // `Coverage` says why placement cannot answer that.
                 if name == SIGNATURE_LOCAL_NAME && ns == Some(DSIG_NS) {
+                    scan.signatures_seen += 1;
                     match signature.as_mut() {
                         Some(open) => open.nested = true,
                         None => {
@@ -1379,13 +1480,32 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                             detail: "<KeyDescriptor> outside a role descriptor".into(),
                         });
                     };
-                    keys.push(PendingKey {
-                        descriptor: descriptor.to_owned(),
-                        key_use: attrs.unqualified("use").map(str::to_owned),
-                        key_name: None,
-                        depth: path.len(),
-                        certs: Vec::new(),
-                    });
+                    let key_use = attrs.unqualified("use").map(str::to_owned);
+                    if empty {
+                        // No end tag will flush it, so it is recorded whole
+                        // here — a key descriptor with no key is still bytes
+                        // a certificate update has to carry.
+                        if depth == Depth::Content
+                            && let Some((index, child_depth)) = open_role
+                            && path.len() == child_depth
+                            && let Some(role) = scan.roles.get_mut(index)
+                        {
+                            role.keys.push(KeyEntry {
+                                range: trim_back(xml, start)..end,
+                                key_use,
+                                certs: Vec::new(),
+                            });
+                        }
+                    } else {
+                        keys.push(PendingKey {
+                            descriptor: descriptor.to_owned(),
+                            key_use,
+                            key_name: None,
+                            depth: path.len(),
+                            certs: Vec::new(),
+                            from: trim_back(xml, start),
+                        });
+                    }
                 }
                 if !empty
                     && !keys.is_empty()
@@ -1457,15 +1577,54 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                 {
                     let key = keys.pop().expect("just checked there is one");
                     if depth == Depth::Content {
+                        let mut certs = Vec::new();
                         for (line, body) in &key.certs {
-                            scan.certs.push(CertRef {
+                            let der = certificate_der(body, *line)?;
+                            let cert = CertRef {
                                 descriptor: key.descriptor.clone(),
                                 key_use: key.key_use.clone(),
                                 key_name: key.key_name.clone(),
-                                sha256: fingerprint(body, *line)?,
+                                sha256: hex(&Sha256::digest(&der)),
+                            };
+                            scan.certs.push(cert.clone());
+                            certs.push((cert, der));
+                        }
+                        if let Some((index, child_depth)) = open_role
+                            && key.depth == child_depth
+                            && let Some(role) = scan.roles.get_mut(index)
+                        {
+                            role.keys.push(KeyEntry {
+                                range: key.from..end,
+                                key_use: key.key_use.clone(),
+                                certs,
                             });
                         }
                     }
+                }
+                if depth == Depth::Content
+                    && let Some((index, child_depth)) = open_role
+                {
+                    if path.len() == child_depth
+                        && let Some(open) = &closed
+                        && is_key_preamble(&open.local, open.ns.as_deref())
+                        && let Some(role) = scan.roles.get_mut(index)
+                    {
+                        role.insert_at = Some(end);
+                    }
+                    if path.len() + 1 == child_depth {
+                        open_role = None;
+                    }
+                }
+                if let Some(done) = fact.take_if(|open| open.depth == path.len()) {
+                    let text = done.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    scan.facts.push(Fact {
+                        owner: done.owner,
+                        text: if text.is_empty() {
+                            done.head
+                        } else {
+                            format!("{} {text}", done.head)
+                        },
+                    });
                 }
                 if let Some((from, _, removal)) =
                     open_cut.take_if(|(_, depth, _)| *depth == path.len())
@@ -1522,6 +1681,9 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                         if let Some(open_leaf) = leaf.as_mut() {
                             open_leaf.body.push_str(&raw);
                         }
+                        if let Some(open_fact) = fact.as_mut() {
+                            open_fact.text.push_str(&raw);
+                        }
                     }
                     // Whitespace around the root is the only character data
                     // the prolog and the epilog may hold.
@@ -1543,6 +1705,9 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                 check_chars(&body, start, "a CDATA section")?;
                 if let Some(open_leaf) = leaf.as_mut() {
                     open_leaf.body.push_str(&body);
+                }
+                if let Some(open_fact) = fact.as_mut() {
+                    open_fact.text.push_str(&body);
                 }
             }
             Event::GeneralRef(reference) => {
@@ -1573,6 +1738,9 @@ fn scan(xml: &[u8], depth: Depth, roots: Roots) -> Result<Scan> {
                 };
                 if let Some(open_leaf) = leaf.as_mut() {
                     open_leaf.body.push(replacement);
+                }
+                if let Some(open_fact) = fact.as_mut() {
+                    open_fact.text.push(replacement);
                 }
             }
             Event::Eof => break,
@@ -1981,6 +2149,27 @@ impl Attrs {
     fn unqualified(&self, local: &str) -> Option<&str> {
         self.get(None, local)
     }
+
+    /// The attributes as a [`Fact`] spells them: sorted, namespace
+    /// declarations left out (they are spelling, not content), and a
+    /// qualified name written with its namespace so two prefixes for one URI
+    /// compare equal.
+    fn fact(&self, skip: &[&str]) -> String {
+        let mut parts = self
+            .items
+            .iter()
+            .filter(|(ns, local, _)| match ns {
+                None => local != "xmlns" && !skip.contains(&local.as_str()),
+                Some(uri) => uri.as_slice() != XMLNS_NS,
+            })
+            .map(|(ns, local, value)| match ns {
+                None => format!(" {local}=\"{value}\""),
+                Some(uri) => format!(" {{{}}}{local}=\"{value}\"", String::from_utf8_lossy(uri)),
+            })
+            .collect::<Vec<_>>();
+        parts.sort();
+        parts.concat()
+    }
 }
 
 fn unknown_prefix(offset: usize, prefix: &[u8]) -> MetadataError {
@@ -2048,7 +2237,7 @@ fn qualified_name(element: &BytesStart<'_>) -> String {
 
 /// SHA-256 over the DER the base64 body decodes to. AM wraps its exports at
 /// 64 columns and Entra emits one long line, so whitespace is stripped first.
-fn fingerprint(body: &str, line: usize) -> Result<String> {
+fn certificate_der(body: &str, line: usize) -> Result<Vec<u8>> {
     let packed = body
         .chars()
         .filter(|character| !character.is_ascii_whitespace())
@@ -2061,13 +2250,12 @@ fn fingerprint(body: &str, line: usize) -> Result<String> {
             detail: "the element is empty".into(),
         });
     }
-    let der = STANDARD
+    STANDARD
         .decode(&packed)
         .map_err(|error| MetadataError::BadCertificate {
             line,
             detail: error.to_string(),
-        })?;
-    Ok(hex(&Sha256::digest(&der)))
+        })
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -2098,6 +2286,181 @@ fn trim_back(xml: &[u8], start: usize) -> usize {
         return cursor;
     }
     start
+}
+
+/// The whitespace before `start` on its own line, when the element starts
+/// the line — the indentation a sibling inserted next to it should copy.
+fn line_indent(xml: &[u8], start: usize) -> Option<String> {
+    let line_start = xml[..start]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |newline| newline + 1);
+    let indent = &xml[line_start..start];
+    indent
+        .iter()
+        .all(|byte| matches!(byte, b' ' | b'\t'))
+        .then(|| String::from_utf8_lossy(indent).into_owned())
+}
+
+/// The direct children of a role that the schema puts *before* its
+/// `<KeyDescriptor>`s — a signature and `<Extensions>` — plus the key
+/// descriptors themselves. A new key descriptor goes after the last of them,
+/// so it lands where the schema's sequence says keys go.
+fn is_key_preamble(name: &str, ns: Option<&[u8]>) -> bool {
+    match ns {
+        Some(uri) if uri == SAML_NS => name == "Extensions" || name == "KeyDescriptor",
+        Some(uri) if uri == DSIG_NS => name == SIGNATURE_LOCAL_NAME,
+        _ => false,
+    }
+}
+
+// ── key layout: splicing certificates in and out ───────────────────────────
+
+/// Where every IdP/SP role's keys sit in a single-entity document, so a
+/// certificate can be added or removed by splicing bytes rather than by
+/// re-serialising the document — the same promise [`sanitise`] makes.
+///
+/// `aic saml cert` is the consumer: AM's `UPDATE_CERTIFICATES` replaces every
+/// `<KeyDescriptor>` of each role the document names, so the document sent
+/// has to carry the roles' encryption keys (and keys with no `use`) byte for
+/// byte, and only an edit of this shape can promise that.
+#[derive(Debug, Clone)]
+pub struct KeyLayout {
+    pub entity_id: String,
+    /// In document order. A role declared twice appears twice, and the
+    /// caller refuses it — which of the two AM would read is not measured.
+    pub roles: Vec<RoleKeys>,
+    /// Whether the document carries any `<ds:Signature>` at all. A splice
+    /// invalidates one, so the caller refuses a signed document rather than
+    /// sending a signature it has broken.
+    pub signed: bool,
+    /// Non-key content, for telling an operator what an update will **not**
+    /// change. See [`Fact`].
+    pub facts: Vec<Fact>,
+}
+
+/// One IdP/SP role descriptor and its key descriptors.
+#[derive(Debug, Clone)]
+pub struct RoleKeys {
+    pub role: Role,
+    /// Its local name, `IDPSSODescriptor` or `SPSSODescriptor` — the
+    /// [`CertRef::descriptor`] of every certificate under it.
+    pub descriptor: String,
+    prefix: Option<String>,
+    /// Where a new key descriptor goes: after the last signature,
+    /// `<Extensions>` or key descriptor, else straight after the start tag.
+    /// `None` for an empty `<IDPSSODescriptor/>`, which has no inside to
+    /// insert into without rewriting the tag.
+    insert_at: Option<usize>,
+    indent: String,
+    newline: &'static str,
+    first_child: bool,
+    /// Direct-child key descriptors, in document order.
+    pub keys: Vec<KeyEntry>,
+}
+
+/// One `<KeyDescriptor>`, as a byte range the caller can cut.
+#[derive(Debug, Clone)]
+pub struct KeyEntry {
+    /// The element, extended back over its indentation and the newline
+    /// before it, so cutting it leaves no blank line — and cutting one this
+    /// module inserted returns the original bytes.
+    pub range: Range<usize>,
+    pub key_use: Option<String>,
+    /// Each certificate with the DER it decodes to.
+    pub certs: Vec<(CertRef, Vec<u8>)>,
+}
+
+/// One piece of non-key content an owner (the entity, or a role) declares:
+/// its own attributes, or a direct child other than a key descriptor or a
+/// signature, spelled as the child's name, its sorted attributes and its
+/// descendants' text with whitespace collapsed.
+///
+/// Deliberately shallow. It exists to answer "does the file say something
+/// the tenant's copy does not", for an operator summary — not to diff XML.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Fact {
+    /// `EntityDescriptor`, or the role's local name.
+    pub owner: String,
+    pub text: String,
+}
+
+/// Read a single-entity document's key layout. Refuses what [`inspect`]
+/// refuses, since it is the same scan.
+pub fn key_layout(xml: &[u8]) -> Result<KeyLayout> {
+    let mut scan = scan(xml, Depth::Content, Roots::Single)?;
+    let entity = scan.only_entity();
+    Ok(KeyLayout {
+        entity_id: entity.entity_id.unwrap_or_default(),
+        roles: scan.roles,
+        signed: scan.signatures_seen > 0,
+        facts: scan.facts,
+    })
+}
+
+impl RoleKeys {
+    /// The edit that inserts a `use="signing"` key descriptor carrying `der`,
+    /// or `None` when the role is an empty element with nowhere to put it.
+    ///
+    /// The key descriptor is written fresh from the DER, so no byte of
+    /// whatever file the certificate came from reaches the document. It
+    /// declares `ds:` itself rather than trusting an outer declaration.
+    pub fn insert_signing_key(&self, der: &[u8]) -> Option<Edit> {
+        let at = self.insert_at?;
+        let prefix = self
+            .prefix
+            .as_deref()
+            .map(|prefix| format!("{prefix}:"))
+            .unwrap_or_default();
+        let body = STANDARD.encode(der);
+        Some(Edit {
+            range: at..at,
+            insert: format!(
+                "{newline}{indent}<{prefix}KeyDescriptor use=\"signing\">\
+                 <ds:KeyInfo xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\">\
+                 <ds:X509Data><ds:X509Certificate>{body}</ds:X509Certificate>\
+                 </ds:X509Data></ds:KeyInfo></{prefix}KeyDescriptor>",
+                newline = self.newline,
+                indent = self.indent,
+            ),
+        })
+    }
+}
+
+impl KeyEntry {
+    /// The edit that removes this key descriptor.
+    pub fn remove(&self) -> Edit {
+        Edit {
+            range: self.range.clone(),
+            insert: String::new(),
+        }
+    }
+}
+
+/// Replace `range` with `insert`. An insertion is an empty range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edit {
+    pub range: Range<usize>,
+    pub insert: String,
+}
+
+/// Apply edits in document order. Edits at the same offset keep the order
+/// they were given; overlapping edits are a caller bug, and `max` keeps one
+/// from indexing backwards rather than panicking — the same rule as
+/// [`splice`].
+pub fn apply_edits(xml: &[u8], edits: &[Edit]) -> Vec<u8> {
+    let mut ordered = edits.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|edit| edit.range.start);
+    let mut out = Vec::with_capacity(xml.len());
+    let mut cursor = 0;
+    for edit in ordered {
+        let from = edit.range.start.max(cursor);
+        out.extend_from_slice(&xml[cursor..from]);
+        out.extend_from_slice(edit.insert.as_bytes());
+        cursor = edit.range.end.max(from);
+    }
+    out.extend_from_slice(&xml[cursor..]);
+    out
 }
 
 /// Copy everything outside the cuts. The cuts arrive in document order and
@@ -3939,5 +4302,253 @@ mod tests {
         assert!(sanitise(xml.as_bytes(), SanitiseOpts::default()).is_err());
         assert!(cert_refs(xml.as_bytes()).is_err());
         assert!(validate_export_document(xml.as_bytes()).is_err());
+    }
+
+    // ── key layout ──────────────────────────────────────────────────────────
+
+    const CERT_DER: &[u8] = include_bytes!("fixtures/cert-rsa.der");
+    const CERT_SHA: &str = "353f92d3903677e8efd96420323c35de7f7961c088e9b6f2c1828fc3c3ba8447";
+
+    /// The `(descriptor, use, sha256)` of every certificate, in order.
+    fn keys_of(xml: &[u8]) -> Vec<(String, Option<String>, String)> {
+        cert_refs(xml)
+            .unwrap()
+            .into_iter()
+            .map(|cert| (cert.descriptor, cert.key_use, cert.sha256))
+            .collect()
+    }
+
+    fn add_signing(xml: &[u8], descriptor: &str) -> Vec<u8> {
+        let layout = key_layout(xml).unwrap();
+        let role = layout
+            .roles
+            .iter()
+            .find(|role| role.descriptor == descriptor)
+            .unwrap();
+        apply_edits(xml, &[role.insert_signing_key(CERT_DER).unwrap()])
+    }
+
+    fn remove_sha(xml: &[u8], sha: &str) -> Vec<u8> {
+        let layout = key_layout(xml).unwrap();
+        let edits = layout
+            .roles
+            .iter()
+            .flat_map(|role| &role.keys)
+            .filter(|key| key.certs.iter().any(|(cert, _)| cert.sha256 == sha))
+            .map(KeyEntry::remove)
+            .collect::<Vec<_>>();
+        assert_eq!(edits.len(), 1, "exactly one key descriptor holds {sha}");
+        apply_edits(xml, &edits)
+    }
+
+    #[test]
+    fn adding_then_removing_a_signing_key_returns_the_original_bytes() {
+        let added = add_signing(AM_SP.as_bytes(), "SPSSODescriptor");
+        assert_ne!(added, AM_SP.as_bytes());
+        let mut expected = keys_of(AM_SP.as_bytes());
+        // After the existing signing and encryption keys: the schema puts
+        // keys in one run, and a new one joins the end of it.
+        expected.push((
+            "SPSSODescriptor".into(),
+            Some("signing".into()),
+            CERT_SHA.into(),
+        ));
+        assert_eq!(keys_of(&added), expected);
+        assert_eq!(remove_sha(&added, CERT_SHA), AM_SP.as_bytes());
+    }
+
+    #[test]
+    fn the_first_signing_key_goes_after_an_encryption_key_which_is_kept_byte_for_byte() {
+        let encryption_only = AM_SP.replacen(
+            "<KeyDescriptor use=\"signing\">",
+            "<KeyDescriptor use=\"encryption\">",
+            1,
+        );
+        let layout = key_layout(encryption_only.as_bytes()).unwrap();
+        let before = layout.roles[0]
+            .keys
+            .iter()
+            .map(|key| encryption_only[key.range.clone()].to_string())
+            .collect::<Vec<_>>();
+        let added = add_signing(encryption_only.as_bytes(), "SPSSODescriptor");
+        let text = String::from_utf8(added.clone()).unwrap();
+        for key in &before {
+            assert!(
+                text.contains(key.as_str()),
+                "an existing key descriptor changed"
+            );
+        }
+        let uses = keys_of(&added)
+            .into_iter()
+            .map(|(_, key_use, _)| key_use.unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(uses, ["encryption", "encryption", "signing"]);
+        assert_eq!(remove_sha(&added, CERT_SHA), encryption_only.as_bytes());
+    }
+
+    #[test]
+    fn a_role_with_no_keys_takes_one_after_its_extensions_and_at_the_childrens_indent() {
+        let xml = "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"https://sp-a.example.com\">\n  <SPSSODescriptor protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">\n      <Extensions><x:y xmlns:x=\"urn:x\"/></Extensions>\n      <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</NameIDFormat>\n  </SPSSODescriptor>\n</EntityDescriptor>\n";
+        let added = String::from_utf8(add_signing(xml.as_bytes(), "SPSSODescriptor")).unwrap();
+        assert!(
+            added.contains("</Extensions>\n      <KeyDescriptor use=\"signing\">"),
+            "{added}"
+        );
+        assert!(
+            added.contains("</KeyDescriptor>\n      <NameIDFormat>"),
+            "{added}"
+        );
+        assert_eq!(remove_sha(added.as_bytes(), CERT_SHA), xml.as_bytes());
+    }
+
+    #[test]
+    fn a_dual_role_entity_takes_the_key_in_the_named_role_only() {
+        let xml = format!(
+            "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"https://sp-a.example.com\">\n  <IDPSSODescriptor protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">\n    <SingleSignOnService Binding=\"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect\" Location=\"https://sp-a.example.com/sso\"/>\n  </IDPSSODescriptor>\n{}</EntityDescriptor>\n",
+            &AM_SP[AM_SP.find("  <SPSSODescriptor").unwrap()
+                ..AM_SP.find("</EntityDescriptor>").unwrap()]
+        );
+        let into_idp = add_signing(xml.as_bytes(), "IDPSSODescriptor");
+        let idp_keys = keys_of(&into_idp)
+            .into_iter()
+            .filter(|(descriptor, _, _)| descriptor == "IDPSSODescriptor")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            idp_keys,
+            [(
+                "IDPSSODescriptor".into(),
+                Some("signing".into()),
+                CERT_SHA.into()
+            )]
+        );
+        let into_idp = String::from_utf8(into_idp).unwrap();
+        assert!(into_idp.contains("protocol\">\n    <KeyDescriptor use=\"signing\">"));
+        assert_eq!(remove_sha(into_idp.as_bytes(), CERT_SHA), xml.as_bytes());
+        let layout = key_layout(xml.as_bytes()).unwrap();
+        let roles = layout
+            .roles
+            .iter()
+            .map(|role| role.role)
+            .collect::<Vec<_>>();
+        assert_eq!(roles, [Role::IdentityProvider, Role::ServiceProvider]);
+    }
+
+    #[test]
+    fn a_key_with_no_use_and_an_empty_key_descriptor_are_both_recorded() {
+        let xml = AM_SP
+            .replacen("<KeyDescriptor use=\"encryption\">", "<KeyDescriptor>", 1)
+            .replacen(
+                "  </SPSSODescriptor>",
+                "    <KeyDescriptor use=\"encryption\"/>\n  </SPSSODescriptor>",
+                1,
+            );
+        let layout = key_layout(xml.as_bytes()).unwrap();
+        let uses = layout.roles[0]
+            .keys
+            .iter()
+            .map(|key| (key.key_use.clone(), key.certs.len()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            uses,
+            [
+                (Some("signing".into()), 1),
+                (None, 1),
+                (Some("encryption".into()), 0),
+            ]
+        );
+        // The empty one is removable like any other.
+        let empty = &layout.roles[0].keys[2];
+        assert_eq!(
+            apply_edits(xml.as_bytes(), &[empty.remove()]),
+            AM_SP
+                .replacen("<KeyDescriptor use=\"encryption\">", "<KeyDescriptor>", 1)
+                .as_bytes()
+        );
+        // And a new signing key goes after it, the last of the run.
+        let added = String::from_utf8(add_signing(xml.as_bytes(), "SPSSODescriptor")).unwrap();
+        assert!(
+            added.contains(
+                "<KeyDescriptor use=\"encryption\"/>\n    <KeyDescriptor use=\"signing\">"
+            )
+        );
+    }
+
+    #[test]
+    fn a_prefixed_document_gets_a_prefixed_key_descriptor() {
+        let xml = "<md:EntityDescriptor xmlns:md=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"https://sp-a.example.com\">\r\n  <md:SPSSODescriptor protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\">\r\n  </md:SPSSODescriptor>\r\n</md:EntityDescriptor>\r\n";
+        let added = String::from_utf8(add_signing(xml.as_bytes(), "SPSSODescriptor")).unwrap();
+        assert!(
+            added.contains("protocol\">\r\n    <md:KeyDescriptor use=\"signing\">"),
+            "{added}"
+        );
+        assert!(
+            added.contains("</md:KeyDescriptor>\r\n  </md:SPSSODescriptor>"),
+            "{added}"
+        );
+        assert_eq!(keys_of(added.as_bytes()).len(), 1);
+        assert_eq!(remove_sha(added.as_bytes(), CERT_SHA), xml.as_bytes());
+    }
+
+    #[test]
+    fn an_empty_role_element_has_nowhere_to_take_a_key() {
+        let xml = "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\" entityID=\"https://sp-a.example.com\"><SPSSODescriptor protocolSupportEnumeration=\"p\"/></EntityDescriptor>";
+        let layout = key_layout(xml.as_bytes()).unwrap();
+        assert!(layout.roles[0].insert_signing_key(CERT_DER).is_none());
+    }
+
+    #[test]
+    fn facts_ignore_keys_signatures_namespace_spelling_and_whitespace() {
+        let facts = |xml: &str| {
+            let mut facts = key_layout(xml.as_bytes()).unwrap().facts;
+            facts.sort();
+            facts
+        };
+        let plain = facts(AM_SP);
+        let owners = plain
+            .iter()
+            .map(|fact| fact.owner.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(owners, ["EntityDescriptor", "SPSSODescriptor"].into());
+        assert!(
+            plain
+                .iter()
+                .all(|fact| !fact.text.contains("KeyDescriptor"))
+        );
+        assert!(plain.iter().all(|fact| !fact.text.contains("xmlns")));
+        assert!(plain.iter().all(|fact| !fact.text.contains("entityID")));
+        assert!(
+            plain.contains(&Fact {
+                owner: "SPSSODescriptor".into(),
+                text: "SPSSODescriptor AuthnRequestsSigned=\"true\" WantAssertionsSigned=\"true\" protocolSupportEnumeration=\"urn:oasis:names:tc:SAML:2.0:protocol\"".into(),
+            }),
+            "{plain:#?}"
+        );
+        // Same content, different spelling: equal facts.
+        let respelled = AM_SP
+            .replace(
+                "<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\"",
+                "<md:EntityDescriptor xmlns:md=\"urn:oasis:names:tc:SAML:2.0:metadata\"",
+            )
+            .replace("</EntityDescriptor>", "</md:EntityDescriptor>")
+            .replace("<SPSSODescriptor", "<md:SPSSODescriptor")
+            .replace("</SPSSODescriptor>", "</md:SPSSODescriptor>")
+            .replace("<KeyDescriptor", "<md:KeyDescriptor")
+            .replace("</KeyDescriptor>", "</md:KeyDescriptor>")
+            .replace("<NameIDFormat>", "<md:NameIDFormat>")
+            .replace("</NameIDFormat>", "</md:NameIDFormat>")
+            .replace("<AssertionConsumerService", "<md:AssertionConsumerService")
+            .replace("<SingleLogoutService", "<md:SingleLogoutService");
+        assert_eq!(facts(&respelled), plain);
+        // A key change is not a fact change; an endpoint change is.
+        let rekeyed = String::from_utf8(add_signing(AM_SP.as_bytes(), "SPSSODescriptor")).unwrap();
+        assert_eq!(facts(&rekeyed), plain);
+        let moved = AM_SP.replacen("/AuthConsumer/", "/AuthConsumer2/", 1);
+        assert_ne!(facts(&moved), plain);
+    }
+
+    #[test]
+    fn a_signature_anywhere_marks_the_layout_signed() {
+        assert!(!key_layout(AM_SP.as_bytes()).unwrap().signed);
+        assert!(key_layout(ENTRA.as_bytes()).unwrap().signed);
     }
 }
