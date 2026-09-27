@@ -27,11 +27,12 @@ use crate::cli::{
     confirm_destructive, ensure_prod_confirmed, print_json, prompt_available, realm_arg,
     tenant_config_for,
 };
+use crate::saml::pem::{self, KeyPair};
 use crate::saml::rotate::journal::{self, Key, StagedRecord};
 use crate::saml::rotate::ops::{self, Settlement};
-use crate::saml::rotate::pem::{self, KeyPair};
-use crate::saml::rotate::spec::{self, CompletePlan, Decision, RotationState, VersionChoice};
-use crate::saml::spec::{Location, Role};
+use crate::saml::rotate::spec::{self, CompletePlan, RotationState, VersionChoice};
+use crate::saml::spec::{Location, Role, role_descriptor};
+use crate::saml::write::{Decision, WriteFailure, consent};
 use crate::{Error, Result};
 
 #[derive(Subcommand, Debug)]
@@ -412,7 +413,7 @@ async fn init(
         println!(
             "{} ({}) is already set up: {} maps to {}",
             state.entity_id,
-            spec::role_descriptor(state.role),
+            role_descriptor(state.role),
             plan.label,
             plan.secret_id
         );
@@ -432,19 +433,19 @@ async fn init(
     };
     // Same mechanism as `stage` and `complete`, for the reason given at
     // `spec::init_ok`: completing the chain replaces the certificate.
-    let confirmed = force.operation()
-        || (prompt_available()
-            && confirm_destructive(
-                "pointing a SAML role at its own signing certificate",
-                &format!(
-                    "Replace {} with {} for {} ({})? The peer must already trust the new one.",
-                    spec::init_current(&state),
-                    spec::init_incoming(&plan),
-                    state.entity_id,
-                    spec::role_descriptor(state.role)
-                ),
-                "--force",
-            )?);
+    let confirmed = consent(force.operation(), prompt_available(), || {
+        confirm_destructive(
+            "pointing a SAML role at its own signing certificate",
+            &format!(
+                "Replace {} with {} for {} ({})? The peer must already trust the new one.",
+                spec::init_current(&state),
+                spec::init_incoming(&plan),
+                state.entity_id,
+                role_descriptor(state.role)
+            ),
+            "--force",
+        )
+    })?;
     spec::init_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
@@ -473,8 +474,13 @@ async fn init(
     .map_err(|error| Error::Config(error.to_string()))?;
     // Every step was sent, answered and verified; what follows proves the
     // chain resolves, so a failure from here on is of an accepted write.
-    let unverified = |failure: spec::WriteFailure| {
-        Error::Config(failure.message("init", "this init run", &state))
+    let unverified = |failure: WriteFailure| {
+        Error::Config(spec::failure_message(
+            &failure,
+            "init",
+            "this init run",
+            &state,
+        ))
     };
 
     // What the tenant publishes now, not what we expect it to — and the two
@@ -500,7 +506,7 @@ async fn init(
 
     let published = ops::wait_for_any_cert(&tenant, &realm, entity_id, state.role)
         .await
-        .map_err(|error| unverified(spec::WriteFailure::unverified(error)))?;
+        .map_err(|error| unverified(WriteFailure::unverified(error)))?;
     for line in spec::adoption_outcome(
         &state,
         &plan.secret_id,
@@ -508,7 +514,7 @@ async fn init(
         key.as_ref().map(|key| key.sha256.as_str()),
         spec::Adoption::Applied,
     )
-    .map_err(|error| unverified(spec::WriteFailure::unverified(error)))?
+    .map_err(|error| unverified(WriteFailure::unverified(error)))?
     {
         println!("{line}");
     }
@@ -551,20 +557,20 @@ async fn stage(
     // headless run comes from `spec::stage_ok`, which names the certificate
     // and the consequence, rather than from `confirm_destructive`'s generic
     // "pass --force".
-    let confirmed = force.operation()
-        || (prompt_available()
-            && confirm_destructive(
-                "cutting SAML signing over to a new certificate",
-                &format!(
-                    "Add certificate {} to {} and treat it as signing for {} ({}) from now? The \
-                     peer must already trust it.",
-                    plan.incoming,
-                    plan.secret_id,
-                    state.entity_id,
-                    spec::role_descriptor(state.role)
-                ),
-                "--force",
-            )?);
+    let confirmed = consent(force.operation(), prompt_available(), || {
+        confirm_destructive(
+            "cutting SAML signing over to a new certificate",
+            &format!(
+                "Add certificate {} to {} and treat it as signing for {} ({}) from now? The \
+                 peer must already trust it.",
+                plan.incoming,
+                plan.secret_id,
+                state.entity_id,
+                role_descriptor(state.role)
+            ),
+            "--force",
+        )
+    })?;
     spec::stage_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
@@ -578,12 +584,12 @@ async fn stage(
         &permit,
     )
     .await
-    .map_err(|failure| Error::Config(failure.message("stage", &adding, &state)))?;
+    .map_err(|failure| Error::Config(spec::failure_message(&failure, "stage", &adding, &state)))?;
     let version = created
         .get("version")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| {
-            spec::WriteFailure::unverified(Error::Config(format!(
+            let failure = WriteFailure::unverified(Error::Config(format!(
                 "ESV secret {} accepted the new version but its response named no version \
                  number, so this rollover cannot be recorded, and the record is the only \
                  thing that ties a certificate to a version. \
@@ -592,8 +598,8 @@ async fn stage(
                  --disable-version <n>`, naming the version holding the certificate being \
                  retired. Both halves are needed: {} names a certificate, not a version.",
                 plan.secret_id, plan.secret_id, plan.incoming, plan.incoming
-            )))
-            .message("stage", &adding, &state)
+            )));
+            spec::failure_message(&failure, "stage", &adding, &state)
         })
         .map_err(Error::Config)?
         .to_string();
@@ -601,7 +607,9 @@ async fn stage(
 
     confirm_publication(&tenant, &realm, entity_id, &state, &plan.expected)
         .await
-        .map_err(|failure| Error::Config(failure.message("stage", &adding, &state)))?;
+        .map_err(|failure| {
+            Error::Config(spec::failure_message(&failure, "stage", &adding, &state))
+        })?;
     // After the export confirms it, not before: this says what the tenant is
     // doing now, and `stage` is the moment it changes. The warning in the plan
     // lines above has scrolled past a confirmation prompt by this point, and
@@ -681,22 +689,22 @@ async fn complete(
     // is the right test and `prompting_disabled` is not: `--no-prompt` is one
     // of four reasons a prompt cannot be answered, and a pipe is the common
     // one.
-    let confirmed = force.operation()
-        || (prompt_available()
-            && confirm_destructive(
-                "closing a SAML certificate rollover",
-                &format!(
-                    "Disable version {} of {} and stop publishing the other certificate?{}",
-                    plan.disable_version,
-                    plan.secret_id,
-                    if plan.moves_signer {
-                        format!(" Treat this as a signer cutover back to {}.", plan.retain)
-                    } else {
-                        String::new()
-                    }
-                ),
-                "--force",
-            )?);
+    let confirmed = consent(force.operation(), prompt_available(), || {
+        confirm_destructive(
+            "closing a SAML certificate rollover",
+            &format!(
+                "Disable version {} of {} and stop publishing the other certificate?{}",
+                plan.disable_version,
+                plan.secret_id,
+                if plan.moves_signer {
+                    format!(" Treat this as a signer cutover back to {}.", plan.retain)
+                } else {
+                    String::new()
+                }
+            ),
+            "--force",
+        )
+    })?;
     spec::complete_ok(confirmed, &plan, &state)?;
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
 
@@ -704,8 +712,10 @@ async fn complete(
         "disabling version {} of ESV secret {}",
         plan.disable_version, plan.secret_id
     );
-    let unverified = |failure: spec::WriteFailure| {
-        Error::Config(failure.message("complete", &disabling, &state))
+    let unverified = |failure: WriteFailure| {
+        Error::Config(spec::failure_message(
+            &failure, "complete", &disabling, &state,
+        ))
     };
     ops::disable_version(&tenant, &state, &plan, ok.confirmed_prod, &permit)
         .await
@@ -718,14 +728,14 @@ async fn complete(
     let expected = std::iter::once(plan.retain.clone()).collect();
     let settled = ops::wait_for_export(&tenant, &realm, entity_id, state.role, &expected)
         .await
-        .map_err(|error| unverified(spec::WriteFailure::unverified(error)))?;
+        .map_err(|error| unverified(WriteFailure::unverified(error)))?;
     report_settlement(&settled, &state);
     if matches!(settled, Settlement::Settled) {
         journal::clear(&key_for(&state))?;
         println!(
             "rollover complete: {} ({}) publishes only {}",
             state.entity_id,
-            spec::role_descriptor(state.role),
+            role_descriptor(state.role),
             plan.retain
         );
         println!(
@@ -739,9 +749,9 @@ async fn complete(
         );
         return Ok(());
     }
-    Err(unverified(spec::WriteFailure::unverified(
-        settlement_error(&state, "complete"),
-    )))
+    Err(unverified(WriteFailure::unverified(settlement_error(
+        &state, "complete",
+    ))))
 }
 
 /// The rollover's own entry in the consumer survey.
@@ -764,7 +774,7 @@ fn complete_plan_lines(plan: &CompletePlan, state: &RotationState) -> Vec<String
         format!(
             "  {} ({}) must then publish only {}",
             state.entity_id,
-            spec::role_descriptor(state.role),
+            role_descriptor(state.role),
             plan.retain
         ),
     ];
@@ -833,22 +843,20 @@ async fn confirm_publication(
     entity_id: &str,
     state: &RotationState,
     expected: &std::collections::BTreeSet<String>,
-) -> std::result::Result<(), spec::WriteFailure> {
+) -> std::result::Result<(), WriteFailure> {
     // Only ever called after an accepted write, so every failure here is one
     // of proving it: the write landed either way.
     let settled = ops::wait_for_export(tenant, realm, entity_id, state.role, expected)
         .await
-        .map_err(spec::WriteFailure::unverified)?;
+        .map_err(WriteFailure::unverified)?;
     report_settlement(&settled, state);
     if !matches!(settled, Settlement::Settled) {
-        return Err(spec::WriteFailure::unverified(settlement_error(
-            state, "confirm",
-        )));
+        return Err(WriteFailure::unverified(settlement_error(state, "confirm")));
     }
     println!(
         "{} ({}) now publishes {}",
         state.entity_id,
-        spec::role_descriptor(state.role),
+        role_descriptor(state.role),
         expected.iter().cloned().collect::<Vec<_>>().join(", ")
     );
     Ok(())
@@ -863,7 +871,7 @@ fn report_settlement(settled: &Settlement, state: &RotationState) {
         eprintln!(
             "the write landed, but {} ({}) has not published what was expected yet",
             state.entity_id,
-            spec::role_descriptor(state.role)
+            role_descriptor(state.role)
         );
         for sha in missing {
             eprintln!("  not published: {sha}");
@@ -897,7 +905,7 @@ fn key_for(state: &RotationState) -> Key {
 fn default_description(state: &RotationState) -> String {
     format!(
         "SAML {} signing key for {} — managed by `aic saml rotate`",
-        spec::role_descriptor(state.role),
+        role_descriptor(state.role),
         state.entity_id
     )
 }

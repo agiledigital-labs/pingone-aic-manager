@@ -20,9 +20,9 @@ use crate::cli::{
 use crate::config::tenant::Tenant;
 use crate::saml::cert::ops;
 use crate::saml::cert::spec::{self, CertPlan, ImportMode, Planned};
-use crate::saml::rotate::pem;
-use crate::saml::rotate::spec::Decision;
+use crate::saml::pem;
 use crate::saml::spec::Role;
+use crate::saml::write::Decision;
 use crate::{Error, Result};
 
 #[derive(Subcommand, Debug)]
@@ -280,9 +280,7 @@ async fn execute(
     let ok = ensure_prod_confirmed(&tenant.name, yes)?;
     ops::apply(tenant, plan, ok.confirmed_prod, &permit)
         .await
-        .map_err(|failure| {
-            Error::Config(spec::failure_message(failure.status, &failure.source, plan))
-        })?;
+        .map_err(|failure| Error::Config(spec::failure_message(&failure, plan)))?;
     for line in spec::outcome_lines(plan) {
         println!("{line}");
     }

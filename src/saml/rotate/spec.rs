@@ -12,39 +12,16 @@ use std::collections::BTreeSet;
 use serde_json::{Map, Value};
 
 use crate::saml::metadata::CertRef;
+use crate::saml::pem::KeyPair;
 use crate::saml::rotate::journal::StagedRecord;
-use crate::saml::rotate::pem::KeyPair;
-use crate::saml::spec::{Location, Role};
+use crate::saml::spec::{Location, Role, SIGNING_USE, role_descriptor};
+use crate::saml::write::{Decision, MeasuredRefusal, WriteFailure, WriteStatus};
 use crate::secretmap::api::Mapping;
 use crate::{Error, Result};
 
 /// The dotted label family a `secretIdIdentifier` mints
 /// (`docs/api/15-secret-mappings.md`).
 const LABEL_PREFIX: &str = "am.applications.federation.entity.providers.saml2.";
-
-/// The `use` attribute a signing key descriptor carries.
-///
-/// This slice rotates **signing** and nothing else. `encryption` and `mtls`
-/// get their own labels off the same identifier and the procedure looks
-/// identical, but nobody has measured that an encryption rollover publishes
-/// two `KeyDescriptor`s the way a signing one does, and `mtls` may be
-/// suppressed from the metadata entirely by
-/// `clientAuthentication.excludeClientCertificate` — which would leave the
-/// verification step with nothing to read (`docs/api/06-saml.md`).
-pub const SIGNING_USE: &str = "signing";
-
-/// The metadata descriptor element a role publishes its keys under.
-///
-/// The entity JSON says `serviceProvider`; the exported XML says
-/// `SPSSODescriptor`. Both names are needed at once here — one addresses the
-/// role block being written, the other the certificates being verified — and
-/// conflating them is how a dual-role entity's two signing keys become one.
-pub fn role_descriptor(role: Role) -> &'static str {
-    match role {
-        Role::Idp => "IDPSSODescriptor",
-        Role::Sp => "SPSSODescriptor",
-    }
-}
 
 /// Where the role block keeps its secret-label pointer.
 ///
@@ -604,49 +581,6 @@ impl InitStep {
 /// because there it would be false.
 pub const NOTHING_SENT: &str = "**Nothing has been sent.**";
 
-/// What is known about a tenant write that did not succeed.
-///
-/// Three states, because "it failed" is two different claims and an operator
-/// acts on whichever one they are told. The only safe retry is from a
-/// [`Refused`](WriteStatus::Refused) write; after either of the others the
-/// tenant has to be read first, since re-sending an ESV version or a mapping
-/// that already landed is a second write, not a retry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WriteStatus {
-    /// Not applied: refused before it was sent — a recheck, the production
-    /// gate, a locked agent — or answered with one of the refusals
-    /// **measured** for that endpoint ([`MeasuredRefusal`]). A status class
-    /// alone never earns this: a `408` does not say whether a forwarded write
-    /// applied, a `409` can accompany a concurrent change, and the
-    /// authenticated client follows redirects, so the status seen need not
-    /// be the answer to the write that was sent.
-    Refused,
-    /// Sent, answered with success, and then the proof failed: the read-back
-    /// or the export that should show it could not be read, or showed
-    /// something else. **The write landed**; what it left is unverified.
-    AcceptedUnverified,
-    /// Attempted, and possibly sent, with no response this command can read
-    /// as settling it — any error status that is not a measured refusal, a
-    /// transport failure, a lost connection to the agent, or a success whose
-    /// body could not be decoded (the agent reports that last one without its
-    /// status). "Possibly": the transport mints its bearer before sending,
-    /// and a minting failure is an `Error::Api` indistinguishable from the
-    /// write's own, so this state cannot claim the request left.
-    Unknown,
-}
-
-/// A refusal measured on a live tenant for one endpoint: the status **and**
-/// the message, both required, because neither alone identifies it.
-///
-/// This is the only way a post-send error is classified as not applied, so
-/// an entry needs the evidence a `docs/api/` row needs. There are two, both
-/// in `docs/api/03-esvs.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MeasuredRefusal {
-    pub status: u16,
-    pub message: &'static str,
-}
-
 /// `PUT /environment/secrets/{id}` on an id that exists: create-only.
 pub const SECRET_ALREADY_EXISTS: MeasuredRefusal = MeasuredRefusal {
     status: 400,
@@ -659,92 +593,15 @@ pub const CANNOT_DISABLE_LATEST: MeasuredRefusal = MeasuredRefusal {
     message: "Cannot disable latest secret version",
 };
 
-/// A failed tenant write and what is known about it ([`WriteStatus`]).
-///
-/// There is deliberately no `From<Error>`: every `?` on a writer's path has
-/// to say which side of the send it is on, because a conversion that
-/// defaulted to one of them would label a read-back failure "not sent" the
-/// first time someone added a `?` after the write.
-#[derive(Debug)]
-pub struct WriteFailure {
-    pub status: WriteStatus,
-    pub source: Error,
-}
-
-impl WriteFailure {
-    /// A failure before anything was sent: a read, a recheck, a refusal.
-    pub fn before_send(source: Error) -> Self {
-        Self {
-            status: WriteStatus::Refused,
-            source,
-        }
-    }
-
-    /// The write call itself failed. **Unknown by default**: only a refusal
-    /// raised before the request left — the production gate, a locked agent
-    /// — or one of `measured`, this endpoint's measured refusals, proves it
-    /// was not applied. Everything else, whatever its status, is unknown.
-    pub fn from_send(source: Error, measured: &[MeasuredRefusal]) -> Self {
-        let status = match &source {
-            Error::ProdConfirmRequired | Error::AuthRequired => WriteStatus::Refused,
-            Error::Api { status, body }
-                if measured
-                    .iter()
-                    .any(|refusal| refusal.status == *status && body.contains(refusal.message)) =>
-            {
-                WriteStatus::Refused
-            }
-            _ => WriteStatus::Unknown,
-        };
-        Self { status, source }
-    }
-
-    /// The write was accepted; proving what it left failed.
-    pub fn unverified(source: Error) -> Self {
-        Self {
-            status: WriteStatus::AcceptedUnverified,
-            source,
-        }
-    }
-
-    /// The operator-facing message for `verb`'s failed write `what`: the
-    /// source, preceded — unless the write was refused — by the sentence
-    /// that says it may have landed and to read the tenant before retrying.
-    ///
-    /// Shared by `init`, `stage` and `complete`, so the three verbs describe
-    /// the same state in the same words.
-    pub fn message(&self, verb: &str, what: &str, state: &RotationState) -> String {
-        let source = self.source.to_string();
-        match self.status {
-            WriteStatus::Refused => source,
-            WriteStatus::AcceptedUnverified | WriteStatus::Unknown => format!(
-                "{} {}\n{source}",
-                self.status.sentence(what),
-                read_before_retry(verb, state)
-            ),
-        }
-    }
-}
-
-impl WriteStatus {
-    /// What this status says about `what`, for the two states that are not a
-    /// refusal. A refusal's own message already says what it says.
-    pub fn sentence(self, what: &str) -> String {
-        match self {
-            Self::Refused => format!("{what} was not applied."),
-            Self::AcceptedUnverified => format!(
-                "{what} was **accepted by the tenant**, and proving what it left then failed. \
-                 **The write landed; this is not a no-op.**"
-            ),
-            Self::Unknown => format!(
-                "{what} was attempted and may have been sent, and **whether it was applied is \
-                 unknown**: what came back — an \
-                 error status that is not a refusal measured for this endpoint, a lost \
-                 connection, or a response that could not be read — does not establish \
-                 either way. **Do not assume it did not land.**"
-            ),
-        }
-    }
+/// A failed rotation write's message: [`WriteFailure::message`] with the
+/// rotation's own read-before-retry remedy.
+pub fn failure_message(
+    failure: &WriteFailure,
+    verb: &str,
+    what: &str,
+    state: &RotationState,
+) -> String {
+    failure.message(what, &read_before_retry(verb, state))
 }
 
 /// The remedy for a write that may have landed: read, then decide.
@@ -755,10 +612,7 @@ fn read_before_retry(verb: &str, state: &RotationState) -> String {
          that state rather than from this run's.",
         state.entity_id,
         state.realm,
-        match state.role {
-            Role::Idp => "idp",
-            Role::Sp => "sp",
-        }
+        state.role.cli_word()
     )
 }
 
@@ -1754,13 +1608,6 @@ pub struct CompletePermit {
 #[derive(Debug)]
 pub struct InitPermit {
     _minted_by_authorize_init: (),
-}
-
-#[derive(Debug)]
-pub enum Decision<P> {
-    /// Print the plan and stop. Carries no permit.
-    Preview,
-    Send(P),
 }
 
 /// What `stage` would do, worked out before anything is sent.
@@ -4916,7 +4763,8 @@ mod tests {
     /// agent reports it without its status.
     #[test]
     fn an_unknown_outcome_does_not_claim_nothing_answered() {
-        let text = WriteFailure::from_send(Error::AgentProtocolMismatch, &[]).message(
+        let text = failure_message(
+            &WriteFailure::from_send(Error::AgentProtocolMismatch, &[]),
             "stage",
             "the write",
             &state(),
@@ -4946,7 +4794,7 @@ mod tests {
             &[CANNOT_DISABLE_LATEST],
         );
         assert_eq!(refused.status, WriteStatus::Refused);
-        let text = refused.message("complete", "disabling version 1", &state);
+        let text = failure_message(&refused, "complete", "disabling version 1", &state);
         assert!(!text.contains("read the tenant"), "{text}");
         assert!(
             !text.to_lowercase().contains("read the tenant before"),
@@ -4964,7 +4812,7 @@ mod tests {
             ),
         ] {
             for verb in ["stage", "complete"] {
-                let text = failure.message(verb, "the write", &state);
+                let text = failure_message(&failure, verb, "the write", &state);
                 assert!(text.contains(marker), "{text}");
                 assert!(text.contains("Read the tenant before retrying"), "{text}");
                 assert!(

@@ -46,7 +46,7 @@ impl std::fmt::Display for Location {
 ///
 /// Distinct from [`metadata::Role`], which names the XML descriptor elements.
 /// This one is the short CLI word and the wire string AM puts in `roles`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum Role {
     Idp,
@@ -60,6 +60,38 @@ impl Role {
             Self::Idp => "identityProvider",
             Self::Sp => "serviceProvider",
         }
+    }
+
+    /// The word `--role` takes, and the one output names a role by.
+    pub fn cli_word(self) -> &'static str {
+        match self {
+            Self::Idp => "idp",
+            Self::Sp => "sp",
+        }
+    }
+}
+
+/// The `use` attribute a signing key descriptor carries.
+///
+/// `rotate` and `cert` both change **signing** keys and nothing else.
+/// `encryption` and `mtls` get their own labels off the same identifier and a
+/// rotation of them looks identical, but nobody has measured that an
+/// encryption rollover publishes two `KeyDescriptor`s the way a signing one
+/// does, and `mtls` may be suppressed from the metadata entirely by
+/// `clientAuthentication.excludeClientCertificate` — which would leave the
+/// verification step with nothing to read (`docs/api/06-saml.md`).
+pub const SIGNING_USE: &str = "signing";
+
+/// The metadata descriptor element a role publishes its keys under.
+///
+/// The entity JSON says `serviceProvider`; the exported XML says
+/// `SPSSODescriptor`. Both names are needed at once here — one addresses the
+/// role block being written, the other the certificates being verified — and
+/// conflating them is how a dual-role entity's two signing keys become one.
+pub fn role_descriptor(role: Role) -> &'static str {
+    match role {
+        Role::Idp => "IDPSSODescriptor",
+        Role::Sp => "SPSSODescriptor",
     }
 }
 
