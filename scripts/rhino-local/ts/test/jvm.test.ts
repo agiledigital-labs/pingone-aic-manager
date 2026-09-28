@@ -180,6 +180,39 @@ describe("ensureRunnerClasses", () => {
     expect(statSync(marker).mtimeMs).toBe(modified);
   });
 
+  it("recompiles when a compiled class is deleted", async () => {
+    const { cache, sources } = copySources();
+    const first = await ensureRunnerClasses(jar, { cache, sources });
+    const classFile = readdirSync(first).find((file) => file.endsWith(".class"));
+    expect(classFile).toBeDefined();
+    if (!classFile) throw new Error("expected a compiled class");
+    rmSync(join(first, classFile));
+    const second = await ensureRunnerClasses(jar, { cache, sources });
+    expect(second).toBe(first);
+    expect(readdirSync(second)).toContain(classFile);
+  });
+
+  it("recompiles when a compiled class is altered", async () => {
+    const { cache, sources } = copySources();
+    const first = await ensureRunnerClasses(jar, { cache, sources });
+    const classFile = readdirSync(first).find((file) => file.endsWith(".class"));
+    expect(classFile).toBeDefined();
+    if (!classFile) throw new Error("expected a compiled class");
+    writeFileSync(join(first, classFile), "corrupt class payload");
+    const second = await ensureRunnerClasses(jar, { cache, sources });
+    expect(second).toBe(first);
+    expect(readFileSync(join(second, classFile))).not.toEqual(Buffer.from("corrupt class payload"));
+  });
+
+  it("rejects an extra stray class file", async () => {
+    const { cache, sources } = copySources();
+    const first = await ensureRunnerClasses(jar, { cache, sources });
+    writeFileSync(join(first, "Stray.class"), "stray");
+    const second = await ensureRunnerClasses(jar, { cache, sources });
+    expect(second).toBe(first);
+    expect(readdirSync(second)).not.toContain("Stray.class");
+  });
+
   it("uses a different directory when a source changes", async () => {
     const { cache, sources } = copySources();
     const first = await ensureRunnerClasses(jar, { cache, sources });

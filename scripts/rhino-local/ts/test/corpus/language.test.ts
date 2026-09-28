@@ -16,6 +16,20 @@ interface CorpusHeader {
   result: string;
 }
 
+export function validateHeader(header: CorpusHeader, file: string): void {
+  if (header.verdict !== "check") {
+    throw new Error(`${file}: unknown verdict ${JSON.stringify(header.verdict)}`);
+  }
+  if (
+    header.compiled === "" &&
+    header.evaluated === "" &&
+    header.exceptionContains === "" &&
+    header.result === ""
+  ) {
+    throw new Error(`${file}: verdict: check requires at least one expectation`);
+  }
+}
+
 function parseHeader(path: string): CorpusHeader {
   const meta: CorpusHeader = {
     row: basename(path, ".js"),
@@ -106,6 +120,7 @@ describe("rhino-local language corpus (VERSION_DEFAULT)", () => {
 
   for (const file of files) {
     const header = parseHeader(file);
+    validateHeader(header, file);
     it(header.row, async () => {
       const response = await runner.eval({
         source: readFileSync(file, "utf8"),
@@ -119,4 +134,21 @@ describe("rhino-local language corpus (VERSION_DEFAULT)", () => {
       }
     });
   }
+});
+
+describe("language corpus header validation", () => {
+  const base: CorpusHeader = {
+    row: "inline",
+    verdict: "check",
+    compiled: "",
+    evaluated: "",
+    exceptionContains: "",
+    result: "",
+  };
+
+  it("requires an expectation and accepts known verdicts", () => {
+    expect(() => validateHeader(base, "inline.js")).toThrow("inline.js");
+    expect(() => validateHeader({ ...base, result: "undefined" }, "inline.js")).not.toThrow();
+    expect(() => validateHeader({ ...base, verdict: "ignore" }, "inline.js")).toThrow("unknown verdict");
+  });
 });
