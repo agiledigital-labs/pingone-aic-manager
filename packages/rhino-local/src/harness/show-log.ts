@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { chmod, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { configuredTenantProvider, type TenantProvider } from "../aic/provider.ts";
 import { aicCliProvider, defaultAicIo } from "../aic/tenant.ts";
@@ -224,6 +224,7 @@ export function createDefaultIo(
       // request headers. The directory is gitignored, but the file should not
       // be world-readable either.
       await writeFile(path, contents, { encoding: "utf8", mode: 0o600 });
+      await chmod(path, 0o600);
       return path;
     },
   };

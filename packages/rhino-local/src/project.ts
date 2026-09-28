@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 /** Overrides {@link projectRoot}. */
@@ -67,6 +67,18 @@ export function ensureStateSubdir(root: string, ...parts: string[]): string {
         throw error;
       }
     }
+  }
+  // An existing file is only trusted if it still ignores everything: one
+  // edited down, or with a `!` re-include after the `*`, would let the next
+  // profile or log dump be committed. The last matching rule wins, so a
+  // trailing `*` restores the guarantee whatever came before it.
+  const text = readFileSync(ignore, "utf8");
+  const rules = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+  if (rules.at(-1) !== "*") {
+    appendFileSync(ignore, `${text === "" || text.endsWith("\n") ? "" : "\n"}*\n`);
   }
   const dir = join(root, ...parts);
   mkdirSync(dir, { recursive: true, mode: 0o700 });

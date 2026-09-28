@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ensureStateSubdir, stateDir } from "../project.ts";
 import type { EnvProfile } from "./types.ts";
@@ -26,6 +26,8 @@ export function writeProfile(profile: EnvProfile, root = stateDir()): string {
     encoding: "utf8",
     mode: 0o600,
   });
+  // `mode` applies only when the write creates the file.
+  chmodSync(path, 0o600);
   return path;
 }
 

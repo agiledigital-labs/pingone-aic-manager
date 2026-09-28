@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -61,6 +61,20 @@ describe("failure JSONL", () => {
     await appendFailure(record, path);
     expect(await readFailures(path)).toEqual([record]);
     expect(await readFile(path, "utf8")).toBe(`${JSON.stringify(record)}\n`);
+  });
+
+  // The dump names tenant transactions; the state directory is 0700 only
+  // when the harness created it.
+  it("keeps the dump 0600, including one that already existed looser", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rl-fail-"));
+    const fresh = join(dir, "fresh.jsonl");
+    await appendFailure(sample("one"), fresh);
+    expect((await stat(fresh)).mode & 0o777).toBe(0o600);
+    const loose = join(dir, "loose.jsonl");
+    await writeFile(loose, "");
+    await chmod(loose, 0o644);
+    await appendFailure(sample("two"), loose);
+    expect((await stat(loose)).mode & 0o777).toBe(0o600);
   });
 
   it("two concurrent writers both survive", async () => {

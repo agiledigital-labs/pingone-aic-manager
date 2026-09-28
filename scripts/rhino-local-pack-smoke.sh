@@ -55,8 +55,9 @@ jar="$(cd "$PKG" && node bin/fetch-jar.ts)"
 
 consumer="$WORK/consumer"
 mkdir -p "$consumer/test"
-# A .git makes the consumer its own project root, as a real repo would be.
-mkdir "$consumer/.git"
+# A repository of its own, as a real consumer is: it makes the consumer the
+# project root, and lets the end ask git whether the state would be committed.
+git init -q "$consumer"
 cat >"$consumer/package.json" <<JSON
 { "name": "rhino-local-consumer", "private": true, "type": "module" }
 JSON
@@ -148,6 +149,22 @@ cache="$WORK/cache"
 ) || fail "the consumer's tests failed"
 
 [[ ! -e "$cache/classes" ]] || fail "the runner compiled classes instead of using the shipped ones"
+# The suite above runs the local lane, which writes no state. So write a
+# failure record through the installed module itself, from a subdirectory, and
+# check it lands in the consumer's own state directory and ignores itself.
+(
+  cd "$consumer/test"
+  node --input-type=module -e '
+    const { appendFailure } = await import(process.argv[1]);
+    await appendFailure({ testName: "t", stem: "s", passIds: ["p"], file: "f",
+      suite: "x", timestamp: "2026-01-01T00:00:00.000Z", tenant: "tenant" });
+  ' "$installed/dist/src/harness/failures.js"
+)
+state="$consumer/.rhino-local"
+[[ -f "$state/failures/failures.jsonl" ]] || fail "no failure record in $state"
+[[ "$(cat "$state/.gitignore")" == "*" ]] || fail "$state does not ignore itself"
+[[ "$(stat -c %a "$state/failures/failures.jsonl")" == 600 ]] || fail "the failure record is not 0600"
+[[ -z "$(git -C "$consumer" status --porcelain -- .rhino-local)" ]] || fail "git would commit $state"
 [[ ! -e "$installed/.rhino-local" ]] || fail "state was written into node_modules"
 
 fetched="$(cd "$consumer" && RHINO_LOCAL_CACHE="$cache" RHINO_LOCAL_RHINO_JAR="$jar" npx rhino-local-fetch-jar)"
