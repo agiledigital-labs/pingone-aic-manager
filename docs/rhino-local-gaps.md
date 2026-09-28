@@ -14,11 +14,13 @@ Re-measured 2026-09-28 against the sandbox (`run-probes.sh`) and the host-JVM
 runner. 47 cases, and every one is green — by asserting what is true, not by
 matching the overlay:
 
-| Count | Status                                                                   |
-| ----- | ------------------------------------------------------------------------ |
-| 27    | pass the live payload exactly                                            |
-| 11    | **known gap** — live payload committed, the differing keys pinned        |
-| 9     | parse errors, blocked on `(parse)` with the JVM's exact message          |
+| Count | Status                                                                                             |
+| ----- | -------------------------------------------------------------------------------------------------- |
+| 27    | pass the live payload exactly                                                                      |
+| 8     | **known gap** — live values committed, the differing keys pinned                                   |
+| 2     | **known gap**, request cases — live request data not committed (it names the tenant); local pinned |
+| 1     | **unmeasured** — `identity-enum-attrs`: every live count was `err`; local pinned                   |
+| 9     | parse errors, blocked on `(parse)` with the JVM's exact message                                    |
 
 A case runs its **origin fixture**, the file the tenant runs, not a copy. The
 copies had drifted, and a two-line header shifted every error line off AIC's.
@@ -29,7 +31,10 @@ at placeholder records with a `Rewrite` matched on the fixture's structure
 identifier is repeated in `cases/real/index.ts`.
 
 A `gap` entry (`cases/real/load.ts`, `KnownGap`) names the payload keys that
-differ. Every other key must equal the committed live payload. Each differing
+differ. The local payload's keys must be exactly the live ones plus those, and
+every other key must equal the committed live payload. Outside the payload the
+case is judged like any other — outcome, state, every callback, openidm, http
+and logs — so a gap entry excuses one set of values, not the run. Each differing
 key's local value is snapshotted (`test/corpus/__snapshots__/`), and where the
 live value is committed too, local must still differ from it — so closing a gap
 fails the test and asks for the entry to be dropped. Do not tune a live payload

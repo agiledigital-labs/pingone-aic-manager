@@ -1,13 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCase } from "../../src/bindings/index.ts";
+import { judge } from "../../src/case/index.ts";
+import type { CallbackEffect } from "../../src/case/types.ts";
 import type { RunCaseOptions } from "../../src/bindings/run.ts";
 import { RhinoRunner } from "../../src/runner.ts";
-import {
-  blockedCases,
-  gapCases,
-  realCases,
-  runnableCases,
-} from "../../cases/real/index.ts";
+import { blockedCases, gapCases, realCases, runnableCases } from "../../cases/real/index.ts";
 import { PROBE_SOURCE_NAME, type RealEntry } from "../../cases/real/load.ts";
 
 function runOptions(entry: RealEntry, sourceName: string): RunCaseOptions {
@@ -67,12 +64,32 @@ describe("real scripted-decision corpus", () => {
         const result = await runCase(runner, entry.kase, runOptions(entry, PROBE_SOURCE_NAME));
         const local = emitted(result.effects.callbacks);
         const live = emitted(entry.kase.expect.callbacks ?? []);
+        // The payload's keys are exactly AIC's plus the declared gap — an
+        // extra local key, or a declared key the script never emitted, fails.
+        expect(Object.keys(local).sort(), `${entry.kase.name} payload keys`).toEqual(
+          [...new Set([...Object.keys(live), ...gap.differs])].sort()
+        );
         for (const key of Object.keys(live)) {
           if (gap.differs.includes(key)) {
             continue;
           }
           expect(local[key], `${entry.kase.name}.${key} matches AIC`).toEqual(live[key]);
         }
+        // Everything outside the payload — outcome, state, every other
+        // callback, openidm, http, logs — is judged as a passing case would
+        // be, with only the payload's own value taken from the local run.
+        const verdict = judge(
+          {
+            ...entry.kase,
+            expect: {
+              ...entry.kase.expect,
+              callbacks: withPayload(entry.kase.expect.callbacks ?? [], result.effects.callbacks),
+            },
+          },
+          result.effects
+        );
+        expect(verdict.summary, `${entry.kase.name} outside the gap`).toBe("");
+        expect(verdict.pass).toBe(true);
         for (const key of gap.differs) {
           if (key in live) {
             // The live value is committed: the gap must still be a gap.
@@ -105,12 +122,29 @@ describe("real scripted-decision corpus", () => {
 });
 
 /** The payload of the HiddenValueCallback every probe fixture emits. */
-function emitted(callbacks: ReadonlyArray<{ type: string; value?: unknown }>): Record<string, unknown> {
+function emitted(
+  callbacks: ReadonlyArray<{ type: string; value?: unknown }>
+): Record<string, unknown> {
   const hidden = callbacks.find((callback) => callback.type === "HiddenValueCallback");
   if (typeof hidden?.value !== "string") {
     throw new Error(`no HiddenValueCallback payload in ${JSON.stringify(callbacks)}`);
   }
   return JSON.parse(hidden.value) as Record<string, unknown>;
+}
+
+/** `expected` with its HiddenValueCallback's value replaced by the one in `actual`. */
+function withPayload(
+  expected: readonly CallbackEffect[],
+  actual: readonly CallbackEffect[]
+): CallbackEffect[] {
+  const payload = actual.find((callback) => callback.type === "HiddenValueCallback");
+  const value = payload?.value;
+  if (value === undefined) {
+    throw new Error("the local run emitted no HiddenValueCallback");
+  }
+  return expected.map((callback) =>
+    callback.type === "HiddenValueCallback" ? { ...callback, value } : callback
+  );
 }
 
 /** `org.mozilla.javascript.Undefined@421faab1` differs on every run, locally and live. */
