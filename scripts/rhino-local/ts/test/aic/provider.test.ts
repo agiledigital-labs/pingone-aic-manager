@@ -137,6 +137,12 @@ describe("callback and URL handling", () => {
     expect(() =>
       tokenCallbackProvider({ baseUrl: `${baseUrl}/path`, getToken: () => "x" })
     ).toThrow(/no path/);
+    expect(() =>
+      tokenCallbackProvider({ baseUrl: "http://tenant.example.com", getToken: () => "x" })
+    ).toThrow(/must be https/);
+    expect(() =>
+      serviceAccountProvider({ baseUrl: "http://tenant.example.com", serviceAccountId: id, jwk })
+    ).toThrow(/must be https/);
   });
 });
 
@@ -149,6 +155,14 @@ describe("providerFromEnv", () => {
   });
   it("returns undefined without URL and validates required configuration", () => {
     expect(providerFromEnv({})).toBeUndefined();
+    // Without the URL, any other provider variable is a partial configuration,
+    // not a reason to fall back to `aic` and its current context.
+    expect(() => providerFromEnv({ [TENANT_ENV.serviceAccountId]: id })).toThrow(
+      /RHINO_LOCAL_SA_ID is set but RHINO_LOCAL_TENANT_URL is not/
+    );
+    expect(() =>
+      providerFromEnv({ [TENANT_ENV.logKeyId]: "k", [TENANT_ENV.logKeySecret]: "s" })
+    ).toThrow(/are set but RHINO_LOCAL_TENANT_URL is not/);
     expect(() => providerFromEnv({ [TENANT_ENV.url]: baseUrl })).toThrow(/SA_ID/);
     expect(() => providerFromEnv(env({ [TENANT_ENV.jwkFile]: "/tmp/key" }))).toThrow(/exactly one/);
     expect(() =>
@@ -240,6 +254,46 @@ describe("logKeysReader", () => {
       }
     );
     expect(await partial.transaction("tx", { waitMs: 1100 })).toEqual([{ n: 3 }]);
+  });
+
+  it("spaces concurrent reads on one reader instead of waking them together", async () => {
+    let clock = 0;
+    const times: number[] = [];
+    const reader = logKeysReader(
+      baseUrl,
+      { id: "i", secret: "s" },
+      async () => {
+        times.push(clock);
+        return response(
+          200,
+          JSON.stringify({ result: [{ payload: { eventName: "AM-ACCESS-OUTCOME" } }] })
+        );
+      },
+      {
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      }
+    );
+    await Promise.all(["a", "b", "c"].map((tx) => reader.transaction(tx)));
+    expect(times).toEqual([0, 1050, 2100]);
+  });
+
+  it("shares one spacer between default readers, as the rate limit is per tenant", async () => {
+    const times: number[] = [];
+    const send: HttpSend = async () => {
+      times.push(Date.now());
+      return response(
+        200,
+        JSON.stringify({ result: [{ payload: { eventName: "AM-ACCESS-OUTCOME" } }] })
+      );
+    };
+    const first = logKeysReader(baseUrl, { id: "i", secret: "s" }, send);
+    const second = logKeysReader(baseUrl, { id: "i", secret: "s" }, send);
+    await first.transaction("a");
+    await second.transaction("b");
+    expect(times[1]! - times[0]!).toBeGreaterThanOrEqual(1_000);
   });
 
   it("honours Retry-After, spaces requests, and rejects other failures", async () => {

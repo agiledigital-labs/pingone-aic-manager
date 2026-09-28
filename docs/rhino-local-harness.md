@@ -100,7 +100,7 @@ id, `aud` = `<base>/am/oauth2/access_token`, a 180-second `exp` and a fresh
 `jti`, posted as `client_id=service-account`. The token is cached until 60
 seconds before its `expires_in` runs out. Log keys read `/monitoring/logs`
 directly, as `aic logs tx` does, with the same prefix-matching `transactionId`
-query, the same 1.05-second request spacing and the same `Retry-After` backoff
+query, the same process-wide 1.05-second request spacing and the same `Retry-After` backoff
 (`docs/api/08-logs.md`).
 
 The environment form is:
@@ -115,7 +115,10 @@ RHINO_LOCAL_TENANT_NAME=...       # optional; default is the hostname
 ```
 
 A partial configuration is an error rather than a fallback to `aic`, so a typo
-cannot quietly send the run to a different tenant. A run pinned to a tenant
+cannot quietly send the run to a different tenant. That includes any of these
+variables set without `RHINO_LOCAL_TENANT_URL`. Tenant URLs must be `https`,
+because the assertion, every bearer and the log keys go to that origin. Log
+reads share one request spacer per process, whichever provider made them. A run pinned to a tenant
 (`aic: { tenant }`) refuses a provider that serves another one, and so does
 `show-log`.
 

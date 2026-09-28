@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
-import { configuredTenantProvider } from "../aic/provider.ts";
+import { configuredTenantProvider, type TenantProvider } from "../aic/provider.ts";
 import { aicCliProvider, defaultAicIo } from "../aic/tenant.ts";
 import { failuresDir, latestLogsPath, repoRoot } from "../paths.ts";
 import {
@@ -167,6 +167,7 @@ export function createDefaultIo(
 ): ShowLogIo {
   const env = options.env ?? process.env;
   const project = options.project ?? repoRoot;
+  const providers = new Map<string, TenantProvider>();
   return {
     env,
     readDump: () => readFailures(),
@@ -194,9 +195,15 @@ export function createDefaultIo(
       });
     },
     async readTransaction(tenant, id) {
-      const provider =
-        configuredTenantProvider(env) ??
-        aicCliProvider(defaultAicIo(project), { tenant, project });
+      // One provider per tenant for the whole session, so an `aic` context is
+      // listed once rather than once per selected transaction.
+      let provider = providers.get(tenant);
+      if (provider === undefined) {
+        provider =
+          configuredTenantProvider(env) ??
+          aicCliProvider(defaultAicIo(project), { tenant, project });
+        providers.set(tenant, provider);
+      }
       const { name } = await provider.describe();
       if (name !== tenant) {
         throw new Error(
