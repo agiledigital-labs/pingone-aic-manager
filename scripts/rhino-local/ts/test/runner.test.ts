@@ -206,10 +206,15 @@ describe.runIf(process.env.RHINO_LOCAL_JVM === "both")("RhinoRunner both lane", 
     ).rejects.toBeInstanceOf(LaneDivergenceError);
   });
 
-  // CI pins the image's exact build (Temurin-25.0.4+7); nixpkgs ships
-  // 25.0.4.1+1, so on a dev box the two legitimately differ here.
+  // CI pins the image's exact build (Temurin-25.0.4+7), so there the premise
+  // is asserted, not assumed. A dev box's nixpkgs JDK is another patch
+  // release and legitimately differs, so it skips.
   it("agrees on the Java build when the host runs the image's build", async (ctx) => {
-    if (runner.environment.javaVendorVersion !== "Temurin-25.0.4+7") ctx.skip();
+    if (process.env.CI) {
+      expect(runner.environment.javaVendorVersion).toBe("Temurin-25.0.4+7");
+    } else if (runner.environment.javaVendorVersion !== "Temurin-25.0.4+7") {
+      ctx.skip();
+    }
     const response = await runner.eval({
       source: "String(java.lang.Runtime.version())",
       sourceName: "both-lanes-runtime-version.js",
