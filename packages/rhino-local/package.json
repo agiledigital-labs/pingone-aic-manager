@@ -1,10 +1,18 @@
 {
-  "name": "rhino-local-ts",
+  "name": "@agiledigital/pingone-aic-script-tester",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Local Rhino harness: mock-surface generator and typed client for the long-lived JVM runner.",
   "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agiledigital-labs/pingone-aic-manager.git",
+    "directory": "packages/rhino-local"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/src/harness/index.d.ts",
@@ -45,6 +53,8 @@
     "dist/",
     "generated/",
     "java/*.java",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
     "src/bindings/rhino/runtime.cjs"
   ],
   "engines": {
