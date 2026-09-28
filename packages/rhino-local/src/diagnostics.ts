@@ -1,4 +1,4 @@
-/** Failure records and log retrieval: what `rhino-local-show-log` is made of. */
+/** Failure records and log retrieval: what `aic-script-tester-show-log` is made of. */
 export { readFailures, sortNewestFirst } from "./harness/failures.ts";
 export type { FailureRecord } from "./harness/failures.ts";
 export { createDefaultIo, runShowLog } from "./harness/show-log.ts";

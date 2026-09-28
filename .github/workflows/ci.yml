@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The script-tester publish workflow runs this whole file as its gate, so a
+  # package is only ever published from a commit every CI job passed on.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}

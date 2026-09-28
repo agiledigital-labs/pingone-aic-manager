@@ -37,7 +37,7 @@ npm install --save-dev @agiledigital/pingone-aic-script-tester vitest zod
 
 The first run downloads the Rhino jar from Maven Central and checks it by
 SHA-256. On a machine without access, point `RHINO_LOCAL_RHINO_JAR` at a copy
-instead. `npx rhino-local-fetch-jar` fills the cache ahead of time.
+instead. `npx aic-script-tester-fetch-jar` fills the cache ahead of time.
 
 A suite runs on the local lane by default:
 
@@ -85,7 +85,7 @@ setTenantProvider(
     baseUrl: "https://tenant.example.com",
     // Called again with reason "rejected" after a 401; don't return the same token.
     getToken: async ({ reason }) => fetchBearerSomehow(reason),
-    // Optional, and needed only for rhino-local-show-log.
+    // Optional, and needed only for aic-script-tester-show-log.
     logKeys: { id: process.env.LOG_KEY_ID!, secret: process.env.LOG_KEY_SECRET! },
   })
 );
@@ -102,9 +102,9 @@ overrides the directory.
 default export is a `TenantProvider`. It exists because a bin runs in its own
 process, where the Vitest registration does not reach.
 
-- `rhino-local-pull-profile [--tenant <name>]` writes
+- `aic-script-tester-pull-profile [--tenant <name>]` writes
   `.rhino-local/profiles/<tenant>.json`. It prints only counts.
-- `rhino-local-show-log [--stdout]` fetches the logs of recorded failures. It
+- `aic-script-tester-show-log [--stdout]` fetches the logs of recorded failures. It
   writes them to `.rhino-local/failures/latest-logs.json`, and opens that in
   `$LOGS_EDITOR` or `$EDITOR` if one is set. `--stdout` prints them instead;
   don't use it in CI.
