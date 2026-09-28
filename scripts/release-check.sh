@@ -369,13 +369,14 @@ gate "typescript project type-check" \
 
 gate "rhino-local typecheck + lint" \
   "the rhino-local harness does not type-check or lint clean" \
-  bash -c 'cd scripts/rhino-local/ts &&
-           npm ci --no-audit --no-fund &&
-           npm run typecheck && npm run lint && npm run lint:am'
+  bash -c 'npm ci --no-audit --no-fund &&
+           npm -w packages/rhino-local run typecheck &&
+           npm -w packages/rhino-local run lint &&
+           npm -w packages/rhino-local run lint:am'
 
 gate "rhino-local tests (host vs AM image)" \
   "the rhino-local harness failed, or the host and AM image JVMs disagreed" \
-  bash -c 'cd scripts/rhino-local/ts && RHINO_LOCAL_JVM=both npm test'
+  bash -c 'RHINO_LOCAL_JVM=both npm -w packages/rhino-local test'
 
 # --- budgets -----------------------------------------------------------------
 

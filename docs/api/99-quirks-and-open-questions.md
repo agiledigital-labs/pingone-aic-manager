@@ -1443,7 +1443,7 @@ The two findings that change how you write a script:
   dangerous one for a local test harness: the idiom passes against any
   hand-rolled plain-object mock and fails only on the tenant, which is exactly
   the failure shape a two-lane harness cannot see by agreeing with itself.
-  `scripts/rhino-local/`'s mock therefore builds the map with a null prototype
+  `packages/rhino-local/`'s mock therefore builds the map with a null prototype
   and throws from `keySet()`.
 
 Also measured: `get()` of an absent key returns `null` (not `undefined`);
@@ -1471,7 +1471,7 @@ This is the sharp edge for anything simulating a suspend locally. Carrying
 transient state across the round trip is the plausible guess, it is wrong, and
 it is invisible: a script that stashes a secret in transient state before
 asking the user a question goes green in the mock and loses the secret on the
-tenant. `scripts/rhino-local/ts/src/harness/step.ts` drops it, and the
+tenant. `packages/rhino-local/src/harness/step.ts` drops it, and the
 discriminating test fails if that is changed.
 
 The same run pinned two smaller things. **`resumedFromSuspend` is `false` on a

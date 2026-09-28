@@ -1,0 +1,5 @@
+{
+  "name": "pingone-aic-manager",
+  "private": true,
+  "workspaces": ["packages/rhino-local"]
+}

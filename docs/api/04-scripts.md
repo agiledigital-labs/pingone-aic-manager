@@ -653,7 +653,7 @@ A script's `description` comes back from `GET` byte-identical to what was
 trailing whitespace, which is **preserved, not trimmed**; and the empty string.
 
 This makes `description` usable as an ownership marker that survives a
-write/read-back comparison — which is what `scripts/rhino-local/` needs it for.
+write/read-back comparison — which is what `packages/rhino-local/` needs it for.
 
 ## Verified against
 

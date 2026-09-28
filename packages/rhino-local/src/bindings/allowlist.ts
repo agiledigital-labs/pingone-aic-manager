@@ -30,7 +30,7 @@ let cached: string[] | undefined;
  * boundary, rather than a speculative widening.
  *
  * STATUS: inferred from live-recorded rows, NOT directly measured on a decision
- * node. `scripts/rhino-local/ts` has a probe ready; measure and then either
+ * node. `packages/rhino-local` has a probe ready; measure and then either
  * fold these into the descriptor's story or drop them.
  */
 export const OBSERVED_BASE: readonly string[] = [

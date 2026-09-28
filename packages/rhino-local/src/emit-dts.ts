@@ -4,7 +4,7 @@ import type { ContextsDocument, Element, MethodElement } from "./schema.ts";
 
 const HEADER = `\
 // GENERATED from docs/api/bindings/scripted-decision-next.json — do not edit.
-// Re-run: npm --prefix scripts/rhino-local/ts run generate
+// Re-run: npm -w packages/rhino-local run generate
 //
 // Case-authoring types for the scripted-decision mock surface. javaScriptType
 // values are mapped as-is (object → object, array → unknown[]); they do not

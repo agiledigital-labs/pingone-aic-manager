@@ -3,8 +3,8 @@
 What happens when the local harness is pointed at the scripted-decision scripts
 this repo actually has, instead of the three toy cases.
 
-Cases live under `scripts/rhino-local/ts/cases/real/`. Overlay:
-`scripts/rhino-local/ts/src/bindings/rhino/runtime.cjs`. Measured 2026-09-12
+Cases live under `packages/rhino-local/cases/real/`. Overlay:
+`packages/rhino-local/src/bindings/rhino/runtime.cjs`. Measured 2026-09-12
 against the JVM runner (`VERSION_DEFAULT` + `ScriptContextScope`) after
 `callbacks.isEmpty`, next-gen `require()`, and legacy `Action.send`.
 
@@ -155,7 +155,7 @@ actually assert.
 
 ## What was converted
 
-47 cases in `scripts/rhino-local/ts/cases/real/index.ts`, each running its
+47 cases in `packages/rhino-local/cases/real/index.ts`, each running its
 origin fixture under `scripts/rhino-script-tester/`:
 
 - 45 next-gen (43 `fixtures/*.script.js` + 2 `scripts/*.script.js`)
