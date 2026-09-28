@@ -20,8 +20,7 @@ closed both; they are no longer a fidelity boundary.
 
 This file does **not** claim a live tenant probe. The AIC column is copied from
 the matrix (runtime-verified 2026-06-03 through 2026-07-30 via
-`scripts/rhino-script-tester/`). Local numbers come from
-`scripts/rhino-local/run-corpus.sh` against Rhino 1.7.14.1 extracted from
+`scripts/rhino-script-tester/`). Historical local measurements in this document were taken in the AM image against Rhino 1.7.14.1 from
 `us-docker.pkg.dev/forgeops-public/images/am:2026.3.1-2053`
 (`@sha256:358d7e1e13b27619b742a759fd5a85d4fcc57cc75811027b9f3c0019a0bd9be3`).
 That image is AM 8.1.1. AIC self-reports `9.0.0-SNAPSHOT`. Where the image
@@ -29,22 +28,22 @@ bytecode and AIC's observed JS disagree, AIC wins.
 
 ## How to run
 
-The machine this was built on has no host JDK. Compile and run inside the AM
-image (Temurin 25.0.4, the same runtime as the jars):
+Use a host JDK 25 through `RHINO_LOCAL_JAVA_HOME` or `JAVA_HOME`; `shell.nix`
+provides `temurin-bin-25`. The default JVM lane is `host`. Set
+`RHINO_LOCAL_JVM=container` to use the AM image JVM, or `both` to run every job
+on host and container and fail on any difference (the latter lanes need Docker
+and the AM image). The default cache is `~/.cache/rhino-local`; set
+`RHINO_LOCAL_CACHE` to override it. In this checkout, `.rhino-local/` is the
+gitignored cache location.
 
 ```bash
-scripts/rhino-local/fetch-jars.sh    # no-op once .rhino-local/ is populated
-scripts/rhino-local/run-corpus.sh    # language corpus via Probe
-scripts/rhino-local/run-runner.sh    # long-lived JSON runner (stdin/stdout)
+nix-shell  # shell.nix adds Temurin 25 to PATH
+export JAVA_HOME="$(dirname "$(dirname "$(command -v javac)")")"
+export RHINO_LOCAL_CACHE="$PWD/.rhino-local"
 npm --prefix scripts/rhino-local/ts ci
 npm --prefix scripts/rhino-local/ts test
 npm --prefix scripts/rhino-local/ts run measure
 ```
-
-`fetch-jars.sh` will not pull the image. If it is absent it exits 1 and names
-it. Jars land in gitignored `.rhino-local/`. The Node client spawns
-`run-runner.sh`; that script compiles the Java sources inside the image when
-they are stale.
 
 ### Running the AIC lane
 
@@ -71,7 +70,7 @@ would never have stored.
 
 ## Local Context configuration
 
-The probe (`scripts/rhino-local/Probe.java`) reproduces AM 8.1.1's
+The corpus test reproduces AM 8.1.1's
 `ObservedJavaScriptContext` constructor, measured with `javap -p -c` on
 `org.forgerock.openam.scripting.timeouts.ObservedContextFactory$ObservedJavaScriptContext`:
 
@@ -275,9 +274,9 @@ harness now reproduces the AIC bug instead of hiding it.
 
 ## Long-lived runner
 
-`Probe.java` is still the one-shot corpus driver. The long-lived process is
-`Runner.java`, spawned by `scripts/rhino-local/run-runner.sh` and driven from
-Node by `scripts/rhino-local/ts/src/runner.ts`.
+`Runner.java` is the long-lived process, launched by the TypeScript client in
+`scripts/rhino-local/ts/src/runner.ts`. The language corpus is also evaluated
+through that client by Vitest.
 
 Line-delimited JSON on stdin; one JSON response per job on stdout. Runner
 diagnostics go to stderr (`rhino-local-runner ready` on start). Jobs are handled
