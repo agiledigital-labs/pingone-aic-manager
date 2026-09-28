@@ -221,6 +221,29 @@ function outputFiles(root: string, relative = ""): string[] {
   return files.sort();
 }
 
+/**
+ * The first published directory for `digest` whose manifest still holds.
+ * One that does not — a class deleted, altered or added since — is removed:
+ * names are never reused, so no worker can be about to publish over it, and
+ * a worker already running from it is running damaged classes regardless.
+ */
+function findValidClasses(classesDir: string, digest: string): string | undefined {
+  let names: string[];
+  try {
+    names = readdirSync(classesDir);
+  } catch {
+    return undefined;
+  }
+  for (const name of names.filter((n) => n.startsWith(`${digest}-`)).sort()) {
+    const dir = join(classesDir, name);
+    if (validRunnerCache(dir, digest)) {
+      return dir;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return undefined;
+}
+
 function validRunnerCache(dest: string, digest: string): boolean {
   const marker = join(dest, ".complete");
   if (!existsSync(marker)) return false;
@@ -290,10 +313,14 @@ export async function ensureRhinoJar(
 }
 
 /**
- * Compiled runner classes, keyed by the Java sources and the jar they compile
- * against, so an edit to a `.java` file cannot run stale bytecode. Compiled
- * into a scratch directory and renamed into place, because Vitest spawns
- * runners from several workers at once on a cold cache.
+ * Compiled runner classes, keyed by the Java sources, the compiler and the jar
+ * they compile against, so an edit to a `.java` file cannot run stale
+ * bytecode. Each compile goes to a scratch directory and is renamed to a
+ * **fresh** `<digest>-<uuid>` name, never to a shared one: Vitest spawns
+ * runners from several workers at once, and a name that is never reused
+ * cannot be replaced or moved after another worker has validated and returned
+ * it. Two cold workers may both publish; the copies are identical and the
+ * lowest valid name wins from then on.
  */
 export async function ensureRunnerClasses(
   jar: string,
@@ -317,22 +344,12 @@ export async function ensureRunnerClasses(
     key.update(readFileSync(join(sourcesDir, name)));
   }
   const digest = key.digest("hex").slice(0, 16);
-  const dest = join(cache, "classes", digest);
-  if (validRunnerCache(dest, digest)) {
-    return dest;
+  const classesDir = join(cache, "classes");
+  const found = findValidClasses(classesDir, digest);
+  if (found !== undefined) {
+    return found;
   }
-  if (existsSync(dest)) {
-    // Present but not what its manifest says: a deleted or altered class, or
-    // a stray one. Move it aside rather than trusting it.
-    const aside = join(cache, "classes", `.${digest}.bad.${randomUUID()}`);
-    try {
-      renameSync(dest, aside);
-    } catch {
-      // Another worker may already have moved/replaced the invalid entry.
-    }
-    rmSync(aside, { recursive: true, force: true });
-  }
-  const scratch = join(cache, "classes", `.${digest}.${randomUUID()}`);
+  const scratch = join(classesDir, `.${digest}.${randomUUID()}`);
   mkdirSync(scratch, { recursive: true });
   try {
     try {
@@ -362,18 +379,12 @@ export async function ensureRunnerClasses(
       (file) => `${sha256(readFileSync(join(scratch, file)))}  ${file}`
     );
     writeFileSync(join(scratch, ".complete"), `${digest}\n${manifest.join("\n")}\n`);
-    try {
-      renameSync(scratch, dest);
-    } catch (error) {
-      // Another worker won the race; its classes came from the same sources.
-      if (!validRunnerCache(dest, digest)) {
-        throw error;
-      }
-    }
+    const dest = join(classesDir, `${digest}-${randomUUID()}`);
+    renameSync(scratch, dest);
+    return dest;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
-  return dest;
 }
 
 export interface Launch {
