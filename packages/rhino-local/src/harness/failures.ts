@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { AicTrace } from "../aic/trace.ts";
 import { isPlainObject } from "../case/util.ts";
@@ -45,7 +45,9 @@ export async function appendFailure(
   path = failuresPath({ create: true })
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await appendFile(path, `${JSON.stringify(record)}\n`, { encoding: "utf8" });
+  await appendFile(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
+  // `mode` applies only when the append creates the file.
+  await chmod(path, 0o600);
 }
 
 export async function recordFailureIfAny(

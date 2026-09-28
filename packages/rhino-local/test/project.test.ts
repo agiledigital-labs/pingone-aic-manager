@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -72,6 +80,18 @@ describe("ensureStateSubdir", () => {
     expect(readFileSync(join(root, ".gitignore"), "utf8")).toBe("*\n# mine\n");
   });
 
+  it.each([
+    ["an empty file", "", "*\n"],
+    ["a file that ignores something else", "profiles/\n", "profiles/\n*\n"],
+    ["a re-include after the star", "*\n!profiles/", "*\n!profiles/\n*\n"],
+  ])("restores the ignore-everything rule over %s", (_name, before, after) => {
+    const root = join(dir, ".rhino-local");
+    mkdirSync(root);
+    writeFileSync(join(root, ".gitignore"), before);
+    ensureStateSubdir(root, "profiles");
+    expect(readFileSync(join(root, ".gitignore"), "utf8")).toBe(after);
+  });
+
   it("places the failure dump and show-log view under the state directory", () => {
     const env = { [STATE_DIR_ENV]: join(dir, "s") };
     expect(failuresPath({ env })).toBe(join(dir, "s", "failures", "failures.jsonl"));
@@ -92,6 +112,14 @@ describe("profile store", () => {
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readFileSync(join(root, ".gitignore"), "utf8")).toBe("*\n");
     expect(readProfile("sandbox", root)).toMatchObject({ tenant: "sandbox" });
+  });
+
+  it("tightens a profile that already exists with a looser mode", () => {
+    const root = join(dir, "state");
+    const path = writeProfile(profile, root);
+    chmodSync(path, 0o644);
+    writeProfile(profile, root);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
   it.each(["../escape", "a/b", "", ".hidden"])("refuses tenant name %j", (tenant) => {
